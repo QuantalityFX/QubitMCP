@@ -26,6 +26,21 @@ except ImportError:
         wrapInstance = None
     QT_IS_6 = False
 
+# --- WebEngine (for embedding Gradio UI) ---
+try:
+    from PySide6 import QtWebEngineWidgets as WebEngine
+except Exception:
+    try:
+        from PySide2 import QtWebEngineWidgets as WebEngine
+    except Exception:
+        WebEngine = None  # guarded elsewhere
+
+LLM_URL = "http://127.0.0.1:7860"
+LLM_EMBED_HEIGHT = 900
+ASPECT_W, ASPECT_H = 16, 9
+LLM_NODE_W = 1920
+LLM_NODE_H = 1080 + 90
+
 # create the icon AFTER Qt is imported
 ICON_PATH = Path(__file__).parent / "icons" / "EchoMatrixMCP_Icon_s.png"
 APP_ICON = QtGui.QIcon(str(ICON_PATH)) if ICON_PATH.exists() else QtGui.QIcon()
@@ -158,6 +173,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         # Embedded widgets (params / switch row)
         self._param_proxies = []
         self._switch_proxy = None
+        self._llm_proxy = None
 
         self._recompute_height()
         self._build_widgets()
@@ -167,8 +183,19 @@ class NodeItem(QtWidgets.QGraphicsObject):
         switch_h = self._PARAM_ROW_H if (self.model.kind or "").lower() == "switch" else 0
         n_params = len(self.model.params)
         params_h = n_params * self._PARAM_ROW_H + (self._PADDING if n_params else 0)
-        self.height = self._BASE_H + switch_h + params_h
+
+        if (self.model.kind or "").lower() == "llm":
+            body_h = LLM_NODE_H                 # fixed interior height for the webview
+            node_w = LLM_NODE_W                 # fixed wide width
+        else:
+            body_h = 0
+            node_w = max(self._BASE_W, self.width)
+
+        new_h = self._BASE_H + switch_h + params_h + body_h
         self.prepareGeometryChange()
+        self.width  = int(node_w)
+        self.height = int(new_h)
+
 
     def _clear_widget_proxies(self):
         if self._switch_proxy:
@@ -187,6 +214,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
             except Exception:
                 pass
         self._param_proxies[:] = []
+        if self._llm_proxy:
+            try:
+                sc = self.scene()
+                if sc:
+                    sc.removeItem(self._llm_proxy)
+            except Exception:
+                pass
+            self._llm_proxy = None
 
     def _build_widgets(self):
         self._clear_widget_proxies()
@@ -206,13 +241,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
             slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
             slider.setMinimum(0)
             slider.setMaximum(max(0, len(self.model.switch_inputs) - 1))
-            slider.setSingleStep(1)
-            slider.setPageStep(1)
+            slider.setSingleStep(1); slider.setPageStep(1)
             slider.setValue(max(0, min(self.model.switch_index, slider.maximum())))
             slider.valueChanged.connect(lambda v, L=lab: self._on_switch_slider(v, L))
 
-            lay.addWidget(lab)
-            lay.addWidget(slider, 1)
+            lay.addWidget(lab); lay.addWidget(slider, 1)
 
             proxy = QtWidgets.QGraphicsProxyWidget(self)
             proxy.setWidget(row)
@@ -223,7 +256,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
             y_cursor += self._PARAM_ROW_H
 
-        # --- Parameters ---
+        # --- Parameters (single pass only) ---
         if self.model.params:
             for i, p in enumerate(self.model.params):
                 row = QtWidgets.QWidget()
@@ -243,8 +276,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 )
                 edit.textEdited.connect(lambda txt, idx=i: self._on_param_changed(idx, txt))
 
-                lay.addWidget(lab)
-                lay.addWidget(edit, 1)
+                lay.addWidget(lab); lay.addWidget(edit, 1)
 
                 proxy = QtWidgets.QGraphicsProxyWidget(self)
                 proxy.setWidget(row)
@@ -254,6 +286,50 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 self._param_proxies.append(proxy)
 
                 y_cursor += self._PARAM_ROW_H
+
+        # --- LLM embedded webview (Gradio) ---
+        if (self.model.kind or "").lower() == "llm":
+            if WebEngine is None:
+                row = QtWidgets.QWidget()
+                lay = QtWidgets.QVBoxLayout(row); lay.setContentsMargins(6,0,6,0); lay.setSpacing(6)
+                warn = QtWidgets.QLabel("QtWebEngine not available.\nInstall PySide6-Qt6-WebEngine (or PySide2 QtWebEngine).")
+                warn.setStyleSheet("color:#fca5a5;")
+                lay.addWidget(warn, 0, QtCore.Qt.AlignLeft)
+
+                proxy = QtWidgets.QGraphicsProxyWidget(self)
+                proxy.setWidget(row)
+                proxy.setZValue(self.zValue() + 0.1)
+                proxy.setPos(0, y_cursor)
+                proxy.resize(self.width, max(200, LLM_NODE_H // 3))
+                try: proxy.setPreferredSize(self.width, max(200, LLM_NODE_H // 3))
+                except AttributeError: pass
+                self._llm_proxy = proxy
+            else:
+                container = QtWidgets.QWidget()
+                container.setAttribute(QtCore.Qt.WA_TranslucentBackground)
+                container.setMinimumSize(self.width, LLM_NODE_H)
+                container.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+
+                v = QtWidgets.QVBoxLayout(container); v.setContentsMargins(0,0,0,0); v.setSpacing(0)
+
+                view = WebEngine.QWebEngineView(container)
+                view.setObjectName("LLMWebView")
+                view.setMinimumHeight(LLM_NODE_H)
+                view.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+                view.setUrl(QtCore.QUrl(LLM_URL))
+                v.addWidget(view)
+
+                proxy = QtWidgets.QGraphicsProxyWidget(self)
+                proxy.setWidget(container)
+                proxy.setZValue(self.zValue() + 0.1)
+                proxy.setPos(0, y_cursor)
+                proxy.resize(self.width, LLM_NODE_H)
+                try: proxy.setPreferredSize(self.width, LLM_NODE_H)
+                except AttributeError: pass
+                self._llm_proxy = proxy
+
+                y_cursor += LLM_NODE_H
+
 
     def _switch_label_text(self):
         n = len(self.model.switch_inputs)
@@ -297,6 +373,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             "import": "#3b82f6",
             "output": "#a855f7",
             "node": "#64748b",
+            "llm": "#14b8a6",
         }
         stripe = color_map.get((self.model.kind or "node").lower(), "#64748b")
         p.setBrush(QtGui.QColor(stripe))
@@ -1040,7 +1117,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
 
         self.kind_edit = QtWidgets.QComboBox()
         self.kind_edit.setEditable(True)
-        self.kind_edit.addItems(["node","import","python","switch","output"])  # <- FIXED INDENT
+        self.kind_edit.addItems(["node","import","python","switch","output","llm"])
         self.kind_edit.setEditText("node")
         form.addRow("Node type:", self.kind_edit)
 
@@ -1068,6 +1145,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
         def _toggle_code_box(kind_text):
             show = (kind_text.strip().lower() == "python")
             code_box.setVisible(show)
+
         self.kind_edit.currentTextChanged.connect(_toggle_code_box)
         _toggle_code_box(self.kind_edit.currentText())
 
