@@ -170,13 +170,29 @@ class NodeItem(QtWidgets.QGraphicsObject):
             QtCore.Qt.LeftButton | QtCore.Qt.RightButton | QtCore.Qt.MiddleButton
         )
 
-        # Embedded widgets (params / switch row)
+        # Embedded widgets (params / switch row / llm view)
         self._param_proxies = []
         self._switch_proxy = None
         self._llm_proxy = None
+        self._llm_view = None  # keep ref for live URL reloads
 
         self._recompute_height()
         self._build_widgets()
+
+    def _normalize_url(self, s: str) -> str:
+        s = (s or "").strip()
+        if not s:
+            return LLM_URL
+        if not re.match(r'^[a-zA-Z]+://', s):
+            s = "http://" + s
+        return s
+
+    def _llm_url_from_params(self) -> str:
+        for p in (self.model.params or []):
+            nm = (p.get("name","") or "").lower()
+            if nm in ("url", "address", "endpoint"):
+                return self._normalize_url(p.get("value",""))
+        return LLM_URL
 
     # ---------- layout helpers ----------
     def _recompute_height(self):
@@ -195,7 +211,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
         self.prepareGeometryChange()
         self.width  = int(node_w)
         self.height = int(new_h)
-
 
     def _clear_widget_proxies(self):
         if self._switch_proxy:
@@ -222,6 +237,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
             except Exception:
                 pass
             self._llm_proxy = None
+        # also drop the view ref so we don't poke a deleted widget
+        self._llm_view = None
 
     def _build_widgets(self):
         self._clear_widget_proxies()
@@ -316,7 +333,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 view.setObjectName("LLMWebView")
                 view.setMinimumHeight(LLM_NODE_H)
                 view.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
-                view.setUrl(QtCore.QUrl(LLM_URL))
+                view.setUrl(QtCore.QUrl(self._llm_url_from_params()))
+                self._llm_view = view  # keep a reference so we can live-update on edits
                 v.addWidget(view)
 
                 proxy = QtWidgets.QGraphicsProxyWidget(self)
@@ -329,7 +347,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 self._llm_proxy = proxy
 
                 y_cursor += LLM_NODE_H
-
 
     def _switch_label_text(self):
         n = len(self.model.switch_inputs)
@@ -347,6 +364,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
             self.model.params[idx]["value"] = txt
         except Exception:
             pass
+
+        # NEW: if it's an LLM node and the edited param is the URL, refresh
+        if (self.model.kind or "").lower() == "llm":
+            try:
+                name = (self.model.params[idx]["name"] or "").lower()
+            except Exception:
+                name = ""
+            if name in ("url", "address", "endpoint") and getattr(self, "_llm_view", None):
+                self._llm_view.setUrl(QtCore.QUrl(self._normalize_url(txt)))
 
     # ---------- QGraphicsItem plumbing ----------
     def boundingRect(self):
@@ -706,7 +732,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
                 "name": node.name, "kind": node.kind, "info": node.info or "",
                 "code": node.code if node.code is not None else None,
                 "pos": [float(node.pos.x()), float(node.pos.y())],
-                "params": [{"name": p["name"], "value": p.get("value","")} for p in (node.params or [])],
+                "params": [{"name": p["name"], "value": p.get("value","")} for p in (node.params or [])],  
             }
             if (node.kind or "").lower() == "switch":
                 nd["switch_inputs"] = list(node.switch_inputs)
@@ -1034,11 +1060,16 @@ class GraphView(QtWidgets.QGraphicsView):
         p.fillRect(rect, QtGui.QColor("#1a1f24"))
 
     def keyPressEvent(self, e: QtGui.QKeyEvent):
-        if e.key() in (QtCore.Qt.Key_Delete, QtCore.Qt.Key_Backspace):
+        # Only DELETE removes selected nodes.
+        if e.key() == QtCore.Qt.Key_Delete:
             sc = self.scene()
             if hasattr(sc, "delete_selected_nodes"):
-                sc.delete_selected_nodes(); e.accept(); return
+                sc.delete_selected_nodes()
+                e.accept()
+                return
+        # Let everything else (including Backspace) pass through to focused widgets/webview.
         super().keyPressEvent(e)
+
 
     # middle pan, right zoom/context
     def mousePressEvent(self, e):
@@ -1121,6 +1152,15 @@ class CreateNodeDialog(QtWidgets.QDialog):
         self.kind_edit.setEditText("node")
         form.addRow("Node type:", self.kind_edit)
 
+        # --- LLM URL (only visible when kind == llm)
+        self._llm_url_label = QtWidgets.QLabel("URL:")
+        self._llm_url_edit  = QtWidgets.QLineEdit()
+        self._llm_url_edit.setPlaceholderText("http://127.0.0.1:7860")
+        self._llm_url_edit.setText(LLM_URL)
+        form.addRow(self._llm_url_label, self._llm_url_edit)
+        self._llm_url_label.setVisible(False)
+        self._llm_url_edit.setVisible(False)
+
         # Params group
         param_box = QtWidgets.QGroupBox("Parameters (optional)")
         pv = QtWidgets.QVBoxLayout(param_box); pv.setContentsMargins(8,8,8,8); pv.setSpacing(6)
@@ -1143,8 +1183,13 @@ class CreateNodeDialog(QtWidgets.QDialog):
 
         # toggle visibility with kind
         def _toggle_code_box(kind_text):
-            show = (kind_text.strip().lower() == "python")
-            code_box.setVisible(show)
+            kind = (kind_text or "").strip().lower()
+            # Python initial code group
+            code_box.setVisible(kind == "python")
+            # LLM URL row visibility
+            is_llm = (kind == "llm")
+            self._llm_url_label.setVisible(is_llm)
+            self._llm_url_edit.setVisible(is_llm)
 
         self.kind_edit.currentTextChanged.connect(_toggle_code_box)
         _toggle_code_box(self.kind_edit.currentText())
@@ -1187,6 +1232,19 @@ class CreateNodeDialog(QtWidgets.QDialog):
         if kind.lower() == "python":
             code_text = self.code_edit.toPlainText()
             code = code_text if code_text.strip() else ""
+
+        # NEW: auto-seed URL for LLM nodes + pull from the dedicated field
+        if kind.lower() == "llm":
+            url_val = (self._llm_url_edit.text() or "").strip() or LLM_URL
+            names = {p["name"].strip().lower() for p in params}
+            if "url" in names:
+                for p in params:
+                    if p["name"].strip().lower() == "url":
+                        p["value"] = url_val
+                        break
+            else:
+                params.append({"name": "URL", "value": url_val})
+
         return {"name": self.name_edit.text().strip(), "kind": kind, "params": params, "code": code}
 
 # main window
