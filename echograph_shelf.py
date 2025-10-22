@@ -709,8 +709,33 @@ class GraphScene(QtWidgets.QGraphicsScene):
         # nice default bg for the scene itself
         self.setBackgroundBrush(QtGui.QColor("#1a1f24"))
 
+        # give plenty of empty space up front so you can pan immediately
+        self.setSceneRect(QtCore.QRectF(-20000, -20000, 40000, 40000))
+
+    def _ensure_space(self, pt: QtCore.QPointF, margin: float = 8000.0):
+        """Expand sceneRect in big chunks, but only if the point is near the edge."""
+        r = self.sceneRect()
+
+        # Fast path: if there’s already ample margin around pt, do nothing.
+        safe = QtCore.QRectF(r.left() + margin, r.top() + margin,
+                            r.width() - 2*margin, r.height() - 2*margin)
+        if safe.contains(pt):
+            return
+
+        # Expand in large blocks to avoid frequent tiny resizes.
+        left   = min(r.left(),   pt.x() - margin)
+        top    = min(r.top(),    pt.y() - margin)
+        right  = max(r.right(),  pt.x() + margin)
+        bottom = max(r.bottom(), pt.y() + margin)
+
+        self.setSceneRect(QtCore.QRectF(QtCore.QPointF(left, top),
+                                        QtCore.QPointF(right, bottom)))
+
     # quick-create via right-click on empty canvas
     def show_create_dialog_at(self, scene_pos: QtCore.QPointF):
+        # make sure there's space where the user clicked
+        self._ensure_space(scene_pos)
+
         hits = self.items(scene_pos)
         for it in hits:
             if isinstance(it, (NodeItem, EdgeItem)):
@@ -774,6 +799,9 @@ class GraphScene(QtWidgets.QGraphicsScene):
 
     # graph ops
     def add_node(self, node: GraphNode, pos):
+        # expand canvas around the placement point
+        self._ensure_space(pos)
+
         item = NodeItem(node); item.setPos(pos); node.pos=pos
         item.clicked.connect(self._on_node_clicked)
         item.requestCenter.connect(self.center_on_name)
