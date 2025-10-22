@@ -461,6 +461,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 for edge in getattr(sc, "_edges", []):
                     if edge.src is self or edge.dst is self:
                         edge.updatePath()
+                # NEW: grow/shrink canvas to wrap all nodes with buffer
+                if hasattr(sc, "_reframe_to_nodes"):
+                    try:
+                        sc._reframe_to_nodes(margin=8000.0)
+                    except Exception:
+                        pass
         return super().itemChange(change, value)
 
 
@@ -712,28 +718,53 @@ class GraphScene(QtWidgets.QGraphicsScene):
         # give plenty of empty space up front so you can pan immediately
         self.setSceneRect(QtCore.QRectF(-20000, -20000, 40000, 40000))
 
-    def _ensure_space(self, pt: QtCore.QPointF, margin: float = 8000.0):
-        """Expand sceneRect in big chunks, but only if the point is near the edge."""
-        r = self.sceneRect()
+    # NEW: compute bbox of all nodes (in scene coords)
+    def _nodes_bbox(self):
+        rect = None
+        for it in self._node_items.values():
+            r = it.mapRectToScene(it.boundingRect())
+            rect = r if rect is None else rect.united(r)
+        return rect
 
-        # Fast path: if there’s already ample margin around pt, do nothing.
+    # NEW: grow/shrink scene to wrap all nodes with a pan buffer
+    def _reframe_to_nodes(self, margin: float = 8000.0, min_half_extent: float = 20000.0):
+        bbox = self._nodes_bbox()
+        if bbox is None:
+            # No nodes: keep a generous empty canvas
+            self.setSceneRect(QtCore.QRectF(-min_half_extent, -min_half_extent,
+                                            2*min_half_extent, 2*min_half_extent))
+            return
+        # Add buffer
+        newr = bbox.adjusted(-margin, -margin, margin, margin)
+
+        # Ensure a minimum canvas size centered on the bbox center (prevents tiny rects)
+        cx = newr.center().x()
+        cy = newr.center().y()
+        minr = QtCore.QRectF(cx - min_half_extent, cy - min_half_extent,
+                             2*min_half_extent, 2*min_half_extent)
+        # Take the union so we keep at least the minimum extents and the buffer
+        final = newr.united(minr)
+
+        if final != self.sceneRect():
+            self.setSceneRect(final)
+
+    def _ensure_space(self, pt: QtCore.QPointF, margin: float = 8000.0):
+        """Expand sceneRect in big chunks around an arbitrary point (for far-click create)."""
+        r = self.sceneRect()
         safe = QtCore.QRectF(r.left() + margin, r.top() + margin,
-                            r.width() - 2*margin, r.height() - 2*margin)
+                             r.width() - 2*margin, r.height() - 2*margin)
         if safe.contains(pt):
             return
-
-        # Expand in large blocks to avoid frequent tiny resizes.
         left   = min(r.left(),   pt.x() - margin)
         top    = min(r.top(),    pt.y() - margin)
         right  = max(r.right(),  pt.x() + margin)
         bottom = max(r.bottom(), pt.y() + margin)
-
         self.setSceneRect(QtCore.QRectF(QtCore.QPointF(left, top),
                                         QtCore.QPointF(right, bottom)))
 
     # quick-create via right-click on empty canvas
     def show_create_dialog_at(self, scene_pos: QtCore.QPointF):
-        # make sure there's space where the user clicked
+        # make sure there's space where the user clicked (even if no nodes yet)
         self._ensure_space(scene_pos)
 
         hits = self.items(scene_pos)
@@ -757,7 +788,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
                 "name": node.name, "kind": node.kind, "info": node.info or "",
                 "code": node.code if node.code is not None else None,
                 "pos": [float(node.pos.x()), float(node.pos.y())],
-                "params": [{"name": p["name"], "value": p.get("value","")} for p in (node.params or [])],  
+                "params": [{"name": p["name"], "value": p.get("value","")} for p in (node.params or [])],
             }
             if (node.kind or "").lower() == "switch":
                 nd["switch_inputs"] = list(node.switch_inputs)
@@ -781,6 +812,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
             try: self._add_edge_and_update_switch(ed["src"], ed["dst"])
             except Exception: pass
         self._refresh_all_switch_widgets()
+        self._reframe_to_nodes(margin=8000.0)  # NEW: fit after load
         if self._current_output_name and self._current_output_name in self._node_items:
             self.recompute_active_path(self._current_output_name)
         else:
@@ -796,10 +828,12 @@ class GraphScene(QtWidgets.QGraphicsScene):
             except Exception: pass
         self._node_items.clear(); self._nodes_by_name.clear()
         self._current_output_name = None
+        # keep an empty-but-large canvas
+        self.setSceneRect(QtCore.QRectF(-20000, -20000, 40000, 40000))
 
     # graph ops
     def add_node(self, node: GraphNode, pos):
-        # expand canvas around the placement point
+        # expand canvas around the placement point, then register node, then reframe to all nodes
         self._ensure_space(pos)
 
         item = NodeItem(node); item.setPos(pos); node.pos=pos
@@ -809,6 +843,8 @@ class GraphScene(QtWidgets.QGraphicsScene):
         item.switchIndexChanged.connect(self._on_switch_index_changed)
         self.addItem(item)
         self._nodes_by_name[node.name]=node; self._node_items[node.name]=item
+
+        self._reframe_to_nodes(margin=8000.0)  # NEW: wrap all nodes + buffer
         return item
 
     def add_edge(self, src_name, dst_name):
@@ -859,6 +895,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
             if self._current_output_name:
                 self.recompute_active_path(self._current_output_name)
         self.nodeDeleted.emit(name)
+        self._reframe_to_nodes(margin=8000.0)  # NEW: shrink/grow after delete
 
     def delete_selected_nodes(self):
         for it in list(self.selectedItems()):
@@ -1073,6 +1110,13 @@ class GraphView(QtWidgets.QGraphicsView):
         self.setAttribute(QtCore.Qt.WA_OpaquePaintEvent, True)
         self.setFocusPolicy(QtCore.Qt.StrongFocus)
 
+        # HIDE SCROLLBARS (keeps UI clean; panning still works)
+        try:
+            self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+            self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        except Exception:
+            pass
+
         # middle-mouse pan
         self._mm_dragging = False
         self._mm_last_pos = None
@@ -1097,7 +1141,6 @@ class GraphView(QtWidgets.QGraphicsView):
                 return
         # Let everything else (including Backspace) pass through to focused widgets/webview.
         super().keyPressEvent(e)
-
 
     # middle pan, right zoom/context
     def mousePressEvent(self, e):
@@ -1314,7 +1357,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
     def _build_topbar(self):
         bar = QtWidgets.QFrame(); bar.setObjectName("TopBar")
-        bar.setStyleSheet("#TopBar{background:#20242b;border-bottom:1px solid #333;} QPushButton{padding:6px 12px;font-weight:600;}")
+        bar.setStyleSheet("#TopBar{background:#20242b;border-bottom:1px solid #333;} PushButton{padding:6px 12px;font-weight:600;}")
         bar.setFixedHeight(36)
         h = QtWidgets.QHBoxLayout(bar); h.setContentsMargins(8,4,8,4); h.setSpacing(8)
 
