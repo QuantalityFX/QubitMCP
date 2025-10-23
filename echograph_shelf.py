@@ -41,9 +41,23 @@ ASPECT_W, ASPECT_H = 16, 9
 LLM_NODE_W = 1920
 LLM_NODE_H = 1080 + 90
 
-# create the icon AFTER Qt is imported
-ICON_PATH = Path(__file__).parent / "icons" / "EchoMatrixMCP_Icon_s.png"
+# create the icon AFTER Qt is imported (handle Houdini shelf tools where __file__ is undefined)
+def _script_dir():
+    # 1) normal files
+    if "__file__" in globals():
+        try:
+            return Path(__file__).resolve().parent
+        except Exception:
+            pass
+    # 2) shelf tools / embedded contexts: fall back to CWD (or home as last resort)
+    try:
+        return Path.cwd()
+    except Exception:
+        return Path.home()
+
+ICON_PATH = _script_dir() / "icons" / "EchoMatrixMCP_Icon_s.png"
 APP_ICON = QtGui.QIcon(str(ICON_PATH)) if ICON_PATH.exists() else QtGui.QIcon()
+
 
 # --- host detection (Maya / Houdini / standalone) ---
 HOST = "standalone"
@@ -432,18 +446,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         p.drawEllipse(QtCore.QRectF(self.width - 4, self._BASE_H / 2.0 - 4, 8, 8))  # out
 
     # ---------- Interaction ----------
-    def mousePressEvent(self, e):
-        if e.button() == QtCore.Qt.LeftButton:
-            lp = e.pos()
-            # clicking near the right socket starts a wire drag
-            if (self.width - 10) <= lp.x() <= (self.width + 6) and \
-               (self._BASE_H / 2.0 - 10) <= lp.y() <= (self._BASE_H / 2.0 + 10):
-                self.startWireDrag.emit(self)
-                e.accept()
-                return
-            # otherwise it's a click on the node body
-            self.clicked.emit(self.model)
-        super().mousePressEvent(e)
+    # --- NodeItem interaction & movement plumbing ---
 
     def hoverEnterEvent(self, e):
         self._hover = True
@@ -455,19 +458,68 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
     def itemChange(self, change, value):
         if change == QtWidgets.QGraphicsItem.ItemPositionHasChanged:
+            # keep model in sync
             self.model.pos = value
             sc = self.scene()
             if sc:
+                # refresh any connected edges
                 for edge in getattr(sc, "_edges", []):
                     if edge.src is self or edge.dst is self:
                         edge.updatePath()
-                # NEW: grow/shrink canvas to wrap all nodes with buffer
+                # keep canvas wrapping all nodes
                 if hasattr(sc, "_reframe_to_nodes"):
                     try:
                         sc._reframe_to_nodes(margin=8000.0)
                     except Exception:
                         pass
         return super().itemChange(change, value)
+
+    def mousePressEvent(self, e):
+        if e.button() == QtCore.Qt.LeftButton:
+            # record press for wire/drag detection
+            self._lmb_press_scene = self.mapToScene(e.pos())
+            self._lmb_started_wire = False
+
+            # hit test near the RIGHT socket to start a wire drag
+            on_right_socket = (self.width - 12 <= e.pos().x() <= self.width + 6) and (0 <= e.pos().y() <= self._BASE_H)
+            if on_right_socket:
+                try:
+                    self.startWireDrag.emit(self)
+                    self._lmb_started_wire = True
+                except Exception:
+                    pass
+            else:
+                # NEW: fire click immediately on press so drag-to-move still selects/shows info
+                try:
+                    self.clicked.emit(self.model)
+                except Exception:
+                    pass
+
+            super().mousePressEvent(e)
+            e.accept()
+            return
+
+        super().mousePressEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == QtCore.Qt.LeftButton:
+            try:
+                press_scene = getattr(self, "_lmb_press_scene", None)
+                if press_scene is not None:
+                    rel_scene = self.mapToScene(e.pos())
+                    # keep the “tiny move = click” fallback for normal taps
+                    if (rel_scene - press_scene).manhattanLength() <= 4 and not getattr(self, "_lmb_started_wire", False):
+                        self.clicked.emit(self.model)
+            finally:
+                self._lmb_press_scene = None
+                self._lmb_started_wire = False
+
+            super().mouseReleaseEvent(e)
+            e.accept()
+            return
+
+        super().mouseReleaseEvent(e)
+
 
 
 class EdgeItem(QtWidgets.QGraphicsPathItem):
@@ -1085,6 +1137,7 @@ class GraphView(QtWidgets.QGraphicsView):
         super().__init__(scene)
         # Antialiasing
         self.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        
         # Viewport update mode (PySide2 first, PySide6 fallback)
         try:
             self.setViewportUpdateMode(QtWidgets.QGraphicsView.BoundingRectViewportUpdate)
@@ -1097,10 +1150,12 @@ class GraphView(QtWidgets.QGraphicsView):
             self.setDragMode(QtWidgets.QGraphicsView.DragMode.NoDrag)
         # Cursor + transform anchor
         self.setCursor(QtCore.Qt.ArrowCursor)
+        # IMPORTANT: Use ViewCenter so our manual _zoom_at() pivot math is the ONLY thing that moves the view.
         try:
-            self.setTransformationAnchor(QtWidgets.QGraphicsView.AnchorUnderMouse)
+            self.setTransformationAnchor(QtWidgets.QGraphicsView.AnchorViewCenter)
         except AttributeError:
-            self.setTransformationAnchor(QtWidgets.QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+            # PySide2 naming
+            self.setTransformationAnchor(QtWidgets.QGraphicsView.ViewportAnchor.AnchorViewCenter)
         # Background (view/viewport)
         self.setBackgroundBrush(QtGui.QColor("#1a1f24"))
         try:
@@ -1123,19 +1178,46 @@ class GraphView(QtWidgets.QGraphicsView):
 
         # right-click drag zoom or quick context
         self._rc_dragging = False
-        self._rc_last_pos = None
         self._rc_press_pos = None
-        self._zoom_sensitivity = 200.0
+        self._rc_started_over_llm = False
+        self._rc_start_transform = QtGui.QTransform()
+        self._rc_press_scene_pt = QtCore.QPointF()
+
+        # click threshold for quick-create vs drag
         self._context_click_thresh = 4.0
+
+        # --- PureOverRef-style RMB-drag zoom config (add these) ---
+        self._drag_divisor = 13.0        # matches your reference script
+        self._zoom_multiplier = 1.1      # matches your reference script
+        self._min_scale = 0.02           # safety clamp (overall zoom lower bound)
+        self._max_scale = 50.0           # safety clamp (overall zoom upper bound)
 
     # --- precise zoom-at-cursor helper (works in PySide2/6) ---
     def _zoom_at(self, viewport_pos: QtCore.QPoint, factor: float):
-        """Scale the view while keeping the scene point under the cursor fixed."""
+        """Scale the view while keeping the scene point under the given cursor fixed."""
         before = self.mapToScene(viewport_pos)
         self.scale(factor, factor)
         after = self.mapToScene(viewport_pos)
         delta = after - before
         self.translate(delta.x(), delta.y())
+
+    def _current_scale_x(self) -> float:
+        t = self.transform()
+        # sx is m11 in QTransform
+        try:
+            return float(t.m11())
+        except Exception:
+            return 1.0
+
+    # Clamp the *resulting* scale (start_scale * factor) into [min,max], and return the adjusted factor.
+    def _clamp_factor_from(self, start_scale: float, factor: float) -> float:
+        target = start_scale * factor
+        if target < self._min_scale:
+            return self._min_scale / max(start_scale, 1e-12)
+        if target > self._max_scale:
+            return self._max_scale / max(start_scale, 1e-12)
+        return factor
+
 
     def _is_over_llm_view(self, viewport_pos: QtCore.QPoint) -> bool:
         """Return True if the cursor is over an embedded LLM webview (disable right-drag zoom there)."""
@@ -1154,7 +1236,6 @@ class GraphView(QtWidgets.QGraphicsView):
                     if pr.mapRectToScene(pr.boundingRect()).contains(sp):
                         return True
         return False
-
 
     def drawBackground(self, p: QtGui.QPainter, rect: QtCore.QRectF):
         p.fillRect(rect, QtGui.QColor("#1a1f24"))
@@ -1179,13 +1260,18 @@ class GraphView(QtWidgets.QGraphicsView):
             e.accept(); return
 
         if e.button() == QtCore.Qt.RightButton:
-            # If cursor is over LLM webview, do NOT engage right-drag zoom; pass through to the web UI.
-            if self._is_over_llm_view(e.pos()):
+            # If cursor is over LLM webview, do NOT engage RMB zoom; let web UI handle RMB fully.
+            self._rc_started_over_llm = self._is_over_llm_view(e.pos())
+            if self._rc_started_over_llm:
+                # Do NOT accept; propagate to the embedded webview.
                 super().mousePressEvent(e)
                 return
+
+            # Begin RefOverNet-style RMB zoom gesture
             self._rc_dragging = True
-            self._rc_last_pos = e.pos()
             self._rc_press_pos = e.pos()
+            self._rc_start_transform = QtGui.QTransform(self.transform())
+            self._rc_press_scene_pt = self.mapToScene(self._rc_press_pos)
             e.accept(); return
 
         super().mousePressEvent(e)
@@ -1198,20 +1284,29 @@ class GraphView(QtWidgets.QGraphicsView):
             self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
             e.accept(); return
 
-        if self._rc_dragging and self._rc_last_pos is not None:
-            delta = e.pos() - self._rc_last_pos
-            score = float(delta.x()) - float(delta.y())
-            if score != 0.0:
-                factor = 1.0 + abs(score) / self._zoom_sensitivity
-                if score < 0:
-                    factor = 1.0 / factor
-                # Zoom around the current cursor position
-                self._zoom_at(e.pos(), factor)
-                self._rc_last_pos = e.pos()
+        # --- REPLACE your current RMB-drag block with this ---
+        if self._rc_dragging and self._rc_press_pos is not None:
+            # RefOverNet rule: distance = dy - dx (from press pivot)
+            dx = e.pos().x() - self._rc_press_pos.x()
+            dy = e.pos().y() - self._rc_press_pos.y()
+            distance = dy - dx
+
+            exponent = abs(distance) / self._drag_divisor
+            base = self._zoom_multiplier
+            factor = base ** (-exponent) if distance > 0 else base ** (exponent)  # >0 ⇒ zoom OUT, <0 ⇒ zoom IN
+
+            # Apply relative to the gesture's starting transform (prevents drift/accel),
+            # and keep the pivot pinned at the RMB press position.
+            start_sx = self._rc_start_transform.m11()
+            factor = self._clamp_factor_from(start_sx, factor)
+
+            # Reset to start transform, then apply zoom about the press pivot.
+            self.setTransform(self._rc_start_transform)
+            self._zoom_at(self._rc_press_pos, factor)
+
             e.accept(); return
 
         super().mouseMoveEvent(e)
-
 
     def mouseReleaseEvent(self, e):
         if e.button() == QtCore.Qt.MiddleButton:
@@ -1221,6 +1316,12 @@ class GraphView(QtWidgets.QGraphicsView):
             e.accept(); return
 
         if e.button() == QtCore.Qt.RightButton:
+            # If the RMB press began over the LLM webview, let it receive the release too.
+            if self._rc_started_over_llm:
+                self._rc_started_over_llm = False
+                super().mouseReleaseEvent(e)
+                return
+
             is_context = False
             if self._rc_press_pos is not None:
                 dx = e.pos().x() - self._rc_press_pos.x()
@@ -1228,11 +1329,11 @@ class GraphView(QtWidgets.QGraphicsView):
                 if math.hypot(dx, dy) <= self._context_click_thresh:
                     is_context = True
 
+            # Clear RMB drag state
             self._rc_dragging = False
-            self._rc_last_pos = None
             self._rc_press_pos = None
 
-            # If over LLM webview, never pop our quick-create (let the web UI handle right-click).
+            # If not over LLM webview and it's a tiny click, pop quick-create on empty canvas
             if is_context and not self._is_over_llm_view(e.pos()):
                 sp = self.mapToScene(e.pos())
                 sc = self.scene()
@@ -1252,7 +1353,11 @@ class GraphView(QtWidgets.QGraphicsView):
             vp = QtCore.QPoint(int(vp.x()), int(vp.y()))
         except AttributeError:
             vp = e.pos()       # Qt5 QPoint
+        # Clamp wheel zoom, too
+        start_sx = self._current_scale_x()
+        factor = self._clamp_factor_from(start_sx, factor)
         self._zoom_at(vp, factor)
+
 
 # Create Node Dialog (+ optional initial python block)
 class CreateNodeDialog(QtWidgets.QDialog):
@@ -1501,8 +1606,6 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
         scroll.setWidget(self._cardsContainer)
 
-        self.infoDock.setWidget(scroll)
-        self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, self.infoDock)
         # Lock dock + scroll colors to our dark palette
         self.infoDock.setWidget(scroll)
         self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, self.infoDock)
