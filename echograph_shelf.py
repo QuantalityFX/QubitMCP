@@ -1128,6 +1128,34 @@ class GraphView(QtWidgets.QGraphicsView):
         self._zoom_sensitivity = 200.0
         self._context_click_thresh = 4.0
 
+    # --- precise zoom-at-cursor helper (works in PySide2/6) ---
+    def _zoom_at(self, viewport_pos: QtCore.QPoint, factor: float):
+        """Scale the view while keeping the scene point under the cursor fixed."""
+        before = self.mapToScene(viewport_pos)
+        self.scale(factor, factor)
+        after = self.mapToScene(viewport_pos)
+        delta = after - before
+        self.translate(delta.x(), delta.y())
+
+    def _is_over_llm_view(self, viewport_pos: QtCore.QPoint) -> bool:
+        """Return True if the cursor is over an embedded LLM webview (disable right-drag zoom there)."""
+        sp = self.mapToScene(viewport_pos)
+        for it in self.scene().items(sp):
+            # If it's a proxy widget, look for our named webview child
+            if isinstance(it, QtWidgets.QGraphicsProxyWidget):
+                w = it.widget()
+                if w is not None:
+                    if w.findChild(QtWidgets.QWidget, "LLMWebView") is not None:
+                        return True
+            # Also handle hit-testing the specific proxy kept on NodeItem
+            if isinstance(it, NodeItem):
+                pr = getattr(it, "_llm_proxy", None)
+                if isinstance(pr, QtWidgets.QGraphicsProxyWidget):
+                    if pr.mapRectToScene(pr.boundingRect()).contains(sp):
+                        return True
+        return False
+
+
     def drawBackground(self, p: QtGui.QPainter, rect: QtCore.QRectF):
         p.fillRect(rect, QtGui.QColor("#1a1f24"))
 
@@ -1149,11 +1177,17 @@ class GraphView(QtWidgets.QGraphicsView):
             self._mm_last_pos = e.pos()
             self.viewport().setCursor(QtCore.Qt.ClosedHandCursor)
             e.accept(); return
+
         if e.button() == QtCore.Qt.RightButton:
+            # If cursor is over LLM webview, do NOT engage right-drag zoom; pass through to the web UI.
+            if self._is_over_llm_view(e.pos()):
+                super().mousePressEvent(e)
+                return
             self._rc_dragging = True
             self._rc_last_pos = e.pos()
             self._rc_press_pos = e.pos()
             e.accept(); return
+
         super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e):
@@ -1163,16 +1197,21 @@ class GraphView(QtWidgets.QGraphicsView):
             self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta.x())
             self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
             e.accept(); return
+
         if self._rc_dragging and self._rc_last_pos is not None:
             delta = e.pos() - self._rc_last_pos
             score = float(delta.x()) - float(delta.y())
             if score != 0.0:
                 factor = 1.0 + abs(score) / self._zoom_sensitivity
-                if score > 0: self.scale(factor, factor)
-                else: self.scale(1.0 / factor, 1.0 / factor)
+                if score < 0:
+                    factor = 1.0 / factor
+                # Zoom around the current cursor position
+                self._zoom_at(e.pos(), factor)
                 self._rc_last_pos = e.pos()
             e.accept(); return
+
         super().mouseMoveEvent(e)
+
 
     def mouseReleaseEvent(self, e):
         if e.button() == QtCore.Qt.MiddleButton:
@@ -1180,6 +1219,7 @@ class GraphView(QtWidgets.QGraphicsView):
             self._mm_last_pos = None
             self.viewport().setCursor(QtCore.Qt.ArrowCursor)
             e.accept(); return
+
         if e.button() == QtCore.Qt.RightButton:
             is_context = False
             if self._rc_press_pos is not None:
@@ -1187,21 +1227,32 @@ class GraphView(QtWidgets.QGraphicsView):
                 dy = e.pos().y() - self._rc_press_pos.y()
                 if math.hypot(dx, dy) <= self._context_click_thresh:
                     is_context = True
+
             self._rc_dragging = False
             self._rc_last_pos = None
             self._rc_press_pos = None
-            if is_context:
+
+            # If over LLM webview, never pop our quick-create (let the web UI handle right-click).
+            if is_context and not self._is_over_llm_view(e.pos()):
                 sp = self.mapToScene(e.pos())
                 sc = self.scene()
                 if hasattr(sc, "show_create_dialog_at"):
                     sc.show_create_dialog_at(sp)
                 e.accept(); return
+
             e.accept(); return
+
         super().mouseReleaseEvent(e)
 
     def wheelEvent(self, e: QtGui.QWheelEvent):
         factor = 1.15 if e.angleDelta().y() > 0 else 1/1.15
-        self.scale(factor, factor)
+        # QWheelEvent.position() in Qt6; pos() in Qt5
+        try:
+            vp = e.position()  # Qt6 QPointF
+            vp = QtCore.QPoint(int(vp.x()), int(vp.y()))
+        except AttributeError:
+            vp = e.pos()       # Qt5 QPoint
+        self._zoom_at(vp, factor)
 
 # Create Node Dialog (+ optional initial python block)
 class CreateNodeDialog(QtWidgets.QDialog):
