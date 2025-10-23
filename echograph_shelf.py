@@ -1150,12 +1150,13 @@ class GraphView(QtWidgets.QGraphicsView):
             self.setDragMode(QtWidgets.QGraphicsView.DragMode.NoDrag)
         # Cursor + transform anchor
         self.setCursor(QtCore.Qt.ArrowCursor)
-        # IMPORTANT: Use ViewCenter so our manual _zoom_at() pivot math is the ONLY thing that moves the view.
+
+        # IMPORTANT: disable built-in anchoring so our custom pivot math controls the zoom
         try:
-            self.setTransformationAnchor(QtWidgets.QGraphicsView.AnchorViewCenter)
+            self.setTransformationAnchor(QtWidgets.QGraphicsView.NoAnchor)
         except AttributeError:
             # PySide2 naming
-            self.setTransformationAnchor(QtWidgets.QGraphicsView.ViewportAnchor.AnchorViewCenter)
+            self.setTransformationAnchor(QtWidgets.QGraphicsView.ViewportAnchor.NoAnchor)
         # Background (view/viewport)
         self.setBackgroundBrush(QtGui.QColor("#1a1f24"))
         try:
@@ -1277,35 +1278,43 @@ class GraphView(QtWidgets.QGraphicsView):
         super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e):
+        # Middle-mouse pan
         if self._mm_dragging and self._mm_last_pos is not None:
             delta = e.pos() - self._mm_last_pos
             self._mm_last_pos = e.pos()
             self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta.x())
             self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
-            e.accept(); return
+            e.accept()
+            return
 
-        # --- REPLACE your current RMB-drag block with this ---
+        # Right-mouse drag zoom — pivot EXACTLY at the initial press scene point
         if self._rc_dragging and self._rc_press_pos is not None:
-            # RefOverNet rule: distance = dy - dx (from press pivot)
+            # RefOverNet rule: distance = dy - dx (from the press pixel)
             dx = e.pos().x() - self._rc_press_pos.x()
             dy = e.pos().y() - self._rc_press_pos.y()
             distance = dy - dx
 
             exponent = abs(distance) / self._drag_divisor
             base = self._zoom_multiplier
-            factor = base ** (-exponent) if distance > 0 else base ** (exponent)  # >0 ⇒ zoom OUT, <0 ⇒ zoom IN
+            factor = base ** (-exponent) if distance > 0 else base ** (exponent)  # >0 ⇒ OUT, <0 ⇒ IN
 
-            # Apply relative to the gesture's starting transform (prevents drift/accel),
-            # and keep the pivot pinned at the RMB press position.
-            start_sx = self._rc_start_transform.m11()
+            # Clamp using the gesture's starting scale
+            start_sx = float(self._rc_start_transform.m11()) or 1.0
             factor = self._clamp_factor_from(start_sx, factor)
 
-            # Reset to start transform, then apply zoom about the press pivot.
-            self.setTransform(self._rc_start_transform)
-            self._zoom_at(self._rc_press_pos, factor)
+            # Build a new transform that scales ABOUT the original press scene point:
+            # New = T(p) * S(factor) * T(-p) * Start
+            p = self._rc_press_scene_pt
+            T = QtGui.QTransform(self._rc_start_transform)
+            T.translate(p.x(), p.y())
+            T.scale(factor, factor)
+            T.translate(-p.x(), -p.y())
 
-            e.accept(); return
+            self.setTransform(T)
+            e.accept()
+            return
 
+        # Fallback
         super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e):
