@@ -1,20 +1,23 @@
-# LangChain (you already migrated imports in that notebook)
-langchain==1.0.1
-langchain-core==1.0.0
-langchain-ollama==1.0.0
+# --- core pins to avoid pydantic_core import issues on Windows/Py 3.11 ---
+pydantic>=2.7,<3
+pydantic-core>=2.18,<3
+typing_extensions>=4.10
 
-# Jupyter / env
-ipykernel>=6.29
-jupyter>=1.0
-python-dotenv>=1.0
-
-# LlamaIndex + FAISS (versions compatible with core 0.10.x)
+# LlamaIndex + FAISS
 llama-index==0.10.47
 llama-index-llms-ollama==0.1.6
 llama-index-embeddings-huggingface==0.1.4
 llama-index-vector-stores-faiss==0.1.2
 faiss-cpu==1.7.4
 
-# Extras used in your notebook
-numpy>=1.26
-httpx>=0.26
+# LangChain stack compatible with the above
+langchain==0.2.14
+langchain-core==0.2.38
+langchain-ollama==0.1.0
+
+# Jupyter / env
+ipykernel>=6.29
+jupyter>=1.0
+python-dotenv>=1.0
+
+PySide6>=6.5,<6.7
