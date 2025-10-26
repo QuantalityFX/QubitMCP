@@ -3,8 +3,7 @@
 # Safe to be launched from external hosts (EchoGraph Python node, Maya, Houdini, etc.)
 
 from pathlib import Path
-import sys, os, traceback
-
+import sys, os, traceback, json
 # ─────────────────────────────────────────────────────────────────────────────
 # Bootstrap: make sure this folder and its local .venv site-packages are importable
 # ─────────────────────────────────────────────────────────────────────────────
@@ -95,6 +94,9 @@ class LibrarianWidget(QtWidgets.QWidget):
         self.setWindowTitle("Librarian")
         self.resize(820, 620)
 
+        # ✅ ensure self.base exists before any IPC code touches it
+        self.base = Path(base) if base else HERE
+
         # Core
         self.lib = Librarian(base=base)
         self._last_summary = ""
@@ -103,6 +105,15 @@ class LibrarianWidget(QtWidgets.QWidget):
         # UI
         self._build_ui()
         self._wire()
+
+        # --- IPC inbox watcher (poll every ~0.8s) ---
+        self._ipc_inbox = (self.base / "ipc" / "inbox")
+        self._ipc_inbox.mkdir(parents=True, exist_ok=True)
+        self._ipc_timer = QtCore.QTimer(self)
+        self._ipc_timer.setInterval(800)
+        self._ipc_timer.timeout.connect(self._poll_inbox)
+        self._ipc_timer.start()
+        self._append_log("[ipc] watching inbox …")
 
         # Style
         self.setStyleSheet(
@@ -128,6 +139,144 @@ class LibrarianWidget(QtWidgets.QWidget):
         self._append_log(f"DOCS:    {self.lib.cfg.docs_dir}")
         self._append_log(f"VAULT:   {self.lib.cfg.obsidian_dir or '(none)'}")
         self._append_log(f"STORAGE: {self.lib.cfg.storage_dir}")
+
+    def _poll_inbox(self):
+        """Check nodes/librarian/ipc/inbox for one JSON cmd and execute it without blocking the UI."""
+        if not hasattr(self, "_ipc_busy"):
+            self._ipc_busy = False
+        if self._ipc_busy:
+            return
+
+        inbox = getattr(self, "_ipc_inbox", None)
+        if not inbox or not inbox.exists():
+            return
+
+        files = sorted(inbox.glob("cmd_*.json"), key=lambda p: p.stat().st_mtime)
+        if not files:
+            return
+
+        fn = files[0]
+        try:
+            data = json.loads(fn.read_text(encoding="utf-8"))
+        except Exception as e:
+            self._append_log(f"[ipc] bad json: {fn.name} :: {e}")
+            try: fn.unlink()
+            except Exception: pass
+            return
+
+        cmd_type = (data.get("type") or data.get("action") or "").strip().lower()
+        if not cmd_type:
+            cmd_type = "search" if "query" in data else "summarize"
+
+        self._ipc_busy = True
+        self._append_log(f"[ipc] processing {fn.name} :: {cmd_type}")
+
+        def _cleanup():
+            try: fn.unlink()
+            except Exception: pass
+            self._ipc_busy = False
+
+        if cmd_type == "search":
+            q = (data.get("query") or "").strip()
+            top_k = int(data.get("top_k", 5))
+            if not q:
+                self._append_log("[ipc] search missing 'query' string.")
+                _cleanup(); return
+
+            def work():
+                self.lib.ensure_index(force_rebuild=False, verbose=False)
+                return self.lib.quick_search(q, top_k=top_k)  # <— use core's quick_search
+
+            def done(res, err):
+                try:
+                    if err:
+                        e, tb = err
+                        self._append_log(f"[ipc] search ERROR: {e}\n{tb}")
+                    else:
+                        hits = res or []
+                        lines = [f"--- Search: {q} (top_k={top_k}) ---", ""]
+                        for i, (path, snip) in enumerate(hits, 1):
+                            lines.append(f"[{i}] {path}\n{snip[:200]}…\n")
+                        self._set_out("\n".join(lines) if hits else f"No results for: {q}")
+                        self._append_log("[ipc] search done.")
+                finally:
+                    _cleanup()
+
+            self._run_async(work, done)
+            return
+
+        elif cmd_type == "summarize":
+            mode = (data.get("mode") or "tree_summarize").strip()
+
+            def work():
+                self.lib.ensure_index(force_rebuild=False, verbose=False)
+                return self.lib.summarize_all(prompt=None, recache=False, mode=mode, top_k=4)
+
+            def done(res, err):
+                try:
+                    if err:
+                        e, tb = err
+                        self._append_log(f"[ipc] summarize ERROR: {e}\n{tb}")
+                    else:
+                        txt = (res or "").strip()
+                        self._last_summary = txt
+                        self._set_out(txt or "[empty summary]")
+                        self._append_log("[ipc] summarize done.")
+                finally:
+                    _cleanup()
+
+            self._run_async(work, done)
+            return
+
+        elif cmd_type in ("analyze", "analyze_with_sources"):
+            question = (data.get("question") or data.get("query") or "").strip()
+            top_k = int(data.get("top_k", 8))
+            max_chars = int(data.get("max_context_chars", 4000))
+            if not question:
+                self._append_log("[ipc] analyze missing 'question' or 'query'.")
+                _cleanup(); return
+
+            use_sources = cmd_type == "analyze_with_sources" or hasattr(self.lib, "analyze_with_sources")
+
+            def work():
+                if use_sources and hasattr(self.lib, "analyze_with_sources"):
+                    return ("sources",) + self.lib.analyze_with_sources(question, top_k=top_k, max_context_chars=max_chars)
+                else:
+                    txt = self.lib.analysis_from_summary(self._last_summary or "", business_prompt=question)
+                    return ("plain", txt)
+
+            def done(res, err):
+                try:
+                    if err:
+                        e, tb = err
+                        self._append_log(f"[ipc] analyze ERROR: {e}\n{tb}")
+                    else:
+                        if not res:
+                            self._set_out("[no analysis result]")
+                        elif res[0] == "sources":
+                            _, answer, sources = res
+                            lines = [answer.strip(), "", "— Sources —"]
+                            for s in sources or []:
+                                score = s.get("score")
+                                sc_s = f" (score={score:.4f})" if isinstance(score, (int, float)) else ""
+                                lines.append(f"[{s.get('idx')}] {s.get('path')}{sc_s}\n{(s.get('snippet') or '')[:200]}…")
+                            self._set_out("\n".join(lines))
+                        else:
+                            _, answer = res
+                            self._set_out((answer or "").strip())
+                        self._append_log("[ipc] analyze done.")
+                finally:
+                    _cleanup()
+
+            self._run_async(work, done)
+            return
+
+        else:
+            self._append_log(f"[ipc] unknown cmd type: {cmd_type}")
+            try: fn.unlink()
+            except Exception: pass
+            self._ipc_busy = False
+
 
     # UI layout
     def _build_ui(self):

@@ -8,7 +8,7 @@
 # Clicking an Output node auto-fills Info pane with ordered branch cards (start → output).
 
 # --- unified imports (PySide6 preferred, fallback to PySide2) ---
-import sys, re, json, math
+import sys, re, json, math, os, time
 from pathlib import Path
 
 try:
@@ -58,7 +58,6 @@ def _script_dir():
 ICON_PATH = _script_dir() / "icons" / "EchoMatrixMCP_Icon_s.png"
 APP_ICON = QtGui.QIcon(str(ICON_PATH)) if ICON_PATH.exists() else QtGui.QIcon()
 
-
 # --- host detection (Maya / Houdini / standalone) ---
 HOST = "standalone"
 maya_cmds = None
@@ -77,6 +76,104 @@ except Exception:
         HOST = "houdini"
     except Exception:
         pass
+
+# ---- Librarian IPC (file-based) ----
+def _librarian_inbox_dir() -> Path:
+    """
+    Returns nodes/librarian/ipc/inbox.
+    Prefers LIBRARIAN_ROOT if set (from your .env), otherwise resolves relative
+    to this script's directory expecting a ./nodes/librarian layout.
+    """
+    # Prefer explicit root if provided
+    env_root = os.getenv("LIBRARIAN_ROOT", "").strip().strip('"').strip("'")
+    if env_root:
+        base = Path(env_root).resolve()
+        lib_dir = base
+        # If env_root points to nodes/librarian already, fine; otherwise try append
+        if not (lib_dir / "ipc").exists() and (base / "nodes" / "librarian").exists():
+            lib_dir = base / "nodes" / "librarian"
+    else:
+        # Fall back to script dir → nodes/librarian
+        base = _script_dir()
+        lib_dir = base / "nodes" / "librarian"
+
+    inbox = lib_dir / "ipc" / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    return inbox
+
+def _enqueue_librarian(cmd: dict) -> Path:
+    """
+    Write a single IPC command JSON into nodes/librarian/ipc/inbox and return the full path.
+    This version normalizes keys, resolves paths deterministically, and verifies the write.
+    """
+    # --- Resolve base/inbox deterministically (same logic as _librarian_inbox_dir but explicit) ---
+    env_root_raw = os.getenv("LIBRARIAN_ROOT", "").strip().strip('"').strip("'")
+    if env_root_raw:
+        base = Path(env_root_raw).resolve()
+        lib_dir = base if (base / "ipc").exists() else (base / "nodes" / "librarian")
+    else:
+        base = _script_dir()
+        lib_dir = base / "nodes" / "librarian"
+
+    inbox = (lib_dir / "ipc" / "inbox")
+    inbox.mkdir(parents=True, exist_ok=True)
+
+    # --- Normalize command keys so BOTH old/new listeners pick it up ---
+    ctype = (cmd.get("type") or cmd.get("action") or "").strip().lower()
+    if not ctype:
+        if "query" in cmd:
+            ctype = "search"
+        elif "question" in cmd:
+            ctype = "analyze"
+        else:
+            ctype = "summarize"
+    cmd["type"] = ctype
+    cmd["action"] = ctype  # legacy listeners
+
+    # Fill common fields if missing
+    cmd.setdefault("from", "EchoGraph")
+    cmd.setdefault("ts", int(time.time() * 1000))
+
+    # --- Filename & write (flush + fsync) ---
+    fn = inbox / f"cmd_{int(time.time()*1000)}_{os.getpid()}.json"
+    text = json.dumps(cmd, ensure_ascii=False, indent=2)
+    # Robust write on Windows
+    with open(fn, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+
+    # --- Verify on disk ---
+    if not fn.exists() or fn.stat().st_size == 0:
+        raise RuntimeError(
+            f"IPC write verification failed.\nTried: {fn}\n"
+            f"LIBRARIAN_ROOT={env_root_raw or '<unset>'}\n"
+            f"script_dir={_script_dir()}\n"
+            f"lib_dir={lib_dir}\n"
+        )
+
+    return fn
+
+
+def __debug_show_librarian_inbox():
+    env_root_raw = os.getenv("LIBRARIAN_ROOT", "").strip().strip('"').strip("'")
+    base = Path(env_root_raw).resolve() if env_root_raw else _script_dir()
+    lib_dir = base if (base / "ipc").exists() else (base / "nodes" / "librarian")
+    inbox = lib_dir / "ipc" / "inbox"
+    outbox = lib_dir / "ipc" / "outbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    outbox.mkdir(parents=True, exist_ok=True)
+    msg = (
+        f"Resolved paths:\n"
+        f"  LIBRARIAN_ROOT = {env_root_raw or '<unset>'}\n"
+        f"  script_dir     = {str(_script_dir())}\n"
+        f"  librarian_dir  = {str(lib_dir)}\n"
+        f"  inbox          = {str(inbox)}\n"
+        f"  outbox         = {str(outbox)}\n\n"
+        f"Inbox contains {len(list(inbox.glob('cmd_*.json')))} file(s)."
+    )
+    QtWidgets.QMessageBox.information(None, APP_TITLE, msg)
+
 
 def _main_window():
     """
@@ -679,7 +776,8 @@ class InfoCard(QtWidgets.QFrame):
             run_btn.clicked.connect(self._run_code)
             footer.addWidget(run_btn)
 
-        elif kind == "librarian":
+        elif (node.kind or "").lower() == "librarian":
+            # --- Open the external Librarian UI ---
             open_btn = QtWidgets.QPushButton("Open Librarian")
             open_btn.setToolTip("Launch the Librarian UI in its own process")
 
@@ -701,6 +799,94 @@ class InfoCard(QtWidgets.QFrame):
 
             open_btn.clicked.connect(_open_librarian)
             footer.addWidget(open_btn)
+
+            # --- Send Query to Librarian (IPC enqueue) ---
+            send_btn = QtWidgets.QPushButton("Send Query → Librarian")
+            send_btn.setToolTip("Enqueue a search/summary request for the Librarian to pick up")
+
+            def _find_param(params, names):
+                # names: list of accepted param names (lowercased)
+                for p in (params or []):
+                    nm = (p.get("name") or "").strip().lower()
+                    if nm in names:
+                        return (p.get("value") or "").strip()
+                return ""
+
+            def _send_query():
+                # Accept 'query' or 'prompt' on THIS Librarian node
+                def _find_param(params, names):
+                    for p in (params or []):
+                        nm = (p.get("name") or "").strip().lower()
+                        if nm in names:
+                            return (p.get("value") or "").strip()
+                    return ""
+
+                q_self = _find_param(self._node_ref.params, {"query", "prompt"})
+                # optional: let a 'top_k' param override default 5
+                topk_str = _find_param(self._node_ref.params, {"top_k", "k"})
+                try:
+                    top_k = max(1, int(topk_str)) if topk_str else 5
+                except Exception:
+                    top_k = 5
+
+                # ALSO pull text from any upstream Prompt node(s) (if scene is available)
+                parts = []
+                sc = getattr(self, "_graph_scene", None)
+                if sc is not None and hasattr(sc, "upstream_of") and hasattr(sc, "resolve_text_value"):
+                    try:
+                        for it in sc.upstream_of(self._node_ref.name):
+                            txt = sc.resolve_text_value(it)
+                            if txt:
+                                parts.append(txt.strip())
+                    except Exception:
+                        pass
+
+                if q_self:
+                    parts.append(q_self.strip())
+
+                # Build final query from all parts (Prompt node first, then this node)
+                q = "\n\n".join([p for p in parts if p])[:4000]
+                if not q:
+                    QtWidgets.QMessageBox.warning(self, APP_TITLE,
+                        "No query text found.\nAdd a Prompt node upstream or set this node’s 'query'/'prompt' parameter.")
+                    return
+
+                try:
+                    cmd = {
+                        "type": "search",      # explicit (still compatible with the poller fallback)
+                        "query": q,
+                        "top_k": top_k,
+                        "from": "EchoGraph",
+                        "ts": int(time.time() * 1000),
+                    }
+                    fn = _enqueue_librarian(cmd)
+
+                    # quick tooltip
+                    try:
+                        QtWidgets.QToolTip.showText(
+                            QtGui.QCursor.pos(),
+                            f"Sent to Librarian\n{q[:200]}{'…' if len(q)>200 else ''}",
+                            self,
+                            self.rect(),
+                            1500
+                        )
+                    except Exception:
+                        pass
+
+                    # ✅ Modal popup confirmation (what you asked for)
+                    QtWidgets.QMessageBox.information(
+                        self,
+                        APP_TITLE,
+                        f"Queued search for Librarian:\n\n{q[:500]}{'…' if len(q)>500 else ''}\n\nFile:\n{fn}"
+                    )
+
+                    print(f"[EchoGraph] Enqueued Librarian cmd -> {fn}")
+                except Exception as e:
+                    QtWidgets.QMessageBox.critical(self, APP_TITLE, f"Failed to enqueue:\n{e}")
+            
+
+            send_btn.clicked.connect(_send_query)
+            footer.addWidget(send_btn)
 
         elif node.code:
             run_btn = QtWidgets.QPushButton("Run Python")
@@ -852,7 +1038,30 @@ class GraphScene(QtWidgets.QGraphicsScene):
         # give plenty of empty space up front so you can pan immediately
         self.setSceneRect(QtCore.QRectF(-20000, -20000, 40000, 40000))
 
-    # NEW: compute bbox of all nodes (in scene coords)
+
+    def upstream_of(self, dst_name: str):
+        """Return list of source NodeItem(s) connected into dst_name (left socket)."""
+        dst = self._node_items.get(dst_name)
+        if not dst: return []
+        srcs = []
+        for e in self._edges:
+            if e.dst is dst:
+                srcs.append(e.src)
+        return srcs
+
+    def resolve_text_value(self, node_item) -> str:
+        """If it's a Prompt node, return its 'prompt' param value. Else ''."""
+        try:
+            kind = (node_item.model.kind or "").lower()
+            if kind == "prompt":
+                for p in (node_item.model.params or []):
+                    if (p.get("name","") or "").strip().lower() == "prompt":
+                        return p.get("value","")
+        except Exception:
+            pass
+        return ""
+
+    # compute bbox of all nodes (in scene coords)
     def _nodes_bbox(self):
         rect = None
         for it in self._node_items.values():
@@ -1661,20 +1870,39 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             data = self.scene.to_dict()
             with open(self._current_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
-            QtWidgets.QMessageBox.information(self, APP_TITLE, f"Saved:\n{self._current_path}")
+            # silent success
+            try:
+                QtWidgets.QToolTip.showText(
+                    QtGui.QCursor.pos(),
+                    f"Saved:\n{self._current_path}",
+                    self, self.rect(), 1500
+                )
+            except Exception:
+                pass
+            print(f"[EchoGraph] Saved: {self._current_path}")
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, APP_TITLE, f"Failed to save:\n{e}")
 
     def _export_graph(self):
         suggested = self._current_path if self._current_path else "graph.json"
         path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Export Graph (.json)", suggested, "JSON Files (*.json)")
-        if not path: return
+        if not path:
+            return
         try:
             data = self.scene.to_dict()
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
             self._current_path = path
-            QtWidgets.QMessageBox.information(self, APP_TITLE, f"Exported:\n{path}")
+            # silent success
+            try:
+                QtWidgets.QToolTip.showText(
+                    QtGui.QCursor.pos(),
+                    f"Exported:\n{path}",
+                    self, self.rect(), 1500
+                )
+            except Exception:
+                pass
+            print(f"[EchoGraph] Exported: {path}")
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, APP_TITLE, f"Failed to export:\n{e}")
 
@@ -1726,9 +1954,16 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 self._cardsLayout.insertWidget(0, existing)
             existing.show()
             return
+
         card = InfoCard(node)
         card.requestJump.connect(self.scene.center_on_name)
         card.closedForNode.connect(self._on_card_closed)
+        # expose the scene so Librarian can gather upstream Prompt text
+        try:
+            card._graph_scene = self.scene
+        except Exception:
+            pass
+
         self._cardsLayout.insertWidget(0, card)
         self._card_by_node[node.name] = card
         self._trim_cards()
