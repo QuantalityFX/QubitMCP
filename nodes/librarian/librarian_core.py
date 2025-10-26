@@ -31,8 +31,10 @@ import faiss
 
 # ---- helpers -----------------------------------------------------------------
 
-def _sanitize_base(raw: Optional[str]) -> Path:
-    s = (raw or str(Path.cwd())).replace("\r", "").replace("\n", "").strip().strip('"').strip("'")
+def _sanitize_base(raw: Optional[str | Path]) -> Path:
+    # Always work with a string before doing .replace/.strip operations
+    s = str(raw or Path.cwd())
+    s = s.replace("\r", "").replace("\n", "").strip().strip('"').strip("'")
     return Path(s).resolve()
 
 def _load_env_dotenv(base: Path) -> None:
@@ -47,6 +49,65 @@ def _clean_text(s: str) -> str:
     s = re.sub(r"(?i)^<think>\s*\n?", "", s)
     s = re.sub(r"<.*?>", "", s, flags=re.DOTALL)
     return s.strip()
+
+
+def analyze_with_sources(self, question: str, top_k: int = 8, max_context_chars: int = 4000) -> tuple[str, list[dict]]:
+    """
+    Retrieve top_k relevant chunks for `question`, run an LLM analysis over a compact context,
+    and return (answer_text, sources_list). Each source = {idx, path, score, snippet}.
+    """
+    if not question or not question.strip():
+        raise ValueError("analysis question is empty")
+
+    # Ensure index
+    if self._index is None:
+        self.ensure_index()
+
+    # 1) Retrieve relevant nodes (no LLM)
+    retriever = self._index.as_retriever(similarity_top_k=max(1, int(top_k)))
+    results = retriever.retrieve(question)
+
+    # 2) Build a compact context from snippets (trim to avoid giant prompts)
+    pieces = []
+    sources = []
+    for i, nws in enumerate(results, 1):
+        node = nws.node
+        score = getattr(nws, "score", None)
+        path = node.metadata.get("file_path") or node.metadata.get("source") or "<unknown>"
+        text = (node.get_content() or "").replace("\r", " ").replace("\n", " ")
+        snip = text[:400]
+        pieces.append(f"[{i}] {snip}")
+        sources.append({
+            "idx": i,
+            "path": str(path),
+            "score": float(score) if score is not None else None,
+            "snippet": snip
+        })
+
+    context = "\n\n".join(pieces)
+    if len(context) > max_context_chars:
+        context = context[:max_context_chars] + "..."
+
+    # 3) Ask the LLM. We do NOT want chain-of-thought; just final answer + bracket refs.
+    prompt = (
+        "You are analyzing the user's question using the provided source snippets.\n"
+        "Write a clear, concise answer. If you cite, use bracket numbers like [1], [2], matching the snippets.\n"
+        "Do NOT include any internal reasoning tags like <think>.\n\n"
+        f"Question:\n{question}\n\n"
+        "Relevant snippets (numbered):\n"
+        f"{context}\n\n"
+        "Answer (use [n] to reference snippets when appropriate):\n"
+    )
+
+    llm = Settings.llm
+    try:
+        resp = llm.complete(prompt)
+        answer = getattr(resp, "text", str(resp))
+    except Exception:
+        answer = str(llm.complete(prompt))
+
+    return (answer.strip(), sources)
+
 
 # ---- dataclass for config -----------------------------------------------------
 

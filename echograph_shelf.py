@@ -414,6 +414,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             "output": "#a855f7",
             "node": "#64748b",
             "llm": "#14b8a6",
+            "librarian": "#74d603",
         }
         stripe = color_map.get((self.model.kind or "node").lower(), "#64748b")
         p.setBrush(QtGui.QColor(stripe))
@@ -620,6 +621,7 @@ class InfoCard(QtWidgets.QFrame):
         super().__init__()
         self._node_name = node.name
         self._node_ref = node
+
         # Frame shape: PySide2 vs PySide6 enum location
         try:
             self.setFrameShape(QtWidgets.QFrame.StyledPanel)        # PySide2
@@ -647,6 +649,7 @@ class InfoCard(QtWidgets.QFrame):
         if order_badge: header.addWidget(order_badge)
         header.addWidget(title); header.addStretch(1); header.addWidget(close_btn)
 
+        # Body text
         text = QtWidgets.QTextBrowser()
         text.setStyleSheet(
             "QTextBrowser{background:#0f1216;color:#e6edf3;"
@@ -660,26 +663,105 @@ class InfoCard(QtWidgets.QFrame):
         text.setMinimumHeight(80)
         text.anchorClicked.connect(lambda url: self.requestJump.emit(url.path().lstrip("/")))
 
+        # Footer actions
         footer = QtWidgets.QHBoxLayout(); footer.setContentsMargins(0, 0, 0, 0); footer.setSpacing(8)
-        if (node.kind or "").lower() == "python":
+
+        kind = (node.kind or "").lower()
+
+        if kind == "python":
             edit_btn = QtWidgets.QPushButton("Edit Code…")
             edit_btn.setToolTip("Edit and save this node's Python script")
             edit_btn.clicked.connect(self._edit_code)
             footer.addWidget(edit_btn)
+
             run_btn = QtWidgets.QPushButton("Run Python")
             run_btn.setToolTip("Provides maya.cmds as 'cmds' and Houdini as 'hou'")
             run_btn.clicked.connect(self._run_code)
             footer.addWidget(run_btn)
+
+        elif kind == "librarian":
+            open_btn = QtWidgets.QPushButton("Open Librarian")
+            open_btn.setToolTip("Launch the Librarian UI in its own process")
+
+            def _open_librarian():
+                try:
+                    # Preferred package-style import
+                    from nodes.librarian import launch_librarian as L
+                except Exception:
+                    # Fallback if PYTHONPATH already points at nodes/librarian
+                    try:
+                        import launch_librarian as L
+                    except Exception as e:
+                        QtWidgets.QMessageBox.critical(self, APP_TITLE, f"Import error:\n{e}")
+                        return
+                try:
+                    L.launch(verbose=False)  # silent spawn
+                except Exception as e:
+                    QtWidgets.QMessageBox.critical(self, APP_TITLE, f"Failed to launch Librarian:\n{e}")
+
+            open_btn.clicked.connect(_open_librarian)
+            footer.addWidget(open_btn)
+
         elif node.code:
             run_btn = QtWidgets.QPushButton("Run Python")
             run_btn.setToolTip("Provides maya.cmds as 'cmds' and Houdini as 'hou'")
             run_btn.clicked.connect(self._run_code)
             footer.addWidget(run_btn)
+
         footer.addStretch(1)
 
+        # Layout
         lay = QtWidgets.QVBoxLayout(self)
         lay.setContentsMargins(10, 10, 10, 10); lay.setSpacing(8)
         lay.addLayout(header); lay.addWidget(text); lay.addLayout(footer)
+
+    def _emit_and_close(self):
+        try:
+            self.closedForNode.emit(self._node_name)
+        except Exception:
+            pass
+        self.deleteLater()
+
+    def _edit_code(self):
+        dlg = CodeEditorDialog(self, initial_code=self._node_ref.code or "")
+        if dlg.exec_() == QtWidgets.QDialog.Accepted:
+            self._node_ref.code = dlg.code()
+
+    def _run_code(self):
+        node = self._node_ref
+        src = (node.code or "").strip()
+        if not src:
+            return
+
+        ns = {
+            "cmds": maya_cmds,      # Maya commands (None in standalone)
+            "hou":  hou_mod,        # Houdini module (None in standalone)
+            "QtWidgets": QtWidgets,
+            "QtCore": QtCore,
+            "QtGui": QtGui,
+            "__name__": "__echograph_exec__",
+        }
+
+        import io, contextlib, traceback
+        out_buf = io.StringIO()
+        err_buf = io.StringIO()
+
+        try:
+            with contextlib.redirect_stdout(out_buf), contextlib.redirect_stderr(err_buf):
+                exec(src, ns, ns)
+
+            out = out_buf.getvalue().strip()
+            err = err_buf.getvalue().strip()
+
+            if err:
+                QtWidgets.QMessageBox.critical(self, APP_TITLE, err)
+            elif out:
+                QtWidgets.QMessageBox.information(self, APP_TITLE, out)
+
+        except Exception:
+            combined = out_buf.getvalue() + "\n" + err_buf.getvalue()
+            tb = traceback.format_exc()
+            QtWidgets.QMessageBox.critical(self, APP_TITLE, f"{combined}\n{tb}")
 
     def _emit_and_close(self):
         try: self.closedForNode.emit(self._node_name)
@@ -1384,7 +1466,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
 
         self.kind_edit = QtWidgets.QComboBox()
         self.kind_edit.setEditable(True)
-        self.kind_edit.addItems(["node","import","python","switch","output","llm"])
+        self.kind_edit.addItems(["node","import","python","switch","output","llm","librarian"])
         self.kind_edit.setEditText("node")
         form.addRow("Node type:", self.kind_edit)
 

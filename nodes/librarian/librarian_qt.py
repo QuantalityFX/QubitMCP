@@ -54,24 +54,27 @@ from librarian_core import Librarian  # now resolves because HERE is on sys.path
 # ─────────────────────────────────────────────────────────────────────────────
 # Simple thread worker (QObject + QRunnable so signals work)
 # ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Simple thread worker (QObject + QRunnable so we can emit signals)
+# ─────────────────────────────────────────────────────────────────────────────
 class _Worker(QtCore.QObject, QtCore.QRunnable):
-    finished = QtCore.Signal(object, object)  # (result, error)
+    finished = QtCore.Signal(object, object)  # (result, error)  error = (Exception, traceback_str) or None
 
     def __init__(self, fn, *args, **kwargs):
         QtCore.QObject.__init__(self)
         QtCore.QRunnable.__init__(self)
-        self.setAutoDelete(True)
         self.fn = fn
         self.args = args
         self.kw = kwargs
+        self.setAutoDelete(True)
 
     @QtCore.Slot()
     def run(self):
+        import traceback
         try:
             res = self.fn(*self.args, **self.kw)
             self.finished.emit(res, None)
         except Exception as e:
-            import traceback
             self.finished.emit(None, (e, traceback.format_exc()))
 
 
@@ -106,11 +109,18 @@ class LibrarianWidget(QtWidgets.QWidget):
             "QWidget{background:#1a1f24;color:#e6edf3;}"
             "QLineEdit,QPlainTextEdit,QTextEdit{background:#0f1216;color:#e6edf3;border:1px solid #3c4450;border-radius:6px;}"
             "QPushButton{background:#20242b;color:#e6edf3;border:1px solid #3c4450;border-radius:6px;padding:4px 10px;}"
-            "QPushButton:hover{background:#2a2f38;} QPushButton:pressed{background:#1b1f26;}"
+            "QPushButton:hover{background:#2a2f38;}"
+            "QPushButton:pressed{background:#1b1f26;}"
             "QCheckBox{spacing:8px;}"
             "QGroupBox{border:1px solid #3c4450;border-radius:8px;margin-top:10px;padding:8px 8px 8px 8px;}"
             "QGroupBox::title{subcontrol-origin: margin; left:8px; padding:0 4px;}"
             "QLabel{color:#cbd5e1;}"
+            "#btnAnalyze{background:#2563eb;color:#e6edf3;border:1px solid #1e3a8a;border-radius:8px;padding:6px 12px;font-weight:600;}"
+            "#btnAnalyze:hover{background:#1d4ed8;}"
+            "#btnAnalyze:pressed{background:#1e40af;}"
+            "#btnAnalyzeSrc{background:#16a34a;color:#e6edf3;border:1px solid #14532d;border-radius:8px;padding:6px 12px;font-weight:600;}"
+            "#btnAnalyzeSrc:hover{background:#15803d;}"
+            "#btnAnalyzeSrc:pressed{background:#166534;}"
         )
 
         # Paths banner
@@ -185,14 +195,30 @@ class LibrarianWidget(QtWidgets.QWidget):
         # Analysis group
         grp_ana = QtWidgets.QGroupBox("Focused Analysis")
         al = QtWidgets.QGridLayout(grp_ana)
+
         self.txt_business_prompt = QtWidgets.QPlainTextEdit()
         self.txt_business_prompt.setPlaceholderText(
             "High-level analysis request.\n"
             "e.g. Find me the Business Plan for a Windows macro app comparable to Stream Deck…"
         )
-        self.btn_analyze = QtWidgets.QPushButton("Run Analysis (from last summary)")
-        al.addWidget(self.txt_business_prompt, 0, 0, 1, 3)
-        al.addWidget(self.btn_analyze,         0, 3, 1, 1)
+
+        self.btn_analyze     = QtWidgets.QPushButton("Run Analysis")
+        self.btn_analyze_src = QtWidgets.QPushButton("Analyze (with Sources)")
+
+        # IDs for styling
+        self.btn_analyze.setObjectName("btnAnalyze")
+        self.btn_analyze_src.setObjectName("btnAnalyzeSrc")
+
+        for b in (self.btn_analyze, self.btn_analyze_src):
+            b.setMinimumHeight(36)
+
+        # Prompt full width; buttons on one row, right-aligned
+        al.addWidget(self.txt_business_prompt, 0, 0, 1, 4)
+        btn_row = QtWidgets.QHBoxLayout()
+        btn_row.addStretch(1)
+        btn_row.addWidget(self.btn_analyze)
+        btn_row.addWidget(self.btn_analyze_src)
+        al.addLayout(btn_row, 1, 0, 1, 4)
 
         # Output / log splitter
         splitter = QtWidgets.QSplitter()
@@ -225,6 +251,7 @@ class LibrarianWidget(QtWidgets.QWidget):
         self.btn_summarize.clicked.connect(self._do_summarize)
         self.btn_search.clicked.connect(self._do_search)
         self.btn_analyze.clicked.connect(self._do_analyze)
+        self.btn_analyze_src.clicked.connect(self._do_analyze_with_sources)
 
     # helpers
     def _append_log(self, msg: str):
@@ -328,24 +355,100 @@ class LibrarianWidget(QtWidgets.QWidget):
 
         self._run_async(work, done)
 
+    def _do_analyze_with_sources(self):
+        q = (self.txt_business_prompt.toPlainText() or "").strip()
+        if not q:
+            self._append_log("[analysis-src] Enter a question/prompt in the box above.")
+            return
+
+        self._append_log("[analysis-src] retrieving sources and analyzing…")
+
+        def work():
+            # Calls your helper in librarian_core.py
+            return self.lib.analyze_with_sources(q, top_k=8, max_context_chars=4000)
+
+        def done(res, err):
+            if err:
+                e, tb = err
+                self._append_log(f"[analysis-src] ERROR: {e}\n{tb}")
+                return
+
+            # Support both (answer, sources) or plain string
+            if isinstance(res, tuple) and len(res) == 2:
+                answer, sources = res
+            else:
+                answer, sources = (str(res) if res is not None else ""), []
+
+            lines = []
+            lines.append((answer or "").strip())
+            lines.append("\n— Sources —")
+            if sources:
+                for s in sources:
+                    idx   = s.get("idx", "?")
+                    path  = s.get("path", "<unknown>")
+                    score = s.get("score", None)
+                    snip  = (s.get("snippet", "") or "").replace("\n", " ")[:200]
+                    if score is not None:
+                        lines.append(f"[{idx}] {path} (score={score:.4f})")
+                    else:
+                        lines.append(f"[{idx}] {path}")
+                    lines.append(f"   {snip}…")
+            else:
+                lines.append("(none)")
+
+            self._set_out("\n".join(lines))
+            self._append_log("[analysis-src] done.")
+
+        self._run_async(work, done)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Standalone launcher (for quick testing from console)
 # ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 def launch_standalone(base: Path | None = None):
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
+
     w = LibrarianWidget(base=base)
     try:
         w.setWindowFlag(QtCore.Qt.Window, True)
     except Exception:
         w.setWindowFlags(QtCore.Qt.Window)
     w.resize(900, 700)
+
+    # Show once, no flag toggles (prevents flicker)
     w.show()
     w.raise_()
     w.activateWindow()
-    app.exec_()
+
+    # Extra gentle “focus nudge” without re-showing (no flicker)
+    def _nudge_focus():
+        try:
+            wh = w.windowHandle()
+            if wh is not None:
+                wh.requestActivate()
+        except Exception:
+            pass
+        w.raise_()
+        w.activateWindow()
+
+    # Nudge right after the event queue runs, and once more shortly after
+    QtCore.QTimer.singleShot(0, _nudge_focus)
+    QtCore.QTimer.singleShot(250, _nudge_focus)
+
+    # Qt5/Qt6 compatible event loop
+    try:
+        app.exec()
+    except AttributeError:
+        app.exec_()
+
+
+def _clear_top_hint(w):
+    # Turn off the always-on-top flag and re-show so the change takes effect
+    w.setWindowFlag(QtCore.Qt.WindowStaysOnTopHint, False)
+    w.show()
+    w.raise_()
+    w.activateWindow()
 
 
 if __name__ == "__main__":
-    # Optional: run directly for testing this panel
     launch_standalone(base=HERE)
