@@ -813,8 +813,26 @@ class InfoCard(QtWidgets.QFrame):
         self.setObjectName("InfoCard")
         self.setStyleSheet("#InfoCard{border:1px solid #3c4450;border-radius:8px;background:#1f232a;}")
 
-        title = QtWidgets.QLabel(node.name)
+        title = QtWidgets.QLineEdit(node.name)
+        title.setObjectName("NodeNameEdit")
         f = title.font(); f.setBold(True); title.setFont(f)
+        title.setStyleSheet("QLineEdit{background:#12151a;color:#e6edf3;border:1px solid #3c4450;border-radius:4px;padding:2px 6px;}")
+        title.setToolTip("Rename node")
+        def _commit_rename():
+            new_name = title.text().strip()
+            old_name = getattr(self, "_node_name", "")
+            sc = getattr(self, "_graph_scene", None)
+            if not sc or not new_name or new_name == old_name:
+                return
+            ok, msg = sc.rename_node(old_name, new_name)
+            if not ok:
+                QtWidgets.QMessageBox.warning(self, APP_TITLE, msg or "Rename failed.")
+                title.setText(old_name)
+                return
+            # update card’s internal pointer & header
+            self._node_name = new_name
+            self._node_ref.name = new_name
+        title.editingFinished.connect(_commit_rename)
 
         order_badge = None
         if isinstance(order_index, int) and isinstance(order_total, int):
@@ -1108,6 +1126,82 @@ class InfoCard(QtWidgets.QFrame):
         lay.setContentsMargins(10, 10, 10, 10); lay.setSpacing(8)
         lay.addLayout(header)
         lay.addWidget(text)
+
+        # --- Parameter editor (visible if node has params; always available) ---
+        self._param_table = QtWidgets.QTableWidget(0, 2)
+        self._param_table.setHorizontalHeaderLabels(["Name", "Value"])
+        self._param_table.horizontalHeader().setStretchLastSection(True)
+        self._param_table.setStyleSheet(
+            "QTableWidget{background:#0f1216;color:#e6edf3;border:1px solid #3c4450;border-radius:6px;}"
+            "QHeaderView::section{background:#20242b;color:#e6edf3;border:none;}"
+        )
+        self._param_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self._param_table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self._param_table.setEditTriggers(QtWidgets.QAbstractItemView.DoubleClicked |
+                                          QtWidgets.QAbstractItemView.EditKeyPressed |
+                                          QtWidgets.QAbstractItemView.SelectedClicked)
+
+        def _load_params_into_table():
+            self._param_table.setRowCount(0)
+            for p in (self._node_ref.params or []):
+                row = self._param_table.rowCount()
+                self._param_table.insertRow(row)
+                nitem = QtWidgets.QTableWidgetItem(p.get("name",""))
+                vitem = QtWidgets.QTableWidgetItem(p.get("value",""))
+                self._param_table.setItem(row, 0, nitem)
+                self._param_table.setItem(row, 1, vitem)
+
+        _load_params_into_table()
+
+        # Param editor buttons
+        pbtns = QtWidgets.QHBoxLayout()
+        addp = QtWidgets.QPushButton("Add Param")
+        delp = QtWidgets.QPushButton("Remove Selected")
+        savep = QtWidgets.QPushButton("Apply Changes")
+        for b in (addp, delp, savep):
+            pbtns.addWidget(b)
+        pbtns.addStretch(1)
+
+        def _add_param_row():
+            r = self._param_table.rowCount()
+            self._param_table.insertRow(r)
+            self._param_table.setItem(r, 0, QtWidgets.QTableWidgetItem("param"))
+            self._param_table.setItem(r, 1, QtWidgets.QTableWidgetItem(""))
+
+        def _remove_selected_row():
+            r = self._param_table.currentRow()
+            if r >= 0:
+                self._param_table.removeRow(r)
+
+        def _apply_param_changes():
+            # collect rows -> list of dicts
+            new_params = []
+            for r in range(self._param_table.rowCount()):
+                name_item = self._param_table.item(r, 0)
+                value_item = self._param_table.item(r, 1)
+                nm = (name_item.text() if name_item else "").strip()
+                val = (value_item.text() if value_item else "")
+                if nm:
+                    new_params.append({"name": nm, "value": val})
+            # write to model & refresh node widget
+            sc = getattr(self, "_graph_scene", None)
+            if sc:
+                sc.set_node_params(self._node_name, new_params)
+            # keep our local copy in sync
+            self._node_ref.params = new_params
+
+        addp.clicked.connect(_add_param_row)
+        delp.clicked.connect(_remove_selected_row)
+        savep.clicked.connect(_apply_param_changes)
+
+        # live-update when user edits cells and presses Enter (optional but nice)
+        self._param_table.itemChanged.connect(lambda *_: None)
+
+        # mount param editor in the card
+        lay.addWidget(self._param_table)
+        lay.addLayout(pbtns)
+
+
         if hasattr(self, "_result_view"):
             lay.addWidget(self._result_view)
         lay.addLayout(footer)
@@ -1227,6 +1321,76 @@ class GraphScene(QtWidgets.QGraphicsScene):
 
         # give plenty of empty space up front so you can pan immediately
         self.setSceneRect(QtCore.QRectF(-20000, -20000, 40000, 40000))
+
+        # --- new: refresh node widget after param changes ---
+    def refresh_node_widget(self, name: str):
+        it = self._node_items.get(name)
+        if not it:
+            return
+        it._recompute_height()
+        it._build_widgets()
+        # refresh connected edge paths
+        for e in self._edges:
+            if e.src is it or e.dst is it:
+                e.updatePath()
+
+    # --- new: update params in one shot (list[{"name":..., "value":...}]) ---
+    def set_node_params(self, name: str, params: list):
+        node = self._nodes_by_name.get(name)
+        if not node:
+            return False
+        # normalize to list of {name,value}
+        clean = []
+        for p in (params or []):
+            nm = str(p.get("name", "")).strip()
+            val = str(p.get("value", ""))
+            if nm:
+                clean.append({"name": nm, "value": val})
+        node.params = clean
+        self.refresh_node_widget(name)
+        return True
+
+    # --- new: rename a node safely (updates maps, switches, output pointer) ---
+    def rename_node(self, old_name: str, new_name: str):
+        new_name = (new_name or "").strip()
+        if not old_name or not new_name or new_name == old_name:
+            return False, "No change."
+
+        if new_name in self._nodes_by_name:
+            return False, f"A node named '{new_name}' already exists."
+
+        item = self._node_items.get(old_name)
+        node = self._nodes_by_name.get(old_name)
+        if not item or not node:
+            return False, f"Node '{old_name}' not found."
+
+        # update internal dict keys
+        self._node_items[new_name] = self._node_items.pop(old_name)
+        self._nodes_by_name[new_name] = self._nodes_by_name.pop(old_name)
+
+        # update the model + item title
+        node.name = new_name
+        item.model.name = new_name
+        item.update()
+
+        # update switch_inputs lists that reference the old name
+        for it in self._node_items.values():
+            if (it.model.kind or "").lower() == "switch":
+                if old_name in it.model.switch_inputs:
+                    it.model.switch_inputs = [
+                        (new_name if n == old_name else n) for n in it.model.switch_inputs
+                    ]
+                    self._refresh_switch_widget(it)
+
+        # keep current output selection consistent
+        if self._current_output_name == old_name:
+            self._current_output_name = new_name
+
+        # highlight/path recompute if needed
+        if self._current_output_name:
+            self.recompute_active_path(self._current_output_name)
+
+        return True, ""
 
 
     def upstream_of(self, dst_name: str):
