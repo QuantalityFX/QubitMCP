@@ -42,7 +42,7 @@ def launch(verbose: bool = False):
         creationflags = 0x00000008  # DETACHED_PROCESS
 
     try:
-        subprocess.Popen(
+        proc = subprocess.Popen(
             [str(py), "-u", "-c", code],
             cwd=str(HERE),
             env=env,
@@ -50,9 +50,9 @@ def launch(verbose: bool = False):
             stderr=log,
             creationflags=creationflags,
         )
-        # Silent success (unless verbose=True)
         if verbose:
             print(f"[launcher] spawned with {py}")
+        return proc   # <<< return the Popen handle
     except Exception as e:
         err = f"[launcher] failed to spawn: {e}"
         if verbose:

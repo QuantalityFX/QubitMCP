@@ -3,11 +3,49 @@
 # Safe to be launched from external hosts (EchoGraph Python node, Maya, Houdini, etc.)
 
 from pathlib import Path
-import sys, os, traceback, json
+import sys, os, traceback, json, time
 # ─────────────────────────────────────────────────────────────────────────────
 # Bootstrap: make sure this folder and its local .venv site-packages are importable
 # ─────────────────────────────────────────────────────────────────────────────
 HERE = Path(__file__).resolve().parent
+ICON_PATH = HERE / "icons" / "librarian_search_s.png"
+
+def _load_window_icon() -> 'QtGui.QIcon':
+    # Build a multi-size icon from your PNG so Windows picks crisp sizes
+    ic = QtGui.QIcon()
+    p = str(ICON_PATH)  # librarian_search_s.png (your exact file)
+    for sz in (16, 20, 24, 32, 40, 48, 64, 128, 256):
+        ic.addFile(p, QtCore.QSize(sz, sz))
+    return ic
+
+def _set_windows_app_id(app_id: str = "QuantalityFX.Librarian") -> None:
+    # Makes the taskbar show this app’s custom icon and group correctly
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
+    except Exception:
+        pass
+
+def _enable_windows_dark_titlebar(widget: 'QtWidgets.QWidget') -> None:
+    # Dark native title bar on Windows 10/11
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        hwnd = int(widget.winId())
+        DWMWA_USE_IMMERSIVE_DARK_MODE = 20  # 19 on older builds; 20 works on most
+        set_window_attribute = ctypes.windll.dwmapi.DwmSetWindowAttribute
+        value = ctypes.c_int(1)
+        set_window_attribute(wintypes.HWND(hwnd),
+                             ctypes.c_uint(DWMWA_USE_IMMERSIVE_DARK_MODE),
+                             ctypes.byref(value),
+                             ctypes.sizeof(value))
+    except Exception:
+        pass
+
 
 # 1) Add this folder so "import librarian_core" works even without a package import
 if str(HERE) not in sys.path:
@@ -160,8 +198,10 @@ class LibrarianWidget(QtWidgets.QWidget):
             data = json.loads(fn.read_text(encoding="utf-8"))
         except Exception as e:
             self._append_log(f"[ipc] bad json: {fn.name} :: {e}")
-            try: fn.unlink()
-            except Exception: pass
+            try:
+                fn.unlink()
+            except Exception:
+                pass
             return
 
         cmd_type = (data.get("type") or data.get("action") or "").strip().lower()
@@ -172,23 +212,40 @@ class LibrarianWidget(QtWidgets.QWidget):
         self._append_log(f"[ipc] processing {fn.name} :: {cmd_type}")
 
         def _cleanup():
-            try: fn.unlink()
-            except Exception: pass
+            try:
+                fn.unlink()
+            except Exception:
+                pass
             self._ipc_busy = False
 
+        # --- Helper to also save result JSON to outbox for EchoGraph ---
+        def _save_outbox_result(ts: int, payload: dict | str):
+            try:
+                outbox = inbox.parent / "outbox"
+                outbox.mkdir(parents=True, exist_ok=True)
+                result_path = outbox / f"result_{ts}.json"
+                text = json.dumps(payload, ensure_ascii=False, indent=2) if isinstance(payload, dict) else str(payload)
+                result_path.write_text(text, encoding="utf-8")
+                self._append_log(f"[ipc] wrote {result_path.name}")
+            except Exception as e:
+                self._append_log(f"[ipc] failed to write result: {e}")
+
+        # === SEARCH ===
         if cmd_type == "search":
             q = (data.get("query") or "").strip()
             top_k = int(data.get("top_k", 5))
             if not q:
                 self._append_log("[ipc] search missing 'query' string.")
-                _cleanup(); return
+                _cleanup()
+                return
 
             def work():
                 self.lib.ensure_index(force_rebuild=False, verbose=False)
-                return self.lib.quick_search(q, top_k=top_k)  # <— use core's quick_search
+                return self.lib.quick_search(q, top_k=top_k)
 
             def done(res, err):
                 try:
+                    ts = data.get("ts") or int(time.time() * 1000)
                     if err:
                         e, tb = err
                         self._append_log(f"[ipc] search ERROR: {e}\n{tb}")
@@ -197,7 +254,9 @@ class LibrarianWidget(QtWidgets.QWidget):
                         lines = [f"--- Search: {q} (top_k={top_k}) ---", ""]
                         for i, (path, snip) in enumerate(hits, 1):
                             lines.append(f"[{i}] {path}\n{snip[:200]}…\n")
-                        self._set_out("\n".join(lines) if hits else f"No results for: {q}")
+                        out_txt = "\n".join(lines) if hits else f"No results for: {q}"
+                        self._set_out(out_txt)
+                        _save_outbox_result(ts, {"query": q, "results": hits})
                         self._append_log("[ipc] search done.")
                 finally:
                     _cleanup()
@@ -205,6 +264,7 @@ class LibrarianWidget(QtWidgets.QWidget):
             self._run_async(work, done)
             return
 
+        # === SUMMARIZE ===
         elif cmd_type == "summarize":
             mode = (data.get("mode") or "tree_summarize").strip()
 
@@ -214,6 +274,7 @@ class LibrarianWidget(QtWidgets.QWidget):
 
             def done(res, err):
                 try:
+                    ts = data.get("ts") or int(time.time() * 1000)
                     if err:
                         e, tb = err
                         self._append_log(f"[ipc] summarize ERROR: {e}\n{tb}")
@@ -221,6 +282,7 @@ class LibrarianWidget(QtWidgets.QWidget):
                         txt = (res or "").strip()
                         self._last_summary = txt
                         self._set_out(txt or "[empty summary]")
+                        _save_outbox_result(ts, {"summary": txt})
                         self._append_log("[ipc] summarize done.")
                 finally:
                     _cleanup()
@@ -228,13 +290,15 @@ class LibrarianWidget(QtWidgets.QWidget):
             self._run_async(work, done)
             return
 
+        # === ANALYZE ===
         elif cmd_type in ("analyze", "analyze_with_sources"):
             question = (data.get("question") or data.get("query") or "").strip()
             top_k = int(data.get("top_k", 8))
             max_chars = int(data.get("max_context_chars", 4000))
             if not question:
                 self._append_log("[ipc] analyze missing 'question' or 'query'.")
-                _cleanup(); return
+                _cleanup()
+                return
 
             use_sources = cmd_type == "analyze_with_sources" or hasattr(self.lib, "analyze_with_sources")
 
@@ -247,12 +311,13 @@ class LibrarianWidget(QtWidgets.QWidget):
 
             def done(res, err):
                 try:
+                    ts = data.get("ts") or int(time.time() * 1000)
                     if err:
                         e, tb = err
                         self._append_log(f"[ipc] analyze ERROR: {e}\n{tb}")
                     else:
                         if not res:
-                            self._set_out("[no analysis result]")
+                            txt = "[no analysis result]"
                         elif res[0] == "sources":
                             _, answer, sources = res
                             lines = [answer.strip(), "", "— Sources —"]
@@ -260,10 +325,13 @@ class LibrarianWidget(QtWidgets.QWidget):
                                 score = s.get("score")
                                 sc_s = f" (score={score:.4f})" if isinstance(score, (int, float)) else ""
                                 lines.append(f"[{s.get('idx')}] {s.get('path')}{sc_s}\n{(s.get('snippet') or '')[:200]}…")
-                            self._set_out("\n".join(lines))
+                            txt = "\n".join(lines)
+                            _save_outbox_result(ts, {"answer": answer, "sources": sources})
                         else:
                             _, answer = res
-                            self._set_out((answer or "").strip())
+                            txt = (answer or "").strip()
+                            _save_outbox_result(ts, {"answer": txt})
+                        self._set_out(txt)
                         self._append_log("[ipc] analyze done.")
                 finally:
                     _cleanup()
@@ -273,10 +341,11 @@ class LibrarianWidget(QtWidgets.QWidget):
 
         else:
             self._append_log(f"[ipc] unknown cmd type: {cmd_type}")
-            try: fn.unlink()
-            except Exception: pass
+            try:
+                fn.unlink()
+            except Exception:
+                pass
             self._ipc_busy = False
-
 
     # UI layout
     def _build_ui(self):
@@ -554,41 +623,119 @@ class LibrarianWidget(QtWidgets.QWidget):
 # Standalone launcher (for quick testing from console)
 # ─────────────────────────────────────────────────────────────────────────────
 # ─────────────────────────────────────────────────────────────────────────────
-def launch_standalone(base: Path | None = None):
-    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
+def launch_standalone(base: Path | None = None, run_event_loop: bool | None = None):
+    """
+    Launch the Librarian UI window.
 
-    w = LibrarianWidget(base=base)
-    try:
-        w.setWindowFlag(QtCore.Qt.Window, True)
-    except Exception:
-        w.setWindowFlags(QtCore.Qt.Window)
-    w.resize(900, 700)
+    - If a QApplication already exists, we reuse it and DO NOT start a new event loop by default.
+    - If no QApplication exists (true standalone), we create one and start the loop unless
+      run_event_loop=False is explicitly passed.
 
-    # Show once, no flag toggles (prevents flicker)
-    w.show()
-    w.raise_()
-    w.activateWindow()
+    Returns:
+        QtWidgets.QWidget : the LibrarianWidget instance.
+    """
+    import sys, traceback, datetime
+    HERE = Path(__file__).resolve().parent
+    LOG  = HERE / "librarian_crash.log"
 
-    # Extra gentle “focus nudge” without re-showing (no flicker)
-    def _nudge_focus():
+    def _crash(e: Exception):
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        tb = traceback.format_exc()
         try:
-            wh = w.windowHandle()
-            if wh is not None:
-                wh.requestActivate()
+            with open(LOG, "a", encoding="utf-8") as f:
+                f.write(f"\n[{ts}] launch_standalone crash:\n{tb}\n")
         except Exception:
             pass
-        w.raise_()
-        w.activateWindow()
+        try:
+            QtWidgets.QMessageBox.critical(None, "Librarian Error", f"{e}\n\nSee log:\n{LOG}")
+        except Exception:
+            pass
 
-    # Nudge right after the event queue runs, and once more shortly after
-    QtCore.QTimer.singleShot(0, _nudge_focus)
-    QtCore.QTimer.singleShot(250, _nudge_focus)
-
-    # Qt5/Qt6 compatible event loop
     try:
-        app.exec()
-    except AttributeError:
-        app.exec_()
+        # Decide whether we are standalone (no app yet) or embedded (app exists)
+        app = QtWidgets.QApplication.instance()
+        app_was_none = app is None
+
+        # Windows taskbar grouping/icon must be set BEFORE creating QApplication
+        if app_was_none:
+            _set_windows_app_id("QuantalityFX.Librarian")
+
+        # Create or reuse the app
+        app = app or QtWidgets.QApplication(sys.argv)
+
+        # App + window icons (from your librarian_search_s.png)
+        icon = _load_window_icon()
+        app.setWindowIcon(icon)
+
+        # Create the window
+        win = LibrarianWidget(base=base)
+        win.setWindowIcon(icon)
+
+        # Keep your extra styles (appended so we don’t replace widget styles)
+        try:
+            win.setStyleSheet(
+                (win.styleSheet() or "") + """
+                QToolBar {
+                    background: #0b0b0b;
+                    border: none;
+                    border-bottom: 1px solid #111;
+                    spacing: 6px;
+                }
+                QToolBar QToolButton {
+                    color: #e6edf3;
+                    background: #0b0b0b;
+                    border: 1px solid #2a2f38;
+                    border-radius: 6px;
+                    padding: 4px 8px;
+                }
+                QToolBar QToolButton:hover  { background: #121212; }
+                QToolBar QToolButton:pressed{ background: #0a0a0a; }
+
+                #TopBar {
+                    background: #0b0b0b;
+                    border-bottom: 1px solid #111;
+                }
+                """
+            )
+        except Exception:
+            pass
+
+        # Real top-level window (taskbar-visible)
+        try:
+            win.setWindowFlag(QtCore.Qt.Window, True)
+        except Exception:
+            win.setWindowFlags(QtCore.Qt.Window)
+        win.resize(900, 700)
+
+        # Show it (this is non-blocking)
+        win.show()
+        win.raise_()
+        win.activateWindow()
+
+        # Native dark title bar on Windows (keeps the real system draggable bar)
+        _enable_windows_dark_titlebar(win)
+
+        # Small focus nudges
+        QtCore.QTimer.singleShot(0,  lambda: win.windowHandle() and win.windowHandle().requestActivate())
+        QtCore.QTimer.singleShot(250, lambda: win.activateWindow())
+
+        # Decide whether to start the event loop:
+        # - Standalone (no app before): default is True
+        # - Embedded (app existed): default is False (don’t block the host)
+        if run_event_loop is None:
+            run_event_loop = app_was_none
+
+        if run_event_loop:
+            try:
+                app.exec()
+            except AttributeError:
+                app.exec_()
+
+        return win
+
+    except Exception as e:
+        _crash(e)
+        return None
 
 
 def _clear_top_hint(w):

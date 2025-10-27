@@ -174,6 +174,92 @@ def __debug_show_librarian_inbox():
     )
     QtWidgets.QMessageBox.information(None, APP_TITLE, msg)
 
+def _librarian_outbox_dir() -> Path:
+    env_root_raw = os.getenv("LIBRARIAN_ROOT", "").strip().strip('"').strip("'")
+    if env_root_raw:
+        base = Path(env_root_raw).resolve()
+        lib_dir = base if (base / "ipc").exists() else (base / "nodes" / "librarian")
+    else:
+        base = _script_dir()
+        lib_dir = base / "nodes" / "librarian"
+    outbox = lib_dir / "ipc" / "outbox"
+    outbox.mkdir(parents=True, exist_ok=True)
+    return outbox
+
+def _librarian_inbox_dir_cached() -> Path:
+    # mirror your resolver so we can save a local copy of the results in inbox
+    return _librarian_inbox_dir()
+
+def _read_json_silent(p: Path):
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+def _render_hits_text(payload: dict) -> str:
+    if not isinstance(payload, dict):
+        return "No result data."
+    lines = []
+    if payload.get("summary"):
+        lines.append(str(payload["summary"]).strip())
+    if payload.get("answer"):
+        lines.append(str(payload["answer"]).strip())
+    for key in ("results", "hits", "items"):
+        arr = payload.get(key)
+        if isinstance(arr, (list, tuple)) and arr:
+            lines.append("")
+            lines.append(f"Top {min(len(arr), 5)} results:")
+            for i, it in enumerate(arr[:5], 1):
+                if isinstance(it, dict):
+                    title = it.get("title") or it.get("name") or it.get("id") or f"Result {i}"
+                    snippet = it.get("snippet") or it.get("summary") or it.get("text") or ""
+                    lines.append(f"{i}. {title}")
+                    if snippet:
+                        s = str(snippet).strip().replace("\r", "").replace("\n", " ")
+                        if len(s) > 240: s = s[:240] + "…"
+                        lines.append(f"   {s}")
+                else:
+                    s = str(it)
+                    if len(s) > 240: s = s[:240] + "…"
+                    lines.append(f"{i}. {s}")
+            break
+    if not lines:
+        lines = [json.dumps(payload, ensure_ascii=False, indent=2)]
+    return "\n".join(lines).strip()
+
+def _save_result_copy_to_inbox(ts: int, payload: dict) -> Path:
+    inbox = _librarian_inbox_dir_cached()
+    fn = inbox / f"result_{ts}.json"
+    fn.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return fn
+
+def _load_latest_saved_result_text() -> str:
+    inbox = _librarian_inbox_dir_cached()
+    files = sorted(inbox.glob("result_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not files:
+        return ""
+    payload = _read_json_silent(files[0])
+    return _render_hits_text(payload) if payload else ""
+
+def _load_latest_librarian_output_text() -> str:
+    """Read the newest result_*.json from nodes/librarian/ipc/outbox and render it as text."""
+    outbox = _librarian_outbox_dir()
+    files = sorted(outbox.glob("result_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not files:
+        return ""
+    payload = _read_json_silent(files[0])
+    return _render_hits_text(payload) if payload else ""
+
+
+def _load_librarian_output_text_by_ts(ts: int) -> str:
+    """Read outbox/result_<ts>.json and render it."""
+    outbox = _librarian_outbox_dir()
+    p = outbox / f"result_{int(ts)}.json"
+    if not p.exists():
+        return ""
+    payload = _read_json_silent(p)
+    return _render_hits_text(payload) if payload else ""
+
 
 def _main_window():
     """
@@ -777,25 +863,78 @@ class InfoCard(QtWidgets.QFrame):
             footer.addWidget(run_btn)
 
         elif (node.kind or "").lower() == "librarian":
+            # --- Inline Results Panel (no popup sounds) ---
+            self._result_view = QtWidgets.QTextBrowser()
+            self._result_view.setStyleSheet(
+                "QTextBrowser{background:#0f1216;color:#e6edf3;"
+                "border:1px solid #3c4450;border-radius:6px;}"
+            )
+            self._result_view.setMinimumHeight(140)
+            self._result_view.setOpenExternalLinks(True)
+            self._result_view.setOpenLinks(True)
+
+            # Reset per-card state once
+            self._last_query_text = ""
+            self._waiting_ts = None
+
+            # Start with a clean panel (no stale results)
+            self._result_view.setPlainText(
+                "No results yet. Send a query to fetch results here."
+            )
+
             # --- Open the external Librarian UI ---
             open_btn = QtWidgets.QPushButton("Open Librarian")
             open_btn.setToolTip("Launch the Librarian UI in its own process")
 
             def _open_librarian():
+                """Start (or re-start) the Librarian UI with a tiny debounce; no sticky app flags."""
+                # 1) Debounce so rapid clicks don't double-spawn
+                now = time.time()
+                last = getattr(self, "_last_lib_launch", 0.0)
+                if (now - last) < 1.0:
+                    return
+                self._last_lib_launch = now
+
+                # 2) Import launcher (supports both package and flat layouts)
                 try:
-                    # Preferred package-style import
                     from nodes.librarian import launch_librarian as L
                 except Exception:
-                    # Fallback if PYTHONPATH already points at nodes/librarian
                     try:
                         import launch_librarian as L
                     except Exception as e:
                         QtWidgets.QMessageBox.critical(self, APP_TITLE, f"Import error:\n{e}")
                         return
+
+                # 3) If we still have a Popen handle and it's alive, just tooltip + bail
+                proc = getattr(self, "_librarian_proc", None)
                 try:
-                    L.launch(verbose=False)  # silent spawn
+                    alive = (proc is not None) and (proc.poll() is None)
+                except Exception:
+                    alive = False
+
+                if alive:
+                    try:
+                        QtWidgets.QToolTip.showText(
+                            QtGui.QCursor.pos(), "Librarian already running.", self, self.rect(), 1500
+                        )
+                    except Exception:
+                        pass
+                    return
+
+                # 4) Launch a fresh one and keep the handle
+                try:
+                    self._librarian_proc = L.launch(verbose=False)  # subprocess.Popen
+                    try:
+                        QtWidgets.QToolTip.showText(
+                            QtGui.QCursor.pos(), "Librarian launched.", self, self.rect(), 1500
+                        )
+                    except Exception:
+                        pass
                 except Exception as e:
+                    self._librarian_proc = None
                     QtWidgets.QMessageBox.critical(self, APP_TITLE, f"Failed to launch Librarian:\n{e}")
+
+
 
             open_btn.clicked.connect(_open_librarian)
             footer.addWidget(open_btn)
@@ -852,41 +991,102 @@ class InfoCard(QtWidgets.QFrame):
                     return
 
                 try:
+                    # Build the command and remember this query
+                    ts = int(time.time() * 1000)
+                    self._last_query_text = q            # keep the latest query text
+                    self._waiting_ts = ts                # (optional) track this send's timestamp
+
                     cmd = {
-                        "type": "search",      # explicit (still compatible with the poller fallback)
+                        "type": "search",
                         "query": q,
                         "top_k": top_k,
                         "from": "EchoGraph",
-                        "ts": int(time.time() * 1000),
+                        "ts": ts,
                     }
                     fn = _enqueue_librarian(cmd)
 
-                    # quick tooltip
+                    # Ensure Librarian UI is up (non-blocking)
+                    _open_librarian()
+
+                    # Tie the panel to THIS specific query/timestamp and show a clear waiting state
+                    self._waiting_ts = ts
+                    self._last_query_text = q
                     try:
-                        QtWidgets.QToolTip.showText(
-                            QtGui.QCursor.pos(),
-                            f"Sent to Librarian\n{q[:200]}{'…' if len(q)>200 else ''}",
-                            self,
-                            self.rect(),
-                            1500
+                        self._result_view.setPlainText(
+                            "Queued search for Librarian:\n\n"
+                            f"{q[:1000]}{'…' if len(q) > 1000 else ''}\n\n"
+                            f"Ticket: result_{ts}.json\n"
+                            "\nWaiting for results…"
                         )
                     except Exception:
                         pass
 
-                    # ✅ Modal popup confirmation (what you asked for)
-                    QtWidgets.QMessageBox.information(
-                        self,
-                        APP_TITLE,
-                        f"Queued search for Librarian:\n\n{q[:500]}{'…' if len(q)>500 else ''}\n\nFile:\n{fn}"
-                    )
+                    # Make sure the per-card poller is running (it only updates when result_<ts>.json appears)
+                    try:
+                        if hasattr(self, "_poll_timer") and self._poll_timer is not None:
+                            if not self._poll_timer.isActive():
+                                self._poll_timer.start()
+                    except Exception:
+                        pass
+
+                    # Quiet tooltips (optional)
+                    try:
+                        QtWidgets.QToolTip.showText(
+                            QtGui.QCursor.pos(),
+                            f"Sent to Librarian\n{q[:200]}{'…' if len(q) > 200 else ''}",
+                            self, self.rect(), 1500
+                        )
+                        QtWidgets.QToolTip.showText(
+                            QtGui.QCursor.pos(),
+                            f"Queued: {fn.name}",
+                            self, self.rect(), 1500
+                        )
+                    except Exception:
+                        pass
 
                     print(f"[EchoGraph] Enqueued Librarian cmd -> {fn}")
+
                 except Exception as e:
                     QtWidgets.QMessageBox.critical(self, APP_TITLE, f"Failed to enqueue:\n{e}")
             
 
             send_btn.clicked.connect(_send_query)
             footer.addWidget(send_btn)
+            
+            # --- Auto-refresh: ONLY show the result that matches the last sent query ---
+            self._poll_timer = QtCore.QTimer(self)
+            self._poll_timer.setInterval(300) # 0.3s for near-instant updates
+
+            def _poll_latest():
+                try:
+                    # If we haven't sent a query from this card, do nothing (prevents stale results)
+                    ts = getattr(self, "_waiting_ts", None)
+                    if not ts:
+                        return
+
+                    # Read the specific outbox file for THIS send's timestamp
+                    txt = ""
+                    if "_load_librarian_output_text_by_ts" in globals():
+                        txt = _load_librarian_output_text_by_ts(ts) or ""
+
+                    if not txt:
+                        return  # keep waiting silently until that exact result appears
+
+                    # We have the matching result -> render it and stop waiting
+                    prefix = f"Query:\n{self._last_query_text}\n\n" if getattr(self, "_last_query_text", "") else ""
+                    combined = prefix + txt
+                    if combined != self._result_view.toPlainText():
+                        self._result_view.setPlainText(combined)
+
+                    # Clear waiting flag so we don't re-apply or pick up future unrelated output
+                    self._waiting_ts = None
+
+                except Exception:
+                    pass
+
+            self._poll_timer.timeout.connect(_poll_latest)
+            self._poll_timer.start()
+
 
         elif node.code:
             run_btn = QtWidgets.QPushButton("Run Python")
@@ -899,14 +1099,50 @@ class InfoCard(QtWidgets.QFrame):
         # Layout
         lay = QtWidgets.QVBoxLayout(self)
         lay.setContentsMargins(10, 10, 10, 10); lay.setSpacing(8)
-        lay.addLayout(header); lay.addWidget(text); lay.addLayout(footer)
+        lay.addLayout(header)
+        lay.addWidget(text)
+        if hasattr(self, "_result_view"):
+            lay.addWidget(self._result_view)
+        lay.addLayout(footer)
 
     def _emit_and_close(self):
+        # Stop polling for this card (if present) so stale timers can't update closed widgets
+        try:
+            if hasattr(self, "_poll_timer") and self._poll_timer is not None:
+                self._poll_timer.stop()
+                self._poll_timer.deleteLater()
+        except Exception:
+            pass
+
+        # Clear any “waiting for this ts” state so it can’t be reused accidentally
+        try:
+            self._waiting_ts = None
+            self._last_query_text = ""
+        except Exception:
+            pass
+
         try:
             self.closedForNode.emit(self._node_name)
         except Exception:
             pass
+
         self.deleteLater()
+
+    def closeEvent(self, e):
+        # Make absolutely sure the per-card poller is stopped before the widget closes
+        try:
+            if hasattr(self, "_poll_timer") and self._poll_timer is not None:
+                self._poll_timer.stop()
+                self._poll_timer.deleteLater()
+        except Exception:
+            pass
+        # Clear pending state
+        try:
+            self._waiting_ts = None
+            self._last_query_text = ""
+        except Exception:
+            pass
+        super().closeEvent(e)
 
     def _edit_code(self):
         dlg = CodeEditorDialog(self, initial_code=self._node_ref.code or "")
@@ -945,59 +1181,6 @@ class InfoCard(QtWidgets.QFrame):
                 QtWidgets.QMessageBox.information(self, APP_TITLE, out)
 
         except Exception:
-            combined = out_buf.getvalue() + "\n" + err_buf.getvalue()
-            tb = traceback.format_exc()
-            QtWidgets.QMessageBox.critical(self, APP_TITLE, f"{combined}\n{tb}")
-
-    def _emit_and_close(self):
-        try: self.closedForNode.emit(self._node_name)
-        except Exception: pass
-        self.deleteLater()
-
-    def _edit_code(self):
-        dlg = CodeEditorDialog(self, initial_code=self._node_ref.code or "")
-        if dlg.exec_() == QtWidgets.QDialog.Accepted:
-            self._node_ref.code = dlg.code()
-
-    def _run_code(self):
-        node = self._node_ref
-        src = (node.code or "").strip()
-        if not src:
-            # No code = no popup. Bail silently.
-            return
-
-        # Execution namespace: host handles + Qt
-        ns = {
-            "cmds": maya_cmds,      # Maya commands (None in standalone)
-            "hou":  hou_mod,        # Houdini module (None in standalone)
-            "QtWidgets": QtWidgets,
-            "QtCore": QtCore,
-            "QtGui": QtGui,
-            "__name__": "__echograph_exec__",  # nicer repr
-        }
-
-        import io, contextlib, traceback
-        out_buf = io.StringIO()
-        err_buf = io.StringIO()
-
-        try:
-            # Capture prints so pythonw launches don't drop them on the floor.
-            with contextlib.redirect_stdout(out_buf), contextlib.redirect_stderr(err_buf):
-                exec(src, ns, ns)
-
-            out = out_buf.getvalue().strip()
-            err = err_buf.getvalue().strip()
-
-            if err:
-                # If the script printed to stderr (warnings/errors), show it.
-                QtWidgets.QMessageBox.critical(self, APP_TITLE, err)
-            elif out:
-                # Only show a success dialog if there was actual output.
-                QtWidgets.QMessageBox.information(self, APP_TITLE, out)
-            # else: no output, no dialog. All quiet on the western front.
-
-        except Exception:
-            # On exceptions, show the traceback (this is necessary).
             combined = out_buf.getvalue() + "\n" + err_buf.getvalue()
             tb = traceback.format_exc()
             QtWidgets.QMessageBox.critical(self, APP_TITLE, f"{combined}\n{tb}")
@@ -1994,17 +2177,26 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
     def _on_node_deleted(self, name: str):
         w = self._card_by_node.pop(name, None)
         if w:
+            try:
+                if hasattr(w, "_poll_timer") and w._poll_timer is not None:
+                    w._poll_timer.stop()
+                    w._poll_timer.deleteLater()
+            except Exception:
+                pass
             try: w.deleteLater()
             except Exception: pass
+
         for i in reversed(range(self._cardsLayout.count()-1)):
             w = self._cardsLayout.itemAt(i).widget()
             if hasattr(w, "_node_name") and getattr(w, "_node_name", None) == name:
+                try:
+                    if hasattr(w, "_poll_timer") and w._poll_timer is not None:
+                        w._poll_timer.stop()
+                        w._poll_timer.deleteLater()
+                except Exception:
+                    pass
                 try: w.deleteLater()
                 except Exception: pass
-        out = self.scene._current_output_name
-        if out and out in self.scene._node_items:
-            ordered = self.scene.recompute_active_path(out)
-            self.populate_branch_info(ordered)
 
     def _on_card_closed(self, node_name: str):
         self._card_by_node.pop(node_name, None)

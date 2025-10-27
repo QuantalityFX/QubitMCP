@@ -325,7 +325,7 @@ class Librarian:
             out.append((str(path), snippet))
         return out
 
-    def analysis_from_summary(self, summary_text: str, business_prompt: Optional=str) -> str:
+    def analysis_from_summary(self, summary_text: str, business_prompt: Optional[str] = None) -> str:
         """
         Run a focused analysis using the configured Ollama LLM.
         """
@@ -333,17 +333,16 @@ class Librarian:
             "Find me the Business Plan for a Windows macro app comparable to Stream Deck "
             "and provide a detailed analysis without including internal reasoning tags like <think>.\n\n"
         )
-        # Using Settings.llm directly to keep deps simple (LangChain optional)
         llm = Settings.llm
         prompt = p + summary_text
         try:
-            # llama_index.llms.ollama.Ollama implements .complete()
             resp = llm.complete(prompt)
             text = getattr(resp, "text", str(resp))
         except Exception:
-            # fallback to plain call if needed
             text = str(llm.complete(prompt))
         return _clean_text(text)
+
+Librarian.analyze_with_sources = analyze_with_sources
 
 # ---- simple CLI (optional) ----------------------------------------------------
 
