@@ -1053,40 +1053,47 @@ class InfoCard(QtWidgets.QFrame):
             send_btn.clicked.connect(_send_query)
             footer.addWidget(send_btn)
             
-            # --- Auto-refresh: ONLY show the result that matches the last sent query ---
+            # --- Auto-refresh: react instantly when the result file appears (watch outbox) ---
             self._poll_timer = QtCore.QTimer(self)
-            self._poll_timer.setInterval(300) # 0.3s for near-instant updates
+            self._poll_timer.setInterval(500)  # short fallback, only used if watcher misses an event
 
-            def _poll_latest():
+            def _apply_result_if_ready():
+                """Render the matching result for the current ticket (if present)."""
                 try:
-                    # If we haven't sent a query from this card, do nothing (prevents stale results)
                     ts = getattr(self, "_waiting_ts", None)
                     if not ts:
                         return
-
-                    # Read the specific outbox file for THIS send's timestamp
                     txt = ""
                     if "_load_librarian_output_text_by_ts" in globals():
                         txt = _load_librarian_output_text_by_ts(ts) or ""
-
                     if not txt:
-                        return  # keep waiting silently until that exact result appears
-
-                    # We have the matching result -> render it and stop waiting
+                        return
                     prefix = f"Query:\n{self._last_query_text}\n\n" if getattr(self, "_last_query_text", "") else ""
                     combined = prefix + txt
                     if combined != self._result_view.toPlainText():
                         self._result_view.setPlainText(combined)
-
-                    # Clear waiting flag so we don't re-apply or pick up future unrelated output
+                    # stop waiting: we consumed this ticket
                     self._waiting_ts = None
-
                 except Exception:
                     pass
+
+            def _poll_latest():
+                # Fallback safety net (some platforms can miss fs events)
+                _apply_result_if_ready()
 
             self._poll_timer.timeout.connect(_poll_latest)
             self._poll_timer.start()
 
+            # File-system watcher for instant updates
+            try:
+                self._fswatcher = QtCore.QFileSystemWatcher(self)
+                self._fswatcher.addPath(str(_librarian_outbox_dir()))
+                def _on_dir_change(_path):
+                    _apply_result_if_ready()
+                self._fswatcher.directoryChanged.connect(_on_dir_change)
+            except Exception:
+                # If watcher fails on this platform, timer still handles it.
+                pass
 
         elif node.code:
             run_btn = QtWidgets.QPushButton("Run Python")
