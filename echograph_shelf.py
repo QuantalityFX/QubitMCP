@@ -18,6 +18,7 @@ try:
     except Exception:
         wrapInstance = None
     QT_IS_6 = True
+    
 except ImportError:
     from PySide2 import QtCore, QtGui, QtWidgets
     try:
@@ -25,6 +26,25 @@ except ImportError:
     except Exception:
         wrapInstance = None
     QT_IS_6 = False
+
+# --- cross-version shortcut helpers (PySide6 vs PySide2) ---
+# PySide6: QShortcut lives in QtGui; PySide2: it lives in QtWidgets.
+try:
+    QShortcut = QtGui.QShortcut
+except AttributeError:
+    QShortcut = QtWidgets.QShortcut
+
+# QKeySequence is in QtGui for both versions
+QKeySequence = QtGui.QKeySequence
+
+# QAction: QtGui in PySide6, QtWidgets in PySide2
+try:
+    QAction = QtGui.QAction
+except AttributeError:
+    QAction = QtWidgets.QAction
+
+# --- Hotkey used on Windows/Linux ---
+KEY_BIGEDIT = "Ctrl+B"
 
 # --- WebEngine (for embedding Gradio UI) ---
 try:
@@ -490,6 +510,19 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 )
                 edit.textEdited.connect(lambda txt, idx=i: self._on_param_changed(idx, txt))
 
+                # Ctrl+B: big editor via helper (Windows/Linux)
+                # (Relies on self._wire_bigedit_shortcut from Step 2)
+                self._wire_bigedit_shortcut(edit, p["name"])
+
+                # Optional: add a context menu action too
+                def _big_edit_action(e=edit, nm=p["name"]):
+                    self._open_big_param_editor(f"Edit: {nm}", e.text(), e)
+
+                edit.setContextMenuPolicy(QtCore.Qt.ActionsContextMenu)
+                act = QAction("Open Big Editor (Ctrl+B)", edit)
+                act.triggered.connect(_big_edit_action)
+                edit.addAction(act)
+
                 lay.addWidget(lab); lay.addWidget(edit, 1)
 
                 proxy = QtWidgets.QGraphicsProxyWidget(self)
@@ -500,6 +533,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 self._param_proxies.append(proxy)
 
                 y_cursor += self._PARAM_ROW_H
+
 
         # --- LLM embedded webview (Gradio) ---
         if (self.model.kind or "").lower() == "llm":
@@ -570,6 +604,89 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 name = ""
             if name in ("url", "address", "endpoint") and getattr(self, "_llm_view", None):
                 self._llm_view.setUrl(QtCore.QUrl(self._normalize_url(txt)))
+
+    def _wire_bigedit_shortcut(self, edit: QtWidgets.QLineEdit, param_name: str):
+        # Ensure strong focus inside proxy
+        edit.setFocusPolicy(QtCore.Qt.StrongFocus)
+        row = edit.parent() if isinstance(edit.parent(), QtWidgets.QWidget) else None
+        if row:
+            row.setFocusPolicy(QtCore.Qt.StrongFocus)
+
+        # Provide a stable handler that both shortcut and eventFilter can call
+        def _activate_bigedit(e=edit, nm=param_name):
+            # On-screen proof (even in pythonw) + the action
+            try:
+                QtWidgets.QToolTip.showText(QtGui.QCursor.pos(),
+                                            f"{KEY_BIGEDIT} → Big Editor: {nm}",
+                                            e, e.rect(), 1000)
+            except Exception:
+                pass
+            self._open_big_param_editor(f"Edit: {nm}", e.text(), e)
+            # Optional breadcrumb for standalone:
+            try:
+                with open("hotkey.log", "a", encoding="utf-8") as f:
+                    f.write("BigEdit hotkey fired\n")
+            except Exception:
+                pass
+
+        # 1) Robust path: eventFilter on the lineedit (works reliably inside QGraphicsProxyWidget)
+        class _HotkeyFilter(QtCore.QObject):
+            def eventFilter(self, obj, ev):
+                if ev.type() == QtCore.QEvent.KeyPress:
+                    # Qt5/6-safe modifier check
+                    if (ev.key() == QtCore.Qt.Key_B) and (ev.modifiers() & QtCore.Qt.ControlModifier):
+                        _activate_bigedit()
+                        return True
+                return super().eventFilter(obj, ev)
+
+        hf = _HotkeyFilter(edit)  # parented to edit so it lives as long as the edit
+        edit.installEventFilter(hf)
+
+        # Keep references (extra safe against GC even though Qt parentage should suffice)
+        if not hasattr(self, "_hotkey_refs"):
+            self._hotkey_refs = []
+        self._hotkey_refs.append(hf)
+
+        # 2) Also bind QShortcuts (sometimes they work, sometimes proxies eat them — this is a bonus path)
+        try:
+            seq = QKeySequence(KEY_BIGEDIT)  # "Ctrl+B" (case-insensitive)
+            sc1 = QShortcut(seq, edit)
+            sc1.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
+            sc1.activated.connect(_activate_bigedit)
+            self._hotkey_refs.append(sc1)
+
+            if row is not None:
+                sc2 = QShortcut(seq, row)
+                sc2.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
+                sc2.activated.connect(_activate_bigedit)
+                self._hotkey_refs.append(sc2)
+        except Exception:
+            pass
+
+    def eventFilter(self, obj, ev):
+        try:
+            if isinstance(obj, QtWidgets.QLineEdit) and ev.type() == QtCore.QEvent.KeyPress:
+                # Ctrl+B
+                if (ev.key() == QtCore.Qt.Key_B) and (ev.modifiers() & QtCore.Qt.ControlModifier):
+                    name = getattr(self, "_bigedit_names", {}).get(obj, "Edit")
+                    self._open_big_param_editor(f"Edit: {name}", obj.text(), obj)
+                    return True  # handled
+        except Exception:
+            pass
+        return super().eventFilter(obj, ev)
+
+
+    def _open_big_param_editor(self, title:str, initial_text:str, apply_to_lineedit:QtWidgets.QLineEdit):
+        try:
+            dlg = BigTextEditDialog(self.scene().views()[0] if self.scene() and self.scene().views() else None,
+                                    title=title, initial=initial_text)
+        except Exception:
+            dlg = BigTextEditDialog(None, title=title, initial=initial_text)
+        if dlg.exec_() == QtWidgets.QDialog.Accepted:
+            new_text = dlg.text()
+            # Update the QLineEdit (this also fires textEdited -> keeps model in sync)
+            apply_to_lineedit.setText(new_text)
+
 
     # ---------- QGraphicsItem plumbing ----------
     def boundingRect(self):
@@ -794,6 +911,105 @@ class CodeEditorDialog(QtWidgets.QDialog):
         v.addWidget(bb)
     def code(self)->str:
         return self.edit.toPlainText()
+
+class ParamEditorDialog(QtWidgets.QDialog):
+    def __init__(self, parent=None, title="Edit Parameters", params=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setMinimumSize(520, 360)
+
+        v = QtWidgets.QVBoxLayout(self)
+
+        self.table = QtWidgets.QTableWidget(0, 2, self)
+        self.table.setHorizontalHeaderLabels(["Name", "Value"])
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.table.setEditTriggers(
+            QtWidgets.QAbstractItemView.DoubleClicked | QtWidgets.QAbstractItemView.EditKeyPressed
+        )
+        v.addWidget(self.table, 1)
+
+        for p in (params or []):
+            r = self.table.rowCount()
+            self.table.insertRow(r)
+            self.table.setItem(r, 0, QtWidgets.QTableWidgetItem(p.get("name", "")))
+            self.table.setItem(r, 1, QtWidgets.QTableWidgetItem(p.get("value", "")))
+
+        rowBtns = QtWidgets.QHBoxLayout()
+        add_btn = QtWidgets.QPushButton("Add")
+        rem_btn = QtWidgets.QPushButton("Remove")
+        up_btn  = QtWidgets.QPushButton("↑")
+        dn_btn  = QtWidgets.QPushButton("↓")
+        rowBtns.addWidget(add_btn); rowBtns.addWidget(rem_btn); rowBtns.addStretch(1)
+        rowBtns.addWidget(up_btn); rowBtns.addWidget(dn_btn)
+        v.addLayout(rowBtns)
+
+        def add_row():
+            r = self.table.rowCount()
+            self.table.insertRow(r)
+            self.table.setItem(r, 0, QtWidgets.QTableWidgetItem(""))
+            self.table.setItem(r, 1, QtWidgets.QTableWidgetItem(""))
+            self.table.editItem(self.table.item(r, 0))
+        def rm_row():
+            for r in sorted({i.row() for i in self.table.selectedIndexes()}, reverse=True):
+                self.table.removeRow(r)
+        def move_row(delta):
+            sel = sorted({i.row() for i in self.table.selectedIndexes()})
+            if len(sel) != 1: return
+            r = sel[0]; nr = r + delta
+            if nr < 0 or nr >= self.table.rowCount(): return
+            for c in range(2):
+                a = self.table.takeItem(r, c)
+                b = self.table.takeItem(nr, c)
+                self.table.setItem(r, c, b); self.table.setItem(nr, c, a)
+            self.table.selectRow(nr)
+
+        add_btn.clicked.connect(add_row)
+        rem_btn.clicked.connect(rm_row)
+        up_btn.clicked.connect(lambda: move_row(-1))
+        dn_btn.clicked.connect(lambda: move_row(+1))
+
+        bb = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        v.addWidget(bb)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+
+    def result_params(self):
+        out = []
+        for r in range(self.table.rowCount()):
+            name = (self.table.item(r, 0).text() if self.table.item(r,0) else "").strip()
+            value = (self.table.item(r, 1).text() if self.table.item(r,1) else "")
+            if name:
+                out.append({"name": name, "value": value})
+        return out
+
+
+class BigTextEditDialog(QtWidgets.QDialog):
+    def __init__(self, parent=None, title="Edit Text", initial=""):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setMinimumSize(560, 360)
+
+        v = QtWidgets.QVBoxLayout(self)
+
+        self.edit = QtWidgets.QPlainTextEdit()
+        self.edit.setPlainText(initial or "")
+        self.edit.setStyleSheet(
+            "QPlainTextEdit{background:#0f1216;color:#e6edf3;border:1px solid #334;}"
+        )
+        v.addWidget(self.edit, 1)
+
+        bb = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        v.addWidget(bb)
+
+    def text(self):
+        return self.edit.toPlainText()
+
 
 # in-window "popup" card (supports optional order badge) + Edit Code for python
 class InfoCard(QtWidgets.QFrame):
@@ -1118,6 +1334,59 @@ class InfoCard(QtWidgets.QFrame):
             run_btn.setToolTip("Provides maya.cmds as 'cmds' and Houdini as 'hou'")
             run_btn.clicked.connect(self._run_code)
             footer.addWidget(run_btn)
+
+        # === ADD THESE TWO BUTTONS HERE (before footer.addStretch) ===
+        edit_params_btn = QtWidgets.QPushButton("Edit Params…")
+        def _edit_params():
+            sc = getattr(self, "_graph_scene", None)
+            if sc is None:
+                QtWidgets.QMessageBox.warning(self, APP_TITLE, "Scene not available.")
+                return
+            dlg = ParamEditorDialog(self, title=f"Edit Parameters — {self._node_ref.name}",
+                                    params=self._node_ref.params)
+            if dlg.exec_() == QtWidgets.QDialog.Accepted:
+                self._node_ref.params = dlg.result_params()
+                # rebuild the on-node widgets so the small fields match
+                try:
+                    node_item = sc._node_items.get(self._node_ref.name)
+                    if node_item:
+                        node_item._recompute_height()
+                        node_item._build_widgets()
+                except Exception:
+                    pass
+        edit_params_btn.clicked.connect(_edit_params)
+        footer.addWidget(edit_params_btn)
+
+        rename_btn = QtWidgets.QPushButton("Rename…")
+        def _rename_node():
+            sc = getattr(self, "_graph_scene", None)
+            if sc is None:
+                return
+            text, ok = QtWidgets.QInputDialog.getText(
+                self, "Rename Node", "New name:", QtWidgets.QLineEdit.Normal, self._node_ref.name
+            )
+            if not ok or not text.strip():
+                return
+            old = self._node_ref.name
+            success, msg = sc.rename_node(old, text.strip())
+            if not success:
+                if msg:
+                    QtWidgets.QMessageBox.warning(self, APP_TITLE, msg)
+                return
+
+            # sync local references and header edit
+            self._node_ref.name = text.strip()
+            self._node_name = self._node_ref.name
+            try:
+                name_edit = self.findChild(QtWidgets.QLineEdit, "NodeNameEdit")
+                if name_edit:
+                    name_edit.setText(self._node_ref.name)
+            except Exception:
+                pass
+
+        rename_btn.clicked.connect(_rename_node)
+        footer.addWidget(rename_btn)
+        # === END ADD ===
 
         footer.addStretch(1)
 
@@ -2146,6 +2415,22 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         vbox = QtWidgets.QVBoxLayout(container); vbox.setContentsMargins(0,0,0,0); vbox.setSpacing(0)
         vbox.addWidget(self._build_topbar()); vbox.addWidget(self.view, 1)
         self.setCentralWidget(container)
+
+        # --- TEMP: global hotkey test (remove when done) ---
+        try:
+            sc_test = QShortcut(QKeySequence("Ctrl+B"), self)
+            sc_test.setContext(QtCore.Qt.ApplicationShortcut)  # fires regardless of focus
+            def _show_hotkey_ping():
+                try:
+                    QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Ctrl+B detected (global)", self, self.rect(), 1200)
+                except Exception:
+                    pass
+                print("[HotkeyTest] Ctrl+B detected (global)")
+            sc_test.activated.connect(_show_hotkey_ping)
+        except Exception as e:
+            print("[HotkeyTest] failed to set global shortcut:", e)
+
+
         # Consistent dark buttons/toolbuttons across the window
         self.setStyleSheet(
             "QPushButton{background:#20242b;color:#e6edf3;border:1px solid #3c4450;"
