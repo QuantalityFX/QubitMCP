@@ -345,6 +345,29 @@ def _gi_flag(enum_name, fallback_enum):
         return getattr(QtWidgets.QGraphicsItem.GraphicsItemFlag, enum_name, fallback_enum)
     return fallback_enum
 
+def _top_level_parent_for_dialog() -> QtWidgets.QWidget | None:
+    """Best-effort, stable parent for modal dialogs in standalone/hosts."""
+    # 1) Prefer the app's activeWindow if it's a real top-level
+    aw = QtWidgets.QApplication.activeWindow()
+    if aw and aw.isWindow():
+        return aw
+    # 2) Prefer our main window singleton (set in _launch)
+    try:
+        if _WINDOW and _WINDOW.isWindow():
+            return _WINDOW
+    except Exception:
+        pass
+    # 3) Fall back to the first visible top-level widget
+    for w in QtWidgets.QApplication.topLevelWidgets():
+        try:
+            if w.isWindow() and w.isVisible():
+                return w
+        except Exception:
+            continue
+    return None
+
+
+
 class NodeItem(QtWidgets.QGraphicsObject):
     # Signals (must be at class scope)
     clicked = QtCore.Signal(object)
@@ -515,20 +538,22 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     "QLineEdit{background:#12151a;color:#e6edf3;"
                     "border:1px solid #3c4450;border-radius:4px;padding:2px 6px;}"
                 )
+                # Wire text change
                 edit.textEdited.connect(lambda txt, idx=i: self._on_param_changed(idx, txt))
 
-                # Ctrl+B: big editor via helper (Windows/Linux)
-                # (Relies on self._wire_bigedit_shortcut from Step 2)
-                self._wire_bigedit_shortcut(edit, p["name"])
+                # Ctrl+B: big editor via helper (works inside QGraphicsProxyWidget)
+                self._wire_bigedit_shortcut(edit, p.get("name", "value"))
 
-                # Optional: add a context menu action too
-                def _big_edit_action(e=edit, nm=p["name"]):
-                    self._open_big_param_editor(f"Edit: {nm}", e.text(), e)
-
-                edit.setContextMenuPolicy(QtCore.Qt.ActionsContextMenu)
+                # Optional: context menu action – single, correct handler
                 act = QAction("Open Big Editor (Ctrl+B)", edit)
-                act.triggered.connect(_big_edit_action)
+                act.triggered.connect(
+                    lambda _=False, e=edit, nm=p.get("name", "value"):
+                        self._open_big_param_editor(f"Edit: {nm}", e.text(), e)
+                )
                 edit.addAction(act)
+
+                # Show only the actions as the context menu (no duplicate defs, no closePersistentEditor)
+                edit.setContextMenuPolicy(QtCore.Qt.ActionsContextMenu)
 
                 lay.addWidget(lab); lay.addWidget(edit, 1)
 
@@ -693,55 +718,67 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
 
     def _open_big_param_editor(self, title: str, initial_text: str, apply_to_lineedit: QtWidgets.QLineEdit):
-        # Prefer a real top-level window as parent (prevents the dialog from hiding behind proxies)
-        try:
-            v = self.scene().views()[0] if self.scene() and self.scene().views() else None
-            parent = v.window() if v else None
-        except Exception:
-            parent = None
-
+        """Open the large text editor dialog, correctly parented and positioned."""
+        parent = _top_level_parent_for_dialog()
         dlg = BigTextEditDialog(parent, title=title, initial=initial_text)
 
-        # Keep modality consistent (helps in Houdini and Maya)
+        # Proper dialog flags + modality
         try:
-            dlg.setWindowModality(QtCore.Qt.ApplicationModal)
+            dlg.setWindowFlags(
+                QtCore.Qt.Dialog
+                | QtCore.Qt.CustomizeWindowHint
+                | QtCore.Qt.WindowTitleHint
+                | QtCore.Qt.WindowCloseButtonHint
+            )
+        except Exception:
+            pass
+        try:
+            dlg.setWindowModality(QtCore.Qt.WindowModal if parent is not None else QtCore.Qt.NonModal)
         except Exception:
             pass
 
-        # --- Standalone: force true top-level + keep-on-top + place near cursor BEFORE exec ---
-        if (HOST == "standalone") or (parent is None):
-            try:
-                dlg.setWindowFlag(QtCore.Qt.Window, True)
-            except Exception:
-                try:
-                    dlg.setWindowFlags(QtCore.Qt.Window)
-                except Exception:
-                    pass
-            try:
-                dlg.setWindowFlag(QtCore.Qt.WindowStaysOnTopHint, True)
-            except Exception:
-                pass
-            try:
-                cp = QtGui.QCursor.pos()
-                # Move first; some WMs need position set before show/exec to respect placement
-                dlg.move(int(cp.x() - dlg.width() * 0.5), int(cp.y() - dlg.height() * 0.5))
-            except Exception:
-                pass
-
-        # Bring-to-front hints (safe no-ops if unsupported)
+        # Sensible default size
         try:
-            dlg.show()
-            dlg.raise_()
-            dlg.activateWindow()
+            sz = dlg.sizeHint()
+            w = max(560, int(sz.width()  or 560))
+            h = max(360, int(sz.height() or 360))
+            dlg.resize(w, h)
+        except Exception:
+            pass
+
+        # Center near cursor, clamped to screen
+        try:
+            cp = QtGui.QCursor.pos()
+            screen = QtGui.QGuiApplication.screenAt(cp) or QtWidgets.QApplication.primaryScreen()
+            sgeom = screen.availableGeometry() if screen else QtCore.QRect(100, 100, 1200, 800)
+            x = cp.x() - dlg.width() // 2
+            y = cp.y() - dlg.height() // 2
+            x = max(sgeom.left() + 8,  min(x, sgeom.right()  - dlg.width()  - 8))
+            y = max(sgeom.top()  + 8,  min(y, sgeom.bottom() - dlg.height() - 8))
+            dlg.move(x, y)
+        except Exception:
+            pass
+
+        # Prevent focus tug-of-war with the proxy-embedded lineedit
+        try:
+            fw = QtWidgets.QApplication.focusWidget()
+            if fw and isinstance(fw, QtWidgets.QWidget):
+                fw.clearFocus()
+        except Exception:
+            pass
+
+        # Show + exec (Qt5/6 safe via _qexec wrapper)
+        try:
+            dlg.show(); dlg.raise_(); dlg.activateWindow()
             QtWidgets.QApplication.processEvents()
         except Exception:
             pass
 
-        # Single exec path
         if _qexec(dlg) == QtWidgets.QDialog.Accepted:
             apply_to_lineedit.setText(dlg.text())
 
-            
+
+
 
     # ---------- QGraphicsItem plumbing ----------
     def boundingRect(self):
@@ -1043,7 +1080,7 @@ class BigTextEditDialog(QtWidgets.QDialog):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.setMinimumSize(560, 360)
-
+        self.setModal(True)  # ← ensures modal semantics regardless of flags
         v = QtWidgets.QVBoxLayout(self)
 
         self.edit = QtWidgets.QPlainTextEdit()
@@ -2556,6 +2593,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         btn_export = QtWidgets.QPushButton("Export", bar)
         btn_export.setToolTip("Export current graph to a new .json (Save As)")
         btn_export.clicked.connect(self._export_graph)
+
         h.addWidget(btn_export, 0)
 
         h.addStretch(1)
