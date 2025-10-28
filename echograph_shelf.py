@@ -237,6 +237,63 @@ def _hash_to_links(text:str)->str:
         text
     )
 
+# ---------- Offscreen hi-res WebEngine sampler (for crisp downscale) ----------
+class _OffscreenWebSampler(QtCore.QObject):
+    """Hidden hi-res QWebEngineView -> grabs frames -> smooth downscale into QLabel."""
+    def __init__(self, url: QtCore.QUrl, out_label: QtWidgets.QLabel, scale_ss=2.0, fps=10, parent=None):
+        super().__init__(parent)
+        self.scale_ss = float(scale_ss)
+        self.out = out_label
+        self.view = None
+        if WebEngine is not None:
+            self.view = WebEngine.QWebEngineView()
+            self.view.setAttribute(QtCore.Qt.WA_DontShowOnScreen, True)
+            self.view.setZoomFactor(self.scale_ss)
+            w = max(64, int(self.out.width() * self.scale_ss))
+            h = max(64, int(self.out.height() * self.scale_ss))
+            self.view.resize(w, h)
+            self.view.setFixedSize(w, h)
+            self.view.setUrl(url)
+
+        # timer “pulls” frames
+        self._tick = QtCore.QTimer(self)
+        self._tick.setInterval(int(1000 / max(1, fps)))
+        self._tick.timeout.connect(self._update_frame)
+        self._tick.start()
+
+        try:
+            self.out.setAttribute(QtCore.Qt.WA_OpaquePaintEvent, True)
+        except Exception:
+            pass
+
+    def set_output_size(self, w, h):
+        if not self.view: return
+        W = max(32, int(w * self.scale_ss))
+        H = max(32, int(h * self.scale_ss))
+        self.view.resize(W, H)
+        self.view.setFixedSize(W, H)
+
+    @QtCore.Slot()
+    def _update_frame(self):
+        if not self.view:
+            return
+        pm = self.view.grab()
+        if pm.isNull():
+            return
+        target = pm.scaled(self.out.size(),
+                           QtCore.Qt.KeepAspectRatioByExpanding,
+                           QtCore.Qt.SmoothTransformation)
+        self.out.setPixmap(target)
+
+    def set_url(self, url: QtCore.QUrl):
+        if self.view:
+            self.view.setUrl(url)
+
+    def stop(self):
+        try: self._tick.stop()
+        except Exception: pass
+        self.deleteLater()
+
 # model
 class GraphNode:
     def __init__(self, name, kind="node", info="", code=None, params=None, switch_inputs=None, switch_index=0):
@@ -317,7 +374,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
         self._param_proxies = []
         self._switch_proxy = None
         self._llm_proxy = None
-        self._llm_view = None
+        self._llm_view = None  # kept for API parity if ever needed
+        self._llm_label = None
+        self._llm_sampler = None
 
         self._recompute_height()
         self._build_widgets()
@@ -374,7 +433,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
             except Exception:
                 pass
             self._llm_proxy = None
+        # stop sampler if any
+        if self._llm_sampler:
+            try: self._llm_sampler.stop()
+            except Exception: pass
+        self._llm_sampler = None
         self._llm_view = None
+        self._llm_label = None
 
     def _build_widgets(self):
         self._clear_widget_proxies()
@@ -428,7 +493,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     "border:1px solid #3c4450;border-radius:4px;padding:2px 6px;}"
                 )
 
-                # Use textChanged (not textEdited) so Big Editor's setText() updates the model before JSON save.
+                # Use textChanged so Big Editor updates model before JSON save.
                 edit.textChanged.connect(lambda txt, idx=i: self._on_param_changed(idx, txt))
 
                 # Focus-only Ctrl+B wiring
@@ -454,7 +519,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
                 y_cursor += self._PARAM_ROW_H
 
-        # --- LLM embedded webview ---
+        # --- LLM embedded webview (offscreen hi-res -> downscaled label) ---
+        # --- LLM embedded webview (direct embed; no offscreen sampler) ---
+        # --- LLM embedded webview: render at 1920x1170, then scale proxy by 0.5 for crisp downsampling ---
         if (self.model.kind or "").lower() == "llm":
             if WebEngine is None:
                 row = QtWidgets.QWidget()
@@ -472,32 +539,59 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 except AttributeError: pass
                 self._llm_proxy = proxy
             else:
-                container = QtWidgets.QWidget()
-                container.setAttribute(QtCore.Qt.WA_TranslucentBackground)
-                container.setMinimumSize(self.width, LLM_NODE_H)
-                container.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
-
-                v = QtWidgets.QVBoxLayout(container); v.setContentsMargins(0,0,0,0); v.setSpacing(0)
-
-                view = WebEngine.QWebEngineView(container)
+                # 1) create a full-resolution view
+                view = WebEngine.QWebEngineView()
                 view.setObjectName("LLMWebView")
-                view.setMinimumHeight(LLM_NODE_H)
-                view.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
-                view.setZoomFactor(LLM_CONTENT_ZOOM)   # ← key: match zoom to size scale
-                view.setUrl(QtCore.QUrl(self._llm_url_from_params()))
-                self._llm_view = view
-                v.addWidget(view)
+                try:
+                    view.setZoomFactor(1.0)  # render at true page scale
+                except Exception:
+                    pass
+                try:
+                    url = QtCore.QUrl(self._llm_url_from_params())
+                except Exception:
+                    url = QtCore.QUrl(LLM_URL)
+                view.setUrl(url)
 
+                # 2) size the widget to HD (unscaled logical size)
+                view.resize(LLM_NODE_W_BASE, LLM_NODE_H_BASE)
+                view.setMinimumSize(LLM_NODE_W_BASE, LLM_NODE_H_BASE)
+                view.setMaximumSize(LLM_NODE_W_BASE, LLM_NODE_H_BASE)
+                view.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+
+                # 3) put it in a proxy and scale the proxy down (keeps HD sharpness)
                 proxy = QtWidgets.QGraphicsProxyWidget(self)
-                proxy.setWidget(container)
+                proxy.setCacheMode(QtWidgets.QGraphicsItem.DeviceCoordinateCache)
+                proxy.setWidget(view)
                 proxy.setZValue(self.zValue() + 0.1)
-                proxy.setPos(0, y_cursor)
-                proxy.resize(self.width, LLM_NODE_H)
-                try: proxy.setPreferredSize(self.width, LLM_NODE_H)
-                except AttributeError: pass
-                self._llm_proxy = proxy
 
-                y_cursor += LLM_NODE_H
+                # scale the proxy (not the view) so Qt paints the HD widget then downscales it
+                S = float(LLM_SCALE)  # e.g., 0.5
+                proxy.setTransform(QtGui.QTransform().scale(S, S))
+                proxy.setPos(0, y_cursor)  # position is in scene coords AFTER transform
+
+                # 4) report scaled footprint to the node layout (so sockets/paint align)
+                try:
+                    proxy.setPreferredSize(LLM_NODE_W_BASE, LLM_NODE_H_BASE)
+                except AttributeError:
+                    pass
+
+                # keep refs
+                self._llm_proxy = proxy
+                self._llm_view  = view
+                self._llm_label = None
+                self._llm_sampler = None
+
+                # advance cursor by the scaled height
+                y_cursor += int(LLM_NODE_H_BASE * LLM_SCALE)
+
+
+    def eventFilter(self, obj, ev):
+        # keep sampler buffer size synced if the QLabel/container changes
+        if obj is not None and ev.type() == QtCore.QEvent.Resize:
+            if self._llm_sampler and self._llm_label:
+                sz = self._llm_label.size()
+                self._llm_sampler.set_output_size(sz.width(), sz.height())
+        return super().eventFilter(obj, ev)
 
     def _switch_label_text(self):
         n = len(self.model.switch_inputs)
@@ -528,13 +622,16 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 name = (self.model.params[idx]["name"] or "").lower()
             except Exception:
                 name = ""
-            if name in ("url", "address", "endpoint") and getattr(self, "_llm_view", None):
-                self._llm_view.setUrl(QtCore.QUrl(self._normalize_url(txt)))
+            if name in ("url", "address", "endpoint"):
+                norm = self._normalize_url(txt)
+                if self._llm_sampler:
+                    try:
+                        self._llm_sampler.set_url(QtCore.QUrl(norm))
+                    except Exception:
+                        pass
 
     def _wire_bigedit_shortcut(self, edit: QtWidgets.QLineEdit, param_name: str):
         # Focus-only hotkey path:
-        # - Per-edit KeyPress filter + WidgetShortcut so Ctrl+B fires ONLY when this edit has focus inside the proxy.
-        # - Also registers this edit with the window so the app-level filter can resolve it.
         edit.setFocusPolicy(QtCore.Qt.StrongFocus)
         row = edit.parent() if isinstance(edit.parent(), QtWidgets.QWidget) else None
         if row:
@@ -543,7 +640,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
         def _activate_bigedit(e=edit, nm=param_name):
             self._open_big_param_editor(f"Edit: {nm}", e.text(), e)
 
-        # Per-edit KeyPress filter: only sees keys when this edit has focus
         class _HotkeyFilter(QtCore.QObject):
             def eventFilter(self, obj, ev):
                 if ev.type() == QtCore.QEvent.KeyPress:
@@ -559,7 +655,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
             self._hotkey_refs = []
         self._hotkey_refs.append(hf)
 
-        # Strict focus-only QShortcut living on the edit
         try:
             seq = QKeySequence(KEY_BIGEDIT)
             sc = QShortcut(seq, edit)
@@ -569,7 +664,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
         except Exception:
             pass
 
-        # Register with the main window so the app-level filter can resolve from FOCUS
         try:
             v = self.scene().views()[0] if self.scene() and self.scene().views() else None
             win = v.window() if v else None
@@ -1510,6 +1604,8 @@ class GraphScene(QtWidgets.QGraphicsScene):
             self._current_output_name = new_name
         if self._current_output_name:
             self.recompute_active_path(self._current_output_name)
+        else:
+            self._clear_path_highlight()
         return True, ""
 
     def upstream_of(self, dst_name: str):
@@ -2042,9 +2138,7 @@ class GraphView(QtWidgets.QGraphicsView):
         factor = self._clamp_factor_from(start_sx, factor)
         self._zoom_at(vp, factor)
 
-# App-level Ctrl+B catcher:
-# - Intercepts ShortcutOverride/KeyPress to bypass Ctrl+B=Bold collisions inside proxies.
-# - Resolves the focused QLineEdit via the window registry; opens Big Editor for that edit only.
+# App-level Ctrl+B catcher (focus-only)
 class _CtrlBEventFilter(QtCore.QObject):
     def __init__(self, win):
         super().__init__(win)
@@ -2222,12 +2316,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
         self._init_info_dock()
 
-        # --- App-level Ctrl+B filter (MOST ROBUST; focus-only) ---
+        # App-level Ctrl+B filter (focus-only)
         self._ctrlb_filter = _CtrlBEventFilter(self)
         QtWidgets.QApplication.instance().installEventFilter(self._ctrlb_filter)
-        print("[EchoGraph] CtrlB filter installed.")
 
-    # -------- Ctrl+B registration + focus-only resolve ----------
     def _register_bigedit_target(self, lineedit: QtWidgets.QLineEdit, node_item: 'NodeItem', param_name: str):
         self._bigedit_registry[lineedit] = (node_item, param_name)
 
@@ -2298,7 +2390,6 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 )
             except Exception:
                 pass
-            print(f"[EchoGraph] Saved: {self._current_path}")
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, APP_TITLE, f"Failed to save:\n{e}")
 
@@ -2320,7 +2411,6 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 )
             except Exception:
                 pass
-            print(f"[EchoGraph] Exported: {path}")
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, APP_TITLE, f"Failed to export:\n{e}")
 
@@ -2401,7 +2491,6 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             self._cardsLayout.insertWidget(self._cardsLayout.count()-1, card)
 
     def _on_params_changed(self, node_name: str, params: list):
-        """Refresh any open InfoCard for this node when its params change."""
         card = self._card_by_node.get(node_name)
         if card and hasattr(card, "refresh_params_from_model"):
             try:
