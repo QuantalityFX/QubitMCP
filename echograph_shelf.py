@@ -59,10 +59,17 @@ except Exception:
         WebEngine = None
 
 LLM_URL = "http://127.0.0.1:7860"
-LLM_EMBED_HEIGHT = 900
-ASPECT_W, ASPECT_H = 16, 9
-LLM_NODE_W = 1920
-LLM_NODE_H = 1080 + 90
+LLM_SCALE       = 1              # divide-by factor
+LLM_NODE_W_BASE = 1920
+LLM_NODE_H_BASE = 1080 + 90        # = 1170
+
+def _llm_dims():
+    w = int(LLM_NODE_W_BASE * LLM_SCALE)
+    h = int(LLM_NODE_H_BASE * LLM_SCALE)
+    return w, h
+
+# Legacy variables used everywhere else:
+LLM_NODE_W, LLM_NODE_H = _llm_dims()
 
 def _script_dir():
     if "__file__" in globals():
@@ -336,8 +343,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
         n_params = len(self.model.params)
         params_h = n_params * self._PARAM_ROW_H + (self._PADDING if n_params else 0)
         if (self.model.kind or "").lower() == "llm":
-            body_h = LLM_NODE_H
-            node_w = LLM_NODE_W
+            LLM_NODE_W, LLM_NODE_H = _llm_dims()   # refresh scaled globals
+            node_w, body_h = LLM_NODE_W, LLM_NODE_H
         else:
             body_h = 0
             node_w = max(self._BASE_W, self.width)
@@ -421,7 +428,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     "QLineEdit{background:#12151a;color:#e6edf3;"
                     "border:1px solid #3c4450;border-radius:4px;padding:2px 6px;}"
                 )
-                edit.textEdited.connect(lambda txt, idx=i: self._on_param_changed(idx, txt))
+
+                # Use textChanged (not textEdited) so Big Editor's setText() updates the model before JSON save.
+                edit.textChanged.connect(lambda txt, idx=i: self._on_param_changed(idx, txt))
 
                 # Focus-only Ctrl+B wiring
                 self._wire_bigedit_shortcut(edit, p.get("name", "value"))
@@ -506,6 +515,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
             self.model.params[idx]["value"] = txt
         except Exception:
             pass
+
+        sc = self.scene()
+        if sc and hasattr(sc, "paramChanged"):
+            try:
+                sc.paramChanged.emit(self.model.name, list(self.model.params))
+            except Exception:
+                pass
+
         if (self.model.kind or "").lower() == "llm":
             try:
                 name = (self.model.params[idx]["name"] or "").lower()
@@ -515,7 +532,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 self._llm_view.setUrl(QtCore.QUrl(self._normalize_url(txt)))
 
     def _wire_bigedit_shortcut(self, edit: QtWidgets.QLineEdit, param_name: str):
-        # Focusability through the proxy
+        # Focus-only hotkey path:
+        # - Per-edit KeyPress filter + WidgetShortcut so Ctrl+B fires ONLY when this edit has focus inside the proxy.
+        # - Also registers this edit with the window so the app-level filter can resolve it.
         edit.setFocusPolicy(QtCore.Qt.StrongFocus)
         row = edit.parent() if isinstance(edit.parent(), QtWidgets.QWidget) else None
         if row:
@@ -607,7 +626,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
         except Exception:
             pass
         if _qexec(dlg) == QtWidgets.QDialog.Accepted:
-            apply_to_lineedit.setText(dlg.text())
+            apply_to_lineedit.setText(dlg.text())         # triggers textChanged → updates model
+            try:
+                apply_to_lineedit.editingFinished.emit()  # optional: keep downstream listeners consistent
+            except Exception:
+                pass
 
     def boundingRect(self):
         m = 6
@@ -1189,17 +1212,26 @@ class InfoCard(QtWidgets.QFrame):
             if sc is None:
                 QtWidgets.QMessageBox.warning(self, APP_TITLE, "Scene not available.")
                 return
+
             dlg = ParamEditorDialog(self, title=f"Edit Parameters — {self._node_ref.name}",
                                     params=self._node_ref.params)
+
             if dlg.exec_() == QtWidgets.QDialog.Accepted:
-                self._node_ref.params = dlg.result_params()
+                new_params = dlg.result_params()
+
+                # Use the scene API so it rebuilds the node widget AND emits paramChanged
+                ok = sc.set_node_params(self._node_name, new_params)
+
+                # Keep our local ref in sync (harmless if scene already set it)
+                self._node_ref.params = new_params
+
+                # Extra safety: refresh this card immediately (in case any listener missed the signal)
                 try:
-                    node_item = sc._node_items.get(self._node_ref.name)
-                    if node_item:
-                        node_item._recompute_height()
-                        node_item._build_widgets()
+                    self.refresh_params_from_model()
                 except Exception:
                     pass
+
+
         edit_params_btn.clicked.connect(_edit_params)
         footer.addWidget(edit_params_btn)
 
@@ -1306,6 +1338,22 @@ class InfoCard(QtWidgets.QFrame):
             lay.addWidget(self._result_view)
         lay.addLayout(footer)
 
+    def refresh_params_from_model(self):
+        """Reload the params table from the live node model."""
+        if not hasattr(self, "_param_table"):
+            return
+        self._param_table.blockSignals(True)
+        try:
+            self._param_table.setRowCount(0)
+            for p in (self._node_ref.params or []):
+                r = self._param_table.rowCount()
+                self._param_table.insertRow(r)
+                self._param_table.setItem(r, 0, QtWidgets.QTableWidgetItem(p.get("name","")))
+                self._param_table.setItem(r, 1, QtWidgets.QTableWidgetItem(p.get("value","")))
+        finally:
+            self._param_table.blockSignals(False)
+
+
     def _emit_and_close(self):
         try:
             if hasattr(self, "_poll_timer") and self._poll_timer is not None:
@@ -1376,7 +1424,8 @@ class InfoCard(QtWidgets.QFrame):
 # scene/view/graph ops
 class GraphScene(QtWidgets.QGraphicsScene):
     nodeDeleted = QtCore.Signal(str)
-
+    paramChanged = QtCore.Signal(str, list)  # (node_name, params)
+    
     def __init__(self, on_info=None, on_branch=None):
         try:
             super().__init__()
@@ -1426,6 +1475,13 @@ class GraphScene(QtWidgets.QGraphicsScene):
                 clean.append({"name": nm, "value": val})
         node.params = clean
         self.refresh_node_widget(name)
+
+        # broadcast so open InfoCards update immediately
+        try:
+            self.paramChanged.emit(name, list(node.params))
+        except Exception:
+            pass
+
         return True
 
     def rename_node(self, old_name: str, new_name: str):
@@ -1986,7 +2042,9 @@ class GraphView(QtWidgets.QGraphicsView):
         factor = self._clamp_factor_from(start_sx, factor)
         self._zoom_at(vp, factor)
 
-# --------- App-level Ctrl+B (focus-only) ----------
+# App-level Ctrl+B catcher:
+# - Intercepts ShortcutOverride/KeyPress to bypass Ctrl+B=Bold collisions inside proxies.
+# - Resolves the focused QLineEdit via the window registry; opens Big Editor for that edit only.
 class _CtrlBEventFilter(QtCore.QObject):
     def __init__(self, win):
         super().__init__(win)
@@ -2143,9 +2201,16 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         topbar = self._build_topbar()
         v.addWidget(topbar, 0)
 
+        # Scene/View
         self.scene = GraphScene(on_info=self.add_info_card, on_branch=self.populate_branch_info)
         try:
             self.scene.nodeDeleted.connect(self._on_node_deleted)
+        except Exception:
+            pass
+        
+        # keep Info cards in sync with param edits
+        try:
+            self.scene.paramChanged.connect(self._on_params_changed)
         except Exception:
             pass
 
@@ -2334,6 +2399,15 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             card.requestJump.connect(self.scene.center_on_name)
             card.closedForNode.connect(self._on_card_closed)
             self._cardsLayout.insertWidget(self._cardsLayout.count()-1, card)
+
+    def _on_params_changed(self, node_name: str, params: list):
+        """Refresh any open InfoCard for this node when its params change."""
+        card = self._card_by_node.get(node_name)
+        if card and hasattr(card, "refresh_params_from_model"):
+            try:
+                card.refresh_params_from_model()
+            except Exception:
+                pass
 
     def _on_node_deleted(self, name: str):
         w = self._card_by_node.pop(name, None)
