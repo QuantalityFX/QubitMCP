@@ -43,6 +43,13 @@ try:
 except AttributeError:
     QAction = QtWidgets.QAction
 
+# ---- PySide2/6-safe modal exec ----
+def _qexec(dlg: QtWidgets.QDialog) -> int:
+    try:
+        return dlg.exec()   # PySide6
+    except AttributeError:
+        return dlg.exec_()  # PySide2
+
 # --- Hotkey used on Windows/Linux ---
 KEY_BIGEDIT = "Ctrl+B"
 
@@ -663,6 +670,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
         except Exception:
             pass
 
+        # --- Register this field with the window so the global Ctrl+B works from focus ---
+        try:
+            v = self.scene().views()[0] if self.scene() and self.scene().views() else None
+            win = v.window() if v else None
+            if win and hasattr(win, "_register_bigedit_target"):
+                win._register_bigedit_target(edit, self, param_name)
+        except Exception:
+            pass
+
     def eventFilter(self, obj, ev):
         try:
             if isinstance(obj, QtWidgets.QLineEdit) and ev.type() == QtCore.QEvent.KeyPress:
@@ -676,17 +692,56 @@ class NodeItem(QtWidgets.QGraphicsObject):
         return super().eventFilter(obj, ev)
 
 
-    def _open_big_param_editor(self, title:str, initial_text:str, apply_to_lineedit:QtWidgets.QLineEdit):
+    def _open_big_param_editor(self, title: str, initial_text: str, apply_to_lineedit: QtWidgets.QLineEdit):
+        # Prefer a real top-level window as parent (prevents the dialog from hiding behind proxies)
         try:
-            dlg = BigTextEditDialog(self.scene().views()[0] if self.scene() and self.scene().views() else None,
-                                    title=title, initial=initial_text)
+            v = self.scene().views()[0] if self.scene() and self.scene().views() else None
+            parent = v.window() if v else None
         except Exception:
-            dlg = BigTextEditDialog(None, title=title, initial=initial_text)
-        if dlg.exec_() == QtWidgets.QDialog.Accepted:
-            new_text = dlg.text()
-            # Update the QLineEdit (this also fires textEdited -> keeps model in sync)
-            apply_to_lineedit.setText(new_text)
+            parent = None
 
+        dlg = BigTextEditDialog(parent, title=title, initial=initial_text)
+
+        # Keep modality consistent (helps in Houdini and Maya)
+        try:
+            dlg.setWindowModality(QtCore.Qt.ApplicationModal)
+        except Exception:
+            pass
+
+        # --- Standalone: force true top-level + keep-on-top + place near cursor BEFORE exec ---
+        if (HOST == "standalone") or (parent is None):
+            try:
+                dlg.setWindowFlag(QtCore.Qt.Window, True)
+            except Exception:
+                try:
+                    dlg.setWindowFlags(QtCore.Qt.Window)
+                except Exception:
+                    pass
+            try:
+                dlg.setWindowFlag(QtCore.Qt.WindowStaysOnTopHint, True)
+            except Exception:
+                pass
+            try:
+                cp = QtGui.QCursor.pos()
+                # Move first; some WMs need position set before show/exec to respect placement
+                dlg.move(int(cp.x() - dlg.width() * 0.5), int(cp.y() - dlg.height() * 0.5))
+            except Exception:
+                pass
+
+        # Bring-to-front hints (safe no-ops if unsupported)
+        try:
+            dlg.show()
+            dlg.raise_()
+            dlg.activateWindow()
+            QtWidgets.QApplication.processEvents()
+        except Exception:
+            pass
+
+        # Single exec path
+        if _qexec(dlg) == QtWidgets.QDialog.Accepted:
+            apply_to_lineedit.setText(dlg.text())
+
+            
 
     # ---------- QGraphicsItem plumbing ----------
     def boundingRect(self):
@@ -820,8 +875,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
             return
 
         super().mouseReleaseEvent(e)
-
-
 
 class EdgeItem(QtWidgets.QGraphicsPathItem):
     def __init__(self, src, dst):
@@ -2401,54 +2454,83 @@ class CreateNodeDialog(QtWidgets.QDialog):
 class EchoGraphWindow(QtWidgets.QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowIcon(APP_ICON)
-        self.setObjectName(APP_TITLE+"Window"); self.setWindowTitle(APP_TITLE); self.resize(1100,700)
-        self._current_path = None
-        self._card_by_node = {}
 
-        self._init_info_dock()
-        self.scene=GraphScene(on_info=self.add_info_card, on_branch=self.populate_branch_info)
-        self.scene.nodeDeleted.connect(self._on_node_deleted)
-        self.view=GraphView(self.scene)
-
-        container = QtWidgets.QWidget(self)
-        vbox = QtWidgets.QVBoxLayout(container); vbox.setContentsMargins(0,0,0,0); vbox.setSpacing(0)
-        vbox.addWidget(self._build_topbar()); vbox.addWidget(self.view, 1)
-        self.setCentralWidget(container)
-
-        # --- TEMP: global hotkey test (remove when done) ---
+        # --- Window basics ---
+        self.setObjectName("EchoGraphWindow")
+        self.setWindowTitle(APP_TITLE)
         try:
-            sc_test = QShortcut(QKeySequence("Ctrl+B"), self)
-            sc_test.setContext(QtCore.Qt.ApplicationShortcut)  # fires regardless of focus
-            def _show_hotkey_ping():
-                try:
-                    QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Ctrl+B detected (global)", self, self.rect(), 1200)
-                except Exception:
-                    pass
-                print("[HotkeyTest] Ctrl+B detected (global)")
-            sc_test.activated.connect(_show_hotkey_ping)
-        except Exception as e:
-            print("[HotkeyTest] failed to set global shortcut:", e)
+            self.setWindowIcon(APP_ICON)
+        except Exception:
+            pass
+        self.resize(1100, 720)
 
+        # --- Core state ---
+        self._current_path = None
+        self._card_by_node = {}          # name -> InfoCard widget
+        self._bigedit_registry = {}      # {QLineEdit: (node_item, param_name)}
 
-        # Consistent dark buttons/toolbuttons across the window
-        self.setStyleSheet(
-            "QPushButton{background:#20242b;color:#e6edf3;border:1px solid #3c4450;"
-            "border-radius:6px;padding:4px 10px;}"
-            "QPushButton:hover{background:#2a2f38;}"
-            "QPushButton:pressed{background:#1b1f26;}"
-            "QToolButton{background:#20242b;color:#e6edf3;border:1px solid #3c4450;"
-            "border-radius:6px;padding:3px 8px;}"
-            "QToolButton:hover{background:#2a2f38;}"
-            "QToolButton:pressed{background:#1b1f26;}"
-        )
-        self.scene.setBackgroundBrush(QtGui.QColor("#1a1f24"))
+        # --- Central UI scaffold (top bar + view) ---
+        central = QtWidgets.QWidget(self)
+        v = QtWidgets.QVBoxLayout(central)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
 
-        # empty startup
+        # Top bar
+        topbar = self._build_topbar()
+        v.addWidget(topbar, 0)
 
-        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
-        self.view.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
-        self.centralWidget().setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        # Scene/View
+        self.scene = GraphScene(on_info=self.add_info_card,
+                                on_branch=self.populate_branch_info)
+        try:
+            self.scene.nodeDeleted.connect(self._on_node_deleted)
+        except Exception:
+            pass
+
+        self.view = GraphView(self.scene)
+        self.view.setMinimumSize(400, 300)
+        v.addWidget(self.view, 1)
+
+        self.setCentralWidget(central)
+
+        # Info dock (cards live here)
+        self._init_info_dock()
+
+        # --- Global Ctrl+B: open Big Editor for whichever param field has focus ---
+        self._sc_bigedit_global = QShortcut(QKeySequence(KEY_BIGEDIT), self)
+        # Make it work no matter which child has focus
+        try:
+            self._sc_bigedit_global.setContext(QtCore.Qt.ApplicationShortcut)
+        except Exception:
+            pass
+
+        def _try_open_bigedit_from_focus():
+            fw = QtWidgets.QApplication.focusWidget()
+            if not fw:
+                return
+            # climb parents to find a registered lineedit (in case focus is inside its popup, etc.)
+            w = fw
+            target = None
+            for _ in range(8):
+                if w in self._bigedit_registry:
+                    target = w
+                    break
+                w = w.parent() if isinstance(w, QtWidgets.QWidget) else None
+                if w is None:
+                    break
+            if not target:
+                return
+            node_item, param_name = self._bigedit_registry[target]
+            # call the same helper NodeItem uses
+            try:
+                node_item._open_big_param_editor(f"Edit: {param_name}", target.text(), target)
+            except Exception:
+                pass
+
+        self._sc_bigedit_global.activated.connect(_try_open_bigedit_from_focus)
+
+    def _register_bigedit_target(self, lineedit: QtWidgets.QLineEdit, node_item: 'NodeItem', param_name: str):
+        self._bigedit_registry[lineedit] = (node_item, param_name)
 
     def _build_topbar(self):
         bar = QtWidgets.QFrame(); bar.setObjectName("TopBar")
