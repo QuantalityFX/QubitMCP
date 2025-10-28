@@ -59,14 +59,13 @@ except Exception:
         WebEngine = None
 
 LLM_URL = "http://127.0.0.1:7860"
-LLM_SCALE       = 1              # divide-by factor
+LLM_SCALE       = 0.5              # divide-by factor
 LLM_NODE_W_BASE = 1920
 LLM_NODE_H_BASE = 1080 + 90        # = 1170
+LLM_CONTENT_ZOOM = LLM_SCALE
 
 def _llm_dims():
-    w = int(LLM_NODE_W_BASE * LLM_SCALE)
-    h = int(LLM_NODE_H_BASE * LLM_SCALE)
-    return w, h
+    return int(LLM_NODE_W_BASE * LLM_SCALE), int(LLM_NODE_H_BASE * LLM_SCALE)
 
 # Legacy variables used everywhere else:
 LLM_NODE_W, LLM_NODE_H = _llm_dims()
@@ -484,6 +483,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 view.setObjectName("LLMWebView")
                 view.setMinimumHeight(LLM_NODE_H)
                 view.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+                view.setZoomFactor(LLM_CONTENT_ZOOM)   # ← key: match zoom to size scale
                 view.setUrl(QtCore.QUrl(self._llm_url_from_params()))
                 self._llm_view = view
                 v.addWidget(view)
