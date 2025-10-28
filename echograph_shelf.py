@@ -18,7 +18,6 @@ try:
     except Exception:
         wrapInstance = None
     QT_IS_6 = True
-    
 except ImportError:
     from PySide2 import QtCore, QtGui, QtWidgets
     try:
@@ -28,16 +27,13 @@ except ImportError:
     QT_IS_6 = False
 
 # --- cross-version shortcut helpers (PySide6 vs PySide2) ---
-# PySide6: QShortcut lives in QtGui; PySide2: it lives in QtWidgets.
 try:
     QShortcut = QtGui.QShortcut
 except AttributeError:
     QShortcut = QtWidgets.QShortcut
 
-# QKeySequence is in QtGui for both versions
 QKeySequence = QtGui.QKeySequence
 
-# QAction: QtGui in PySide6, QtWidgets in PySide2
 try:
     QAction = QtGui.QAction
 except AttributeError:
@@ -46,9 +42,9 @@ except AttributeError:
 # ---- PySide2/6-safe modal exec ----
 def _qexec(dlg: QtWidgets.QDialog) -> int:
     try:
-        return dlg.exec()   # PySide6
+        return dlg.exec()
     except AttributeError:
-        return dlg.exec_()  # PySide2
+        return dlg.exec_()
 
 # --- Hotkey used on Windows/Linux ---
 KEY_BIGEDIT = "Ctrl+B"
@@ -60,7 +56,7 @@ except Exception:
     try:
         from PySide2 import QtWebEngineWidgets as WebEngine
     except Exception:
-        WebEngine = None  # guarded elsewhere
+        WebEngine = None
 
 LLM_URL = "http://127.0.0.1:7860"
 LLM_EMBED_HEIGHT = 900
@@ -68,15 +64,12 @@ ASPECT_W, ASPECT_H = 16, 9
 LLM_NODE_W = 1920
 LLM_NODE_H = 1080 + 90
 
-# create the icon AFTER Qt is imported (handle Houdini shelf tools where __file__ is undefined)
 def _script_dir():
-    # 1) normal files
     if "__file__" in globals():
         try:
             return Path(__file__).resolve().parent
         except Exception:
             pass
-    # 2) shelf tools / embedded contexts: fall back to CWD (or home as last resort)
     try:
         return Path.cwd()
     except Exception:
@@ -91,13 +84,11 @@ maya_cmds = None
 omui = None
 hou_mod = None
 
-# Try Maya first
 try:
     from maya import cmds as maya_cmds
     from maya import OpenMayaUI as omui
     HOST = "maya"
 except Exception:
-    # Try Houdini next
     try:
         import hou as hou_mod
         HOST = "houdini"
@@ -106,34 +97,20 @@ except Exception:
 
 # ---- Librarian IPC (file-based) ----
 def _librarian_inbox_dir() -> Path:
-    """
-    Returns nodes/librarian/ipc/inbox.
-    Prefers LIBRARIAN_ROOT if set (from your .env), otherwise resolves relative
-    to this script's directory expecting a ./nodes/librarian layout.
-    """
-    # Prefer explicit root if provided
     env_root = os.getenv("LIBRARIAN_ROOT", "").strip().strip('"').strip("'")
     if env_root:
         base = Path(env_root).resolve()
         lib_dir = base
-        # If env_root points to nodes/librarian already, fine; otherwise try append
         if not (lib_dir / "ipc").exists() and (base / "nodes" / "librarian").exists():
             lib_dir = base / "nodes" / "librarian"
     else:
-        # Fall back to script dir → nodes/librarian
         base = _script_dir()
         lib_dir = base / "nodes" / "librarian"
-
     inbox = lib_dir / "ipc" / "inbox"
     inbox.mkdir(parents=True, exist_ok=True)
     return inbox
 
 def _enqueue_librarian(cmd: dict) -> Path:
-    """
-    Write a single IPC command JSON into nodes/librarian/ipc/inbox and return the full path.
-    This version normalizes keys, resolves paths deterministically, and verifies the write.
-    """
-    # --- Resolve base/inbox deterministically (same logic as _librarian_inbox_dir but explicit) ---
     env_root_raw = os.getenv("LIBRARIAN_ROOT", "").strip().strip('"').strip("'")
     if env_root_raw:
         base = Path(env_root_raw).resolve()
@@ -145,7 +122,6 @@ def _enqueue_librarian(cmd: dict) -> Path:
     inbox = (lib_dir / "ipc" / "inbox")
     inbox.mkdir(parents=True, exist_ok=True)
 
-    # --- Normalize command keys so BOTH old/new listeners pick it up ---
     ctype = (cmd.get("type") or cmd.get("action") or "").strip().lower()
     if not ctype:
         if "query" in cmd:
@@ -155,22 +131,15 @@ def _enqueue_librarian(cmd: dict) -> Path:
         else:
             ctype = "summarize"
     cmd["type"] = ctype
-    cmd["action"] = ctype  # legacy listeners
-
-    # Fill common fields if missing
+    cmd["action"] = ctype
     cmd.setdefault("from", "EchoGraph")
     cmd.setdefault("ts", int(time.time() * 1000))
 
-    # --- Filename & write (flush + fsync) ---
     fn = inbox / f"cmd_{int(time.time()*1000)}_{os.getpid()}.json"
     text = json.dumps(cmd, ensure_ascii=False, indent=2)
-    # Robust write on Windows
     with open(fn, "w", encoding="utf-8", newline="\n") as f:
-        f.write(text)
-        f.flush()
-        os.fsync(f.fileno())
+        f.write(text); f.flush(); os.fsync(f.fileno())
 
-    # --- Verify on disk ---
     if not fn.exists() or fn.stat().st_size == 0:
         raise RuntimeError(
             f"IPC write verification failed.\nTried: {fn}\n"
@@ -178,28 +147,7 @@ def _enqueue_librarian(cmd: dict) -> Path:
             f"script_dir={_script_dir()}\n"
             f"lib_dir={lib_dir}\n"
         )
-
     return fn
-
-
-def __debug_show_librarian_inbox():
-    env_root_raw = os.getenv("LIBRARIAN_ROOT", "").strip().strip('"').strip("'")
-    base = Path(env_root_raw).resolve() if env_root_raw else _script_dir()
-    lib_dir = base if (base / "ipc").exists() else (base / "nodes" / "librarian")
-    inbox = lib_dir / "ipc" / "inbox"
-    outbox = lib_dir / "ipc" / "outbox"
-    inbox.mkdir(parents=True, exist_ok=True)
-    outbox.mkdir(parents=True, exist_ok=True)
-    msg = (
-        f"Resolved paths:\n"
-        f"  LIBRARIAN_ROOT = {env_root_raw or '<unset>'}\n"
-        f"  script_dir     = {str(_script_dir())}\n"
-        f"  librarian_dir  = {str(lib_dir)}\n"
-        f"  inbox          = {str(inbox)}\n"
-        f"  outbox         = {str(outbox)}\n\n"
-        f"Inbox contains {len(list(inbox.glob('cmd_*.json')))} file(s)."
-    )
-    QtWidgets.QMessageBox.information(None, APP_TITLE, msg)
 
 def _librarian_outbox_dir() -> Path:
     env_root_raw = os.getenv("LIBRARIAN_ROOT", "").strip().strip('"').strip("'")
@@ -212,10 +160,6 @@ def _librarian_outbox_dir() -> Path:
     outbox = lib_dir / "ipc" / "outbox"
     outbox.mkdir(parents=True, exist_ok=True)
     return outbox
-
-def _librarian_inbox_dir_cached() -> Path:
-    # mirror your resolver so we can save a local copy of the results in inbox
-    return _librarian_inbox_dir()
 
 def _read_json_silent(p: Path):
     try:
@@ -254,32 +198,7 @@ def _render_hits_text(payload: dict) -> str:
         lines = [json.dumps(payload, ensure_ascii=False, indent=2)]
     return "\n".join(lines).strip()
 
-def _save_result_copy_to_inbox(ts: int, payload: dict) -> Path:
-    inbox = _librarian_inbox_dir_cached()
-    fn = inbox / f"result_{ts}.json"
-    fn.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    return fn
-
-def _load_latest_saved_result_text() -> str:
-    inbox = _librarian_inbox_dir_cached()
-    files = sorted(inbox.glob("result_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not files:
-        return ""
-    payload = _read_json_silent(files[0])
-    return _render_hits_text(payload) if payload else ""
-
-def _load_latest_librarian_output_text() -> str:
-    """Read the newest result_*.json from nodes/librarian/ipc/outbox and render it as text."""
-    outbox = _librarian_outbox_dir()
-    files = sorted(outbox.glob("result_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not files:
-        return ""
-    payload = _read_json_silent(files[0])
-    return _render_hits_text(payload) if payload else ""
-
-
 def _load_librarian_output_text_by_ts(ts: int) -> str:
-    """Read outbox/result_<ts>.json and render it."""
     outbox = _librarian_outbox_dir()
     p = outbox / f"result_{int(ts)}.json"
     if not p.exists():
@@ -287,13 +206,7 @@ def _load_librarian_output_text_by_ts(ts: int) -> str:
     payload = _read_json_silent(p)
     return _render_hits_text(payload) if payload else ""
 
-
 def _main_window():
-    """
-    Return the host application's main Qt window, or None.
-    - Maya: wraps MQtUtil.mainWindow() with shiboken (6/2).
-    - Houdini: uses hou.qt.mainWindow().
-    """
     if HOST == "maya" and omui:
         try:
             ptr = omui.MQtUtil.mainWindow()
@@ -311,7 +224,6 @@ def _main_window():
 APP_TITLE = "EchoGraph"
 WS_CTRL = "EchoGraphWorkspaceControl"  # Maya only
 
-# utils
 def _hash_to_links(text:str)->str:
     return re.sub(
         r"#([^\n#]+)",
@@ -325,39 +237,29 @@ class GraphNode:
         self.name = name
         self.kind = kind
         self.info = info
-        self.code = code  # python source (for kind == 'python')
+        self.code = code
         self.pos = QtCore.QPointF(0, 0)
-        self.params = list(params or [])  # list of {"name": str, "value": str}
+        self.params = list(params or [])
         self.switch_inputs = list(switch_inputs or [])
         self.switch_index = int(switch_index or 0)
 
 # items
 def _gi_flag(enum_name, fallback_enum):
-    """
-    Cross-Qt helper for GraphicsItem flags.
-    In Qt6, flags live under QGraphicsItem.GraphicsItemFlag.*
-    In Qt5 (PySide2), they are attributes on QGraphicsItem directly.
-    """
     if hasattr(QtWidgets.QGraphicsItem, enum_name):
         return getattr(QtWidgets.QGraphicsItem, enum_name)
-    # Qt6 style:
     if hasattr(QtWidgets.QGraphicsItem, "GraphicsItemFlag"):
         return getattr(QtWidgets.QGraphicsItem.GraphicsItemFlag, enum_name, fallback_enum)
     return fallback_enum
 
 def _top_level_parent_for_dialog() -> QtWidgets.QWidget | None:
-    """Best-effort, stable parent for modal dialogs in standalone/hosts."""
-    # 1) Prefer the app's activeWindow if it's a real top-level
     aw = QtWidgets.QApplication.activeWindow()
     if aw and aw.isWindow():
         return aw
-    # 2) Prefer our main window singleton (set in _launch)
     try:
         if _WINDOW and _WINDOW.isWindow():
             return _WINDOW
     except Exception:
         pass
-    # 3) Fall back to the first visible top-level widget
     for w in QtWidgets.QApplication.topLevelWidgets():
         try:
             if w.isWindow() and w.isVisible():
@@ -366,10 +268,7 @@ def _top_level_parent_for_dialog() -> QtWidgets.QWidget | None:
             continue
     return None
 
-
-
 class NodeItem(QtWidgets.QGraphicsObject):
-    # Signals (must be at class scope)
     clicked = QtCore.Signal(object)
     requestCenter = QtCore.Signal(str)
     startWireDrag = QtCore.Signal(object)
@@ -381,7 +280,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
     _PADDING = 8
 
     def __init__(self, model: GraphNode):
-        # PySide2/6-safe super()
         try:
             super().__init__()
         except TypeError:
@@ -392,36 +290,28 @@ class NodeItem(QtWidgets.QGraphicsObject):
         self.height = self._BASE_H
         self.radius = 10
 
-        # Flags — use QGraphicsItem enums, not "self.ItemIsMovable"
         self.setFlag(QtWidgets.QGraphicsItem.ItemIsMovable, True)
         self.setFlag(QtWidgets.QGraphicsItem.ItemSendsGeometryChanges, True)
         self.setFlag(QtWidgets.QGraphicsItem.ItemIsSelectable, True)
 
-        # Cache mode: PySide2/6 enum guard
         try:
             self.setCacheMode(QtWidgets.QGraphicsItem.CacheMode.DeviceCoordinateCache)
         except AttributeError:
-            # PySide2 style
             self.setCacheMode(QtWidgets.QGraphicsItem.DeviceCoordinateCache)
 
         self.setZValue(1)
 
-        # Pens/colors
         self.pen = QtGui.QPen(QtGui.QColor("#7a8793"))
         self.titlePen = QtGui.QPen(QtGui.QColor("#e6edf3"))
 
-        # Hover + mouse setup
         self._hover = False
         self.setAcceptHoverEvents(True)
-        self.setAcceptedMouseButtons(
-            QtCore.Qt.LeftButton | QtCore.Qt.RightButton | QtCore.Qt.MiddleButton
-        )
+        self.setAcceptedMouseButtons(QtCore.Qt.LeftButton | QtCore.Qt.RightButton | QtCore.Qt.MiddleButton)
 
-        # Embedded widgets (params / switch row / llm view)
         self._param_proxies = []
         self._switch_proxy = None
         self._llm_proxy = None
-        self._llm_view = None  # keep ref for live URL reloads
+        self._llm_view = None
 
         self._recompute_height()
         self._build_widgets()
@@ -441,19 +331,16 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 return self._normalize_url(p.get("value",""))
         return LLM_URL
 
-    # ---------- layout helpers ----------
     def _recompute_height(self):
         switch_h = self._PARAM_ROW_H if (self.model.kind or "").lower() == "switch" else 0
         n_params = len(self.model.params)
         params_h = n_params * self._PARAM_ROW_H + (self._PADDING if n_params else 0)
-
         if (self.model.kind or "").lower() == "llm":
-            body_h = LLM_NODE_H                 # fixed interior height for the webview
-            node_w = LLM_NODE_W                 # fixed wide width
+            body_h = LLM_NODE_H
+            node_w = LLM_NODE_W
         else:
             body_h = 0
             node_w = max(self._BASE_W, self.width)
-
         new_h = self._BASE_H + switch_h + params_h + body_h
         self.prepareGeometryChange()
         self.width  = int(node_w)
@@ -463,33 +350,29 @@ class NodeItem(QtWidgets.QGraphicsObject):
         if self._switch_proxy:
             try:
                 sc = self.scene()
-                if sc:
-                    sc.removeItem(self._switch_proxy)
+                if sc: sc.removeItem(self._switch_proxy)
             except Exception:
                 pass
             self._switch_proxy = None
         for pr in list(self._param_proxies):
             try:
                 sc = self.scene()
-                if sc:
-                    sc.removeItem(pr)
+                if sc: sc.removeItem(pr)
             except Exception:
                 pass
         self._param_proxies[:] = []
         if self._llm_proxy:
             try:
                 sc = self.scene()
-                if sc:
-                    sc.removeItem(self._llm_proxy)
+                if sc: sc.removeItem(self._llm_proxy)
             except Exception:
                 pass
             self._llm_proxy = None
-        # also drop the view ref so we don't poke a deleted widget
         self._llm_view = None
 
     def _build_widgets(self):
         self._clear_widget_proxies()
-        y_cursor = 38 + 16 + self._PADDING  # below the badge
+        y_cursor = 38 + 16 + self._PADDING
 
         # --- Switch slider row ---
         if (self.model.kind or "").lower() == "switch":
@@ -520,7 +403,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
             y_cursor += self._PARAM_ROW_H
 
-        # --- Parameters (single pass only) ---
+        # --- Parameters ---
         if self.model.params:
             for i, p in enumerate(self.model.params):
                 row = QtWidgets.QWidget()
@@ -538,21 +421,18 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     "QLineEdit{background:#12151a;color:#e6edf3;"
                     "border:1px solid #3c4450;border-radius:4px;padding:2px 6px;}"
                 )
-                # Wire text change
                 edit.textEdited.connect(lambda txt, idx=i: self._on_param_changed(idx, txt))
 
-                # Ctrl+B: big editor via helper (works inside QGraphicsProxyWidget)
+                # Focus-only Ctrl+B wiring
                 self._wire_bigedit_shortcut(edit, p.get("name", "value"))
 
-                # Optional: context menu action – single, correct handler
+                # Context action
                 act = QAction("Open Big Editor (Ctrl+B)", edit)
                 act.triggered.connect(
                     lambda _=False, e=edit, nm=p.get("name", "value"):
                         self._open_big_param_editor(f"Edit: {nm}", e.text(), e)
                 )
                 edit.addAction(act)
-
-                # Show only the actions as the context menu (no duplicate defs, no closePersistentEditor)
                 edit.setContextMenuPolicy(QtCore.Qt.ActionsContextMenu)
 
                 lay.addWidget(lab); lay.addWidget(edit, 1)
@@ -566,8 +446,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
                 y_cursor += self._PARAM_ROW_H
 
-
-        # --- LLM embedded webview (Gradio) ---
+        # --- LLM embedded webview ---
         if (self.model.kind or "").lower() == "llm":
             if WebEngine is None:
                 row = QtWidgets.QWidget()
@@ -597,7 +476,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 view.setMinimumHeight(LLM_NODE_H)
                 view.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
                 view.setUrl(QtCore.QUrl(self._llm_url_from_params()))
-                self._llm_view = view  # keep a reference so we can live-update on edits
+                self._llm_view = view
                 v.addWidget(view)
 
                 proxy = QtWidgets.QGraphicsProxyWidget(self)
@@ -627,8 +506,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
             self.model.params[idx]["value"] = txt
         except Exception:
             pass
-
-        # NEW: if it's an LLM node and the edited param is the URL, refresh
         if (self.model.kind or "").lower() == "llm":
             try:
                 name = (self.model.params[idx]["name"] or "").lower()
@@ -638,64 +515,42 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 self._llm_view.setUrl(QtCore.QUrl(self._normalize_url(txt)))
 
     def _wire_bigedit_shortcut(self, edit: QtWidgets.QLineEdit, param_name: str):
-        # Ensure strong focus inside proxy
+        # Focusability through the proxy
         edit.setFocusPolicy(QtCore.Qt.StrongFocus)
         row = edit.parent() if isinstance(edit.parent(), QtWidgets.QWidget) else None
         if row:
             row.setFocusPolicy(QtCore.Qt.StrongFocus)
 
-        # Provide a stable handler that both shortcut and eventFilter can call
         def _activate_bigedit(e=edit, nm=param_name):
-            # On-screen proof (even in pythonw) + the action
-            try:
-                QtWidgets.QToolTip.showText(QtGui.QCursor.pos(),
-                                            f"{KEY_BIGEDIT} → Big Editor: {nm}",
-                                            e, e.rect(), 1000)
-            except Exception:
-                pass
             self._open_big_param_editor(f"Edit: {nm}", e.text(), e)
-            # Optional breadcrumb for standalone:
-            try:
-                with open("hotkey.log", "a", encoding="utf-8") as f:
-                    f.write("BigEdit hotkey fired\n")
-            except Exception:
-                pass
 
-        # 1) Robust path: eventFilter on the lineedit (works reliably inside QGraphicsProxyWidget)
+        # Per-edit KeyPress filter: only sees keys when this edit has focus
         class _HotkeyFilter(QtCore.QObject):
             def eventFilter(self, obj, ev):
                 if ev.type() == QtCore.QEvent.KeyPress:
-                    # Qt5/6-safe modifier check
                     if (ev.key() == QtCore.Qt.Key_B) and (ev.modifiers() & QtCore.Qt.ControlModifier):
                         _activate_bigedit()
                         return True
                 return super().eventFilter(obj, ev)
 
-        hf = _HotkeyFilter(edit)  # parented to edit so it lives as long as the edit
+        hf = _HotkeyFilter(edit)
         edit.installEventFilter(hf)
 
-        # Keep references (extra safe against GC even though Qt parentage should suffice)
         if not hasattr(self, "_hotkey_refs"):
             self._hotkey_refs = []
         self._hotkey_refs.append(hf)
 
-        # 2) Also bind QShortcuts (sometimes they work, sometimes proxies eat them — this is a bonus path)
+        # Strict focus-only QShortcut living on the edit
         try:
-            seq = QKeySequence(KEY_BIGEDIT)  # "Ctrl+B" (case-insensitive)
-            sc1 = QShortcut(seq, edit)
-            sc1.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
-            sc1.activated.connect(_activate_bigedit)
-            self._hotkey_refs.append(sc1)
-
-            if row is not None:
-                sc2 = QShortcut(seq, row)
-                sc2.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
-                sc2.activated.connect(_activate_bigedit)
-                self._hotkey_refs.append(sc2)
+            seq = QKeySequence(KEY_BIGEDIT)
+            sc = QShortcut(seq, edit)
+            sc.setContext(QtCore.Qt.WidgetShortcut)  # requires the edit itself to have focus
+            sc.activated.connect(_activate_bigedit)
+            self._hotkey_refs.append(sc)
         except Exception:
             pass
 
-        # --- Register this field with the window so the global Ctrl+B works from focus ---
+        # Register with the main window so the app-level filter can resolve from FOCUS
         try:
             v = self.scene().views()[0] if self.scene() and self.scene().views() else None
             win = v.window() if v else None
@@ -704,25 +559,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
         except Exception:
             pass
 
-    def eventFilter(self, obj, ev):
-        try:
-            if isinstance(obj, QtWidgets.QLineEdit) and ev.type() == QtCore.QEvent.KeyPress:
-                # Ctrl+B
-                if (ev.key() == QtCore.Qt.Key_B) and (ev.modifiers() & QtCore.Qt.ControlModifier):
-                    name = getattr(self, "_bigedit_names", {}).get(obj, "Edit")
-                    self._open_big_param_editor(f"Edit: {name}", obj.text(), obj)
-                    return True  # handled
-        except Exception:
-            pass
-        return super().eventFilter(obj, ev)
-
+    # (Deliberately NO NodeItem.eventFilter override — avoids accidental second path.)
 
     def _open_big_param_editor(self, title: str, initial_text: str, apply_to_lineedit: QtWidgets.QLineEdit):
-        """Open the large text editor dialog, correctly parented and positioned."""
         parent = _top_level_parent_for_dialog()
         dlg = BigTextEditDialog(parent, title=title, initial=initial_text)
-
-        # Proper dialog flags + modality
         try:
             dlg.setWindowFlags(
                 QtCore.Qt.Dialog
@@ -736,8 +577,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
             dlg.setWindowModality(QtCore.Qt.WindowModal if parent is not None else QtCore.Qt.NonModal)
         except Exception:
             pass
-
-        # Sensible default size
         try:
             sz = dlg.sizeHint()
             w = max(560, int(sz.width()  or 560))
@@ -745,8 +584,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
             dlg.resize(w, h)
         except Exception:
             pass
-
-        # Center near cursor, clamped to screen
         try:
             cp = QtGui.QCursor.pos()
             screen = QtGui.QGuiApplication.screenAt(cp) or QtWidgets.QApplication.primaryScreen()
@@ -758,29 +595,20 @@ class NodeItem(QtWidgets.QGraphicsObject):
             dlg.move(x, y)
         except Exception:
             pass
-
-        # Prevent focus tug-of-war with the proxy-embedded lineedit
         try:
             fw = QtWidgets.QApplication.focusWidget()
             if fw and isinstance(fw, QtWidgets.QWidget):
                 fw.clearFocus()
         except Exception:
             pass
-
-        # Show + exec (Qt5/6 safe via _qexec wrapper)
         try:
             dlg.show(); dlg.raise_(); dlg.activateWindow()
             QtWidgets.QApplication.processEvents()
         except Exception:
             pass
-
         if _qexec(dlg) == QtWidgets.QDialog.Accepted:
             apply_to_lineedit.setText(dlg.text())
 
-
-
-
-    # ---------- QGraphicsItem plumbing ----------
     def boundingRect(self):
         m = 6
         return QtCore.QRectF(-m, -m, self.width + 2 * m, self.height + 2 * m)
@@ -798,7 +626,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
         p.setPen(self.pen)
         p.drawRoundedRect(r, self.radius, self.radius)
 
-        # header stripe
         color_map = {
             "switch": "#f59e0b",
             "python": "#10b981",
@@ -814,7 +641,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
         p.drawRoundedRect(QtCore.QRectF(0, 0, self.width, 8), self.radius, self.radius)
         p.drawRect(QtCore.QRectF(0, 4, self.width, 4))
 
-        # title
         p.setPen(self.titlePen)
         fm = QtGui.QFontMetrics(p.font())
         p.drawText(
@@ -822,7 +648,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
             fm.elidedText(self.model.name, QtCore.Qt.ElideRight, int(self.width - 16)),
         )
 
-        # type badge under the title
         kb_y = 38
         kb = QtCore.QRectF(self.width - 90, kb_y, 80, 16)
         p.setBrush(QtGui.QBrush(QtGui.QColor("#3b82f6")))
@@ -832,14 +657,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
         badge = (self.model.kind or "node").upper()
         p.drawText(kb.adjusted(6, 1, -6, -2), QtCore.Qt.AlignCenter, badge)
 
-        # sockets at mid-height (visual)
         p.setPen(QtCore.Qt.NoPen)
         p.setBrush(QtGui.QColor("#cbd5e1"))
-        p.drawEllipse(QtCore.QRectF(-4, self._BASE_H / 2.0 - 4, 8, 8))              # in
-        p.drawEllipse(QtCore.QRectF(self.width - 4, self._BASE_H / 2.0 - 4, 8, 8))  # out
-
-    # ---------- Interaction ----------
-    # --- NodeItem interaction & movement plumbing ---
+        p.drawEllipse(QtCore.QRectF(-4, self._BASE_H / 2.0 - 4, 8, 8))
+        p.drawEllipse(QtCore.QRectF(self.width - 4, self._BASE_H / 2.0 - 4, 8, 8))
 
     def hoverEnterEvent(self, e):
         self._hover = True
@@ -851,15 +672,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
     def itemChange(self, change, value):
         if change == QtWidgets.QGraphicsItem.ItemPositionHasChanged:
-            # keep model in sync
             self.model.pos = value
             sc = self.scene()
             if sc:
-                # refresh any connected edges
                 for edge in getattr(sc, "_edges", []):
                     if edge.src is self or edge.dst is self:
                         edge.updatePath()
-                # keep canvas wrapping all nodes
                 if hasattr(sc, "_reframe_to_nodes"):
                     try:
                         sc._reframe_to_nodes(margin=8000.0)
@@ -869,11 +687,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
     def mousePressEvent(self, e):
         if e.button() == QtCore.Qt.LeftButton:
-            # record press for wire/drag detection
             self._lmb_press_scene = self.mapToScene(e.pos())
             self._lmb_started_wire = False
-
-            # hit test near the RIGHT socket to start a wire drag
             on_right_socket = (self.width - 12 <= e.pos().x() <= self.width + 6) and (0 <= e.pos().y() <= self._BASE_H)
             if on_right_socket:
                 try:
@@ -882,16 +697,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 except Exception:
                     pass
             else:
-                # NEW: fire click immediately on press so drag-to-move still selects/shows info
                 try:
                     self.clicked.emit(self.model)
                 except Exception:
                     pass
-
             super().mousePressEvent(e)
             e.accept()
             return
-
         super().mousePressEvent(e)
 
     def mouseReleaseEvent(self, e):
@@ -900,17 +712,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 press_scene = getattr(self, "_lmb_press_scene", None)
                 if press_scene is not None:
                     rel_scene = self.mapToScene(e.pos())
-                    # keep the “tiny move = click” fallback for normal taps
                     if (rel_scene - press_scene).manhattanLength() <= 4 and not getattr(self, "_lmb_started_wire", False):
                         self.clicked.emit(self.model)
             finally:
                 self._lmb_press_scene = None
                 self._lmb_started_wire = False
-
             super().mouseReleaseEvent(e)
             e.accept()
             return
-
         super().mouseReleaseEvent(e)
 
 class EdgeItem(QtWidgets.QGraphicsPathItem):
@@ -987,7 +796,6 @@ class CodeEditorDialog(QtWidgets.QDialog):
         v = QtWidgets.QVBoxLayout(self)
         self.edit = QtWidgets.QPlainTextEdit()
         self.edit.setPlainText(initial_code or "")
-        # Qt6-safe tab width setup
         fm = self.edit.fontMetrics()
         try:
             space_w = fm.horizontalAdvance(' ')
@@ -1074,13 +882,12 @@ class ParamEditorDialog(QtWidgets.QDialog):
                 out.append({"name": name, "value": value})
         return out
 
-
 class BigTextEditDialog(QtWidgets.QDialog):
     def __init__(self, parent=None, title="Edit Text", initial=""):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.setMinimumSize(560, 360)
-        self.setModal(True)  # ← ensures modal semantics regardless of flags
+        self.setModal(True)
         v = QtWidgets.QVBoxLayout(self)
 
         self.edit = QtWidgets.QPlainTextEdit()
@@ -1100,8 +907,7 @@ class BigTextEditDialog(QtWidgets.QDialog):
     def text(self):
         return self.edit.toPlainText()
 
-
-# in-window "popup" card (supports optional order badge) + Edit Code for python
+# in-window card
 class InfoCard(QtWidgets.QFrame):
     requestJump = QtCore.Signal(str)
     closedForNode = QtCore.Signal(str)
@@ -1111,11 +917,10 @@ class InfoCard(QtWidgets.QFrame):
         self._node_name = node.name
         self._node_ref = node
 
-        # Frame shape: PySide2 vs PySide6 enum location
         try:
-            self.setFrameShape(QtWidgets.QFrame.StyledPanel)        # PySide2
+            self.setFrameShape(QtWidgets.QFrame.StyledPanel)
         except AttributeError:
-            self.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)  # PySide6
+            self.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
         self.setObjectName("InfoCard")
         self.setStyleSheet("#InfoCard{border:1px solid #3c4450;border-radius:8px;background:#1f232a;}")
 
@@ -1135,7 +940,6 @@ class InfoCard(QtWidgets.QFrame):
                 QtWidgets.QMessageBox.warning(self, APP_TITLE, msg or "Rename failed.")
                 title.setText(old_name)
                 return
-            # update card’s internal pointer & header
             self._node_name = new_name
             self._node_ref.name = new_name
         title.editingFinished.connect(_commit_rename)
@@ -1156,7 +960,6 @@ class InfoCard(QtWidgets.QFrame):
         if order_badge: header.addWidget(order_badge)
         header.addWidget(title); header.addStretch(1); header.addWidget(close_btn)
 
-        # Body text
         text = QtWidgets.QTextBrowser()
         text.setStyleSheet(
             "QTextBrowser{background:#0f1216;color:#e6edf3;"
@@ -1170,7 +973,6 @@ class InfoCard(QtWidgets.QFrame):
         text.setMinimumHeight(80)
         text.anchorClicked.connect(lambda url: self.requestJump.emit(url.path().lstrip("/")))
 
-        # Footer actions
         footer = QtWidgets.QHBoxLayout(); footer.setContentsMargins(0, 0, 0, 0); footer.setSpacing(8)
 
         kind = (node.kind or "").lower()
@@ -1187,7 +989,6 @@ class InfoCard(QtWidgets.QFrame):
             footer.addWidget(run_btn)
 
         elif (node.kind or "").lower() == "librarian":
-            # --- Inline Results Panel (no popup sounds) ---
             self._result_view = QtWidgets.QTextBrowser()
             self._result_view.setStyleSheet(
                 "QTextBrowser{background:#0f1216;color:#e6edf3;"
@@ -1197,29 +998,22 @@ class InfoCard(QtWidgets.QFrame):
             self._result_view.setOpenExternalLinks(True)
             self._result_view.setOpenLinks(True)
 
-            # Reset per-card state once
             self._last_query_text = ""
             self._waiting_ts = None
 
-            # Start with a clean panel (no stale results)
             self._result_view.setPlainText(
                 "No results yet. Send a query to fetch results here."
             )
 
-            # --- Open the external Librarian UI ---
             open_btn = QtWidgets.QPushButton("Open Librarian")
             open_btn.setToolTip("Launch the Librarian UI in its own process")
 
             def _open_librarian():
-                """Start (or re-start) the Librarian UI with a tiny debounce; no sticky app flags."""
-                # 1) Debounce so rapid clicks don't double-spawn
                 now = time.time()
                 last = getattr(self, "_last_lib_launch", 0.0)
                 if (now - last) < 1.0:
                     return
                 self._last_lib_launch = now
-
-                # 2) Import launcher (supports both package and flat layouts)
                 try:
                     from nodes.librarian import launch_librarian as L
                 except Exception:
@@ -1228,14 +1022,11 @@ class InfoCard(QtWidgets.QFrame):
                     except Exception as e:
                         QtWidgets.QMessageBox.critical(self, APP_TITLE, f"Import error:\n{e}")
                         return
-
-                # 3) If we still have a Popen handle and it's alive, just tooltip + bail
                 proc = getattr(self, "_librarian_proc", None)
                 try:
                     alive = (proc is not None) and (proc.poll() is None)
                 except Exception:
                     alive = False
-
                 if alive:
                     try:
                         QtWidgets.QToolTip.showText(
@@ -1244,10 +1035,8 @@ class InfoCard(QtWidgets.QFrame):
                     except Exception:
                         pass
                     return
-
-                # 4) Launch a fresh one and keep the handle
                 try:
-                    self._librarian_proc = L.launch(verbose=False)  # subprocess.Popen
+                    self._librarian_proc = L.launch(verbose=False)
                     try:
                         QtWidgets.QToolTip.showText(
                             QtGui.QCursor.pos(), "Librarian launched.", self, self.rect(), 1500
@@ -1258,25 +1047,13 @@ class InfoCard(QtWidgets.QFrame):
                     self._librarian_proc = None
                     QtWidgets.QMessageBox.critical(self, APP_TITLE, f"Failed to launch Librarian:\n{e}")
 
-
-
             open_btn.clicked.connect(_open_librarian)
             footer.addWidget(open_btn)
 
-            # --- Send Query to Librarian (IPC enqueue) ---
             send_btn = QtWidgets.QPushButton("Send Query → Librarian")
             send_btn.setToolTip("Enqueue a search/summary request for the Librarian to pick up")
 
-            def _find_param(params, names):
-                # names: list of accepted param names (lowercased)
-                for p in (params or []):
-                    nm = (p.get("name") or "").strip().lower()
-                    if nm in names:
-                        return (p.get("value") or "").strip()
-                return ""
-
             def _send_query():
-                # Accept 'query' or 'prompt' on THIS Librarian node
                 def _find_param(params, names):
                     for p in (params or []):
                         nm = (p.get("name") or "").strip().lower()
@@ -1285,14 +1062,12 @@ class InfoCard(QtWidgets.QFrame):
                     return ""
 
                 q_self = _find_param(self._node_ref.params, {"query", "prompt"})
-                # optional: let a 'top_k' param override default 5
                 topk_str = _find_param(self._node_ref.params, {"top_k", "k"})
                 try:
                     top_k = max(1, int(topk_str)) if topk_str else 5
                 except Exception:
                     top_k = 5
 
-                # ALSO pull text from any upstream Prompt node(s) (if scene is available)
                 parts = []
                 sc = getattr(self, "_graph_scene", None)
                 if sc is not None and hasattr(sc, "upstream_of") and hasattr(sc, "resolve_text_value"):
@@ -1307,18 +1082,15 @@ class InfoCard(QtWidgets.QFrame):
                 if q_self:
                     parts.append(q_self.strip())
 
-                # Build final query from all parts (Prompt node first, then this node)
                 q = "\n\n".join([p for p in parts if p])[:4000]
                 if not q:
                     QtWidgets.QMessageBox.warning(self, APP_TITLE,
                         "No query text found.\nAdd a Prompt node upstream or set this node’s 'query'/'prompt' parameter.")
                     return
-
                 try:
-                    # Build the command and remember this query
                     ts = int(time.time() * 1000)
-                    self._last_query_text = q            # keep the latest query text
-                    self._waiting_ts = ts                # (optional) track this send's timestamp
+                    self._last_query_text = q
+                    self._waiting_ts = ts
 
                     cmd = {
                         "type": "search",
@@ -1328,11 +1100,8 @@ class InfoCard(QtWidgets.QFrame):
                         "ts": ts,
                     }
                     fn = _enqueue_librarian(cmd)
-
-                    # Ensure Librarian UI is up (non-blocking)
                     _open_librarian()
 
-                    # Tie the panel to THIS specific query/timestamp and show a clear waiting state
                     self._waiting_ts = ts
                     self._last_query_text = q
                     try:
@@ -1345,7 +1114,6 @@ class InfoCard(QtWidgets.QFrame):
                     except Exception:
                         pass
 
-                    # Make sure the per-card poller is running (it only updates when result_<ts>.json appears)
                     try:
                         if hasattr(self, "_poll_timer") and self._poll_timer is not None:
                             if not self._poll_timer.isActive():
@@ -1353,7 +1121,6 @@ class InfoCard(QtWidgets.QFrame):
                     except Exception:
                         pass
 
-                    # Quiet tooltips (optional)
                     try:
                         QtWidgets.QToolTip.showText(
                             QtGui.QCursor.pos(),
@@ -1372,43 +1139,35 @@ class InfoCard(QtWidgets.QFrame):
 
                 except Exception as e:
                     QtWidgets.QMessageBox.critical(self, APP_TITLE, f"Failed to enqueue:\n{e}")
-            
 
             send_btn.clicked.connect(_send_query)
             footer.addWidget(send_btn)
-            
-            # --- Auto-refresh: react instantly when the result file appears (watch outbox) ---
+
             self._poll_timer = QtCore.QTimer(self)
-            self._poll_timer.setInterval(500)  # short fallback, only used if watcher misses an event
+            self._poll_timer.setInterval(500)
 
             def _apply_result_if_ready():
-                """Render the matching result for the current ticket (if present)."""
                 try:
                     ts = getattr(self, "_waiting_ts", None)
                     if not ts:
                         return
-                    txt = ""
-                    if "_load_librarian_output_text_by_ts" in globals():
-                        txt = _load_librarian_output_text_by_ts(ts) or ""
+                    txt = _load_librarian_output_text_by_ts(ts) or ""
                     if not txt:
                         return
                     prefix = f"Query:\n{self._last_query_text}\n\n" if getattr(self, "_last_query_text", "") else ""
                     combined = prefix + txt
                     if combined != self._result_view.toPlainText():
                         self._result_view.setPlainText(combined)
-                    # stop waiting: we consumed this ticket
                     self._waiting_ts = None
                 except Exception:
                     pass
 
             def _poll_latest():
-                # Fallback safety net (some platforms can miss fs events)
                 _apply_result_if_ready()
 
             self._poll_timer.timeout.connect(_poll_latest)
             self._poll_timer.start()
 
-            # File-system watcher for instant updates
             try:
                 self._fswatcher = QtCore.QFileSystemWatcher(self)
                 self._fswatcher.addPath(str(_librarian_outbox_dir()))
@@ -1416,7 +1175,6 @@ class InfoCard(QtWidgets.QFrame):
                     _apply_result_if_ready()
                 self._fswatcher.directoryChanged.connect(_on_dir_change)
             except Exception:
-                # If watcher fails on this platform, timer still handles it.
                 pass
 
         elif node.code:
@@ -1425,7 +1183,6 @@ class InfoCard(QtWidgets.QFrame):
             run_btn.clicked.connect(self._run_code)
             footer.addWidget(run_btn)
 
-        # === ADD THESE TWO BUTTONS HERE (before footer.addStretch) ===
         edit_params_btn = QtWidgets.QPushButton("Edit Params…")
         def _edit_params():
             sc = getattr(self, "_graph_scene", None)
@@ -1436,7 +1193,6 @@ class InfoCard(QtWidgets.QFrame):
                                     params=self._node_ref.params)
             if dlg.exec_() == QtWidgets.QDialog.Accepted:
                 self._node_ref.params = dlg.result_params()
-                # rebuild the on-node widgets so the small fields match
                 try:
                     node_item = sc._node_items.get(self._node_ref.name)
                     if node_item:
@@ -1463,8 +1219,6 @@ class InfoCard(QtWidgets.QFrame):
                 if msg:
                     QtWidgets.QMessageBox.warning(self, APP_TITLE, msg)
                 return
-
-            # sync local references and header edit
             self._node_ref.name = text.strip()
             self._node_name = self._node_ref.name
             try:
@@ -1476,17 +1230,14 @@ class InfoCard(QtWidgets.QFrame):
 
         rename_btn.clicked.connect(_rename_node)
         footer.addWidget(rename_btn)
-        # === END ADD ===
 
         footer.addStretch(1)
 
-        # Layout
         lay = QtWidgets.QVBoxLayout(self)
         lay.setContentsMargins(10, 10, 10, 10); lay.setSpacing(8)
         lay.addLayout(header)
         lay.addWidget(text)
 
-        # --- Parameter editor (visible if node has params; always available) ---
         self._param_table = QtWidgets.QTableWidget(0, 2)
         self._param_table.setHorizontalHeaderLabels(["Name", "Value"])
         self._param_table.horizontalHeader().setStretchLastSection(True)
@@ -1509,10 +1260,8 @@ class InfoCard(QtWidgets.QFrame):
                 vitem = QtWidgets.QTableWidgetItem(p.get("value",""))
                 self._param_table.setItem(row, 0, nitem)
                 self._param_table.setItem(row, 1, vitem)
-
         _load_params_into_table()
 
-        # Param editor buttons
         pbtns = QtWidgets.QHBoxLayout()
         addp = QtWidgets.QPushButton("Add Param")
         delp = QtWidgets.QPushButton("Remove Selected")
@@ -1526,14 +1275,11 @@ class InfoCard(QtWidgets.QFrame):
             self._param_table.insertRow(r)
             self._param_table.setItem(r, 0, QtWidgets.QTableWidgetItem("param"))
             self._param_table.setItem(r, 1, QtWidgets.QTableWidgetItem(""))
-
         def _remove_selected_row():
             r = self._param_table.currentRow()
             if r >= 0:
                 self._param_table.removeRow(r)
-
         def _apply_param_changes():
-            # collect rows -> list of dicts
             new_params = []
             for r in range(self._param_table.rowCount()):
                 name_item = self._param_table.item(r, 0)
@@ -1542,61 +1288,49 @@ class InfoCard(QtWidgets.QFrame):
                 val = (value_item.text() if value_item else "")
                 if nm:
                     new_params.append({"name": nm, "value": val})
-            # write to model & refresh node widget
             sc = getattr(self, "_graph_scene", None)
             if sc:
                 sc.set_node_params(self._node_name, new_params)
-            # keep our local copy in sync
             self._node_ref.params = new_params
 
         addp.clicked.connect(_add_param_row)
         delp.clicked.connect(_remove_selected_row)
         savep.clicked.connect(_apply_param_changes)
 
-        # live-update when user edits cells and presses Enter (optional but nice)
         self._param_table.itemChanged.connect(lambda *_: None)
 
-        # mount param editor in the card
         lay.addWidget(self._param_table)
         lay.addLayout(pbtns)
-
 
         if hasattr(self, "_result_view"):
             lay.addWidget(self._result_view)
         lay.addLayout(footer)
 
     def _emit_and_close(self):
-        # Stop polling for this card (if present) so stale timers can't update closed widgets
         try:
             if hasattr(self, "_poll_timer") and self._poll_timer is not None:
                 self._poll_timer.stop()
                 self._poll_timer.deleteLater()
         except Exception:
             pass
-
-        # Clear any “waiting for this ts” state so it can’t be reused accidentally
         try:
             self._waiting_ts = None
             self._last_query_text = ""
         except Exception:
             pass
-
         try:
             self.closedForNode.emit(self._node_name)
         except Exception:
             pass
-
         self.deleteLater()
 
     def closeEvent(self, e):
-        # Make absolutely sure the per-card poller is stopped before the widget closes
         try:
             if hasattr(self, "_poll_timer") and self._poll_timer is not None:
                 self._poll_timer.stop()
                 self._poll_timer.deleteLater()
         except Exception:
             pass
-        # Clear pending state
         try:
             self._waiting_ts = None
             self._last_query_text = ""
@@ -1614,32 +1348,26 @@ class InfoCard(QtWidgets.QFrame):
         src = (node.code or "").strip()
         if not src:
             return
-
         ns = {
-            "cmds": maya_cmds,      # Maya commands (None in standalone)
-            "hou":  hou_mod,        # Houdini module (None in standalone)
+            "cmds": maya_cmds,
+            "hou":  hou_mod,
             "QtWidgets": QtWidgets,
             "QtCore": QtCore,
             "QtGui": QtGui,
             "__name__": "__echograph_exec__",
         }
-
         import io, contextlib, traceback
         out_buf = io.StringIO()
         err_buf = io.StringIO()
-
         try:
             with contextlib.redirect_stdout(out_buf), contextlib.redirect_stderr(err_buf):
                 exec(src, ns, ns)
-
             out = out_buf.getvalue().strip()
             err = err_buf.getvalue().strip()
-
             if err:
                 QtWidgets.QMessageBox.critical(self, APP_TITLE, err)
             elif out:
                 QtWidgets.QMessageBox.information(self, APP_TITLE, out)
-
         except Exception:
             combined = out_buf.getvalue() + "\n" + err_buf.getvalue()
             tb = traceback.format_exc()
@@ -1658,7 +1386,6 @@ class GraphScene(QtWidgets.QGraphicsScene):
         self.on_info = on_info
         self.on_branch = on_branch
 
-        # internal state
         self._nodes_by_name = {}
         self._node_items = {}
         self._edges = []
@@ -1666,39 +1393,31 @@ class GraphScene(QtWidgets.QGraphicsScene):
         self._temp_wire = None
         self._current_output_name = None
 
-        # item indexing (PySide2/6 compatible)
         try:
             self.setItemIndexMethod(QtWidgets.QGraphicsScene.NoIndex)
         except AttributeError:
             try:
                 self.setItemIndexMethod(QtWidgets.QGraphicsScene.ItemIndexMethod.NoIndex)
             except Exception:
-                self.setItemIndexMethod(0)  # last resort int
+                self.setItemIndexMethod(0)
 
-        # nice default bg for the scene itself
         self.setBackgroundBrush(QtGui.QColor("#1a1f24"))
-
-        # give plenty of empty space up front so you can pan immediately
         self.setSceneRect(QtCore.QRectF(-20000, -20000, 40000, 40000))
 
-        # --- new: refresh node widget after param changes ---
     def refresh_node_widget(self, name: str):
         it = self._node_items.get(name)
         if not it:
             return
         it._recompute_height()
         it._build_widgets()
-        # refresh connected edge paths
         for e in self._edges:
             if e.src is it or e.dst is it:
                 e.updatePath()
 
-    # --- new: update params in one shot (list[{"name":..., "value":...}]) ---
     def set_node_params(self, name: str, params: list):
         node = self._nodes_by_name.get(name)
         if not node:
             return False
-        # normalize to list of {name,value}
         clean = []
         for p in (params or []):
             nm = str(p.get("name", "")).strip()
@@ -1709,30 +1428,21 @@ class GraphScene(QtWidgets.QGraphicsScene):
         self.refresh_node_widget(name)
         return True
 
-    # --- new: rename a node safely (updates maps, switches, output pointer) ---
     def rename_node(self, old_name: str, new_name: str):
         new_name = (new_name or "").strip()
         if not old_name or not new_name or new_name == old_name:
             return False, "No change."
-
         if new_name in self._nodes_by_name:
             return False, f"A node named '{new_name}' already exists."
-
         item = self._node_items.get(old_name)
         node = self._nodes_by_name.get(old_name)
         if not item or not node:
             return False, f"Node '{old_name}' not found."
-
-        # update internal dict keys
         self._node_items[new_name] = self._node_items.pop(old_name)
         self._nodes_by_name[new_name] = self._nodes_by_name.pop(old_name)
-
-        # update the model + item title
         node.name = new_name
         item.model.name = new_name
         item.update()
-
-        # update switch_inputs lists that reference the old name
         for it in self._node_items.values():
             if (it.model.kind or "").lower() == "switch":
                 if old_name in it.model.switch_inputs:
@@ -1740,20 +1450,13 @@ class GraphScene(QtWidgets.QGraphicsScene):
                         (new_name if n == old_name else n) for n in it.model.switch_inputs
                     ]
                     self._refresh_switch_widget(it)
-
-        # keep current output selection consistent
         if self._current_output_name == old_name:
             self._current_output_name = new_name
-
-        # highlight/path recompute if needed
         if self._current_output_name:
             self.recompute_active_path(self._current_output_name)
-
         return True, ""
 
-
     def upstream_of(self, dst_name: str):
-        """Return list of source NodeItem(s) connected into dst_name (left socket)."""
         dst = self._node_items.get(dst_name)
         if not dst: return []
         srcs = []
@@ -1763,7 +1466,6 @@ class GraphScene(QtWidgets.QGraphicsScene):
         return srcs
 
     def resolve_text_value(self, node_item) -> str:
-        """If it's a Prompt node, return its 'prompt' param value. Else ''."""
         try:
             kind = (node_item.model.kind or "").lower()
             if kind == "prompt":
@@ -1774,7 +1476,6 @@ class GraphScene(QtWidgets.QGraphicsScene):
             pass
         return ""
 
-    # compute bbox of all nodes (in scene coords)
     def _nodes_bbox(self):
         rect = None
         for it in self._node_items.values():
@@ -1782,30 +1483,22 @@ class GraphScene(QtWidgets.QGraphicsScene):
             rect = r if rect is None else rect.united(r)
         return rect
 
-    # NEW: grow/shrink scene to wrap all nodes with a pan buffer
     def _reframe_to_nodes(self, margin: float = 8000.0, min_half_extent: float = 20000.0):
         bbox = self._nodes_bbox()
         if bbox is None:
-            # No nodes: keep a generous empty canvas
             self.setSceneRect(QtCore.QRectF(-min_half_extent, -min_half_extent,
                                             2*min_half_extent, 2*min_half_extent))
             return
-        # Add buffer
         newr = bbox.adjusted(-margin, -margin, margin, margin)
-
-        # Ensure a minimum canvas size centered on the bbox center (prevents tiny rects)
         cx = newr.center().x()
         cy = newr.center().y()
         minr = QtCore.QRectF(cx - min_half_extent, cy - min_half_extent,
                              2*min_half_extent, 2*min_half_extent)
-        # Take the union so we keep at least the minimum extents and the buffer
         final = newr.united(minr)
-
         if final != self.sceneRect():
             self.setSceneRect(final)
 
     def _ensure_space(self, pt: QtCore.QPointF, margin: float = 8000.0):
-        """Expand sceneRect in big chunks around an arbitrary point (for far-click create)."""
         r = self.sceneRect()
         safe = QtCore.QRectF(r.left() + margin, r.top() + margin,
                              r.width() - 2*margin, r.height() - 2*margin)
@@ -1818,11 +1511,8 @@ class GraphScene(QtWidgets.QGraphicsScene):
         self.setSceneRect(QtCore.QRectF(QtCore.QPointF(left, top),
                                         QtCore.QPointF(right, bottom)))
 
-    # quick-create via right-click on empty canvas
     def show_create_dialog_at(self, scene_pos: QtCore.QPointF):
-        # make sure there's space where the user clicked (even if no nodes yet)
         self._ensure_space(scene_pos)
-
         hits = self.items(scene_pos)
         for it in hits:
             if isinstance(it, (NodeItem, EdgeItem)):
@@ -1836,7 +1526,6 @@ class GraphScene(QtWidgets.QGraphicsScene):
         item.setPos(scene_pos - QtCore.QPointF(item.width/2.0, item.height/2.0))
         if callable(self.on_info): self.on_info(node)
 
-    # serialization
     def to_dict(self):
         nodes=[]
         for node in self._nodes_by_name.values():
@@ -1868,7 +1557,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
             try: self._add_edge_and_update_switch(ed["src"], ed["dst"])
             except Exception: pass
         self._refresh_all_switch_widgets()
-        self._reframe_to_nodes(margin=8000.0)  # NEW: fit after load
+        self._reframe_to_nodes(margin=8000.0)
         if self._current_output_name and self._current_output_name in self._node_items:
             self.recompute_active_path(self._current_output_name)
         else:
@@ -1884,14 +1573,10 @@ class GraphScene(QtWidgets.QGraphicsScene):
             except Exception: pass
         self._node_items.clear(); self._nodes_by_name.clear()
         self._current_output_name = None
-        # keep an empty-but-large canvas
         self.setSceneRect(QtCore.QRectF(-20000, -20000, 40000, 40000))
 
-    # graph ops
     def add_node(self, node: GraphNode, pos):
-        # expand canvas around the placement point, then register node, then reframe to all nodes
         self._ensure_space(pos)
-
         item = NodeItem(node); item.setPos(pos); node.pos=pos
         item.clicked.connect(self._on_node_clicked)
         item.requestCenter.connect(self.center_on_name)
@@ -1899,8 +1584,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
         item.switchIndexChanged.connect(self._on_switch_index_changed)
         self.addItem(item)
         self._nodes_by_name[node.name]=node; self._node_items[node.name]=item
-
-        self._reframe_to_nodes(margin=8000.0)  # NEW: wrap all nodes + buffer
+        self._reframe_to_nodes(margin=8000.0)
         return item
 
     def add_edge(self, src_name, dst_name):
@@ -1951,7 +1635,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
             if self._current_output_name:
                 self.recompute_active_path(self._current_output_name)
         self.nodeDeleted.emit(name)
-        self._reframe_to_nodes(margin=8000.0)  # NEW: shrink/grow after delete
+        self._reframe_to_nodes(margin=8000.0)
 
     def delete_selected_nodes(self):
         for it in list(self.selectedItems()):
@@ -1980,7 +1664,6 @@ class GraphScene(QtWidgets.QGraphicsScene):
             ordered_nodes = self.recompute_active_path(model.name)
             if not ordered_nodes:
                 ordered_nodes = [model]
-            # Also surface the clicked Output's own card immediately
             if callable(self.on_info):
                 try: self.on_info(model)
                 except Exception: pass
@@ -1996,7 +1679,6 @@ class GraphScene(QtWidgets.QGraphicsScene):
             item=self._node_items[name]; views=self.views()
             if views: views[0].centerOn(item)
 
-    # wire drag
     def _on_start_wire_drag(self, src_item: NodeItem):
         self._cancel_temp_wire()
         self._drag_src_item = src_item
@@ -2033,7 +1715,6 @@ class GraphScene(QtWidgets.QGraphicsScene):
             self._temp_wire = None
         self._drag_src_item = None
 
-    # path highlighting
     def _clear_path_highlight(self):
         for e in self._edges:
             e.setHighlighted(False)
@@ -2042,14 +1723,10 @@ class GraphScene(QtWidgets.QGraphicsScene):
         return [e for e in self._edges if getattr(e, "_highlight", False)]
 
     def recompute_active_path(self, output_name: str):
-        """Highlight active path and return ordered node models (start → output).
-           Never returns an empty list if the Output exists."""
         self._clear_path_highlight()
         out_item = self._node_items.get(output_name)
         if not out_item:
             return []
-
-        # Build active upstream edge set (switch-aware)
         active_edges = set()
         stack = [out_item]
         visited = set()
@@ -2058,10 +1735,8 @@ class GraphScene(QtWidgets.QGraphicsScene):
             if it in visited:
                 continue
             visited.add(it)
-
             in_edges = [e for e in self._edges if e.dst is it]
             kind = (it.model.kind or "").lower()
-
             if kind == "switch":
                 byname={}
                 for e in in_edges:
@@ -2080,33 +1755,24 @@ class GraphScene(QtWidgets.QGraphicsScene):
                 for e in in_edges:
                     active_edges.add(e)
                     stack.append(e.src)
-
-        # Highlight chosen edges
         for e in active_edges:
             e.setHighlighted(True)
-
-        # If there are no edges, still return the output node so the Info pane shows it
         if not active_edges:
             return [out_item.model]
-
-        # Topological order on active subgraph
         nodes = set()
         for e in active_edges:
             nodes.add(e.src); nodes.add(e.dst)
-
         indeg = {n: 0 for n in nodes}
         adj   = {n: [] for n in nodes}
         for e in active_edges:
             adj[e.src].append(e.dst)
             indeg[e.dst] += 1
-
         def node_key(n):
             try:
                 x = float(n.scenePos().x())
             except Exception:
                 x = 0.0
             return (x, n.model.name)
-
         S = [n for n in nodes if indeg[n] == 0]; S.sort(key=node_key)
         L = []
         while S:
@@ -2116,8 +1782,6 @@ class GraphScene(QtWidgets.QGraphicsScene):
                 indeg[m] -= 1
                 if indeg[m] == 0:
                     S.append(m); S.sort(key=node_key)
-
-        # Keep only nodes that can reach the output
         rev = {n: [] for n in nodes}
         for e in active_edges:
             rev[e.dst].append(e.src)
@@ -2127,41 +1791,35 @@ class GraphScene(QtWidgets.QGraphicsScene):
             for src in rev.get(cur, ()):
                 if src not in reach:
                     reach.add(src); todo.append(src)
-
         ordered_items = [n for n in L if n in reach]
         if out_item not in ordered_items:
             ordered_items.append(out_item)
         else:
             ordered_items = [n for n in ordered_items if n is not out_item] + [out_item]
-
         return [it.model for it in ordered_items]
 
 class GraphView(QtWidgets.QGraphicsView):
     def __init__(self, scene):
         super().__init__(scene)
-        # Antialiasing
         self.setRenderHint(QtGui.QPainter.Antialiasing, True)
-        
-        # Viewport update mode (PySide2 first, PySide6 fallback)
+
         try:
             self.setViewportUpdateMode(QtWidgets.QGraphicsView.BoundingRectViewportUpdate)
         except AttributeError:
             self.setViewportUpdateMode(QtWidgets.QGraphicsView.ViewportUpdateMode.BoundingRectViewportUpdate)
-        # Drag mode
+
         try:
             self.setDragMode(QtWidgets.QGraphicsView.NoDrag)
         except AttributeError:
             self.setDragMode(QtWidgets.QGraphicsView.DragMode.NoDrag)
-        # Cursor + transform anchor
+
         self.setCursor(QtCore.Qt.ArrowCursor)
 
-        # IMPORTANT: disable built-in anchoring so our custom pivot math controls the zoom
         try:
             self.setTransformationAnchor(QtWidgets.QGraphicsView.NoAnchor)
         except AttributeError:
-            # PySide2 naming
             self.setTransformationAnchor(QtWidgets.QGraphicsView.ViewportAnchor.NoAnchor)
-        # Background (view/viewport)
+
         self.setBackgroundBrush(QtGui.QColor("#1a1f24"))
         try:
             self.viewport().setStyleSheet("background:#1a1f24;")
@@ -2170,36 +1828,29 @@ class GraphView(QtWidgets.QGraphicsView):
         self.setAttribute(QtCore.Qt.WA_OpaquePaintEvent, True)
         self.setFocusPolicy(QtCore.Qt.StrongFocus)
 
-        # HIDE SCROLLBARS (keeps UI clean; panning still works)
         try:
             self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
             self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         except Exception:
             pass
 
-        # middle-mouse pan
         self._mm_dragging = False
         self._mm_last_pos = None
 
-        # right-click drag zoom or quick context
         self._rc_dragging = False
         self._rc_press_pos = None
         self._rc_started_over_llm = False
         self._rc_start_transform = QtGui.QTransform()
         self._rc_press_scene_pt = QtCore.QPointF()
 
-        # click threshold for quick-create vs drag
         self._context_click_thresh = 4.0
 
-        # --- PureOverRef-style RMB-drag zoom config (add these) ---
-        self._drag_divisor = 13.0        # matches your reference script
-        self._zoom_multiplier = 1.1      # matches your reference script
-        self._min_scale = 0.02           # safety clamp (overall zoom lower bound)
-        self._max_scale = 50.0           # safety clamp (overall zoom upper bound)
+        self._drag_divisor = 13.0
+        self._zoom_multiplier = 1.1
+        self._min_scale = 0.02
+        self._max_scale = 50.0
 
-    # --- precise zoom-at-cursor helper (works in PySide2/6) ---
     def _zoom_at(self, viewport_pos: QtCore.QPoint, factor: float):
-        """Scale the view while keeping the scene point under the given cursor fixed."""
         before = self.mapToScene(viewport_pos)
         self.scale(factor, factor)
         after = self.mapToScene(viewport_pos)
@@ -2208,13 +1859,11 @@ class GraphView(QtWidgets.QGraphicsView):
 
     def _current_scale_x(self) -> float:
         t = self.transform()
-        # sx is m11 in QTransform
         try:
             return float(t.m11())
         except Exception:
             return 1.0
 
-    # Clamp the *resulting* scale (start_scale * factor) into [min,max], and return the adjusted factor.
     def _clamp_factor_from(self, start_scale: float, factor: float) -> float:
         target = start_scale * factor
         if target < self._min_scale:
@@ -2223,18 +1872,14 @@ class GraphView(QtWidgets.QGraphicsView):
             return self._max_scale / max(start_scale, 1e-12)
         return factor
 
-
     def _is_over_llm_view(self, viewport_pos: QtCore.QPoint) -> bool:
-        """Return True if the cursor is over an embedded LLM webview (disable right-drag zoom there)."""
         sp = self.mapToScene(viewport_pos)
         for it in self.scene().items(sp):
-            # If it's a proxy widget, look for our named webview child
             if isinstance(it, QtWidgets.QGraphicsProxyWidget):
                 w = it.widget()
                 if w is not None:
                     if w.findChild(QtWidgets.QWidget, "LLMWebView") is not None:
                         return True
-            # Also handle hit-testing the specific proxy kept on NodeItem
             if isinstance(it, NodeItem):
                 pr = getattr(it, "_llm_proxy", None)
                 if isinstance(pr, QtWidgets.QGraphicsProxyWidget):
@@ -2246,17 +1891,14 @@ class GraphView(QtWidgets.QGraphicsView):
         p.fillRect(rect, QtGui.QColor("#1a1f24"))
 
     def keyPressEvent(self, e: QtGui.QKeyEvent):
-        # Only DELETE removes selected nodes.
         if e.key() == QtCore.Qt.Key_Delete:
             sc = self.scene()
             if hasattr(sc, "delete_selected_nodes"):
                 sc.delete_selected_nodes()
                 e.accept()
                 return
-        # Let everything else (including Backspace) pass through to focused widgets/webview.
         super().keyPressEvent(e)
 
-    # middle pan, right zoom/context
     def mousePressEvent(self, e):
         if e.button() == QtCore.Qt.MiddleButton:
             self._mm_dragging = True
@@ -2265,14 +1907,10 @@ class GraphView(QtWidgets.QGraphicsView):
             e.accept(); return
 
         if e.button() == QtCore.Qt.RightButton:
-            # If cursor is over LLM webview, do NOT engage RMB zoom; let web UI handle RMB fully.
             self._rc_started_over_llm = self._is_over_llm_view(e.pos())
             if self._rc_started_over_llm:
-                # Do NOT accept; propagate to the embedded webview.
                 super().mousePressEvent(e)
                 return
-
-            # Begin RefOverNet-style RMB zoom gesture
             self._rc_dragging = True
             self._rc_press_pos = e.pos()
             self._rc_start_transform = QtGui.QTransform(self.transform())
@@ -2282,7 +1920,6 @@ class GraphView(QtWidgets.QGraphicsView):
         super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e):
-        # Middle-mouse pan
         if self._mm_dragging and self._mm_last_pos is not None:
             delta = e.pos() - self._mm_last_pos
             self._mm_last_pos = e.pos()
@@ -2290,35 +1927,23 @@ class GraphView(QtWidgets.QGraphicsView):
             self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
             e.accept()
             return
-
-        # Right-mouse drag zoom — pivot EXACTLY at the initial press scene point
         if self._rc_dragging and self._rc_press_pos is not None:
-            # RefOverNet rule: distance = dy - dx (from the press pixel)
             dx = e.pos().x() - self._rc_press_pos.x()
             dy = e.pos().y() - self._rc_press_pos.y()
             distance = dy - dx
-
             exponent = abs(distance) / self._drag_divisor
             base = self._zoom_multiplier
-            factor = base ** (-exponent) if distance > 0 else base ** (exponent)  # >0 ⇒ OUT, <0 ⇒ IN
-
-            # Clamp using the gesture's starting scale
+            factor = base ** (-exponent) if distance > 0 else base ** (exponent)
             start_sx = float(self._rc_start_transform.m11()) or 1.0
             factor = self._clamp_factor_from(start_sx, factor)
-
-            # Build a new transform that scales ABOUT the original press scene point:
-            # New = T(p) * S(factor) * T(-p) * Start
             p = self._rc_press_scene_pt
             T = QtGui.QTransform(self._rc_start_transform)
             T.translate(p.x(), p.y())
             T.scale(factor, factor)
             T.translate(-p.x(), -p.y())
-
             self.setTransform(T)
             e.accept()
             return
-
-        # Fallback
         super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e):
@@ -2329,48 +1954,64 @@ class GraphView(QtWidgets.QGraphicsView):
             e.accept(); return
 
         if e.button() == QtCore.Qt.RightButton:
-            # If the RMB press began over the LLM webview, let it receive the release too.
             if self._rc_started_over_llm:
                 self._rc_started_over_llm = False
                 super().mouseReleaseEvent(e)
                 return
-
             is_context = False
             if self._rc_press_pos is not None:
                 dx = e.pos().x() - self._rc_press_pos.x()
                 dy = e.pos().y() - self._rc_press_pos.y()
                 if math.hypot(dx, dy) <= self._context_click_thresh:
                     is_context = True
-
-            # Clear RMB drag state
             self._rc_dragging = False
             self._rc_press_pos = None
-
-            # If not over LLM webview and it's a tiny click, pop quick-create on empty canvas
             if is_context and not self._is_over_llm_view(e.pos()):
                 sp = self.mapToScene(e.pos())
                 sc = self.scene()
                 if hasattr(sc, "show_create_dialog_at"):
                     sc.show_create_dialog_at(sp)
                 e.accept(); return
-
             e.accept(); return
-
         super().mouseReleaseEvent(e)
 
     def wheelEvent(self, e: QtGui.QWheelEvent):
         factor = 1.15 if e.angleDelta().y() > 0 else 1/1.15
-        # QWheelEvent.position() in Qt6; pos() in Qt5
         try:
-            vp = e.position()  # Qt6 QPointF
+            vp = e.position()
             vp = QtCore.QPoint(int(vp.x()), int(vp.y()))
         except AttributeError:
-            vp = e.pos()       # Qt5 QPoint
-        # Clamp wheel zoom, too
+            vp = e.pos()
         start_sx = self._current_scale_x()
         factor = self._clamp_factor_from(start_sx, factor)
         self._zoom_at(vp, factor)
 
+# --------- App-level Ctrl+B (focus-only) ----------
+class _CtrlBEventFilter(QtCore.QObject):
+    def __init__(self, win):
+        super().__init__(win)
+        self.win = win  # EchoGraphWindow
+
+    def eventFilter(self, obj, ev):
+        et = ev.type()
+        if et in (QtCore.QEvent.ShortcutOverride, QtCore.QEvent.KeyPress):
+            if isinstance(ev, QtGui.QKeyEvent) and ev.key() == QtCore.Qt.Key_B and (ev.modifiers() & QtCore.Qt.ControlModifier):
+                fw = QtWidgets.QApplication.focusWidget()
+                w = fw
+                target = None
+                for _ in range(6):
+                    if w in self.win._bigedit_registry:
+                        target = w
+                        break
+                    w = w.parent() if isinstance(w, QtWidgets.QWidget) else None
+                    if w is None:
+                        break
+                if target:
+                    node_item, param_name = self.win._bigedit_registry[target]
+                    node_item._open_big_param_editor(f"Edit: {param_name}", target.text(), target)
+                    ev.accept()
+                    return True
+        return False
 
 # Create Node Dialog (+ optional initial python block)
 class CreateNodeDialog(QtWidgets.QDialog):
@@ -2392,7 +2033,6 @@ class CreateNodeDialog(QtWidgets.QDialog):
         self.kind_edit.setEditText("node")
         form.addRow("Node type:", self.kind_edit)
 
-        # --- LLM URL (only visible when kind == llm)
         self._llm_url_label = QtWidgets.QLabel("URL:")
         self._llm_url_edit  = QtWidgets.QLineEdit()
         self._llm_url_edit.setPlaceholderText("http://127.0.0.1:7860")
@@ -2401,7 +2041,6 @@ class CreateNodeDialog(QtWidgets.QDialog):
         self._llm_url_label.setVisible(False)
         self._llm_url_edit.setVisible(False)
 
-        # Params group
         param_box = QtWidgets.QGroupBox("Parameters (optional)")
         pv = QtWidgets.QVBoxLayout(param_box); pv.setContentsMargins(8,8,8,8); pv.setSpacing(6)
         self.param_list = QtWidgets.QListWidget()
@@ -2412,7 +2051,6 @@ class CreateNodeDialog(QtWidgets.QDialog):
         pv.addWidget(self.param_list); pv.addLayout(btns)
         add_btn.clicked.connect(self._add_param); rem_btn.clicked.connect(self._remove_param)
 
-        # Initial code (only for python)
         code_box = QtWidgets.QGroupBox("Initial Python (optional)")
         code_box.setCheckable(False)
         cv = QtWidgets.QVBoxLayout(code_box); cv.setContentsMargins(8,8,8,8); cv.setSpacing(6)
@@ -2421,12 +2059,9 @@ class CreateNodeDialog(QtWidgets.QDialog):
         self.code_edit.setStyleSheet("QPlainTextEdit{background:#0f1216;color:#e6edf3;border:1px solid #334;}")
         cv.addWidget(self.code_edit)
 
-        # toggle visibility with kind
         def _toggle_code_box(kind_text):
             kind = (kind_text or "").strip().lower()
-            # Python initial code group
             code_box.setVisible(kind == "python")
-            # LLM URL row visibility
             is_llm = (kind == "llm")
             self._llm_url_label.setVisible(is_llm)
             self._llm_url_edit.setVisible(is_llm)
@@ -2472,8 +2107,6 @@ class CreateNodeDialog(QtWidgets.QDialog):
         if kind.lower() == "python":
             code_text = self.code_edit.toPlainText()
             code = code_text if code_text.strip() else ""
-
-        # NEW: auto-seed URL for LLM nodes + pull from the dedicated field
         if kind.lower() == "llm":
             url_val = (self._llm_url_edit.text() or "").strip() or LLM_URL
             names = {p["name"].strip().lower() for p in params}
@@ -2484,7 +2117,6 @@ class CreateNodeDialog(QtWidgets.QDialog):
                         break
             else:
                 params.append({"name": "URL", "value": url_val})
-
         return {"name": self.name_edit.text().strip(), "kind": kind, "params": params, "code": code}
 
 # main window
@@ -2492,7 +2124,6 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        # --- Window basics ---
         self.setObjectName("EchoGraphWindow")
         self.setWindowTitle(APP_TITLE)
         try:
@@ -2501,24 +2132,18 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             pass
         self.resize(1100, 720)
 
-        # --- Core state ---
         self._current_path = None
-        self._card_by_node = {}          # name -> InfoCard widget
-        self._bigedit_registry = {}      # {QLineEdit: (node_item, param_name)}
+        self._card_by_node = {}
+        self._bigedit_registry = {}
 
-        # --- Central UI scaffold (top bar + view) ---
         central = QtWidgets.QWidget(self)
         v = QtWidgets.QVBoxLayout(central)
-        v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(0)
+        v.setContentsMargins(0, 0, 0, 0); v.setSpacing(0)
 
-        # Top bar
         topbar = self._build_topbar()
         v.addWidget(topbar, 0)
 
-        # Scene/View
-        self.scene = GraphScene(on_info=self.add_info_card,
-                                on_branch=self.populate_branch_info)
+        self.scene = GraphScene(on_info=self.add_info_card, on_branch=self.populate_branch_info)
         try:
             self.scene.nodeDeleted.connect(self._on_node_deleted)
         except Exception:
@@ -2530,42 +2155,14 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
         self.setCentralWidget(central)
 
-        # Info dock (cards live here)
         self._init_info_dock()
 
-        # --- Global Ctrl+B: open Big Editor for whichever param field has focus ---
-        self._sc_bigedit_global = QShortcut(QKeySequence(KEY_BIGEDIT), self)
-        # Make it work no matter which child has focus
-        try:
-            self._sc_bigedit_global.setContext(QtCore.Qt.ApplicationShortcut)
-        except Exception:
-            pass
+        # --- App-level Ctrl+B filter (MOST ROBUST; focus-only) ---
+        self._ctrlb_filter = _CtrlBEventFilter(self)
+        QtWidgets.QApplication.instance().installEventFilter(self._ctrlb_filter)
+        print("[EchoGraph] CtrlB filter installed.")
 
-        def _try_open_bigedit_from_focus():
-            fw = QtWidgets.QApplication.focusWidget()
-            if not fw:
-                return
-            # climb parents to find a registered lineedit (in case focus is inside its popup, etc.)
-            w = fw
-            target = None
-            for _ in range(8):
-                if w in self._bigedit_registry:
-                    target = w
-                    break
-                w = w.parent() if isinstance(w, QtWidgets.QWidget) else None
-                if w is None:
-                    break
-            if not target:
-                return
-            node_item, param_name = self._bigedit_registry[target]
-            # call the same helper NodeItem uses
-            try:
-                node_item._open_big_param_editor(f"Edit: {param_name}", target.text(), target)
-            except Exception:
-                pass
-
-        self._sc_bigedit_global.activated.connect(_try_open_bigedit_from_focus)
-
+    # -------- Ctrl+B registration + focus-only resolve ----------
     def _register_bigedit_target(self, lineedit: QtWidgets.QLineEdit, node_item: 'NodeItem', param_name: str):
         self._bigedit_registry[lineedit] = (node_item, param_name)
 
@@ -2593,7 +2190,6 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         btn_export = QtWidgets.QPushButton("Export", bar)
         btn_export.setToolTip("Export current graph to a new .json (Save As)")
         btn_export.clicked.connect(self._export_graph)
-
         h.addWidget(btn_export, 0)
 
         h.addStretch(1)
@@ -2629,7 +2225,6 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             data = self.scene.to_dict()
             with open(self._current_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
-            # silent success
             try:
                 QtWidgets.QToolTip.showText(
                     QtGui.QCursor.pos(),
@@ -2652,7 +2247,6 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
             self._current_path = path
-            # silent success
             try:
                 QtWidgets.QToolTip.showText(
                     QtGui.QCursor.pos(),
@@ -2684,11 +2278,9 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
         scroll.setWidget(self._cardsContainer)
 
-        # Lock dock + scroll colors to our dark palette
         self.infoDock.setWidget(scroll)
         self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, self.infoDock)
 
-        # Lock dock + scroll colors to our dark palette (with styled title bar)
         self.infoDock.setStyleSheet(
             "QDockWidget{background:#1a1f24;color:#e6edf3;}"
             "QDockWidget::title{background:#20242b;color:#e6edf3;padding:4px 8px;}"
@@ -2713,36 +2305,29 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 self._cardsLayout.insertWidget(0, existing)
             existing.show()
             return
-
         card = InfoCard(node)
         card.requestJump.connect(self.scene.center_on_name)
         card.closedForNode.connect(self._on_card_closed)
-        # expose the scene so Librarian can gather upstream Prompt text
         try:
             card._graph_scene = self.scene
         except Exception:
             pass
-
         self._cardsLayout.insertWidget(0, card)
         self._card_by_node[node.name] = card
         self._trim_cards()
 
     def populate_branch_info(self, ordered_nodes):
-        # Ensure the dock is visible/raised (H21 can hide it early in session)
         try:
             self.infoDock.setVisible(True)
             self.infoDock.raise_()
         except Exception:
             pass
-
         for i in reversed(range(self._cardsLayout.count()-1)):
             w = self._cardsLayout.itemAt(i).widget()
             if w: w.deleteLater()
         self._card_by_node.clear()
-
         if not ordered_nodes:
             return
-
         total = len(ordered_nodes)
         for idx, node in enumerate(ordered_nodes, start=1):
             card = InfoCard(node, order_index=idx, order_total=total)
@@ -2761,7 +2346,6 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 pass
             try: w.deleteLater()
             except Exception: pass
-
         for i in reversed(range(self._cardsLayout.count()-1)):
             w = self._cardsLayout.itemAt(i).widget()
             if hasattr(w, "_node_name") and getattr(w, "_node_name", None) == name:
@@ -2800,7 +2384,6 @@ def _launch():
                 maya_cmds.deleteUI(WS_CTRL)
         except Exception:
             pass
-
         ctrl = maya_cmds.workspaceControl(WS_CTRL, label=APP_TITLE, retain=False, iw=1100, ih=700)
         ptr = omui.MQtUtil.findControl(ctrl)
         host_widget = wrapInstance(int(ptr), QtWidgets.QWidget)
@@ -2825,13 +2408,11 @@ def _launch():
         _WINDOW.show()
         QtWidgets.QApplication.processEvents()
         return
-    
-    # Houdini or standalone
+
     parent = _main_window() if HOST == "houdini" else None
     _WINDOW = EchoGraphWindow(parent)
 
     if HOST == "standalone":
-        # Make sure it’s a real top-level window (taskbar-visible)
         try:
             _WINDOW.setWindowFlag(QtCore.Qt.Window, True)
         except Exception:
@@ -2842,7 +2423,6 @@ def _launch():
     _WINDOW.raise_()
     _WINDOW.activateWindow()
     QtWidgets.QApplication.processEvents()
-
 
 # run immediately
 _launch()
