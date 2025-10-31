@@ -11,6 +11,7 @@
 import sys, re, json, math, os, time
 from pathlib import Path
 
+
 try:
     from PySide6 import QtCore, QtGui, QtWidgets
     try:
@@ -106,7 +107,6 @@ def set_global_llm_scale(new_scale: float, scene=None):
     except Exception:
         pass
 
-
 def _script_dir():
     if "__file__" in globals():
         try:
@@ -120,6 +120,68 @@ def _script_dir():
 
 ICON_PATH = _script_dir() / "icons" / "EchoMatrixMCP_Icon_s.png"
 APP_ICON = QtGui.QIcon(str(ICON_PATH)) if ICON_PATH.exists() else QtGui.QIcon()
+
+# --- Import path bootstrap (must come before importing nodes.core) ---
+_BASE_DIR = _script_dir()
+_NODES_DIR = _BASE_DIR / "nodes"
+for _p in (str(_BASE_DIR), str(_NODES_DIR)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+# --- Node-kind registry (plugin hooks) ---
+import nodes.core as core
+
+core.register_defaults()
+
+
+def _spec_stripe_color(kind: str) -> str | None:
+    """Return stripe color from nodes.core spec, supporting dicts or objects."""
+    try:
+        spec = core.get_spec((kind or "node").lower())
+    except Exception as e:
+        print(f"[EchoGraph] get_spec({kind}) failed:", e)
+        return None
+
+    # dict style spec
+    if isinstance(spec, dict):
+        return spec.get("stripe_color") or spec.get("color") or spec.get("stripe")
+
+    # object / namedtuple / SimpleNamespace style
+    for attr in ("stripe_color", "color", "stripe"):
+        try:
+            val = getattr(spec, attr)
+            if val:
+                return str(val)
+        except Exception:
+            pass
+
+    return None
+
+
+def _bootstrap_plugins():
+    """Register core defaults and optional node plugins (e.g., Librarian)."""
+    # 1) Core defaults (single source of truth)
+    try:
+        core.register_defaults()
+    except Exception as e:
+        print("[EchoGraph] register_defaults failed:", e)
+
+    # 2) Optional: Librarian plugin (nodes/librarian/__init__.py exposes register())
+    try:
+        from nodes import librarian  # package path: nodes/librarian/__init__.py
+        if hasattr(librarian, "register"):
+            librarian.register()
+            # Sanity log: do we have the augment hook?
+            try:
+                spec = core.get_spec("librarian")
+                has_hook = bool(getattr(spec, "augment_infocard_footer", None))
+                print(f"[EchoGraph] Librarian plugin registered. augment_infocard_footer={has_hook}")
+            except Exception as e:
+                print("[EchoGraph] core.get_spec('librarian') failed:", e)
+        else:
+            print("[EchoGraph] Librarian module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Librarian plugin import failed:", e)
 
 # --- host detection (Maya / Houdini / standalone) ---
 HOST = "standalone"
@@ -295,15 +357,24 @@ def ensure_librarian_running(focus_hint: bool = True):
         return _LIBRARIAN_PROC
     _LAST_LIBRARIAN_LAUNCH_TS = now
 
-    # import launcher
+    # import launcher (package, loose module, or by file path)
     try:
         from nodes.librarian import launch_librarian as L
     except Exception:
         try:
-            import launch_librarian as L
-        except Exception as e:
-            QtWidgets.QMessageBox.critical(None, APP_TITLE, f"Import error launching Librarian:\n{e}")
-            return None
+            import launch_librarian as L  # if cwd is nodes/librarian
+        except Exception:
+            try:
+                import importlib.util
+                lib_file = _NODES_DIR / "librarian" / "launch_librarian.py"
+                spec = importlib.util.spec_from_file_location("librarian_launcher", str(lib_file))
+                if spec is None or spec.loader is None:
+                    raise ImportError(f"spec_from_file_location failed for {lib_file}")
+                L = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(L)  # type: ignore[attr-defined]
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(None, APP_TITLE, f"Import error launching Librarian:\n{e}")
+                return None
 
     # launch
     try:
@@ -756,49 +827,70 @@ class NodeItem(QtWidgets.QGraphicsObject):
         path.addRoundedRect(QtCore.QRectF(0, 0, self.width, self.height), self.radius, self.radius)
         return path
 
-    def paint(self, p, opt, w=None):
+    def paint(self, p: QtGui.QPainter, opt: QtWidgets.QStyleOptionGraphicsItem, w: QtWidgets.QWidget | None = None):
         p.setRenderHint(QtGui.QPainter.Antialiasing, True)
+
+        # --- Base body ---
         r = QtCore.QRectF(0, 0, self.width, self.height)
         body = QtGui.QColor("#262930" if not self._hover else "#2f343c")
-        p.setBrush(QtGui.QBrush(body))
-        p.setPen(self.pen)
-        p.drawRoundedRect(r, self.radius, self.radius)
+        try:
+            p.setBrush(QtGui.QBrush(body))
+            p.setPen(self.pen)  # outline pen set in __init__
+            p.drawRoundedRect(r, self.radius, self.radius)
+        except Exception as e:
+            print("[EchoGraph][paint] body fail:", e)
 
-        color_map = {
-            "switch": "#f59e0b",
-            "python": "#10b981",
-            "import": "#3b82f6",
-            "output": "#a855f7",
-            "node": "#64748b",
-            "llm": "#14b8a6",
-            "librarian": "#74d603",
-        }
-        stripe = color_map.get((self.model.kind or "node").lower(), "#64748b")
-        p.setBrush(QtGui.QColor(stripe))
-        p.setPen(QtCore.Qt.NoPen)
-        p.drawRoundedRect(QtCore.QRectF(0, 0, self.width, 8), self.radius, self.radius)
-        p.drawRect(QtCore.QRectF(0, 4, self.width, 4))
+        # --- Stripe color (registry → fallback) ---
+        try:
+            stripe_hex = _spec_stripe_color((self.model.kind or "node").lower()) or "#3b82f6"
+        except Exception:
+            stripe_hex = "#3b82f6"
 
-        p.setPen(self.titlePen)
-        fm = QtGui.QFontMetrics(p.font())
-        p.drawText(
-            QtCore.QPointF(10, 28),
-            fm.elidedText(self.model.name, QtCore.Qt.ElideRight, int(self.width - 16)),
-        )
+        # --- Top stripe ---
+        try:
+            p.setOpacity(1.0)
+            p.setBrush(QtGui.QColor(stripe_hex))
+            p.setPen(QtCore.Qt.NoPen)
+            p.drawRoundedRect(QtCore.QRectF(0, 0, self.width, 8), self.radius, self.radius)
+            p.drawRect(QtCore.QRectF(0, 4, self.width, 4))  # solid bar under the rounded cap
+        except Exception as e:
+            print("[EchoGraph][paint] stripe fail:", e)
 
-        kb_y = 38
-        kb = QtCore.QRectF(self.width - 90, kb_y, 80, 16)
-        p.setBrush(QtGui.QBrush(QtGui.QColor("#3b82f6")))
-        p.setPen(QtCore.Qt.NoPen)
-        p.drawRoundedRect(kb, 8, 8)
-        p.setPen(QtGui.QPen(QtGui.QColor("#ffffff")))
-        badge = (self.model.kind or "node").upper()
-        p.drawText(kb.adjusted(6, 1, -6, -2), QtCore.Qt.AlignCenter, badge)
+        # --- Title (node name) ---
+        try:
+            p.setPen(self.titlePen)  # #e6edf3
+            fm = QtGui.QFontMetrics(p.font())
+            name_txt = self.model.name or "<unnamed>"
+            p.drawText(
+                QtCore.QPointF(10, 28),
+                fm.elidedText(name_txt, QtCore.Qt.ElideRight, int(self.width - 16)),
+            )
+        except Exception as e:
+            print("[EchoGraph][paint] title fail:", e)
 
-        p.setPen(QtCore.Qt.NoPen)
-        p.setBrush(QtGui.QColor("#cbd5e1"))
-        p.drawEllipse(QtCore.QRectF(-4, self._BASE_H / 2.0 - 4, 8, 8))
-        p.drawEllipse(QtCore.QRectF(self.width - 4, self._BASE_H / 2.0 - 4, 8, 8))
+        # --- Kind badge (type pill) ---
+        try:
+            kb_y = 38  # under the title line
+            kb = QtCore.QRectF(self.width - 90, kb_y, 80, 16)
+            p.setBrush(QtGui.QBrush(QtGui.QColor("#3b82f6")))
+            p.setPen(QtCore.Qt.NoPen)
+            p.drawRoundedRect(kb, 8, 8)
+            p.setPen(QtGui.QPen(QtGui.QColor("#ffffff")))
+            badge = (self.model.kind or "node").upper()
+            p.drawText(kb.adjusted(6, 1, -6, -2), QtCore.Qt.AlignCenter, badge)
+        except Exception as e:
+            print("[EchoGraph][paint] badge fail:", e)
+
+        # --- IO sockets ---
+        try:
+            p.setPen(QtCore.Qt.NoPen)
+            p.setBrush(QtGui.QColor("#cbd5e1"))
+            # left (input)
+            p.drawEllipse(QtCore.QRectF(-4, self._BASE_H / 2.0 - 4, 8, 8))
+            # right (output)
+            p.drawEllipse(QtCore.QRectF(self.width - 4, self._BASE_H / 2.0 - 4, 8, 8))
+        except Exception as e:
+            print("[EchoGraph][paint] sockets fail:", e)
 
     def hoverEnterEvent(self, e):
         self._hover = True
@@ -1113,6 +1205,21 @@ class InfoCard(QtWidgets.QFrame):
 
         footer = QtWidgets.QHBoxLayout(); footer.setContentsMargins(0, 0, 0, 0); footer.setSpacing(8)
 
+        # Give plugins a chance to add buttons into the footer
+        _augmented_by_plugin = False
+        try:
+            spec = core.get_spec((node.kind or "node").lower())
+            augment = None
+            if isinstance(spec, dict):
+                augment = spec.get("augment_infocard_footer")
+            else:
+                augment = getattr(spec, "augment_infocard_footer", None)
+            if callable(augment):
+                augment(self, footer)
+                _augmented_by_plugin = True
+        except Exception as e:
+            print("[EchoGraph] augment_infocard_footer error:", e)
+
         kind = (node.kind or "").lower()
 
         if kind == "python":
@@ -1130,7 +1237,7 @@ class InfoCard(QtWidgets.QFrame):
 #    down to (but NOT including) 'open_btn = QtWidgets.QPushButton("Open Librarian")'
 #    WITH THIS (i.e., delete the old TOP param actions row entirely):
 
-        elif (node.kind or "").lower() == "librarian":
+        elif (node.kind or "").lower() == "librarian" and not _augmented_by_plugin:
             self._result_view = QtWidgets.QTextBrowser()
             self._result_view.setStyleSheet(
                 "QTextBrowser{background:#0f1216;color:#e6edf3;"
@@ -1687,6 +1794,16 @@ class GraphScene(QtWidgets.QGraphicsScene):
         if _qexec(dlg) != QtWidgets.QDialog.Accepted: return
         data = dlg.result_payload()
         node = GraphNode(data["name"], kind=data["kind"], info="User-created node.", params=data["params"], code=data.get("code"))
+
+        # Check if it's a Librarian node
+        if (data["kind"] or "").lower() == "librarian":
+            node.info = "Librarian node created"
+            # Ensure a 'query' param exists; don't blow away user-specified params
+            names = { (p.get("name") or "").strip().lower() for p in (node.params or []) }
+            if "query" not in names:
+                node.params = list(node.params or [])
+                node.params.append({"name": "query", "value": ""})
+
         item = self.add_node(node, scene_pos)
         item.setPos(scene_pos - QtCore.QPointF(item.width/2.0, item.height/2.0))
         if callable(self.on_info): self.on_info(node)
@@ -2302,8 +2419,11 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
 
+        _bootstrap_plugins()  # ← register core + optional plugin specs before scene builds
+
         self.setObjectName("EchoGraphWindow")
         self.setWindowTitle(APP_TITLE)
+
         try:
             self.setWindowIcon(APP_ICON)
         except Exception:
