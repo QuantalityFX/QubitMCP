@@ -185,6 +185,23 @@ def _bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Librarian plugin import failed:", e)
 
+    # 3) Optional: Note plugin
+    try:
+        from nodes import note
+        if hasattr(note, "register"):
+            note.register()
+            try:
+                spec = core.get_spec("note")
+                has_hook = bool(getattr(spec, "augment_infocard_footer", None))
+                print(f"[EchoGraph] Note plugin registered. augment_infocard_footer={has_hook}")
+            except Exception as e:
+                print("[EchoGraph] core.get_spec('note') failed:", e)
+        else:
+            print("[EchoGraph] Note module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Note plugin import failed:", e)
+
+
 # --- host detection (Maya / Houdini / standalone) ---
 HOST = "standalone"
 maya_cmds = None
@@ -2335,7 +2352,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
 
         self.kind_edit = QtWidgets.QComboBox()
         self.kind_edit.setEditable(True)
-        self.kind_edit.addItems(["node","import","python","switch","output","llm","librarian"])
+        self.kind_edit.addItems(["node","import","python","switch","output","llm","librarian","note"])
         self.kind_edit.setEditText("node")
         form.addRow("Node type:", self.kind_edit)
 
