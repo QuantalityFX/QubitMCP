@@ -267,6 +267,59 @@ def _main_window():
 APP_TITLE = "EchoGraph"
 WS_CTRL = "EchoGraphWorkspaceControl"  # Maya only
 
+# --- Librarian single-instance launcher (global) ---
+_LIBRARIAN_PROC = None
+_LAST_LIBRARIAN_LAUNCH_TS = 0.0
+
+def ensure_librarian_running(focus_hint: bool = True):
+    import subprocess, time
+    global _LIBRARIAN_PROC, _LAST_LIBRARIAN_LAUNCH_TS
+
+    # still alive?
+    if isinstance(_LIBRARIAN_PROC, subprocess.Popen):
+        try:
+            if _LIBRARIAN_PROC.poll() is None:
+                if focus_hint:
+                    try:
+                        _enqueue_librarian({"type": "focus"})
+                    except Exception:
+                        pass
+                return _LIBRARIAN_PROC
+        except Exception:
+            pass
+        _LIBRARIAN_PROC = None  # dead / invalid, relaunch below
+
+    # debounce
+    now = time.time()
+    if (now - _LAST_LIBRARIAN_LAUNCH_TS) < 1.0:
+        return _LIBRARIAN_PROC
+    _LAST_LIBRARIAN_LAUNCH_TS = now
+
+    # import launcher
+    try:
+        from nodes.librarian import launch_librarian as L
+    except Exception:
+        try:
+            import launch_librarian as L
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(None, APP_TITLE, f"Import error launching Librarian:\n{e}")
+            return None
+
+    # launch
+    try:
+        _LIBRARIAN_PROC = L.launch(verbose=False)
+        if focus_hint:
+            try:
+                _enqueue_librarian({"type": "focus"})
+            except Exception:
+                pass
+        return _LIBRARIAN_PROC
+    except Exception as e:
+        _LIBRARIAN_PROC = None
+        QtWidgets.QMessageBox.critical(None, APP_TITLE, f"Failed to launch Librarian:\n{e}")
+        return None
+
+
 def _hash_to_links(text:str)->str:
     return re.sub(
         r"#([^\n#]+)",
@@ -274,62 +327,6 @@ def _hash_to_links(text:str)->str:
         text
     )
 
-# ---------- Offscreen hi-res WebEngine sampler (for crisp downscale) ----------
-class _OffscreenWebSampler(QtCore.QObject):
-    """Hidden hi-res QWebEngineView -> grabs frames -> smooth downscale into QLabel."""
-    def __init__(self, url: QtCore.QUrl, out_label: QtWidgets.QLabel, scale_ss=2.0, fps=10, parent=None):
-        super().__init__(parent)
-        self.scale_ss = float(scale_ss)
-        self.out = out_label
-        self.view = None
-        if WebEngine is not None:
-            self.view = WebEngine.QWebEngineView()
-            self.view.setAttribute(QtCore.Qt.WA_DontShowOnScreen, True)
-            self.view.setZoomFactor(self.scale_ss)
-            w = max(64, int(self.out.width() * self.scale_ss))
-            h = max(64, int(self.out.height() * self.scale_ss))
-            self.view.resize(w, h)
-            self.view.setFixedSize(w, h)
-            self.view.setUrl(url)
-
-        # timer “pulls” frames
-        self._tick = QtCore.QTimer(self)
-        self._tick.setInterval(int(1000 / max(1, fps)))
-        self._tick.timeout.connect(self._update_frame)
-        self._tick.start()
-
-        try:
-            self.out.setAttribute(QtCore.Qt.WA_OpaquePaintEvent, True)
-        except Exception:
-            pass
-
-    def set_output_size(self, w, h):
-        if not self.view: return
-        W = max(32, int(w * self.scale_ss))
-        H = max(32, int(h * self.scale_ss))
-        self.view.resize(W, H)
-        self.view.setFixedSize(W, H)
-
-    @QtCore.Slot()
-    def _update_frame(self):
-        if not self.view:
-            return
-        pm = self.view.grab()
-        if pm.isNull():
-            return
-        target = pm.scaled(self.out.size(),
-                           QtCore.Qt.KeepAspectRatioByExpanding,
-                           QtCore.Qt.SmoothTransformation)
-        self.out.setPixmap(target)
-
-    def set_url(self, url: QtCore.QUrl):
-        if self.view:
-            self.view.setUrl(url)
-
-    def stop(self):
-        try: self._tick.stop()
-        except Exception: pass
-        self.deleteLater()
 
 # model
 class GraphNode:
@@ -412,8 +409,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         self._switch_proxy = None
         self._llm_proxy = None
         self._llm_view = None  # kept for API parity if ever needed
-        self._llm_label = None
-        self._llm_sampler = None
+
 
         self._recompute_height()
         self._build_widgets()
@@ -470,11 +466,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             except Exception:
                 pass
             self._llm_proxy = None
-        # stop sampler if any
-        if self._llm_sampler:
-            try: self._llm_sampler.stop()
-            except Exception: pass
-        self._llm_sampler = None
+    
         self._llm_view = None
         self._llm_label = None
 
@@ -621,14 +613,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 # advance cursor by the scaled height
                 y_cursor += int(LLM_NODE_H_BASE * LLM_SCALE)
 
-
-    def eventFilter(self, obj, ev):
-        # keep sampler buffer size synced if the QLabel/container changes
-        if obj is not None and ev.type() == QtCore.QEvent.Resize:
-            if self._llm_sampler and self._llm_label:
-                sz = self._llm_label.size()
-                self._llm_sampler.set_output_size(sz.width(), sz.height())
-        return super().eventFilter(obj, ev)
 
     def _switch_label_text(self):
         n = len(self.model.switch_inputs)
@@ -1142,6 +1126,10 @@ class InfoCard(QtWidgets.QFrame):
             run_btn.clicked.connect(self._run_code)
             footer.addWidget(run_btn)
 
+        # 1) REPLACE your current "elif (node.kind or '').lower() == 'librarian':" block header
+#    down to (but NOT including) 'open_btn = QtWidgets.QPushButton("Open Librarian")'
+#    WITH THIS (i.e., delete the old TOP param actions row entirely):
+
         elif (node.kind or "").lower() == "librarian":
             self._result_view = QtWidgets.QTextBrowser()
             self._result_view.setStyleSheet(
@@ -1159,49 +1147,11 @@ class InfoCard(QtWidgets.QFrame):
                 "No results yet. Send a query to fetch results here."
             )
 
+            # (no top param actions row anymore)
             open_btn = QtWidgets.QPushButton("Open Librarian")
             open_btn.setToolTip("Launch the Librarian UI in its own process")
 
-            def _open_librarian():
-                now = time.time()
-                last = getattr(self, "_last_lib_launch", 0.0)
-                if (now - last) < 1.0:
-                    return
-                self._last_lib_launch = now
-                try:
-                    from nodes.librarian import launch_librarian as L
-                except Exception:
-                    try:
-                        import launch_librarian as L
-                    except Exception as e:
-                        QtWidgets.QMessageBox.critical(self, APP_TITLE, f"Import error:\n{e}")
-                        return
-                proc = getattr(self, "_librarian_proc", None)
-                try:
-                    alive = (proc is not None) and (proc.poll() is None)
-                except Exception:
-                    alive = False
-                if alive:
-                    try:
-                        QtWidgets.QToolTip.showText(
-                            QtGui.QCursor.pos(), "Librarian already running.", self, self.rect(), 1500
-                        )
-                    except Exception:
-                        pass
-                    return
-                try:
-                    self._librarian_proc = L.launch(verbose=False)
-                    try:
-                        QtWidgets.QToolTip.showText(
-                            QtGui.QCursor.pos(), "Librarian launched.", self, self.rect(), 1500
-                        )
-                    except Exception:
-                        pass
-                except Exception as e:
-                    self._librarian_proc = None
-                    QtWidgets.QMessageBox.critical(self, APP_TITLE, f"Failed to launch Librarian:\n{e}")
-
-            open_btn.clicked.connect(_open_librarian)
+            open_btn.clicked.connect(lambda: ensure_librarian_running(True))
             footer.addWidget(open_btn)
 
             send_btn = QtWidgets.QPushButton("Send Query → Librarian")
@@ -1254,7 +1204,8 @@ class InfoCard(QtWidgets.QFrame):
                         "ts": ts,
                     }
                     fn = _enqueue_librarian(cmd)
-                    _open_librarian()
+                    # Ensure Librarian UI is up (non-blocking, single instance)
+                    ensure_librarian_running(True)
 
                     self._waiting_ts = ts
                     self._last_query_text = q
@@ -1337,36 +1288,23 @@ class InfoCard(QtWidgets.QFrame):
             run_btn.clicked.connect(self._run_code)
             footer.addWidget(run_btn)
 
-        edit_params_btn = QtWidgets.QPushButton("Edit Params…")
+        # --- Edit/Rename handlers (shared) ---
         def _edit_params():
             sc = getattr(self, "_graph_scene", None)
             if sc is None:
                 QtWidgets.QMessageBox.warning(self, APP_TITLE, "Scene not available.")
                 return
-
             dlg = ParamEditorDialog(self, title=f"Edit Parameters — {self._node_ref.name}",
                                     params=self._node_ref.params)
-
-            if dlg.exec_() == QtWidgets.QDialog.Accepted:
+            if _qexec(dlg) == QtWidgets.QDialog.Accepted:
                 new_params = dlg.result_params()
-
-                # Use the scene API so it rebuilds the node widget AND emits paramChanged
-                ok = sc.set_node_params(self._node_name, new_params)
-
-                # Keep our local ref in sync (harmless if scene already set it)
+                sc.set_node_params(self._node_name, new_params)
                 self._node_ref.params = new_params
-
-                # Extra safety: refresh this card immediately (in case any listener missed the signal)
                 try:
                     self.refresh_params_from_model()
                 except Exception:
                     pass
 
-
-        edit_params_btn.clicked.connect(_edit_params)
-        footer.addWidget(edit_params_btn)
-
-        rename_btn = QtWidgets.QPushButton("Rename…")
         def _rename_node():
             sc = getattr(self, "_graph_scene", None)
             if sc is None:
@@ -1391,16 +1329,7 @@ class InfoCard(QtWidgets.QFrame):
             except Exception:
                 pass
 
-        rename_btn.clicked.connect(_rename_node)
-        footer.addWidget(rename_btn)
-
-        footer.addStretch(1)
-
-        lay = QtWidgets.QVBoxLayout(self)
-        lay.setContentsMargins(10, 10, 10, 10); lay.setSpacing(8)
-        lay.addLayout(header)
-        lay.addWidget(text)
-
+        # --- Params table + buttons (single source of truth) ---
         self._param_table = QtWidgets.QTableWidget(0, 2)
         self._param_table.setHorizontalHeaderLabels(["Name", "Value"])
         self._param_table.horizontalHeader().setStretchLastSection(True)
@@ -1410,44 +1339,46 @@ class InfoCard(QtWidgets.QFrame):
         )
         self._param_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self._param_table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
-        self._param_table.setEditTriggers(QtWidgets.QAbstractItemView.DoubleClicked |
-                                          QtWidgets.QAbstractItemView.EditKeyPressed |
-                                          QtWidgets.QAbstractItemView.SelectedClicked)
+        self._param_table.setEditTriggers(
+            QtWidgets.QAbstractItemView.DoubleClicked |
+            QtWidgets.QAbstractItemView.EditKeyPressed |
+            QtWidgets.QAbstractItemView.SelectedClicked
+        )
 
         def _load_params_into_table():
             self._param_table.setRowCount(0)
             for p in (self._node_ref.params or []):
-                row = self._param_table.rowCount()
-                self._param_table.insertRow(row)
-                nitem = QtWidgets.QTableWidgetItem(p.get("name",""))
-                vitem = QtWidgets.QTableWidgetItem(p.get("value",""))
-                self._param_table.setItem(row, 0, nitem)
-                self._param_table.setItem(row, 1, vitem)
+                r = self._param_table.rowCount()
+                self._param_table.insertRow(r)
+                self._param_table.setItem(r, 0, QtWidgets.QTableWidgetItem(p.get("name","")))
+                self._param_table.setItem(r, 1, QtWidgets.QTableWidgetItem(p.get("value","")))
         _load_params_into_table()
 
         pbtns = QtWidgets.QHBoxLayout()
-        addp = QtWidgets.QPushButton("Add Param")
-        delp = QtWidgets.QPushButton("Remove Selected")
+        addp  = QtWidgets.QPushButton("Add Param")
+        delp  = QtWidgets.QPushButton("Remove Selected")
         savep = QtWidgets.QPushButton("Apply Changes")
         for b in (addp, delp, savep):
             pbtns.addWidget(b)
-        pbtns.addStretch(1)
+
 
         def _add_param_row():
             r = self._param_table.rowCount()
             self._param_table.insertRow(r)
             self._param_table.setItem(r, 0, QtWidgets.QTableWidgetItem("param"))
             self._param_table.setItem(r, 1, QtWidgets.QTableWidgetItem(""))
+
         def _remove_selected_row():
             r = self._param_table.currentRow()
             if r >= 0:
                 self._param_table.removeRow(r)
+
         def _apply_param_changes():
             new_params = []
             for r in range(self._param_table.rowCount()):
-                name_item = self._param_table.item(r, 0)
+                name_item  = self._param_table.item(r, 0)
                 value_item = self._param_table.item(r, 1)
-                nm = (name_item.text() if name_item else "").strip()
+                nm  = (name_item.text()  if name_item  else "").strip()
                 val = (value_item.text() if value_item else "")
                 if nm:
                     new_params.append({"name": nm, "value": val})
@@ -1459,15 +1390,60 @@ class InfoCard(QtWidgets.QFrame):
         addp.clicked.connect(_add_param_row)
         delp.clicked.connect(_remove_selected_row)
         savep.clicked.connect(_apply_param_changes)
-
         self._param_table.itemChanged.connect(lambda *_: None)
 
+        # --- Place Edit/Rename (Librarian → beside Add/Remove/Apply; others → footer) ---
+        # --- Place Edit/Rename (Librarian = NEW ROW under Add/Remove/Apply; others → footer) ---
+        btn_edit = QtWidgets.QPushButton("Edit Params…")
+        btn_edit.clicked.connect(_edit_params)
+        btn_rename = QtWidgets.QPushButton("Rename…")
+        btn_rename.clicked.connect(_rename_node)
+
+        if (self._node_ref.kind or "").lower() == "librarian":
+            # row1: Add / Remove / Apply  (keep existing pbtns as-is)
+            # row2: Edit / Rename         (new row under row1)
+            librow = QtWidgets.QHBoxLayout()
+            librow.setContentsMargins(0, 0, 0, 0)
+            librow.setSpacing(6)
+            librow.addWidget(btn_edit)
+            librow.addWidget(btn_rename)
+            librow.addStretch(1)
+
+            # stack the two rows vertically
+            pcol = QtWidgets.QVBoxLayout()
+            pcol.setContentsMargins(0, 0, 0, 0)
+            pcol.setSpacing(6)
+            pcol.addLayout(pbtns)     # row1
+            pcol.addLayout(librow)    # row2
+
+            # later in root layout use: lay.addLayout(pcol)  (see below)
+            _use_pcol_for_librarian = True
+        else:
+            footer.addWidget(btn_edit)
+            footer.addWidget(btn_rename)
+            _use_pcol_for_librarian = False
+
+        footer.addStretch(1)
+
+        pbtns.addStretch(1)
+        
+        # --- Root layout (assemble ONCE) ---
+        lay = QtWidgets.QVBoxLayout(self)
+        lay.setContentsMargins(10, 10, 10, 10)
+        lay.setSpacing(8)
+
+        lay.addLayout(header)           # title + close
+        lay.addWidget(text)             # info text browser
         lay.addWidget(self._param_table)
-        lay.addLayout(pbtns)
+        if (self._node_ref.kind or "").lower() == "librarian" and _use_pcol_for_librarian:
+            lay.addLayout(pcol)     # two-row block for Librarian
+        else:
+            lay.addLayout(pbtns)    # single row for others
 
         if hasattr(self, "_result_view"):
-            lay.addWidget(self._result_view)
-        lay.addLayout(footer)
+            lay.addWidget(self._result_view)   # Librarian results panel
+
+        lay.addLayout(footer)           # footer buttons
 
     def refresh_params_from_model(self):
         """Reload the params table from the live node model."""
@@ -1519,7 +1495,7 @@ class InfoCard(QtWidgets.QFrame):
 
     def _edit_code(self):
         dlg = CodeEditorDialog(self, initial_code=self._node_ref.code or "")
-        if dlg.exec_() == QtWidgets.QDialog.Accepted:
+        if _qexec(dlg) == QtWidgets.QDialog.Accepted:
             self._node_ref.code = dlg.code()
 
     def _run_code(self):
@@ -1708,7 +1684,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
                 return
         parent = self.views()[0] if self.views() else None
         dlg = CreateNodeDialog(parent, existing_names=list(self._nodes_by_name.keys()))
-        if dlg.exec_() != QtWidgets.QDialog.Accepted: return
+        if _qexec(dlg) != QtWidgets.QDialog.Accepted: return
         data = dlg.result_payload()
         node = GraphNode(data["name"], kind=data["kind"], info="User-created node.", params=data["params"], code=data.get("code"))
         item = self.add_node(node, scene_pos)
@@ -2426,7 +2402,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
     def _create_node_interactive(self):
         dlg = CreateNodeDialog(self, existing_names=list(self.scene._nodes_by_name.keys()))
-        if dlg.exec_() != QtWidgets.QDialog.Accepted: return
+        if _qexec(dlg) != QtWidgets.QDialog.Accepted: return
         data = dlg.result_payload()
         node = GraphNode(data["name"], kind=data["kind"], info="User-created node.", params=data["params"], code=data.get("code"))
         center_scene = self.view.mapToScene(self.view.viewport().rect().center())
