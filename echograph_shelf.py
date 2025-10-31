@@ -65,6 +65,8 @@ LLM_NODE_W_BASE = 1920
 LLM_NODE_H_BASE = 1080 + 90        # = 1170
 LLM_CONTENT_ZOOM = LLM_SCALE
 
+DEFAULT_STRIPE_HEX = "#475569"
+
 def _llm_dims():
     return int(LLM_NODE_W_BASE * LLM_SCALE), int(LLM_NODE_H_BASE * LLM_SCALE)
 
@@ -134,29 +136,29 @@ import nodes.core as core
 core.register_defaults()
 
 
-def _spec_stripe_color(kind: str) -> str | None:
-    """Return stripe color from nodes.core spec, supporting dicts or objects."""
+def _spec_stripe_color(kind: str) -> str:
+    k = (kind or "node").lower()
     try:
-        spec = core.get_spec((kind or "node").lower())
+        spec = core.get_spec(k)
     except Exception as e:
-        print(f"[EchoGraph] get_spec({kind}) failed:", e)
-        return None
+        print(f"[EchoGraph] get_spec({k}) failed:", e)
+        spec = None
 
-    # dict style spec
-    if isinstance(spec, dict):
-        return spec.get("stripe_color") or spec.get("color") or spec.get("stripe")
+    if spec is not None:
+        if isinstance(spec, dict):
+            c = spec.get("stripe_color") or spec.get("color") or spec.get("stripe")
+            if c: return str(c)
+        for attr in ("stripe_color", "color", "stripe"):
+            try:
+                val = getattr(spec, attr)
+                if val:
+                    return str(val)
+            except Exception:
+                pass
+        print(f"[EchoGraph] Spec for '{k}' has no stripe_color; using default.")
+        return DEFAULT_STRIPE_HEX
 
-    # object / namedtuple / SimpleNamespace style
-    for attr in ("stripe_color", "color", "stripe"):
-        try:
-            val = getattr(spec, attr)
-            if val:
-                return str(val)
-        except Exception:
-            pass
-
-    return None
-
+    return DEFAULT_STRIPE_HEX
 
 def _bootstrap_plugins():
     """Register core defaults and optional node plugins (e.g., Librarian)."""
@@ -840,11 +842,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
         except Exception as e:
             print("[EchoGraph][paint] body fail:", e)
 
-        # --- Stripe color (registry → fallback) ---
-        try:
-            stripe_hex = _spec_stripe_color((self.model.kind or "node").lower()) or "#3b82f6"
-        except Exception:
-            stripe_hex = "#3b82f6"
+        # --- Stripe color (from registry or default) ---
+        stripe_hex = _spec_stripe_color((self.model.kind or "node").lower())
 
         # --- Top stripe ---
         try:
@@ -891,6 +890,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             p.drawEllipse(QtCore.QRectF(self.width - 4, self._BASE_H / 2.0 - 4, 8, 8))
         except Exception as e:
             print("[EchoGraph][paint] sockets fail:", e)
+
 
     def hoverEnterEvent(self, e):
         self._hover = True
@@ -1206,6 +1206,7 @@ class InfoCard(QtWidgets.QFrame):
         footer = QtWidgets.QHBoxLayout(); footer.setContentsMargins(0, 0, 0, 0); footer.setSpacing(8)
 
         # Give plugins a chance to add buttons into the footer
+        # Give plugins a chance to add buttons into the footer
         _augmented_by_plugin = False
         try:
             spec = core.get_spec((node.kind or "node").lower())
@@ -1214,11 +1215,21 @@ class InfoCard(QtWidgets.QFrame):
                 augment = spec.get("augment_infocard_footer")
             else:
                 augment = getattr(spec, "augment_infocard_footer", None)
+
             if callable(augment):
-                augment(self, footer)
-                _augmented_by_plugin = True
+                try:
+                    did = bool(augment(self, footer))
+                    _augmented_by_plugin = bool(did)
+                except Exception as e:
+                    print("[EchoGraph] augment_infocard_footer raised:", e)
+                    _augmented_by_plugin = False
         except Exception as e:
             print("[EchoGraph] augment_infocard_footer error:", e)
+            _augmented_by_plugin = False
+
+        # optional debug (helps confirm the branch you’ll hit next)
+        print(f"[EchoGraph] augment hook for '{(node.kind or '').lower()}': "
+            f"callable={callable(augment)} result={_augmented_by_plugin}")
 
         kind = (node.kind or "").lower()
 
@@ -1234,10 +1245,10 @@ class InfoCard(QtWidgets.QFrame):
             footer.addWidget(run_btn)
 
         # 1) REPLACE your current "elif (node.kind or '').lower() == 'librarian':" block header
-#    down to (but NOT including) 'open_btn = QtWidgets.QPushButton("Open Librarian")'
-#    WITH THIS (i.e., delete the old TOP param actions row entirely):
+        #    down to (but NOT including) 'open_btn = QtWidgets.QPushButton("Open Librarian")'
+        #    WITH THIS (i.e., delete the old TOP param actions row entirely):
 
-        elif (node.kind or "").lower() == "librarian" and not _augmented_by_plugin:
+        elif (node.kind or "").lower() == "librarian":
             self._result_view = QtWidgets.QTextBrowser()
             self._result_view.setStyleSheet(
                 "QTextBrowser{background:#0f1216;color:#e6edf3;"
@@ -2770,3 +2781,4 @@ def _launch():
 
 # run immediately
 _launch()
+
