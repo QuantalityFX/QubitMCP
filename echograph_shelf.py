@@ -70,6 +70,43 @@ def _llm_dims():
 # Legacy variables used everywhere else:
 LLM_NODE_W, LLM_NODE_H = _llm_dims()
 
+def set_global_llm_scale(new_scale: float, scene=None):
+    """Apply a new global LLM scale and refresh all LLM nodes + layout."""
+    global LLM_SCALE, LLM_NODE_W, LLM_NODE_H
+    try:
+        s = float(new_scale)
+    except Exception:
+        return
+    s = max(0.25, min(1.75, s))  # clamp to sane range
+    if abs(s - LLM_SCALE) < 1e-6:
+        return
+
+    LLM_SCALE = s
+    LLM_NODE_W, LLM_NODE_H = _llm_dims()
+
+    if scene is None:
+        return
+
+    # Rebuild all LLM nodes so the offscreen sampler and label resize
+    for item in list(getattr(scene, "_node_items", {}).values()):
+        try:
+            if (item.model.kind or "").lower() == "llm":
+                item._recompute_height()
+                item._build_widgets()
+        except Exception:
+            pass
+
+    # Refresh edges and scene rect
+    for e in list(getattr(scene, "_edges", [])):
+        try: e.updatePath()
+        except Exception: pass
+    try:
+        if hasattr(scene, "_reframe_to_nodes"):
+            scene._reframe_to_nodes()
+    except Exception:
+        pass
+
+
 def _script_dir():
     if "__file__" in globals():
         try:
@@ -1678,6 +1715,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
         item.setPos(scene_pos - QtCore.QPointF(item.width/2.0, item.height/2.0))
         if callable(self.on_info): self.on_info(node)
 
+    # --- in GraphScene.to_dict(self) ---
     def to_dict(self):
         nodes=[]
         for node in self._nodes_by_name.values():
@@ -1692,10 +1730,21 @@ class GraphScene(QtWidgets.QGraphicsScene):
                 nd["switch_index"] = int(node.switch_index)
             nodes.append(nd)
         edges=[{"src": e.src.model.name, "dst": e.dst.model.name} for e in self._edges]
-        return {"nodes": nodes, "edges": edges}
 
+        # ADD this:
+        return {"nodes": nodes, "edges": edges, "llm_scale": float(LLM_SCALE)}
+
+    # --- in GraphScene.from_dict(self, data) ---
     def from_dict(self, data):
         self.clear_scene()
+
+        # ADD this (apply saved scale before building nodes):
+        try:
+            s = float((data.get("settings", {}) or {}).get("llm_scale", LLM_SCALE))
+            set_global_llm_scale(s, self)
+        except Exception:
+            pass
+
         for nd in data.get("nodes", []):
             n = GraphNode(
                 nd["name"], nd.get("kind","node"), nd.get("info",""), nd.get("code"),
@@ -1714,6 +1763,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
             self.recompute_active_path(self._current_output_name)
         else:
             self._clear_path_highlight()
+
 
     def clear_scene(self):
         for e in list(self._edges):
@@ -2301,14 +2351,17 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             self.scene.nodeDeleted.connect(self._on_node_deleted)
         except Exception:
             pass
-        
+
         # keep Info cards in sync with param edits
         try:
             self.scene.paramChanged.connect(self._on_params_changed)
         except Exception:
             pass
 
+        set_global_llm_scale(0.5, self.scene)  # ← apply global LLM scale here
+        
         self.view = GraphView(self.scene)
+
         self.view.setMinimumSize(400, 300)
         v.addWidget(self.view, 1)
 
@@ -2349,8 +2402,27 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         btn_export.clicked.connect(self._export_graph)
         h.addWidget(btn_export, 0)
 
-        h.addStretch(1)
+        # --- LLM Scale slider ---
+        # LLM Scale (LEFT side)
+        # h.addStretch(1)  # ← move content that follows to the right
+
+        self._llm_value_lbl = QtWidgets.QLabel(f"{int(round(LLM_SCALE*100))}%")
+        self._llm_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self._llm_slider.setMinimum(25); self._llm_slider.setMaximum(175)
+        self._llm_slider.setSingleStep(1); self._llm_slider.setPageStep(5)
+        self._llm_slider.setFixedWidth(140)
+        self._llm_slider.setValue(int(round(LLM_SCALE * 100)))
+        self._llm_slider.valueChanged.connect(
+            lambda v: (set_global_llm_scale(max(0.25, min(1.75, v/100.0)), self.scene),
+                    self._llm_value_lbl.setText(f"{v}%"))
+        )
+        h.addWidget(QtWidgets.QLabel("LLM Scale"))
+        h.addWidget(self._llm_slider)
+        h.addWidget(self._llm_value_lbl)
+
+        h.addStretch(1)   # ← stretch AFTER the slider block to keep it left
         return bar
+    
 
     def _create_node_interactive(self):
         dlg = CreateNodeDialog(self, existing_names=list(self.scene._nodes_by_name.keys()))
@@ -2366,8 +2438,21 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Open Graph (.json)", "", "JSON Files (*.json)")
         if not path: return
         try:
-            with open(path, "r", encoding="utf-8") as f: data = json.load(f)
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
             self.scene.from_dict(data)
+
+            # ← restore LLM scale and slider from file (default to current if missing)
+            s = float(data.get("llm_scale", LLM_SCALE))
+            set_global_llm_scale(s, self.scene)
+            if hasattr(self, "_llm_slider"):
+                self._llm_slider.blockSignals(True)
+                self._llm_slider.setValue(int(round(s * 100)))
+                if hasattr(self, "_llm_value_lbl"):
+                    self._llm_value_lbl.setText(f"{int(round(s*100))}%")
+                self._llm_slider.blockSignals(False)
+
             self._current_path = path
             if self.scene._node_items:
                 first = next(iter(self.scene._node_items.values()))
