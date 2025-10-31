@@ -1,43 +1,31 @@
 # nodes/librarian/__init__.py
-from .spec import LibrarianSpec
+from __future__ import annotations
 
-def register():
+# Import the Spec (with augment_infocard_footer returning False)
+from .spec import Spec
+
+def register() -> None:
     """
-    Called by EchoGraph’s plugin bootstrap:
-      - imports nodes.librarian
-      - looks for callable 'register'
-      - runs it
-    This must register the spec into nodes.core.
+    Register the Librarian spec with nodes.core.
+    Prefers core.register_spec(name, spec); falls back to core.register(name, spec).
     """
-    try:
-        import nodes.core as core
-    except Exception as e:
-        print("[Librarian] core import failed:", e)
+    import importlib
+
+    core = importlib.import_module("nodes.core")
+
+    # Prefer newer API
+    if hasattr(core, "register_spec") and callable(core.register_spec):
+        core.register_spec("librarian", Spec)
         return
 
-    spec = LibrarianSpec()
+    # Fallback
+    if hasattr(core, "register") and callable(core.register):
+        core.register("librarian", Spec)
+        return
 
-    # Try common registry APIs, fall back to dict injection if present.
-    for fn_name in ("register", "register_kind", "register_spec", "add_spec"):
-        fn = getattr(core, fn_name, None)
-        if callable(fn):
-            try:
-                # prefer (kind, spec)
-                fn("librarian", spec)
-            except TypeError:
-                # some registries accept just the spec with spec.kind attribute
-                fn(spec)
-            print("[Librarian] registered via core.%s" % fn_name)
-            return
+    raise AttributeError(
+        "[librarian] nodes.core has neither register_spec nor register; "
+        "export one that accepts (name, spec)."
+    )
 
-    # Last-ditch fallback if core exposes a dict
-    try:
-        reg = getattr(core, "_REGISTRY", None) or getattr(core, "REGISTRY", None) or getattr(core, "_registry", None)
-        if isinstance(reg, dict):
-            reg["librarian"] = spec
-            print("[Librarian] registered via registry dict fallback")
-            return
-    except Exception:
-        pass
-
-    print("[Librarian] failed to register: no known registry API found")
+__all__ = ["register", "Spec"]
