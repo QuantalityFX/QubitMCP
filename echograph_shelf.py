@@ -132,6 +132,7 @@ for _p in (str(_BASE_DIR), str(_NODES_DIR)):
 
 # --- Node-kind registry (plugin hooks) ---
 import nodes.core as core
+from nodes.loader import bootstrap_plugins
 
 core.register_defaults()
 
@@ -159,124 +160,6 @@ def _spec_stripe_color(kind: str) -> str:
         return DEFAULT_STRIPE_HEX
 
     return DEFAULT_STRIPE_HEX
-
-def _bootstrap_plugins():
-    """Register core defaults and optional node plugins (e.g., Librarian)."""
-    # 1) Core defaults (single source of truth)
-    try:
-        core.register_defaults()
-    except Exception as e:
-        print("[EchoGraph] register_defaults failed:", e)
-
-    # 2) Optional: Librarian plugin (nodes/librarian/__init__.py exposes register())
-    try:
-        from nodes import librarian  # package path: nodes/librarian/__init__.py
-        if hasattr(librarian, "register"):
-            librarian.register()
-
-            # ⬇️ ADD THIS probe immediately after register()
-            try:
-                spec = core.get_spec("librarian")
-                print("[EchoGraph] librarian spec:",
-                      type(spec).__name__, "stripe:", getattr(spec, "stripe_color", None))
-                has_hook = bool(getattr(spec, "augment_infocard_footer", None))
-                print(f"[EchoGraph] Librarian plugin registered. augment_infocard_footer={has_hook}")
-            except Exception as e:
-                print("[EchoGraph] core.get_spec('librarian') failed:", e)
-        else:
-            print("[EchoGraph] Librarian module has no 'register' function.")
-    except Exception as e:
-        print("[EchoGraph] Librarian plugin import failed:", e)
-
-    # 3) Optional: Note plugin
-    try:
-        from nodes import note
-        if hasattr(note, "register"):
-            note.register()
-
-            # ⬇️ ADD THIS probe immediately after register()
-            try:
-                spec = core.get_spec("note")
-                print("[EchoGraph] note spec:",
-                      type(spec).__name__, "stripe:", getattr(spec, "stripe_color", None))
-                has_hook = bool(getattr(spec, "augment_infocard_footer", None))
-                print(f"[EchoGraph] Note plugin registered. augment_infocard_footer={has_hook}")
-            except Exception as e:
-                print("[EchoGraph] core.get_spec('note') failed:", e)
-        else:
-            print("[EchoGraph] Note module has no 'register' function.")
-    except Exception as e:
-        print("[EchoGraph] Note plugin import failed:", e)
-
-    # 4) Optional: Python plugin
-    try:
-        from nodes import python as python_node
-        if hasattr(python_node, "register"):
-            python_node.register()
-            try:
-                spec = core.get_spec("python")
-                print("[EchoGraph] python spec:",
-                    type(spec).__name__, "stripe:", getattr(spec, "stripe_color", None))
-            except Exception as e:
-                print("[EchoGraph] core.get_spec('python') failed:", e)
-        else:
-            print("[EchoGraph] Python module has no 'register' function.")
-    except Exception as e:
-        print("[EchoGraph] Python plugin import failed:", e)
-
-    # 5) Optional: Output plugin
-    try:
-        from nodes import output
-        if hasattr(output, "register"):
-            output.register()
-            # probe (optional)
-            try:
-                spec = core.get_spec("output")
-                print("[EchoGraph] output spec:",
-                      type(spec).__name__, "stripe:", getattr(spec, "stripe_color", None))
-            except Exception as e:
-                print("[EchoGraph] core.get_spec('output') failed:", e)
-        else:
-            print("[EchoGraph] Output module has no 'register' function.")
-    except Exception as e:
-        print("[EchoGraph] Output plugin import failed:", e)
-
-    # 6) Optional: Append plugin
-    import importlib, sys
-    try:
-        append_node = importlib.import_module("nodes.append")  # ← force the submodule
-        print("[EchoGraph] append module:", getattr(append_node, "__file__", "<no __file__>"))
-        if hasattr(append_node, "register"):
-            append_node.register()
-            try:
-                spec = core.get_spec("append")
-                print("[EchoGraph] append spec:", type(spec).__name__,
-                    "stripe:", getattr(spec, "stripe_color", None),
-                    "has_hook:", bool(getattr(spec, "augment_infocard_footer", None)))
-            except Exception as e:
-                print("[EchoGraph] core.get_spec('append') failed:", e)
-        else:
-            print("[EchoGraph] Append module missing 'register' (got:", dir(append_node), ")")
-    except Exception as e:
-        print("[EchoGraph] Append plugin import failed:", e)
-
-    # 7) Optional: Switch plugin
-    try:
-        from nodes import switch as switch_node
-        if hasattr(switch_node, "register"):
-            switch_node.register()
-            try:
-                spec = core.get_spec("switch")
-                print("[EchoGraph] switch spec:", type(spec).__name__,
-                    "stripe:", getattr(spec, "stripe_color", None),
-                    "has_hook:", bool(getattr(spec, "augment_infocard_footer", None)))
-            except Exception as e:
-                print("[EchoGraph] core.get_spec('switch') failed:", e)
-        else:
-            print("[EchoGraph] Switch module has no 'register' function.")
-    except Exception as e:
-        print("[EchoGraph] Switch plugin import failed:", e)
-
 
 # --- host detection (Maya / Houdini / standalone) ---
 HOST = "standalone"
@@ -2515,7 +2398,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        _bootstrap_plugins()  # ← register core + optional plugin specs before scene builds
+        bootstrap_plugins()  # ← register core + optional plugin specs before scene builds
 
         self.setObjectName("EchoGraphWindow")
         self.setWindowTitle(APP_TITLE)
