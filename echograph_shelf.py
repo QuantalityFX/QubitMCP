@@ -173,9 +173,12 @@ def _bootstrap_plugins():
         from nodes import librarian  # package path: nodes/librarian/__init__.py
         if hasattr(librarian, "register"):
             librarian.register()
-            # Sanity log: do we have the augment hook?
+
+            # ⬇️ ADD THIS probe immediately after register()
             try:
                 spec = core.get_spec("librarian")
+                print("[EchoGraph] librarian spec:",
+                      type(spec).__name__, "stripe:", getattr(spec, "stripe_color", None))
                 has_hook = bool(getattr(spec, "augment_infocard_footer", None))
                 print(f"[EchoGraph] Librarian plugin registered. augment_infocard_footer={has_hook}")
             except Exception as e:
@@ -190,8 +193,12 @@ def _bootstrap_plugins():
         from nodes import note
         if hasattr(note, "register"):
             note.register()
+
+            # ⬇️ ADD THIS probe immediately after register()
             try:
                 spec = core.get_spec("note")
+                print("[EchoGraph] note spec:",
+                      type(spec).__name__, "stripe:", getattr(spec, "stripe_color", None))
                 has_hook = bool(getattr(spec, "augment_infocard_footer", None))
                 print(f"[EchoGraph] Note plugin registered. augment_infocard_footer={has_hook}")
             except Exception as e:
@@ -2526,6 +2533,14 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         btn_export.clicked.connect(self._export_graph)
         h.addWidget(btn_export, 0)
 
+        btn_logs = QtWidgets.QPushButton("Logs")
+        btn_logs.setToolTip("Open EchoGraph log folder")
+        btn_logs.clicked.connect(lambda: QtGui.QDesktopServices.openUrl(
+            QtCore.QUrl.fromLocalFile(__import__("os").path.join(__import__("tempfile").gettempdir(), "EchoGraph"))
+        ))
+        h.addWidget(btn_logs, 0)
+
+                
         # --- LLM Scale slider ---
         # LLM Scale (LEFT side)
         # h.addStretch(1)  # ← move content that follows to the right

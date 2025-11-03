@@ -1,7 +1,45 @@
-# edugraph_app.py
-import sys
+# echograph_app.py
 from pathlib import Path
+import sys
+
+# Ensure local imports (icons, echograph_shelf, nodes/*) resolve
 sys.path.insert(0, str(Path(__file__).parent))
+
+# --- EchoGraph: stdout/stderr -> per-day temp log (works with pythonw) ---
+import os, time, tempfile, atexit, traceback
+
+def _init_logging():
+    log_dir = os.path.join(tempfile.gettempdir(), "EchoGraph")
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, f"echograph_{time.strftime('%Y%m%d')}.log")
+
+    # Line-buffered so writes appear quickly
+    f = open(log_path, mode="a", encoding="utf-8", buffering=1)
+    sys.stdout = f
+    sys.stderr = f
+
+    print(f"[{time.strftime('%H:%M:%S')}] --- EchoGraph started ---")
+
+    # Log any uncaught exceptions too
+    def _excepthook(exc_type, exc, tb):
+        print("\n[EchoGraph] Uncaught exception:")
+        traceback.print_exception(exc_type, exc, tb)
+    sys.excepthook = _excepthook
+
+    @atexit.register
+    def _close_log():
+        try:
+            print(f"[{time.strftime('%H:%M:%S')}] --- EchoGraph exit ---")
+        except Exception:
+            pass
+        try:
+            f.flush(); f.close()
+        except Exception:
+            pass
+
+    return log_path
+
+_LOG_PATH = _init_logging()
 
 # Qt imports with fallback
 try:
@@ -17,8 +55,7 @@ icon_path = Path(__file__).parent / "icons" / "EchoMatrixMCP_Icon_s.png"
 if icon_path.exists():
     app.setWindowIcon(QtGui.QIcon(str(icon_path)))
 else:
-    # Non-fatal, but useful in console if you launched with python.exe
-    print(f"[EduGraph] Icon not found: {icon_path}")
+    print(f"[EchoGraph] Icon not found: {icon_path}")
 
 # Windows taskbar identity (groups as its own app)
 if sys.platform.startswith("win"):
@@ -29,8 +66,8 @@ if sys.platform.startswith("win"):
         pass
 
 # Dark theme for standalone
-def apply_dark(app):
-    app.setStyle("Fusion")
+def apply_dark(app_):
+    app_.setStyle("Fusion")
     pal = QtGui.QPalette()
     pal.setColor(QtGui.QPalette.Window,        QtGui.QColor("#1a1f24"))
     pal.setColor(QtGui.QPalette.WindowText,    QtGui.QColor("#e6edf3"))
@@ -47,12 +84,12 @@ def apply_dark(app):
     pal.setColor(QtGui.QPalette.HighlightedText, QtGui.QColor("#0a0f0a"))
     pal.setColor(QtGui.QPalette.Disabled, QtGui.QPalette.Text,       QtGui.QColor("#808891"))
     pal.setColor(QtGui.QPalette.Disabled, QtGui.QPalette.ButtonText, QtGui.QColor("#808891"))
-    app.setPalette(pal)
+    app_.setPalette(pal)
 
 apply_dark(app)
 
 # Import the shelf script (it builds and shows the window)
-import echograph_shelf
+import echograph_shelf  # this runs _launch() and sets echograph_shelf._WINDOW
 
 # Ensure taskbar-visible (force Qt.Window in case shelf used a tool flag)
 try:
@@ -66,7 +103,11 @@ try:
         app.setQuitOnLastWindowClosed(True)
         win.show(); win.raise_(); win.activateWindow()
 except Exception as e:
-    # If you run with python.exe, you'll see this
     print("[EchoGraph] Failed to show window:", e)
 
-sys.exit(app.exec())
+# PySide6 uses exec(); PySide2 uses exec_()
+try:
+    rc = app.exec()
+except AttributeError:
+    rc = app.exec_()
+sys.exit(rc)
