@@ -224,6 +224,60 @@ def _bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Python plugin import failed:", e)
 
+    # 5) Optional: Output plugin
+    try:
+        from nodes import output
+        if hasattr(output, "register"):
+            output.register()
+            # probe (optional)
+            try:
+                spec = core.get_spec("output")
+                print("[EchoGraph] output spec:",
+                      type(spec).__name__, "stripe:", getattr(spec, "stripe_color", None))
+            except Exception as e:
+                print("[EchoGraph] core.get_spec('output') failed:", e)
+        else:
+            print("[EchoGraph] Output module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Output plugin import failed:", e)
+
+    # 6) Optional: Append plugin
+    import importlib, sys
+    try:
+        append_node = importlib.import_module("nodes.append")  # ← force the submodule
+        print("[EchoGraph] append module:", getattr(append_node, "__file__", "<no __file__>"))
+        if hasattr(append_node, "register"):
+            append_node.register()
+            try:
+                spec = core.get_spec("append")
+                print("[EchoGraph] append spec:", type(spec).__name__,
+                    "stripe:", getattr(spec, "stripe_color", None),
+                    "has_hook:", bool(getattr(spec, "augment_infocard_footer", None)))
+            except Exception as e:
+                print("[EchoGraph] core.get_spec('append') failed:", e)
+        else:
+            print("[EchoGraph] Append module missing 'register' (got:", dir(append_node), ")")
+    except Exception as e:
+        print("[EchoGraph] Append plugin import failed:", e)
+
+    # 7) Optional: Switch plugin
+    try:
+        from nodes import switch as switch_node
+        if hasattr(switch_node, "register"):
+            switch_node.register()
+            try:
+                spec = core.get_spec("switch")
+                print("[EchoGraph] switch spec:", type(spec).__name__,
+                    "stripe:", getattr(spec, "stripe_color", None),
+                    "has_hook:", bool(getattr(spec, "augment_infocard_footer", None)))
+            except Exception as e:
+                print("[EchoGraph] core.get_spec('switch') failed:", e)
+        else:
+            print("[EchoGraph] Switch module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Switch plugin import failed:", e)
+
+
 # --- host detection (Maya / Houdini / standalone) ---
 HOST = "standalone"
 maya_cmds = None
@@ -1779,6 +1833,13 @@ class GraphScene(QtWidgets.QGraphicsScene):
                 for p in (node_item.model.params or []):
                     if (p.get("name","") or "").strip().lower() == "prompt":
                         return p.get("value","")
+
+            # minimal generic fallback (Note, etc.)
+            for key in ("text", "content"):
+                for p in (node_item.model.params or []):
+                    if (p.get("name","") or "").strip().lower() == key:
+                        v = (p.get("value","") or "").strip()
+                        if v: return v
         except Exception:
             pass
         return ""
@@ -2359,7 +2420,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
 
         self.kind_edit = QtWidgets.QComboBox()
         self.kind_edit.setEditable(True)
-        self.kind_edit.addItems(["node","import","python","switch","output","llm","librarian","note"])
+        self.kind_edit.addItems(["node","import","python","switch","output","llm","librarian","note","append"])
         self.kind_edit.setEditText("node")
         form.addRow("Node type:", self.kind_edit)
 
