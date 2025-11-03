@@ -208,6 +208,21 @@ def _bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Note plugin import failed:", e)
 
+    # 4) Optional: Python plugin
+    try:
+        from nodes import python as python_node
+        if hasattr(python_node, "register"):
+            python_node.register()
+            try:
+                spec = core.get_spec("python")
+                print("[EchoGraph] python spec:",
+                    type(spec).__name__, "stripe:", getattr(spec, "stripe_color", None))
+            except Exception as e:
+                print("[EchoGraph] core.get_spec('python') failed:", e)
+        else:
+            print("[EchoGraph] Python module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Python plugin import failed:", e)
 
 # --- host detection (Maya / Houdini / standalone) ---
 HOST = "standalone"
@@ -1257,22 +1272,7 @@ class InfoCard(QtWidgets.QFrame):
 
         kind = (node.kind or "").lower()
 
-        if kind == "python":
-            edit_btn = QtWidgets.QPushButton("Edit Code…")
-            edit_btn.setToolTip("Edit and save this node's Python script")
-            edit_btn.clicked.connect(self._edit_code)
-            footer.addWidget(edit_btn)
-
-            run_btn = QtWidgets.QPushButton("Run Python")
-            run_btn.setToolTip("Provides maya.cmds as 'cmds' and Houdini as 'hou'")
-            run_btn.clicked.connect(self._run_code)
-            footer.addWidget(run_btn)
-
-        # 1) REPLACE your current "elif (node.kind or '').lower() == 'librarian':" block header
-        #    down to (but NOT including) 'open_btn = QtWidgets.QPushButton("Open Librarian")'
-        #    WITH THIS (i.e., delete the old TOP param actions row entirely):
-
-        elif (node.kind or "").lower() == "librarian":
+        if (node.kind or "").lower() == "librarian":
             self._result_view = QtWidgets.QTextBrowser()
             self._result_view.setStyleSheet(
                 "QTextBrowser{background:#0f1216;color:#e6edf3;"
@@ -1424,7 +1424,7 @@ class InfoCard(QtWidgets.QFrame):
             except Exception:
                 pass
 
-        elif node.code:
+        elif node.code and not _augmented_by_plugin:
             run_btn = QtWidgets.QPushButton("Run Python")
             run_btn.setToolTip("Provides maya.cmds as 'cmds' and Houdini as 'hou'")
             run_btn.clicked.connect(self._run_code)
