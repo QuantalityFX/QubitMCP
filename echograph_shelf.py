@@ -466,6 +466,49 @@ class NodeItem(QtWidgets.QGraphicsObject):
         self._recompute_height()
         self._build_widgets()
 
+
+    def _rebuild_deferred(self):
+        """Recompute + rebuild on next event-loop tick to avoid re-entrancy/tearing."""
+        try:
+            from PySide6 import QtCore as _QtCore
+        except Exception:
+            from PySide2 import QtCore as _QtCore
+        if getattr(self, "_rebuild_pending", False):
+            return
+        self._rebuild_pending = True
+        _QtCore.QTimer.singleShot(0, lambda: (
+            setattr(self, "_rebuild_pending", False),
+            self._recompute_height(),
+            self._build_widgets()
+        ))
+
+
+    def _get_featured_set(self):
+        """Return a COPY of featured param names (set[str]) on this node's model."""
+        feat = getattr(self.model, "_featured_params", None)
+
+        out = set()
+        if isinstance(feat, set):
+            out.update(feat)
+        elif isinstance(feat, (list, tuple)):
+            out.update([str(x) for x in feat if x])
+        elif isinstance(feat, str) and feat:
+            out.add(feat)
+
+        # migrate legacy single string once
+        old = getattr(self.model, "_featured_param", "")
+        if isinstance(old, str) and old:
+            out.add(old)
+            try: setattr(self.model, "_featured_param", "")
+            except Exception: pass
+
+        return out
+
+    def _set_featured_set(self, names: set[str]):
+        """Write back a NEW set instance (copy-on-write)."""
+        setattr(self.model, "_featured_params", set(names))
+
+
     def _normalize_url(self, s: str) -> str:
         s = (s or "").strip()
         if not s:
@@ -489,17 +532,20 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
         # params height
         n_params = len(self.model.params)
-
         params_h = n_params * self._PARAM_ROW_H
-        # If this is a Note node and it has a featured param, add extra height
-        if kind == "note":
+
+        # If this is a Note node and it has featured params, add extra height per one
+        if (self.model.kind or "").lower() == "note":
             try:
-                feat = getattr(self.model, "_featured_param", None) or ""
-                if feat:
-                    # one row becomes multi-line; add the delta
-                    params_h += max(0, self._NOTE_FEATURED_H - self._PARAM_ROW_H)
+                feat_set = self._get_featured_set()
+                n_feat = len(feat_set)
+                if n_feat:
+                    # We render BOTH the regular row (already counted in n_params*row)
+                    # AND an extra big row per featured → add full NOTE_FEATURED_H per featured
+                    params_h += n_feat * self._NOTE_FEATURED_H
             except Exception:
                 pass
+
 
         params_h += (self._PADDING if n_params else 0)
 
@@ -590,228 +636,218 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
 
     def _build_widgets(self):
-        self._clear_widget_proxies()
-        y_cursor = 38 + 16 + self._PADDING
-
-        # --- Plugin body hook (lets specs draw a custom node body) ---
+        # prevent re-entrancy while we're tearing down/creating proxies
+        if getattr(self, "_is_building", False):
+            return
+        self._is_building = True
         try:
-            spec = core.get_spec((self.model.kind or "node").lower())
-            render = None
-            if isinstance(spec, dict):
-                render = spec.get("render_node_body")
-            else:
-                render = getattr(spec, "render_node_body", None)
-            if callable(render):
-                new_y = render(self, y_cursor)
-                if isinstance(new_y, (int, float)):
-                    y_cursor = int(new_y)
-        except Exception as e:
-            print("[EchoGraph] render_node_body error:", e)
+            self._clear_widget_proxies()
+            y_cursor = 38 + 16 + self._PADDING
 
-        # --- Switch slider row ---
-        if (self.model.kind or "").lower() == "switch":
-            row = QtWidgets.QWidget()
-            row.setAttribute(QtCore.Qt.WA_TranslucentBackground)
-            lay = QtWidgets.QHBoxLayout(row)
-            lay.setContentsMargins(6, 0, 6, 0)
-            lay.setSpacing(6)
+            # --- Plugin body hook (lets specs draw a custom node body) ---
+            try:
+                spec = core.get_spec((self.model.kind or "node").lower())
+                render = None
+                if isinstance(spec, dict):
+                    render = spec.get("render_node_body")
+                else:
+                    render = getattr(spec, "render_node_body", None)
+                if callable(render):
+                    new_y = render(self, y_cursor)
+                    if isinstance(new_y, (int, float)):
+                        y_cursor = int(new_y)
+            except Exception as e:
+                print("[EchoGraph] render_node_body error:", e)
 
-            lab = QtWidgets.QLabel(self._switch_label_text())
-            lab.setStyleSheet("color:#cbd5e1;")
-
-            slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-            slider.setMinimum(0)
-            slider.setMaximum(max(0, len(self.model.switch_inputs) - 1))
-            slider.setSingleStep(1); slider.setPageStep(1)
-            slider.setValue(max(0, min(self.model.switch_index, slider.maximum())))
-            slider.valueChanged.connect(lambda v, L=lab: self._on_switch_slider(v, L))
-
-            lay.addWidget(lab); lay.addWidget(slider, 1)
-
-            proxy = QtWidgets.QGraphicsProxyWidget(self)
-            proxy.setWidget(row)
-            proxy.setZValue(self.zValue() + 0.1)
-            proxy.setPos(0, y_cursor)
-            proxy.resize(self.width, self._PARAM_ROW_H)
-            self._switch_proxy = proxy
-
-            y_cursor += self._PARAM_ROW_H
-
-        # --- Parameters ---
-        if self.model.params:
-            kind = (self.model.kind or "").lower()
-            featured_name = ""
-            if kind == "note":
-                try:
-                    featured_name = getattr(self.model, "_featured_param", "") or ""
-                except Exception:
-                    featured_name = ""
-
-            for i, p in enumerate(self.model.params):
-                pname = p.get("name", "")
-                pval  = p.get("value", "")
-                is_note = (kind == "note")
-                is_featured = is_note and (pname == featured_name)
-
-                # Row container (horizontal: eye | label | editor)
+            # --- Switch slider row ---
+            if (self.model.kind or "").lower() == "switch":
                 row = QtWidgets.QWidget()
                 row.setAttribute(QtCore.Qt.WA_TranslucentBackground)
                 lay = QtWidgets.QHBoxLayout(row)
                 lay.setContentsMargins(6, 0, 6, 0)
                 lay.setSpacing(6)
 
-                # 👁 eye on the LEFT (Note only)
-                if is_note:
-                    eye_btn = QtWidgets.QToolButton()
-                    eye_btn.setAutoRaise(True)
-                    eye_btn.setToolTip("Toggle big view for this parameter below")
-                    eye_btn.setText("👁️" if is_featured else "🙈")  # open when featured, closed otherwise
-
-                    def _toggle_feat(_idx=i, _pname=pname, _btn=eye_btn):
-                        cur = getattr(self.model, "_featured_param", "") or ""
-                        setattr(self.model, "_featured_param", "" if cur == _pname else _pname)
-                        # Defer rebuild to end of event loop (avoid tearing down sender mid-signal)
-                        self._schedule_rebuild()
-
-                    eye_btn.clicked.connect(_toggle_feat)
-                    lay.addWidget(eye_btn)
-
-                # Label
-                lab = QtWidgets.QLabel(pname)
+                lab = QtWidgets.QLabel(self._switch_label_text())
                 lab.setStyleSheet("color:#cbd5e1;")
-                lay.addWidget(lab)
 
-                # Small editor (single-line) always present on the main row
-                edit = QtWidgets.QLineEdit(pval)
-                edit.setPlaceholderText("value")
-                edit.setStyleSheet(
-                    "QLineEdit{background:#12151a;color:#e6edf3;"
-                    "border:1px solid #3c4450;border-radius:4px;padding:2px 6px;}"
-                )
-                # Keep model synced
-                edit.textChanged.connect(lambda txt, idx=i: self._on_param_changed(idx, txt))
+                slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+                slider.setMinimum(0)
+                slider.setMaximum(max(0, len(self.model.switch_inputs) - 1))
+                slider.setSingleStep(1); slider.setPageStep(1)
+                slider.setValue(max(0, min(self.model.switch_index, slider.maximum())))
+                slider.valueChanged.connect(lambda v, L=lab: self._on_switch_slider(v, L))
 
-                # Big editor shortcut/context
-                self._wire_bigedit_shortcut(edit, pname or "value")
-                act = QAction("Open Big Editor (Ctrl+B)", edit)
-                act.triggered.connect(
-                    lambda _=False, e=edit, nm=(pname or "value"): self._open_big_param_editor(f"Edit: {nm}", e.text(), e)
-                )
-                edit.addAction(act)
-                edit.setContextMenuPolicy(QtCore.Qt.ActionsContextMenu)
+                lay.addWidget(lab); lay.addWidget(slider, 1)
 
-                lay.addWidget(edit, 1)
-
-                # Place the main row
-                row_h = self._PARAM_ROW_H
                 proxy = QtWidgets.QGraphicsProxyWidget(self)
                 proxy.setWidget(row)
                 proxy.setZValue(self.zValue() + 0.1)
                 proxy.setPos(0, y_cursor)
-                proxy.resize(self.width, row_h)
-                self._param_proxies.append(proxy)
-                y_cursor += row_h
+                proxy.resize(self.width, self._PARAM_ROW_H)
+                self._switch_proxy = proxy
 
-                # If featured → add a SECOND row right BELOW with a large QTextEdit
-                if is_featured:
-                    big_row = QtWidgets.QWidget()
-                    big_row.setAttribute(QtCore.Qt.WA_TranslucentBackground)
+                y_cursor += self._PARAM_ROW_H
 
-                    vlay = QtWidgets.QVBoxLayout(big_row)
-                    vlay.setContentsMargins(0, 0, 0, 0)   # ← no outer margins: fully flush to node edges
-                    vlay.setSpacing(0)
+            # --- Parameters ---
+            if self.model.params:
+                kind = (self.model.kind or "").lower()
+                feat_set = self._get_featured_set() if kind == "note" else set()
 
-                    big = QtWidgets.QTextEdit()
-                    big.setAcceptRichText(False)
-                    big.setPlainText(pval)
-                    # No frame + tiny padding so it looks flush but still readable
-                    big.setFrameStyle(QtWidgets.QFrame.NoFrame)
-                    big.setStyleSheet(
-                        "QTextEdit{background:#0f1216;color:#e6edf3;"
-                        "border:1px solid #3c4450;border-radius:6px;padding:2px;}"
+                for i, p in enumerate(self.model.params):
+                    pname = p.get("name", "")
+                    pval  = p.get("value", "")
+
+                    # Row 1: eye (optional) + label + line edit
+                    row = QtWidgets.QWidget()
+                    row.setAttribute(QtCore.Qt.WA_TranslucentBackground)
+                    lay = QtWidgets.QHBoxLayout(row)
+                    lay.setContentsMargins(6, 0, 6, 0)
+                    lay.setSpacing(6)
+
+                    if kind == "note":
+                        eye_btn = QtWidgets.QToolButton()
+                        is_featured = pname in feat_set
+                        eye_btn.setAutoRaise(True)
+                        eye_btn.setToolTip("Toggle big view for this parameter")
+                        eye_btn.setText("🙈" if not is_featured else "👁")
+
+                        def _mk_toggle(nm=pname, btn=eye_btn):
+                            def _toggle():
+                                fs = set(self._get_featured_set())  # copy-on-write
+                                if nm in fs:
+                                    fs.remove(nm)
+                                else:
+                                    fs.add(nm)
+                                # write back (use helper if you later add one)
+                                try:
+                                    setattr(self.model, "_featured_params", set(fs))
+                                except Exception:
+                                    pass
+                                # defer heavy rebuild to end of event loop tick
+                                self._schedule_rebuild()
+                            return _toggle
+                        eye_btn.clicked.connect(_mk_toggle())
+                        lay.addWidget(eye_btn)
+
+                    lab = QtWidgets.QLabel(pname)
+                    lab.setStyleSheet("color:#cbd5e1;")
+                    lay.addWidget(lab)
+
+                    edit = QtWidgets.QLineEdit(pval)
+                    edit.setPlaceholderText("value")
+                    edit.setStyleSheet(
+                        "QLineEdit{background:#12151a;color:#e6edf3;"
+                        "border:1px solid #3c4450;border-radius:4px;padding:2px 6px;}"
                     )
+                    edit.textChanged.connect(lambda txt, idx=i: self._on_param_changed(idx, txt))
 
-                    # Keep model synced
-                    def _sync_big(idx=i, w=big):
-                        self._on_param_changed(idx, w.toPlainText())
-                    big.textChanged.connect(_sync_big)
+                    # Ctrl+B shortcut + context action
+                    self._wire_bigedit_shortcut(edit, p.get("name", "value"))
+                    act = QAction("Open Big Editor (Ctrl+B)", edit)
+                    act.triggered.connect(
+                        lambda _=False, e=edit, nm=p.get("name","value"):
+                            self._open_big_param_editor(f"Edit: {nm}", e.text(), e)
+                    )
+                    edit.addAction(act)
+                    edit.setContextMenuPolicy(QtCore.Qt.ActionsContextMenu)
+                    lay.addWidget(edit, 1)
 
-                    vlay.addWidget(big, 1)
+                    proxy = QtWidgets.QGraphicsProxyWidget(self)
+                    proxy.setWidget(row)
+                    proxy.setZValue(self.zValue() + 0.1)
+                    proxy.setPos(0, y_cursor)
+                    proxy.resize(self.width, self._PARAM_ROW_H)
+                    self._param_proxies.append(proxy)
 
-                    big_proxy = QtWidgets.QGraphicsProxyWidget(self)
-                    big_proxy.setWidget(big_row)
-                    big_proxy.setZValue(self.zValue() + 0.1)
-                    big_proxy.setPos(1, y_cursor)                 # ← hug left edge
-                    big_proxy.resize(self.width - 2, self._NOTE_FEATURED_H)  # ← full width minus 1px each side
-                    self._param_proxies.append(big_proxy)
+                    y_cursor += self._PARAM_ROW_H
 
-                    y_cursor += self._NOTE_FEATURED_H
+                    # If featured → add a SECOND row right BELOW with a large QTextEdit
+                    if kind == "note" and pname in feat_set:
+                        big_row = QtWidgets.QWidget()
+                        big_row.setAttribute(QtCore.Qt.WA_TranslucentBackground)
+                        vlay = QtWidgets.QVBoxLayout(big_row)
+                        vlay.setContentsMargins(6, 4, 6, 6)  # left flush, a bit of bottom breathing room
+                        vlay.setSpacing(4)
 
+                        big = QtWidgets.QTextEdit()
+                        big.setAcceptRichText(False)
+                        big.setPlainText(pval)
+                        big.setStyleSheet(
+                            "QTextEdit{background:#0f1216;color:#e6edf3;"
+                            "border:1px solid #3c4450;border-radius:6px;padding:6px;}"
+                        )
+                        def _sync_big(idx=i, w=big):
+                            self._on_param_changed(idx, w.toPlainText())
+                        big.textChanged.connect(_sync_big)
+                        vlay.addWidget(big, 1)
 
-        # --- LLM embedded webview (offscreen hi-res -> downscaled label) ---
-        # --- LLM embedded webview (direct embed; no offscreen sampler) ---
-        # --- LLM embedded webview: render at 1920x1170, then scale proxy by 0.5 for crisp downsampling ---
-        if (self.model.kind or "").lower() == "llm":
-            if WebEngine is None:
-                row = QtWidgets.QWidget()
-                lay = QtWidgets.QVBoxLayout(row); lay.setContentsMargins(6,0,6,0); lay.setSpacing(6)
-                warn = QtWidgets.QLabel("QtWebEngine not available.\nInstall PySide6-Qt6-WebEngine (or PySide2 QtWebEngine).")
-                warn.setStyleSheet("color:#fca5a5;")
-                lay.addWidget(warn, 0, QtCore.Qt.AlignLeft)
+                        big_proxy = QtWidgets.QGraphicsProxyWidget(self)
+                        big_proxy.setWidget(big_row)
+                        big_proxy.setZValue(self.zValue() + 0.1)
+                        big_proxy.setPos(0, y_cursor)
+                        big_proxy.resize(self.width, self._NOTE_FEATURED_H)
+                        self._param_proxies.append(big_proxy)
 
-                proxy = QtWidgets.QGraphicsProxyWidget(self)
-                proxy.setWidget(row)
-                proxy.setZValue(self.zValue() + 0.1)
-                proxy.setPos(0, y_cursor)
-                proxy.resize(self.width, max(200, LLM_NODE_H // 3))
-                try: proxy.setPreferredSize(self.width, max(200, LLM_NODE_H // 3))
-                except AttributeError: pass
-                self._llm_proxy = proxy
-            else:
-                # 1) create a full-resolution view
-                view = WebEngine.QWebEngineView()
-                view.setObjectName("LLMWebView")
-                try:
-                    view.setZoomFactor(1.0)  # render at true page scale
-                except Exception:
-                    pass
-                try:
-                    url = QtCore.QUrl(self._llm_url_from_params())
-                except Exception:
-                    url = QtCore.QUrl(LLM_URL)
-                view.setUrl(url)
+                        y_cursor += self._NOTE_FEATURED_H
 
-                # 2) size the widget to HD (unscaled logical size)
-                view.resize(LLM_NODE_W_BASE, LLM_NODE_H_BASE)
-                view.setMinimumSize(LLM_NODE_W_BASE, LLM_NODE_H_BASE)
-                view.setMaximumSize(LLM_NODE_W_BASE, LLM_NODE_H_BASE)
-                view.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+            # --- LLM embedded webview ---
+            if (self.model.kind or "").lower() == "llm":
+                if WebEngine is None:
+                    row = QtWidgets.QWidget()
+                    lay = QtWidgets.QVBoxLayout(row); lay.setContentsMargins(6,0,6,0); lay.setSpacing(6)
+                    warn = QtWidgets.QLabel("QtWebEngine not available.\nInstall PySide6-Qt6-WebEngine (or PySide2 QtWebEngine).")
+                    warn.setStyleSheet("color:#fca5a5;")
+                    lay.addWidget(warn, 0, QtCore.Qt.AlignLeft)
 
-                # 3) put it in a proxy and scale the proxy down (keeps HD sharpness)
-                proxy = QtWidgets.QGraphicsProxyWidget(self)
-                proxy.setCacheMode(QtWidgets.QGraphicsItem.DeviceCoordinateCache)
-                proxy.setWidget(view)
-                proxy.setZValue(self.zValue() + 0.1)
+                    proxy = QtWidgets.QGraphicsProxyWidget(self)
+                    proxy.setWidget(row)
+                    proxy.setZValue(self.zValue() + 0.1)
+                    proxy.setPos(0, y_cursor)
+                    proxy.resize(self.width, max(200, LLM_NODE_H // 3))
+                    try: proxy.setPreferredSize(self.width, max(200, LLM_NODE_H // 3))
+                    except AttributeError: pass
+                    self._llm_proxy = proxy
+                else:
+                    view = WebEngine.QWebEngineView()
+                    view.setObjectName("LLMWebView")
+                    try:
+                        view.setZoomFactor(1.0)
+                    except Exception:
+                        pass
+                    try:
+                        url = QtCore.QUrl(self._llm_url_from_params())
+                    except Exception:
+                        url = QtCore.QUrl(LLM_URL)
+                    view.setUrl(url)
 
-                # scale the proxy (not the view) so Qt paints the HD widget then downscales it
-                S = float(LLM_SCALE)  # e.g., 0.5
-                proxy.setTransform(QtGui.QTransform().scale(S, S))
-                proxy.setPos(0, y_cursor)  # position is in scene coords AFTER transform
+                    view.resize(LLM_NODE_W_BASE, LLM_NODE_H_BASE)
+                    view.setMinimumSize(LLM_NODE_W_BASE, LLM_NODE_H_BASE)
+                    view.setMaximumSize(LLM_NODE_W_BASE, LLM_NODE_H_BASE)
+                    view.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
 
-                # 4) report scaled footprint to the node layout (so sockets/paint align)
-                try:
-                    proxy.setPreferredSize(LLM_NODE_W_BASE, LLM_NODE_H_BASE)
-                except AttributeError:
-                    pass
+                    proxy = QtWidgets.QGraphicsProxyWidget(self)
+                    proxy.setCacheMode(QtWidgets.QGraphicsItem.DeviceCoordinateCache)
+                    proxy.setWidget(view)
+                    proxy.setZValue(self.zValue() + 0.1)
 
-                # keep refs
-                self._llm_proxy = proxy
-                self._llm_view  = view
-                self._llm_label = None
-                self._llm_sampler = None
+                    S = float(LLM_SCALE)
+                    proxy.setTransform(QtGui.QTransform().scale(S, S))
+                    proxy.setPos(0, y_cursor)
 
-                # advance cursor by the scaled height
-                y_cursor += int(LLM_NODE_H_BASE * LLM_SCALE)
+                    try:
+                        proxy.setPreferredSize(LLM_NODE_W_BASE, LLM_NODE_H_BASE)
+                    except AttributeError:
+                        pass
+
+                    self._llm_proxy = proxy
+                    self._llm_view  = view
+                    self._llm_label = None
+                    self._llm_sampler = None
+
+                    y_cursor += int(LLM_NODE_H_BASE * LLM_SCALE)
+
+        finally:
+            self._is_building = False
 
 
     def _schedule_rebuild(self):
@@ -1953,10 +1989,12 @@ class GraphScene(QtWidgets.QGraphicsScene):
 
     # --- in GraphScene.to_dict(self) ---
     def to_dict(self):
-        nodes=[]
+        nodes = []
         for node in self._nodes_by_name.values():
             nd = {
-                "name": node.name, "kind": node.kind, "info": node.info or "",
+                "name": node.name,
+                "kind": node.kind,
+                "info": node.info or "",
                 "code": node.code if node.code is not None else None,
                 "pos": [float(node.pos.x()), float(node.pos.y())],
                 "params": [{"name": p["name"], "value": p.get("value","")} for p in (node.params or [])],
@@ -1964,10 +2002,23 @@ class GraphScene(QtWidgets.QGraphicsScene):
             if (node.kind or "").lower() == "switch":
                 nd["switch_inputs"] = list(node.switch_inputs)
                 nd["switch_index"] = int(node.switch_index)
-            nodes.append(nd)
-        edges=[{"src": e.src.model.name, "dst": e.dst.model.name} for e in self._edges]
 
-        # ADD this:
+            # ▶ NEW: persist Note “eye” visibility state
+            if (node.kind or "").lower() == "note":
+                feat = getattr(node, "_featured_params", None)
+                if isinstance(feat, set):
+                    nd["featured_params"] = sorted(feat)
+                elif isinstance(feat, (list, tuple)):
+                    nd["featured_params"] = [str(x) for x in feat if x]
+                else:
+                    # legacy single string support
+                    legacy = getattr(node, "_featured_param", "")
+                    if legacy:
+                        nd["featured_params"] = [legacy]
+
+            nodes.append(nd)
+
+        edges = [{"src": e.src.model.name, "dst": e.dst.model.name} for e in self._edges]
         return {"nodes": nodes, "edges": edges, "llm_scale": float(LLM_SCALE)}
 
     # --- in GraphScene.from_dict(self, data) ---
@@ -1988,8 +2039,32 @@ class GraphScene(QtWidgets.QGraphicsScene):
                 switch_inputs=nd.get("switch_inputs", []),
                 switch_index=nd.get("switch_index", 0)
             )
+            
+            # ▶ NEW: restore Note “eye” visibility state
+            if (n.kind or "").lower() == "note":
+                raw = nd.get("featured_params")
+                if not raw:
+                    # migrate legacy fields if present
+                    raw = []
+                    for k in ("featured_param", "_featured_param"):
+                        v = nd.get(k)
+                        if v:
+                            raw.append(v)
+                            break
+                try:
+                    s = {str(x) for x in (raw or []) if x}
+                except Exception:
+                    s = set()
+                setattr(n, "_featured_params", s)
+                # clear legacy single slot to avoid confusion
+                try:
+                    setattr(n, "_featured_param", "")
+                except Exception:
+                    pass
+
             pos = QtCore.QPointF(*nd.get("pos",[0,0]))
             self.add_node(n, pos)
+        # Rebuild edges  
         for ed in data.get("edges", []):
             try: self._add_edge_and_update_switch(ed["src"], ed["dst"])
             except Exception: pass
@@ -1999,7 +2074,6 @@ class GraphScene(QtWidgets.QGraphicsScene):
             self.recompute_active_path(self._current_output_name)
         else:
             self._clear_path_highlight()
-
 
     def clear_scene(self):
         for e in list(self._edges):
