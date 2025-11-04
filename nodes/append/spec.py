@@ -1,7 +1,6 @@
 # nodes/append/spec.py
 from nodes.core import Spec
 
-# Qt import that works in both PySide6 and PySide2
 try:
     from PySide6 import QtWidgets, QtGui, QtCore
 except Exception:
@@ -10,93 +9,64 @@ except Exception:
 def augment_infocard_footer(card, footer_layout) -> bool:
     """
     Adds Preview + Save JSON buttons to the Append node's InfoCard footer.
-    Returns True if widgets were added.
+    This version HONORS the Append UI order (switch_inputs) exactly.
     """
-    # ---- helper lives INSIDE the augment, so no globals leak/NameError ----
-    def _collect_upstream_texts() -> list:
+
+    def _collect_append_texts_in_order() -> list[str]:
         sc   = getattr(card, "_graph_scene", None)
         node = getattr(card, "_node_ref", None)
         if not sc or not node:
             return []
 
-        # broaden keys; we’ll also fall back to node.info
-        KEYS = {"text","body","content","prompt","note","message","desc","description","value"}
-
-        seen = set()
-        out  = []
-
-        def grab_from_item(item) -> str:
-            # 1) host helper (e.g., Prompt nodes)
-            try:
-                txt = sc.resolve_text_value(item)
-                if txt:
-                    return txt.strip()
-            except Exception:
-                pass
-
-            # 2) params by common names
-            try:
-                for p in (getattr(item.model, "params", None) or []):
-                    nm = (p.get("name", "") or "").strip().lower()
-                    if nm in KEYS:
-                        val = (p.get("value", "") or "").strip()
-                        if val:
-                            return val
-            except Exception:
-                pass
-
-            # 3) fallback to node.info
-            try:
-                info = (getattr(item.model, "info", "") or "").strip()
-                if info:
-                    return info
-            except Exception:
-                pass
-            return ""
-
-        # DFS over ALL upstream nodes so chains also work
+        # Get the live NodeItem for this Append node
         try:
-            stack = list(sc.upstream_of(node.name))
+            append_item = sc._node_items.get(node.name)
         except Exception:
-            stack = []
+            append_item = None
+        if append_item is None:
+            return []
 
-        while stack:
-            it = stack.pop()
-            if it in seen:
-                continue
-            seen.add(it)
+        texts = []
 
-            txt = grab_from_item(it)
-            if txt:
-                out.append(txt)
+        # Use the scene's Append-aware ordering for inputs
+        try:
+            ordered_in_edges = sc._ordered_in_edges(append_item)  # already respects switch_inputs
+        except Exception:
+            ordered_in_edges = []
 
+        for e in ordered_in_edges:
             try:
-                stack.extend(sc.upstream_of(it.model.name))
+                t = sc.resolve_text_value(e.src)
             except Exception:
-                pass
+                t = ""
+            if t:
+                texts.append(t.strip())
 
-        return out
+        return texts
 
     # ---- UI callbacks ----
     def _preview():
-        parts = _collect_upstream_texts()
+        parts = _collect_append_texts_in_order()
         QtWidgets.QMessageBox.information(
-            card, "Preview (Append)",
+            card, "Preview (Append order)",
             "No upstream text found." if not parts else "\n\n---\n\n".join(parts)[:5000]
         )
 
     def _save_json():
         import json
         from pathlib import Path
-        parts = _collect_upstream_texts()
+
+        parts = _collect_append_texts_in_order()
         if not parts:
             QtWidgets.QMessageBox.warning(card, "Append", "No upstream text found.")
             return
+
         payload = {
             "node": getattr(card, "_node_ref", None).name if hasattr(card, "_node_ref") else "append",
             "combined_text": "\n\n".join(parts),
             "parts": parts,
         }
+
         # suggest next to current graph path if available
         win = card.window()
         suggested = "append_result.json"
@@ -116,8 +86,8 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         except Exception as e:
             QtWidgets.QMessageBox.critical(card, "Append", f"Failed to save:\n{e}")
 
-    # ---- actual footer buttons ----
-    b1 = QtWidgets.QPushButton("Preview Merge")
+    # ---- footer buttons ----
+    b1 = QtWidgets.QPushButton("Preview Merge (Append order)")
     b1.clicked.connect(_preview)
     footer_layout.addWidget(b1)
 

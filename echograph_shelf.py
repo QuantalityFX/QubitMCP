@@ -2012,28 +2012,43 @@ class GraphScene(QtWidgets.QGraphicsScene):
             return False, "No change."
         if new_name in self._nodes_by_name:
             return False, f"A node named '{new_name}' already exists."
+
         item = self._node_items.get(old_name)
         node = self._nodes_by_name.get(old_name)
         if not item or not node:
             return False, f"Node '{old_name}' not found."
+
+        # remap registries
         self._node_items[new_name] = self._node_items.pop(old_name)
         self._nodes_by_name[new_name] = self._nodes_by_name.pop(old_name)
         node.name = new_name
         item.model.name = new_name
         item.update()
+
+        # 🔧 update any Switch/Append nodes that reference the old name
         for it in self._node_items.values():
-            if (it.model.kind or "").lower() == "switch":
+            k = (it.model.kind or "").lower()
+            if k in ("switch", "append"):
                 if old_name in it.model.switch_inputs:
                     it.model.switch_inputs = [
                         (new_name if n == old_name else n) for n in it.model.switch_inputs
                     ]
-                    self._refresh_switch_widget(it)
+                    # refresh UI
+                    if k == "switch":
+                        self._refresh_switch_widget(it)
+                    else:
+                        self.refresh_node_widget(it.model.name)
+
+        # keep current output pointer stable
         if self._current_output_name == old_name:
             self._current_output_name = new_name
+
+        # recompute path highlighting if an output is active
         if self._current_output_name:
             self.recompute_active_path(self._current_output_name)
         else:
             self._clear_path_highlight()
+
         return True, ""
 
     def upstream_of(self, dst_name: str):
@@ -2149,9 +2164,12 @@ class GraphScene(QtWidgets.QGraphicsScene):
                 "pos": [float(node.pos.x()), float(node.pos.y())],
                 "params": [{"name": p["name"], "value": p.get("value","")} for p in (node.params or [])],
             }
-            if (node.kind or "").lower() == "switch":
+
+            k = (node.kind or "").lower()
+            if k in ("switch", "append"):
                 nd["switch_inputs"] = list(node.switch_inputs)
-                nd["switch_index"] = int(node.switch_index)
+                if k == "switch":
+                    nd["switch_index"] = int(node.switch_index)
 
             # ▶ NEW: persist Note “eye” visibility state
             if (node.kind or "").lower() == "note":
