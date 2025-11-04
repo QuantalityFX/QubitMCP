@@ -47,10 +47,64 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     # ---- UI callbacks ----
     def _preview():
         parts = _collect_append_texts_in_order()
-        QtWidgets.QMessageBox.information(
-            card, "Preview (Append order)",
-            "No upstream text found." if not parts else "\n\n---\n\n".join(parts)[:5000]
-        )
+        text = "No upstream text found." if not parts else "\n\n---\n\n".join(parts)
+
+        # Build a resizable modal dialog with a scrollable text widget
+        dlg = QtWidgets.QDialog(card)
+        dlg.setWindowTitle("Preview (Append order)")
+        try:
+            dlg.setWindowFlags(
+                QtCore.Qt.Dialog
+                | QtCore.Qt.CustomizeWindowHint
+                | QtCore.Qt.WindowTitleHint
+                | QtCore.Qt.WindowCloseButtonHint
+            )
+        except Exception:
+            pass
+        try:
+            dlg.setModal(True)
+        except Exception:
+            pass
+
+        v = QtWidgets.QVBoxLayout(dlg)
+        v.setContentsMargins(8, 8, 8, 8)
+        v.setSpacing(6)
+
+        txt = QtWidgets.QPlainTextEdit()
+        txt.setReadOnly(True)
+        # guard against absurdly large payloads (you can remove the slice if desired)
+        txt.setPlainText(text[:200000])
+        txt.setMinimumSize(560, 360)
+        try:
+            txt.setStyleSheet("QPlainTextEdit{background:#0f1216;color:#e6edf3;border:1px solid #3c4450;border-radius:6px;}")
+        except Exception:
+            pass
+        v.addWidget(txt, 1)
+
+        bb = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
+        bb.rejected.connect(dlg.reject)
+        bb.accepted.connect(dlg.accept)
+        v.addWidget(bb, 0)
+
+        # Center the dialog near the host window if possible
+        try:
+            parent_win = card.window() if card is not None else None
+            if parent_win:
+                geom = parent_win.geometry()
+                x = max(geom.left() + 20, geom.center().x() - dlg.width() // 2)
+                y = max(geom.top() + 20, geom.center().y() - dlg.height() // 2)
+                dlg.move(x, y)
+        except Exception:
+            pass
+
+        # Exec dialog (exec with fallback)
+        try:
+            dlg.exec()
+        except AttributeError:
+            try:
+                dlg.exec_()
+            except Exception:
+                pass
 
     def _save_json():
         import json
