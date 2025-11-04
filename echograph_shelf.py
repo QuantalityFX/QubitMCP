@@ -1476,7 +1476,7 @@ class InfoCard(QtWidgets.QFrame):
             up   = QtWidgets.QPushButton("↑")
             down = QtWidgets.QPushButton("↓")
             apply = QtWidgets.QPushButton("Apply Order")
-            btns.addWidget(up); btns.addWidget(down); btns.addStretch(1); btns.addWidget(apply)
+            btns.addWidget(up); btns.addWidget(down); btns.addWidget(apply); btns.addStretch(1)
 
             def _move_selected(delta: int):
                 r = listw.currentRow()
@@ -1737,7 +1737,7 @@ class InfoCard(QtWidgets.QFrame):
         savep = QtWidgets.QPushButton("Apply Changes")
         for b in (addp, delp, savep):
             pbtns.addWidget(b)
-
+        pbtns.addStretch(1)
 
         def _add_param_row():
             r = self._param_table.rowCount()
@@ -1764,67 +1764,56 @@ class InfoCard(QtWidgets.QFrame):
                 sc.set_node_params(self._node_name, new_params)
             self._node_ref.params = new_params
 
+        # wire buttons
         addp.clicked.connect(_add_param_row)
         delp.clicked.connect(_remove_selected_row)
         savep.clicked.connect(_apply_param_changes)
         self._param_table.itemChanged.connect(lambda *_: None)
 
-        # --- Place Edit/Rename (Librarian → beside Add/Remove/Apply; others → footer) ---
-        # --- Place Edit/Rename (Librarian = NEW ROW under Add/Remove/Apply; others → footer) ---
+        # --- Place Edit/Rename (stacked under Add/Remove/Apply for EVERY node) ---
         btn_edit = QtWidgets.QPushButton("Edit Params…")
         btn_edit.clicked.connect(_edit_params)
         btn_rename = QtWidgets.QPushButton("Rename…")
         btn_rename.clicked.connect(_rename_node)
 
-        if (self._node_ref.kind or "").lower() == "librarian":
-            # row1: Add / Remove / Apply  (keep existing pbtns as-is)
-            # row2: Edit / Rename         (new row under row1)
-            librow = QtWidgets.QHBoxLayout()
-            librow.setContentsMargins(0, 0, 0, 0)
-            librow.setSpacing(6)
-            librow.addWidget(btn_edit)
-            librow.addWidget(btn_rename)
-            librow.addStretch(1)
+        erow = QtWidgets.QHBoxLayout()
+        erow.setContentsMargins(0, 0, 0, 0)
+        erow.setSpacing(6)
+        erow.addWidget(btn_edit)
+        erow.addWidget(btn_rename)
+        erow.addStretch(1)
 
-            # stack the two rows vertically
-            pcol = QtWidgets.QVBoxLayout()
-            pcol.setContentsMargins(0, 0, 0, 0)
-            pcol.setSpacing(6)
-            pcol.addLayout(pbtns)     # row1
-            pcol.addLayout(librow)    # row2
+        # keep the first row buttons left-aligned
+        # (only once — no duplicates)
+        pbtns.addStretch(1)
 
-            # later in root layout use: lay.addLayout(pcol)  (see below)
-            _use_pcol_for_librarian = True
-        else:
-            footer.addWidget(btn_edit)
-            footer.addWidget(btn_rename)
-            _use_pcol_for_librarian = False
+        # stack: row1 (Add/Remove/Apply), row2 (Edit/Rename)
+        pcol = QtWidgets.QVBoxLayout()
+        pcol.setContentsMargins(0, 0, 0, 0)
+        pcol.setSpacing(6)
+        pcol.addLayout(pbtns)   # row 1
+        pcol.addLayout(erow)    # row 2
 
         footer.addStretch(1)
 
-        pbtns.addStretch(1)
-        
         # --- Root layout (assemble ONCE) ---
         lay = QtWidgets.QVBoxLayout(self)
         lay.setContentsMargins(10, 10, 10, 10)
         lay.setSpacing(8)
 
-        lay.addLayout(header)           # title + close
-        lay.addWidget(text)             # info text browser
+        lay.addLayout(header)          # title + close
+        lay.addWidget(text)            # info text browser
         lay.addWidget(self._param_table)
-        if (self._node_ref.kind or "").lower() == "librarian" and _use_pcol_for_librarian:
-            lay.addLayout(pcol)     # two-row block for Librarian
-        else:
-            lay.addLayout(pbtns)    # single row for others
+        lay.addLayout(pcol)            # stacked param controls (all nodes)
 
         if hasattr(self, "_result_view"):
             lay.addWidget(self._result_view)   # Librarian results panel
 
-        # Append reorder UI (only if this InfoCard is for an Append node)
+        # Append reorder UI (only for Append cards)
         if (self._node_ref.kind or "").lower() == "append" and 'box' in locals() and box is not None:
             lay.addWidget(box)
 
-        lay.addLayout(footer)           # footer buttons
+        lay.addLayout(footer)          # footer (e.g., Preview Merge / Save JSON)
 
     def refresh_params_from_model(self):
         """Reload the params table from the live node model."""
@@ -3210,7 +3199,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._cardsContainer.setStyleSheet("QWidget{background:#1a1f24;color:#e6edf3;}")
 
         try:
-            self.resizeDocks([self.infoDock], [250], QtCore.Qt.Horizontal)
+            self.resizeDocks([self.infoDock], [380], QtCore.Qt.Horizontal)
         except Exception:
             pass
 
