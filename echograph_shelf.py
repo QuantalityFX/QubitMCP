@@ -523,44 +523,54 @@ class NodeItem(QtWidgets.QGraphicsObject):
             if nm in ("url", "address", "endpoint"):
                 return self._normalize_url(p.get("value",""))
         return LLM_URL
-
+    
     def _recompute_height(self):
         kind = (self.model.kind or "").lower()
 
-        # base switch row
+        # Baseline used by y_cursor in _build_widgets
+        header_h = 38 + 16 + self._PADDING
+
+        # Switch row
         switch_h = self._PARAM_ROW_H if kind == "switch" else 0
 
-        # params height
-        n_params = len(self.model.params)
+        # Params block (regular rows)
+        n_params = len(self.model.params or [])
         params_h = n_params * self._PARAM_ROW_H
 
-        # If this is a Note node and it has featured params, add extra height per one
-        if (self.model.kind or "").lower() == "note":
+        # Note: add a big block per featured param (in addition to its normal row)
+        if kind == "note":
             try:
                 feat_set = self._get_featured_set()
-                n_feat = len(feat_set)
-                if n_feat:
-                    # We render BOTH the regular row (already counted in n_params*row)
-                    # AND an extra big row per featured → add full NOTE_FEATURED_H per featured
-                    params_h += n_feat * self._NOTE_FEATURED_H
+                params_h += len(feat_set) * self._NOTE_FEATURED_H
             except Exception:
                 pass
 
+        if n_params:
+            params_h += self._PADDING  # breathing room below params
 
-        params_h += (self._PADDING if n_params else 0)
-
-        # LLM special sizing
+        # Kind-specific body additions
         if kind == "llm":
-            LLM_NODE_W, LLM_NODE_H = _llm_dims()
-            node_w, body_h = LLM_NODE_W, LLM_NODE_H
+            body_h = int(LLM_NODE_H_BASE * LLM_SCALE)
+            node_w = max(self._BASE_W, int(LLM_NODE_W_BASE * LLM_SCALE))
+        elif kind == "append":
+            count = max(1, len(self.model.switch_inputs or []))
+            body_h = 6 + count * self._PARAM_ROW_H
+            node_w = self._BASE_W
         else:
             body_h = 0
-            node_w = max(self._BASE_W, self.width)
+            node_w = self._BASE_W
 
-        new_h = self._BASE_H + switch_h + params_h + body_h + self._PADDING # add bottom pad
-        self.prepareGeometryChange()
-        self.width  = int(node_w)
-        self.height = int(new_h)
+        new_w = max(node_w, self._BASE_W)
+        new_h = max(self._BASE_H, header_h + switch_h + params_h + body_h + self._PADDING)
+
+        if new_w != getattr(self, "width", 0) or new_h != getattr(self, "height", 0):
+            try:
+                self.prepareGeometryChange()
+            except Exception:
+                pass
+            self.width = new_w
+            self.height = new_h
+
 
     def _clear_widget_proxies(self):
         """Safely tear down all embedded proxy widgets (switch, params, plugins, LLM)."""
@@ -658,6 +668,35 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         y_cursor = int(new_y)
             except Exception as e:
                 print("[EchoGraph] render_node_body error:", e)
+
+            # --- Append node body: list connected node names in current order ---
+            if (self.model.kind or "").lower() == "append":
+                body = QtWidgets.QWidget()
+                v = QtWidgets.QVBoxLayout(body)
+                v.setContentsMargins(6, 6, 6, 6)
+                v.setSpacing(2)
+
+                names = list(self.model.switch_inputs or [])
+                if not names:
+                    lbl = QtWidgets.QLabel("No inputs connected.")
+                    lbl.setStyleSheet("color:#94a3b8;")
+                    v.addWidget(lbl)
+                else:
+                    for nm in names:
+                        row = QtWidgets.QLabel(f"• {nm}")
+                        row.setStyleSheet("color:#e6edf3;")
+                        v.addWidget(row)
+
+                proxy = QtWidgets.QGraphicsProxyWidget(self)
+                proxy.setWidget(body)
+                proxy.setZValue(self.zValue() + 0.1)
+                proxy.setPos(0, y_cursor)
+
+                append_h = 6 + max(1, len(names)) * self._PARAM_ROW_H
+                proxy.resize(self.width, append_h)
+                self._param_proxies.append(proxy)
+
+                y_cursor += append_h
 
             # --- Switch slider row ---
             if (self.model.kind or "").lower() == "switch":
@@ -1367,6 +1406,7 @@ class InfoCard(QtWidgets.QFrame):
         header.addWidget(title); header.addStretch(1); header.addWidget(close_btn)
 
         text = QtWidgets.QTextBrowser()
+        self._text_browser = text
         text.setStyleSheet(
             "QTextBrowser{background:#0f1216;color:#e6edf3;"
             "border:1px solid #3c4450;border-radius:6px;}"
@@ -1377,6 +1417,7 @@ class InfoCard(QtWidgets.QFrame):
         html = _hash_to_links(safe.toPlainText())
         text.setHtml("<style>body{font-family:Segoe UI,Roboto,Helvetica,Arial,sans-serif; font-size:12px;}a{color:#60a5fa;}</style>"+html)
         text.setMinimumHeight(80)
+
         text.anchorClicked.connect(lambda url: self.requestJump.emit(url.path().lstrip("/")))
 
         footer = QtWidgets.QHBoxLayout(); footer.setContentsMargins(0, 0, 0, 0); footer.setSpacing(8)
@@ -1408,6 +1449,50 @@ class InfoCard(QtWidgets.QFrame):
             f"callable={callable(augment)} result={_augmented_by_plugin}")
 
         kind = (node.kind or "").lower()
+
+        if kind == "append":
+            box = QtWidgets.QGroupBox("Append Inputs (order)")
+            lv = QtWidgets.QVBoxLayout(box); lv.setContentsMargins(8,8,8,8); lv.setSpacing(6)
+
+            listw = QtWidgets.QListWidget()
+            listw.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+            for nm in (self._node_ref.switch_inputs or []):
+                listw.addItem(nm)
+
+            btns = QtWidgets.QHBoxLayout()
+            up   = QtWidgets.QPushButton("↑")
+            down = QtWidgets.QPushButton("↓")
+            apply = QtWidgets.QPushButton("Apply Order")
+            btns.addWidget(up); btns.addWidget(down); btns.addStretch(1); btns.addWidget(apply)
+
+            def _move_selected(delta: int):
+                r = listw.currentRow()
+                if r < 0: return
+                nr = r + delta
+                if nr < 0 or nr >= listw.count(): return
+                it = listw.takeItem(r)
+                listw.insertItem(nr, it)
+                listw.setCurrentRow(nr)
+
+            def _apply_order():
+                new_order = [listw.item(i).text() for i in range(listw.count())]
+                self._node_ref.switch_inputs = new_order
+                sc = getattr(self, "_graph_scene", None)
+                if sc:
+                    sc.refresh_node_widget(self._node_ref.name)
+                    # Refresh the active output preview using the Append-aware order
+                    if getattr(sc, "_current_output_name", None):
+                        # rebuild the cards using the new ordered sequence
+                        seq = sc.ordered_upstream_items(sc._current_output_name)
+                        if hasattr(sc.views()[0].window(), "populate_branch_info"):
+                            sc.views()[0].window().populate_branch_info([it.model for it in seq])
+
+
+            up.clicked.connect(lambda: _move_selected(-1))
+            down.clicked.connect(lambda: _move_selected(+1))
+            apply.clicked.connect(_apply_order)
+            lv.addWidget(listw)
+            lv.addLayout(btns)
 
         if (node.kind or "").lower() == "librarian":
             self._result_view = QtWidgets.QTextBrowser()
@@ -1722,6 +1807,10 @@ class InfoCard(QtWidgets.QFrame):
         if hasattr(self, "_result_view"):
             lay.addWidget(self._result_view)   # Librarian results panel
 
+        # Append reorder UI (only if this InfoCard is for an Append node)
+        if (self._node_ref.kind or "").lower() == "append" and 'box' in locals() and box is not None:
+            lay.addWidget(box)
+
         lay.addLayout(footer)           # footer buttons
 
     def refresh_params_from_model(self):
@@ -1738,6 +1827,21 @@ class InfoCard(QtWidgets.QFrame):
                 self._param_table.setItem(r, 1, QtWidgets.QTableWidgetItem(p.get("value","")))
         finally:
             self._param_table.blockSignals(False)
+
+    def apply_append_preview_if_output(self):
+        """Rebuild the preview for Output cards using Append-respecting order."""
+        try:
+            if (self._node_ref.kind or "").lower() != "output":
+                return
+            sc = getattr(self, "_graph_scene", None)
+            tb = getattr(self, "_text_browser", None)
+            if not sc or not tb or not hasattr(sc, "merged_text_for_output"):
+                return
+            pairs = sc.merged_text_for_output(self._node_ref.name)  # [(node, text)] in correct order
+            merged = "\n\n".join(t for _, t in pairs)
+            tb.setPlainText(merged)
+        except Exception:
+            pass
 
 
     def _emit_and_close(self):
@@ -1910,22 +2014,36 @@ class GraphScene(QtWidgets.QGraphicsScene):
         return srcs
 
     def resolve_text_value(self, node_item) -> str:
+        """Return a textual value for a node.
+        Priority:
+        1) Well-known keys ('prompt', 'text', 'content') if present.
+        2) Otherwise join ALL non-empty param values (in row order).
+        3) Fallback to node.info.
+        """
         try:
-            kind = (node_item.model.kind or "").lower()
-            if kind == "prompt":
-                for p in (node_item.model.params or []):
-                    if (p.get("name","") or "").strip().lower() == "prompt":
-                        return p.get("value","")
-
-            # minimal generic fallback (Note, etc.)
-            for key in ("text", "content"):
-                for p in (node_item.model.params or []):
-                    if (p.get("name","") or "").strip().lower() == key:
+            params = list(node_item.model.params or [])
+            # 1) well-known keys first
+            keys = {"prompt", "text", "content"}
+            for k in keys:
+                for p in params:
+                    if (p.get("name","") or "").strip().lower() == k:
                         v = (p.get("value","") or "").strip()
-                        if v: return v
+                        if v:
+                            return v
+
+            # 2) ANY non-empty params (makes Append accept arbitrary names)
+            vals = []
+            for p in params:
+                v = (p.get("value","") or "").strip()
+                if v:
+                    vals.append(v)
+            if vals:
+                return "\n".join(vals)
+
+            # 3) fallback
+            return (node_item.model.info or "").strip()
         except Exception:
-            pass
-        return ""
+            return ""
 
     def _nodes_bbox(self):
         rect = None
@@ -2019,7 +2137,12 @@ class GraphScene(QtWidgets.QGraphicsScene):
             nodes.append(nd)
 
         edges = [{"src": e.src.model.name, "dst": e.dst.model.name} for e in self._edges]
-        return {"nodes": nodes, "edges": edges, "llm_scale": float(LLM_SCALE)}
+        return {
+            "nodes": nodes,
+            "edges": edges,
+            "llm_scale": float(LLM_SCALE),
+            "settings": {"llm_scale": float(LLM_SCALE)},
+        }
 
     # --- in GraphScene.from_dict(self, data) ---
     def from_dict(self, data):
@@ -2027,7 +2150,8 @@ class GraphScene(QtWidgets.QGraphicsScene):
 
         # ADD this (apply saved scale before building nodes):
         try:
-            s = float((data.get("settings", {}) or {}).get("llm_scale", LLM_SCALE))
+            s = float((data.get("settings", {}) or {}).get("llm_scale",
+                    data.get("llm_scale", LLM_SCALE)))
             set_global_llm_scale(s, self)
         except Exception:
             pass
@@ -2103,25 +2227,51 @@ class GraphScene(QtWidgets.QGraphicsScene):
         return self._add_edge_and_update_switch(src_name, dst_name)
 
     def _add_edge_and_update_switch(self, src_name, dst_name):
-        src=self._node_items[src_name]; dst=self._node_items[dst_name]
-        edge=EdgeItem(src,dst)
+        src = self._node_items[src_name]; dst = self._node_items[dst_name]
+        edge = EdgeItem(src, dst)
         self._edges.append(edge); self.addItem(edge)
-        if (dst.model.kind or "").lower()=="switch":
+
+        dst_kind = (dst.model.kind or "").lower()
+        if dst_kind in ("append", "switch"):
             if src.model.name not in dst.model.switch_inputs:
                 dst.model.switch_inputs.append(src.model.name)
-            dst.model.switch_index = max(0, min(dst.model.switch_index, max(0, len(dst.model.switch_inputs)-1)))
-            self._refresh_switch_widget(dst)
+            if dst_kind == "switch":
+                dst.model.switch_index = max(0, min(dst.model.switch_index,
+                                                    max(0, len(dst.model.switch_inputs)-1)))
+            self.refresh_node_widget(dst.model.name)
+
+        # NEW: keep Info panel + preview live when graph changes
+        if self._current_output_name:
+            try:
+                self.recompute_active_path(self._current_output_name)
+                if self.views() and hasattr(self.views()[0].window(), "populate_branch_info"):
+                    win = self.views()[0].window()
+                    seq = self.ordered_upstream_items(self._current_output_name)
+                    win.populate_branch_info([it.model for it in seq])
+                    # refresh merged preview on the Output card too
+                    card = getattr(win, "_card_by_node", {}).get(self._current_output_name)
+                    if card and hasattr(card, "apply_append_preview_if_output"):
+                        card.apply_append_preview_if_output()
+            except Exception:
+                pass
+
         return edge
 
     def _on_edge_removed(self, edge: 'EdgeItem'):
         dst = edge.dst; src = edge.src
-        if isinstance(dst, NodeItem) and (dst.model.kind or "").lower()=="switch":
+        dst_kind = (dst.model.kind or "").lower()
+        if dst_kind in ("append", "switch"):
             try:
                 if src.model.name in dst.model.switch_inputs:
                     dst.model.switch_inputs.remove(src.model.name)
-            except Exception: pass
-            dst.model.switch_index = max(0, min(dst.model.switch_index, max(0, len(dst.model.switch_inputs)-1)))
-            self._refresh_switch_widget(dst)
+            except Exception:
+                pass
+            if dst_kind == "switch":
+                dst.model.switch_index = max(0, min(dst.model.switch_index,
+                                                    max(0, len(dst.model.switch_inputs)-1)))
+            # refresh UI for both cases
+            self.refresh_node_widget(dst.model.name)
+
         if self._current_output_name:
             self.recompute_active_path(self._current_output_name)
 
@@ -2235,80 +2385,180 @@ class GraphScene(QtWidgets.QGraphicsScene):
         return [e for e in self._edges if getattr(e, "_highlight", False)]
 
     def recompute_active_path(self, output_name: str):
+        """Return upstream nodes ordered so that:
+        - SWITCH picks only the active branch (by slider).
+        - APPEND expands inputs in the user-defined switch_inputs order.
+        - Other nodes expand all inputs (left→right fallback).
+        Also highlights the participating edges.
+        """
         self._clear_path_highlight()
         out_item = self._node_items.get(output_name)
         if not out_item:
             return []
-        active_edges = set()
-        stack = [out_item]
-        visited = set()
-        while stack:
-            it = stack.pop()
-            if it in visited:
-                continue
-            visited.add(it)
-            in_edges = [e for e in self._edges if e.dst is it]
+
+        # --- helpers -------------------------------------------------------------
+        def _in_edges(it):
+            return [e for e in self._edges if e.dst is it]
+
+        def _ordered_in_edges(it):
             kind = (it.model.kind or "").lower()
+            in_edges = _in_edges(it)
+
+            if kind == "append":
+                # map by src name; use switch_inputs order
+                byname = {e.src.model.name: e for e in in_edges}
+                ordered = [byname[n] for n in it.model.switch_inputs if n in byname]
+                # append any stray inputs not in switch_inputs (stable)
+                extras = [e for e in in_edges if e.src.model.name not in it.model.switch_inputs]
+                return ordered + extras
+
             if kind == "switch":
-                byname={}
+                # maintain current behavior: only the active one
+                if not in_edges:
+                    return []
+                # build ordered list following switch_inputs, then fall back
+                byname = {e.src.model.name: e for e in in_edges}
+                ordered = [byname[n] for n in it.model.switch_inputs if n in byname]
                 for e in in_edges:
-                    byname.setdefault(e.src.model.name, e)
-                ordered=[]
-                for nm in it.model.switch_inputs:
-                    if nm in byname: ordered.append(byname[nm])
-                for e in in_edges:
-                    if e not in ordered: ordered.append(e)
-                if ordered:
-                    idx = max(0, min(it.model.switch_index, len(ordered)-1))
-                    chosen = ordered[idx]
-                    active_edges.add(chosen)
-                    stack.append(chosen.src)
-            else:
-                for e in in_edges:
-                    active_edges.add(e)
-                    stack.append(e.src)
+                    if e not in ordered:
+                        ordered.append(e)
+                idx = max(0, min(it.model.switch_index, len(ordered) - 1))
+                return [ordered[idx]]
+
+            # default: sort left→right for stability
+            return sorted(in_edges, key=lambda e: (float(e.src.scenePos().x()), e.src.model.name))
+
+        # Depth-first expansion that honors Append order
+        active_edges = set()
+        seen_items = set()
+
+        def _collect(it, out_list):
+            if it in seen_items:
+                return
+            seen_items.add(it)
+
+            # visit inputs in node-specific order
+            for e in _ordered_in_edges(it):
+                active_edges.add(e)
+                _collect(e.src, out_list)
+
+            # do not push 'it' itself now; we want a pure upstream list.
+            # The caller will place the output at the end.
+
+        # build ordered upstream
+        ordered_items = []
+        _collect(out_item, ordered_items)
+
+        # highlight edges used
         for e in active_edges:
             e.setHighlighted(True)
-        if not active_edges:
-            return [out_item.model]
-        nodes = set()
-        for e in active_edges:
-            nodes.add(e.src); nodes.add(e.dst)
-        indeg = {n: 0 for n in nodes}
-        adj   = {n: [] for n in nodes}
-        for e in active_edges:
-            adj[e.src].append(e.dst)
-            indeg[e.dst] += 1
-        def node_key(n):
-            try:
-                x = float(n.scenePos().x())
-            except Exception:
-                x = 0.0
-            return (x, n.model.name)
-        S = [n for n in nodes if indeg[n] == 0]; S.sort(key=node_key)
-        L = []
-        while S:
-            n = S.pop(0)
-            L.append(n)
-            for m in adj[n]:
-                indeg[m] -= 1
-                if indeg[m] == 0:
-                    S.append(m); S.sort(key=node_key)
-        rev = {n: [] for n in nodes}
-        for e in active_edges:
-            rev[e.dst].append(e.src)
-        reach = set([out_item]); todo = [out_item]
-        while todo:
-            cur = todo.pop()
-            for src in rev.get(cur, ()):
-                if src not in reach:
-                    reach.add(src); todo.append(src)
-        ordered_items = [n for n in L if n in reach]
+
+        # ensure unique, keep order (DFS already unique via seen_items gate)
+        # Add the output node at the end so the Info panel shows sources → … → Output
         if out_item not in ordered_items:
             ordered_items.append(out_item)
-        else:
-            ordered_items = [n for n in ordered_items if n is not out_item] + [out_item]
+
         return [it.model for it in ordered_items]
+
+    # --- helpers to honor Append order everywhere -------------------------------
+    def _in_edges(self, it):
+        return [e for e in self._edges if e.dst is it]
+
+    def _ordered_in_edges(self, it):
+        kind = (it.model.kind or "").lower()
+        in_edges = self._in_edges(it)
+
+        if kind == "append":
+            byname = {e.src.model.name: e for e in in_edges}
+            ordered = [byname[n] for n in it.model.switch_inputs if n in byname]
+            extras = [e for e in in_edges if e.src.model.name not in it.model.switch_inputs]
+            return ordered + extras
+
+        if kind == "switch":
+            if not in_edges:
+                return []
+            byname = {e.src.model.name: e for e in in_edges}
+            ordered = [byname[n] for n in it.model.switch_inputs if n in byname]
+            for e in in_edges:
+                if e not in ordered:
+                    ordered.append(e)
+            idx = max(0, min(it.model.switch_index, len(ordered) - 1))
+            return [ordered[idx]]
+
+        # default: stable left→right
+        return sorted(in_edges, key=lambda e: (float(e.src.scenePos().x()), e.src.model.name))
+
+    def ordered_upstream_items(self, output_name: str):
+        """Return NodeItems upstream of 'output' in correct visual/render order,
+        honoring Append order and Switch selection. Last element is the output itself.
+        """
+        out_item = self._node_items.get(output_name)
+        if not out_item:
+            return []
+
+        active_edges = set()
+        seen = set()
+        ordered = []
+
+        def _visit(it):
+            if it in seen:
+                return
+            seen.add(it)
+            for e in self._ordered_in_edges(it):
+                active_edges.add(e)
+                _visit(e.src)
+            # push after inputs so ordered becomes [sources..., output] when we finish at root
+            ordered.append(it)
+
+        _visit(out_item)
+
+        # highlight currently-used edges
+        for e in active_edges:
+            e.setHighlighted(True)
+
+        return ordered
+
+    # In class GraphScene, put this after ordered_upstream_items(...)
+    def merged_text_for_output(self, output_name: str):
+        """Return [(node_name, text_value), ...] in the exact order set on the
+        nearest upstream Append node. If no Append exists near the output,
+        fall back to the general upstream order."""
+        out_item = self._node_items.get(output_name)
+        if not out_item:
+            return []
+
+        # Find the nearest upstream Append (the one feeding directly into the output path)
+        def _nearest_append(dst_item):
+            # direct parents first
+            for e in self._in_edges(dst_item):
+                if (e.src.model.kind or "").lower() == "append":
+                    return e.src
+            # otherwise search one level further (kept shallow on purpose)
+            for e in self._in_edges(dst_item):
+                for e2 in self._in_edges(e.src):
+                    if (e2.src.model.kind or "").lower() == "append":
+                        return e2.src
+            return None
+
+        append_item = _nearest_append(out_item)
+        out = []
+
+        if append_item:
+            # Use the Append node's declared input order exactly
+            for e in self._ordered_in_edges(append_item):
+                t = self.resolve_text_value(e.src)
+                if t:
+                    out.append((e.src.model.name, t))
+            return out
+
+        # Fallback: stable upstream order
+        seq = self.ordered_upstream_items(output_name)
+        for it in seq:
+            t = self.resolve_text_value(it)
+            if t:
+                out.append((it.model.name, t))
+        return out
+
 
 class GraphView(QtWidgets.QGraphicsView):
     def __init__(self, scene):
@@ -2721,7 +2971,6 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             QtCore.QUrl.fromLocalFile(__import__("os").path.join(__import__("tempfile").gettempdir(), "EchoGraph"))
         ))
         h.addWidget(btn_logs, 0)
-
                 
         # --- LLM Scale slider ---
         # LLM Scale (LEFT side)
@@ -2801,13 +3050,30 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
     def _export_graph(self):
         suggested = self._current_path if self._current_path else "graph.json"
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Export Graph (.json)", suggested, "JSON Files (*.json)")
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Export Graph (.json)", suggested, "JSON Files (*.json)"
+        )
         if not path:
             return
         try:
             data = self.scene.to_dict()
+
+            # --- Append-respecting preview (if we have an active Output and the helper exists) ---
+            try:
+                out_name = getattr(self.scene, "_current_output_name", "") or ""
+                if out_name and hasattr(self.scene, "merged_text_for_output"):
+                    pairs = self.scene.merged_text_for_output(out_name)  # [(node_name, text)]
+                    data.setdefault("preview", {})
+                    data["preview"]["output"] = out_name
+                    data["preview"]["ordered_pairs"] = [{"node": n, "text": t} for (n, t) in pairs]
+                    data["preview"]["merged_text"] = "\n\n".join(t for _, t in pairs)
+            except Exception:
+                # Don't block export if preview assembly fails
+                pass
+
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
+
             self._current_path = path
             try:
                 QtWidgets.QToolTip.showText(
@@ -2817,6 +3083,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 )
             except Exception:
                 pass
+
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, APP_TITLE, f"Failed to export:\n{e}")
 
@@ -2873,27 +3140,47 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             card._graph_scene = self.scene
         except Exception:
             pass
+
+        # Fill Append-ordered preview if this is an Output card
+        try:
+            card.apply_append_preview_if_output()
+        except Exception:
+            pass
+
         self._cardsLayout.insertWidget(0, card)
         self._card_by_node[node.name] = card
         self._trim_cards()
 
     def populate_branch_info(self, ordered_nodes):
+        # ignore incoming ordered_nodes; rebuild with Append-aware order
+        if not getattr(self, 'scene', None) or not getattr(self.scene, '_current_output_name', None):
+            return
+
         try:
-            self.infoDock.setVisible(True)
-            self.infoDock.raise_()
+            self.infoDock.setVisible(True); self.infoDock.raise_()
         except Exception:
             pass
+
+        # clear all existing cards (keep trailing stretch)
         for i in reversed(range(self._cardsLayout.count()-1)):
             w = self._cardsLayout.itemAt(i).widget()
             if w: w.deleteLater()
         self._card_by_node.clear()
-        if not ordered_nodes:
+
+        seq = self.scene.ordered_upstream_items(self.scene._current_output_name)  # ← Append-aware
+        if not seq:
             return
-        total = len(ordered_nodes)
-        for idx, node in enumerate(ordered_nodes, start=1):
+        total = len(seq)
+        for idx, item in enumerate(seq, start=1):
+            node = item.model
             card = InfoCard(node, order_index=idx, order_total=total)
             card.requestJump.connect(self.scene.center_on_name)
             card.closedForNode.connect(self._on_card_closed)
+            try:
+                card._graph_scene = self.scene
+                card.apply_append_preview_if_output()
+            except Exception:
+                pass
             self._cardsLayout.insertWidget(self._cardsLayout.count()-1, card)
 
     def _on_params_changed(self, node_name: str, params: list):
