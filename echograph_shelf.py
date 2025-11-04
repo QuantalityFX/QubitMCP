@@ -1458,6 +1458,10 @@ class InfoCard(QtWidgets.QFrame):
             listw.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
             for nm in (self._node_ref.switch_inputs or []):
                 listw.addItem(nm)
+                
+            # keep references so other parts of the app can refresh this UI
+            self._append_box = box
+            self._append_list = listw
 
             btns = QtWidgets.QHBoxLayout()
             up   = QtWidgets.QPushButton("↑")
@@ -1473,20 +1477,26 @@ class InfoCard(QtWidgets.QFrame):
                 it = listw.takeItem(r)
                 listw.insertItem(nr, it)
                 listw.setCurrentRow(nr)
-
+                
             def _apply_order():
                 new_order = [listw.item(i).text() for i in range(listw.count())]
                 self._node_ref.switch_inputs = new_order
                 sc = getattr(self, "_graph_scene", None)
                 if sc:
                     sc.refresh_node_widget(self._node_ref.name)
-                    # Refresh the active output preview using the Append-aware order
-                    if getattr(sc, "_current_output_name", None):
-                        # rebuild the cards using the new ordered sequence
-                        seq = sc.ordered_upstream_items(sc._current_output_name)
-                        if hasattr(sc.views()[0].window(), "populate_branch_info"):
-                            sc.views()[0].window().populate_branch_info([it.model for it in seq])
 
+                    # If we have an active output, rebuild branch cards and refresh merged preview
+                    try:
+                        out_name = getattr(sc, "_current_output_name", None)
+                        if out_name and sc.views() and hasattr(sc.views()[0].window(), "populate_branch_info"):
+                            win = sc.views()[0].window()
+                            seq = sc.ordered_upstream_items(out_name)
+                            win.populate_branch_info([it.model for it in seq])
+                            card = getattr(win, "_card_by_node", {}).get(out_name)
+                            if card and hasattr(card, "apply_append_preview_if_output"):
+                                card.apply_append_preview_if_output()
+                    except Exception:
+                        pass
 
             up.clicked.connect(lambda: _move_selected(-1))
             down.clicked.connect(lambda: _move_selected(+1))
@@ -1813,20 +1823,27 @@ class InfoCard(QtWidgets.QFrame):
 
         lay.addLayout(footer)           # footer buttons
 
-    def refresh_params_from_model(self):
-        """Reload the params table from the live node model."""
-        if not hasattr(self, "_param_table"):
-            return
-        self._param_table.blockSignals(True)
+    def refresh_append_ui_from_model(self):
+        """Rebuild the Append list widget from the node model’s current switch_inputs."""
         try:
-            self._param_table.setRowCount(0)
-            for p in (self._node_ref.params or []):
-                r = self._param_table.rowCount()
-                self._param_table.insertRow(r)
-                self._param_table.setItem(r, 0, QtWidgets.QTableWidgetItem(p.get("name","")))
-                self._param_table.setItem(r, 1, QtWidgets.QTableWidgetItem(p.get("value","")))
+            # Only applies to Append cards
+            if (self._node_ref.kind or "").lower() != "append":
+                return
+
+            # We stored this in __init__ when building the Append section
+            lw = getattr(self, "_append_list", None)
+            if lw is None:
+                return
+
+            lw.blockSignals(True)
+            lw.clear()
+            for nm in (self._node_ref.switch_inputs or []):
+                lw.addItem(nm)
         finally:
-            self._param_table.blockSignals(False)
+            try:
+                lw.blockSignals(False)
+            except Exception:
+                pass
 
     def apply_append_preview_if_output(self):
         """Rebuild the preview for Output cards using Append-respecting order."""
@@ -1980,15 +1997,20 @@ class GraphScene(QtWidgets.QGraphicsScene):
             return False, "No change."
         if new_name in self._nodes_by_name:
             return False, f"A node named '{new_name}' already exists."
+
         item = self._node_items.get(old_name)
         node = self._nodes_by_name.get(old_name)
         if not item or not node:
             return False, f"Node '{old_name}' not found."
+
+        # Swap keys in registries and update model
         self._node_items[new_name] = self._node_items.pop(old_name)
         self._nodes_by_name[new_name] = self._nodes_by_name.pop(old_name)
         node.name = new_name
         item.model.name = new_name
         item.update()
+
+        # Update any Switch nodes that reference this name (existing behavior)
         for it in self._node_items.values():
             if (it.model.kind or "").lower() == "switch":
                 if old_name in it.model.switch_inputs:
@@ -1996,13 +2018,37 @@ class GraphScene(QtWidgets.QGraphicsScene):
                         (new_name if n == old_name else n) for n in it.model.switch_inputs
                     ]
                     self._refresh_switch_widget(it)
+
+        # NEW: Update any Append nodes that reference this name
+        for it in self._node_items.values():
+            if (it.model.kind or "").lower() == "append":
+                if old_name in it.model.switch_inputs:
+                    it.model.switch_inputs = [
+                        (new_name if n == old_name else n) for n in it.model.switch_inputs
+                    ]
+                    self.refresh_node_widget(it.model.name)
+                    # Refresh the Append InfoCard UI if open
+                    try:
+                        win = self.views()[0].window() if self.views() else None
+                        if win:
+                            card = getattr(win, "_card_by_node", {}).get(it.model.name)
+                            if card and hasattr(card, "refresh_append_ui_from_model"):
+                                card.refresh_append_ui_from_model()
+                    except Exception:
+                        pass
+
+        # Keep current output tracking consistent
         if self._current_output_name == old_name:
             self._current_output_name = new_name
+
+        # Recompute active path or clear highlight
         if self._current_output_name:
             self.recompute_active_path(self._current_output_name)
         else:
             self._clear_path_highlight()
+
         return True, ""
+
 
     def upstream_of(self, dst_name: str):
         dst = self._node_items.get(dst_name)
@@ -2239,6 +2285,15 @@ class GraphScene(QtWidgets.QGraphicsScene):
                 dst.model.switch_index = max(0, min(dst.model.switch_index,
                                                     max(0, len(dst.model.switch_inputs)-1)))
             self.refresh_node_widget(dst.model.name)
+            # Refresh Append card UI if the destination is an Append/Switch node with a list
+            try:
+                win = self.views()[0].window() if self.views() else None
+                if win:
+                    card = getattr(win, "_card_by_node", {}).get(dst.model.name)
+                    if card and hasattr(card, "refresh_append_ui_from_model"):
+                        card.refresh_append_ui_from_model()
+            except Exception:
+                pass
 
         # NEW: keep Info panel + preview live when graph changes
         if self._current_output_name:
@@ -2258,22 +2313,52 @@ class GraphScene(QtWidgets.QGraphicsScene):
         return edge
 
     def _on_edge_removed(self, edge: 'EdgeItem'):
-        dst = edge.dst; src = edge.src
+        dst = edge.dst
+        src = edge.src
         dst_kind = (dst.model.kind or "").lower()
+
         if dst_kind in ("append", "switch"):
             try:
                 if src.model.name in dst.model.switch_inputs:
                     dst.model.switch_inputs.remove(src.model.name)
             except Exception:
                 pass
+
             if dst_kind == "switch":
-                dst.model.switch_index = max(0, min(dst.model.switch_index,
-                                                    max(0, len(dst.model.switch_inputs)-1)))
+                dst.model.switch_index = max(
+                    0,
+                    min(
+                        dst.model.switch_index,
+                        max(0, len(dst.model.switch_inputs) - 1)
+                    )
+                )
+
             # refresh UI for both cases
             self.refresh_node_widget(dst.model.name)
 
+            # Also refresh the Append card UI if open
+            try:
+                win = self.views()[0].window() if self.views() else None
+                if win:
+                    card = getattr(win, "_card_by_node", {}).get(dst.model.name)
+                    if card and hasattr(card, "refresh_append_ui_from_model"):
+                        card.refresh_append_ui_from_model()
+            except Exception:
+                pass
+
         if self._current_output_name:
-            self.recompute_active_path(self._current_output_name)
+            try:
+                self.recompute_active_path(self._current_output_name)
+                # Rebuild branch cards + refresh the Output card's merged preview
+                if self.views() and hasattr(self.views()[0].window(), "populate_branch_info"):
+                    win = self.views()[0].window()
+                    seq = self.ordered_upstream_items(self._current_output_name)
+                    win.populate_branch_info([it.model for it in seq])
+                    card = getattr(win, "_card_by_node", {}).get(self._current_output_name)
+                    if card and hasattr(card, "apply_append_preview_if_output"):
+                        card.apply_append_preview_if_output()
+            except Exception:
+                pass
 
     def delete_node_by_name(self, name: str):
         item = self._node_items.get(name)
@@ -2520,20 +2605,20 @@ class GraphScene(QtWidgets.QGraphicsScene):
 
     # In class GraphScene, put this after ordered_upstream_items(...)
     def merged_text_for_output(self, output_name: str):
-        """Return [(node_name, text_value), ...] in the exact order set on the
-        nearest upstream Append node. If no Append exists near the output,
-        fall back to the general upstream order."""
+        """Return [(node_name, text_value), ...] in the exact order declared on the
+        nearest upstream Append node (top row first). If no Append exists near the
+        output, fall back to the general upstream order."""
         out_item = self._node_items.get(output_name)
         if not out_item:
             return []
 
-        # Find the nearest upstream Append (the one feeding directly into the output path)
+        # Find the nearest upstream Append (one hop, otherwise two hops)
         def _nearest_append(dst_item):
             # direct parents first
             for e in self._in_edges(dst_item):
                 if (e.src.model.kind or "").lower() == "append":
                     return e.src
-            # otherwise search one level further (kept shallow on purpose)
+            # otherwise look one level further (kept shallow on purpose)
             for e in self._in_edges(dst_item):
                 for e2 in self._in_edges(e.src):
                     if (e2.src.model.kind or "").lower() == "append":
@@ -2541,23 +2626,31 @@ class GraphScene(QtWidgets.QGraphicsScene):
             return None
 
         append_item = _nearest_append(out_item)
-        out = []
-
         if append_item:
-            # Use the Append node's declared input order exactly
-            for e in self._ordered_in_edges(append_item):
+            # STRICT: iterate exactly by the Append's switch_inputs top→bottom.
+            # Build a name→edge map so we don't rely on traversal order.
+            byname = {e.src.model.name: e for e in self._in_edges(append_item)}
+            order = list(append_item.model.switch_inputs or [])
+            # NOTE: If your preview still looks inverted, flip this next line to: order = list(reversed(order))
+            pairs = []
+            for nm in order:
+                e = byname.get(nm)
+                if not e:
+                    continue
                 t = self.resolve_text_value(e.src)
                 if t:
-                    out.append((e.src.model.name, t))
-            return out
+                    pairs.append((e.src.model.name, t))
+            return pairs
 
-        # Fallback: stable upstream order
+        # Fallback: stable upstream order (already Append/Switch aware)
         seq = self.ordered_upstream_items(output_name)
+        out = []
         for it in seq:
             t = self.resolve_text_value(it)
             if t:
                 out.append((it.model.name, t))
         return out
+
 
 
 class GraphView(QtWidgets.QGraphicsView):
