@@ -7,47 +7,36 @@
 # Delete/Backspace removes selected nodes with their links.
 # Clicking an Output node auto-fills Info pane with ordered branch cards (start → output).
 
-# --- unified imports (PySide6 preferred, fallback to PySide2) ---
 import sys, re, json, math, os, time
 from pathlib import Path
 
-try:
-    from PySide6 import QtCore, QtGui, QtWidgets
-    try:
-        from shiboken6 import wrapInstance
-    except Exception:
-        wrapInstance = None
-    QT_IS_6 = True
-except ImportError:
-    from PySide2 import QtCore, QtGui, QtWidgets
-    try:
-        from shiboken2 import wrapInstance
-    except Exception:
-        wrapInstance = None
-    QT_IS_6 = False
+from echograph.qt_compat import (
+    QtCore, QtGui, QtWidgets,
+    QAction, QShortcut, QKeySequence,
+    wrapInstance, QT_IS_6, _qexec
+)
+from echograph.constants import (
+    APP_TITLE, APP_ICON, KEY_BIGEDIT,
+    LLM_URL, LLM_NODE_W_BASE, LLM_NODE_H_BASE,
+    DEFAULT_STRIPE_HEX, LLM_SCALE_DEFAULT,
+    script_dir
+)
 
-# --- cross-version shortcut helpers (PySide6 vs PySide2) ---
-try:
-    QShortcut = QtGui.QShortcut
-except AttributeError:
-    QShortcut = QtWidgets.QShortcut
+# Librarian IPC glue (redirect old private helpers to the new service)
+from echograph.services.librarian_ipc import (
+    outbox_dir,
+    enqueue,
+    load_output_text_by_ts,
+    ensure_running,
+)
 
-QKeySequence = QtGui.QKeySequence
+# Keep a local mutable scale (slider edits this)
+LLM_SCALE = float(LLM_SCALE_DEFAULT)
+def _llm_dims():
+    return int(LLM_NODE_W_BASE * LLM_SCALE), int(LLM_NODE_H_BASE * LLM_SCALE)
 
-try:
-    QAction = QtGui.QAction
-except AttributeError:
-    QAction = QtWidgets.QAction
-
-# ---- PySide2/6-safe modal exec ----
-def _qexec(dlg: QtWidgets.QDialog) -> int:
-    try:
-        return dlg.exec()
-    except AttributeError:
-        return dlg.exec_()
-
-# --- Hotkey used on Windows/Linux ---
-KEY_BIGEDIT = "Ctrl+B"
+# Derived dims used by node sizing
+LLM_NODE_W, LLM_NODE_H = _llm_dims()
 
 # --- WebEngine (for embedding Gradio UI) ---
 try:
@@ -57,20 +46,6 @@ except Exception:
         from PySide2 import QtWebEngineWidgets as WebEngine
     except Exception:
         WebEngine = None
-
-LLM_URL = "http://127.0.0.1:7860"
-LLM_SCALE       = 0.5              # divide-by factor
-LLM_NODE_W_BASE = 1920
-LLM_NODE_H_BASE = 1080 + 90        # = 1170
-LLM_CONTENT_ZOOM = LLM_SCALE
-
-DEFAULT_STRIPE_HEX = "#475569"
-
-def _llm_dims():
-    return int(LLM_NODE_W_BASE * LLM_SCALE), int(LLM_NODE_H_BASE * LLM_SCALE)
-
-# Legacy variables used everywhere else:
-LLM_NODE_W, LLM_NODE_H = _llm_dims()
 
 def set_global_llm_scale(new_scale: float, scene=None):
     """Apply a new global LLM scale and refresh all LLM nodes + layout."""
@@ -108,22 +83,10 @@ def set_global_llm_scale(new_scale: float, scene=None):
     except Exception:
         pass
 
-def _script_dir():
-    if "__file__" in globals():
-        try:
-            return Path(__file__).resolve().parent
-        except Exception:
-            pass
-    try:
-        return Path.cwd()
-    except Exception:
-        return Path.home()
-
-ICON_PATH = _script_dir() / "icons" / "EchoMatrixMCP_Icon_s.png"
-APP_ICON = QtGui.QIcon(str(ICON_PATH)) if ICON_PATH.exists() else QtGui.QIcon()
+# script_dir() and APP_ICON now come from echograph.constants
 
 # --- Import path bootstrap (must come before importing nodes.core) ---
-_BASE_DIR = _script_dir()
+_BASE_DIR = script_dir()
 _NODES_DIR = _BASE_DIR / "nodes"
 for _p in (str(_BASE_DIR), str(_NODES_DIR)):
     if _p not in sys.path:
@@ -134,7 +97,6 @@ import nodes.core as core
 from nodes.loader import bootstrap_plugins
 
 core.register_defaults()
-
 
 def _spec_stripe_color(kind: str) -> str:
     k = (kind or "node").lower()
@@ -177,117 +139,6 @@ except Exception:
     except Exception:
         pass
 
-# ---- Librarian IPC (file-based) ----
-def _librarian_inbox_dir() -> Path:
-    env_root = os.getenv("LIBRARIAN_ROOT", "").strip().strip('"').strip("'")
-    if env_root:
-        base = Path(env_root).resolve()
-        lib_dir = base
-        if not (lib_dir / "ipc").exists() and (base / "nodes" / "librarian").exists():
-            lib_dir = base / "nodes" / "librarian"
-    else:
-        base = _script_dir()
-        lib_dir = base / "nodes" / "librarian"
-    inbox = lib_dir / "ipc" / "inbox"
-    inbox.mkdir(parents=True, exist_ok=True)
-    return inbox
-
-def _enqueue_librarian(cmd: dict) -> Path:
-    env_root_raw = os.getenv("LIBRARIAN_ROOT", "").strip().strip('"').strip("'")
-    if env_root_raw:
-        base = Path(env_root_raw).resolve()
-        lib_dir = base if (base / "ipc").exists() else (base / "nodes" / "librarian")
-    else:
-        base = _script_dir()
-        lib_dir = base / "nodes" / "librarian"
-
-    inbox = (lib_dir / "ipc" / "inbox")
-    inbox.mkdir(parents=True, exist_ok=True)
-
-    ctype = (cmd.get("type") or cmd.get("action") or "").strip().lower()
-    if not ctype:
-        if "query" in cmd:
-            ctype = "search"
-        elif "question" in cmd:
-            ctype = "analyze"
-        else:
-            ctype = "summarize"
-    cmd["type"] = ctype
-    cmd["action"] = ctype
-    cmd.setdefault("from", "EchoGraph")
-    cmd.setdefault("ts", int(time.time() * 1000))
-
-    fn = inbox / f"cmd_{int(time.time()*1000)}_{os.getpid()}.json"
-    text = json.dumps(cmd, ensure_ascii=False, indent=2)
-    with open(fn, "w", encoding="utf-8", newline="\n") as f:
-        f.write(text); f.flush(); os.fsync(f.fileno())
-
-    if not fn.exists() or fn.stat().st_size == 0:
-        raise RuntimeError(
-            f"IPC write verification failed.\nTried: {fn}\n"
-            f"LIBRARIAN_ROOT={env_root_raw or '<unset>'}\n"
-            f"script_dir={_script_dir()}\n"
-            f"lib_dir={lib_dir}\n"
-        )
-    return fn
-
-def _librarian_outbox_dir() -> Path:
-    env_root_raw = os.getenv("LIBRARIAN_ROOT", "").strip().strip('"').strip("'")
-    if env_root_raw:
-        base = Path(env_root_raw).resolve()
-        lib_dir = base if (base / "ipc").exists() else (base / "nodes" / "librarian")
-    else:
-        base = _script_dir()
-        lib_dir = base / "nodes" / "librarian"
-    outbox = lib_dir / "ipc" / "outbox"
-    outbox.mkdir(parents=True, exist_ok=True)
-    return outbox
-
-def _read_json_silent(p: Path):
-    try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-
-def _render_hits_text(payload: dict) -> str:
-    if not isinstance(payload, dict):
-        return "No result data."
-    lines = []
-    if payload.get("summary"):
-        lines.append(str(payload["summary"]).strip())
-    if payload.get("answer"):
-        lines.append(str(payload["answer"]).strip())
-    for key in ("results", "hits", "items"):
-        arr = payload.get(key)
-        if isinstance(arr, (list, tuple)) and arr:
-            lines.append("")
-            lines.append(f"Top {min(len(arr), 5)} results:")
-            for i, it in enumerate(arr[:5], 1):
-                if isinstance(it, dict):
-                    title = it.get("title") or it.get("name") or it.get("id") or f"Result {i}"
-                    snippet = it.get("snippet") or it.get("summary") or it.get("text") or ""
-                    lines.append(f"{i}. {title}")
-                    if snippet:
-                        s = str(snippet).strip().replace("\r", "").replace("\n", " ")
-                        if len(s) > 240: s = s[:240] + "…"
-                        lines.append(f"   {s}")
-                else:
-                    s = str(it)
-                    if len(s) > 240: s = s[:240] + "…"
-                    lines.append(f"{i}. {s}")
-            break
-    if not lines:
-        lines = [json.dumps(payload, ensure_ascii=False, indent=2)]
-    return "\n".join(lines).strip()
-
-def _load_librarian_output_text_by_ts(ts: int) -> str:
-    outbox = _librarian_outbox_dir()
-    p = outbox / f"result_{int(ts)}.json"
-    if not p.exists():
-        return ""
-    payload = _read_json_silent(p)
-    return _render_hits_text(payload) if payload else ""
-
 def _main_window():
     if HOST == "maya" and omui:
         try:
@@ -303,69 +154,7 @@ def _main_window():
             return None
     return None
 
-APP_TITLE = "EchoGraph"
 WS_CTRL = "EchoGraphWorkspaceControl"  # Maya only
-
-# --- Librarian single-instance launcher (global) ---
-_LIBRARIAN_PROC = None
-_LAST_LIBRARIAN_LAUNCH_TS = 0.0
-
-def ensure_librarian_running(focus_hint: bool = True):
-    import subprocess, time
-    global _LIBRARIAN_PROC, _LAST_LIBRARIAN_LAUNCH_TS
-
-    # still alive?
-    if isinstance(_LIBRARIAN_PROC, subprocess.Popen):
-        try:
-            if _LIBRARIAN_PROC.poll() is None:
-                if focus_hint:
-                    try:
-                        _enqueue_librarian({"type": "focus"})
-                    except Exception:
-                        pass
-                return _LIBRARIAN_PROC
-        except Exception:
-            pass
-        _LIBRARIAN_PROC = None  # dead / invalid, relaunch below
-
-    # debounce
-    now = time.time()
-    if (now - _LAST_LIBRARIAN_LAUNCH_TS) < 1.0:
-        return _LIBRARIAN_PROC
-    _LAST_LIBRARIAN_LAUNCH_TS = now
-
-    # import launcher (package, loose module, or by file path)
-    try:
-        from nodes.librarian import launch_librarian as L
-    except Exception:
-        try:
-            import launch_librarian as L  # if cwd is nodes/librarian
-        except Exception:
-            try:
-                import importlib.util
-                lib_file = _NODES_DIR / "librarian" / "launch_librarian.py"
-                spec = importlib.util.spec_from_file_location("librarian_launcher", str(lib_file))
-                if spec is None or spec.loader is None:
-                    raise ImportError(f"spec_from_file_location failed for {lib_file}")
-                L = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(L)  # type: ignore[attr-defined]
-            except Exception as e:
-                QtWidgets.QMessageBox.critical(None, APP_TITLE, f"Import error launching Librarian:\n{e}")
-                return None
-
-    # launch
-    try:
-        _LIBRARIAN_PROC = L.launch(verbose=False)
-        if focus_hint:
-            try:
-                _enqueue_librarian({"type": "focus"})
-            except Exception:
-                pass
-        return _LIBRARIAN_PROC
-    except Exception as e:
-        _LIBRARIAN_PROC = None
-        QtWidgets.QMessageBox.critical(None, APP_TITLE, f"Failed to launch Librarian:\n{e}")
-        return None
 
 
 def _hash_to_links(text:str)->str:
@@ -374,7 +163,6 @@ def _hash_to_links(text:str)->str:
         lambda m: f'<a href="jump:/{QtCore.QUrl.toPercentEncoding(m.group(1).strip()).data().decode()}">#{m.group(1).strip()}</a>',
         text
     )
-
 
 # model
 class GraphNode:
@@ -1530,7 +1318,7 @@ class InfoCard(QtWidgets.QFrame):
             open_btn = QtWidgets.QPushButton("Open Librarian")
             open_btn.setToolTip("Launch the Librarian UI in its own process")
 
-            open_btn.clicked.connect(lambda: ensure_librarian_running(True))
+            open_btn.clicked.connect(lambda: ensure_running(True))
             footer.addWidget(open_btn)
 
             send_btn = QtWidgets.QPushButton("Send Query → Librarian")
@@ -1582,9 +1370,9 @@ class InfoCard(QtWidgets.QFrame):
                         "from": "EchoGraph",
                         "ts": ts,
                     }
-                    fn = _enqueue_librarian(cmd)
+                    fn = enqueue(cmd)
                     # Ensure Librarian UI is up (non-blocking, single instance)
-                    ensure_librarian_running(True)
+                    ensure_running(True)
 
                     self._waiting_ts = ts
                     self._last_query_text = q
@@ -1635,7 +1423,7 @@ class InfoCard(QtWidgets.QFrame):
                     ts = getattr(self, "_waiting_ts", None)
                     if not ts:
                         return
-                    txt = _load_librarian_output_text_by_ts(ts) or ""
+                    txt = load_output_text_by_ts(ts) or ""
                     if not txt:
                         return
                     prefix = f"Query:\n{self._last_query_text}\n\n" if getattr(self, "_last_query_text", "") else ""
@@ -1654,7 +1442,7 @@ class InfoCard(QtWidgets.QFrame):
 
             try:
                 self._fswatcher = QtCore.QFileSystemWatcher(self)
-                self._fswatcher.addPath(str(_librarian_outbox_dir()))
+                self._fswatcher.addPath(str(outbox_dir()))
                 def _on_dir_change(_path):
                     _apply_result_if_ready()
                 self._fswatcher.directoryChanged.connect(_on_dir_change)
