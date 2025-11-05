@@ -1,0 +1,833 @@
+
+import re
+from echograph.qt_compat import QtCore, QtGui, QtWidgets, QAction, QShortcut, QKeySequence, _qexec
+from echograph.constants import LLM_URL, LLM_NODE_W_BASE, LLM_NODE_H_BASE, LLM_SCALE_DEFAULT, KEY_BIGEDIT
+from echograph.ui.dialogs import BigTextEditDialog
+import nodes.core as core
+from echograph.constants import DEFAULT_STRIPE_HEX
+
+# WebEngine (optional)
+try:
+    from PySide6 import QtWebEngineWidgets as WebEngine
+except Exception:
+    try:
+        from PySide2 import QtWebEngineWidgets as WebEngine
+    except Exception:
+        WebEngine = None
+
+# Local scale fallback so NodeItem doesn’t depend on the main window globals.
+try:
+    # If the app injected a global LLM_SCALE, use it; otherwise default.
+    LLM_SCALE  # noqa: F401
+except NameError:
+    LLM_SCALE = float(LLM_SCALE_DEFAULT)
+
+# Convenience for the “WebEngine missing” path that references LLM_NODE_H
+try:
+    LLM_NODE_H  # noqa: F401
+except NameError:
+    LLM_NODE_H = int(LLM_NODE_H_BASE * LLM_SCALE)
+
+
+def _top_level_parent_for_dialog() -> QtWidgets.QWidget | None:
+    """Best-effort: pick a sensible parent for dialogs, avoids 'windowless' modals."""
+    aw = QtWidgets.QApplication.activeWindow()
+    if aw and aw.isWindow():
+        return aw
+    for w in QtWidgets.QApplication.topLevelWidgets():
+        try:
+            if w.isWindow() and w.isVisible():
+                return w
+        except Exception:
+            continue
+    return None
+
+
+def _spec_stripe_color(kind: str) -> str:
+    """Ask the node spec for its stripe color; fall back to DEFAULT_STRIPE_HEX."""
+    k = (kind or "node").lower()
+    try:
+        spec = core.get_spec(k)
+    except Exception:
+        spec = None
+
+    if spec is not None:
+        if isinstance(spec, dict):
+            c = spec.get("stripe_color") or spec.get("color") or spec.get("stripe")
+            if c:
+                return str(c)
+        else:
+            for attr in ("stripe_color", "color", "stripe"):
+                try:
+                    val = getattr(spec, attr)
+                    if val:
+                        return str(val)
+                except Exception:
+                    pass
+    return DEFAULT_STRIPE_HEX
+
+
+class NodeItem(QtWidgets.QGraphicsObject):
+    clicked = QtCore.Signal(object)
+    requestCenter = QtCore.Signal(str)
+    startWireDrag = QtCore.Signal(object)
+    switchIndexChanged = QtCore.Signal(object, int)
+
+    _BASE_W = 220
+    _BASE_H = 72
+    _PARAM_ROW_H = 24
+    _PADDING = 8
+    _NOTE_FEATURED_H = 160
+    
+    def __init__(self, model):
+        try:
+            super().__init__()
+        except TypeError:
+            super(NodeItem, self).__init__()
+
+        self.model = model
+        self.width = self._BASE_W
+        self.height = self._BASE_H
+        self.radius = 10
+
+        self.setFlag(QtWidgets.QGraphicsItem.ItemIsMovable, True)
+        self.setFlag(QtWidgets.QGraphicsItem.ItemSendsGeometryChanges, True)
+        self.setFlag(QtWidgets.QGraphicsItem.ItemIsSelectable, True)
+
+        try:
+            self.setCacheMode(QtWidgets.QGraphicsItem.CacheMode.DeviceCoordinateCache)
+        except AttributeError:
+            self.setCacheMode(QtWidgets.QGraphicsItem.DeviceCoordinateCache)
+
+        self.setZValue(1)
+
+        self.pen = QtGui.QPen(QtGui.QColor("#7a8793"))
+        self.titlePen = QtGui.QPen(QtGui.QColor("#e6edf3"))
+
+        self._hover = False
+        self.setAcceptHoverEvents(True)
+        self.setAcceptedMouseButtons(QtCore.Qt.LeftButton | QtCore.Qt.RightButton | QtCore.Qt.MiddleButton)
+
+        self._param_proxies = []
+        self._plugin_proxies = []
+
+        self._switch_proxy = None
+        self._llm_proxy = None
+        self._llm_view = None  # kept for API parity if ever needed
+
+
+        self._recompute_height()
+        self._build_widgets()
+
+
+    def _rebuild_deferred(self):
+        """Recompute + rebuild on next event-loop tick to avoid re-entrancy/tearing."""
+        try:
+            from PySide6 import QtCore as _QtCore
+        except Exception:
+            from PySide2 import QtCore as _QtCore
+        if getattr(self, "_rebuild_pending", False):
+            return
+        self._rebuild_pending = True
+        _QtCore.QTimer.singleShot(0, lambda: (
+            setattr(self, "_rebuild_pending", False),
+            self._recompute_height(),
+            self._build_widgets()
+        ))
+
+
+    def _get_featured_set(self):
+        """Return a COPY of featured param names (set[str]) on this node's model."""
+        feat = getattr(self.model, "_featured_params", None)
+
+        out = set()
+        if isinstance(feat, set):
+            out.update(feat)
+        elif isinstance(feat, (list, tuple)):
+            out.update([str(x) for x in feat if x])
+        elif isinstance(feat, str) and feat:
+            out.add(feat)
+
+        # migrate legacy single string once
+        old = getattr(self.model, "_featured_param", "")
+        if isinstance(old, str) and old:
+            out.add(old)
+            try: setattr(self.model, "_featured_param", "")
+            except Exception: pass
+
+        return out
+
+    def _pruned_featured_set(self, valid_names: set[str]) -> set[str]:
+        """Return featured set ∩ valid_names and write back if anything was pruned."""
+        feat = self._get_featured_set()
+        pruned = {n for n in feat if n in valid_names}
+        if pruned != feat:
+            self._set_featured_set(pruned)
+        return pruned
+
+    def _set_featured_set(self, names: set[str]):
+        """Write back a NEW set instance (copy-on-write)."""
+        setattr(self.model, "_featured_params", set(names))
+
+
+    def _normalize_url(self, s: str) -> str:
+        s = (s or "").strip()
+        if not s:
+            return LLM_URL
+        if not re.match(r'^[a-zA-Z]+://', s):
+            s = "http://" + s
+        return s
+
+    def _llm_url_from_params(self) -> str:
+        for p in (self.model.params or []):
+            nm = (p.get("name","") or "").lower()
+            if nm in ("url", "address", "endpoint"):
+                return self._normalize_url(p.get("value",""))
+        return LLM_URL
+    
+    def _recompute_height(self):
+        kind = (self.model.kind or "").lower()
+
+        # Baseline used by y_cursor in _build_widgets
+        header_h = 38 + 16 + self._PADDING
+
+        # Switch row
+        switch_h = self._PARAM_ROW_H if kind == "switch" else 0
+
+        # Params block (regular rows)
+        n_params = len(self.model.params or [])
+        params_h = n_params * self._PARAM_ROW_H
+
+        # Note: add a big block per featured param (prune orphans first)
+        if kind == "note":
+            try:
+                current_names = { (p.get("name") or "") for p in (self.model.params or []) if (p.get("name") or "") }
+                feat_set = self._pruned_featured_set(current_names)
+                params_h += len(feat_set) * self._NOTE_FEATURED_H
+            except Exception:
+                pass
+
+        if n_params:
+            params_h += self._PADDING  # breathing room below params
+
+        # Kind-specific body additions
+        if kind == "llm":
+            body_h = int(LLM_NODE_H_BASE * LLM_SCALE)
+            node_w = max(self._BASE_W, int(LLM_NODE_W_BASE * LLM_SCALE))
+        elif kind == "append":
+            count = max(1, len(self.model.switch_inputs or []))
+            body_h = 6 + count * self._PARAM_ROW_H
+            node_w = self._BASE_W
+        else:
+            body_h = 0
+            node_w = self._BASE_W
+
+        new_w = max(node_w, self._BASE_W)
+        new_h = max(self._BASE_H, header_h + switch_h + params_h + body_h + self._PADDING)
+
+        if new_w != getattr(self, "width", 0) or new_h != getattr(self, "height", 0):
+            try:
+                self.prepareGeometryChange()
+            except Exception:
+                pass
+            self.width = new_w
+            self.height = new_h
+
+
+    def _clear_widget_proxies(self):
+        """Safely tear down all embedded proxy widgets (switch, params, plugins, LLM)."""
+
+        def _kill_proxy(pr):
+            if not pr:
+                return
+            try:
+                # If this is a QGraphicsProxyWidget, detach its child widget first
+                if isinstance(pr, QtWidgets.QGraphicsProxyWidget):
+                    try:
+                        w = pr.widget()
+                    except Exception:
+                        w = None
+                    try:
+                        pr.setWidget(None)  # detach to avoid re-entrant destruction crashes
+                    except Exception:
+                        pass
+                    if w is not None:
+                        try:
+                            w.deleteLater()  # schedule actual Qt widget deletion
+                        except Exception:
+                            pass
+                # Remove the proxy itself from the scene
+                try:
+                    sc = self.scene()
+                    if sc:
+                        sc.removeItem(pr)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        # --- Switch row proxy ---
+        _kill_proxy(getattr(self, "_switch_proxy", None))
+        self._switch_proxy = None
+
+        # --- Parameter row proxies ---
+        for pr in list(getattr(self, "_param_proxies", [])):
+            _kill_proxy(pr)
+        try:
+            self._param_proxies[:] = []
+        except Exception:
+            self._param_proxies = []
+
+        # --- Plugin-provided proxies (e.g., Note big preview area) ---
+        for pr in list(getattr(self, "_plugin_proxies", [])):
+            _kill_proxy(pr)
+        try:
+            self._plugin_proxies[:] = []
+        except Exception:
+            self._plugin_proxies = []
+
+        # --- LLM proxy/view bits ---
+        _kill_proxy(getattr(self, "_llm_proxy", None))
+        self._llm_proxy = None
+
+        # Clear any cached view/label/sampler refs
+        try:
+            self._llm_view = None
+        except Exception:
+            pass
+        try:
+            self._llm_label = None
+        except Exception:
+            pass
+        try:
+            # Some branches may still have this attribute around
+            if hasattr(self, "_llm_sampler"):
+                self._llm_sampler = None
+        except Exception:
+            pass
+
+
+    def _build_widgets(self):
+        # prevent re-entrancy while we're tearing down/creating proxies
+        if getattr(self, "_is_building", False):
+            return
+        self._is_building = True
+        try:
+            self._clear_widget_proxies()
+            y_cursor = 38 + 16 + self._PADDING
+
+            # --- Plugin body hook (lets specs draw a custom node body) ---
+            try:
+                spec = core.get_spec((self.model.kind or "node").lower())
+                render = None
+                if isinstance(spec, dict):
+                    render = spec.get("render_node_body")
+                else:
+                    render = getattr(spec, "render_node_body", None)
+                if callable(render):
+                    new_y = render(self, y_cursor)
+                    if isinstance(new_y, (int, float)):
+                        y_cursor = int(new_y)
+            except Exception as e:
+                print("[EchoGraph] render_node_body error:", e)
+
+            # --- Append node body: list connected node names in current order ---
+            if (self.model.kind or "").lower() == "append":
+                body = QtWidgets.QWidget()
+                v = QtWidgets.QVBoxLayout(body)
+                v.setContentsMargins(6, 6, 6, 6)
+                v.setSpacing(2)
+
+                names = list(self.model.switch_inputs or [])
+                if not names:
+                    lbl = QtWidgets.QLabel("No inputs connected.")
+                    lbl.setStyleSheet("color:#94a3b8;")
+                    v.addWidget(lbl)
+                else:
+                    for nm in names:
+                        row = QtWidgets.QLabel(f"• {nm}")
+                        row.setStyleSheet("color:#e6edf3;")
+                        v.addWidget(row)
+
+                proxy = QtWidgets.QGraphicsProxyWidget(self)
+                proxy.setWidget(body)
+                proxy.setZValue(self.zValue() + 0.1)
+                proxy.setPos(0, y_cursor)
+
+                append_h = 6 + max(1, len(names)) * self._PARAM_ROW_H
+                proxy.resize(self.width, append_h)
+                self._param_proxies.append(proxy)
+
+                y_cursor += append_h
+
+            # --- Switch slider row ---
+            if (self.model.kind or "").lower() == "switch":
+                row = QtWidgets.QWidget()
+                row.setAttribute(QtCore.Qt.WA_TranslucentBackground)
+                lay = QtWidgets.QHBoxLayout(row)
+                lay.setContentsMargins(6, 0, 6, 0)
+                lay.setSpacing(6)
+
+                lab = QtWidgets.QLabel(self._switch_label_text())
+                lab.setStyleSheet("color:#cbd5e1;")
+
+                slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+                slider.setMinimum(0)
+                slider.setMaximum(max(0, len(self.model.switch_inputs) - 1))
+                slider.setSingleStep(1); slider.setPageStep(1)
+                slider.setValue(max(0, min(self.model.switch_index, slider.maximum())))
+                slider.valueChanged.connect(lambda v, L=lab: self._on_switch_slider(v, L))
+
+                lay.addWidget(lab); lay.addWidget(slider, 1)
+
+                proxy = QtWidgets.QGraphicsProxyWidget(self)
+                proxy.setWidget(row)
+                proxy.setZValue(self.zValue() + 0.1)
+                proxy.setPos(0, y_cursor)
+                proxy.resize(self.width, self._PARAM_ROW_H)
+                self._switch_proxy = proxy
+
+                y_cursor += self._PARAM_ROW_H
+
+            # --- Parameters ---
+            if self.model.params:
+                kind = (self.model.kind or "").lower()
+                if kind == "note":
+                    current_names = { (p.get("name") or "") for p in (self.model.params or []) if (p.get("name") or "") }
+                    feat_set = self._pruned_featured_set(current_names)
+                else:
+                    feat_set = set()
+
+                for i, p in enumerate(self.model.params):
+                    pname = p.get("name", "")
+                    pval  = p.get("value", "")
+
+                    # Row 1: eye (optional) + label + line edit
+                    row = QtWidgets.QWidget()
+                    row.setAttribute(QtCore.Qt.WA_TranslucentBackground)
+                    lay = QtWidgets.QHBoxLayout(row)
+                    lay.setContentsMargins(6, 0, 6, 0)
+                    lay.setSpacing(6)
+
+                    if kind == "note":
+                        eye_btn = QtWidgets.QToolButton()
+                        is_featured = pname in feat_set
+                        eye_btn.setAutoRaise(True)
+                        eye_btn.setToolTip("Toggle big view for this parameter")
+                        eye_btn.setText("🙈" if not is_featured else "👁")
+
+                        def _mk_toggle(nm=pname, btn=eye_btn):
+                            def _toggle():
+                                fs = set(self._get_featured_set())  # copy-on-write
+                                if nm in fs:
+                                    fs.remove(nm)
+                                else:
+                                    fs.add(nm)
+                                # write back (use helper if you later add one)
+                                try:
+                                    setattr(self.model, "_featured_params", set(fs))
+                                except Exception:
+                                    pass
+                                # defer heavy rebuild to end of event loop tick
+                                self._schedule_rebuild()
+                            return _toggle
+                        eye_btn.clicked.connect(_mk_toggle())
+                        lay.addWidget(eye_btn)
+
+                    lab = QtWidgets.QLabel(pname)
+                    lab.setStyleSheet("color:#cbd5e1;")
+                    lay.addWidget(lab)
+
+                    edit = QtWidgets.QLineEdit(pval)
+                    edit.setPlaceholderText("value")
+                    edit.setStyleSheet(
+                        "QLineEdit{background:#12151a;color:#e6edf3;"
+                        "border:1px solid #3c4450;border-radius:4px;padding:2px 6px;}"
+                    )
+                    edit.textChanged.connect(lambda txt, idx=i: self._on_param_changed(idx, txt))
+
+                    # Ctrl+B shortcut + context action
+                    self._wire_bigedit_shortcut(edit, p.get("name", "value"))
+                    act = QAction("Open Big Editor (Ctrl+B)", edit)
+                    act.triggered.connect(
+                        lambda _=False, e=edit, nm=p.get("name","value"):
+                            self._open_big_param_editor(f"Edit: {nm}", e.text(), e)
+                    )
+                    edit.addAction(act)
+                    edit.setContextMenuPolicy(QtCore.Qt.ActionsContextMenu)
+                    lay.addWidget(edit, 1)
+
+                    proxy = QtWidgets.QGraphicsProxyWidget(self)
+                    proxy.setWidget(row)
+                    proxy.setZValue(self.zValue() + 0.1)
+                    proxy.setPos(0, y_cursor)
+                    proxy.resize(self.width, self._PARAM_ROW_H)
+                    self._param_proxies.append(proxy)
+
+                    y_cursor += self._PARAM_ROW_H
+
+                    # If featured → add a SECOND row right BELOW with a large QTextEdit
+                    if kind == "note" and pname in feat_set:
+                        big_row = QtWidgets.QWidget()
+                        big_row.setAttribute(QtCore.Qt.WA_TranslucentBackground)
+                        vlay = QtWidgets.QVBoxLayout(big_row)
+                        vlay.setContentsMargins(6, 4, 6, 6)  # left flush, a bit of bottom breathing room
+                        vlay.setSpacing(4)
+
+                        big = QtWidgets.QTextEdit()
+                        big.setAcceptRichText(False)
+                        big.setPlainText(pval)
+                        big.setStyleSheet(
+                            "QTextEdit{background:#0f1216;color:#e6edf3;"
+                            "border:1px solid #3c4450;border-radius:6px;padding:6px;}"
+                        )
+                        def _sync_big(idx=i, w=big):
+                            self._on_param_changed(idx, w.toPlainText())
+                        big.textChanged.connect(_sync_big)
+                        vlay.addWidget(big, 1)
+
+                        big_proxy = QtWidgets.QGraphicsProxyWidget(self)
+                        big_proxy.setWidget(big_row)
+                        big_proxy.setZValue(self.zValue() + 0.1)
+                        big_proxy.setPos(0, y_cursor)
+                        big_proxy.resize(self.width, self._NOTE_FEATURED_H)
+                        self._param_proxies.append(big_proxy)
+
+                        y_cursor += self._NOTE_FEATURED_H
+
+            # --- LLM embedded webview ---
+            if (self.model.kind or "").lower() == "llm":
+                if WebEngine is None:
+                    row = QtWidgets.QWidget()
+                    lay = QtWidgets.QVBoxLayout(row); lay.setContentsMargins(6,0,6,0); lay.setSpacing(6)
+                    warn = QtWidgets.QLabel("QtWebEngine not available.\nInstall PySide6-Qt6-WebEngine (or PySide2 QtWebEngine).")
+                    warn.setStyleSheet("color:#fca5a5;")
+                    lay.addWidget(warn, 0, QtCore.Qt.AlignLeft)
+
+                    proxy = QtWidgets.QGraphicsProxyWidget(self)
+                    proxy.setWidget(row)
+                    proxy.setZValue(self.zValue() + 0.1)
+                    proxy.setPos(0, y_cursor)
+                    proxy.resize(self.width, max(200, LLM_NODE_H // 3))
+                    try: proxy.setPreferredSize(self.width, max(200, LLM_NODE_H // 3))
+                    except AttributeError: pass
+                    self._llm_proxy = proxy
+                else:
+                    view = WebEngine.QWebEngineView()
+                    view.setObjectName("LLMWebView")
+                    try:
+                        view.setZoomFactor(1.0)
+                    except Exception:
+                        pass
+                    try:
+                        url = QtCore.QUrl(self._llm_url_from_params())
+                    except Exception:
+                        url = QtCore.QUrl(LLM_URL)
+                    view.setUrl(url)
+
+                    view.resize(LLM_NODE_W_BASE, LLM_NODE_H_BASE)
+                    view.setMinimumSize(LLM_NODE_W_BASE, LLM_NODE_H_BASE)
+                    view.setMaximumSize(LLM_NODE_W_BASE, LLM_NODE_H_BASE)
+                    view.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+
+                    proxy = QtWidgets.QGraphicsProxyWidget(self)
+                    proxy.setCacheMode(QtWidgets.QGraphicsItem.DeviceCoordinateCache)
+                    proxy.setWidget(view)
+                    proxy.setZValue(self.zValue() + 0.1)
+
+                    S = float(LLM_SCALE)
+                    proxy.setTransform(QtGui.QTransform().scale(S, S))
+                    proxy.setPos(0, y_cursor)
+
+                    try:
+                        proxy.setPreferredSize(LLM_NODE_W_BASE, LLM_NODE_H_BASE)
+                    except AttributeError:
+                        pass
+
+                    self._llm_proxy = proxy
+                    self._llm_view  = view
+                    self._llm_label = None
+                    self._llm_sampler = None
+
+                    y_cursor += int(LLM_NODE_H_BASE * LLM_SCALE)
+
+        finally:
+            self._is_building = False
+
+
+    def _schedule_rebuild(self):
+        # Coalesce multiple toggles/edits into a single rebuild on the next event loop tick
+        if getattr(self, "_rebuild_pending", False):
+            return
+        self._rebuild_pending = True
+        QtCore.QTimer.singleShot(0, self._do_rebuild)
+
+    def _do_rebuild(self):
+        self._rebuild_pending = False
+        # Recompute height first, then rebuild
+        self._recompute_height()
+        self._build_widgets()
+
+    def _switch_label_text(self):
+        n = len(self.model.switch_inputs)
+        idx = max(0, min(self.model.switch_index, max(0, n - 1)))
+        return f"Branch {idx+1}/{max(1, n)}"
+
+    def _on_switch_slider(self, v, label_widget):
+        self.model.switch_index = int(v)
+        if isinstance(label_widget, QtWidgets.QLabel):
+            label_widget.setText(self._switch_label_text())
+        self.switchIndexChanged.emit(self, self.model.switch_index)
+
+    def _on_param_changed(self, idx, txt):
+        try:
+            self.model.params[idx]["value"] = txt
+        except Exception:
+            pass
+
+        sc = self.scene()
+        if sc and hasattr(sc, "paramChanged"):
+            try:
+                sc.paramChanged.emit(self.model.name, list(self.model.params))
+            except Exception:
+                pass
+
+        if (self.model.kind or "").lower() == "llm":
+            try:
+                name = (self.model.params[idx]["name"] or "").lower()
+            except Exception:
+                name = ""
+            if name in ("url", "address", "endpoint"):
+                norm = self._normalize_url(txt)
+                if self._llm_sampler:
+                    try:
+                        self._llm_sampler.set_url(QtCore.QUrl(norm))
+                    except Exception:
+                        pass
+
+    def _wire_bigedit_shortcut(self, edit: QtWidgets.QLineEdit, param_name: str):
+        # Focus-only hotkey path:
+        edit.setFocusPolicy(QtCore.Qt.StrongFocus)
+        row = edit.parent() if isinstance(edit.parent(), QtWidgets.QWidget) else None
+        if row:
+            row.setFocusPolicy(QtCore.Qt.StrongFocus)
+
+        def _activate_bigedit(e=edit, nm=param_name):
+            self._open_big_param_editor(f"Edit: {nm}", e.text(), e)
+
+        class _HotkeyFilter(QtCore.QObject):
+            def eventFilter(self, obj, ev):
+                if ev.type() == QtCore.QEvent.KeyPress:
+                    if (ev.key() == QtCore.Qt.Key_B) and (ev.modifiers() & QtCore.Qt.ControlModifier):
+                        _activate_bigedit()
+                        return True
+                return super().eventFilter(obj, ev)
+
+        hf = _HotkeyFilter(edit)
+        edit.installEventFilter(hf)
+
+        if not hasattr(self, "_hotkey_refs"):
+            self._hotkey_refs = []
+        self._hotkey_refs.append(hf)
+
+        try:
+            seq = QKeySequence(KEY_BIGEDIT)
+            sc = QShortcut(seq, edit)
+            sc.setContext(QtCore.Qt.WidgetShortcut)  # requires the edit itself to have focus
+            sc.activated.connect(_activate_bigedit)
+            self._hotkey_refs.append(sc)
+        except Exception:
+            pass
+
+        try:
+            v = self.scene().views()[0] if self.scene() and self.scene().views() else None
+            win = v.window() if v else None
+            if win and hasattr(win, "_register_bigedit_target"):
+                win._register_bigedit_target(edit, self, param_name)
+        except Exception:
+            pass
+
+    # (Deliberately NO NodeItem.eventFilter override — avoids accidental second path.)
+
+    def _open_big_param_editor(self, title: str, initial_text: str, apply_to_lineedit: QtWidgets.QLineEdit):
+        parent = _top_level_parent_for_dialog()
+        dlg = BigTextEditDialog(parent, title=title, initial=initial_text)
+        try:
+            dlg.setWindowFlags(
+                QtCore.Qt.Dialog
+                | QtCore.Qt.CustomizeWindowHint
+                | QtCore.Qt.WindowTitleHint
+                | QtCore.Qt.WindowCloseButtonHint
+            )
+        except Exception:
+            pass
+        try:
+            dlg.setWindowModality(QtCore.Qt.WindowModal if parent is not None else QtCore.Qt.NonModal)
+        except Exception:
+            pass
+        try:
+            sz = dlg.sizeHint()
+            w = max(560, int(sz.width()  or 560))
+            h = max(360, int(sz.height() or 360))
+            dlg.resize(w, h)
+        except Exception:
+            pass
+        try:
+            cp = QtGui.QCursor.pos()
+            screen = QtGui.QGuiApplication.screenAt(cp) or QtWidgets.QApplication.primaryScreen()
+            sgeom = screen.availableGeometry() if screen else QtCore.QRect(100, 100, 1200, 800)
+            x = cp.x() - dlg.width() // 2
+            y = cp.y() - dlg.height() // 2
+            x = max(sgeom.left() + 8,  min(x, sgeom.right()  - dlg.width()  - 8))
+            y = max(sgeom.top()  + 8,  min(y, sgeom.bottom() - dlg.height() - 8))
+            dlg.move(x, y)
+        except Exception:
+            pass
+        try:
+            fw = QtWidgets.QApplication.focusWidget()
+            if fw and isinstance(fw, QtWidgets.QWidget):
+                fw.clearFocus()
+        except Exception:
+            pass
+        try:
+            dlg.show(); dlg.raise_(); dlg.activateWindow()
+            QtWidgets.QApplication.processEvents()
+        except Exception:
+            pass
+        if _qexec(dlg) == QtWidgets.QDialog.Accepted:
+            apply_to_lineedit.setText(dlg.text())         # triggers textChanged → updates model
+            try:
+                apply_to_lineedit.editingFinished.emit()  # optional: keep downstream listeners consistent
+            except Exception:
+                pass
+
+    def boundingRect(self):
+        m = 6
+        return QtCore.QRectF(-m, -m, self.width + 2 * m, self.height + 2 * m)
+
+    def shape(self):
+        path = QtGui.QPainterPath()
+        path.addRoundedRect(QtCore.QRectF(0, 0, self.width, self.height), self.radius, self.radius)
+        return path
+
+    def paint(self, p: QtGui.QPainter, opt: QtWidgets.QStyleOptionGraphicsItem, w: QtWidgets.QWidget | None = None):
+        p.setRenderHint(QtGui.QPainter.Antialiasing, True)
+
+        # --- Base body ---
+        r = QtCore.QRectF(0, 0, self.width, self.height)
+        body = QtGui.QColor("#262930" if not self._hover else "#2f343c")
+        try:
+            p.setBrush(QtGui.QBrush(body))
+            p.setPen(self.pen)  # outline pen set in __init__
+            p.drawRoundedRect(r, self.radius, self.radius)
+        except Exception as e:
+            print("[EchoGraph][paint] body fail:", e)
+
+        # --- Stripe color (from registry or default) ---
+        stripe_hex = _spec_stripe_color((self.model.kind or "node").lower())
+
+        # --- Top stripe ---
+        try:
+            p.setOpacity(1.0)
+            p.setBrush(QtGui.QColor(stripe_hex))
+            p.setPen(QtCore.Qt.NoPen)
+            p.drawRoundedRect(QtCore.QRectF(0, 0, self.width, 8), self.radius, self.radius)
+            p.drawRect(QtCore.QRectF(0, 4, self.width, 4))  # solid bar under the rounded cap
+        except Exception as e:
+            print("[EchoGraph][paint] stripe fail:", e)
+
+        # --- Title (node name) ---
+        try:
+            p.setPen(self.titlePen)
+            fm = QtGui.QFontMetrics(p.font())
+            name_txt = self.model.name or "<Unnamed>"
+            elided = fm.elidedText(name_txt, QtCore.Qt.ElideRight, int(self.width - 16))
+            p.drawText(QtCore.QPointF(10, 28), elided)
+        except Exception as e:
+            # Avoid stdout spam in paint; keep silent in release builds
+            pass
+
+        # --- Kind badge (type pill) ---
+        try:
+            kb_y = 38  # under the title line
+            kb = QtCore.QRectF(self.width - 90, kb_y, 80, 16)
+            p.setBrush(QtGui.QBrush(QtGui.QColor("#3b82f6")))
+            p.setPen(QtCore.Qt.NoPen)
+            p.drawRoundedRect(kb, 8, 8)
+            p.setPen(QtGui.QPen(QtGui.QColor("#ffffff")))
+            badge = (self.model.kind or "node").upper()
+            p.drawText(kb.adjusted(6, 1, -6, -2), QtCore.Qt.AlignCenter, badge)
+        except Exception as e:
+            print("[EchoGraph][paint] badge fail:", e)
+
+        # --- IO sockets ---
+        try:
+            p.setPen(QtCore.Qt.NoPen)
+            p.setBrush(QtGui.QColor("#cbd5e1"))
+            # left (input)
+            p.drawEllipse(QtCore.QRectF(-4, self._BASE_H / 2.0 - 4, 8, 8))
+            # right (output)
+            p.drawEllipse(QtCore.QRectF(self.width - 4, self._BASE_H / 2.0 - 4, 8, 8))
+        except Exception as e:
+            print("[EchoGraph][paint] sockets fail:", e)
+
+
+    def hoverEnterEvent(self, e):
+        self._hover = True
+        self.update()
+
+    def hoverLeaveEvent(self, e):
+        self._hover = False
+        self.update()
+
+    def itemChange(self, change, value):
+        if change == QtWidgets.QGraphicsItem.ItemPositionHasChanged:
+            self.model.pos = value
+            sc = self.scene()
+            if sc:
+                for edge in getattr(sc, "_edges", []):
+                    if edge.src is self or edge.dst is self:
+                        edge.updatePath()
+                if hasattr(sc, "_reframe_to_nodes"):
+                    try:
+                        sc._reframe_to_nodes(margin=8000.0)
+                    except Exception:
+                        pass
+        return super().itemChange(change, value)
+
+    def mousePressEvent(self, e):
+        if e.button() == QtCore.Qt.LeftButton:
+            self._lmb_press_scene = self.mapToScene(e.pos())
+            self._lmb_started_wire = False
+            on_right_socket = (self.width - 12 <= e.pos().x() <= self.width + 6) and (0 <= e.pos().y() <= self._BASE_H)
+            if on_right_socket:
+                try:
+                    self.startWireDrag.emit(self)
+                    self._lmb_started_wire = True
+                except Exception:
+                    pass
+            else:
+                try:
+                    self.clicked.emit(self.model)
+                except Exception:
+                    pass
+            super().mousePressEvent(e)
+            e.accept()
+            return
+        super().mousePressEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == QtCore.Qt.LeftButton:
+            try:
+                press_scene = getattr(self, "_lmb_press_scene", None)
+                if press_scene is not None:
+                    rel_scene = self.mapToScene(e.pos())
+                    if (rel_scene - press_scene).manhattanLength() <= 4 and not getattr(self, "_lmb_started_wire", False):
+                        self.clicked.emit(self.model)
+            finally:
+                self._lmb_press_scene = None
+                self._lmb_started_wire = False
+            super().mouseReleaseEvent(e)
+            e.accept()
+            return
+        super().mouseReleaseEvent(e)
