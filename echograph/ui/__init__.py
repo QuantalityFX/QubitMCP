@@ -1,1 +1,0 @@
-self._rc_did_zoom = False

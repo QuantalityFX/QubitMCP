@@ -15,19 +15,6 @@ except Exception:
     except Exception:
         WebEngine = None
 
-# Local scale fallback so NodeItem doesn’t depend on the main window globals.
-try:
-    # If the app injected a global LLM_SCALE, use it; otherwise default.
-    LLM_SCALE  # noqa: F401
-except NameError:
-    LLM_SCALE = float(LLM_SCALE_DEFAULT)
-
-# Convenience for the “WebEngine missing” path that references LLM_NODE_H
-try:
-    LLM_NODE_H  # noqa: F401
-except NameError:
-    LLM_NODE_H = int(LLM_NODE_H_BASE * LLM_SCALE)
-
 
 def _top_level_parent_for_dialog() -> QtWidgets.QWidget | None:
     """Best-effort: pick a sensible parent for dialogs, avoids 'windowless' modals."""
@@ -118,6 +105,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
         self._recompute_height()
         self._build_widgets()
+
+    def _current_llm_scale(self) -> float:
+        sc = self.scene()
+        try:
+            return float(getattr(sc, "_llm_scale", LLM_SCALE_DEFAULT))
+        except Exception:
+            return float(LLM_SCALE_DEFAULT)
+
 
 
     def _rebuild_deferred(self):
@@ -212,8 +207,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
         # Kind-specific body additions
         if kind == "llm":
-            body_h = int(LLM_NODE_H_BASE * LLM_SCALE)
-            node_w = max(self._BASE_W, int(LLM_NODE_W_BASE * LLM_SCALE))
+            S = self._current_llm_scale()
+            body_h = int(LLM_NODE_H_BASE * S)
+            node_w = max(self._BASE_W, int(LLM_NODE_W_BASE * S))
         elif kind == "append":
             count = max(1, len(self.model.switch_inputs or []))
             body_h = 6 + count * self._PARAM_ROW_H
