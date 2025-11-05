@@ -1,12 +1,15 @@
-
+# echograph/ui/node_item.py
+from __future__ import annotations
 import re
 from echograph.qt_compat import QtCore, QtGui, QtWidgets, QAction, QShortcut, QKeySequence, _qexec
-from echograph.constants import LLM_URL, LLM_NODE_W_BASE, LLM_NODE_H_BASE, LLM_SCALE_DEFAULT, KEY_BIGEDIT
 from echograph.ui.dialogs import BigTextEditDialog
+from echograph.constants import (
+    LLM_URL, LLM_NODE_W_BASE, LLM_NODE_H_BASE, LLM_SCALE_DEFAULT, KEY_BIGEDIT,
+    DEFAULT_STRIPE_HEX,
+)
 import nodes.core as core
-from echograph.constants import DEFAULT_STRIPE_HEX
 
-# WebEngine (optional)
+# Optional WebEngine
 try:
     from PySide6 import QtWebEngineWidgets as WebEngine
 except Exception:
@@ -15,9 +18,19 @@ except Exception:
     except Exception:
         WebEngine = None
 
+# Local fallback to avoid “LLM_SCALE is not defined” when main doesn’t inject it
+try:
+    LLM_SCALE  # provided by main app sometimes
+except NameError:
+    LLM_SCALE = float(LLM_SCALE_DEFAULT)
+
+# Convenience for the “WebEngine missing” path that references LLM_NODE_H
+try:
+    LLM_NODE_H
+except NameError:
+    LLM_NODE_H = int(LLM_NODE_H_BASE * LLM_SCALE)
 
 def _top_level_parent_for_dialog() -> QtWidgets.QWidget | None:
-    """Best-effort: pick a sensible parent for dialogs, avoids 'windowless' modals."""
     aw = QtWidgets.QApplication.activeWindow()
     if aw and aw.isWindow():
         return aw
@@ -29,15 +42,12 @@ def _top_level_parent_for_dialog() -> QtWidgets.QWidget | None:
             continue
     return None
 
-
 def _spec_stripe_color(kind: str) -> str:
-    """Ask the node spec for its stripe color; fall back to DEFAULT_STRIPE_HEX."""
     k = (kind or "node").lower()
     try:
         spec = core.get_spec(k)
     except Exception:
         spec = None
-
     if spec is not None:
         if isinstance(spec, dict):
             c = spec.get("stripe_color") or spec.get("color") or spec.get("stripe")
@@ -53,7 +63,6 @@ def _spec_stripe_color(kind: str) -> str:
                     pass
     return DEFAULT_STRIPE_HEX
 
-
 class NodeItem(QtWidgets.QGraphicsObject):
     clicked = QtCore.Signal(object)
     requestCenter = QtCore.Signal(str)
@@ -66,7 +75,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
     _PADDING = 8
     _NOTE_FEATURED_H = 160
     
-    def __init__(self, model):
+    def __init__(self, model: GraphNode):
         try:
             super().__init__()
         except TypeError:
@@ -105,14 +114,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
         self._recompute_height()
         self._build_widgets()
-
-    def _current_llm_scale(self) -> float:
-        sc = self.scene()
-        try:
-            return float(getattr(sc, "_llm_scale", LLM_SCALE_DEFAULT))
-        except Exception:
-            return float(LLM_SCALE_DEFAULT)
-
 
 
     def _rebuild_deferred(self):
@@ -207,9 +208,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
         # Kind-specific body additions
         if kind == "llm":
-            S = self._current_llm_scale()
-            body_h = int(LLM_NODE_H_BASE * S)
-            node_w = max(self._BASE_W, int(LLM_NODE_W_BASE * S))
+            body_h = int(LLM_NODE_H_BASE * LLM_SCALE)
+            node_w = max(self._BASE_W, int(LLM_NODE_W_BASE * LLM_SCALE))
         elif kind == "append":
             count = max(1, len(self.model.switch_inputs or []))
             body_h = 6 + count * self._PARAM_ROW_H
@@ -734,14 +734,16 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
         # --- Title (node name) ---
         try:
+            # In NodeItem.paint()
             p.setPen(self.titlePen)
             fm = QtGui.QFontMetrics(p.font())
             name_txt = self.model.name or "<Unnamed>"
-            elided = fm.elidedText(name_txt, QtCore.Qt.ElideRight, int(self.width - 16))
-            p.drawText(QtCore.QPointF(10, 28), elided)
+            p.drawText(
+                QtCore.QPointF(10, 28),
+                fm.elidedText(name_txt, QtCore.Qt.ElideRight, int(self.width - 16)),
+            )
         except Exception as e:
-            # Avoid stdout spam in paint; keep silent in release builds
-            pass
+            print("[EchoGraph][paint] title fail:", e)
 
         # --- Kind badge (type pill) ---
         try:
