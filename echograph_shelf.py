@@ -2950,6 +2950,20 @@ class CreateNodeDialog(QtWidgets.QDialog):
         layout.addWidget(code_box)
         layout.addWidget(bb)
 
+    def showEvent(self, e):
+        super().showEvent(e)
+        # Focus after the dialog is visible (ensures it sticks)
+        QtCore.QTimer.singleShot(0, self._focus_kind)
+
+    def _focus_kind(self):
+        try:
+            self.kind_edit.setFocus(QtCore.Qt.TabFocusReason)
+            le = self.kind_edit.lineEdit()
+            if le:
+                le.selectAll()
+        except Exception:
+            pass
+
     def _add_param(self):
         name, ok = QtWidgets.QInputDialog.getText(self, "Add Parameter", "Parameter name:")
         if not ok or not name.strip(): return
