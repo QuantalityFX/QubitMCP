@@ -1084,9 +1084,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
         # --- Title (node name) ---
         try:
-            p.setPen(self.titlePen)  # #e6edf3
+            # In NodeItem.paint()
+            p.setPen(self.titlePen)
             fm = QtGui.QFontMetrics(p.font())
-            name_txt = self.model.name or "<unnamed>"
+            name_txt = self.model.name or "<Unnamed>"
+            print(f"Rendering node with name: {name_txt}")  # Debugging statement
             p.drawText(
                 QtCore.QPointF(10, 28),
                 fm.elidedText(name_txt, QtCore.Qt.ElideRight, int(self.width - 16)),
@@ -1995,9 +1997,40 @@ class GraphScene(QtWidgets.QGraphicsScene):
 
         return True
 
+
+    def _unique_node_name(self, requested: str, kind: str) -> str:
+        """
+        Return a unique node name:
+        - If 'requested' is non-empty: use it, or append 1..N if taken.
+        - If empty: use the node 'kind' (lowercased, spaces->underscores),
+            or append 1..N if that base is taken.
+        """
+        existing = set(self._nodes_by_name.keys() or [])
+        req = (requested or "").strip()
+        knd = (kind or "node").strip() or "node"
+
+        if req:
+            base = req
+        else:
+            import re
+            base = re.sub(r"\s+", "_", knd.lower())
+
+        # If base is free, use it
+        if base not in existing:
+            return base
+
+        # Otherwise append 1..N
+        i = 1
+        while True:
+            cand = f"{base}{i}"
+            if cand not in existing:
+                return cand
+            i += 1
+
+
     def rename_node(self, old_name: str, new_name: str):
         new_name = (new_name or "").strip()
-        if not old_name or not new_name or new_name == old_name:
+        if not new_name or new_name == old_name:
             return False, "No change."
         if new_name in self._nodes_by_name:
             return False, f"A node named '{new_name}' already exists."
@@ -2007,39 +2040,32 @@ class GraphScene(QtWidgets.QGraphicsScene):
         if not item or not node:
             return False, f"Node '{old_name}' not found."
 
-        # remap registries
+        # Update registries
         self._node_items[new_name] = self._node_items.pop(old_name)
         self._nodes_by_name[new_name] = self._nodes_by_name.pop(old_name)
         node.name = new_name
         item.model.name = new_name
         item.update()
 
-        # 🔧 update any Switch/Append nodes that reference the old name
+        # Update any nodes that reference the old name (e.g., Switch/Append nodes)
         for it in self._node_items.values():
-            k = (it.model.kind or "").lower()
-            if k in ("switch", "append"):
+            if (it.model.kind or "").lower() in ("switch", "append"):
                 if old_name in it.model.switch_inputs:
                     it.model.switch_inputs = [
                         (new_name if n == old_name else n) for n in it.model.switch_inputs
                     ]
-                    # refresh UI
-                    if k == "switch":
-                        self._refresh_switch_widget(it)
-                    else:
-                        self.refresh_node_widget(it.model.name)
+                    self.refresh_node_widget(it.model.name)
 
-        # keep current output pointer stable
         if self._current_output_name == old_name:
             self._current_output_name = new_name
 
-        # recompute path highlighting if an output is active
         if self._current_output_name:
             self.recompute_active_path(self._current_output_name)
         else:
             self._clear_path_highlight()
 
         return True, ""
-
+    
     def upstream_of(self, dst_name: str):
         dst = self._node_items.get(dst_name)
         if not dst: return []
@@ -2126,8 +2152,13 @@ class GraphScene(QtWidgets.QGraphicsScene):
         dlg = CreateNodeDialog(parent, existing_names=list(self._nodes_by_name.keys()))
         if _qexec(dlg) != QtWidgets.QDialog.Accepted: return
         data = dlg.result_payload()
-        node = GraphNode(data["name"], kind=data["kind"], info="User-created node.", params=data["params"], code=data.get("code"))
+        # Finalize the name (handles empty or conflicting names)
+        final_name = self._unique_node_name(data.get("name", ""), data.get("kind", "node"))
+        data["name"] = final_name
 
+        node = GraphNode(final_name, kind=data["kind"], info="User-created node.",
+                        params=data["params"], code=data.get("code"))
+                
         # Check if it's a Librarian node
         if (data["kind"] or "").lower() == "librarian":
             node.info = "Librarian node created"
@@ -2935,10 +2966,9 @@ class CreateNodeDialog(QtWidgets.QDialog):
 
     def _accept(self):
         name = self.name_edit.text().strip()
-        if not name:
-            QtWidgets.QMessageBox.warning(self, APP_TITLE, "Please enter a node name."); return
         if name in self._existing:
-            QtWidgets.QMessageBox.warning(self, APP_TITLE, f"Node '{name}' already exists."); return
+            QtWidgets.QMessageBox.warning(self, APP_TITLE, f"Node '{name}' already exists.")
+            return
         self.accept()
 
     def result_payload(self):
@@ -3071,17 +3101,50 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
         h.addStretch(1)   # ← stretch AFTER the slider block to keep it left
         return bar
-    
 
     def _create_node_interactive(self):
         dlg = CreateNodeDialog(self, existing_names=list(self.scene._nodes_by_name.keys()))
-        if _qexec(dlg) != QtWidgets.QDialog.Accepted: return
+        if _qexec(dlg) != QtWidgets.QDialog.Accepted:
+            return
+
         data = dlg.result_payload()
-        node = GraphNode(data["name"], kind=data["kind"], info="User-created node.", params=data["params"], code=data.get("code"))
-        center_scene = self.view.mapToScene(self.view.viewport().rect().center())
-        item = self.scene.add_node(node, center_scene)
-        item.setPos(center_scene - QtCore.QPointF(item.width/2.0, item.height/2.0))
-        self.scene.center_on_name(node.name); self.add_info_card(node)
+
+        # Finalize a unique name (empty -> kind; conflicts -> numbered)
+        final_name = self.scene._unique_node_name(data.get("name", ""), data.get("kind", "node"))
+        data["name"] = final_name
+
+        # Build the node
+        node = GraphNode(
+            data["name"],
+            kind=data["kind"],
+            info="User-created node.",
+            params=data["params"],
+            code=data.get("code"),
+        )
+
+        # Librarian nicety (same as right-click path)
+        if (data["kind"] or "").lower() == "librarian":
+            node.info = "Librarian node created"
+            names = { (p.get("name") or "").strip().lower() for p in (node.params or []) }
+            if "query" not in names:
+                node.params = list(node.params or [])
+                node.params.append({"name": "query", "value": ""})
+
+        # Drop it at the center of the view
+        v = self.view
+        try:
+            center_vp = v.viewport().rect().center()
+            scene_pos = v.mapToScene(center_vp)
+        except Exception:
+            scene_pos = QtCore.QPointF(0, 0)
+
+        item = self.scene.add_node(node, scene_pos)
+        item.setPos(scene_pos - QtCore.QPointF(item.width / 2.0, item.height / 2.0))
+
+        # Pop an Info card immediately (nice feedback)
+        if callable(self.add_info_card):
+            self.add_info_card(node)
+
 
     def _open_graph(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Open Graph (.json)", "", "JSON Files (*.json)")
