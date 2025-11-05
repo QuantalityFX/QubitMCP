@@ -116,6 +116,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
         self._build_widgets()
 
 
+    def _current_llm_scale(self) -> float:
+        sc = self.scene()
+        try:
+            return float(getattr(sc, "_llm_scale", LLM_SCALE_DEFAULT))
+        except Exception:
+            return float(LLM_SCALE_DEFAULT)
+
+
     def _rebuild_deferred(self):
         """Recompute + rebuild on next event-loop tick to avoid re-entrancy/tearing."""
         try:
@@ -208,8 +216,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
         # Kind-specific body additions
         if kind == "llm":
-            body_h = int(LLM_NODE_H_BASE * LLM_SCALE)
-            node_w = max(self._BASE_W, int(LLM_NODE_W_BASE * LLM_SCALE))
+            S = self._current_llm_scale()
+            body_h = int(LLM_NODE_H_BASE * S)
+            node_w = max(self._BASE_W, int(LLM_NODE_W_BASE * S))
         elif kind == "append":
             count = max(1, len(self.model.switch_inputs or []))
             body_h = 6 + count * self._PARAM_ROW_H
@@ -504,8 +513,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     proxy.setWidget(row)
                     proxy.setZValue(self.zValue() + 0.1)
                     proxy.setPos(0, y_cursor)
-                    proxy.resize(self.width, max(200, LLM_NODE_H // 3))
-                    try: proxy.setPreferredSize(self.width, max(200, LLM_NODE_H // 3))
+                    proxy.resize(self.width, max(200, int((LLM_NODE_H_BASE * self._current_llm_scale()) // 3)))
+                    try: proxy.setPreferredSize(self.width, max(100, LLM_NODE_H // 3))
                     except AttributeError: pass
                     self._llm_proxy = proxy
                 else:
@@ -531,7 +540,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     proxy.setWidget(view)
                     proxy.setZValue(self.zValue() + 0.1)
 
-                    S = float(LLM_SCALE)
+                    S = self._current_llm_scale()
                     proxy.setTransform(QtGui.QTransform().scale(S, S))
                     proxy.setPos(0, y_cursor)
 
@@ -545,8 +554,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     self._llm_label = None
                     self._llm_sampler = None
 
-                    y_cursor += int(LLM_NODE_H_BASE * LLM_SCALE)
-
+                    S = self._current_llm_scale()
+                    y_cursor += int(LLM_NODE_H_BASE * S)
         finally:
             self._is_building = False
 

@@ -60,40 +60,32 @@ except Exception:
         WebEngine = None
 
 def set_global_llm_scale(new_scale: float, scene=None):
-    """Apply a new global LLM scale and refresh all LLM nodes + layout."""
     global LLM_SCALE, LLM_NODE_W, LLM_NODE_H
     try:
         s = float(new_scale)
     except Exception:
         return
-    s = max(0.25, min(1.75, s))  # clamp to sane range
-    if abs(s - LLM_SCALE) < 1e-6:
+    s = max(0.25, min(1.75, s))
+    if abs(s - LLM_SCALE) < 1e-6 and scene is None:
         return
 
     LLM_SCALE = s
     LLM_NODE_W, LLM_NODE_H = _llm_dims()
 
-    if scene is None:
-        return
+    if scene is not None:
+        scene._llm_scale = s  # <<< critical so NodeItem can read it
 
-    # Rebuild all LLM nodes so the offscreen sampler and label resize
-    for item in list(getattr(scene, "_node_items", {}).values()):
-        try:
-            if (item.model.kind or "").lower() == "llm":
-                item._recompute_height()
-                item._build_widgets()
-        except Exception:
-            pass
+        # Rebuild only LLM nodes
+        for it in list(getattr(scene, "_node_items", {}).values()):
+            if (it.model.kind or "").lower() == "llm":
+                it._rebuild_deferred()   # coalesced recompute+rebuild
 
-    # Refresh edges and scene rect
-    for e in list(getattr(scene, "_edges", [])):
-        try: e.updatePath()
-        except Exception: pass
-    try:
+        # Refresh edges/scene rect
+        for e in list(getattr(scene, "_edges", [])):
+            e.updatePath()
         if hasattr(scene, "_reframe_to_nodes"):
             scene._reframe_to_nodes()
-    except Exception:
-        pass
+
 
 # script_dir() and APP_ICON now come from echograph.constants
 
@@ -298,7 +290,6 @@ class GraphScene(QtWidgets.QGraphicsScene):
             if cand not in existing:
                 return cand
             i += 1
-
 
     def rename_node(self, old_name: str, new_name: str):
         new_name = (new_name or "").strip()
@@ -1121,7 +1112,6 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         # Pop an Info card immediately (nice feedback)
         if callable(self.add_info_card):
             self.add_info_card(node)
-
 
     def _open_graph(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Open Graph (.json)", "", "JSON Files (*.json)")
