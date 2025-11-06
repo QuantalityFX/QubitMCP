@@ -1184,11 +1184,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         card.requestJump.connect(self.scene.center_on_name)
         card.closedForNode.connect(self._on_card_closed)
         card.attach_scene(self.scene)
-        try:
-            card._graph_scene = self.scene
-        except Exception:
-            pass
-
+        
         # Fill Append-ordered preview if this is an Output card
         try:
             card.apply_append_preview_if_output()
