@@ -1,25 +1,34 @@
-# echograph/persistence.py
 from __future__ import annotations
-from typing import Callable, Iterable, Dict, Any
-from echograph.qt_compat import QtCore
+from typing import Callable, Dict, Any
 from echograph.constants import LLM_SCALE_DEFAULT
 
 def _node_to_dict(node) -> Dict[str, Any]:
+    # Prefer Qt-free position
+    try:
+        x, y = node.pos_xy
+        pos_out = [float(x), float(y)]
+    except Exception:
+        # legacy fallback if some code still writes QPointF on model.pos
+        try:
+            pos_out = [float(node.pos.x()), float(node.pos.y())]
+        except Exception:
+            pos_out = [0.0, 0.0]
+
     d = {
         "name": node.name,
         "kind": node.kind,
         "info": node.info or "",
         "code": node.code if node.code is not None else None,
-        "pos": [float(node.pos.x()), float(node.pos.y())],
+        "pos": pos_out,  # <- always plain numbers now
         "params": [{"name": p.get("name",""), "value": p.get("value","")} for p in (node.params or [])],
     }
+
     k = (node.kind or "").lower()
     if k in ("switch", "append"):
         d["switch_inputs"] = list(node.switch_inputs or [])
         if k == "switch":
             d["switch_index"] = int(node.switch_index or 0)
 
-    # persist Note featured state (eyes)
     if k == "note":
         feat = getattr(node, "_featured_params", None)
         if isinstance(feat, set):
@@ -27,19 +36,18 @@ def _node_to_dict(node) -> Dict[str, Any]:
 
     return d
 
+
 def serialize_scene(scene) -> Dict[str, Any]:
     nodes = [_node_to_dict(nitem.model) for nitem in scene._node_items.values()]
     edges = [{"src": e.src.model.name, "dst": e.dst.model.name} for e in scene._edges]
-
-    # read scale from scene, never from __main__
     llm_scale = float(getattr(scene, "_llm_scale", LLM_SCALE_DEFAULT))
-    data = {
+    return {
         "nodes": nodes,
         "edges": edges,
         "llm_scale": llm_scale,                 # legacy top-level
         "settings": {"llm_scale": llm_scale},   # preferred
     }
-    return data
+
 
 def deserialize_scene(
     scene,
@@ -47,18 +55,18 @@ def deserialize_scene(
     *,
     GraphNode_ctor: Callable[..., Any],
     set_scale_cb: Callable[[float], None],
-):
-    # apply saved scale first
+) -> None:
+    # 1) apply saved scale first
     raw = (data.get("settings", {}) or {}).get("llm_scale", data.get("llm_scale", LLM_SCALE_DEFAULT))
     try:
         set_scale_cb(float(raw))
     except Exception:
         set_scale_cb(LLM_SCALE_DEFAULT)
 
-    # clear
+    # 2) clear
     scene.clear_scene()
 
-    # rebuild nodes
+    # 3) rebuild nodes
     for nd in data.get("nodes", []):
         n = GraphNode_ctor(
             nd.get("name",""),
@@ -69,6 +77,8 @@ def deserialize_scene(
             switch_inputs=nd.get("switch_inputs", []),
             switch_index=nd.get("switch_index", 0),
         )
+
+        # featured params (Note)
         if (n.kind or "").lower() == "note":
             feat = nd.get("featured_params") or []
             try:
@@ -76,15 +86,17 @@ def deserialize_scene(
             except Exception:
                 setattr(n, "_featured_params", set())
 
+        # position (Qt-free)
         pos = nd.get("pos", [0.0, 0.0])
         try:
-            pt = QtCore.QPointF(float(pos[0]), float(pos[1]))
+            n.pos_xy = (float(pos[0]), float(pos[1]))
         except Exception:
-            pt = QtCore.QPointF(0.0, 0.0)
+            n.pos_xy = (0.0, 0.0)
 
-        scene.add_node(n, pt)
+        # let GraphScene convert to QPointF as needed
+        scene.add_node(n, n.pos_xy)
 
-    # rebuild edges
+    # 4) rebuild edges
     for ed in data.get("edges", []):
         try:
             scene._add_edge_and_update_switch(ed["src"], ed["dst"])

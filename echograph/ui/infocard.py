@@ -151,6 +151,28 @@ class InfoCard(QtWidgets.QFrame):
 
         lay.addLayout(footer)
 
+    def attach_scene(self, scene):
+        """Bind this card to a GraphScene so it live-updates on link changes."""
+        try:
+            self._graph_scene = scene
+        except Exception:
+            pass
+        try:
+            if hasattr(scene, "linksChanged"):
+                scene.linksChanged.connect(self._on_links_changed)
+        except Exception:
+            pass
+
+    def _on_links_changed(self):
+        try:
+            kind = (self._node_ref.kind or "").lower()
+            if kind == "append":
+                self.refresh_append_ui_from_model()
+            elif kind == "output":
+                self.apply_append_preview_if_output()
+        except Exception:
+            pass
+
     # ---------- shared helpers ----------
     def refresh_params_from_model(self):
         if not hasattr(self, "_param_table"):

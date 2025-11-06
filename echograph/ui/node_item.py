@@ -1,5 +1,10 @@
 # echograph/ui/node_item.py
 from __future__ import annotations
+
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from echograph.model import GraphNode
+
 import re
 from echograph.qt_compat import QtCore, QtGui, QtWidgets, QAction, QShortcut, QKeySequence, _qexec
 from echograph.ui.dialogs import BigTextEditDialog
@@ -7,6 +12,7 @@ from echograph.constants import (
     LLM_URL, LLM_NODE_W_BASE, LLM_NODE_H_BASE, LLM_SCALE_DEFAULT, KEY_BIGEDIT,
     DEFAULT_STRIPE_HEX,
 )
+
 import nodes.core as core
 
 # Optional WebEngine
@@ -17,7 +23,6 @@ except Exception:
         from PySide2 import QtWebEngineWidgets as WebEngine
     except Exception:
         WebEngine = None
-
 
 def _top_level_parent_for_dialog() -> QtWidgets.QWidget | None:
     aw = QtWidgets.QApplication.activeWindow()
@@ -781,18 +786,39 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
     def itemChange(self, change, value):
         if change == QtWidgets.QGraphicsItem.ItemPositionHasChanged:
-            self.model.pos = value
+            # Write both: new model (pos_xy) + legacy (pos) for compatibility
+            try:
+                if isinstance(value, QtCore.QPointF):
+                    try:
+                        self.model.pos_xy = (float(value.x()), float(value.y()))
+                    except Exception:
+                        pass
+                    try:
+                        # Keep legacy QPointF field alive until all code switches to pos_xy
+                        self.model.pos = value
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
             sc = self.scene()
             if sc:
+                # Keep connected edges updated
                 for edge in getattr(sc, "_edges", []):
                     if edge.src is self or edge.dst is self:
-                        edge.updatePath()
+                        try:
+                            edge.updatePath()
+                        except Exception:
+                            pass
+                # Let the scene auto-grow to fit nodes
                 if hasattr(sc, "_reframe_to_nodes"):
                     try:
                         sc._reframe_to_nodes(margin=8000.0)
                     except Exception:
                         pass
+
         return super().itemChange(change, value)
+
 
     def mousePressEvent(self, e):
         if e.button() == QtCore.Qt.LeftButton:

@@ -15,6 +15,7 @@ from echograph.ui.graph_items import _gi_flag, EdgeItem, TempWire
 from echograph.ui.view import GraphView
 from echograph.ui.node_item import NodeItem
 from echograph import persistence
+from echograph.model import GraphNode
 
 from echograph.qt_compat import (
     QtCore, QtGui, QtWidgets,
@@ -110,30 +111,6 @@ from nodes.loader import bootstrap_plugins
 
 core.register_defaults()
 
-def _spec_stripe_color(kind: str) -> str:
-    k = (kind or "node").lower()
-    try:
-        spec = core.get_spec(k)
-    except Exception as e:
-        print(f"[EchoGraph] get_spec({k}) failed:", e)
-        spec = None
-
-    if spec is not None:
-        if isinstance(spec, dict):
-            c = spec.get("stripe_color") or spec.get("color") or spec.get("stripe")
-            if c: return str(c)
-        for attr in ("stripe_color", "color", "stripe"):
-            try:
-                val = getattr(spec, attr)
-                if val:
-                    return str(val)
-            except Exception:
-                pass
-        print(f"[EchoGraph] Spec for '{k}' has no stripe_color; using default.")
-        return DEFAULT_STRIPE_HEX
-
-    return DEFAULT_STRIPE_HEX
-
 # --- host detection (Maya / Houdini / standalone) ---
 HOST = "standalone"
 maya_cmds = None
@@ -168,44 +145,6 @@ def _main_window():
 
 WS_CTRL = "EchoGraphWorkspaceControl"  # Maya only
 
-
-def _hash_to_links(text:str)->str:
-    return re.sub(
-        r"#([^\n#]+)",
-        lambda m: f'<a href="jump:/{QtCore.QUrl.toPercentEncoding(m.group(1).strip()).data().decode()}">#{m.group(1).strip()}</a>',
-        text
-    )
-
-# model
-class GraphNode:
-    def __init__(self, name, kind="node", info="", code=None, params=None, switch_inputs=None, switch_index=0):
-        self.name = name
-        self.kind = kind
-        self.info = info
-        self.code = code
-        self.pos = QtCore.QPointF(0, 0)
-        self.params = list(params or [])
-        self.switch_inputs = list(switch_inputs or [])
-        self.switch_index = int(switch_index or 0)
-
-def _top_level_parent_for_dialog() -> QtWidgets.QWidget | None:
-    aw = QtWidgets.QApplication.activeWindow()
-    if aw and aw.isWindow():
-        return aw
-    try:
-        if _WINDOW and _WINDOW.isWindow():
-            return _WINDOW
-    except Exception:
-        pass
-    for w in QtWidgets.QApplication.topLevelWidgets():
-        try:
-            if w.isWindow() and w.isVisible():
-                return w
-        except Exception:
-            continue
-    return None
-
-
 def _as_pointf(pt):
     if isinstance(pt, QtCore.QPointF):
         return pt
@@ -222,7 +161,8 @@ def _as_pointf(pt):
 class GraphScene(QtWidgets.QGraphicsScene):
     nodeDeleted = QtCore.Signal(str)
     paramChanged = QtCore.Signal(str, list)  # (node_name, params)
-    
+    linksChanged = QtCore.Signal()
+
     def __init__(self, on_info=None, on_branch=None):
         try:
             super().__init__()
@@ -485,15 +425,36 @@ class GraphScene(QtWidgets.QGraphicsScene):
         self.setSceneRect(QtCore.QRectF(-20000, -20000, 40000, 40000))
 
     def add_node(self, node: GraphNode, pos):
-        pos = _as_pointf(pos)
+        # If the model already has a stored position (e.g., after load), prefer it.
+        try:
+            x, y = node.pos_xy  # may raise if not set yet
+            pos = QtCore.QPointF(float(x), float(y))
+        except Exception:
+            pos = _as_pointf(pos)
+
         self._ensure_space(pos)
-        item = NodeItem(node); item.setPos(pos); node.pos=pos
+
+        item = NodeItem(node)
+        item.setPos(pos)
+
+        # Write both the legacy QPointF and the new tuple field for persistence/model.
+        try:
+            node.pos = pos
+        except Exception:
+            pass
+        try:
+            node.pos_xy = (float(pos.x()), float(pos.y()))
+        except Exception:
+            pass
+
         item.clicked.connect(self._on_node_clicked)
         item.requestCenter.connect(self.center_on_name)
         item.startWireDrag.connect(self._on_start_wire_drag)
         item.switchIndexChanged.connect(self._on_switch_index_changed)
+
         self.addItem(item)
-        self._nodes_by_name[node.name]=node; self._node_items[node.name]=item
+        self._nodes_by_name[node.name] = node
+        self._node_items[node.name] = item
         self._reframe_to_nodes(margin=8000.0)
         return item
 
@@ -539,11 +500,16 @@ class GraphScene(QtWidgets.QGraphicsScene):
             except Exception:
                 pass
 
+        try:
+            self.linksChanged.emit()
+        except Exception:
+            pass
         return edge
 
     def _on_edge_removed(self, edge: 'EdgeItem'):
         dst = edge.dst; src = edge.src
         dst_kind = (dst.model.kind or "").lower()
+
         if dst_kind in ("append", "switch"):
             try:
                 if src.model.name in dst.model.switch_inputs:
@@ -551,13 +517,42 @@ class GraphScene(QtWidgets.QGraphicsScene):
             except Exception:
                 pass
             if dst_kind == "switch":
-                dst.model.switch_index = max(0, min(dst.model.switch_index,
-                                                    max(0, len(dst.model.switch_inputs)-1)))
-            # refresh UI for both cases
+                dst.model.switch_index = max(
+                    0,
+                    min(dst.model.switch_index, max(0, len(dst.model.switch_inputs) - 1))
+                )
             self.refresh_node_widget(dst.model.name)
 
+            # Also refresh the Append card UI if there’s a live card
+            try:
+                win = self.views()[0].window() if self.views() else None
+                if win:
+                    card = getattr(win, "_card_by_node", {}).get(dst.model.name)
+                    if card and hasattr(card, "refresh_append_ui_from_model"):
+                        card.refresh_append_ui_from_model()
+            except Exception:
+                pass
+
         if self._current_output_name:
-            self.recompute_active_path(self._current_output_name)
+            try:
+                self.recompute_active_path(self._current_output_name)
+                if self.views() and hasattr(self.views()[0].window(), "populate_branch_info"):
+                    win = self.views()[0].window()
+                    seq = self.ordered_upstream_items(self._current_output_name)
+                    win.populate_branch_info([it.model for it in seq])
+                    # refresh merged preview on the Output card too
+                    card = getattr(win, "_card_by_node", {}).get(self._current_output_name)
+                    if card and hasattr(card, "apply_append_preview_if_output"):
+                        card.apply_append_preview_if_output()
+            except Exception:
+                pass
+
+        # ← emit here as well
+        try:
+            self.linksChanged.emit()
+        except Exception:
+            pass
+
 
     def delete_node_by_name(self, name: str):
         item = self._node_items.get(name)
@@ -1188,6 +1183,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         card = InfoCard(node)
         card.requestJump.connect(self.scene.center_on_name)
         card.closedForNode.connect(self._on_card_closed)
+        card.attach_scene(self.scene)
         try:
             card._graph_scene = self.scene
         except Exception:
@@ -1228,11 +1224,13 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             card = InfoCard(node, order_index=idx, order_total=total)
             card.requestJump.connect(self.scene.center_on_name)
             card.closedForNode.connect(self._on_card_closed)
+            card.attach_scene(self.scene)  # sets _graph_scene and connects linksChanged
+
             try:
-                card._graph_scene = self.scene
                 card.apply_append_preview_if_output()
             except Exception:
                 pass
+
             self._cardsLayout.insertWidget(self._cardsLayout.count()-1, card)
 
     def _on_params_changed(self, node_name: str, params: list):
