@@ -300,23 +300,63 @@ class GraphScene(QtWidgets.QGraphicsScene):
 
     def resolve_text_value(self, node_item) -> str:
         """Return a textual value for a node.
-        Priority:
-        1) Well-known keys ('prompt', 'text', 'content') if present.
-        2) Otherwise join ALL non-empty param values (in row order).
-        3) Fallback to node.info.
+        Append special-case:
+        - Prepend this Append node's own param text (if any),
+        - then merge upstream texts in UI order (switch_inputs).
+        Otherwise:
+        - 'prompt'/'text'/'content' if present,
+        - else join all non-empty param values,
+        - else fallback to node.info.
         """
         try:
+            kind = (node_item.model.kind or "").lower()
+
+            # --- helper to get this node's OWN param text (no recursion) ---
+            def _own_param_text(model) -> str:
+                params = list(model.params or [])
+                # well-known keys first
+                for k in ("prompt", "text", "content"):
+                    for p in params:
+                        if (p.get("name", "") or "").strip().lower() == k:
+                            v = (p.get("value", "") or "").strip()
+                            if v:
+                                return v
+                # else any non-empty params, in row order
+                vals = [(p.get("value", "") or "").strip() for p in params]
+                vals = [v for v in vals if v]
+                return "\n".join(vals) if vals else ""
+
+            if kind == "append":
+                # 1) this Append's own param text (optional)
+                own = _own_param_text(node_item.model)
+
+                # 2) upstream texts in UI order
+                try:
+                    in_edges = self._ordered_in_edges(node_item)  # respects switch_inputs
+                except Exception:
+                    in_edges = self._in_edges(node_item)
+
+                parts = []
+                for e in in_edges:
+                    t = (self.resolve_text_value(e.src) or "").strip()
+                    if t:
+                        parts.append(t)
+
+                # Prepend own text if present
+                if own:
+                    parts.insert(0, own)
+
+                return "\n\n".join(parts) if parts else own  # own or empty
+
+            # --- generic nodes (unchanged) ---
             params = list(node_item.model.params or [])
-            # 1) well-known keys first
-            keys = {"prompt", "text", "content"}
-            for k in keys:
+            for k in ("prompt", "text", "content"):
                 for p in params:
                     if (p.get("name","") or "").strip().lower() == k:
                         v = (p.get("value","") or "").strip()
                         if v:
                             return v
 
-            # 2) ANY non-empty params (makes Append accept arbitrary names)
             vals = []
             for p in params:
                 v = (p.get("value","") or "").strip()
@@ -325,10 +365,10 @@ class GraphScene(QtWidgets.QGraphicsScene):
             if vals:
                 return "\n".join(vals)
 
-            # 3) fallback
             return (node_item.model.info or "").strip()
         except Exception:
             return ""
+
 
     def _nodes_bbox(self):
         rect = None
