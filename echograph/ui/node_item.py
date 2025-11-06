@@ -18,17 +18,6 @@ except Exception:
     except Exception:
         WebEngine = None
 
-# Local fallback to avoid “LLM_SCALE is not defined” when main doesn’t inject it
-try:
-    LLM_SCALE  # provided by main app sometimes
-except NameError:
-    LLM_SCALE = float(LLM_SCALE_DEFAULT)
-
-# Convenience for the “WebEngine missing” path that references LLM_NODE_H
-try:
-    LLM_NODE_H
-except NameError:
-    LLM_NODE_H = int(LLM_NODE_H_BASE * LLM_SCALE)
 
 def _top_level_parent_for_dialog() -> QtWidgets.QWidget | None:
     aw = QtWidgets.QApplication.activeWindow()
@@ -514,7 +503,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     proxy.setZValue(self.zValue() + 0.1)
                     proxy.setPos(0, y_cursor)
                     proxy.resize(self.width, max(200, int((LLM_NODE_H_BASE * self._current_llm_scale()) // 3)))
-                    try: proxy.setPreferredSize(self.width, max(100, LLM_NODE_H // 3))
+                    try:
+                        proxy.setPreferredSize(self.width, max(100, int((LLM_NODE_H_BASE * self._current_llm_scale()) // 3)))
+                    except AttributeError:
+                        pass
                     except AttributeError: pass
                     self._llm_proxy = proxy
                 else:

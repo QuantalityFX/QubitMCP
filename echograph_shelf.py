@@ -14,6 +14,7 @@ from echograph.ui.infocard import InfoCard
 from echograph.ui.graph_items import _gi_flag, EdgeItem, TempWire
 from echograph.ui.view import GraphView
 from echograph.ui.node_item import NodeItem
+from echograph import persistence
 
 from echograph.qt_compat import (
     QtCore, QtGui, QtWidgets,
@@ -66,26 +67,33 @@ def set_global_llm_scale(new_scale: float, scene=None):
     except Exception:
         return
     s = max(0.25, min(1.75, s))
-    if abs(s - LLM_SCALE) < 1e-6 and scene is None:
+    if abs(s - LLM_SCALE) < 1e-6 and (scene is None or getattr(scene, "_llm_scale", None) == s):
         return
 
     LLM_SCALE = s
     LLM_NODE_W, LLM_NODE_H = _llm_dims()
 
     if scene is not None:
-        scene._llm_scale = s  # <<< critical so NodeItem can read it
+        scene._llm_scale = s   # ← important so NodeItem uses the fresh value
 
-        # Rebuild only LLM nodes
-        for it in list(getattr(scene, "_node_items", {}).values()):
-            if (it.model.kind or "").lower() == "llm":
-                it._rebuild_deferred()   # coalesced recompute+rebuild
+        # Rebuild LLM nodes (unchanged)
+        for item in list(getattr(scene, "_node_items", {}).values()):
+            try:
+                if (item.model.kind or "").lower() == "llm":
+                    item._recompute_height()
+                    item._build_widgets()
+            except Exception:
+                pass
 
-        # Refresh edges/scene rect
         for e in list(getattr(scene, "_edges", [])):
-            e.updatePath()
-        if hasattr(scene, "_reframe_to_nodes"):
-            scene._reframe_to_nodes()
+            try: e.updatePath()
+            except Exception: pass
 
+        try:
+            if hasattr(scene, "_reframe_to_nodes"):
+                scene._reframe_to_nodes()
+        except Exception:
+            pass
 
 # script_dir() and APP_ICON now come from echograph.constants
 
@@ -196,6 +204,18 @@ def _top_level_parent_for_dialog() -> QtWidgets.QWidget | None:
         except Exception:
             continue
     return None
+
+
+def _as_pointf(pt):
+    if isinstance(pt, QtCore.QPointF):
+        return pt
+    try:
+        # accept (x, y) tuples/lists, or any sequence of 2 numbers
+        if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+            return QtCore.QPointF(float(pt[0]), float(pt[1]))
+    except Exception:
+        pass
+    return QtCore.QPointF(0.0, 0.0)
 
 
 # scene/view/graph ops
@@ -393,9 +413,10 @@ class GraphScene(QtWidgets.QGraphicsScene):
             self.setSceneRect(final)
 
     def _ensure_space(self, pt: QtCore.QPointF, margin: float = 8000.0):
+        pt = _as_pointf(pt)   # <-- add this
         r = self.sceneRect()
         safe = QtCore.QRectF(r.left() + margin, r.top() + margin,
-                             r.width() - 2*margin, r.height() - 2*margin)
+                            r.width() - 2*margin, r.height() - 2*margin)
         if safe.contains(pt):
             return
         left   = min(r.left(),   pt.x() - margin)
@@ -404,6 +425,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
         bottom = max(r.bottom(), pt.y() + margin)
         self.setSceneRect(QtCore.QRectF(QtCore.QPointF(left, top),
                                         QtCore.QPointF(right, bottom)))
+
 
     def show_create_dialog_at(self, scene_pos: QtCore.QPointF):
         self._ensure_space(scene_pos)
@@ -437,100 +459,18 @@ class GraphScene(QtWidgets.QGraphicsScene):
 
     # --- in GraphScene.to_dict(self) ---
     def to_dict(self):
-        nodes = []
-        for node in self._nodes_by_name.values():
-            nd = {
-                "name": node.name,
-                "kind": node.kind,
-                "info": node.info or "",
-                "code": node.code if node.code is not None else None,
-                "pos": [float(node.pos.x()), float(node.pos.y())],
-                "params": [{"name": p["name"], "value": p.get("value","")} for p in (node.params or [])],
-            }
-
-            k = (node.kind or "").lower()
-            if k in ("switch", "append"):
-                nd["switch_inputs"] = list(node.switch_inputs)
-                if k == "switch":
-                    nd["switch_index"] = int(node.switch_index)
-
-            # ▶ NEW: persist Note “eye” visibility state
-            if (node.kind or "").lower() == "note":
-                feat = getattr(node, "_featured_params", None)
-                if isinstance(feat, set):
-                    nd["featured_params"] = sorted(feat)
-                elif isinstance(feat, (list, tuple)):
-                    nd["featured_params"] = [str(x) for x in feat if x]
-                else:
-                    # legacy single string support
-                    legacy = getattr(node, "_featured_param", "")
-                    if legacy:
-                        nd["featured_params"] = [legacy]
-
-            nodes.append(nd)
-
-        edges = [{"src": e.src.model.name, "dst": e.dst.model.name} for e in self._edges]
-        return {
-            "nodes": nodes,
-            "edges": edges,
-            "llm_scale": float(LLM_SCALE),
-            "settings": {"llm_scale": float(LLM_SCALE)},
-        }
+        # Single source of truth lives in echograph.persistence
+        return persistence.serialize_scene(self)
 
     # --- in GraphScene.from_dict(self, data) ---
     def from_dict(self, data):
-        self.clear_scene()
-
-        # ADD this (apply saved scale before building nodes):
-        try:
-            s = float((data.get("settings", {}) or {}).get("llm_scale",
-                    data.get("llm_scale", LLM_SCALE)))
-            set_global_llm_scale(s, self)
-        except Exception:
-            pass
-
-        for nd in data.get("nodes", []):
-            n = GraphNode(
-                nd["name"], nd.get("kind","node"), nd.get("info",""), nd.get("code"),
-                params=nd.get("params", []),
-                switch_inputs=nd.get("switch_inputs", []),
-                switch_index=nd.get("switch_index", 0)
-            )
-            
-            # ▶ NEW: restore Note “eye” visibility state
-            if (n.kind or "").lower() == "note":
-                raw = nd.get("featured_params")
-                if not raw:
-                    # migrate legacy fields if present
-                    raw = []
-                    for k in ("featured_param", "_featured_param"):
-                        v = nd.get(k)
-                        if v:
-                            raw.append(v)
-                            break
-                try:
-                    s = {str(x) for x in (raw or []) if x}
-                except Exception:
-                    s = set()
-                setattr(n, "_featured_params", s)
-                # clear legacy single slot to avoid confusion
-                try:
-                    setattr(n, "_featured_param", "")
-                except Exception:
-                    pass
-
-            pos = QtCore.QPointF(*nd.get("pos",[0,0]))
-            self.add_node(n, pos)
-        # Rebuild edges  
-        for ed in data.get("edges", []):
-            try: self._add_edge_and_update_switch(ed["src"], ed["dst"])
-            except Exception: pass
-        self._refresh_all_switch_widgets()
-        self._reframe_to_nodes(margin=8000.0)
-        if self._current_output_name and self._current_output_name in self._node_items:
-            self.recompute_active_path(self._current_output_name)
-        else:
-            self._clear_path_highlight()
+        # delegate; pass your ctor + scale setter
+        persistence.deserialize_scene(
+            self,
+            data,
+            GraphNode_ctor=GraphNode,
+            set_scale_cb=lambda s: set_global_llm_scale(s, self),
+        )
 
     def clear_scene(self):
         for e in list(self._edges):
@@ -545,6 +485,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
         self.setSceneRect(QtCore.QRectF(-20000, -20000, 40000, 40000))
 
     def add_node(self, node: GraphNode, pos):
+        pos = _as_pointf(pos)
         self._ensure_space(pos)
         item = NodeItem(node); item.setPos(pos); node.pos=pos
         item.clicked.connect(self._on_node_clicked)
@@ -1115,14 +1056,16 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
     def _open_graph(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Open Graph (.json)", "", "JSON Files (*.json)")
-        if not path: return
+        if not path:
+            return
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
 
+            # Build scene from file
             self.scene.from_dict(data)
 
-            # ← restore LLM scale and slider from file (default to current if missing)
+            # Restore LLM scale + slider UI (fallback to current if missing)
             s = float(data.get("llm_scale", LLM_SCALE))
             set_global_llm_scale(s, self.scene)
             if hasattr(self, "_llm_slider"):
@@ -1157,6 +1100,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, APP_TITLE, f"Failed to save:\n{e}")
 
+
     def _export_graph(self):
         suggested = self._current_path if self._current_path else "graph.json"
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
@@ -1167,7 +1111,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         try:
             data = self.scene.to_dict()
 
-            # --- Append-respecting preview (if we have an active Output and the helper exists) ---
+            # Optional: Append-aware preview block
             try:
                 out_name = getattr(self.scene, "_current_output_name", "") or ""
                 if out_name and hasattr(self.scene, "merged_text_for_output"):
@@ -1177,8 +1121,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                     data["preview"]["ordered_pairs"] = [{"node": n, "text": t} for (n, t) in pairs]
                     data["preview"]["merged_text"] = "\n\n".join(t for _, t in pairs)
             except Exception:
-                # Don't block export if preview assembly fails
-                pass
+                pass  # don’t block export if preview assembly hiccups
 
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
