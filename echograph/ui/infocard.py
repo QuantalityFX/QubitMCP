@@ -337,8 +337,8 @@ class InfoCard(QtWidgets.QFrame):
         open_btn.clicked.connect(lambda: ensure_running(True))
         footer_layout.addWidget(open_btn)
 
-        send_btn = QtWidgets.QPushButton("Send Query → Librarian")
-        send_btn.setToolTip("Enqueue a search/summary request for the Librarian to pick up")
+        send_btn = QtWidgets.QPushButton("Send -> Librarian")
+        send_btn.setToolTip("Enqueue a search/analyze request for the Librarian to pick up")
         footer_layout.addWidget(send_btn)
 
         def _find_param(params, names):
@@ -348,47 +348,131 @@ class InfoCard(QtWidgets.QFrame):
                     return (p.get("value") or "").strip()
             return ""
 
+        def _normalize_action(raw: str, fallback: str = "search") -> str:
+            aliases = {
+                "analysis": "analyze",
+                "analyse": "analyze",
+                "analyse_with_sources": "analyze_with_sources",
+                "analyze with sources": "analyze_with_sources",
+                "analyse with sources": "analyze_with_sources",
+                "search with sources": "analyze_with_sources",
+            }
+            val = (raw or "").strip()
+            if not val:
+                return fallback
+            key = aliases.get(val.lower().replace(" ", "_"), val.lower().replace(" ", "_"))
+            allowed = {"search", "analyze", "analyze_with_sources", "summarize", "summarize_with_sources"}
+            return key if key in allowed else fallback
+
         def _send_query():
-            q_self = _find_param(self._node_ref.params, {"query", "prompt"})
-            topk_str = _find_param(self._node_ref.params, {"top_k", "k"})
             try:
-                top_k = max(1, int(topk_str)) if topk_str else 5
+                from nodes.librarian import spec as librarian_spec
             except Exception:
-                top_k = 5
+                librarian_spec = None
 
-            parts = []
             sc = getattr(self, "_graph_scene", None)
-            if sc is not None and hasattr(sc, "upstream_of") and hasattr(sc, "resolve_text_value"):
+            node_item = None
+            if sc is not None:
                 try:
-                    for it in sc.upstream_of(self._node_ref.name):
-                        txt = sc.resolve_text_value(it)
-                        if txt: parts.append(txt.strip())
+                    node_item = sc._node_items.get(self._node_ref.name)  # type: ignore[attr-defined]
                 except Exception:
-                    pass
+                    node_item = None
 
-            if q_self:
-                parts.append(q_self.strip())
+            def _param_value(name: str) -> str:
+                target = (name or "").strip().lower()
+                for p in (self._node_ref.params or []):
+                    if (p.get("name") or "").strip().lower() == target:
+                        return p.get("value") or ""
+                return ""
 
-            q = "\n\n".join([p for p in parts if p])[:4000]
-            if not q:
-                QtWidgets.QMessageBox.warning(self, APP_TITLE,
-                    "No query text found.\nAdd a Prompt node upstream or set this node’s 'query'/'prompt' parameter.")
+            def _wired_value(port: str) -> str:
+                if librarian_spec and hasattr(librarian_spec, "_text_from_input") and node_item:
+                    try:
+                        txt = librarian_spec._text_from_input(self, node_item, port)
+                        if txt and txt.strip():
+                            return txt
+                    except Exception:
+                        pass
+                return ""
+
+            def _val(port: str) -> str:
+                wired = _wired_value(port)
+                return wired if wired.strip() else _param_value(port)
+
+            def _legacy_query_fallback() -> str:
+                q_param = _find_param(self._node_ref.params, {"query", "prompt"})
+                parts = []
+                if sc is not None and hasattr(sc, "upstream_of") and hasattr(sc, "resolve_text_value"):
+                    try:
+                        for it in sc.upstream_of(self._node_ref.name):
+                            txt = sc.resolve_text_value(it)
+                            if txt:
+                                parts.append(txt.strip())
+                    except Exception:
+                        pass
+                if q_param:
+                    parts.append(q_param.strip())
+                return "\n\n".join([p for p in parts if p])
+
+            def _kval(name: str, default: int) -> int:
+                raw = _val(name) or _find_param(self._node_ref.params, {name})
+                try:
+                    return int(raw.strip())
+                except Exception:
+                    return default
+
+            query = (_val("query") or "").strip()
+            if not query:
+                query = _legacy_query_fallback().strip()
+            query = query[:4000]
+
+            if not query:
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    APP_TITLE,
+                    "No query text found.\nAdd a Prompt node upstream or set this node’s 'query' parameter.",
+                )
                 return
+
+            docs_dir = (_val("docs_dir") or "").strip()
+            mode = (_val("mode") or _find_param(self._node_ref.params, {"mode"}) or "tree_summarize").strip()
+            top_k = max(1, _kval("top_k", 5))
+            action = _normalize_action(_val("action") or _find_param(self._node_ref.params, {"action"}) or "", "search")
+
+            if action == "search" and not query:
+                QtWidgets.QMessageBox.warning(self, APP_TITLE, "Search requires a non-empty query.")
+                return
+
             try:
                 ts = int(time.time() * 1000)
-                self._last_query_text = q
+                self._last_query_text = "\n".join([
+                    f"Action: {action}",
+                    f"Docs: {docs_dir or '(default)'}",
+                    "",
+                    query
+                ]).strip()
                 self._waiting_ts = ts
 
-                cmd = {"type": "search", "query": q, "top_k": top_k, "from": "EchoGraph", "ts": ts}
+                cmd = {
+                    "type": action,
+                    "action": action,
+                    "query": query,
+                    "top_k": top_k,
+                    "mode": mode,
+                    "from": "EchoGraph",
+                    "ts": ts,
+                }
+                if docs_dir:
+                    cmd["docs_dir"] = docs_dir
+
                 fn = enqueue(cmd)
                 ensure_running(True)
 
                 self._waiting_ts = ts
-                self._last_query_text = q
                 try:
                     self._result_view.setPlainText(
-                        "Queued search for Librarian:\n\n"
-                        f"{q[:1000]}{'…' if len(q) > 1000 else ''}\n\n"
+                        f"Queued {action} for Librarian:\n\n"
+                        f"{query[:1000]}{'…' if len(query) > 1000 else ''}\n\n"
                         f"Ticket: result_{ts}.json\n"
                         "\nWaiting for results…"
                     )
@@ -398,7 +482,7 @@ class InfoCard(QtWidgets.QFrame):
                 try:
                     QtWidgets.QToolTip.showText(
                         QtGui.QCursor.pos(),
-                        f"Sent to Librarian\n{q[:200]}{'…' if len(q) > 200 else ''}",
+                        f"Sent ({action})\n{query[:200]}{'…' if len(query) > 200 else ''}",
                         self, self.rect(), 1500
                     )
                     QtWidgets.QToolTip.showText(
