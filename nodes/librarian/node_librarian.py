@@ -13,7 +13,7 @@ Assumptions:
 
 from __future__ import annotations
 from pathlib import Path
-import sys, traceback
+import sys, traceback, os
 
 # --- Qt imports (PySide6 first, fallback to PySide2) -------------------------
 try:
@@ -54,21 +54,81 @@ class LibrarianNodeWidget(QtWidgets.QWidget):
         self.lbl_status.setWordWrap(True)
         self.lbl_status.setStyleSheet("color:#9aa4b2;")
 
+        # --- Docs path row (override + remember) ------------------------------
+        roww = QtWidgets.QHBoxLayout()
+        self.le_docs = QtWidgets.QLineEdit()
+        self.le_docs.setPlaceholderText("Docs folder (overrides settings.json)")
+        btn_browse = QtWidgets.QPushButton("Browse")
+        btn_use = QtWidgets.QPushButton("Use")
+        roww.addWidget(self.le_docs, 1)
+        roww.addWidget(btn_browse)
+        roww.addWidget(btn_use)
+
         root.addWidget(title)
+        root.addLayout(roww)
         root.addWidget(self.btn_open)
         root.addWidget(self.lbl_status)
 
         # Light styling that matches your dark theme reasonably well
         self.setStyleSheet(
             "QWidget{background:#1a1f24;color:#e6edf3;}"
+            "QLineEdit{background:#12151a;color:#e6edf3;border:1px solid #3c4450;"
+            "border-radius:6px;padding:4px 8px;}"
             "QPushButton{background:#2563eb;border:1px solid #3c4450;"
             "color:#e6edf3;border-radius:8px;padding:6px 12px;}"
             "QPushButton:hover{background:#1d4ed8;}"
             "QPushButton:pressed{background:#1e40af;}"
         )
 
+        # load last persisted docs_dir (nodes/librarian/settings.json)
+        try:
+            import json
+            st = LIBRARIAN_DIR / "settings.json"
+            if st.exists():
+                data = json.loads(st.read_text(encoding="utf-8"))
+                v = (data.get("docs_dir") or "").strip()
+                if v:
+                    self.le_docs.setText(v)
+        except Exception:
+            pass
+
+        self._btn_browse = btn_browse
+        self._btn_use = btn_use
+
     def _wire(self):
         self.btn_open.clicked.connect(self._on_open)
+        self._btn_browse.clicked.connect(self._on_browse)
+        self._btn_use.clicked.connect(self._on_use)
+
+    def _on_browse(self):
+        start = self.le_docs.text().strip() or str(LIBRARIAN_DIR)
+        p = QtWidgets.QFileDialog.getExistingDirectory(self, "Choose docs folder", start)
+        if p:
+            self.le_docs.setText(p)
+
+    def _persist_docs_dir(self, path: str):
+        # write nodes/librarian/settings.json so the standalone remembers it
+        try:
+            import json
+            p = (LIBRARIAN_DIR / "settings.json")
+            data = {}
+            if p.exists():
+                try:
+                    data = json.loads(p.read_text(encoding="utf-8"))
+                except Exception:
+                    data = {}
+            data["docs_dir"] = path
+            p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _on_use(self):
+        path = self.le_docs.text().strip()
+        if not path:
+            self._set_status("No path set.", error=True); return
+        os.environ["LIBRARIAN_DOCS_DIR"] = path  # override for next launch in this process
+        self._persist_docs_dir(path)             # persist for future standalone launches
+        self._set_status(f"Docs set:\n{path}", error=False)
 
     def _on_open(self):
         # Import inside the handler so the node loads fast in the graph
@@ -80,6 +140,12 @@ class LibrarianNodeWidget(QtWidgets.QWidget):
             except Exception as e:
                 self._set_status(f"Import error: {e}\n{traceback.format_exc()}", error=True)
                 return
+
+        # If the user set a path, ensure it’s passed down to the child
+        path = self.le_docs.text().strip()
+        if path:
+            os.environ["LIBRARIAN_DOCS_DIR"] = path
+            self._persist_docs_dir(path)
 
         try:
             # Silent spawn; raises if the venv/python is missing
@@ -113,7 +179,7 @@ class LibrarianNode(QtWidgets.QFrame):
 NODE_META = {
     "type_name": "Librarian",
     "category": "AI / Tools",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "create_widget": LibrarianNode,   # Or use LibrarianNodeWidget directly if your graph prefers
     # Optional icon: place a 24x24 png in nodes/librarian/icons/librarian.png
     "icon_path": str(LIBRARIAN_DIR / "icons" / "librarian.png"),

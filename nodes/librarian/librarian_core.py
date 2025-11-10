@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+import json as _json  # keep both json and _json if you prefer
+
 # LlamaIndex imports
 from llama_index.core import (
     Settings, SimpleDirectoryReader, StorageContext, VectorStoreIndex, load_index_from_storage,
@@ -30,6 +32,45 @@ from llama_index.vector_stores.faiss import FaissVectorStore
 import faiss
 
 # ---- helpers -----------------------------------------------------------------
+_SETTINGS_FILE = "settings.json"  # lives under LIBRARIAN_ROOT (nodes/librarian)
+
+def _load_settings(base: Path) -> dict:
+    try:
+        p = base / _SETTINGS_FILE
+        if p.exists():
+            return _json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+def _save_settings(base: Path, data: dict) -> None:
+    try:
+        p = base / _SETTINGS_FILE
+        p.write_text(_json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+def _resolve_docs_dir(base: Path) -> Path:
+    """
+    Precedence:
+      1) env LIBRARIAN_DOCS_DIR (graph/node override)
+      2) settings.json: {"docs_dir": "..."}
+      3) <base>/docs  (default)
+    """
+    # 1) env override (from node / launcher)
+    env_dir = os.environ.get("LIBRARIAN_DOCS_DIR", "").strip().strip('"').strip("'")
+    if env_dir:
+        return Path(env_dir).expanduser().resolve()
+
+    # 2) persisted setting
+    st = _load_settings(base)
+    cfg_dir = (st.get("docs_dir") or "").strip()
+    if cfg_dir:
+        return Path(cfg_dir).expanduser().resolve()
+
+    # 3) default
+    return (base / "docs").resolve()
+
 
 def _sanitize_base(raw: Optional[str | Path]) -> Path:
     # Always work with a string before doing .replace/.strip operations
@@ -114,7 +155,7 @@ def analyze_with_sources(self, question: str, top_k: int = 8, max_context_chars:
 @dataclass
 class LibrarianConfig:
     base: Path                    # LIBRARIAN_ROOT
-    docs_dir: Path                # base/docs
+    docs_dir: Path                # base/docs (overridable)
     storage_dir: Path             # base/storage
     cache_file: Path              # base/query_cache.json
     obsidian_dir: Optional[Path]  # external vault folder (optional)
@@ -134,10 +175,14 @@ class Librarian:
         self.base = _sanitize_base(base if base is not None else env_root)
         _load_env_dotenv(self.base)
 
-        # Paths
+        # load persisted settings (for docs_dir, etc.)
+        self._settings = _load_settings(self.base)
+
+        # Paths (docs_dir now resolved via precedence helper)
+        resolved_docs = _resolve_docs_dir(self.base)
         self.cfg = LibrarianConfig(
             base=self.base,
-            docs_dir=self.base / "docs",
+            docs_dir=resolved_docs,
             storage_dir=self.base / "storage",
             cache_file=self.base / "query_cache.json",
             obsidian_dir=Path(os.environ["OBSIDIAN_DIR"]).resolve()
@@ -167,6 +212,27 @@ class Librarian:
         self._index: Optional[VectorStoreIndex] = None
         self._docs_mem: Optional[List[Document]] = None
 
+    # ----- public docs-dir API -------------------------------------------------
+    def get_docs_dir(self) -> Path:
+        """Return the active documents directory."""
+        return self.cfg.docs_dir
+
+    def set_docs_dir(self, path: Path | str, persist: bool = True) -> Path:
+        """
+        Update the active documents directory (creates it if missing).
+        If persist=True, writes settings.json so the next launch recalls it.
+        Note: if LIBRARIAN_DOCS_DIR env is set by a node/graph, that will
+        override on next process start, regardless of persisted value.
+        """
+        p = Path(str(path)).expanduser().resolve()
+        p.mkdir(parents=True, exist_ok=True)
+        self.cfg.docs_dir = p
+        self._docs_mem = None  # force reload on next load_documents
+        if persist:
+            self._settings["docs_dir"] = str(p)
+            _save_settings(self.base, self._settings)
+        return p
+
     # ----- document loading ----------------------------------------------------
 
     def _reader_for_plain(self):
@@ -181,17 +247,42 @@ class Librarian:
 
         return _Plain()
 
+    # in librarian_core.py (near _reader_for_plain), add:
+    # inside class Librarian, near _reader_for_plain
+    def _reader_for_html(self):
+        from llama_index.core.readers.base import BaseReader
+        try:
+            from bs4 import BeautifulSoup
+            def strip_html(s):
+                return BeautifulSoup(s, "html.parser").get_text(separator=" ", strip=True)
+        except Exception:
+            import re
+            def strip_html(s):
+                return re.sub(r"<[^>]+>", " ", s)
+
+        class _HTMLReader(BaseReader):
+            def load_data(self, file_path, extra_info=None):
+                with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                    html = f.read()
+                text = strip_html(html)
+                from llama_index.core import Document
+                return [Document(text=text, extra_info=extra_info or {})]
+        return _HTMLReader()
+
+
     def load_documents(self, verbose: bool = True) -> List[Document]:
         plain = self._reader_for_plain()
+        htmlr = self._reader_for_html()
         file_extractor = {
-            ".txt": plain, ".md": plain, ".mb": plain, ".canvas": plain
+            ".txt": plain, ".md": plain, ".mb": plain, ".canvas": plain,
+            ".html": htmlr, ".htm": htmlr,
         }
-        required_exts = [".txt", ".md", ".mb", ".canvas", ".pdf"]
+        required_exts = [".txt", ".md", ".mb", ".canvas", ".pdf", ".html", ".htm"]
         exclude_patterns = ["**/.obsidian/**"]
 
         docs: List[Document] = []
 
-        # base/docs (optional if empty)
+        # base/docs (optional if empty) — now whatever cfg.docs_dir points to
         if self.cfg.docs_dir.exists():
             try:
                 d1 = SimpleDirectoryReader(
@@ -349,6 +440,7 @@ Librarian.analyze_with_sources = analyze_with_sources
 if __name__ == "__main__":
     lib = Librarian()
     print("[librarian] base:", lib.cfg.base)
+    print("[librarian] docs:", lib.get_docs_dir())
     lib.load_documents()
     lib.ensure_index()
     print(lib.summarize_all()[:1000])

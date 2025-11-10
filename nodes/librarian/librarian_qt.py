@@ -82,6 +82,38 @@ except Exception:
     from PySide2 import QtCore, QtGui, QtWidgets
     QT_IS_6 = False
 
+# --- settings helpers for docs path persistence ---
+_SETTINGS_FILE = "settings.json"
+def _settings_path() -> Path:
+    return HERE / _SETTINGS_FILE
+
+def _load_settings() -> dict:
+    p = _settings_path()
+    try:
+        if p.exists():
+            return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+def _save_settings(data: dict) -> None:
+    p = _settings_path()
+    try:
+        p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+def _current_docs_dir() -> str:
+    # Precedence: ENV override → settings.json → default <base>/docs
+    env_dir = (os.getenv("LIBRARIAN_DOCS_DIR") or "").strip().strip('"').strip("'")
+    if env_dir:
+        return env_dir
+    st = _load_settings()
+    if st.get("docs_dir"):
+        return st["docs_dir"]
+    return str((HERE / "docs").resolve())
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Import core (must live next to this file as nodes/librarian/librarian_core.py)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -142,6 +174,7 @@ class LibrarianWidget(QtWidgets.QWidget):
 
         # UI
         self._build_ui()
+        self.ed_docs.setText(str(self.lib.cfg.docs_dir))  # mirror core’s resolved path
         self._wire()
 
         # --- IPC inbox watcher (poll every ~0.8s) ---
@@ -350,6 +383,18 @@ class LibrarianWidget(QtWidgets.QWidget):
     # UI layout
     def _build_ui(self):
         root = QtWidgets.QVBoxLayout(self)
+        # Docs path row (choose where to read documents from)
+        docs_row = QtWidgets.QHBoxLayout()
+        self.ed_docs = QtWidgets.QLineEdit()
+        self.ed_docs.setPlaceholderText("Path to your documents folder…")
+        self.ed_docs.setText(_current_docs_dir())
+        self.btn_browse_docs = QtWidgets.QPushButton("Browse…")
+        self.btn_apply_docs  = QtWidgets.QPushButton("Apply")
+        docs_row.addWidget(QtWidgets.QLabel("Docs:"))
+        docs_row.addWidget(self.ed_docs, 1)
+        docs_row.addWidget(self.btn_browse_docs)
+        docs_row.addWidget(self.btn_apply_docs)
+        root.addLayout(docs_row)
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(8)
 
@@ -465,11 +510,47 @@ class LibrarianWidget(QtWidgets.QWidget):
         root.addWidget(splitter, 1)
 
     def _wire(self):
+        self.btn_browse_docs.clicked.connect(self._browse_docs)
+        self.btn_apply_docs.clicked.connect(self._apply_docs)
         self.btn_build.clicked.connect(self._do_build_or_load)
         self.btn_summarize.clicked.connect(self._do_summarize)
         self.btn_search.clicked.connect(self._do_search)
         self.btn_analyze.clicked.connect(self._do_analyze)
         self.btn_analyze_src.clicked.connect(self._do_analyze_with_sources)
+
+    def _browse_docs(self):
+        start = self.ed_docs.text().strip() or str((HERE / "docs").resolve())
+        path = QtWidgets.QFileDialog.getExistingDirectory(self, "Choose documents folder", start)
+        if path:
+            self.ed_docs.setText(path)
+
+    def _apply_docs(self):
+        path = (self.ed_docs.text() or "").strip()
+        if not path:
+            QtWidgets.QMessageBox.warning(self, "Librarian", "Please enter a folder path.")
+            return
+        p = Path(path).expanduser().resolve()
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Librarian", f"Cannot create folder:\n{p}\n\n{e}")
+            return
+
+        # Persist and broadcast to core
+        st = _load_settings()
+        st["docs_dir"] = str(p)
+        _save_settings(st)
+        os.environ["LIBRARIAN_DOCS_DIR"] = str(p)  # UI override wins until changed
+
+        # Point the live core at the new path (will be used on next build/load)
+        try:
+            self.lib.cfg.docs_dir = p
+        except Exception:
+            pass
+
+        self._append_log(f"[docs] set to: {p}")
+        self._append_log("[docs] apply complete. Rebuild/Load to refresh the index.")
+
 
     # helpers
     def _append_log(self, msg: str):
