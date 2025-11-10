@@ -15,9 +15,9 @@ class GraphView(QtWidgets.QGraphicsView):
             self.setViewportUpdateMode(QtWidgets.QGraphicsView.ViewportUpdateMode.BoundingRectViewportUpdate)
 
         try:
-            self.setDragMode(QtWidgets.QGraphicsView.NoDrag)
+            self.setDragMode(QtWidgets.QGraphicsView.RubberBandDrag)
         except AttributeError:
-            self.setDragMode(QtWidgets.QGraphicsView.DragMode.NoDrag)
+            self.setDragMode(QtWidgets.QGraphicsView.DragMode.RubberBandDrag)
 
         self.setCursor(QtCore.Qt.ArrowCursor)
 
@@ -101,10 +101,51 @@ class GraphView(QtWidgets.QGraphicsView):
         p.fillRect(rect, QtGui.QColor("#1a1f24"))
 
     def keyPressEvent(self, e: QtGui.QKeyEvent):
+        def _text_input_has_focus() -> bool:
+            fw = QtWidgets.QApplication.focusWidget()
+            if not fw:
+                return False
+            editable_types = (
+                QtWidgets.QLineEdit,
+                QtWidgets.QTextEdit,
+                QtWidgets.QPlainTextEdit,
+                QtWidgets.QTextBrowser,
+                QtWidgets.QSpinBox,
+                QtWidgets.QDoubleSpinBox,
+                QtWidgets.QComboBox,
+            )
+            if isinstance(fw, editable_types):
+                if isinstance(fw, QtWidgets.QComboBox):
+                    return bool(fw.isEditable())
+                if hasattr(fw, "isReadOnly"):
+                    return not fw.isReadOnly()
+                return True
+            return fw.focusPolicy() in (QtCore.Qt.StrongFocus, QtCore.Qt.WheelFocus)
+
         if e.key() == QtCore.Qt.Key_Delete:
             sc = self.scene()
             if hasattr(sc, "delete_selected_nodes"):
                 sc.delete_selected_nodes()
+                e.accept()
+                return
+        if e.matches(QtGui.QKeySequence.Copy):
+            sc = self.scene()
+            if (
+                sc
+                and hasattr(sc, "copy_selection_to_clipboard")
+                and not _text_input_has_focus()
+                and sc.copy_selection_to_clipboard()
+            ):
+                e.accept()
+                return
+        if e.matches(QtGui.QKeySequence.Paste):
+            sc = self.scene()
+            if (
+                sc
+                and hasattr(sc, "paste_from_clipboard")
+                and not _text_input_has_focus()
+                and sc.paste_from_clipboard()
+            ):
                 e.accept()
                 return
         super().keyPressEvent(e)

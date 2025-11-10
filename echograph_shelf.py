@@ -178,6 +178,10 @@ class GraphScene(QtWidgets.QGraphicsScene):
         self._drag_src_item = None
         self._temp_wire = None
         self._current_output_name = None
+        self._copied_payload = None
+        self._last_paste_jitter = QtCore.QPointF(0.0, 0.0)
+        self._group_drag_active = False
+        self._group_move_lock = False
 
         try:
             self.setItemIndexMethod(QtWidgets.QGraphicsScene.NoIndex)
@@ -630,6 +634,188 @@ class GraphScene(QtWidgets.QGraphicsScene):
         for it in list(self.selectedItems()):
             if isinstance(it, NodeItem):
                 self.delete_node_by_name(it.model.name)
+
+    # --- copy/paste helpers ---------------------------------------------------
+    def _node_payload_for_clipboard(self, node: GraphNode) -> dict:
+        try:
+            x, y = node.pos_xy
+        except Exception:
+            try:
+                x = float(node.pos.x())
+                y = float(node.pos.y())
+            except Exception:
+                x = y = 0.0
+        snap = {
+            "name": node.name,
+            "kind": node.kind,
+            "info": node.info or "",
+            "code": node.code if node.code is not None else None,
+            "params": [{"name": p.get("name",""), "value": p.get("value","")} for p in (node.params or [])],
+            "switch_inputs": list(node.switch_inputs or []),
+            "switch_index": int(getattr(node, "switch_index", 0) or 0),
+            "pos": [float(x), float(y)],
+        }
+        if (node.kind or "").lower() == "note":
+            feat = getattr(node, "_featured_params", None)
+            if isinstance(feat, set):
+                snap["featured_params"] = sorted(feat)
+        return snap
+
+    def copy_selection_to_clipboard(self) -> bool:
+        items = [it for it in self.selectedItems() if isinstance(it, NodeItem)]
+        if not items:
+            return False
+
+        nodes_data = []
+        selected_names = set()
+        positions = []
+        for it in items:
+            node = it.model
+            nodes_data.append(self._node_payload_for_clipboard(node))
+            selected_names.add(node.name)
+            try:
+                positions.append(tuple(map(float, node.pos_xy)))
+            except Exception:
+                try:
+                    positions.append((float(node.pos.x()), float(node.pos.y())))
+                except Exception:
+                    positions.append((0.0, 0.0))
+
+        if not positions:
+            return False
+
+        centroid = [
+            sum(p[0] for p in positions) / len(positions),
+            sum(p[1] for p in positions) / len(positions),
+        ]
+
+        edges_data = []
+        for e in self._edges:
+            src_name = getattr(getattr(e, "src", None), "model", None)
+            dst_name = getattr(getattr(e, "dst", None), "model", None)
+            src_name = getattr(src_name, "name", None)
+            dst_name = getattr(dst_name, "name", None)
+            if src_name in selected_names and dst_name in selected_names:
+                entry = {"src": src_name, "dst": dst_name}
+                if getattr(e, "dst_port_name", None):
+                    entry["dst_port"] = e.dst_port_name
+                if getattr(e, "src_port_name", None):
+                    entry["src_port"] = e.src_port_name
+                edges_data.append(entry)
+
+        payload = {
+            "format": "EchoGraphClipboard",
+            "version": 1,
+            "nodes": nodes_data,
+            "edges": edges_data,
+            "centroid": centroid,
+        }
+
+        QtWidgets.QApplication.clipboard().setText(json.dumps(payload, ensure_ascii=False))
+        self._copied_payload = payload
+        return True
+
+    def paste_from_clipboard(self) -> bool:
+        payload = None
+        text = QtWidgets.QApplication.clipboard().text()
+        if text:
+            try:
+                data = json.loads(text)
+                if isinstance(data, dict) and data.get("format") == "EchoGraphClipboard":
+                    payload = data
+            except Exception:
+                payload = None
+        if payload is None:
+            payload = getattr(self, "_copied_payload", None)
+        if not payload:
+            return False
+
+        nodes_data = payload.get("nodes") or []
+        if not nodes_data:
+            return False
+
+        centroid = payload.get("centroid") or [0.0, 0.0]
+        try:
+            cx = float(centroid[0])
+            cy = float(centroid[1])
+        except Exception:
+            cx = cy = 0.0
+
+        if self.views():
+            view = self.views()[0]
+            anchor = view.mapToScene(view.viewport().rect().center())
+        else:
+            anchor = QtCore.QPointF(0.0, 0.0)
+
+        jitter = getattr(self, "_last_paste_jitter", QtCore.QPointF(0.0, 0.0))
+        anchor = anchor + jitter
+        jitter += QtCore.QPointF(24.0, 24.0)
+        if abs(jitter.x()) > 240 or abs(jitter.y()) > 240:
+            jitter = QtCore.QPointF(0.0, 0.0)
+        self._last_paste_jitter = jitter
+
+        name_map = {}
+        new_items = []
+
+        # Clear current selection so pasted nodes become the new selection
+        for it in self.selectedItems():
+            it.setSelected(False)
+
+        for entry in nodes_data:
+            orig_name = entry.get("name", "node")
+            kind = entry.get("kind", "node")
+            new_name = self._unique_node_name(orig_name, kind)
+
+            node = GraphNode(
+                new_name,
+                kind=kind,
+                info=entry.get("info", ""),
+                code=entry.get("code"),
+                params=[{"name": p.get("name",""), "value": p.get("value","")} for p in (entry.get("params") or [])],
+                switch_inputs=list(entry.get("switch_inputs") or []),
+                switch_index=int(entry.get("switch_index", 0) or 0),
+            )
+
+            if (kind or "").lower() == "note" and entry.get("featured_params"):
+                try:
+                    setattr(node, "_featured_params", {str(x) for x in entry["featured_params"] if x})
+                except Exception:
+                    setattr(node, "_featured_params", set())
+
+            pos = entry.get("pos") or [0.0, 0.0]
+            try:
+                ox = float(pos[0])
+                oy = float(pos[1])
+            except Exception:
+                ox = oy = 0.0
+
+            new_x = anchor.x() + (ox - cx)
+            new_y = anchor.y() + (oy - cy)
+            node.pos_xy = (new_x, new_y)
+
+            item = self.add_node(node, (new_x, new_y))
+            if hasattr(node, "_featured_params"):
+                setattr(item.model, "_featured_params", getattr(node, "_featured_params"))
+            new_items.append(item)
+            name_map[orig_name] = new_name
+
+        for item in new_items:
+            item.setSelected(True)
+
+        for edge in payload.get("edges", []):
+            src_old = edge.get("src")
+            dst_old = edge.get("dst")
+            if src_old in name_map and dst_old in name_map:
+                try:
+                    self._add_edge_and_update_switch(
+                        name_map[src_old],
+                        name_map[dst_old],
+                        dst_port_name=edge.get("dst_port"),
+                    )
+                except Exception:
+                    pass
+
+        return True
 
     def _refresh_all_switch_widgets(self):
         for it in self._node_items.values():

@@ -840,6 +840,24 @@ class NodeItem(QtWidgets.QGraphicsObject):
         except Exception as e:
             print("[EchoGraph][paint] body fail:", e)
 
+        # --- Selection outline ---
+        try:
+            if self.isSelected():
+                sel_pen = QtGui.QPen(QtGui.QColor("#93c5fd"), 2)
+                sel_pen.setCosmetic(True)
+                p.setPen(sel_pen)
+                p.setBrush(QtCore.Qt.NoBrush)
+                grow = 1.5
+                p.drawRoundedRect(
+                    r.adjusted(-grow, -grow, grow, grow),
+                    self.radius + 4,
+                    self.radius + 4,
+                )
+        except Exception:
+            pass
+        finally:
+            p.setPen(QtCore.Qt.NoPen)
+
         # --- Stripe color (from registry or default) ---
         stripe_hex = _spec_stripe_color((self.model.kind or "node").lower())
 
@@ -916,6 +934,28 @@ class NodeItem(QtWidgets.QGraphicsObject):
         self.update()
 
     def itemChange(self, change, value):
+        if change == QtWidgets.QGraphicsItem.ItemPositionChange:
+            sc = self.scene()
+            if (
+                sc
+                and getattr(sc, "_group_drag_active", False)
+                and not getattr(sc, "_group_move_lock", False)
+                and self.isSelected()
+                and isinstance(value, QtCore.QPointF)
+            ):
+                selected_nodes = [it for it in sc.selectedItems() if isinstance(it, NodeItem)]
+                if len(selected_nodes) > 1:
+                    delta = value - self.pos()
+                    if isinstance(delta, QtCore.QPointF) and delta.manhattanLength() > 0:
+                        sc._group_move_lock = True
+                        try:
+                            for it in selected_nodes:
+                                if it is self:
+                                    continue
+                                it.setPos(it.pos() + delta)
+                        finally:
+                            sc._group_move_lock = False
+
         if change == QtWidgets.QGraphicsItem.ItemPositionHasChanged:
             # Write both: new model (pos_xy) + legacy (pos) for compatibility
             try:
@@ -955,14 +995,32 @@ class NodeItem(QtWidgets.QGraphicsObject):
         if e.button() == QtCore.Qt.LeftButton:
             self._lmb_press_scene = self.mapToScene(e.pos())
             self._lmb_started_wire = False
+
+            scene = self.scene()
+            multi_sel = bool(e.modifiers() & (QtCore.Qt.ShiftModifier | QtCore.Qt.ControlModifier))
+            if scene:
+                if multi_sel:
+                    self.setSelected(not self.isSelected())
+                else:
+                    if not self.isSelected():
+                        for it in scene.selectedItems():
+                            if it is not self and isinstance(it, NodeItem):
+                                it.setSelected(False)
+                        self.setSelected(True)
+
             on_right_socket = (self.width - 12 <= e.pos().x() <= self.width + 6) and (0 <= e.pos().y() <= self._BASE_H)
             if on_right_socket:
+                if scene:
+                    scene._group_drag_active = False
                 try:
                     self.startWireDrag.emit(self)
                     self._lmb_started_wire = True
                 except Exception:
                     pass
             else:
+                if scene:
+                    selected_nodes = [it for it in scene.selectedItems() if isinstance(it, NodeItem)]
+                    scene._group_drag_active = len(selected_nodes) > 1
                 try:
                     self.clicked.emit(self.model)
                 except Exception:
@@ -974,6 +1032,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
     def mouseReleaseEvent(self, e):
         if e.button() == QtCore.Qt.LeftButton:
+            scene = self.scene()
+            if scene:
+                scene._group_drag_active = False
             try:
                 press_scene = getattr(self, "_lmb_press_scene", None)
                 if press_scene is not None:
