@@ -42,6 +42,7 @@ from echograph.ui.dialogs import (
     ParamEditorDialog,
     BigTextEditDialog,
     CreateNodeDialog,
+    RecentGraphsDialog,
 )
 
 # Keep a local mutable scale (slider edits this)
@@ -51,6 +52,37 @@ def _llm_dims():
 
 # Derived dims used by node sizing
 LLM_NODE_W, LLM_NODE_H = _llm_dims()
+
+# Recent file tracking
+_RECENT_GRAPHS_PATH = script_dir() / "recent_graphs.json"
+_RECENT_GRAPHS_LIMIT = 10
+
+def _load_recent_graphs() -> list[str]:
+    try:
+        data = json.loads(_RECENT_GRAPHS_PATH.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            out = []
+            for entry in data:
+                if isinstance(entry, str):
+                    entry = entry.strip()
+                    if entry:
+                        out.append(entry)
+                if len(out) >= _RECENT_GRAPHS_LIMIT:
+                    break
+            return out
+    except Exception:
+        pass
+    return []
+
+def _save_recent_graphs(paths: list[str]) -> None:
+    try:
+        _RECENT_GRAPHS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _RECENT_GRAPHS_PATH.write_text(
+            json.dumps(list(paths), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
 
 # --- WebEngine (for embedding Gradio UI) ---
 try:
@@ -1167,6 +1199,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._current_path = None
         self._card_by_node = {}
         self._bigedit_registry = {}
+        self._recent_files = _load_recent_graphs()
 
         central = QtWidgets.QWidget(self)
         v = QtWidgets.QVBoxLayout(central)
@@ -1203,8 +1236,71 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._ctrlb_filter = _CtrlBEventFilter(self)
         QtWidgets.QApplication.instance().installEventFilter(self._ctrlb_filter)
 
+        if HOST == "standalone":
+            QtCore.QTimer.singleShot(0, self._maybe_show_recent_dialog)
+
     def _register_bigedit_target(self, lineedit: QtWidgets.QLineEdit, node_item: 'NodeItem', param_name: str):
         self._bigedit_registry[lineedit] = (node_item, param_name)
+
+    def _remember_recent(self, path: str):
+        path = (path or "").strip()
+        if not path:
+            return
+        try:
+            path = os.path.abspath(path)
+        except Exception:
+            pass
+        entries = []
+        seen = set()
+        for cand in [path] + list(getattr(self, "_recent_files", [])):
+            cand = (cand or "").strip()
+            if not cand:
+                continue
+            try:
+                norm = os.path.abspath(cand)
+            except Exception:
+                norm = cand
+            if norm in seen:
+                continue
+            entries.append(norm)
+            seen.add(norm)
+            if len(entries) >= _RECENT_GRAPHS_LIMIT:
+                break
+        self._recent_files = entries
+        _save_recent_graphs(entries)
+
+    def _forget_recent(self, path: str):
+        if not path:
+            return
+        try:
+            target = os.path.abspath(path)
+        except Exception:
+            target = path
+        new_list = []
+        changed = False
+        for cand in getattr(self, "_recent_files", []):
+            try:
+                norm = os.path.abspath(cand)
+            except Exception:
+                norm = cand
+            if norm == target:
+                changed = True
+                continue
+            new_list.append(cand)
+        if changed:
+            self._recent_files = new_list
+            _save_recent_graphs(new_list)
+
+    def _maybe_show_recent_dialog(self):
+        recents = [p for p in getattr(self, "_recent_files", []) if p]
+        if not recents:
+            return
+        dlg = RecentGraphsDialog(self, recents)
+        if _qexec(dlg) == QtWidgets.QDialog.Accepted:
+            path = dlg.selected_path()
+            if path:
+                if not self._load_graph_file(path):
+                    self._forget_recent(path)
 
     def _build_topbar(self):
         bar = QtWidgets.QFrame(); bar.setObjectName("TopBar")
@@ -1312,33 +1408,47 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         if callable(self.add_info_card):
             self.add_info_card(node)
 
+    def _load_graph_file(self, path: str) -> bool:
+        path = (path or "").strip()
+        if not path:
+            return False
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, APP_TITLE, f"Failed to open:\n{e}")
+            return False
+        try:
+            self.scene.from_dict(data)
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, APP_TITLE, f"Failed to open:\n{e}")
+            return False
+
+        try:
+            s = float(data.get("llm_scale", LLM_SCALE))
+        except Exception as e:
+            s = LLM_SCALE
+
+        set_global_llm_scale(s, self.scene)
+        if hasattr(self, "_llm_slider"):
+            self._llm_slider.blockSignals(True)
+            self._llm_slider.setValue(int(round(s * 100)))
+            if hasattr(self, "_llm_value_lbl"):
+                self._llm_value_lbl.setText(f"{int(round(s*100))}%")
+            self._llm_slider.blockSignals(False)
+
+        self._current_path = path
+        self._remember_recent(path)
+        if self.scene._node_items:
+            first = next(iter(self.scene._node_items.values()))
+            self.view.centerOn(first)
+        return True
+
     def _open_graph(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Open Graph (.json)", "", "JSON Files (*.json)")
         if not path:
             return
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-
-            # Build scene from file
-            self.scene.from_dict(data)
-
-            # Restore LLM scale + slider UI (fallback to current if missing)
-            s = float(data.get("llm_scale", LLM_SCALE))
-            set_global_llm_scale(s, self.scene)
-            if hasattr(self, "_llm_slider"):
-                self._llm_slider.blockSignals(True)
-                self._llm_slider.setValue(int(round(s * 100)))
-                if hasattr(self, "_llm_value_lbl"):
-                    self._llm_value_lbl.setText(f"{int(round(s*100))}%")
-                self._llm_slider.blockSignals(False)
-
-            self._current_path = path
-            if self.scene._node_items:
-                first = next(iter(self.scene._node_items.values()))
-                self.view.centerOn(first)
-        except Exception as e:
-            QtWidgets.QMessageBox.critical(self, APP_TITLE, f"Failed to open:\n{e}")
+        self._load_graph_file(path)
 
     def _save_graph(self):
         if not self._current_path:
@@ -1347,6 +1457,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             data = self.scene.to_dict()
             with open(self._current_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
+            self._remember_recent(self._current_path)
             try:
                 QtWidgets.QToolTip.showText(
                     QtGui.QCursor.pos(),
@@ -1385,6 +1496,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 json.dump(data, f, indent=2)
 
             self._current_path = path
+            self._remember_recent(path)
             try:
                 QtWidgets.QToolTip.showText(
                     QtGui.QCursor.pos(),

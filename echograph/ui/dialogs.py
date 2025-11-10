@@ -1,6 +1,7 @@
 # echograph/ui/dialogs.py
 from __future__ import annotations
 from typing import List, Dict, Any
+from pathlib import Path
 
 from echograph.qt_compat import QtCore, QtGui, QtWidgets, _qexec
 from echograph.constants import LLM_URL, APP_TITLE
@@ -244,3 +245,43 @@ class CreateNodeDialog(QtWidgets.QDialog):
             else:
                 params.append({"name": "URL", "value": url_val})
         return {"name": self.name_edit.text().strip(), "kind": kind, "params": params, "code": code}
+
+
+class RecentGraphsDialog(QtWidgets.QDialog):
+    def __init__(self, parent=None, recent_paths=None):
+        super().__init__(parent)
+        self.setWindowTitle("Recent Graphs")
+        self.setMinimumWidth(420)
+        self._paths = [str(p) for p in (recent_paths or []) if isinstance(p, str) and p.strip()]
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        label = QtWidgets.QLabel("Select a recent graph to open:")
+        layout.addWidget(label)
+
+        self.list = QtWidgets.QListWidget()
+        self.list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        for path in self._paths:
+            text = Path(path).name or path
+            item = QtWidgets.QListWidgetItem(text)
+            item.setData(QtCore.Qt.UserRole, path)
+            item.setToolTip(path)
+            self.list.addItem(item)
+        if self.list.count():
+            self.list.setCurrentRow(0)
+        self.list.itemDoubleClicked.connect(lambda *_: self.accept())
+        layout.addWidget(self.list, 1)
+
+        btns = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Open | QtWidgets.QDialogButtonBox.Cancel)
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        layout.addWidget(btns)
+
+    def selected_path(self) -> str:
+        it = self.list.currentItem()
+        if not it:
+            return ""
+        path = it.data(QtCore.Qt.UserRole)
+        return str(path) if path else ""
