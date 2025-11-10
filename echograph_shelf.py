@@ -351,6 +351,20 @@ class GraphScene(QtWidgets.QGraphicsScene):
 
                 return "\n\n".join(parts) if parts else own  # own or empty
 
+            if kind == "switch":
+                try:
+                    in_edges = self._ordered_in_edges(node_item)
+                except Exception:
+                    in_edges = self._in_edges(node_item)
+                if in_edges:
+                    try:
+                        return self.resolve_text_value(in_edges[0].src) or ""
+                    except Exception:
+                        pass
+                own = _own_param_text(node_item.model)
+                if own:
+                    return own
+
             # --- generic nodes (unchanged) ---
             params = list(node_item.model.params or [])
             for k in ("prompt", "text", "content"):
