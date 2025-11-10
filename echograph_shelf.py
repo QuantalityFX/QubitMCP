@@ -178,7 +178,6 @@ class GraphScene(QtWidgets.QGraphicsScene):
         self._drag_src_item = None
         self._temp_wire = None
         self._current_output_name = None
-        self._copied_payload = None
         self._last_paste_jitter = QtCore.QPointF(0.0, 0.0)
         self._group_drag_active = False
         self._group_move_lock = False
@@ -712,7 +711,6 @@ class GraphScene(QtWidgets.QGraphicsScene):
         }
 
         QtWidgets.QApplication.clipboard().setText(json.dumps(payload, ensure_ascii=False))
-        self._copied_payload = payload
         return True
 
     def paste_from_clipboard(self) -> bool:
@@ -725,8 +723,6 @@ class GraphScene(QtWidgets.QGraphicsScene):
                     payload = data
             except Exception:
                 payload = None
-        if payload is None:
-            payload = getattr(self, "_copied_payload", None)
         if not payload:
             return False
 

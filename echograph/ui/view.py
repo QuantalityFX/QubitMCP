@@ -101,11 +101,11 @@ class GraphView(QtWidgets.QGraphicsView):
         p.fillRect(rect, QtGui.QColor("#1a1f24"))
 
     def keyPressEvent(self, e: QtGui.QKeyEvent):
-        def _text_input_has_focus() -> bool:
+        def _text_widget_wants_copy() -> bool:
             fw = QtWidgets.QApplication.focusWidget()
             if not fw:
                 return False
-            editable_types = (
+            text_widgets = (
                 QtWidgets.QLineEdit,
                 QtWidgets.QTextEdit,
                 QtWidgets.QPlainTextEdit,
@@ -114,13 +114,47 @@ class GraphView(QtWidgets.QGraphicsView):
                 QtWidgets.QDoubleSpinBox,
                 QtWidgets.QComboBox,
             )
-            if isinstance(fw, editable_types):
+            if isinstance(fw, text_widgets):
                 if isinstance(fw, QtWidgets.QComboBox):
                     return bool(fw.isEditable())
-                if hasattr(fw, "isReadOnly"):
+                if isinstance(fw, QtWidgets.QLineEdit):
+                    return fw.hasSelectedText()
+                if isinstance(fw, (QtWidgets.QTextEdit, QtWidgets.QPlainTextEdit, QtWidgets.QTextBrowser)):
+                    try:
+                        cursor = fw.textCursor()
+                        return cursor.hasSelection()
+                    except Exception:
+                        return True
+                if isinstance(fw, (QtWidgets.QSpinBox, QtWidgets.QDoubleSpinBox)):
+                    return fw.hasSelectedText()
+            return False
+
+        def _text_widget_wants_paste() -> bool:
+            fw = QtWidgets.QApplication.focusWidget()
+            if not fw:
+                return False
+            text_widgets = (
+                QtWidgets.QLineEdit,
+                QtWidgets.QTextEdit,
+                QtWidgets.QPlainTextEdit,
+                QtWidgets.QTextBrowser,
+                QtWidgets.QSpinBox,
+                QtWidgets.QDoubleSpinBox,
+                QtWidgets.QComboBox,
+            )
+            if isinstance(fw, text_widgets):
+                if isinstance(fw, QtWidgets.QComboBox):
+                    return bool(fw.isEditable())
+                if isinstance(fw, QtWidgets.QLineEdit):
                     return not fw.isReadOnly()
-                return True
-            return fw.focusPolicy() in (QtCore.Qt.StrongFocus, QtCore.Qt.WheelFocus)
+                if isinstance(fw, (QtWidgets.QTextEdit, QtWidgets.QPlainTextEdit, QtWidgets.QTextBrowser)):
+                    try:
+                        return not fw.isReadOnly()
+                    except Exception:
+                        return True
+                if isinstance(fw, (QtWidgets.QSpinBox, QtWidgets.QDoubleSpinBox)):
+                    return True
+            return False
 
         if e.key() == QtCore.Qt.Key_Delete:
             sc = self.scene()
@@ -133,7 +167,7 @@ class GraphView(QtWidgets.QGraphicsView):
             if (
                 sc
                 and hasattr(sc, "copy_selection_to_clipboard")
-                and not _text_input_has_focus()
+                and not _text_widget_wants_copy()
                 and sc.copy_selection_to_clipboard()
             ):
                 e.accept()
@@ -143,7 +177,7 @@ class GraphView(QtWidgets.QGraphicsView):
             if (
                 sc
                 and hasattr(sc, "paste_from_clipboard")
-                and not _text_input_has_focus()
+                and not _text_widget_wants_paste()
                 and sc.paste_from_clipboard()
             ):
                 e.accept()
