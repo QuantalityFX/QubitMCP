@@ -843,16 +843,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
         # --- Selection outline ---
         try:
             if self.isSelected():
-                sel_pen = QtGui.QPen(QtGui.QColor("#93c5fd"), 2)
+                sel_pen = QtGui.QPen(QtGui.QColor("#93c5fd"), 1.4)
                 sel_pen.setCosmetic(True)
                 p.setPen(sel_pen)
                 p.setBrush(QtCore.Qt.NoBrush)
-                grow = 1.5
-                p.drawRoundedRect(
-                    r.adjusted(-grow, -grow, grow, grow),
-                    self.radius + 4,
-                    self.radius + 4,
-                )
+                grow = 0.45
+                rect = r.adjusted(-grow, -grow, grow, grow)
+                radius = max(0.0, self.radius + 0.15)
+                p.drawRoundedRect(rect, radius, radius)
         except Exception:
             pass
         finally:
@@ -863,11 +861,18 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
         # --- Top stripe ---
         try:
-            p.setOpacity(1.0)
+            stripe_h = 12.0
+            full_rect = QtCore.QRectF(0.0, 0.0, self.width, self.height)
+            clip_rect = QtCore.QRectF(0.0, 0.0, self.width, stripe_h)
+            clip_path = QtGui.QPainterPath()
+            clip_path.addRoundedRect(full_rect, self.radius, self.radius)
+            p.save()
+            p.setClipPath(clip_path)
+            p.setClipRect(clip_rect, QtCore.Qt.IntersectClip)
             p.setBrush(QtGui.QColor(stripe_hex))
             p.setPen(QtCore.Qt.NoPen)
-            p.drawRoundedRect(QtCore.QRectF(0, 0, self.width, 8), self.radius, self.radius)
-            p.drawRect(QtCore.QRectF(0, 4, self.width, 4))  # solid bar under the rounded cap
+            p.drawRect(clip_rect)
+            p.restore()
         except Exception as e:
             print("[EchoGraph][paint] stripe fail:", e)
 
