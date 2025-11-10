@@ -498,12 +498,12 @@ class GraphScene(QtWidgets.QGraphicsScene):
         self._reframe_to_nodes(margin=8000.0)
         return item
 
-    def add_edge(self, src_name, dst_name):
-        return self._add_edge_and_update_switch(src_name, dst_name)
+    def add_edge(self, src_name, dst_name, dst_port_name=None):
+        return self._add_edge_and_update_switch(src_name, dst_name, dst_port_name=dst_port_name)
 
-    def _add_edge_and_update_switch(self, src_name, dst_name):
+    def _add_edge_and_update_switch(self, src_name, dst_name, dst_port_name=None):
         src = self._node_items[src_name]; dst = self._node_items[dst_name]
-        edge = EdgeItem(src, dst)
+        edge = EdgeItem(src, dst, dst_port_name=dst_port_name)
         self._edges.append(edge); self.addItem(edge)
 
         dst_kind = (dst.model.kind or "").lower()
@@ -674,10 +674,16 @@ class GraphScene(QtWidgets.QGraphicsScene):
 
     def mouseReleaseEvent(self, e: QtWidgets.QGraphicsSceneMouseEvent):
         if self._temp_wire is not None and self._drag_src_item is not None:
-            target = self._node_at_left_socket(e.scenePos())
+            target, dst_port = self._node_at_left_socket(e.scenePos())
             if target and (target is not self._drag_src_item):
-                try: self._add_edge_and_update_switch(self._drag_src_item.model.name, target.model.name)
-                except Exception: pass
+                try:
+                    self._add_edge_and_update_switch(
+                        self._drag_src_item.model.name,
+                        target.model.name,
+                        dst_port_name=dst_port,
+                    )
+                except Exception:
+                    pass
             self._cancel_temp_wire(); e.accept(); return
         super().mouseReleaseEvent(e)
 
@@ -686,9 +692,13 @@ class GraphScene(QtWidgets.QGraphicsScene):
         for it in items:
             if isinstance(it, NodeItem):
                 lp = it.mapFromScene(scene_pos)
-                if -6 <= lp.x() <= 12 and 0 <= lp.y() <= it._BASE_H:
-                    return it
-        return None
+                h = getattr(it, "height", getattr(it, "_BASE_H", 0))
+                if -6 <= lp.x() <= 12 and 0 <= lp.y() <= h:
+                    port_name = None
+                    if hasattr(it, "input_port_hit"):
+                        port_name = it.input_port_hit(lp)
+                    return it, port_name
+        return None, None
 
     def _cancel_temp_wire(self):
         if self._temp_wire:

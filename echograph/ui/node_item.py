@@ -68,6 +68,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
     _PARAM_ROW_H = 24
     _PADDING = 8
     _NOTE_FEATURED_H = 160
+    _PORT_LABEL_TOP = 48
+    _PORT_ROW_H = 18
+    _PORT_HIT_TOL = 9.0
     
     def __init__(self, model: GraphNode):
         try:
@@ -104,6 +107,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         self._switch_proxy = None
         self._llm_proxy = None
         self._llm_view = None  # kept for API parity if ever needed
+        self._input_port_y = {}
        # Let the spec add named inputs (e.g., Librarian: query/docs_dir/mode/top_k/action)
         try:
             spec = core.get_spec((self.model.kind or "node").lower())
@@ -119,15 +123,26 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
     def _ensure_named_inputs_set(self):
         try:
-            s = getattr(self.model, "_named_inputs", None)
-            if not isinstance(s, set):
-                setattr(self.model, "_named_inputs", set())
+            store = getattr(self.model, "_named_inputs", None)
         except Exception:
-            setattr(self.model, "_named_inputs", set())
+            store = None
+
+        if isinstance(store, list):
+            return
+        if isinstance(store, set):
+            setattr(self.model, "_named_inputs", [str(n) for n in store if n])
+            return
+        if store is None:
+            setattr(self.model, "_named_inputs", [])
+            return
+        try:
+            setattr(self.model, "_named_inputs", [str(n) for n in store if n])
+        except Exception:
+            setattr(self.model, "_named_inputs", [])
 
     def input_port_names(self) -> list[str]:
         self._ensure_named_inputs_set()
-        return [n for n in getattr(self.model, "_named_inputs", set())]
+        return [str(n) for n in getattr(self.model, "_named_inputs", []) if n]
 
     def port_anchor(self, name: str, side: str = "in") -> QtCore.QPointF:
         """Return scene-relative anchor point for a named port bead."""
@@ -141,13 +156,47 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
     def ensure_input(self, name: str):
         self._ensure_named_inputs_set()
-        if name:
+        if not name:
+            return
+        try:
+            names = getattr(self.model, "_named_inputs", [])
+            if str(name) not in names:
+                names.append(str(name))
+        except Exception:
+            existing = [str(n) for n in getattr(self.model, "_named_inputs", []) if n]
+            if str(name) not in existing:
+                existing.append(str(name))
+            setattr(self.model, "_named_inputs", existing)
+
+    def input_port_hit(self, local_point, tolerance: float | None = None) -> str | None:
+        """
+        Return the named input hit by a left-socket interaction.
+        Accepts either a QPointF (local coords) or a y-value.
+        """
+        names = self.input_port_names()
+        if not names:
+            return None
+
+        if hasattr(local_point, "y"):
             try:
-                self.model._named_inputs.add(str(name))
+                y = float(local_point.y())
             except Exception:
-                s = set(getattr(self.model, "_named_inputs", set()))
-                s.add(str(name))
-                setattr(self.model, "_named_inputs", s)
+                y = float(getattr(local_point, "__float__", lambda: 0.0)())
+        else:
+            try:
+                y = float(local_point)
+            except Exception:
+                return None
+
+        tol = float(self._PORT_HIT_TOL if tolerance is None else tolerance)
+        ymap = getattr(self, "_input_port_y", {})
+        for nm in names:
+            cy = ymap.get(nm)
+            if cy is None:
+                continue
+            if abs(y - float(cy)) <= tol:
+                return nm
+        return None
 
     # back-compat aliases some specs may call
     def add_input_port(self, name: str):
@@ -234,6 +283,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
         # Baseline used by y_cursor in _build_widgets
         header_h = 38 + 16 + self._PADDING
 
+        # Named input labels reserve vertical space before params
+        names = self.input_port_names()
+        port_gap = 0
+        if names:
+            port_block = self._PORT_LABEL_TOP + len(names) * self._PORT_ROW_H + self._PADDING
+            if port_block > header_h:
+                port_gap = port_block - header_h
+
         # Switch row
         switch_h = self._PARAM_ROW_H if kind == "switch" else 0
 
@@ -267,7 +324,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             node_w = self._BASE_W
 
         new_w = max(node_w, self._BASE_W)
-        new_h = max(self._BASE_H, header_h + switch_h + params_h + body_h + self._PADDING)
+        new_h = max(self._BASE_H, header_h + port_gap + switch_h + params_h + body_h + self._PADDING)
 
         if new_w != getattr(self, "width", 0) or new_h != getattr(self, "height", 0):
             try:
@@ -432,6 +489,18 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 self._switch_proxy = proxy
 
                 y_cursor += self._PARAM_ROW_H
+
+            # --- Named input bead layout (for plugins like Librarian) ---
+            names = self.input_port_names()
+            self._input_port_y = {}
+            if names:
+                top = self._PORT_LABEL_TOP        # under stripe+title
+                row_h = self._PORT_ROW_H
+                for i, nm in enumerate(names):
+                    self._input_port_y[str(nm)] = top + i * row_h
+                # ensure parameter widgets start below the port labels
+                block_bottom = top + len(names) * row_h
+                y_cursor = max(y_cursor, block_bottom + self._PADDING)
 
             # --- Parameters ---
             if self.model.params:
@@ -598,15 +667,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
                     S = self._current_llm_scale()
                     y_cursor += int(LLM_NODE_H_BASE * S)
-
-            # --- Named input bead layout (for plugins like Librarian) ---
-            names = self.input_port_names()
-            self._input_port_y = {}
-            if names:
-                top = 48        # under stripe+title
-                row_h = 18
-                for i, nm in enumerate(names):
-                    self._input_port_y[str(nm)] = top + i * row_h
 
         finally:
             self._is_building = False

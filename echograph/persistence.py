@@ -39,7 +39,13 @@ def _node_to_dict(node) -> Dict[str, Any]:
 
 def serialize_scene(scene) -> Dict[str, Any]:
     nodes = [_node_to_dict(nitem.model) for nitem in scene._node_items.values()]
-    edges = [{"src": e.src.model.name, "dst": e.dst.model.name} for e in scene._edges]
+    edges = []
+    for e in scene._edges:
+        entry = {"src": e.src.model.name, "dst": e.dst.model.name}
+        dst_port = getattr(e, "dst_port_name", None)
+        if dst_port:
+            entry["dst_port"] = dst_port
+        edges.append(entry)
     llm_scale = float(getattr(scene, "_llm_scale", LLM_SCALE_DEFAULT))
     return {
         "nodes": nodes,
@@ -99,7 +105,11 @@ def deserialize_scene(
     # 4) rebuild edges
     for ed in data.get("edges", []):
         try:
-            scene._add_edge_and_update_switch(ed["src"], ed["dst"])
+            scene._add_edge_and_update_switch(
+                ed["src"],
+                ed["dst"],
+                dst_port_name=ed.get("dst_port"),
+            )
         except Exception:
             pass
 
