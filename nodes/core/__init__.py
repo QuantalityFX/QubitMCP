@@ -8,7 +8,8 @@ __all__ = [
     "register",
     "get_spec",
     "register_defaults",
-    # legacy shims (so old plugins still work):
+    "apply_spec_to_item",   # helper
+    # legacy shims:
     "NodeKindSpec",
     "register_spec",
 ]
@@ -26,9 +27,11 @@ class Spec:
 
     # Optional: Node body hook (called from NodeItem._build_widgets)
     # def render_node_body(node_item, y_cursor:int) -> int|None
-    #   - Draw custom widgets into the node body.
-    #   - Return a new y_cursor (int) if you consumed vertical space.
     render_node_body: Optional[Callable[..., Any]] = None
+
+    # Optional: Port builder hook (called after NodeItem is created)
+    # def build_ports(node_item) -> None
+    build_ports: Optional[Callable[..., Any]] = None
 
 
 # Global registry
@@ -43,7 +46,8 @@ def register(kind: str, **kwargs) -> None:
         register("librarian",
                  stripe_color="#e11d48",
                  augment_infocard_footer=my_footer_hook,
-                 render_node_body=my_body_hook)
+                 render_node_body=my_body_hook,
+                 build_ports=my_build_ports)
     """
     k = (kind or "node").strip().lower()
     spec = _REGISTRY.get(k) or Spec()
@@ -56,6 +60,9 @@ def register(kind: str, **kwargs) -> None:
 
     if "render_node_body" in kwargs:
         spec.render_node_body = kwargs["render_node_body"]
+
+    if "build_ports" in kwargs:
+        spec.build_ports = kwargs["build_ports"]
 
     _REGISTRY[k] = spec
 
@@ -72,8 +79,42 @@ def register_defaults() -> None:
     register("import",    stripe_color="#3b82f6")
     register("output",    stripe_color="#a855f7")
     register("llm",       stripe_color="#14b8a6")
-    # librarians can override this later in their plugin
+    # librarian plugins can override this later
     register("librarian", stripe_color="#74d603")
+
+
+def apply_spec_to_item(item: Any, kind: str | Spec, *, debug: bool = False) -> Any:
+    """
+    Apply the registered Spec to a newly created NodeItem.
+
+    Call this right after you instantiate your NodeItem:
+        item = NodeItem(model)
+        apply_spec_to_item(item, model.kind)
+
+    Returns the same item for chaining.
+    """
+    spec = kind if isinstance(kind, Spec) else get_spec(kind)
+
+    # 1) Let spec build named ports (if provided)
+    try:
+        if callable(spec.build_ports):
+            spec.build_ports(item)
+            if debug:
+                names = getattr(item, "input_port_names", lambda: [])()
+                print(f"[EchoGraph] build_ports for '{getattr(item.model,'kind','node')}': {names}")
+    except Exception as e:
+        if debug:
+            print("[EchoGraph] build_ports error:", e)
+
+    # 2) Apply stripe color if NodeItem supports it (optional)
+    try:
+        if hasattr(item, "set_stripe_color") and spec.stripe_color:
+            item.set_stripe_color(spec.stripe_color)
+    except Exception as e:
+        if debug:
+            print("[EchoGraph] set_stripe_color error:", e)
+
+    return item
 
 
 # ---- Legacy shims (for old plugins) ----
@@ -90,6 +131,7 @@ def register_spec(kind: str, spec_or_kwargs: Any) -> None:
             stripe_color=spec_or_kwargs.stripe_color,
             augment_infocard_footer=spec_or_kwargs.augment_infocard_footer,
             render_node_body=spec_or_kwargs.render_node_body,
+            build_ports=spec_or_kwargs.build_ports,
         )
     elif isinstance(spec_or_kwargs, dict):
         register(kind, **spec_or_kwargs)

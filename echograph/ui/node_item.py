@@ -104,11 +104,57 @@ class NodeItem(QtWidgets.QGraphicsObject):
         self._switch_proxy = None
         self._llm_proxy = None
         self._llm_view = None  # kept for API parity if ever needed
-
+       # Let the spec add named inputs (e.g., Librarian: query/docs_dir/mode/top_k/action)
+        try:
+            spec = core.get_spec((self.model.kind or "node").lower())
+            build_ports = getattr(spec, "build_ports", None)
+            if callable(build_ports):
+                build_ports(self)
+        except Exception:
+            pass
 
         self._recompute_height()
         self._build_widgets()
+        # --- named-input helpers (used by plugin specs like Librarian) ---
 
+    def _ensure_named_inputs_set(self):
+        try:
+            s = getattr(self.model, "_named_inputs", None)
+            if not isinstance(s, set):
+                setattr(self.model, "_named_inputs", set())
+        except Exception:
+            setattr(self.model, "_named_inputs", set())
+
+    def input_port_names(self) -> list[str]:
+        self._ensure_named_inputs_set()
+        return [n for n in getattr(self.model, "_named_inputs", set())]
+
+    def port_anchor(self, name: str, side: str = "in") -> QtCore.QPointF:
+        """Return scene-relative anchor point for a named port bead."""
+        ymap = getattr(self, "_input_port_y", {})
+        y = ymap.get(name, self._BASE_H / 2.0)
+        if side == "in":
+            return self.scenePos() + QtCore.QPointF(0, y)
+        else:
+            return self.scenePos() + QtCore.QPointF(self.width, y)
+
+
+    def ensure_input(self, name: str):
+        self._ensure_named_inputs_set()
+        if name:
+            try:
+                self.model._named_inputs.add(str(name))
+            except Exception:
+                s = set(getattr(self.model, "_named_inputs", set()))
+                s.add(str(name))
+                setattr(self.model, "_named_inputs", s)
+
+    # back-compat aliases some specs may call
+    def add_input_port(self, name: str):
+        self.ensure_input(name)
+
+    def add_input(self, name: str):
+        self.ensure_input(name)
 
     def _current_llm_scale(self) -> float:
         sc = self.scene()
@@ -116,7 +162,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
             return float(getattr(sc, "_llm_scale", LLM_SCALE_DEFAULT))
         except Exception:
             return float(LLM_SCALE_DEFAULT)
-
 
     def _rebuild_deferred(self):
         """Recompute + rebuild on next event-loop tick to avoid re-entrancy/tearing."""
@@ -553,6 +598,16 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
                     S = self._current_llm_scale()
                     y_cursor += int(LLM_NODE_H_BASE * S)
+
+            # --- Named input bead layout (for plugins like Librarian) ---
+            names = self.input_port_names()
+            self._input_port_y = {}
+            if names:
+                top = 48        # under stripe+title
+                row_h = 18
+                for i, nm in enumerate(names):
+                    self._input_port_y[str(nm)] = top + i * row_h
+
         finally:
             self._is_building = False
 
@@ -768,9 +823,25 @@ class NodeItem(QtWidgets.QGraphicsObject):
         try:
             p.setPen(QtCore.Qt.NoPen)
             p.setBrush(QtGui.QColor("#cbd5e1"))
-            # left (input)
-            p.drawEllipse(QtCore.QRectF(-4, self._BASE_H / 2.0 - 4, 8, 8))
-            # right (output)
+
+            # left (multiple named inputs if present)
+            names = getattr(self, "input_port_names", lambda: [])()
+            ymap  = getattr(self, "_input_port_y", {})
+            if names:
+                for nm in names:
+                    y = float(ymap.get(nm, self._BASE_H / 2.0))
+                    p.drawEllipse(QtCore.QRectF(-4, y - 4, 8, 8))
+                    # faint labels
+                    p.setPen(QtGui.QPen(QtGui.QColor("#94a3b8")))
+                    fm = QtGui.QFontMetrics(p.font())
+                    txt = fm.elidedText(str(nm), QtCore.Qt.ElideRight, int(self.width * 0.4))
+                    p.drawText(QtCore.QRectF(8, y - 7, self.width * 0.5, 14), QtCore.Qt.AlignVCenter, txt)
+                    p.setPen(QtCore.Qt.NoPen)
+            else:
+                # fallback single inlet
+                p.drawEllipse(QtCore.QRectF(-4, self._BASE_H / 2.0 - 4, 8, 8))
+
+            # right (single output)
             p.drawEllipse(QtCore.QRectF(self.width - 4, self._BASE_H / 2.0 - 4, 8, 8))
         except Exception as e:
             print("[EchoGraph][paint] sockets fail:", e)

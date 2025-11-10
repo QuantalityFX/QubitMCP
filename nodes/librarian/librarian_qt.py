@@ -229,6 +229,25 @@ class LibrarianWidget(QtWidgets.QWidget):
         fn = files[0]
         try:
             data = json.loads(fn.read_text(encoding="utf-8"))
+            docs_dir = (data.get("docs_dir") or "").strip()
+            if docs_dir:
+                p = Path(docs_dir).expanduser().resolve()
+                try:
+                    p.mkdir(parents=True, exist_ok=True)
+                except Exception as e:
+                    self._append_log(f"[ipc] docs_dir error: {e}")
+                else:
+                    # persist + env + live core update
+                    st = _load_settings()
+                    st["docs_dir"] = str(p)
+                    _save_settings(st)
+                    os.environ["LIBRARIAN_DOCS_DIR"] = str(p)
+                    try:
+                        self.lib.cfg.docs_dir = p
+                    except Exception:
+                        pass
+                    self._append_log(f"[ipc] docs_dir set → {p}")
+
         except Exception as e:
             self._append_log(f"[ipc] bad json: {fn.name} :: {e}")
             try:
@@ -545,12 +564,12 @@ class LibrarianWidget(QtWidgets.QWidget):
         # Point the live core at the new path (will be used on next build/load)
         try:
             self.lib.cfg.docs_dir = p
+            self.ed_docs.setText(str(p))
         except Exception:
             pass
 
         self._append_log(f"[docs] set to: {p}")
         self._append_log("[docs] apply complete. Rebuild/Load to refresh the index.")
-
 
     # helpers
     def _append_log(self, msg: str):
