@@ -162,6 +162,15 @@ class GraphView(QtWidgets.QGraphicsView):
                 sc.delete_selected_nodes()
                 e.accept()
                 return
+        if (
+            e.key() == QtCore.Qt.Key_C
+            and not (e.modifiers() & (QtCore.Qt.ControlModifier | QtCore.Qt.MetaModifier | QtCore.Qt.AltModifier))
+        ):
+            sc = self.scene()
+            if sc and hasattr(sc, "create_comment_group_from_selection"):
+                sc.create_comment_group_from_selection()
+                e.accept()
+                return
         if e.matches(QtGui.QKeySequence.Copy):
             sc = self.scene()
             if (

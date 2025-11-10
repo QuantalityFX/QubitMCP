@@ -84,6 +84,137 @@ def _save_recent_graphs(paths: list[str]) -> None:
     except Exception:
         pass
 
+class CommentGroup(QtWidgets.QGraphicsObject):
+    Type = QtWidgets.QGraphicsItem.UserType + 5201
+
+    def __init__(self, scene: 'GraphScene', title: str, body: str, members: list[str], rect: QtCore.QRectF):
+        super().__init__()
+        self._scene_ref = scene
+        self._title = (title or "").strip() or "Comment"
+        self._body = (body or "").strip()
+        self._members = [str(m) for m in (members or []) if m]
+
+        rect = QtCore.QRectF(rect)
+        if rect.width() < 160:
+            rect.setWidth(160)
+        if rect.height() < 100:
+            rect.setHeight(100)
+        self._rect = QtCore.QRectF(0.0, 0.0, rect.width(), rect.height())
+        self.setPos(rect.topLeft())
+
+        self.setZValue(0.2)
+        self.setFlag(QtWidgets.QGraphicsItem.ItemIsMovable, True)
+        self.setFlag(QtWidgets.QGraphicsItem.ItemIsSelectable, True)
+        self.setFlag(QtWidgets.QGraphicsItem.ItemSendsGeometryChanges, True)
+
+    # --- data helpers --------------------------------------------------------
+    def members(self) -> list[str]:
+        return list(self._members)
+
+    def remove_member(self, name: str):
+        if name in self._members:
+            self._members = [m for m in self._members if m != name]
+
+    def replace_member(self, old: str, new: str):
+        self._members = [new if m == old else m for m in self._members]
+
+    def to_dict(self) -> dict:
+        pos = self.scenePos()
+        return {
+            "title": self._title,
+            "body": self._body,
+            "members": list(self._members),
+            "rect": [float(pos.x()), float(pos.y()), float(self._rect.width()), float(self._rect.height())],
+        }
+
+    # --- graphics ------------------------------------------------------------
+    def boundingRect(self) -> QtCore.QRectF:
+        return self._rect.adjusted(-8, -28, 8, 8)
+
+    def shape(self) -> QtGui.QPainterPath:
+        path = QtGui.QPainterPath()
+        path.addRoundedRect(self._rect, 14, 14)
+        return path
+
+    def paint(self, p: QtGui.QPainter, option, widget=None):
+        rect = QtCore.QRectF(self._rect)
+        padding = 14.0
+        bg = QtGui.QColor("#1f2933")
+        bg.setAlphaF(0.45)
+        pen = QtGui.QPen(QtGui.QColor("#94a3b8"), 1.2, QtCore.Qt.DashLine)
+        pen.setCosmetic(True)
+        p.setBrush(QtGui.QBrush(bg))
+        p.setPen(pen)
+        p.drawRoundedRect(rect, 14, 14)
+
+        title_rect = QtCore.QRectF(rect.x() + padding, rect.y() + padding, rect.width() - 2 * padding, 24)
+        title_color = QtGui.QColor("#e2e8f0")
+        p.setPen(QtGui.QPen(title_color))
+        font = p.font()
+        font.setBold(True)
+        p.setFont(font)
+        p.drawText(title_rect, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, self._title)
+
+        if self._body:
+            body_rect = QtCore.QRectF(title_rect.x(), title_rect.bottom() + 4, title_rect.width(), rect.height() - 2 * padding - 28)
+            font.setBold(False)
+            p.setFont(font)
+            body_color = QtGui.QColor("#94a3b8")
+            p.setPen(QtGui.QPen(body_color))
+            p.drawText(body_rect, QtCore.Qt.TextWordWrap, self._body)
+
+    # --- behavior ------------------------------------------------------------
+    def itemChange(self, change, value):
+        if change == QtWidgets.QGraphicsItem.ItemPositionChange and self.scene():
+            old_pos = self.pos()
+            new_pos = value if isinstance(value, QtCore.QPointF) else QtCore.QPointF(value)
+            delta = new_pos - old_pos
+            if delta.manhattanLength() > 0:
+                scene = self.scene()
+                if scene and hasattr(scene, "_move_comment_members"):
+                    scene._move_comment_members(self, delta)
+        return super().itemChange(change, value)
+
+    def mousePressEvent(self, e: QtWidgets.QGraphicsSceneMouseEvent):
+        if e.button() == QtCore.Qt.LeftButton and not (e.modifiers() & QtCore.Qt.ControlModifier):
+            self._select_members()
+        super().mousePressEvent(e)
+
+    def mouseDoubleClickEvent(self, e: QtWidgets.QGraphicsSceneMouseEvent):
+        if e.button() == QtCore.Qt.LeftButton:
+            new_title, ok = QtWidgets.QInputDialog.getText(
+                None,
+                "Edit Comment Title",
+                "Title:",
+                text=self._title,
+            )
+            if ok:
+                self._title = (new_title or "").strip() or self._title
+            new_body, ok = QtWidgets.QInputDialog.getMultiLineText(
+                None,
+                "Edit Comment Body",
+                "Body:",
+                self._body,
+            )
+            if ok:
+                self._body = (new_body or "").strip()
+            self.update()
+            e.accept()
+            return
+        super().mouseDoubleClickEvent(e)
+
+    def _select_members(self):
+        scene = self.scene()
+        if not scene:
+            return
+        for it in scene.selectedItems():
+            if not isinstance(it, CommentGroup):
+                it.setSelected(False)
+        for name in self._members:
+            node = scene._node_items.get(name)
+            if node:
+                node.setSelected(True)
+
 # --- WebEngine (for embedding Gradio UI) ---
 try:
     from PySide6 import QtWebEngineWidgets as WebEngine
@@ -207,6 +338,8 @@ class GraphScene(QtWidgets.QGraphicsScene):
         self._nodes_by_name = {}
         self._node_items = {}
         self._edges = []
+        self._comment_groups = []
+        self._moving_comment_group = False
         self._drag_src_item = None
         self._temp_wire = None
         self._current_output_name = None
@@ -313,6 +446,9 @@ class GraphScene(QtWidgets.QGraphicsScene):
                         (new_name if n == old_name else n) for n in it.model.switch_inputs
                     ]
                     self.refresh_node_widget(it.model.name)
+
+        for cg in self._comment_groups:
+            cg.replace_member(old_name, new_name)
 
         if self._current_output_name == old_name:
             self._current_output_name = new_name
@@ -514,6 +650,11 @@ class GraphScene(QtWidgets.QGraphicsScene):
             try: self.removeItem(e)
             except Exception: pass
         self._edges.clear()
+        for cg in list(self._comment_groups):
+            try: self.removeItem(cg)
+            except Exception:
+                pass
+        self._comment_groups.clear()
         for it in list(self._node_items.values()):
             try: self.removeItem(it)
             except Exception: pass
@@ -666,6 +807,12 @@ class GraphScene(QtWidgets.QGraphicsScene):
         except Exception: pass
         self._node_items.pop(name, None)
         self._nodes_by_name.pop(name, None)
+
+        for cg in list(self._comment_groups):
+            cg.remove_member(name)
+            if not cg.members():
+                self.delete_comment_group(cg)
+
         if self._current_output_name == name:
             self._current_output_name = None
             self._clear_path_highlight()
@@ -679,6 +826,8 @@ class GraphScene(QtWidgets.QGraphicsScene):
         for it in list(self.selectedItems()):
             if isinstance(it, NodeItem):
                 self.delete_node_by_name(it.model.name)
+            elif isinstance(it, CommentGroup):
+                self.delete_comment_group(it)
 
     # --- copy/paste helpers ---------------------------------------------------
     def _node_payload_for_clipboard(self, node: GraphNode) -> dict:
@@ -858,6 +1007,74 @@ class GraphScene(QtWidgets.QGraphicsScene):
                     pass
 
         return True
+
+    # --- comment groups ------------------------------------------------------
+    def _move_comment_members(self, group: CommentGroup, delta: QtCore.QPointF):
+        if self._moving_comment_group:
+            return
+        if delta.manhattanLength() <= 0.0:
+            return
+        self._moving_comment_group = True
+        try:
+            for name in group.members():
+                it = self._node_items.get(name)
+                if it:
+                    it.setPos(it.pos() + delta)
+        finally:
+            self._moving_comment_group = False
+
+    def create_comment_group_from_selection(self):
+        selected = [it for it in self.selectedItems() if isinstance(it, NodeItem)]
+        if not selected:
+            QtWidgets.QMessageBox.information(None, APP_TITLE, "Select at least one node before wrapping it.")
+            return
+        rect = QtCore.QRectF(selected[0].sceneBoundingRect())
+        for it in selected[1:]:
+            rect = rect.united(it.sceneBoundingRect())
+        padding = 40.0
+        rect = rect.adjusted(-padding, -padding, padding, padding)
+        title, ok = QtWidgets.QInputDialog.getText(None, "Comment Title", "Title:", text="Comment")
+        if not ok:
+            return
+        body, ok = QtWidgets.QInputDialog.getMultiLineText(None, "Comment Body", "Body (optional):", "")
+        if not ok:
+            return
+        group = CommentGroup(self, title, body, [it.model.name for it in selected], rect)
+        self.addItem(group)
+        self._comment_groups.append(group)
+        group.setSelected(True)
+
+    def delete_comment_group(self, group: CommentGroup):
+        if group in self._comment_groups:
+            try:
+                self.removeItem(group)
+            except Exception:
+                pass
+            self._comment_groups.remove(group)
+
+    def comment_groups_data(self) -> list[dict]:
+        out = []
+        for cg in self._comment_groups:
+            out.append(cg.to_dict())
+        return out
+
+    def _add_comment_group_from_data(self, data: dict):
+        if not isinstance(data, dict):
+            return
+        rect = data.get("rect") or [0.0, 0.0, 200.0, 120.0]
+        try:
+            rectf = QtCore.QRectF(float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3]))
+        except Exception:
+            rectf = QtCore.QRectF(0.0, 0.0, 200.0, 120.0)
+        group = CommentGroup(
+            self,
+            data.get("title", "Comment"),
+            data.get("body", ""),
+            data.get("members", []),
+            rectf,
+        )
+        self.addItem(group)
+        self._comment_groups.append(group)
 
     def _refresh_all_switch_widgets(self):
         for it in self._node_items.values():

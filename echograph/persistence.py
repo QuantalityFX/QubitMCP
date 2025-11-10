@@ -46,10 +46,17 @@ def serialize_scene(scene) -> Dict[str, Any]:
         if dst_port:
             entry["dst_port"] = dst_port
         edges.append(entry)
+    comments = []
+    if hasattr(scene, "comment_groups_data"):
+        try:
+            comments = scene.comment_groups_data()
+        except Exception:
+            comments = []
     llm_scale = float(getattr(scene, "_llm_scale", LLM_SCALE_DEFAULT))
     return {
         "nodes": nodes,
         "edges": edges,
+        "comments": comments,
         "llm_scale": llm_scale,                 # legacy top-level
         "settings": {"llm_scale": llm_scale},   # preferred
     }
@@ -110,6 +117,13 @@ def deserialize_scene(
                 ed["dst"],
                 dst_port_name=ed.get("dst_port"),
             )
+        except Exception:
+            pass
+
+    # 5) rebuild comment groups
+    for cdata in data.get("comments", []):
+        try:
+            scene._add_comment_group_from_data(cdata)
         except Exception:
             pass
 
