@@ -992,6 +992,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         sc._reframe_to_nodes(margin=8000.0)
                     except Exception:
                         pass
+                if hasattr(sc, "_update_comment_membership_for_node"):
+                    try:
+                        sc._update_comment_membership_for_node(self)
+                    except Exception:
+                        pass
 
         return super().itemChange(change, value)
 
@@ -1008,8 +1013,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     self.setSelected(not self.isSelected())
                 else:
                     if not self.isSelected():
-                        for it in scene.selectedItems():
-                            if it is not self and isinstance(it, NodeItem):
+                        for it in list(scene.selectedItems()):
+                            name = getattr(it, "__class__", type(it)).__name__
+                            if it is self:
+                                continue
+                            if isinstance(it, NodeItem):
+                                it.setSelected(False)
+                            elif name == "CommentGroup":
                                 it.setSelected(False)
                         self.setSelected(True)
 

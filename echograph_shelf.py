@@ -9,6 +9,7 @@
 
 import sys, re, json, math, os, time
 from pathlib import Path
+from typing import List, Dict, Any
 
 from echograph.ui.infocard import InfoCard
 from echograph.ui.graph_items import _gi_flag, EdgeItem, TempWire
@@ -57,7 +58,7 @@ LLM_NODE_W, LLM_NODE_H = _llm_dims()
 _RECENT_GRAPHS_PATH = script_dir() / "recent_graphs.json"
 _RECENT_GRAPHS_LIMIT = 10
 
-def _load_recent_graphs() -> list[str]:
+def _load_recent_graphs() -> List[str]:
     try:
         data = json.loads(_RECENT_GRAPHS_PATH.read_text(encoding="utf-8"))
         if isinstance(data, list):
@@ -74,7 +75,7 @@ def _load_recent_graphs() -> list[str]:
         pass
     return []
 
-def _save_recent_graphs(paths: list[str]) -> None:
+def _save_recent_graphs(paths: List[str]) -> None:
     try:
         _RECENT_GRAPHS_PATH.parent.mkdir(parents=True, exist_ok=True)
         _RECENT_GRAPHS_PATH.write_text(
@@ -87,7 +88,7 @@ def _save_recent_graphs(paths: list[str]) -> None:
 class CommentGroup(QtWidgets.QGraphicsObject):
     Type = QtWidgets.QGraphicsItem.UserType + 5201
 
-    def __init__(self, scene: 'GraphScene', title: str, body: str, members: list[str], rect: QtCore.QRectF):
+    def __init__(self, scene: 'GraphScene', title: str, body: str, members: List[str], rect: QtCore.QRectF):
         super().__init__()
         self._scene_ref = scene
         self._title = (title or "").strip() or "Comment"
@@ -106,9 +107,15 @@ class CommentGroup(QtWidgets.QGraphicsObject):
         self.setFlag(QtWidgets.QGraphicsItem.ItemIsMovable, True)
         self.setFlag(QtWidgets.QGraphicsItem.ItemIsSelectable, True)
         self.setFlag(QtWidgets.QGraphicsItem.ItemSendsGeometryChanges, True)
+        self.setAcceptHoverEvents(True)
+        self._resize_mode = None
+        self._resize_start_pos = QtCore.QPointF()
+        self._initial_rect = QtCore.QRectF(self._rect)
+        self._initial_pos = QtCore.QPointF(self.pos())
+        self._suspend_member_move = False
 
     # --- data helpers --------------------------------------------------------
-    def members(self) -> list[str]:
+    def members(self) -> List[str]:
         return list(self._members)
 
     def remove_member(self, name: str):
@@ -171,14 +178,41 @@ class CommentGroup(QtWidgets.QGraphicsObject):
             delta = new_pos - old_pos
             if delta.manhattanLength() > 0:
                 scene = self.scene()
-                if scene and hasattr(scene, "_move_comment_members"):
+                if (
+                    scene
+                    and hasattr(scene, "_move_comment_members")
+                    and not getattr(self, "_suspend_member_move", False)
+                ):
                     scene._move_comment_members(self, delta)
         return super().itemChange(change, value)
 
     def mousePressEvent(self, e: QtWidgets.QGraphicsSceneMouseEvent):
+        if e.button() == QtCore.Qt.LeftButton:
+            mode = self._hit_test_resize(e.pos())
+            if mode:
+                self._resize_mode = mode
+                self._resize_start_pos = QtCore.QPointF(e.pos())
+                self._initial_rect = QtCore.QRectF(self._rect)
+                self._initial_pos = QtCore.QPointF(self.pos())
+                e.accept()
+                return
         if e.button() == QtCore.Qt.LeftButton and not (e.modifiers() & QtCore.Qt.ControlModifier):
             self._select_members()
         super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e: QtWidgets.QGraphicsSceneMouseEvent):
+        if self._resize_mode:
+            self._apply_resize(e.pos())
+            e.accept()
+            return
+        super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e: QtWidgets.QGraphicsSceneMouseEvent):
+        if self._resize_mode and e.button() == QtCore.Qt.LeftButton:
+            self._resize_mode = None
+            e.accept()
+            return
+        super().mouseReleaseEvent(e)
 
     def mouseDoubleClickEvent(self, e: QtWidgets.QGraphicsSceneMouseEvent):
         if e.button() == QtCore.Qt.LeftButton:
@@ -203,6 +237,19 @@ class CommentGroup(QtWidgets.QGraphicsObject):
             return
         super().mouseDoubleClickEvent(e)
 
+    def hoverMoveEvent(self, e: QtWidgets.QGraphicsSceneHoverEvent):
+        mode = self._hit_test_resize(e.pos())
+        cursor = self._cursor_for_mode(mode)
+        if cursor:
+            self.setCursor(cursor)
+        else:
+            self.unsetCursor()
+        super().hoverMoveEvent(e)
+
+    def hoverLeaveEvent(self, e: QtWidgets.QGraphicsSceneHoverEvent):
+        self.unsetCursor()
+        super().hoverLeaveEvent(e)
+
     def _select_members(self):
         scene = self.scene()
         if not scene:
@@ -214,6 +261,94 @@ class CommentGroup(QtWidgets.QGraphicsObject):
             node = scene._node_items.get(name)
             if node:
                 node.setSelected(True)
+
+    def _hit_test_resize(self, pos: QtCore.QPointF) -> str | None:
+        margin = 8.0
+        r = self._rect
+        x = pos.x()
+        y = pos.y()
+        near_left = abs(x - r.left()) <= margin
+        near_right = abs(x - r.right()) <= margin
+        near_top = abs(y - r.top()) <= margin
+        near_bottom = abs(y - r.bottom()) <= margin
+
+        if near_left and near_top:
+            return "top-left"
+        if near_right and near_top:
+            return "top-right"
+        if near_left and near_bottom:
+            return "bottom-left"
+        if near_right and near_bottom:
+            return "bottom-right"
+        if near_left:
+            return "left"
+        if near_right:
+            return "right"
+        if near_top:
+            return "top"
+        if near_bottom:
+            return "bottom"
+        return None
+
+    def _cursor_for_mode(self, mode: str | None):
+        if not mode:
+            return None
+        if mode in ("left", "right"):
+            return QtCore.Qt.SizeHorCursor
+        if mode in ("top", "bottom"):
+            return QtCore.Qt.SizeVerCursor
+        if mode in ("top-left", "bottom-right"):
+            return QtCore.Qt.SizeFDiagCursor
+        if mode in ("top-right", "bottom-left"):
+            return QtCore.Qt.SizeBDiagCursor
+        return None
+
+    def _apply_resize(self, pos: QtCore.QPointF):
+        if not self._resize_mode:
+            return
+        min_w, min_h = 160.0, 100.0
+        rect = QtCore.QRectF(self._initial_rect)
+        pos_delta = pos - self._resize_start_pos
+        new_rect = QtCore.QRectF(rect)
+        new_pos = QtCore.QPointF(self._initial_pos)
+        mode = self._resize_mode
+
+        if "right" in mode:
+            new_rect.setWidth(max(min_w, rect.width() + pos_delta.x()))
+        if "bottom" in mode:
+            new_rect.setHeight(max(min_h, rect.height() + pos_delta.y()))
+        if "left" in mode:
+            dx = pos_delta.x()
+            max_dx = rect.width() - min_w
+            dx = min(max_dx, dx)
+            new_rect.setWidth(max(min_w, rect.width() - dx))
+            new_pos.setX(self._initial_pos.x() + dx)
+        if "top" in mode:
+            dy = pos_delta.y()
+            max_dy = rect.height() - min_h
+            dy = min(max_dy, dy)
+            new_rect.setHeight(max(min_h, rect.height() - dy))
+            new_pos.setY(self._initial_pos.y() + dy)
+
+        new_rect.setWidth(max(min_w, new_rect.width()))
+        new_rect.setHeight(max(min_h, new_rect.height()))
+
+        if new_rect == self._rect and new_pos == self.pos():
+            return
+
+        self.prepareGeometryChange()
+        self._rect = new_rect
+        if new_pos != self.pos():
+            self._suspend_member_move = True
+            try:
+                self.setPos(new_pos)
+            finally:
+                self._suspend_member_move = False
+        self.update()
+
+        scene = self.scene()
+        if scene and hasattr(scene, "_refresh_comment_group_membership"):
+            scene._refresh_comment_group_membership(self)
 
 # --- WebEngine (for embedding Gradio UI) ---
 try:
@@ -1042,6 +1177,40 @@ class GraphScene(QtWidgets.QGraphicsScene):
         group = CommentGroup(self, title, body, [it.model.name for it in selected], rect)
         self.addItem(group)
         self._comment_groups.append(group)
+
+    def _refresh_comment_group_membership(self, group: CommentGroup):
+        if group not in self._comment_groups:
+            return
+        group_rect = group.mapRectToScene(group._rect)
+        members = []
+        for name, node in self._node_items.items():
+            rect = node.sceneBoundingRect()
+            if group_rect.contains(rect):
+                members.append(name)
+        group._members = members
+        if not members:
+            self.delete_comment_group(group)
+
+    def _update_comment_membership_for_node(self, node_item: NodeItem):
+        if getattr(self, "_moving_comment_group", False):
+            return
+        name = node_item.model.name
+        node_rect = node_item.sceneBoundingRect()
+        changed = False
+        for cg in list(self._comment_groups):
+            group_rect = cg.mapRectToScene(cg._rect)
+            if group_rect.contains(node_rect):
+                if name not in cg.members():
+                    cg._members.append(name)
+                    changed = True
+            else:
+                if name in cg.members():
+                    cg.remove_member(name)
+                    changed = True
+                    if not cg.members():
+                        self.delete_comment_group(cg)
+        if changed:
+            self.update()
         group.setSelected(True)
 
     def delete_comment_group(self, group: CommentGroup):
@@ -1052,7 +1221,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
                 pass
             self._comment_groups.remove(group)
 
-    def comment_groups_data(self) -> list[dict]:
+    def comment_groups_data(self) -> List[Dict[str, Any]]:
         out = []
         for cg in self._comment_groups:
             out.append(cg.to_dict())
