@@ -427,11 +427,19 @@ class GraphScene(QtWidgets.QGraphicsScene):
         # Check if it's a Librarian node
         if (data["kind"] or "").lower() == "librarian":
             node.info = "Librarian node created"
-            # Ensure a 'query' param exists; don't blow away user-specified params
-            names = { (p.get("name") or "").strip().lower() for p in (node.params or []) }
-            if "query" not in names:
-                node.params = list(node.params or [])
-                node.params.append({"name": "query", "value": ""})
+            ensure_params = [
+                ("query", ""),
+                ("docs_dir", ""),
+                ("mode", "tree_summarize"),
+                ("top_k", "5"),
+                ("action", ""),
+            ]
+            names = {(p.get("name") or "").strip().lower() for p in (node.params or [])}
+            for pname, default in ensure_params:
+                if pname not in names:
+                    node.params = list(node.params or [])
+                    node.params.append({"name": pname, "value": default})
+                    names.add(pname)
 
         item = self.add_node(node, scene_pos)
         item.setPos(scene_pos - QtCore.QPointF(item.width/2.0, item.height/2.0))
@@ -1079,10 +1087,19 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         # Librarian nicety (same as right-click path)
         if (data["kind"] or "").lower() == "librarian":
             node.info = "Librarian node created"
-            names = { (p.get("name") or "").strip().lower() for p in (node.params or []) }
-            if "query" not in names:
-                node.params = list(node.params or [])
-                node.params.append({"name": "query", "value": ""})
+            ensure_params = [
+                ("query", ""),
+                ("docs_dir", ""),
+                ("mode", "tree_summarize"),
+                ("top_k", "5"),
+                ("action", ""),
+            ]
+            names = {(p.get("name") or "").strip().lower() for p in (node.params or [])}
+            for pname, default in ensure_params:
+                if pname not in names:
+                    node.params = list(node.params or [])
+                    node.params.append({"name": pname, "value": default})
+                    names.add(pname)
 
         # Drop it at the center of the view
         v = self.view
