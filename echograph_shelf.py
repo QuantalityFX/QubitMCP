@@ -187,6 +187,9 @@ class CommentGroup(QtWidgets.QGraphicsObject):
         return super().itemChange(change, value)
 
     def mousePressEvent(self, e: QtWidgets.QGraphicsSceneMouseEvent):
+        if e.button() == QtCore.Qt.LeftButton and (e.modifiers() & QtCore.Qt.AltModifier):
+            e.ignore()
+            return
         if e.button() == QtCore.Qt.LeftButton:
             mode = self._hit_test_resize(e.pos())
             if mode:
