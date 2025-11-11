@@ -68,8 +68,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
     _PARAM_ROW_H = 24
     _PADDING = 8
     _NOTE_FEATURED_H = 160
-    _PORT_LABEL_TOP = 48
-    _PORT_ROW_H = 18
     _PORT_HIT_TOL = 9.0
     
     def __init__(self, model: GraphNode):
@@ -107,7 +105,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
         self._switch_proxy = None
         self._llm_proxy = None
         self._llm_view = None  # kept for API parity if ever needed
-        self._input_port_y = {}
+        self._input_port_pos = {}
+        self._input_port_labels = {}
+        self._input_port_labels = {}
        # Let the spec add named inputs (e.g., Librarian: query/docs_dir/mode/top_k/action)
         try:
             spec = core.get_spec((self.model.kind or "node").lower())
@@ -120,6 +120,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         self._recompute_height()
         self._build_widgets()
         # --- named-input helpers (used by plugin specs like Librarian) ---
+        self._socket_buttons = {}
 
     def _ensure_named_inputs_set(self):
         try:
@@ -146,12 +147,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
     def port_anchor(self, name: str, side: str = "in") -> QtCore.QPointF:
         """Return scene-relative anchor point for a named port bead."""
-        ymap = getattr(self, "_input_port_y", {})
-        y = ymap.get(name, self._BASE_H / 2.0)
+        pos = getattr(self, "_input_port_pos", {}).get((name or "").strip().lower())
+        if pos:
+            return self.scenePos() + QtCore.QPointF(pos.x(), pos.y())
         if side == "in":
-            return self.scenePos() + QtCore.QPointF(0, y)
-        else:
-            return self.scenePos() + QtCore.QPointF(self.width, y)
+            return self.scenePos() + QtCore.QPointF(0, self._BASE_H / 2.0)
+        return self.scenePos() + QtCore.QPointF(self.width, self._BASE_H / 2.0)
 
 
     def ensure_input(self, name: str):
@@ -171,31 +172,23 @@ class NodeItem(QtWidgets.QGraphicsObject):
     def input_port_hit(self, local_point, tolerance: float | None = None) -> str | None:
         """
         Return the named input hit by a left-socket interaction.
-        Accepts either a QPointF (local coords) or a y-value.
+        Accepts a QPointF in local coords.
         """
-        names = self.input_port_names()
-        if not names:
+        if not hasattr(local_point, "x"):
+            return None
+        try:
+            lx = float(local_point.x())
+            ly = float(local_point.y())
+        except Exception:
             return None
 
-        if hasattr(local_point, "y"):
-            try:
-                y = float(local_point.y())
-            except Exception:
-                y = float(getattr(local_point, "__float__", lambda: 0.0)())
-        else:
-            try:
-                y = float(local_point)
-            except Exception:
-                return None
-
         tol = float(self._PORT_HIT_TOL if tolerance is None else tolerance)
-        ymap = getattr(self, "_input_port_y", {})
-        for nm in names:
-            cy = ymap.get(nm)
-            if cy is None:
-                continue
-            if abs(y - float(cy)) <= tol:
-                return nm
+        labels = getattr(self, "_input_port_labels", {})
+        for name, pos in getattr(self, "_input_port_pos", {}).items():
+            dx = lx - float(pos.x())
+            dy = ly - float(pos.y())
+            if (dx * dx + dy * dy) ** 0.5 <= tol:
+                return labels.get(name, name)
         return None
 
     def _wired_named_inputs(self) -> set[str]:
@@ -298,14 +291,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
         # Baseline used by y_cursor in _build_widgets
         header_h = 38 + 16 + self._PADDING
 
-        # Named input labels reserve vertical space before params
-        names = self.input_port_names()
-        port_gap = 0
-        if names:
-            port_block = self._PORT_LABEL_TOP + len(names) * self._PORT_ROW_H + self._PADDING
-            if port_block > header_h:
-                port_gap = port_block - header_h
-
         # Switch row
         switch_h = self._PARAM_ROW_H if kind == "switch" else 0
 
@@ -339,7 +324,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             node_w = self._BASE_W
 
         new_w = max(node_w, self._BASE_W)
-        new_h = max(self._BASE_H, header_h + port_gap + switch_h + params_h + body_h + self._PADDING)
+        new_h = max(self._BASE_H, header_h + switch_h + params_h + body_h + self._PADDING)
 
         if new_w != getattr(self, "width", 0) or new_h != getattr(self, "height", 0):
             try:
@@ -506,18 +491,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 y_cursor += self._PARAM_ROW_H
 
             # --- Named input bead layout (for plugins like Librarian) ---
-            names = self.input_port_names()
-            self._input_port_y = {}
-            if names:
-                top = self._PORT_LABEL_TOP        # under stripe+title
-                row_h = self._PORT_ROW_H
-                for i, nm in enumerate(names):
-                    self._input_port_y[str(nm)] = top + i * row_h
-                # ensure parameter widgets start below the port labels
-                block_bottom = top + len(names) * row_h
-                y_cursor = max(y_cursor, block_bottom + self._PADDING)
-
             # --- Parameters ---
+            self._input_port_pos = {}
             if self.model.params:
                 kind = (self.model.kind or "").lower()
                 if kind == "note":
@@ -527,12 +502,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     feat_set = set()
 
                 wired_inputs = self._wired_named_inputs()
+                named_inputs = {n.strip().lower() for n in self.input_port_names()}
 
                 for i, p in enumerate(self.model.params):
                     pname = p.get("name", "")
                     pval  = p.get("value", "")
                     pname_key = (pname or "").strip().lower()
-                    wired = pname_key in wired_inputs
+                    has_port = pname_key in named_inputs
+                    wired = has_port and pname_key in wired_inputs
 
                     # Row 1: eye (optional) + label + line edit
                     row = QtWidgets.QWidget()
@@ -555,16 +532,23 @@ class NodeItem(QtWidgets.QGraphicsObject):
                                     fs.remove(nm)
                                 else:
                                     fs.add(nm)
-                                # write back (use helper if you later add one)
                                 try:
                                     setattr(self.model, "_featured_params", set(fs))
                                 except Exception:
                                     pass
-                                # defer heavy rebuild to end of event loop tick
                                 self._schedule_rebuild()
                             return _toggle
                         eye_btn.clicked.connect(_mk_toggle())
                         lay.addWidget(eye_btn)
+
+                    if has_port:
+                        dot = QtWidgets.QLabel("●")
+                        dot.setFixedWidth(14)
+                        dot.setAlignment(QtCore.Qt.AlignCenter)
+                        dot.setStyleSheet("color:#facc15;font-weight:bold;")
+                        lay.addWidget(dot)
+                    else:
+                        lay.addSpacing(4)
 
                     lab = QtWidgets.QLabel(pname)
                     lab.setStyleSheet("color:#cbd5e1;")
@@ -598,12 +582,16 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     edit.setContextMenuPolicy(QtCore.Qt.ActionsContextMenu)
                     lay.addWidget(edit, 1)
 
+                    row_center_y = y_cursor + self._PARAM_ROW_H / 2.0
                     proxy = QtWidgets.QGraphicsProxyWidget(self)
                     proxy.setWidget(row)
                     proxy.setZValue(self.zValue() + 0.1)
                     proxy.setPos(0, y_cursor)
                     proxy.resize(self.width, self._PARAM_ROW_H)
                     self._param_proxies.append(proxy)
+                    if has_port:
+                        self._input_port_pos[pname_key] = QtCore.QPointF(14.0, row_center_y)
+                        self._input_port_labels[pname_key] = pname or pname_key
 
                     y_cursor += self._PARAM_ROW_H
 
@@ -934,26 +922,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
         try:
             p.setPen(QtCore.Qt.NoPen)
             p.setBrush(QtGui.QColor("#cbd5e1"))
-
-            # left (multiple named inputs if present)
-            names = getattr(self, "input_port_names", lambda: [])()
-            ymap  = getattr(self, "_input_port_y", {})
-            if names:
-                for nm in names:
-                    y = float(ymap.get(nm, self._BASE_H / 2.0))
-                    p.drawEllipse(QtCore.QRectF(-4, y - 4, 8, 8))
-                    # faint labels
-                    p.setPen(QtGui.QPen(QtGui.QColor("#94a3b8")))
-                    fm = QtGui.QFontMetrics(p.font())
-                    txt = fm.elidedText(str(nm), QtCore.Qt.ElideRight, int(self.width * 0.4))
-                    p.drawText(QtCore.QRectF(8, y - 7, self.width * 0.5, 14), QtCore.Qt.AlignVCenter, txt)
-                    p.setPen(QtCore.Qt.NoPen)
-            else:
-                # fallback single inlet
-                p.drawEllipse(QtCore.QRectF(-4, self._BASE_H / 2.0 - 4, 8, 8))
-
-            # right (single output)
             p.drawEllipse(QtCore.QRectF(self.width - 4, self._BASE_H / 2.0 - 4, 8, 8))
+            positions = list(getattr(self, "_input_port_pos", {}).values())
+            if positions:
+                for pos in positions:
+                    p.drawEllipse(QtCore.QRectF(float(pos.x()) - 4.0, float(pos.y()) - 4.0, 8.0, 8.0))
+            else:
+                p.drawEllipse(QtCore.QRectF(-4, self._BASE_H / 2.0 - 4, 8, 8))
         except Exception as e:
             print("[EchoGraph][paint] sockets fail:", e)
 

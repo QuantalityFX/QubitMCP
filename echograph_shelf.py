@@ -1325,11 +1325,13 @@ class GraphScene(QtWidgets.QGraphicsScene):
             if isinstance(it, NodeItem):
                 lp = it.mapFromScene(scene_pos)
                 h = getattr(it, "height", getattr(it, "_BASE_H", 0))
-                if -6 <= lp.x() <= 12 and 0 <= lp.y() <= h:
-                    port_name = None
-                    if hasattr(it, "input_port_hit"):
-                        port_name = it.input_port_hit(lp)
+                port_name = None
+                if hasattr(it, "input_port_hit"):
+                    port_name = it.input_port_hit(lp)
+                if port_name:
                     return it, port_name
+                if -12 <= lp.x() <= 24 and 0 <= lp.y() <= h:
+                    return it, None
         return None, None
 
     def _cancel_temp_wire(self):
