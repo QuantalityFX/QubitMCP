@@ -106,8 +106,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
         self._llm_proxy = None
         self._llm_view = None  # kept for API parity if ever needed
         self._input_port_pos = {}
-        self._input_port_labels = {}
-        self._input_port_labels = {}
        # Let the spec add named inputs (e.g., Librarian: query/docs_dir/mode/top_k/action)
         try:
             spec = core.get_spec((self.model.kind or "node").lower())
@@ -120,7 +118,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
         self._recompute_height()
         self._build_widgets()
         # --- named-input helpers (used by plugin specs like Librarian) ---
-        self._socket_buttons = {}
 
     def _ensure_named_inputs_set(self):
         try:
@@ -147,9 +144,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
     def port_anchor(self, name: str, side: str = "in") -> QtCore.QPointF:
         """Return scene-relative anchor point for a named port bead."""
-        pos = getattr(self, "_input_port_pos", {}).get((name or "").strip().lower())
-        if pos:
-            return self.scenePos() + QtCore.QPointF(pos.x(), pos.y())
+        entry = getattr(self, "_input_port_pos", {}).get((name or "").strip().lower())
+        if entry:
+            point = entry[0]
+            return self.scenePos() + QtCore.QPointF(point.x(), point.y())
         if side == "in":
             return self.scenePos() + QtCore.QPointF(0, self._BASE_H / 2.0)
         return self.scenePos() + QtCore.QPointF(self.width, self._BASE_H / 2.0)
@@ -183,12 +181,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
             return None
 
         tol = float(self._PORT_HIT_TOL if tolerance is None else tolerance)
-        labels = getattr(self, "_input_port_labels", {})
-        for name, pos in getattr(self, "_input_port_pos", {}).items():
+        for name_key, entry in getattr(self, "_input_port_pos", {}).items():
+            pos, canonical = entry
             dx = lx - float(pos.x())
             dy = ly - float(pos.y())
             if (dx * dx + dy * dy) ** 0.5 <= tol:
-                return labels.get(name, name)
+                return canonical or name_key
         return None
 
     def _wired_named_inputs(self) -> set[str]:
@@ -542,13 +540,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         lay.addWidget(eye_btn)
 
                     if has_port:
-                        dot = QtWidgets.QLabel("●")
-                        dot.setFixedWidth(14)
-                        dot.setAlignment(QtCore.Qt.AlignCenter)
-                        dot.setStyleSheet("color:#facc15;font-weight:bold;")
-                        lay.addWidget(dot)
+                        lay.addSpacing(10)
+                        pin_center_x = 10.0
                     else:
-                        lay.addSpacing(4)
+                        lay.addSpacing(6)
+                        pin_center_x = None
 
                     lab = QtWidgets.QLabel(pname)
                     lab.setStyleSheet("color:#cbd5e1;")
@@ -590,8 +586,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     proxy.resize(self.width, self._PARAM_ROW_H)
                     self._param_proxies.append(proxy)
                     if has_port:
-                        self._input_port_pos[pname_key] = QtCore.QPointF(14.0, row_center_y)
-                        self._input_port_labels[pname_key] = pname or pname_key
+                        center_x = pin_center_x or 10.0
+                        canonical = (pname or pname_key) or pname_key
+                        self._input_port_pos[pname_key] = (QtCore.QPointF(center_x, row_center_y), canonical)
 
                     y_cursor += self._PARAM_ROW_H
 
@@ -923,9 +920,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
             p.setPen(QtCore.Qt.NoPen)
             p.setBrush(QtGui.QColor("#cbd5e1"))
             p.drawEllipse(QtCore.QRectF(self.width - 4, self._BASE_H / 2.0 - 4, 8, 8))
-            positions = list(getattr(self, "_input_port_pos", {}).values())
-            if positions:
-                for pos in positions:
+            entries = list(getattr(self, "_input_port_pos", {}).items())
+            wired = self._wired_named_inputs()
+            if entries:
+                for key, (pos, _) in entries:
+                    color = QtGui.QColor("#facc15" if key in wired else "#cbd5e1")
+                    p.setBrush(color)
                     p.drawEllipse(QtCore.QRectF(float(pos.x()) - 4.0, float(pos.y()) - 4.0, 8.0, 8.0))
             else:
                 p.drawEllipse(QtCore.QRectF(-4, self._BASE_H / 2.0 - 4, 8, 8))
