@@ -541,13 +541,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
                     if has_port:
                         lay.addSpacing(10)
-                        pin_center_x = 10.0
+                        pin_center_x = 0.0
                     else:
                         lay.addSpacing(6)
                         pin_center_x = None
 
                     lab = QtWidgets.QLabel(pname)
                     lab.setStyleSheet("color:#cbd5e1;")
+                    lab.setMinimumWidth(50)
                     lay.addWidget(lab)
 
                     edit = QtWidgets.QLineEdit(pval)
@@ -586,7 +587,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     proxy.resize(self.width, self._PARAM_ROW_H)
                     self._param_proxies.append(proxy)
                     if has_port:
-                        center_x = pin_center_x or 10.0
+                        center_x = pin_center_x if pin_center_x is not None else 0.0
                         canonical = (pname or pname_key) or pname_key
                         self._input_port_pos[pname_key] = (QtCore.QPointF(center_x, row_center_y), canonical)
 
