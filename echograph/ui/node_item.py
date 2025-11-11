@@ -198,6 +198,21 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 return nm
         return None
 
+    def _wired_named_inputs(self) -> set[str]:
+        wired = set()
+        sc = self.scene()
+        if sc is None:
+            return wired
+        try:
+            in_edges = sc._in_edges(self)
+        except Exception:
+            in_edges = []
+        for e in in_edges:
+            name = getattr(e, "dst_port_name", None) or getattr(e, "dst_label", None) or getattr(e, "dst_name", None)
+            if name:
+                wired.add(str(name).strip().lower())
+        return wired
+
     # back-compat aliases some specs may call
     def add_input_port(self, name: str):
         self.ensure_input(name)
@@ -511,9 +526,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 else:
                     feat_set = set()
 
+                wired_inputs = self._wired_named_inputs()
+
                 for i, p in enumerate(self.model.params):
                     pname = p.get("name", "")
                     pval  = p.get("value", "")
+                    pname_key = (pname or "").strip().lower()
+                    wired = pname_key in wired_inputs
 
                     # Row 1: eye (optional) + label + line edit
                     row = QtWidgets.QWidget()
@@ -557,6 +576,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         "QLineEdit{background:#12151a;color:#e6edf3;"
                         "border:1px solid #3c4450;border-radius:4px;padding:2px 6px;}"
                     )
+                    if wired:
+                        edit.setEnabled(False)
+                        edit.setToolTip("Driven by connected input.")
+                        edit.setStyleSheet(
+                            "QLineEdit{background:#191d24;color:#94a3b8;"
+                            "border:1px dashed #475569;border-radius:4px;padding:2px 6px;}"
+                        )
+                    else:
+                        edit.setToolTip("")
                     edit.textChanged.connect(lambda txt, idx=i: self._on_param_changed(idx, txt))
 
                     # Ctrl+B shortcut + context action

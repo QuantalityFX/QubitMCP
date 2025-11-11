@@ -124,16 +124,16 @@ class EdgeItem(QtWidgets.QGraphicsPathItem):
             sc = self.scene()
             if sc and hasattr(sc, "_edges"):
                 try:
-                    if hasattr(sc, "_on_edge_removed"):
-                        sc._on_edge_removed(self)
-                except Exception:
-                    pass
-                try:
                     sc.removeItem(self)
                 except Exception:
                     pass
                 try:
                     sc._edges.remove(self)
+                except Exception:
+                    pass
+                try:
+                    if hasattr(sc, "_on_edge_removed"):
+                        sc._on_edge_removed(self)
                 except Exception:
                     pass
                 e.accept()

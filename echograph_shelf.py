@@ -877,6 +877,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
             self.linksChanged.emit()
         except Exception:
             pass
+        self.refresh_node_widget(dst.model.name)
         return edge
 
     def _on_edge_removed(self, edge: 'EdgeItem'):
@@ -925,6 +926,8 @@ class GraphScene(QtWidgets.QGraphicsScene):
             self.linksChanged.emit()
         except Exception:
             pass
+        self.refresh_node_widget(dst.model.name)
+        self.refresh_node_widget(dst.model.name)
 
 
     def delete_node_by_name(self, name: str):
@@ -932,11 +935,14 @@ class GraphScene(QtWidgets.QGraphicsScene):
         if not item: return
         for e in list(self._edges):
             if e.src is item or e.dst is item:
-                try: self._on_edge_removed(e)
-                except Exception: pass
                 try: self.removeItem(e)
                 except Exception: pass
-                try: self._edges.remove(e)
+                try:
+                    if e in self._edges:
+                        self._edges.remove(e)
+                except Exception:
+                    pass
+                try: self._on_edge_removed(e)
                 except Exception: pass
         try: self.removeItem(item)
         except Exception: pass
@@ -1249,6 +1255,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
         for it in self._node_items.values():
             if (it.model.kind or "").lower()=="switch":
                 self._refresh_switch_widget(it)
+            self.refresh_node_widget(it.model.name)
 
     def _refresh_switch_widget(self, switch_item: 'NodeItem'):
         switch_item._recompute_height()
