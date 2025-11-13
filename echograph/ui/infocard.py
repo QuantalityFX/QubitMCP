@@ -165,6 +165,7 @@ class InfoCard(QtWidgets.QFrame):
                 scene.linksChanged.connect(self._on_links_changed)
         except Exception:
             pass
+        self._refresh_append_list_labels()
 
     def _on_links_changed(self):
         try:
@@ -193,16 +194,47 @@ class InfoCard(QtWidgets.QFrame):
 
     def refresh_append_ui_from_model(self):
         try:
-            if (self._node_ref.kind or "").lower() != "append": return
+            if (self._node_ref.kind or "").lower() != "append":
+                return
             lw = getattr(self, "_append_list", None)
-            if not lw: return
+            if not lw:
+                return
             lw.blockSignals(True)
             lw.clear()
             for nm in (self._node_ref.switch_inputs or []):
-                lw.addItem(nm)
+                item = QtWidgets.QListWidgetItem(nm)
+                item.setData(QtCore.Qt.UserRole, nm)
+                lw.addItem(item)
+            self._refresh_append_list_labels()
         finally:
-            try: lw.blockSignals(False)
-            except Exception: pass
+            try:
+                lw.blockSignals(False)
+            except Exception:
+                pass
+
+    def _append_display_label(self, node_name: str) -> str:
+        sc = getattr(self, "_graph_scene", None)
+        if sc and hasattr(sc, "text_source_info"):
+            try:
+                info = sc.text_source_info(node_name)
+            except Exception:
+                info = None
+            if info:
+                param = (info.get("parameter") or "").strip()
+                if param:
+                    return f"{node_name} · {param}"
+        return node_name
+
+    def _refresh_append_list_labels(self):
+        listw = getattr(self, "_append_list", None)
+        if not listw:
+            return
+        for i in range(listw.count()):
+            it = listw.item(i)
+            if not it:
+                continue
+            base = it.data(QtCore.Qt.UserRole) or it.text()
+            it.setText(self._append_display_label(base))
 
     def apply_append_preview_if_output(self):
         try:
@@ -288,7 +320,10 @@ class InfoCard(QtWidgets.QFrame):
         self._append_list = listw
         listw.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         for nm in (self._node_ref.switch_inputs or []):
-            listw.addItem(nm)
+            item = QtWidgets.QListWidgetItem(nm)
+            item.setData(QtCore.Qt.UserRole, nm)
+            listw.addItem(item)
+        self._refresh_append_list_labels()
 
         btns = QtWidgets.QHBoxLayout()
         up   = QtWidgets.QPushButton("↑")
@@ -306,7 +341,11 @@ class InfoCard(QtWidgets.QFrame):
             listw.setCurrentRow(nr)
 
         def _apply_order():
-            new_order = [listw.item(i).text() for i in range(listw.count())]
+            new_order = []
+            for i in range(listw.count()):
+                it = listw.item(i)
+                base = it.data(QtCore.Qt.UserRole)
+                new_order.append(base or it.text())
             self._node_ref.switch_inputs = new_order
             sc = getattr(self, "_graph_scene", None)
             if sc:

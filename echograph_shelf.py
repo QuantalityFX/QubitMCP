@@ -607,104 +607,142 @@ class GraphScene(QtWidgets.QGraphicsScene):
                 srcs.append(e.src)
         return srcs
 
-    def resolve_text_value(self, node_item) -> str:
-        """Return a textual value for a node.
-        Append special-case:
-        - Prepend this Append node's own param text (if any),
-        - then merge upstream texts in UI order (switch_inputs).
-        Otherwise:
-        - 'prompt'/'text'/'content' if present,
-        - else join all non-empty param values,
-        - else fallback to node.info.
-        """
-        try:
-            kind = (node_item.model.kind or "").lower()
+    def _coerce_node_item(self, ref):
+        if isinstance(ref, NodeItem):
+            return ref
+        if isinstance(ref, GraphNode):
+            return self._node_items.get(ref.name)
+        if isinstance(ref, str):
+            return self._node_items.get(ref)
+        if hasattr(ref, "model"):
+            return ref
+        return None
 
-            # --- helper to get this node's OWN param text (no recursion) ---
-            def _own_param_text(model) -> str:
-                params = list(model.params or [])
-                # well-known keys first
-                for k in ("prompt", "text", "content"):
-                    for p in params:
-                        if (p.get("name", "") or "").strip().lower() == k:
-                            v = (p.get("value", "") or "").strip()
-                            if v:
-                                return v
-                # else any non-empty params, in row order
-                vals = [(p.get("value", "") or "").strip() for p in params]
-                vals = [v for v in vals if v]
-                return "\n".join(vals) if vals else ""
+    def _primary_param_text(self, model) -> tuple[str, str]:
+        params = list(model.params or [])
+        for key in ("prompt", "text", "content"):
+            for p in params:
+                name = (p.get("name") or "").strip()
+                if name.lower() == key:
+                    val = (p.get("value") or "").strip()
+                    if val:
+                        return val, name or key
+        collected = []
+        label = ""
+        for p in params:
+            val = (p.get("value") or "").strip()
+            if val:
+                collected.append(val)
+                if not label:
+                    label = (p.get("name") or "").strip() or "param"
+        if collected:
+            return ("\n".join(collected), label)
+        return "", ""
+
+    def _resolve_text_with_label(self, ref) -> tuple[str, str]:
+        try:
+            item = self._coerce_node_item(ref)
+            if not item or not getattr(item, "model", None):
+                return "", ""
+
+            model = item.model
+            kind = (model.kind or "").lower()
+            own_text, own_label = self._primary_param_text(model)
 
             if kind == "append":
-                # 1) this Append's own param text (optional)
-                own = _own_param_text(node_item.model)
-
-                # 2) upstream texts in UI order
                 try:
-                    in_edges = self._ordered_in_edges(node_item)  # respects switch_inputs
+                    in_edges = self._ordered_in_edges(item)
                 except Exception:
-                    in_edges = self._in_edges(node_item)
-
+                    in_edges = self._in_edges(item)
                 parts = []
                 for e in in_edges:
-                    t = (self.resolve_text_value(e.src) or "").strip()
-                    if t:
-                        parts.append(t)
-
-                # Prepend own text if present
-                if own:
-                    parts.insert(0, own)
-
-                return "\n\n".join(parts) if parts else own  # own or empty
+                    txt, _ = self._resolve_text_with_label(e.src)
+                    if txt:
+                        parts.append(txt)
+                if own_text:
+                    parts.insert(0, own_text)
+                merged = "\n\n".join(parts) if parts else own_text
+                return merged, own_label or "append"
 
             if kind == "switch":
                 try:
-                    in_edges = self._ordered_in_edges(node_item)
+                    in_edges = self._ordered_in_edges(item)
                 except Exception:
-                    in_edges = self._in_edges(node_item)
+                    in_edges = self._in_edges(item)
                 if in_edges:
-                    try:
-                        return self.resolve_text_value(in_edges[0].src) or ""
-                    except Exception:
-                        pass
-                own = _own_param_text(node_item.model)
-                if own:
-                    return own
+                    txt, label = self._resolve_text_with_label(in_edges[0].src)
+                    if txt:
+                        return txt, label
+                if own_text:
+                    return own_text, own_label or "switch"
+                return "", ""
 
             if kind == "import":
                 path = ""
-                for p in (node_item.model.params or []):
+                for p in (model.params or []):
                     if (p.get("name", "") or "").strip().lower() == "path":
                         path = (p.get("value", "") or "").strip()
                         break
                 if path:
                     try:
                         with open(path, "r", encoding="utf-8", errors="ignore") as fh:
-                            return fh.read()
+                            return fh.read(), "path"
                     except Exception:
-                        return ""
-                return ""
+                        return "", ""
+                return "", ""
 
-            # --- generic nodes (unchanged) ---
-            params = list(node_item.model.params or [])
-            for k in ("prompt", "text", "content"):
-                for p in params:
-                    if (p.get("name","") or "").strip().lower() == k:
-                        v = (p.get("value","") or "").strip()
-                        if v:
-                            return v
+            if own_text:
+                return own_text, own_label or ""
 
-            vals = []
-            for p in params:
-                v = (p.get("value","") or "").strip()
-                if v:
-                    vals.append(v)
-            if vals:
-                return "\n".join(vals)
-
-            return (node_item.model.info or "").strip()
+            info = (model.info or "").strip()
+            if info:
+                return info, "info"
+            return "", ""
         except Exception:
-            return ""
+            return "", ""
+
+    def resolve_text_value(self, node_item) -> str:
+        text, _ = self._resolve_text_with_label(node_item)
+        return text
+
+    def resolve_text_label(self, node_item) -> str:
+        _, label = self._resolve_text_with_label(node_item)
+        return label
+
+    def text_source_info(self, node_ref):
+        item = self._coerce_node_item(node_ref)
+        if not item:
+            return {"text": "", "parameter": ""}
+        text, label = self._resolve_text_with_label(item)
+        return {"text": text, "parameter": label or ""}
+
+    def describe_append_inputs(self, append_ref):
+        item = self._coerce_node_item(append_ref)
+        if not item or (item.model.kind or "").lower() != "append":
+            return []
+        rows = []
+        own_text, own_label = self._primary_param_text(item.model)
+        if own_text:
+            rows.append({
+                "node": item.model.name,
+                "param": own_label or "append",
+                "text": own_text,
+                "is_local": True,
+            })
+        try:
+            in_edges = self._ordered_in_edges(item)
+        except Exception:
+            in_edges = self._in_edges(item)
+        for e in in_edges:
+            txt, label = self._resolve_text_with_label(e.src)
+            if txt:
+                rows.append({
+                    "node": e.src.model.name,
+                    "param": label or "",
+                    "text": txt,
+                    "is_local": False,
+                })
+        return rows
 
 
     def _nodes_bbox(self):
