@@ -57,7 +57,6 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         # Build a host-agnostic namespace: try Maya/Houdini, but don't require them.
         ns = {
             "__name__": "__echograph_exec__",
-            # Qt convenience if users want to pop UIs
             "QtWidgets": QtWidgets,
             "QtCore": QtCore,
             "QtGui": QtGui,
@@ -72,6 +71,46 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             ns["hou"] = _hou
         except Exception:
             ns["hou"] = None
+
+        params_map = {
+            (p.get("name") or f"param{i+1}"): p.get("value", "")
+            for i, p in enumerate(node.params or [])
+        }
+        raw_params = list(node.params or [])
+
+        sc = getattr(card, "_graph_scene", None)
+        inputs = {}
+        primary_input = ""
+        if sc and hasattr(sc, "_node_items"):
+            python_item = sc._node_items.get(node.name)
+            if python_item is not None:
+                try:
+                    in_edges = sc._ordered_in_edges(python_item)
+                except Exception:
+                    in_edges = sc._in_edges(python_item)
+                for idx, edge in enumerate(in_edges or []):
+                    try:
+                        txt = sc.resolve_text_value(edge.src)
+                    except Exception:
+                        txt = ""
+                    if not txt:
+                        continue
+                    if not primary_input:
+                        primary_input = txt
+                    key = edge.src.model.name
+                    inputs.setdefault(key, txt)
+                    inputs.setdefault(f"in{idx+1}", txt)
+
+        ns.update(
+            {
+                "node": node,
+                "params": params_map,
+                "raw_params": raw_params,
+                "inputs": inputs,
+                "primary_input": primary_input,
+                "graph_scene": sc,
+            }
+        )
 
         import io, contextlib, traceback
         out_buf = io.StringIO()
