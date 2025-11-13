@@ -671,6 +671,20 @@ class GraphScene(QtWidgets.QGraphicsScene):
                 if own:
                     return own
 
+            if kind == "import":
+                path = ""
+                for p in (node_item.model.params or []):
+                    if (p.get("name", "") or "").strip().lower() == "path":
+                        path = (p.get("value", "") or "").strip()
+                        break
+                if path:
+                    try:
+                        with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+                            return fh.read()
+                    except Exception:
+                        return ""
+                return ""
+
             # --- generic nodes (unchanged) ---
             params = list(node_item.model.params or [])
             for k in ("prompt", "text", "content"):
@@ -763,6 +777,12 @@ class GraphScene(QtWidgets.QGraphicsScene):
                     node.params = list(node.params or [])
                     node.params.append({"name": pname, "value": default})
                     names.add(pname)
+
+        if (data["kind"] or "").lower() == "import":
+            names = {(p.get("name") or "").strip().lower() for p in (node.params or [])}
+            if "path" not in names:
+                node.params = list(node.params or [])
+                node.params.append({"name": "path", "value": ""})
 
         item = self.add_node(node, scene_pos)
         item.setPos(scene_pos - QtCore.QPointF(item.width/2.0, item.height/2.0))

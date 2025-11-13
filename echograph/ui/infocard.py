@@ -1,5 +1,6 @@
 # echograph/ui/infocard.py
 from __future__ import annotations
+import os
 import re, time, json
 from typing import Optional, List, Tuple
 
@@ -119,6 +120,8 @@ class InfoCard(QtWidgets.QFrame):
 
         if kind == "librarian":
             self._build_librarian_footer(footer)
+        elif kind == "import":
+            self._build_import_footer(footer)
 
         elif node.code and not _augmented_by_plugin:
             run_btn = QtWidgets.QPushButton("Run Python")
@@ -533,6 +536,52 @@ class InfoCard(QtWidgets.QFrame):
         except Exception:
             pass
 
+    def _build_import_footer(self, footer_layout: QtWidgets.QHBoxLayout):
+        sc = getattr(self, "_graph_scene", None)
+        if not sc or not hasattr(sc, "set_node_params"):
+            return False
+
+        path = self._param_value("path")
+        path_edit = QtWidgets.QLineEdit(path)
+        path_edit.setPlaceholderText("C:/docs/page.html")
+
+        browse_btn = QtWidgets.QPushButton()
+        browse_btn.setIcon(self.style().standardIcon(QtWidgets.QStyle.SP_DialogOpenButton))
+        browse_btn.setToolTip("Browse for file")
+        view_btn = QtWidgets.QPushButton("View")
+        view_btn.setEnabled(bool(path))
+
+        def _apply(new_path: str):
+            new_path = (new_path or "").strip()
+            self._set_param_value("path", new_path)
+            path_edit.setText(new_path)
+            view_btn.setEnabled(bool(new_path))
+
+        def _browse():
+            start = path or os.path.expanduser("~")
+            file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+                self,
+                "Select HTML File",
+                start,
+                "HTML Files (*.html *.htm);;All Files (*.*)",
+            )
+            if file_path:
+                _apply(file_path)
+
+        def _view():
+            self._preview_import_file(path_edit.text().strip())
+
+        browse_btn.clicked.connect(_browse)
+        view_btn.clicked.connect(_view)
+        path_edit.editingFinished.connect(lambda: _apply(path_edit.text()))
+
+        footer_layout.addWidget(QtWidgets.QLabel("File:"))
+        footer_layout.addWidget(path_edit, 1)
+        footer_layout.addWidget(browse_btn)
+        footer_layout.addWidget(view_btn)
+
+        return True
+
     # ---------- params table & controls ----------
     def _build_param_table(self) -> QtWidgets.QTableWidget:
         tbl = QtWidgets.QTableWidget(0, 2)
@@ -654,3 +703,43 @@ class InfoCard(QtWidgets.QFrame):
                 name_edit.setText(self._node_ref.name)
         except Exception:
             pass
+
+    def _param_value(self, name: str) -> str:
+        key = (name or "").strip().lower()
+        for p in (self._node_ref.params or []):
+            if (p.get("name", "") or "").strip().lower() == key:
+                return p.get("value", "") or ""
+        return ""
+
+    def _set_param_value(self, name: str, value: str):
+        key = (name or "").strip().lower()
+        params = list(self._node_ref.params or [])
+        found = False
+        for p in params:
+            if (p.get("name", "") or "").strip().lower() == key:
+                p["value"] = value
+                found = True
+                break
+        if not found:
+            params.append({"name": name, "value": value})
+
+        sc = getattr(self, "_graph_scene", None)
+        if sc:
+            sc.set_node_params(self._node_name, params)
+            try:
+                sc.refresh_node_widget(self._node_name)
+            except Exception:
+                pass
+        self._node_ref.params = params
+        try:
+            self.refresh_params_from_model()
+        except Exception:
+            pass
+
+    def _preview_import_file(self, path: str):
+        sc = getattr(self, "_graph_scene", None)
+        if not sc:
+            return
+        node_item = sc._node_items.get(self._node_name)
+        if node_item and hasattr(node_item, "_open_import_preview"):
+            node_item._open_import_preview(path)

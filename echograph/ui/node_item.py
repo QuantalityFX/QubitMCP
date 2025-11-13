@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from echograph.model import GraphNode
 
+import os
+import datetime
 import re
 from echograph.qt_compat import QtCore, QtGui, QtWidgets, QAction, QShortcut, QKeySequence, _qexec
 from echograph.ui.dialogs import BigTextEditDialog
@@ -115,6 +117,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
         except Exception:
             pass
 
+        if (self.model.kind or "").lower() == "import":
+            params = list(self.model.params or [])
+            names = {(p.get("name") or "").strip().lower() for p in params}
+            if "path" not in names:
+                params.append({"name": "path", "value": ""})
+                self.model.params = params
+
         self._recompute_height()
         self._build_widgets()
         # --- named-input helpers (used by plugin specs like Librarian) ---
@@ -141,6 +150,34 @@ class NodeItem(QtWidgets.QGraphicsObject):
     def input_port_names(self) -> list[str]:
         self._ensure_named_inputs_set()
         return [str(n) for n in getattr(self.model, "_named_inputs", []) if n]
+
+    def _set_param_value(self, name: str, value: str):
+        key = (name or "").strip().lower()
+        params = list(self.model.params or [])
+        found = False
+        for p in params:
+            if (p.get("name", "") or "").strip().lower() == key:
+                p["value"] = value
+                found = True
+                break
+        if not found:
+            params.append({"name": name, "value": value})
+
+        self.model.params = params
+        sc = self.scene()
+        if sc:
+            try:
+                sc.set_node_params(self.model.name, params)
+                sc.refresh_node_widget(self.model.name)
+            except Exception:
+                pass
+
+    def _param_value(self, name: str) -> str:
+        key = (name or "").strip().lower()
+        for p in (self.model.params or []):
+            if (p.get("name", "") or "").strip().lower() == key:
+                return p.get("value", "") or ""
+        return ""
 
     def port_anchor(self, name: str, side: str = "in") -> QtCore.QPointF:
         """Return scene-relative anchor point for a named port bead."""
@@ -316,6 +353,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
         elif kind == "append":
             count = max(1, len(self.model.switch_inputs or []))
             body_h = 6 + count * self._PARAM_ROW_H
+            node_w = self._BASE_W
+        elif kind == "import":
+            body_h = self._PARAM_ROW_H * 2 + self._PADDING
             node_w = self._BASE_W
         else:
             body_h = 0
@@ -622,6 +662,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
                         y_cursor += self._NOTE_FEATURED_H
 
+            if (self.model.kind or "").lower() == "import":
+                y_cursor = self._build_import_summary(y_cursor)
+
             # --- LLM embedded webview ---
             if (self.model.kind or "").lower() == "llm":
                 if WebEngine is None:
@@ -684,6 +727,86 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
         finally:
             self._is_building = False
+
+    def _build_import_summary(self, y_cursor: int) -> int:
+        path = self._param_value("path")
+        row = QtWidgets.QWidget()
+        row.setAttribute(QtCore.Qt.WA_TranslucentBackground)
+        lay = QtWidgets.QHBoxLayout(row)
+        lay.setContentsMargins(6, 0, 6, 0)
+        lay.setSpacing(6)
+
+        if path:
+            name = os.path.basename(path) or path
+            if os.path.exists(path):
+                try:
+                    stat = os.stat(path)
+                    mtime = datetime.datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M")
+                    detail = f"{name}\nUpdated: {mtime}"
+                except Exception:
+                    detail = name
+                btn_enabled = True
+            else:
+                detail = f"{name}\n(Missing file)"
+                btn_enabled = False
+        else:
+            detail = "No file selected"
+            btn_enabled = False
+
+        label = QtWidgets.QLabel(detail)
+        label.setStyleSheet("color:#cbd5e1;")
+        label.setWordWrap(True)
+        lay.addWidget(label, 1)
+
+        browse_btn = QtWidgets.QToolButton()
+        style = QtWidgets.QApplication.style()
+        if style:
+            browse_btn.setIcon(style.standardIcon(QtWidgets.QStyle.SP_DialogOpenButton))
+        browse_btn.setToolTip("Choose file…")
+        browse_btn.clicked.connect(lambda: self._browse_import_file(path))
+        lay.addWidget(browse_btn)
+
+        btn = QtWidgets.QPushButton("View")
+        btn.setEnabled(btn_enabled)
+        btn.clicked.connect(lambda _=False, p=path: self._open_import_preview(p))
+        lay.addWidget(btn)
+
+        proxy = QtWidgets.QGraphicsProxyWidget(self)
+        proxy.setWidget(row)
+        proxy.setZValue(self.zValue() + 0.1)
+        proxy.setPos(0, y_cursor)
+        proxy.resize(self.width, self._PARAM_ROW_H * 2)
+        self._plugin_proxies.append(proxy)
+
+        return y_cursor + int(self._PARAM_ROW_H * 2)
+
+    def _browse_import_file(self, current: str):
+        start = current or os.path.expanduser("~")
+        file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            _top_level_parent_for_dialog(),
+            "Select HTML File",
+            start,
+            "HTML Files (*.html *.htm);;All Files (*.*)",
+        )
+        if file_path:
+            self._set_param_value("path", file_path)
+
+    def _open_import_preview(self, path: str):
+        path = (path or "").strip()
+        if not path:
+            QtWidgets.QMessageBox.information(_top_level_parent_for_dialog(), "Import", "No file selected.")
+            return
+
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+                text = fh.read()
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(_top_level_parent_for_dialog(), "Import", f"Failed to open file:\n{exc}")
+            return
+
+        dlg = BigTextEditDialog(_top_level_parent_for_dialog(), title=f"Preview: {os.path.basename(path)}", initial=text)
+        dlg.edit.setReadOnly(True)
+        _qexec(dlg)
 
 
     def _schedule_rebuild(self):
