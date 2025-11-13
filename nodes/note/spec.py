@@ -18,7 +18,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     if table is None or node is None:
         return False
 
-    btn = QtWidgets.QPushButton("👁 Set display to selected param")
+    btn = QtWidgets.QPushButton("\N{EYE} Set display to selected param")
     btn.setToolTip("Show the selected parameter’s value inside the Note node body.")
 
     def _apply():
@@ -47,3 +47,5 @@ NOTE_SPEC = Spec(
     stripe_color="#f59e0b",
     augment_infocard_footer=augment_infocard_footer,
 )
+
+

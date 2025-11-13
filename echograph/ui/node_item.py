@@ -572,7 +572,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         is_featured = pname in feat_set
                         eye_btn.setAutoRaise(True)
                         eye_btn.setToolTip("Toggle big view for this parameter")
-                        eye_btn.setText("🙈" if not is_featured else "👁")
+                        eye_btn.setText("\N{SEE-NO-EVIL MONKEY}" if not is_featured else "\N{EYE}")
 
                         def _mk_toggle(nm=pname, btn=eye_btn):
                             def _toggle():
@@ -1257,3 +1257,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
             e.accept()
             return
         super().mouseReleaseEvent(e)
+
+
+
