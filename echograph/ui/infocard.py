@@ -213,16 +213,6 @@ class InfoCard(QtWidgets.QFrame):
                 pass
 
     def _append_display_label(self, node_name: str) -> str:
-        sc = getattr(self, "_graph_scene", None)
-        if sc and hasattr(sc, "text_source_info"):
-            try:
-                info = sc.text_source_info(node_name)
-            except Exception:
-                info = None
-            if info:
-                param = (info.get("parameter") or "").strip()
-                if param:
-                    return f"{node_name} · {param}"
         return node_name
 
     def _refresh_append_list_labels(self):

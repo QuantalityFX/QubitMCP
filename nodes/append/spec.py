@@ -37,6 +37,13 @@ def _render_rich_html(text: str) -> str:
         "</pre></body></html>"
     )
 
+def _format_segment_block(entry: dict) -> str:
+    node = entry.get("node") or "(Append)"
+    param = (entry.get("param") or "").strip()
+    heading = f"{node} :: {param}" if param else node
+    body = entry.get("text", "")
+    return f"{heading}\n{body}"
+
 def augment_infocard_footer(card, footer_layout) -> bool:
     """
     Adds Preview + Save JSON buttons to the Append node's InfoCard footer.
@@ -110,7 +117,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             QtWidgets.QMessageBox.information(card, "Append", "No upstream text found.")
             return
 
-        merged_text = "\n\n---\n\n".join(entry["text"] for entry in entries)
+        merged_text = "\n\n".join(_format_segment_block(entry) for entry in entries)
 
         dlg = QtWidgets.QDialog(card)
         dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
@@ -241,11 +248,29 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         if not entries:
             QtWidgets.QMessageBox.warning(card, "Append", "No upstream text found.")
             return
-        parts = [entry["text"] for entry in entries]
+        parts = [
+            {
+                "node": entry.get("node") or "",
+                "parameter": entry.get("param") or "",
+                "text": entry.get("text", ""),
+            }
+            for entry in entries
+        ]
+        combined_text = "\n\n".join(
+            _format_segment_block(
+                {
+                    "node": part["node"],
+                    "param": part["parameter"],
+                    "text": part["text"],
+                }
+            )
+            for part in parts
+            if part.get("text")
+        )
 
         payload = {
             "node": getattr(card, "_node_ref", None).name if hasattr(card, "_node_ref") else "append",
-            "combined_text": "\n\n".join(parts),
+            "combined_text": combined_text,
             "parts": parts,
             "entries": entries,
         }

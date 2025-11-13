@@ -489,30 +489,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 v.setSpacing(2)
 
                 names = list(self.model.switch_inputs or [])
-                label_map = {}
-                sc = self.scene()
-                if sc and hasattr(sc, "describe_append_inputs"):
-                    try:
-                        for entry in sc.describe_append_inputs(self):
-                            if entry.get("is_local"):
-                                continue
-                            nm = entry.get("node")
-                            if nm:
-                                label_map[nm] = entry.get("param") or ""
-                    except Exception:
-                        pass
-
                 if not names:
                     lbl = QtWidgets.QLabel("No inputs connected.")
                     lbl.setStyleSheet("color:#94a3b8;")
                     v.addWidget(lbl)
                 else:
                     for nm in names:
-                        lbl_txt = f"• {nm}"
-                        param_lbl = (label_map.get(nm) or "").strip()
-                        if param_lbl:
-                            lbl_txt += f"  [{param_lbl}]"
-                        row = QtWidgets.QLabel(lbl_txt)
+                        row = QtWidgets.QLabel(f"• {nm}")
                         row.setStyleSheet("color:#e6edf3;")
                         v.addWidget(row)
 

@@ -618,130 +618,117 @@ class GraphScene(QtWidgets.QGraphicsScene):
             return ref
         return None
 
-    def _primary_param_text(self, model) -> tuple[str, str]:
+    def _direct_param_segments(self, node_item):
+        item = self._coerce_node_item(node_item)
+        if not item or not getattr(item, "model", None):
+            return []
+        model = item.model
+        kind = (model.kind or "").lower()
+        segments = []
+
         params = list(model.params or [])
-        for key in ("prompt", "text", "content"):
-            for p in params:
-                name = (p.get("name") or "").strip()
-                if name.lower() == key:
-                    val = (p.get("value") or "").strip()
-                    if val:
-                        return val, name or key
-        collected = []
-        label = ""
-        for p in params:
+        for idx, p in enumerate(params):
             val = (p.get("value") or "").strip()
-            if val:
-                collected.append(val)
-                if not label:
-                    label = (p.get("name") or "").strip() or "param"
-        if collected:
-            return ("\n".join(collected), label)
-        return "", ""
+            if not val:
+                continue
+            name = (p.get("name") or "").strip()
+            if not name:
+                name = f"param{idx+1}"
+            segments.append({"node": model.name, "param": name, "text": val})
 
-    def _resolve_text_with_label(self, ref) -> tuple[str, str]:
-        try:
-            item = self._coerce_node_item(ref)
-            if not item or not getattr(item, "model", None):
-                return "", ""
-
-            model = item.model
-            kind = (model.kind or "").lower()
-            own_text, own_label = self._primary_param_text(model)
-
-            if kind == "append":
+        if kind == "import":
+            path = ""
+            for p in params:
+                if (p.get("name") or "").strip().lower() == "path":
+                    path = (p.get("value") or "").strip()
+                    break
+            if path:
                 try:
-                    in_edges = self._ordered_in_edges(item)
+                    with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+                        text = fh.read()
                 except Exception:
-                    in_edges = self._in_edges(item)
-                parts = []
-                for e in in_edges:
-                    txt, _ = self._resolve_text_with_label(e.src)
-                    if txt:
-                        parts.append(txt)
-                if own_text:
-                    parts.insert(0, own_text)
-                merged = "\n\n".join(parts) if parts else own_text
-                return merged, own_label or "append"
+                    text = ""
+                if text:
+                    segments.append({"node": model.name, "param": "file", "text": text})
 
-            if kind == "switch":
-                try:
-                    in_edges = self._ordered_in_edges(item)
-                except Exception:
-                    in_edges = self._in_edges(item)
-                if in_edges:
-                    txt, label = self._resolve_text_with_label(in_edges[0].src)
-                    if txt:
-                        return txt, label
-                if own_text:
-                    return own_text, own_label or "switch"
-                return "", ""
-
-            if kind == "import":
-                path = ""
-                for p in (model.params or []):
-                    if (p.get("name", "") or "").strip().lower() == "path":
-                        path = (p.get("value", "") or "").strip()
-                        break
-                if path:
-                    try:
-                        with open(path, "r", encoding="utf-8", errors="ignore") as fh:
-                            return fh.read(), "path"
-                    except Exception:
-                        return "", ""
-                return "", ""
-
-            if own_text:
-                return own_text, own_label or ""
-
+        if not segments:
             info = (model.info or "").strip()
             if info:
-                return info, "info"
-            return "", ""
-        except Exception:
-            return "", ""
+                segments.append({"node": model.name, "param": "info", "text": info})
+        return segments
+
+    def _flatten_text_segments(self, node_item):
+        item = self._coerce_node_item(node_item)
+        if not item or not getattr(item, "model", None):
+            return []
+        kind = (item.model.kind or "").lower()
+
+        if kind == "append":
+            segs = [dict(seg) for seg in self._direct_param_segments(item)]
+            try:
+                in_edges = self._ordered_in_edges(item)
+            except Exception:
+                in_edges = self._in_edges(item)
+            for e in in_edges:
+                for seg in self._flatten_text_segments(e.src):
+                    segs.append(dict(seg))
+            return segs
+
+        if kind == "switch":
+            try:
+                in_edges = self._ordered_in_edges(item)
+            except Exception:
+                in_edges = self._in_edges(item)
+            if in_edges:
+                return self._flatten_text_segments(in_edges[0].src)
+            return [dict(seg) for seg in self._direct_param_segments(item)]
+
+        if kind == "import":
+            return [dict(seg) for seg in self._direct_param_segments(item)]
+
+        segs = self._direct_param_segments(item)
+        if segs:
+            return [dict(seg) for seg in segs]
+        return []
 
     def resolve_text_value(self, node_item) -> str:
-        text, _ = self._resolve_text_with_label(node_item)
-        return text
+        segments = self._flatten_text_segments(node_item)
+        texts = [seg.get("text", "") for seg in segments if seg.get("text")]
+        return "\n\n".join(texts)
 
     def resolve_text_label(self, node_item) -> str:
-        _, label = self._resolve_text_with_label(node_item)
-        return label
+        segments = self._flatten_text_segments(node_item)
+        if segments:
+            return segments[0].get("param", "")
+        return ""
 
     def text_source_info(self, node_ref):
-        item = self._coerce_node_item(node_ref)
-        if not item:
+        segments = self._flatten_text_segments(node_ref)
+        if not segments:
             return {"text": "", "parameter": ""}
-        text, label = self._resolve_text_with_label(item)
-        return {"text": text, "parameter": label or ""}
+        first = segments[0]
+        return {"text": first.get("text", ""), "parameter": first.get("param", "")}
 
     def describe_append_inputs(self, append_ref):
         item = self._coerce_node_item(append_ref)
         if not item or (item.model.kind or "").lower() != "append":
             return []
+
         rows = []
-        own_text, own_label = self._primary_param_text(item.model)
-        if own_text:
-            rows.append({
-                "node": item.model.name,
-                "param": own_label or "append",
-                "text": own_text,
-                "is_local": True,
-            })
+        for seg in self._direct_param_segments(item):
+            entry = dict(seg)
+            entry["is_local"] = True
+            rows.append(entry)
+
         try:
             in_edges = self._ordered_in_edges(item)
         except Exception:
             in_edges = self._in_edges(item)
         for e in in_edges:
-            txt, label = self._resolve_text_with_label(e.src)
-            if txt:
-                rows.append({
-                    "node": e.src.model.name,
-                    "param": label or "",
-                    "text": txt,
-                    "is_local": False,
-                })
+            for seg in self._flatten_text_segments(e.src):
+                entry = dict(seg)
+                entry["is_local"] = False
+                rows.append(entry)
         return rows
 
 
