@@ -17,6 +17,16 @@ from echograph.constants import (
 
 import nodes.core as core
 
+try:
+    from pygments import highlight
+    from pygments.lexers import get_lexer_for_filename, guess_lexer, TextLexer
+    from pygments.formatters import HtmlFormatter
+    _HAS_PYGMENTS = True
+except Exception:
+    highlight = None
+    get_lexer_for_filename = guess_lexer = TextLexer = HtmlFormatter = None
+    _HAS_PYGMENTS = False
+
 # Optional WebEngine
 try:
     from PySide6 import QtWebEngineWidgets as WebEngine
@@ -804,9 +814,52 @@ class NodeItem(QtWidgets.QGraphicsObject):
             QtWidgets.QMessageBox.critical(_top_level_parent_for_dialog(), "Import", f"Failed to open file:\n{exc}")
             return
 
+        html = self._highlight_html_content(text, path)
+        if html:
+            dlg = QtWidgets.QDialog(_top_level_parent_for_dialog())
+            dlg.setWindowTitle(f"Preview: {os.path.basename(path)}")
+            dlg.resize(760, 540)
+            layout = QtWidgets.QVBoxLayout(dlg)
+            view = QtWidgets.QTextBrowser()
+            view.setOpenExternalLinks(True)
+            view.setHtml(html)
+            layout.addWidget(view, 1)
+            bb = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
+            bb.rejected.connect(dlg.reject)
+            bb.accepted.connect(dlg.accept)
+            layout.addWidget(bb)
+            _qexec(dlg)
+            return
+
         dlg = BigTextEditDialog(_top_level_parent_for_dialog(), title=f"Preview: {os.path.basename(path)}", initial=text)
         dlg.edit.setReadOnly(True)
         _qexec(dlg)
+
+    def _highlight_html_content(self, text: str, filename: str) -> str | None:
+        if not _HAS_PYGMENTS:
+            return None
+        try:
+            lexer = get_lexer_for_filename(filename, stripall=True)
+        except Exception:
+            try:
+                lexer = guess_lexer(text)
+            except Exception:
+                lexer = TextLexer()
+
+        try:
+            formatter = HtmlFormatter(style="monokai", noclasses=True, nowrap=True)
+            colored = highlight(text, lexer, formatter)
+        except Exception:
+            return None
+
+        return (
+            "<html><head><meta charset='utf-8'></head>"
+            "<body style='margin:0;background:#272822;color:#f8f8f2;'>"
+            "<pre style='margin:0;padding:12px;font-family:\"Fira Code\",\"Consolas\",\"Courier New\",monospace;"
+            "font-size:13px;line-height:1.4;white-space:pre-wrap;'>"
+            f"{colored}"
+            "</pre></body></html>"
+        )
 
 
     def _schedule_rebuild(self):
