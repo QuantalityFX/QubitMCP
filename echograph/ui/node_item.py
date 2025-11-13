@@ -118,6 +118,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         self._llm_proxy = None
         self._llm_view = None  # kept for API parity if ever needed
         self._input_port_pos = {}
+        self._live_dialogs: set[QtWidgets.QDialog] = set()
        # Let the spec add named inputs (e.g., Librarian: query/docs_dir/mode/top_k/action)
         try:
             spec = core.get_spec((self.model.kind or "node").lower())
@@ -825,15 +826,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
             view.setHtml(html)
             layout.addWidget(view, 1)
             bb = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
-            bb.rejected.connect(dlg.reject)
-            bb.accepted.connect(dlg.accept)
+            bb.rejected.connect(dlg.close)
+            bb.accepted.connect(dlg.close)
             layout.addWidget(bb)
-            _qexec(dlg)
+            self._show_modeless_dialog(dlg)
             return
 
         dlg = BigTextEditDialog(_top_level_parent_for_dialog(), title=f"Preview: {os.path.basename(path)}", initial=text)
         dlg.edit.setReadOnly(True)
-        _qexec(dlg)
+        self._show_modeless_dialog(dlg)
 
     def _highlight_html_content(self, text: str, filename: str) -> str | None:
         if not _HAS_PYGMENTS:
@@ -860,6 +861,19 @@ class NodeItem(QtWidgets.QGraphicsObject):
             f"{colored}"
             "</pre></body></html>"
         )
+
+    def _show_modeless_dialog(self, dlg: QtWidgets.QDialog):
+        dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+        dlg.setWindowFlag(QtCore.Qt.WindowMaximizeButtonHint, True)
+        dlg.setWindowFlag(QtCore.Qt.WindowMinMaxButtonsHint, True)
+        dlg.setSizeGripEnabled(True)
+        dlg.setWindowModality(QtCore.Qt.NonModal)
+        self._live_dialogs.add(dlg)
+        def _cleanup(*_):
+            self._live_dialogs.discard(dlg)
+        dlg.finished.connect(_cleanup)
+        dlg.destroyed.connect(lambda *_: self._live_dialogs.discard(dlg))
+        dlg.show()
 
 
     def _schedule_rebuild(self):
