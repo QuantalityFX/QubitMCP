@@ -270,7 +270,6 @@ def augment_infocard_footer(card, footer_layout) -> bool:
 
         payload = {
             "node": getattr(card, "_node_ref", None).name if hasattr(card, "_node_ref") else "append",
-            "combined_text": combined_text,
             "parts": parts,
             "entries": entries,
         }
