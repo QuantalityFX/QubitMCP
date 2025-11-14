@@ -77,6 +77,7 @@ def register_defaults() -> None:
     register("switch",    stripe_color="#f59e0b")
     register("python",    stripe_color="#10b981")
     register("import",    stripe_color="#3b82f6")
+    register("html_preview", stripe_color="#f97316")
     register("output",    stripe_color="#a855f7")
     register("llm",       stripe_color="#14b8a6")
     # librarian plugins can override this later

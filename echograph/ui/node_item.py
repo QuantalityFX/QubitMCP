@@ -128,7 +128,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         except Exception:
             pass
 
-        if (self.model.kind or "").lower() == "import":
+        if (self.model.kind or "").lower() in ("import", "html_preview"):
             params = list(self.model.params or [])
             names = {(p.get("name") or "").strip().lower() for p in params}
             if "path" not in names:
@@ -367,6 +367,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
             node_w = self._BASE_W
         elif kind == "import":
             body_h = self._PARAM_ROW_H * 2 + self._PADDING
+            node_w = self._BASE_W
+        elif kind == "html_preview":
+            body_h = self._html_preview_body_height()
             node_w = self._BASE_W
         else:
             body_h = 0
@@ -607,7 +610,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     lab_holder.addWidget(lab, 0)
 
                     attach_import_browse = (
-                        kind == "import"
+                        kind in ("import", "html_preview")
                         and pname_key == "path"
                         and hasattr(self, "_browse_import_file")
                     )
@@ -697,11 +700,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
                         y_cursor += self._NOTE_FEATURED_H
 
-            if (self.model.kind or "").lower() == "import":
+            kind_lower = (self.model.kind or "").lower()
+            if kind_lower == "import":
                 y_cursor = self._build_import_summary(y_cursor)
+            elif kind_lower == "html_preview":
+                y_cursor = self._build_html_preview(y_cursor)
 
             # --- LLM embedded webview ---
-            if (self.model.kind or "").lower() == "llm":
+            if kind_lower == "llm":
                 if WebEngine is None:
                     row = QtWidgets.QWidget()
                     lay = QtWidgets.QVBoxLayout(row); lay.setContentsMargins(6,0,6,0); lay.setSpacing(6)
@@ -765,28 +771,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
     def _build_import_summary(self, y_cursor: int) -> int:
         path = self._param_value("path")
+        detail, btn_enabled = self._file_detail_for_path(path)
         row = QtWidgets.QWidget()
         row.setAttribute(QtCore.Qt.WA_TranslucentBackground)
         outer = QtWidgets.QVBoxLayout(row)
         outer.setContentsMargins(6, 0, 6, 0)
         outer.setSpacing(4)
-
-        if path:
-            name = os.path.basename(path) or path
-            if os.path.exists(path):
-                try:
-                    stat = os.stat(path)
-                    mtime = datetime.datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d")
-                    detail = f"{name}\nUpdated: {mtime}"
-                except Exception:
-                    detail = name
-                btn_enabled = True
-            else:
-                detail = f"{name}\n(Missing file)"
-                btn_enabled = False
-        else:
-            detail = "No file selected"
-            btn_enabled = False
 
         label = QtWidgets.QLabel(detail)
         label.setStyleSheet("color:#cbd5e1;")
@@ -813,6 +803,110 @@ class NodeItem(QtWidgets.QGraphicsObject):
         self._plugin_proxies.append(proxy)
 
         return y_cursor + int(self._PARAM_ROW_H * 2)
+
+    def _build_html_preview(self, y_cursor: int) -> int:
+        path = self._param_value("path")
+        detail, btn_enabled = self._file_detail_for_path(path)
+        row = QtWidgets.QWidget()
+        row.setAttribute(QtCore.Qt.WA_TranslucentBackground)
+        outer = QtWidgets.QVBoxLayout(row)
+        outer.setContentsMargins(6, 0, 6, 0)
+        outer.setSpacing(4)
+
+        label = QtWidgets.QLabel(detail)
+        label.setStyleSheet("color:#cbd5e1;")
+        label.setWordWrap(True)
+        outer.addWidget(label, 0)
+
+        btn_row = QtWidgets.QHBoxLayout()
+        btn_row.setContentsMargins(0, 0, 0, 0)
+        btn_row.setSpacing(6)
+
+        btn = QtWidgets.QPushButton("View")
+        btn.setEnabled(btn_enabled)
+        btn.setFixedWidth(64)
+        btn.clicked.connect(lambda _=False, p=path: self._open_import_preview(p))
+        btn_row.addWidget(btn, 0, QtCore.Qt.AlignLeft)
+        btn_row.addStretch(1)
+        outer.addLayout(btn_row)
+
+        preview_widget = self._create_html_preview_widget(path) if btn_enabled else None
+        if preview_widget is not None:
+            preview_widget.setMinimumHeight(220)
+            preview_widget.setMaximumHeight(320)
+            preview_widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+            outer.addWidget(preview_widget, 1)
+
+        proxy = QtWidgets.QGraphicsProxyWidget(self)
+        proxy.setWidget(row)
+        proxy.setZValue(self.zValue() + 0.1)
+        proxy.setPos(0, y_cursor)
+        desired_height = max(self._PARAM_ROW_H * 2, row.sizeHint().height())
+        proxy.resize(self.width, desired_height)
+        self._plugin_proxies.append(proxy)
+
+        return y_cursor + int(desired_height)
+
+    def _html_preview_body_height(self) -> int:
+        base = self._PARAM_ROW_H * 2 + self._PADDING
+        path = (self._param_value("path") or "").strip()
+        if not path or not os.path.exists(path):
+            return base
+        preview_extra = 220 if WebEngine is not None else 180
+        return base + preview_extra
+
+    def _file_detail_for_path(self, path: str) -> tuple[str, bool]:
+        path = (path or "").strip()
+        if not path:
+            return "No file selected", False
+        name = os.path.basename(path) or path
+        if os.path.exists(path):
+            try:
+                stat = os.stat(path)
+                mtime = datetime.datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d")
+                detail = f"{name}\nUpdated: {mtime}"
+            except Exception:
+                detail = name
+            return detail, True
+        return f"{name}\n(Missing file)", False
+
+    def _read_html_text(self, path: str) -> str:
+        path = (path or "").strip()
+        if not path:
+            return ""
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                return fh.read()
+        except Exception:
+            try:
+                with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+                    return fh.read()
+            except Exception:
+                return ""
+
+    def _create_html_preview_widget(self, path: str):
+        html = self._read_html_text(path)
+        if not html:
+            return None
+        if WebEngine is not None:
+            view = WebEngine.QWebEngineView()
+            view.setObjectName("HtmlPreviewView")
+            try:
+                view.setZoomFactor(0.9)
+            except Exception:
+                pass
+            view.setHtml(html, QtCore.QUrl.fromLocalFile(path))
+            return view
+
+        browser = QtWidgets.QTextBrowser()
+        browser.setObjectName("HtmlPreviewFallback")
+        browser.setStyleSheet(
+            "QTextBrowser{background:#0f1216;color:#e6edf3;"
+            "border:1px solid #3c4450;border-radius:6px;padding:6px;}"
+        )
+        browser.setHtml(html)
+        browser.setOpenExternalLinks(True)
+        return browser
 
     def _browse_import_file(self, current: str):
         start = current or os.path.expanduser("~")
@@ -1280,6 +1374,5 @@ class NodeItem(QtWidgets.QGraphicsObject):
             e.accept()
             return
         super().mouseReleaseEvent(e)
-
 
 

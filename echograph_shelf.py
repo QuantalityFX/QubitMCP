@@ -636,7 +636,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
                 name = f"param{idx+1}"
             segments.append({"node": model.name, "param": name, "text": val})
 
-        if kind == "import":
+        if kind in ("import", "html_preview"):
             path = ""
             for p in params:
                 if (p.get("name") or "").strip().lower() == "path":
@@ -683,7 +683,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
                 return self._flatten_text_segments(in_edges[0].src)
             return [dict(seg) for seg in self._direct_param_segments(item)]
 
-        if kind == "import":
+        if kind in ("import", "html_preview"):
             return [dict(seg) for seg in self._direct_param_segments(item)]
 
         segs = self._direct_param_segments(item)
@@ -803,7 +803,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
                     node.params.append({"name": pname, "value": default})
                     names.add(pname)
 
-        if (data["kind"] or "").lower() == "import":
+        if (data["kind"] or "").lower() in ("import", "html_preview"):
             names = {(p.get("name") or "").strip().lower() for p in (node.params or [])}
             if "path" not in names:
                 node.params = list(node.params or [])

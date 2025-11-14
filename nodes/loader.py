@@ -97,3 +97,14 @@ def bootstrap_plugins():
             print("[EchoGraph] Switch module has no 'register' function.")
     except Exception as e:
         print("[EchoGraph] Switch plugin import failed:", e)
+
+    # 8) HTML Preview
+    try:
+        from nodes import html_preview
+        if hasattr(html_preview, "register"):
+            html_preview.register()
+            _safe_probe("html_preview")
+        else:
+            print("[EchoGraph] HTML Preview module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] HTML Preview plugin import failed:", e)

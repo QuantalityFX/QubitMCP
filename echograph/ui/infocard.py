@@ -120,7 +120,7 @@ class InfoCard(QtWidgets.QFrame):
 
         if kind == "librarian":
             self._build_librarian_footer(footer)
-        elif kind == "import":
+        elif kind in ("import", "html_preview"):
             self._build_import_footer(footer)
 
         elif node.code and not _augmented_by_plugin:
