@@ -743,16 +743,16 @@ class NodeItem(QtWidgets.QGraphicsObject):
         path = self._param_value("path")
         row = QtWidgets.QWidget()
         row.setAttribute(QtCore.Qt.WA_TranslucentBackground)
-        lay = QtWidgets.QHBoxLayout(row)
-        lay.setContentsMargins(6, 0, 6, 0)
-        lay.setSpacing(6)
+        outer = QtWidgets.QVBoxLayout(row)
+        outer.setContentsMargins(6, 0, 6, 0)
+        outer.setSpacing(4)
 
         if path:
             name = os.path.basename(path) or path
             if os.path.exists(path):
                 try:
                     stat = os.stat(path)
-                    mtime = datetime.datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M")
+                    mtime = datetime.datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d")
                     detail = f"{name}\nUpdated: {mtime}"
                 except Exception:
                     detail = name
@@ -767,20 +767,26 @@ class NodeItem(QtWidgets.QGraphicsObject):
         label = QtWidgets.QLabel(detail)
         label.setStyleSheet("color:#cbd5e1;")
         label.setWordWrap(True)
-        lay.addWidget(label, 1)
+        outer.addWidget(label, 0)
 
+        btn_row = QtWidgets.QHBoxLayout()
+        btn_row.setContentsMargins(0, 0, 0, 0)
+        btn_row.setSpacing(6)
         browse_btn = QtWidgets.QToolButton()
         style = QtWidgets.QApplication.style()
         if style:
             browse_btn.setIcon(style.standardIcon(QtWidgets.QStyle.SP_DialogOpenButton))
         browse_btn.setToolTip("Choose file…")
         browse_btn.clicked.connect(lambda: self._browse_import_file(path))
-        lay.addWidget(browse_btn)
+        btn_row.addWidget(browse_btn, 0, QtCore.Qt.AlignLeft)
 
         btn = QtWidgets.QPushButton("View")
         btn.setEnabled(btn_enabled)
+        btn.setFixedWidth(64)
         btn.clicked.connect(lambda _=False, p=path: self._open_import_preview(p))
-        lay.addWidget(btn)
+        btn_row.addWidget(btn, 0, QtCore.Qt.AlignLeft)
+        btn_row.addStretch(1)
+        outer.addLayout(btn_row)
 
         proxy = QtWidgets.QGraphicsProxyWidget(self)
         proxy.setWidget(row)
