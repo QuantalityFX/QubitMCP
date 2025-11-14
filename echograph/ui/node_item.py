@@ -767,18 +767,24 @@ class NodeItem(QtWidgets.QGraphicsObject):
         label = QtWidgets.QLabel(detail)
         label.setStyleSheet("color:#cbd5e1;")
         label.setWordWrap(True)
-        outer.addWidget(label, 0)
 
-        btn_row = QtWidgets.QHBoxLayout()
-        btn_row.setContentsMargins(0, 0, 0, 0)
-        btn_row.setSpacing(6)
+        top_row = QtWidgets.QHBoxLayout()
+        top_row.setContentsMargins(0, 0, 0, 0)
+        top_row.setSpacing(6)
+
         browse_btn = QtWidgets.QToolButton()
         style = QtWidgets.QApplication.style()
         if style:
             browse_btn.setIcon(style.standardIcon(QtWidgets.QStyle.SP_DialogOpenButton))
         browse_btn.setToolTip("Choose file…")
         browse_btn.clicked.connect(lambda: self._browse_import_file(path))
-        btn_row.addWidget(browse_btn, 0, QtCore.Qt.AlignLeft)
+        top_row.addWidget(browse_btn, 0, QtCore.Qt.AlignLeft)
+        top_row.addWidget(label, 1)
+        outer.addLayout(top_row)
+
+        btn_row = QtWidgets.QHBoxLayout()
+        btn_row.setContentsMargins(0, 0, 0, 0)
+        btn_row.setSpacing(6)
 
         btn = QtWidgets.QPushButton("View")
         btn.setEnabled(btn_enabled)
