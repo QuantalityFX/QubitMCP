@@ -597,10 +597,22 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         lay.addSpacing(6)
                         pin_center_x = None
 
+                    lab_holder = QtWidgets.QHBoxLayout()
+                    lab_holder.setContentsMargins(0, 0, 0, 0)
+                    lab_holder.setSpacing(4)
+
                     lab = QtWidgets.QLabel(pname)
                     lab.setStyleSheet("color:#cbd5e1;")
                     lab.setMinimumWidth(50)
-                    lay.addWidget(lab)
+                    lab_holder.addWidget(lab, 0)
+
+                    attach_import_browse = (
+                        kind == "import"
+                        and pname_key == "path"
+                        and hasattr(self, "_browse_import_file")
+                    )
+                    lab_holder.addStretch(1)
+                    lay.addLayout(lab_holder)
 
                     edit = QtWidgets.QLineEdit(pval)
                     edit.setPlaceholderText("value")
@@ -618,6 +630,19 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     else:
                         edit.setToolTip("")
                     edit.textChanged.connect(lambda txt, idx=i: self._on_param_changed(idx, txt))
+                    lay.addWidget(edit, 1)
+
+                    if attach_import_browse:
+                        browse_btn = QtWidgets.QToolButton()
+                        btn_style = QtWidgets.QApplication.style()
+                        if btn_style:
+                            browse_btn.setIcon(btn_style.standardIcon(QtWidgets.QStyle.SP_DialogOpenButton))
+                        browse_btn.setToolTip("Choose file…")
+                        browse_btn.setFixedSize(22, 22)
+                        browse_btn.clicked.connect(
+                            lambda _=False: self._browse_import_file(self._param_value("path"))
+                        )
+                        lay.addWidget(browse_btn, 0)
 
                     # Ctrl+B shortcut + context action
                     self._wire_bigedit_shortcut(edit, p.get("name", "value"))
@@ -628,7 +653,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     )
                     edit.addAction(act)
                     edit.setContextMenuPolicy(QtCore.Qt.ActionsContextMenu)
-                    lay.addWidget(edit, 1)
 
                     row_center_y = y_cursor + self._PARAM_ROW_H / 2.0
                     proxy = QtWidgets.QGraphicsProxyWidget(self)
@@ -767,20 +791,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         label = QtWidgets.QLabel(detail)
         label.setStyleSheet("color:#cbd5e1;")
         label.setWordWrap(True)
-
-        top_row = QtWidgets.QHBoxLayout()
-        top_row.setContentsMargins(0, 0, 0, 0)
-        top_row.setSpacing(6)
-
-        browse_btn = QtWidgets.QToolButton()
-        style = QtWidgets.QApplication.style()
-        if style:
-            browse_btn.setIcon(style.standardIcon(QtWidgets.QStyle.SP_DialogOpenButton))
-        browse_btn.setToolTip("Choose file…")
-        browse_btn.clicked.connect(lambda: self._browse_import_file(path))
-        top_row.addWidget(browse_btn, 0, QtCore.Qt.AlignLeft)
-        top_row.addWidget(label, 1)
-        outer.addLayout(top_row)
+        outer.addWidget(label, 0)
 
         btn_row = QtWidgets.QHBoxLayout()
         btn_row.setContentsMargins(0, 0, 0, 0)
