@@ -381,7 +381,8 @@ def set_global_llm_scale(new_scale: float, scene=None):
         # Rebuild LLM nodes (unchanged)
         for item in list(getattr(scene, "_node_items", {}).values()):
             try:
-                if (item.model.kind or "").lower() == "llm":
+                kind = (item.model.kind or "").lower()
+                if kind in ("llm", "html_preview"):
                     item._recompute_height()
                     item._build_widgets()
             except Exception:

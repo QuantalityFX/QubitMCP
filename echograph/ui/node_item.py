@@ -370,7 +370,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
             node_w = self._BASE_W
         elif kind == "html_preview":
             body_h = self._html_preview_body_height()
-            node_w = self._BASE_W
+            preview_w, _ = self._html_preview_dimensions()
+            path = (self._param_value("path") or "").strip()
+            if path and os.path.exists(path):
+                node_w = preview_w
+            else:
+                node_w = self._BASE_W
         else:
             body_h = 0
             node_w = self._BASE_W
@@ -772,41 +777,51 @@ class NodeItem(QtWidgets.QGraphicsObject):
     def _build_import_summary(self, y_cursor: int) -> int:
         path = self._param_value("path")
         detail, btn_enabled = self._file_detail_for_path(path)
-        row = QtWidgets.QWidget()
-        row.setAttribute(QtCore.Qt.WA_TranslucentBackground)
-        outer = QtWidgets.QVBoxLayout(row)
-        outer.setContentsMargins(6, 0, 6, 0)
-        outer.setSpacing(4)
-
-        label = QtWidgets.QLabel(detail)
-        label.setStyleSheet("color:#cbd5e1;")
-        label.setWordWrap(True)
-        outer.addWidget(label, 0)
-
-        btn_row = QtWidgets.QHBoxLayout()
-        btn_row.setContentsMargins(0, 0, 0, 0)
-        btn_row.setSpacing(6)
-
-        btn = QtWidgets.QPushButton("View")
-        btn.setEnabled(btn_enabled)
-        btn.setFixedWidth(64)
-        btn.clicked.connect(lambda _=False, p=path: self._open_import_preview(p))
-        btn_row.addWidget(btn, 0, QtCore.Qt.AlignLeft)
-        btn_row.addStretch(1)
-        outer.addLayout(btn_row)
-
-        proxy = QtWidgets.QGraphicsProxyWidget(self)
-        proxy.setWidget(row)
-        proxy.setZValue(self.zValue() + 0.1)
-        proxy.setPos(0, y_cursor)
-        proxy.resize(self.width, self._PARAM_ROW_H * 2)
-        self._plugin_proxies.append(proxy)
-
-        return y_cursor + int(self._PARAM_ROW_H * 2)
+        return self._render_file_summary(y_cursor, detail, btn_enabled, path)
 
     def _build_html_preview(self, y_cursor: int) -> int:
         path = self._param_value("path")
         detail, btn_enabled = self._file_detail_for_path(path)
+        y_cursor = self._render_file_summary(y_cursor, detail, btn_enabled, path)
+
+        if not btn_enabled:
+            return y_cursor
+
+        preview_widget = self._create_html_preview_widget(path)
+        if preview_widget is None:
+            return y_cursor
+
+        y_cursor += self._PADDING * 2
+        preview_w, preview_h = self._html_preview_dimensions()
+        preview_w = max(preview_w, int(self.width))
+        preview_widget.setMinimumSize(preview_w, preview_h)
+        preview_widget.setMaximumSize(preview_w, preview_h)
+        preview_widget.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+
+        proxy = QtWidgets.QGraphicsProxyWidget(self)
+        proxy.setWidget(preview_widget)
+        proxy.setZValue(self.zValue() + 0.1)
+        proxy.setPos(0, y_cursor)
+        proxy.resize(self.width, preview_h)
+        self._plugin_proxies.append(proxy)
+
+        return y_cursor + preview_h + self._PADDING
+
+    def _html_preview_dimensions(self) -> tuple[int, int]:
+        scale = max(0.25, float(self._current_llm_scale()))
+        width = max(self._BASE_W, int(LLM_NODE_W_BASE * scale))
+        height = max(180, int(LLM_NODE_H_BASE * scale))
+        return width, height
+
+    def _html_preview_body_height(self) -> int:
+        summary_h = self._PARAM_ROW_H * 2
+        _, preview_h = self._html_preview_dimensions()
+        path = (self._param_value("path") or "").strip()
+        if not path or not os.path.exists(path):
+            return summary_h
+        return summary_h + preview_h + self._PADDING
+
+    def _render_file_summary(self, y_cursor: int, detail: str, btn_enabled: bool, path: str) -> int:
         row = QtWidgets.QWidget()
         row.setAttribute(QtCore.Qt.WA_TranslucentBackground)
         outer = QtWidgets.QVBoxLayout(row)
@@ -830,30 +845,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
         btn_row.addStretch(1)
         outer.addLayout(btn_row)
 
-        preview_widget = self._create_html_preview_widget(path) if btn_enabled else None
-        if preview_widget is not None:
-            preview_widget.setMinimumHeight(220)
-            preview_widget.setMaximumHeight(320)
-            preview_widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
-            outer.addWidget(preview_widget, 1)
-
         proxy = QtWidgets.QGraphicsProxyWidget(self)
         proxy.setWidget(row)
         proxy.setZValue(self.zValue() + 0.1)
         proxy.setPos(0, y_cursor)
-        desired_height = max(self._PARAM_ROW_H * 2, row.sizeHint().height())
-        proxy.resize(self.width, desired_height)
+        summary_h = self._PARAM_ROW_H * 2
+        proxy.resize(self.width, summary_h)
         self._plugin_proxies.append(proxy)
 
-        return y_cursor + int(desired_height)
-
-    def _html_preview_body_height(self) -> int:
-        base = self._PARAM_ROW_H * 2 + self._PADDING
-        path = (self._param_value("path") or "").strip()
-        if not path or not os.path.exists(path):
-            return base
-        preview_extra = 220 if WebEngine is not None else 180
-        return base + preview_extra
+        return y_cursor + summary_h
 
     def _file_detail_for_path(self, path: str) -> tuple[str, bool]:
         path = (path or "").strip()
