@@ -1,5 +1,6 @@
 # nodes/python/spec.py
 from nodes.core import Spec
+import threading
 
 def augment_infocard_footer(card, footer_layout) -> bool:
     """
@@ -117,31 +118,83 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         out_buf = io.StringIO()
         err_buf = io.StringIO()
         busy_item = python_item if python_item and hasattr(python_item, "setBusyState") else None
-        if busy_item:
-            try:
-                busy_item.setBusyState(True, "running")
-                QtWidgets.QApplication.processEvents()
-            except Exception:
-                pass
-        try:
-            with contextlib.redirect_stdout(out_buf), contextlib.redirect_stderr(err_buf):
-                exec(src, ns, ns)
-            out = out_buf.getvalue().strip()
-            err = err_buf.getvalue().strip()
-            if err:
-                QtWidgets.QMessageBox.critical(card, "EchoGraph", err)
-            elif out:
-                QtWidgets.QMessageBox.information(card, "EchoGraph", out)
-        except Exception:
-            combined = out_buf.getvalue() + "\n" + err_buf.getvalue()
-            tb = traceback.format_exc()
-            QtWidgets.QMessageBox.critical(card, "EchoGraph", f"{combined}\n{tb}")
-        finally:
-            if busy_item:
+
+        def _set_busy(active: bool, label: str = "") -> None:
+            if not busy_item:
+                return
+
+            def _apply():
                 try:
-                    busy_item.setBusyState(False, "")
+                    busy_item.setBusyState(active, label)
                 except Exception:
                     pass
+
+            QtCore.QTimer.singleShot(0, _apply)
+
+        def _notify(message: str, *, error: bool = False) -> None:
+            def _show():
+                fn = QtWidgets.QMessageBox.critical if error else QtWidgets.QMessageBox.information
+                fn(card, "EchoGraph", message)
+            QtCore.QTimer.singleShot(0, _show)
+
+        def _cleanup_timer(timer_obj: QtCore.QTimer | None) -> None:
+            if not timer_obj:
+                return
+            try:
+                timer_obj.stop()
+            except Exception:
+                pass
+            try:
+                timer_obj.deleteLater()
+            except Exception:
+                pass
+
+        if python_item:
+            prev_timer = getattr(python_item, "_python_busy_timer", None)
+            _cleanup_timer(prev_timer)
+            setattr(python_item, "_python_busy_timer", None)
+
+        def _worker():
+            try:
+                with contextlib.redirect_stdout(out_buf), contextlib.redirect_stderr(err_buf):
+                    exec(src, ns, ns)
+                out = out_buf.getvalue().strip()
+                err = err_buf.getvalue().strip()
+                if err:
+                    _notify(err, error=True)
+                elif out:
+                    _notify(out)
+            except Exception:
+                combined = out_buf.getvalue() + "\n" + err_buf.getvalue()
+                tb = traceback.format_exc()
+                _notify(f"{combined}\n{tb}", error=True)
+            finally:
+                if python_item:
+                    _cleanup_timer(getattr(python_item, "_python_busy_timer", None))
+                    setattr(python_item, "_python_busy_timer", None)
+                    setattr(python_item, "_python_worker_thread", None)
+                _set_busy(False, "")
+
+        _set_busy(True, "running")
+        worker_thread = threading.Thread(target=_worker, daemon=True)
+        worker_thread.start()
+        if python_item:
+            setattr(python_item, "_python_worker_thread", worker_thread)
+
+            def _check_worker():
+                th = getattr(python_item, "_python_worker_thread", None)
+                timer_obj = getattr(python_item, "_python_busy_timer", None)
+                if not th or not th.is_alive():
+                    _cleanup_timer(timer_obj)
+                    setattr(python_item, "_python_busy_timer", None)
+                    setattr(python_item, "_python_worker_thread", None)
+                    _set_busy(False, "")
+
+            timer = QtCore.QTimer(card)
+            timer.setInterval(250)
+            timer.timeout.connect(_check_worker)
+            setattr(python_item, "_python_busy_timer", timer)
+            timer.start()
 
     btn_edit = QtWidgets.QPushButton("Edit Code…")
     btn_edit.setToolTip("Edit and save this node's Python script")
