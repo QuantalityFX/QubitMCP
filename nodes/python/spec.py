@@ -137,7 +137,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 fn(card, "EchoGraph", message)
             QtCore.QTimer.singleShot(0, _show)
 
-        def _cleanup_timer(timer_obj: QtCore.QTimer | None) -> None:
+        def _cleanup_timer(timer_obj):
             if not timer_obj:
                 return
             try:
@@ -149,10 +149,16 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             except Exception:
                 pass
 
+        def _clear_busy_state():
+            if python_item:
+                timer_obj = getattr(python_item, "_python_busy_timer", None)
+                _cleanup_timer(timer_obj)
+                setattr(python_item, "_python_busy_timer", None)
+                setattr(python_item, "_python_worker_thread", None)
+            _set_busy(False, "")
+
         if python_item:
-            prev_timer = getattr(python_item, "_python_busy_timer", None)
-            _cleanup_timer(prev_timer)
-            setattr(python_item, "_python_busy_timer", None)
+            _clear_busy_state()
 
         def _worker():
             try:
@@ -169,11 +175,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 tb = traceback.format_exc()
                 _notify(f"{combined}\n{tb}", error=True)
             finally:
-                if python_item:
-                    _cleanup_timer(getattr(python_item, "_python_busy_timer", None))
-                    setattr(python_item, "_python_busy_timer", None)
-                    setattr(python_item, "_python_worker_thread", None)
-                _set_busy(False, "")
+                QtCore.QTimer.singleShot(0, _clear_busy_state)
 
         _set_busy(True, "running")
         worker_thread = threading.Thread(target=_worker, daemon=True)
@@ -183,12 +185,8 @@ def augment_infocard_footer(card, footer_layout) -> bool:
 
             def _check_worker():
                 th = getattr(python_item, "_python_worker_thread", None)
-                timer_obj = getattr(python_item, "_python_busy_timer", None)
                 if not th or not th.is_alive():
-                    _cleanup_timer(timer_obj)
-                    setattr(python_item, "_python_busy_timer", None)
-                    setattr(python_item, "_python_worker_thread", None)
-                    _set_busy(False, "")
+                    QtCore.QTimer.singleShot(0, _clear_busy_state)
 
             timer = QtCore.QTimer(card)
             timer.setInterval(250)
