@@ -44,6 +44,10 @@ class InfoCard(QtWidgets.QFrame):
         super().__init__()
         self._node_name = node.name
         self._node_ref = node
+        try:
+            self._graph_scene = getattr(node, "_graph_scene", None)
+        except Exception:
+            self._graph_scene = None
 
         try:
             self.setFrameShape(QtWidgets.QFrame.StyledPanel)

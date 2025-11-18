@@ -135,6 +135,72 @@ def _parse_path_list(raw: str) -> List[Path]:
             continue
     return paths
 
+def _structured_path_segments(text: str | None) -> List[str]:
+    if not text:
+        return []
+    segments: List[str] = []
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        header = lines[i].strip()
+        if not header:
+            i += 1
+            continue
+        header_lower = header.lower()
+        if "::" in header and "path" in header_lower:
+            _, _, inline = header.partition("::")
+            inline_val = inline.strip()
+            if inline_val:
+                segments.append(inline_val)
+                i += 1
+                continue
+            i += 1
+            value_lines: List[str] = []
+            while i < len(lines) and lines[i].strip():
+                value_lines.append(lines[i].strip())
+                i += 1
+            if value_lines:
+                segments.append("\n".join(value_lines))
+        else:
+            i += 1
+    return segments
+
+def _collect_paths_from_text(text: str | None) -> List[Path]:
+    if not text:
+        return []
+    collected: List[Path] = []
+    segments = _structured_path_segments(text)
+    for segment in segments:
+        collected.extend(_parse_path_list(segment))
+    if not collected:
+        collected.extend(_parse_path_list(text))
+    return collected
+
+def _paths_from_params(node) -> List[Path]:
+    if not node:
+        return []
+    params = getattr(node, "params", []) or []
+    paths: List[Path] = []
+    for entry in params:
+        name = (entry.get("name") or "").lower()
+        value = entry.get("value") or ""
+        if not value:
+            continue
+        if "path" in name or "path" in value.lower():
+            paths.extend(_collect_paths_from_text(value))
+    return paths
+
+def _dedupe_paths(paths: Sequence[Path]) -> List[Path]:
+    seen = set()
+    deduped: List[Path] = []
+    for path in paths:
+        key = str(path).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(path)
+    return deduped
+
 def _load_file_contexts(paths: Sequence[Path]) -> Tuple[List[Tuple[Path, str]], List[str]]:
     contexts: List[Tuple[Path, str]] = []
     warnings: List[str] = []
@@ -200,7 +266,7 @@ def _extract_response_text(payload: dict) -> str:
             texts.append(maybe)
     return "\n\n".join([t for t in texts if t]).strip()
 
-def _call_openai(api_key: str, model: str, temperature: float, prompt_text: str) -> str:
+def _call_openai(api_key: str, model: str, temperature: float, prompt_text: str) -> tuple[str, dict]:
     body = {
         "model": model or DEFAULT_MODEL,
         "input": prompt_text,
@@ -225,7 +291,7 @@ def _call_openai(api_key: str, model: str, temperature: float, prompt_text: str)
         raise RuntimeError(f"OpenAI request failed: {err.code} {err.reason}\n{detail}") from err
     except urllib.error.URLError as err:
         raise RuntimeError(f"OpenAI request failed: {err.reason}") from err
-    return _extract_response_text(payload)
+    return _extract_response_text(payload), payload
 
 def _notify(card, message: str, *, error: bool = False) -> None:
     def _show():
@@ -236,19 +302,18 @@ def _notify(card, message: str, *, error: bool = False) -> None:
 def augment_infocard_footer(card, footer_layout) -> bool:
     print(f"[llm_prompt] augment_infocard_footer for node {getattr(getattr(card, '_node_ref', None), 'name', '?')}")
     node = getattr(card, "_node_ref", None)
-    if not node or (node.kind or "").lower() != PROMPT_NODE_KIND:
+    node_kind = (node.kind or "").strip().lower() if node else ""
+    if not node or node_kind not in PROMPT_NODE_KINDS:
         return False
 
-    sc = getattr(card, "_graph_scene", None)
-    if not sc:
-        return False
-
-    try:
-        node_item = sc._node_items.get(node.name)
-    except Exception:
-        node_item = None
-    if node_item is None:
-        return False
+    def _node_item() -> object | None:
+        sc = getattr(card, "_graph_scene", None)
+        if not sc:
+            return None
+        try:
+            return sc._node_items.get(node.name)
+        except Exception:
+            return None
 
     def _param_value(name: str) -> str:
         for param in (getattr(node, "params", None) or []):
@@ -257,9 +322,11 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         return ""
 
     def _val(name: str) -> str:
-        wired = _text_from_input(card, node_item, name)
-        if wired:
-            return wired
+        item = _node_item()
+        if item:
+            wired = _text_from_input(card, item, name)
+            if wired:
+                return wired
         return _param_value(name)
 
     def _float_value(raw: str, default: float) -> float:
@@ -296,7 +363,10 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             QtWidgets.QMessageBox.critical(card, APP_TITLE, f"Invalid output path:\n{exc}")
             return
 
-        file_paths = _parse_path_list(_val("files"))
+        files_value = _val("files")
+        wired_paths = _collect_paths_from_text(files_value)
+        param_paths = _paths_from_params(node)
+        file_paths = _dedupe_paths(param_paths + wired_paths)
         contexts, warnings = _load_file_contexts(file_paths)
         combined_prompt = _compose_prompt(prompt_text, contexts)
         model = (_val("model") or DEFAULT_MODEL).strip() or DEFAULT_MODEL
@@ -304,7 +374,9 @@ def augment_infocard_footer(card, footer_layout) -> bool:
 
         def _worker():
             try:
-                response_text = _call_openai(api_key, model, temperature, combined_prompt)
+                response_text, raw_payload = _call_openai(api_key, model, temperature, combined_prompt)
+                if not response_text.strip():
+                    response_text = json.dumps(raw_payload, indent=2, ensure_ascii=False)
                 output_path.parent.mkdir(parents=True, exist_ok=True)
                 output_path.write_text(response_text, encoding="utf-8")
             except Exception as exc:  # pylint: disable=broad-except
