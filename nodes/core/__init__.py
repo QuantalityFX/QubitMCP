@@ -2,6 +2,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Any
+import sys
 
 __all__ = [
     "Spec",
@@ -82,6 +83,14 @@ def register_defaults() -> None:
     register("llm",       stripe_color="#14b8a6")
     # librarian plugins can override this later
     register("librarian", stripe_color="#74d603")
+
+    # Auto-register optional GPT prompt node so it's available even if loader plugins fail later
+    try:
+        from nodes import gpt_prompt as _gpt_prompt  # type: ignore
+        if hasattr(_gpt_prompt, "register"):
+            _gpt_prompt.register(core=sys.modules[__name__])
+    except Exception as exc:  # pragma: no cover - optional plugin
+        print("[EchoGraph] GPT Prompt auto-register failed:", exc)
 
 
 def apply_spec_to_item(item: Any, kind: str | Spec, *, debug: bool = False) -> Any:

@@ -16,6 +16,11 @@ from echograph.services.librarian_ipc import (
     ensure_running,
 )
 
+try:
+    from nodes.gpt_prompt import spec as _gpt_prompt_spec  # optional
+except Exception:  # pragma: no cover - optional
+    _gpt_prompt_spec = None
+
 # Reuse dialog classes we extracted
 from echograph.ui.dialogs import (
     CodeEditorDialog,
@@ -110,6 +115,13 @@ class InfoCard(QtWidgets.QFrame):
         except Exception as e:
             print("[EchoGraph] augment_infocard_footer error:", e)
             _augmented_by_plugin = False
+
+        if (not _augmented_by_plugin) and _gpt_prompt_spec:
+            try:
+                if (node.kind or "").strip().lower() in _gpt_prompt_spec.PROMPT_NODE_KINDS:
+                    _augmented_by_plugin = bool(_gpt_prompt_spec.augment_infocard_footer(self, footer))
+            except Exception as e:
+                print("[EchoGraph] llm_prompt footer error:", e)
 
         # Kind-specific UI
         kind = (node.kind or "").lower()

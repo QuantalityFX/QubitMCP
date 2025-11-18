@@ -18,6 +18,11 @@ from echograph.constants import (
 import nodes.core as core
 
 try:
+    from nodes.gpt_prompt import spec as _gpt_prompt_spec  # optional plugin
+except Exception:  # pragma: no cover - optional
+    _gpt_prompt_spec = None
+
+try:
     from pygments import highlight
     from pygments.lexers import get_lexer_for_filename, guess_lexer, TextLexer
     from pygments.formatters import HtmlFormatter
@@ -125,6 +130,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
             build_ports = getattr(spec, "build_ports", None)
             if callable(build_ports):
                 build_ports(self)
+        except Exception:
+            pass
+
+        # Fallback for optional GPT prompt node kinds (ensure ports even if spec failed to register)
+        try:
+            if _gpt_prompt_spec and ((self.model.kind or "").strip().lower() in _gpt_prompt_spec.PROMPT_NODE_KINDS):
+                _gpt_prompt_spec.build_ports(self)
         except Exception:
             pass
 

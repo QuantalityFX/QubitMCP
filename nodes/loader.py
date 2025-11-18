@@ -108,3 +108,14 @@ def bootstrap_plugins():
             print("[EchoGraph] HTML Preview module has no 'register' function.")
     except Exception as e:
         print("[EchoGraph] HTML Preview plugin import failed:", e)
+
+    # 9) GPT Prompt
+    try:
+        from nodes import gpt_prompt
+        if hasattr(gpt_prompt, "register"):
+            gpt_prompt.register()
+            _safe_probe("llm_prompt")
+        else:
+            print("[EchoGraph] GPT Prompt module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] GPT Prompt plugin import failed:", e)

@@ -145,7 +145,10 @@ class CreateNodeDialog(QtWidgets.QDialog):
 
         self.kind_edit = QtWidgets.QComboBox()
         self.kind_edit.setEditable(True)
-        self.kind_edit.addItems(["node","import","html_preview","python","switch","output","llm","librarian","note","append"])
+        self.kind_edit.addItems([
+            "node","import","html_preview","python","switch","output","llm",
+            "llm_prompt","librarian","note","append"
+        ])
         self.kind_edit.setEditText("node")
         form.addRow("Node type:", self.kind_edit)
 
