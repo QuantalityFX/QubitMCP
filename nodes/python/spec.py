@@ -81,6 +81,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         sc = getattr(card, "_graph_scene", None)
         inputs = {}
         primary_input = ""
+        python_item = None
         if sc and hasattr(sc, "_node_items"):
             python_item = sc._node_items.get(node.name)
             if python_item is not None:
@@ -115,6 +116,13 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         import io, contextlib, traceback
         out_buf = io.StringIO()
         err_buf = io.StringIO()
+        busy_item = python_item if python_item and hasattr(python_item, "setBusyState") else None
+        if busy_item:
+            try:
+                busy_item.setBusyState(True, "running")
+                QtWidgets.QApplication.processEvents()
+            except Exception:
+                pass
         try:
             with contextlib.redirect_stdout(out_buf), contextlib.redirect_stderr(err_buf):
                 exec(src, ns, ns)
@@ -128,6 +136,12 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             combined = out_buf.getvalue() + "\n" + err_buf.getvalue()
             tb = traceback.format_exc()
             QtWidgets.QMessageBox.critical(card, "EchoGraph", f"{combined}\n{tb}")
+        finally:
+            if busy_item:
+                try:
+                    busy_item.setBusyState(False, "")
+                except Exception:
+                    pass
 
     btn_edit = QtWidgets.QPushButton("Edit Code…")
     btn_edit.setToolTip("Edit and save this node's Python script")

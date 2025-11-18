@@ -377,6 +377,24 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         combined_prompt = _compose_prompt(prompt_text, contexts)
         model = (_val("model") or DEFAULT_MODEL).strip() or DEFAULT_MODEL
         temperature = _float_value(_val("temperature"), DEFAULT_TEMPERATURE)
+        node_item = _node_item()
+
+        def _set_busy(active: bool, label: str = "") -> None:
+            if not node_item or not hasattr(node_item, "setBusyState"):
+                return
+            try:
+                QtCore.QMetaObject.invokeMethod(
+                    node_item,
+                    "setBusyState",
+                    QtCore.Qt.QueuedConnection,
+                    QtCore.Q_ARG(bool, bool(active)),
+                    QtCore.Q_ARG(str, label),
+                )
+            except Exception:
+                try:
+                    node_item.setBusyState(active, label)
+                except Exception:
+                    pass
 
         def _worker():
             try:
@@ -388,16 +406,18 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 log_path.write_text(json.dumps(raw_payload, indent=2, ensure_ascii=False), encoding="utf-8")
             except Exception as exc:  # pylint: disable=broad-except
                 _notify(card, f"GPT request failed:\n{exc}", error=True)
-                return
-
-            message = f"Wrote response to {output_path}"
-            if warnings:
-                message += "\n\nWarnings:\n" + "\n".join(warnings[:6])
-                if len(warnings) > 6:
-                    message += f"\n(+{len(warnings) - 6} more)"
-            _notify(card, message, error=False)
+            else:
+                message = f"Wrote response to {output_path}"
+                if warnings:
+                    message += "\n\nWarnings:\n" + "\n".join(warnings[:6])
+                    if len(warnings) > 6:
+                        message += f"\n(+{len(warnings) - 6} more)"
+                _notify(card, message, error=False)
+            finally:
+                _set_busy(False, "")
 
         QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Dispatching prompt…", card)
+        _set_busy(True, "sending")
         threading.Thread(target=_worker, daemon=True).start()
 
     btn = QtWidgets.QPushButton("Send to GPT")

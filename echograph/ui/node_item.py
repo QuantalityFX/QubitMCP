@@ -124,6 +124,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
         self._llm_view = None  # kept for API parity if ever needed
         self._input_port_pos = {}
         self._live_dialogs: set[QtWidgets.QDialog] = set()
+        self._busy = False
+        self._busy_message = ""
+        self._busy_flash_on = False
+        self._busy_timer = QtCore.QTimer(self)
+        self._busy_timer.setInterval(320)
+        self._busy_timer.timeout.connect(self._on_busy_timeout)
        # Let the spec add named inputs (e.g., Librarian: query/docs_dir/mode/top_k/action)
         try:
             spec = core.get_spec((self.model.kind or "node").lower())
@@ -201,6 +207,27 @@ class NodeItem(QtWidgets.QGraphicsObject):
             if (p.get("name", "") or "").strip().lower() == key:
                 return p.get("value", "") or ""
         return ""
+
+    @QtCore.Slot(bool, str)
+    def setBusyState(self, busy: bool, message: str = "") -> None:
+        busy = bool(busy)
+        message = (message or "").strip()
+        if busy == self._busy and message == self._busy_message:
+            return
+        self._busy = busy
+        self._busy_message = message
+        if busy:
+            self._busy_flash_on = True
+            if not self._busy_timer.isActive():
+                self._busy_timer.start()
+        else:
+            self._busy_timer.stop()
+            self._busy_flash_on = False
+        self.update()
+
+    def _on_busy_timeout(self) -> None:
+        self._busy_flash_on = not self._busy_flash_on
+        self.update()
 
     def port_anchor(self, name: str, side: str = "in") -> QtCore.QPointF:
         """Return scene-relative anchor point for a named port bead."""
@@ -1188,6 +1215,21 @@ class NodeItem(QtWidgets.QGraphicsObject):
             pass
         finally:
             p.setPen(QtCore.Qt.NoPen)
+
+        if self._busy:
+            try:
+                pulse = QtGui.QColor(249, 115, 22)
+                pulse.setAlpha(180 if self._busy_flash_on else 90)
+                p.save()
+                busy_pen = QtGui.QPen(pulse, 3.0)
+                busy_pen.setCosmetic(True)
+                p.setPen(busy_pen)
+                p.setBrush(QtCore.Qt.NoBrush)
+                glow_rect = r.adjusted(-2.0, -2.0, 2.0, 2.0)
+                p.drawRoundedRect(glow_rect, self.radius + 2.0, self.radius + 2.0)
+                p.restore()
+            except Exception:
+                p.setPen(QtCore.Qt.NoPen)
 
         # --- Stripe color (from registry or default) ---
         stripe_hex = _spec_stripe_color((self.model.kind or "node").lower())
