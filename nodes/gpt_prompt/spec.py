@@ -241,30 +241,36 @@ def _compose_prompt(prompt: str, contexts: Sequence[Tuple[Path, str]]) -> str:
 
 def _extract_response_text(payload: dict) -> str:
     texts: List[str] = []
+
+    def _push(value):
+        if isinstance(value, str):
+            trimmed = value.strip()
+            if trimmed:
+                texts.append(trimmed)
+        elif isinstance(value, list):
+            for entry in value:
+                if isinstance(entry, str):
+                    _push(entry)
+
     for entry in payload.get("output") or []:
-        if entry.get("type") == "message":
+        entry_type = (entry.get("type") or "").lower()
+        if entry_type == "message":
             for fragment in entry.get("content") or []:
-                if fragment.get("type") == "text" and fragment.get("text"):
-                    texts.append(fragment["text"].strip())
-        elif entry.get("type") == "text" and entry.get("text"):
-            texts.append(entry["text"].strip())
+                _push(fragment.get("text"))
+        else:
+            _push(entry.get("text"))
     if not texts and "choices" in payload:
         for choice in payload.get("choices") or []:
             message = choice.get("message") or {}
             content = message.get("content")
             if isinstance(content, list):
                 for fragment in content:
-                    if fragment.get("type") == "text" and fragment.get("text"):
-                        texts.append(fragment["text"].strip())
-            elif isinstance(content, str):
-                texts.append(content.strip())
+                    _push(fragment.get("text"))
+            else:
+                _push(content)
     if not texts:
-        maybe = payload.get("output_text")
-        if isinstance(maybe, list):
-            texts.extend([t for t in maybe if isinstance(t, str)])
-        elif isinstance(maybe, str):
-            texts.append(maybe)
-    return "\n\n".join([t for t in texts if t]).strip()
+        _push(payload.get("output_text"))
+    return "\n\n".join(texts).strip()
 
 def _call_openai(api_key: str, model: str, temperature: float, prompt_text: str) -> tuple[str, dict]:
     body = {
@@ -375,10 +381,11 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         def _worker():
             try:
                 response_text, raw_payload = _call_openai(api_key, model, temperature, combined_prompt)
-                if not response_text.strip():
-                    response_text = json.dumps(raw_payload, indent=2, ensure_ascii=False)
+                response_text = (response_text or "").strip()
                 output_path.parent.mkdir(parents=True, exist_ok=True)
                 output_path.write_text(response_text, encoding="utf-8")
+                log_path = output_path.with_name(f"{output_path.stem}_log.json")
+                log_path.write_text(json.dumps(raw_payload, indent=2, ensure_ascii=False), encoding="utf-8")
             except Exception as exc:  # pylint: disable=broad-except
                 _notify(card, f"GPT request failed:\n{exc}", error=True)
                 return
