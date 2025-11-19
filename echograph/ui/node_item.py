@@ -130,6 +130,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
         self._busy_timer = QtCore.QTimer(self)
         self._busy_timer.setInterval(320)
         self._busy_timer.timeout.connect(self._on_busy_timeout)
+        self._note_resize_mode: str | None = None
+        self._note_resize_start = QtCore.QPointF()
+        self._note_initial_rect = QtCore.QRectF()
+        self._note_initial_pos = QtCore.QPointF()
        # Let the spec add named inputs (e.g., Librarian: query/docs_dir/mode/top_k/action)
         try:
             spec = core.get_spec((self.model.kind or "node").lower())
@@ -421,6 +425,19 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
         new_w = max(node_w, self._BASE_W)
         new_h = max(self._BASE_H, header_h + switch_h + params_h + body_h + self._PADDING)
+
+        if kind == "note":
+            custom_size = getattr(self.model, "_note_size", None)
+            if isinstance(custom_size, (list, tuple)) and len(custom_size) >= 2:
+                try:
+                    custom_w = float(custom_size[0])
+                    custom_h = float(custom_size[1])
+                except Exception:
+                    custom_w = custom_h = None
+                if custom_w is not None and custom_w > 0:
+                    new_w = max(new_w, max(self._BASE_W, custom_w))
+                if custom_h is not None and custom_h > 0:
+                    new_h = max(new_h, max(self._BASE_H, custom_h))
 
         if new_w != getattr(self, "width", 0) or new_h != getattr(self, "height", 0):
             try:
@@ -1045,6 +1062,141 @@ class NodeItem(QtWidgets.QGraphicsObject):
         self._recompute_height()
         self._build_widgets()
 
+    def _note_resize_available(self) -> bool:
+        if (self.model.kind or "").lower() != "note":
+            return False
+        if self._note_resize_mode:
+            return True
+        return bool(self.isSelected())
+
+    def _note_hit_test(self, pos: QtCore.QPointF) -> str | None:
+        if not self._note_resize_available():
+            return None
+        margin = 8.0
+        r = QtCore.QRectF(0.0, 0.0, float(self.width), float(self.height))
+        x = float(pos.x())
+        y = float(pos.y())
+        near_left = abs(x - r.left()) <= margin
+        near_right = abs(x - r.right()) <= margin
+        near_top = abs(y - r.top()) <= margin
+        near_bottom = abs(y - r.bottom()) <= margin
+
+        if near_right:
+            port_center_y = self._BASE_H / 2.0
+            if abs(y - port_center_y) <= 10.0 and (r.right() - x) <= margin + 2.0:
+                near_right = False
+
+        if near_left and near_top:
+            return "top-left"
+        if near_right and near_top:
+            return "top-right"
+        if near_left and near_bottom:
+            return "bottom-left"
+        if near_right and near_bottom:
+            return "bottom-right"
+        if near_left:
+            return "left"
+        if near_right:
+            return "right"
+        if near_top:
+            return "top"
+        if near_bottom:
+            return "bottom"
+        return None
+
+    def _note_cursor_for_mode(self, mode: str | None):
+        if not mode:
+            return None
+        if mode in ("left", "right"):
+            return QtCore.Qt.SizeHorCursor
+        if mode in ("top", "bottom"):
+            return QtCore.Qt.SizeVerCursor
+        if mode in ("top-left", "bottom-right"):
+            return QtCore.Qt.SizeFDiagCursor
+        if mode in ("top-right", "bottom-left"):
+            return QtCore.Qt.SizeBDiagCursor
+        return None
+
+    def _begin_note_resize(self, mode: str, pos: QtCore.QPointF):
+        self._note_resize_mode = mode
+        self._note_resize_start = QtCore.QPointF(pos)
+        self._note_initial_rect = QtCore.QRectF(0.0, 0.0, float(self.width), float(self.height))
+        self._note_initial_pos = QtCore.QPointF(self.pos())
+
+    def _apply_note_resize(self, pos: QtCore.QPointF):
+        if not self._note_resize_mode:
+            return
+        rect = QtCore.QRectF(self._note_initial_rect)
+        delta = pos - self._note_resize_start
+        new_rect = QtCore.QRectF(rect)
+        new_pos = QtCore.QPointF(self._note_initial_pos)
+        min_w = float(self._BASE_W)
+        min_h = float(self._BASE_H)
+        mode = self._note_resize_mode
+
+        if "right" in mode:
+            new_rect.setWidth(max(min_w, rect.width() + delta.x()))
+        if "bottom" in mode:
+            new_rect.setHeight(max(min_h, rect.height() + delta.y()))
+        if "left" in mode:
+            dx = delta.x()
+            max_dx = rect.width() - min_w
+            dx = min(max_dx, dx)
+            new_rect.setWidth(max(min_w, rect.width() - dx))
+            new_pos.setX(self._note_initial_pos.x() + dx)
+        if "top" in mode:
+            dy = delta.y()
+            max_dy = rect.height() - min_h
+            dy = min(max_dy, dy)
+            new_rect.setHeight(max(min_h, rect.height() - dy))
+            new_pos.setY(self._note_initial_pos.y() + dy)
+
+        new_rect.setWidth(max(min_w, new_rect.width()))
+        new_rect.setHeight(max(min_h, new_rect.height()))
+
+        changed = (
+            abs(new_rect.width() - float(self.width)) > 0.25
+            or abs(new_rect.height() - float(self.height)) > 0.25
+            or (new_pos != self.pos())
+        )
+        if not changed:
+            return
+
+        try:
+            self.prepareGeometryChange()
+        except Exception:
+            pass
+        self.width = float(new_rect.width())
+        self.height = float(new_rect.height())
+        if new_pos != self.pos():
+            self.setPos(new_pos)
+        try:
+            self.model._note_size = (float(self.width), float(self.height))
+        except Exception:
+            pass
+        try:
+            self._build_widgets()
+        except Exception:
+            pass
+        sc = self.scene()
+        if sc:
+            try:
+                for edge in getattr(sc, "_edges", []):
+                    if edge.src is self or edge.dst is self:
+                        edge.updatePath()
+            except Exception:
+                pass
+        self.update()
+
+    def _finish_note_resize(self):
+        if self._note_resize_mode:
+            self._note_resize_mode = None
+            try:
+                self.model._note_size = (float(self.width), float(self.height))
+            except Exception:
+                pass
+            self._schedule_rebuild()
+
     def _switch_label_text(self):
         n = len(self.model.switch_inputs)
         idx = max(0, min(self.model.switch_index, max(0, n - 1)))
@@ -1302,6 +1454,19 @@ class NodeItem(QtWidgets.QGraphicsObject):
     def hoverLeaveEvent(self, e):
         self._hover = False
         self.update()
+        self.unsetCursor()
+
+    def hoverMoveEvent(self, e):
+        if self._note_resize_available():
+            mode = self._note_hit_test(e.pos())
+            cursor = self._note_cursor_for_mode(mode)
+            if cursor:
+                self.setCursor(cursor)
+            else:
+                self.unsetCursor()
+        else:
+            self.unsetCursor()
+        super().hoverMoveEvent(e)
 
     def itemChange(self, change, value):
         if change == QtWidgets.QGraphicsItem.ItemPositionChange:
@@ -1368,6 +1533,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
     def mousePressEvent(self, e):
         if e.button() == QtCore.Qt.LeftButton:
+            if self._note_resize_available():
+                mode = self._note_hit_test(e.pos())
+                if mode:
+                    self._begin_note_resize(mode, e.pos())
+                    e.accept()
+                    return
             self._lmb_press_scene = self.mapToScene(e.pos())
             self._lmb_started_wire = False
 
@@ -1410,8 +1581,20 @@ class NodeItem(QtWidgets.QGraphicsObject):
             return
         super().mousePressEvent(e)
 
+    def mouseMoveEvent(self, e):
+        if self._note_resize_mode:
+            self._apply_note_resize(e.pos())
+            e.accept()
+            return
+        super().mouseMoveEvent(e)
+
     def mouseReleaseEvent(self, e):
         if e.button() == QtCore.Qt.LeftButton:
+            if self._note_resize_mode:
+                self._apply_note_resize(e.pos())
+                self._finish_note_resize()
+                e.accept()
+                return
             scene = self.scene()
             if scene:
                 scene._group_drag_active = False

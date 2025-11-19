@@ -33,6 +33,15 @@ def _node_to_dict(node) -> Dict[str, Any]:
         feat = getattr(node, "_featured_params", None)
         if isinstance(feat, set):
             d["featured_params"] = sorted(feat)
+        size = getattr(node, "_note_size", None)
+        if isinstance(size, (list, tuple)) and len(size) >= 2:
+            try:
+                w = float(size[0])
+                h = float(size[1])
+            except Exception:
+                w = h = None
+            if w is not None and h is not None:
+                d["note_size"] = [w, h]
 
     return d
 
@@ -98,6 +107,12 @@ def deserialize_scene(
                 setattr(n, "_featured_params", {str(x) for x in feat if x})
             except Exception:
                 setattr(n, "_featured_params", set())
+            nsize = nd.get("note_size")
+            if isinstance(nsize, (list, tuple)) and len(nsize) >= 2:
+                try:
+                    setattr(n, "_note_size", (float(nsize[0]), float(nsize[1])))
+                except Exception:
+                    pass
 
         # position (Qt-free)
         pos = nd.get("pos", [0.0, 0.0])
