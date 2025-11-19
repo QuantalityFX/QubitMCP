@@ -132,6 +132,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
         self._busy_timer.timeout.connect(self._on_busy_timeout)
         self._note_resize_mode: str | None = None
         self._note_resize_start = QtCore.QPointF()
+        self._note_scene_start = QtCore.QPointF()
+        self._note_initial_rect = QtCore.QRectF()
+        self._note_initial_pos = QtCore.QPointF()
+        self._note_resizing = False
+        self._note_resize_mode: str | None = None
+        self._note_resize_start = QtCore.QPointF()
         self._note_initial_rect = QtCore.QRectF()
         self._note_initial_pos = QtCore.QPointF()
        # Let the spec add named inputs (e.g., Librarian: query/docs_dir/mode/top_k/action)
@@ -1081,11 +1087,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
         near_top = abs(y - r.top()) <= margin
         near_bottom = abs(y - r.bottom()) <= margin
 
-        if near_right:
-            port_center_y = self._BASE_H / 2.0
-            if abs(y - port_center_y) <= 10.0 and (r.right() - x) <= margin + 2.0:
-                near_right = False
-
         if near_left and near_top:
             return "top-left"
         if near_right and near_top:
@@ -1119,7 +1120,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
     def _begin_note_resize(self, mode: str, pos: QtCore.QPointF):
         self._note_resize_mode = mode
+        self._note_resizing = True
         self._note_resize_start = QtCore.QPointF(pos)
+        try:
+            self._note_scene_start = QtCore.QPointF(self.mapToScene(pos))
+        except Exception:
+            self._note_scene_start = QtCore.QPointF()
         self._note_initial_rect = QtCore.QRectF(0.0, 0.0, float(self.width), float(self.height))
         self._note_initial_pos = QtCore.QPointF(self.pos())
 
@@ -1127,7 +1133,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
         if not self._note_resize_mode:
             return
         rect = QtCore.QRectF(self._note_initial_rect)
-        delta = pos - self._note_resize_start
+        try:
+            scene_pos = self.mapToScene(pos)
+            delta_scene = scene_pos - self._note_scene_start
+            delta = QtCore.QPointF(delta_scene.x(), delta_scene.y())
+        except Exception:
+            delta = pos - self._note_resize_start
         new_rect = QtCore.QRectF(rect)
         new_pos = QtCore.QPointF(self._note_initial_pos)
         min_w = float(self._BASE_W)
@@ -1196,6 +1207,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
             except Exception:
                 pass
             self._schedule_rebuild()
+        self._note_resizing = False
+        self._note_scene_start = QtCore.QPointF()
 
     def _switch_label_text(self):
         n = len(self.model.switch_inputs)
@@ -1470,6 +1483,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
     def itemChange(self, change, value):
         if change == QtWidgets.QGraphicsItem.ItemPositionChange:
+            if getattr(self, "_note_resizing", False):
+                return super().itemChange(change, value)
             sc = self.scene()
             if (
                 sc

@@ -179,6 +179,10 @@ class GraphView(QtWidgets.QGraphicsView):
                 return True
             return False
 
+        if _resolved_text_widget() is not None:
+            super().keyPressEvent(e)
+            return
+
         active_text_widget = _resolved_text_widget()
         if active_text_widget is not None:
             super().keyPressEvent(e)
