@@ -1680,6 +1680,14 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._ctrlb_filter = _CtrlBEventFilter(self)
         QtWidgets.QApplication.instance().installEventFilter(self._ctrlb_filter)
 
+        # Global shortcuts
+        try:
+            self._shortcut_save = QShortcut(QKeySequence("Ctrl+S"), self)
+            self._shortcut_save.setContext(QtCore.Qt.ApplicationShortcut)
+            self._shortcut_save.activated.connect(self._save_graph)
+        except Exception:
+            self._shortcut_save = None
+
         if HOST == "standalone":
             QtCore.QTimer.singleShot(0, self._maybe_show_recent_dialog)
 

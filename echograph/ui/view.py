@@ -117,16 +117,10 @@ class GraphView(QtWidgets.QGraphicsView):
             if isinstance(fw, text_widgets):
                 if isinstance(fw, QtWidgets.QComboBox):
                     return bool(fw.isEditable())
-                if isinstance(fw, QtWidgets.QLineEdit):
-                    return fw.hasSelectedText()
+                if isinstance(fw, (QtWidgets.QLineEdit, QtWidgets.QSpinBox, QtWidgets.QDoubleSpinBox)):
+                    return True
                 if isinstance(fw, (QtWidgets.QTextEdit, QtWidgets.QPlainTextEdit, QtWidgets.QTextBrowser)):
-                    try:
-                        cursor = fw.textCursor()
-                        return cursor.hasSelection()
-                    except Exception:
-                        return True
-                if isinstance(fw, (QtWidgets.QSpinBox, QtWidgets.QDoubleSpinBox)):
-                    return fw.hasSelectedText()
+                    return True
             return False
 
         def _text_widget_wants_paste() -> bool:
