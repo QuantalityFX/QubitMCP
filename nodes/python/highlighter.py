@@ -76,6 +76,8 @@ class PythonSyntaxHighlighter(QtGui.QSyntaxHighlighter):
         "tuple",
         "type",
         "Path",  # common pathlib alias – highlight like other builtins for readability
+        "self",
+        "cls",
     )
 
     def __init__(self, document: QtGui.QTextDocument):
@@ -86,6 +88,7 @@ class PythonSyntaxHighlighter(QtGui.QSyntaxHighlighter):
         builtin_fmt = self._build_format("#c084fc")
         number_fmt = self._build_format("#f9a8d4")
         decorator_fmt = self._build_format("#f97316")
+        variable_fmt = self._build_format("#f472b6")
         comment_fmt = self._build_format("#94a3b8", italic=True)
         self._string_format = self._build_format("#86efac")
         self._def_format = self._build_format("#facc15")
@@ -100,6 +103,13 @@ class PythonSyntaxHighlighter(QtGui.QSyntaxHighlighter):
         self._add_rule(QtCore.QRegularExpression(r'"[^"\\]*(?:\\.[^"\\]*)*"'), self._string_format)
         self._add_rule(QtCore.QRegularExpression(r"#.*"), comment_fmt)
         self._add_rule(QtCore.QRegularExpression(r"@[\w\.]+"), decorator_fmt)
+        keywords_pattern = "|".join(sorted(set(self._KEYWORDS)))
+        self._add_rule(
+            QtCore.QRegularExpression(
+                rf"(?<!\S)(?!(?:{keywords_pattern})\b)([A-Za-z_]\w*)(?=\s*=\s*(?![=]))"
+            ),
+            variable_fmt,
+        )
 
         self._function_regex = QtCore.QRegularExpression(r"\bdef\s+([A-Za-z_]\w*)")
         self._class_regex = QtCore.QRegularExpression(r"\bclass\s+([A-Za-z_]\w*)")
