@@ -75,6 +75,7 @@ class PythonSyntaxHighlighter(QtGui.QSyntaxHighlighter):
         "sum",
         "tuple",
         "type",
+        "Path",  # common pathlib alias – highlight like other builtins for readability
     )
 
     def __init__(self, document: QtGui.QTextDocument):
