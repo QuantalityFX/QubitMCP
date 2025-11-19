@@ -709,17 +709,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         edit.editingFinished.connect(lambda e=edit: self._commit_import_path_edit(e))
 
                     if attach_import_browse:
-                        reload_btn = QtWidgets.QToolButton()
-                        btn_style = QtWidgets.QApplication.style()
-                        if btn_style:
-                            reload_btn.setIcon(btn_style.standardIcon(QtWidgets.QStyle.SP_BrowserReload))
-                        reload_btn.setToolTip("Reload file")
-                        reload_btn.setFixedSize(22, 22)
-                        reload_btn.clicked.connect(
-                            lambda _=False, e=edit: self._commit_import_path_edit(e, force_refresh=True)
-                        )
-                        lay.addWidget(reload_btn, 0)
-
                         browse_btn = QtWidgets.QToolButton()
                         btn_style = QtWidgets.QApplication.style()
                         if btn_style:
@@ -921,6 +910,18 @@ class NodeItem(QtWidgets.QGraphicsObject):
         btn.setFixedWidth(64)
         btn.clicked.connect(lambda _=False, p=path: self._open_import_preview(p))
         btn_row.addWidget(btn, 0, QtCore.Qt.AlignLeft)
+
+        if (self.model.kind or "").lower() in ("import", "html_preview"):
+            reload_btn = QtWidgets.QToolButton()
+            btn_style = QtWidgets.QApplication.style()
+            if btn_style:
+                reload_btn.setIcon(btn_style.standardIcon(QtWidgets.QStyle.SP_BrowserReload))
+            reload_btn.setToolTip("Reload file")
+            reload_btn.setEnabled(bool(path))
+            reload_btn.setFixedSize(24, 24)
+            reload_btn.clicked.connect(lambda _=False: self._reload_import_path())
+            btn_row.addWidget(reload_btn, 0, QtCore.Qt.AlignLeft)
+
         btn_row.addStretch(1)
         outer.addLayout(btn_row)
 
@@ -945,6 +946,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
             if value == last:
                 self._schedule_rebuild()
                 return
+        self._set_param_value("path", value)
+
+    def _reload_import_path(self) -> None:
+        if (self.model.kind or "").lower() not in ("import", "html_preview"):
+            return
+        value = (self._param_value("path") or "").strip()
         self._set_param_value("path", value)
 
     def _file_detail_for_path(self, path: str) -> tuple[str, bool]:
