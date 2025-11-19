@@ -101,9 +101,15 @@ class GraphView(QtWidgets.QGraphicsView):
         p.fillRect(rect, QtGui.QColor("#1a1f24"))
 
     def keyPressEvent(self, e: QtGui.QKeyEvent):
-        def _text_widget_wants_copy() -> bool:
-            fw = QtWidgets.QApplication.focusWidget()
-            if not fw:
+        def _unwrap_proxy(obj):
+            if isinstance(obj, QtWidgets.QGraphicsProxyWidget):
+                child = obj.widget()
+                if child is not None:
+                    return child
+            return obj
+
+        def _is_text_widget(widget) -> bool:
+            if widget is None:
                 return False
             text_widgets = (
                 QtWidgets.QLineEdit,
@@ -114,41 +120,69 @@ class GraphView(QtWidgets.QGraphicsView):
                 QtWidgets.QDoubleSpinBox,
                 QtWidgets.QComboBox,
             )
-            if isinstance(fw, text_widgets):
-                if isinstance(fw, QtWidgets.QComboBox):
-                    return bool(fw.isEditable())
-                if isinstance(fw, (QtWidgets.QLineEdit, QtWidgets.QSpinBox, QtWidgets.QDoubleSpinBox)):
-                    return True
-                if isinstance(fw, (QtWidgets.QTextEdit, QtWidgets.QPlainTextEdit, QtWidgets.QTextBrowser)):
-                    return True
+            if isinstance(widget, text_widgets):
+                if isinstance(widget, QtWidgets.QComboBox):
+                    return bool(widget.isEditable())
+                return True
+            return False
+
+        def _resolved_text_widget():
+            fw = _unwrap_proxy(QtWidgets.QApplication.focusWidget())
+            if _is_text_widget(fw):
+                return fw
+            scene = self.scene()
+            if scene:
+                item = scene.focusItem()
+                fw = _unwrap_proxy(item)
+                if _is_text_widget(fw):
+                    return fw
+            return None
+
+        def _has_selected_nodes() -> bool:
+            sc = self.scene()
+            if not sc:
+                return False
+            try:
+                for item in sc.selectedItems():
+                    if getattr(item, "model", None) is not None:
+                        return True
+            except Exception:
+                pass
+            return False
+
+        def _text_widget_wants_copy() -> bool:
+            fw = _resolved_text_widget()
+            if not fw:
+                return False
+            if isinstance(fw, QtWidgets.QComboBox):
+                return bool(fw.isEditable())
+            if isinstance(fw, (QtWidgets.QLineEdit, QtWidgets.QSpinBox, QtWidgets.QDoubleSpinBox)):
+                return True
+            if isinstance(fw, (QtWidgets.QTextEdit, QtWidgets.QPlainTextEdit, QtWidgets.QTextBrowser)):
+                return True
             return False
 
         def _text_widget_wants_paste() -> bool:
-            fw = QtWidgets.QApplication.focusWidget()
+            fw = _resolved_text_widget()
             if not fw:
                 return False
-            text_widgets = (
-                QtWidgets.QLineEdit,
-                QtWidgets.QTextEdit,
-                QtWidgets.QPlainTextEdit,
-                QtWidgets.QTextBrowser,
-                QtWidgets.QSpinBox,
-                QtWidgets.QDoubleSpinBox,
-                QtWidgets.QComboBox,
-            )
-            if isinstance(fw, text_widgets):
-                if isinstance(fw, QtWidgets.QComboBox):
-                    return bool(fw.isEditable())
-                if isinstance(fw, QtWidgets.QLineEdit):
+            if isinstance(fw, QtWidgets.QComboBox):
+                return bool(fw.isEditable())
+            if isinstance(fw, QtWidgets.QLineEdit):
+                return not fw.isReadOnly()
+            if isinstance(fw, (QtWidgets.QTextEdit, QtWidgets.QPlainTextEdit, QtWidgets.QTextBrowser)):
+                try:
                     return not fw.isReadOnly()
-                if isinstance(fw, (QtWidgets.QTextEdit, QtWidgets.QPlainTextEdit, QtWidgets.QTextBrowser)):
-                    try:
-                        return not fw.isReadOnly()
-                    except Exception:
-                        return True
-                if isinstance(fw, (QtWidgets.QSpinBox, QtWidgets.QDoubleSpinBox)):
+                except Exception:
                     return True
+            if isinstance(fw, (QtWidgets.QSpinBox, QtWidgets.QDoubleSpinBox)):
+                return True
             return False
+
+        active_text_widget = _resolved_text_widget()
+        if active_text_widget is not None:
+            super().keyPressEvent(e)
+            return
 
         if e.key() == QtCore.Qt.Key_Delete:
             sc = self.scene()
@@ -159,6 +193,7 @@ class GraphView(QtWidgets.QGraphicsView):
         if (
             e.key() == QtCore.Qt.Key_C
             and not (e.modifiers() & (QtCore.Qt.ControlModifier | QtCore.Qt.MetaModifier | QtCore.Qt.AltModifier))
+            and _has_selected_nodes()
         ):
             sc = self.scene()
             if sc and hasattr(sc, "create_comment_group_from_selection"):
