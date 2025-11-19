@@ -946,13 +946,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
             if value == last:
                 self._schedule_rebuild()
                 return
-        self._set_param_value("path", value)
+        QtCore.QTimer.singleShot(0, lambda v=value: self._set_param_value("path", v))
 
     def _reload_import_path(self) -> None:
         if (self.model.kind or "").lower() not in ("import", "html_preview"):
             return
         value = (self._param_value("path") or "").strip()
-        self._set_param_value("path", value)
+        QtCore.QTimer.singleShot(0, lambda v=value: self._set_param_value("path", v))
 
     def _file_detail_for_path(self, path: str) -> tuple[str, bool]:
         path = (path or "").strip()
@@ -1016,7 +1016,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             "HTML Files (*.html *.htm);;All Files (*.*)",
         )
         if file_path:
-            self._set_param_value("path", file_path)
+            QtCore.QTimer.singleShot(0, lambda p=file_path: self._set_param_value("path", p))
 
     def _open_import_preview(self, path: str):
         path = (path or "").strip()
