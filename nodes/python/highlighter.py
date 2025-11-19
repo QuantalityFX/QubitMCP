@@ -89,6 +89,7 @@ class PythonSyntaxHighlighter(QtGui.QSyntaxHighlighter):
         number_fmt = self._build_format("#f9a8d4")
         decorator_fmt = self._build_format("#f97316")
         variable_fmt = self._build_format("#f472b6")
+        import_symbol_fmt = self._build_format("#93c5fd")
         comment_fmt = self._build_format("#94a3b8", italic=True)
         self._string_format = self._build_format("#86efac")
         self._def_format = self._build_format("#facc15")
@@ -103,6 +104,10 @@ class PythonSyntaxHighlighter(QtGui.QSyntaxHighlighter):
         self._add_rule(QtCore.QRegularExpression(r'"[^"\\]*(?:\\.[^"\\]*)*"'), self._string_format)
         self._add_rule(QtCore.QRegularExpression(r"#.*"), comment_fmt)
         self._add_rule(QtCore.QRegularExpression(r"@[\w\.]+"), decorator_fmt)
+        self._add_rule(
+            QtCore.QRegularExpression(r"(?<=\bfrom\s+)\w+|(?<=\bimport\s+)\w+"),
+            import_symbol_fmt,
+        )
         keywords_pattern = "|".join(sorted(set(self._KEYWORDS)))
         self._add_rule(
             QtCore.QRegularExpression(
