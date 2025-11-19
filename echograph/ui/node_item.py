@@ -136,10 +136,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         self._note_initial_rect = QtCore.QRectF()
         self._note_initial_pos = QtCore.QPointF()
         self._note_resizing = False
-        self._note_resize_mode: str | None = None
-        self._note_resize_start = QtCore.QPointF()
-        self._note_initial_rect = QtCore.QRectF()
-        self._note_initial_pos = QtCore.QPointF()
+        self._import_path_committed = None
        # Let the spec add named inputs (e.g., Librarian: query/docs_dir/mode/top_k/action)
         try:
             spec = core.get_spec((self.model.kind or "node").lower())
@@ -165,6 +162,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
         self._recompute_height()
         self._build_widgets()
+        if (self.model.kind or "").lower() in ("import", "html_preview"):
+            self._import_path_committed = (self._param_value("path") or "").strip()
         # --- named-input helpers (used by plugin specs like Librarian) ---
 
     def _ensure_named_inputs_set(self):
@@ -192,6 +191,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
     def _set_param_value(self, name: str, value: str):
         key = (name or "").strip().lower()
+        is_import_path = key == "path" and (self.model.kind or "").lower() in ("import", "html_preview")
+        if is_import_path:
+            value = (value or "").strip()
         params = list(self.model.params or [])
         found = False
         for p in params:
@@ -203,6 +205,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
             params.append({"name": name, "value": value})
 
         self.model.params = params
+        if is_import_path:
+            self._import_path_committed = value
         sc = self.scene()
         if sc:
             try:
@@ -701,8 +705,21 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         edit.setToolTip("")
                     edit.textChanged.connect(lambda txt, idx=i: self._on_param_changed(idx, txt))
                     lay.addWidget(edit, 1)
+                    if attach_import_browse:
+                        edit.editingFinished.connect(lambda e=edit: self._commit_import_path_edit(e))
 
                     if attach_import_browse:
+                        reload_btn = QtWidgets.QToolButton()
+                        btn_style = QtWidgets.QApplication.style()
+                        if btn_style:
+                            reload_btn.setIcon(btn_style.standardIcon(QtWidgets.QStyle.SP_BrowserReload))
+                        reload_btn.setToolTip("Reload file")
+                        reload_btn.setFixedSize(22, 22)
+                        reload_btn.clicked.connect(
+                            lambda _=False, e=edit: self._commit_import_path_edit(e, force_refresh=True)
+                        )
+                        lay.addWidget(reload_btn, 0)
+
                         browse_btn = QtWidgets.QToolButton()
                         btn_style = QtWidgets.QApplication.style()
                         if btn_style:
@@ -917,6 +934,19 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
         return y_cursor + summary_h
 
+    def _commit_import_path_edit(self, line_edit: QtWidgets.QLineEdit | None, *, force_refresh: bool = False) -> None:
+        if line_edit is None:
+            return
+        value = (line_edit.text() or "").strip()
+        if not force_refresh:
+            last = ""
+            if isinstance(self._import_path_committed, str):
+                last = (self._import_path_committed or "").strip()
+            if value == last:
+                self._schedule_rebuild()
+                return
+        self._set_param_value("path", value)
+
     def _file_detail_for_path(self, path: str) -> tuple[str, bool]:
         path = (path or "").strip()
         if not path:
@@ -1067,6 +1097,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
         # Recompute height first, then rebuild
         self._recompute_height()
         self._build_widgets()
+        if (self.model.kind or "").lower() in ("import", "html_preview"):
+            self._import_path_committed = (self._param_value("path") or "").strip()
 
     def _note_resize_available(self) -> bool:
         if (self.model.kind or "").lower() != "note":
