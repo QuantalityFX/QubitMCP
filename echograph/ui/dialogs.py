@@ -5,6 +5,10 @@ from pathlib import Path
 
 from echograph.qt_compat import QtCore, QtGui, QtWidgets, _qexec
 from echograph.constants import LLM_URL, APP_TITLE
+try:
+    from nodes.python.highlighter import PythonSyntaxHighlighter
+except Exception:  # pragma: no cover - optional plugin import
+    PythonSyntaxHighlighter = None
 
 # -------- Code Editor Dialog --------
 class CodeEditorDialog(QtWidgets.QDialog):
@@ -22,6 +26,12 @@ class CodeEditorDialog(QtWidgets.QDialog):
             space_w = fm.width(' ')
         self.edit.setTabStopDistance(4 * space_w)
         self.edit.setStyleSheet("QPlainTextEdit{background:#0f1216;color:#e6edf3;border:1px solid #334;}")
+        self._syntax_highlighter = None
+        if PythonSyntaxHighlighter is not None:
+            try:
+                self._syntax_highlighter = PythonSyntaxHighlighter(self.edit.document())
+            except Exception:
+                self._syntax_highlighter = None
         v.addWidget(self.edit, 1)
         bb = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
         bb.accepted.connect(self.accept); bb.rejected.connect(self.reject)

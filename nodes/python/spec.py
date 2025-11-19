@@ -12,6 +12,10 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         from PySide6 import QtWidgets, QtGui, QtCore
     except Exception:
         from PySide2 import QtWidgets, QtGui, QtCore
+    try:
+        from .highlighter import PythonSyntaxHighlighter
+    except Exception:
+        PythonSyntaxHighlighter = None
 
     node = getattr(card, "_node_ref", None)
     if not node or (node.kind or "").lower() != "python":
@@ -36,6 +40,12 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             self.edit.setStyleSheet(
                 "QPlainTextEdit{background:#0f1216;color:#e6edf3;border:1px solid #334;}"
             )
+            self._syntax_highlighter = None
+            if PythonSyntaxHighlighter is not None:
+                try:
+                    self._syntax_highlighter = PythonSyntaxHighlighter(self.edit.document())
+                except Exception:
+                    self._syntax_highlighter = None
             v.addWidget(self.edit, 1)
             bb = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
             bb.accepted.connect(self.accept)
