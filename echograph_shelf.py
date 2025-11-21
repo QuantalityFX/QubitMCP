@@ -415,6 +415,7 @@ core.register_defaults()
 
 # --- host detection (Maya / Houdini / standalone) ---
 HOST = "standalone"
+_SKIP_RECENT_DIALOG = "--skip-recent" in sys.argv
 maya_cmds = None
 omui = None
 hou_mod = None
@@ -1685,7 +1686,9 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             self._shortcut_save = None
 
         if HOST == "standalone":
-            QtCore.QTimer.singleShot(0, self._maybe_show_recent_dialog)
+            if not _SKIP_RECENT_DIALOG:
+                QtCore.QTimer.singleShot(0, self._maybe_show_recent_dialog)
+            QtCore.QTimer.singleShot(0, self.showMaximized)
 
     def _register_bigedit_target(self, lineedit: QtWidgets.QLineEdit, node_item: 'NodeItem', param_name: str):
         self._bigedit_registry[lineedit] = (node_item, param_name)
@@ -1745,6 +1748,9 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             return
         dlg = RecentGraphsDialog(self, recents)
         if _qexec(dlg) == QtWidgets.QDialog.Accepted:
+            action = getattr(dlg, "result_action", lambda: "open")()
+            if action == "new":
+                return
             path = dlg.selected_path()
             if path:
                 if not self._load_graph_file(path):
@@ -1757,7 +1763,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, APP_TITLE, f"Unable to find launcher:\n{script}")
             return
         try:
-            subprocess.Popen([python, str(script)])
+            subprocess.Popen([python, str(script), "--skip-recent"])
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, APP_TITLE, f"Failed to launch:\n{exc}")
 

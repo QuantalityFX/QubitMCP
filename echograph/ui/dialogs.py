@@ -266,6 +266,7 @@ class RecentGraphsDialog(QtWidgets.QDialog):
         self.setWindowTitle("Recent Graphs")
         self.setMinimumWidth(420)
         self._paths = [str(p) for p in (recent_paths or []) if isinstance(p, str) and p.strip()]
+        self._action = "open"
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
@@ -284,13 +285,22 @@ class RecentGraphsDialog(QtWidgets.QDialog):
             self.list.addItem(item)
         if self.list.count():
             self.list.setCurrentRow(0)
-        self.list.itemDoubleClicked.connect(lambda *_: self.accept())
+        self.list.itemDoubleClicked.connect(lambda *_: self._accept_open())
         layout.addWidget(self.list, 1)
 
+        btn_row = QtWidgets.QHBoxLayout()
+        btn_new = QtWidgets.QPushButton("New Workflow")
+        btn_new.clicked.connect(self._accept_new)
+        btn_row.addWidget(btn_new, 0, QtCore.Qt.AlignLeft)
+
+        btn_row.addStretch(1)
+
         btns = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Open | QtWidgets.QDialogButtonBox.Cancel)
-        btns.accepted.connect(self.accept)
-        btns.rejected.connect(self.reject)
-        layout.addWidget(btns)
+        btns.accepted.connect(self._accept_open)
+        btns.rejected.connect(self._reject_dialog)
+        btn_row.addWidget(btns, 0, QtCore.Qt.AlignRight)
+
+        layout.addLayout(btn_row)
 
     def selected_path(self) -> str:
         it = self.list.currentItem()
@@ -298,3 +308,18 @@ class RecentGraphsDialog(QtWidgets.QDialog):
             return ""
         path = it.data(QtCore.Qt.UserRole)
         return str(path) if path else ""
+
+    def _accept_open(self):
+        self._action = "open"
+        self.accept()
+
+    def _accept_new(self):
+        self._action = "new"
+        self.accept()
+
+    def _reject_dialog(self):
+        self._action = "cancel"
+        self.reject()
+
+    def result_action(self) -> str:
+        return self._action
