@@ -32,6 +32,13 @@ except Exception:
     get_lexer_for_filename = guess_lexer = TextLexer = HtmlFormatter = None
     _HAS_PYGMENTS = False
 
+try:
+    from pypdf import PdfReader
+    _HAS_PYPDF = True
+except Exception:
+    PdfReader = None
+    _HAS_PYPDF = False
+
 # Optional WebEngine
 try:
     from PySide6 import QtWebEngineWidgets as WebEngine
@@ -1007,6 +1014,52 @@ class NodeItem(QtWidgets.QGraphicsObject):
         browser.setOpenExternalLinks(True)
         return browser
 
+    @staticmethod
+    def _read_plaintext_file(path: str) -> str:
+        path = (path or "").strip()
+        if not path:
+            return ""
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                return fh.read()
+        except Exception:
+            try:
+                with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+                    return fh.read()
+            except Exception:
+                return ""
+
+    @staticmethod
+    def _read_pdf_text(path: str) -> str:
+        if not _HAS_PYPDF:
+            return ""
+        path = (path or "").strip()
+        if not path:
+            return ""
+        try:
+            reader = PdfReader(path)
+            chunks = []
+            for page in reader.pages:
+                try:
+                    txt = page.extract_text() or ""
+                except Exception:
+                    txt = ""
+                if txt.strip():
+                    chunks.append(txt.strip())
+            return "\n\n".join(chunks)
+        except Exception:
+            return ""
+
+    @staticmethod
+    def read_import_text(path: str) -> str:
+        path = (path or "").strip()
+        if not path:
+            return ""
+        ext = os.path.splitext(path)[1].lower()
+        if ext == ".pdf":
+            return NodeItem._read_pdf_text(path)
+        return NodeItem._read_plaintext_file(path)
+
     def _browse_import_file(self, current: str):
         start = current or os.path.expanduser("~")
         file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
@@ -1022,6 +1075,19 @@ class NodeItem(QtWidgets.QGraphicsObject):
         path = (path or "").strip()
         if not path:
             QtWidgets.QMessageBox.information(_top_level_parent_for_dialog(), "Import", "No file selected.")
+            return
+
+        ext = os.path.splitext(path)[1].lower()
+
+        if ext == ".pdf":
+            text = self.read_import_text(path)
+            if not text:
+                msg = "Install 'pypdf' to enable PDF previews." if not _HAS_PYPDF else "Failed to extract text from PDF."
+                QtWidgets.QMessageBox.warning(_top_level_parent_for_dialog(), "Import", msg)
+                return
+            dlg = BigTextEditDialog(_top_level_parent_for_dialog(), title=f"Preview: {os.path.basename(path)}", initial=text)
+            dlg.edit.setReadOnly(True)
+            self._show_modeless_dialog(dlg)
             return
 
         try:

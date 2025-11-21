@@ -644,11 +644,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
                     path = (p.get("value") or "").strip()
                     break
             if path:
-                try:
-                    with open(path, "r", encoding="utf-8", errors="ignore") as fh:
-                        text = fh.read()
-                except Exception:
-                    text = ""
+                text = NodeItem.read_import_text(path)
                 if text:
                     segments.append({"node": model.name, "param": "file", "text": text})
 
