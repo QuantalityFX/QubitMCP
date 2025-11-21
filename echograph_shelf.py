@@ -7,7 +7,7 @@
 # Delete/Backspace removes selected nodes with their links.
 # Clicking an Output node auto-fills Info pane with ordered branch cards (start → output).
 
-import sys, re, json, math, os, time
+import sys, re, json, math, os, time, subprocess
 from pathlib import Path
 from typing import List, Dict, Any
 
@@ -1750,11 +1750,27 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 if not self._load_graph_file(path):
                     self._forget_recent(path)
 
+    def _launch_new_instance(self):
+        script = Path(__file__).resolve().parent / "echograph_app.py"
+        python = sys.executable or "python"
+        if not script.exists():
+            QtWidgets.QMessageBox.warning(self, APP_TITLE, f"Unable to find launcher:\n{script}")
+            return
+        try:
+            subprocess.Popen([python, str(script)])
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, APP_TITLE, f"Failed to launch:\n{exc}")
+
     def _build_topbar(self):
         bar = QtWidgets.QFrame(); bar.setObjectName("TopBar")
         bar.setStyleSheet("#TopBar{background:#20242b;border-bottom:1px solid #333;} PushButton{padding:6px 12px;font-weight:600;}")
         bar.setFixedHeight(36)
         h = QtWidgets.QHBoxLayout(bar); h.setContentsMargins(8,4,8,4); h.setSpacing(8)
+
+        btn_new = QtWidgets.QPushButton("New Workflow", bar)
+        btn_new.setToolTip("Launch a fresh EchoGraph window")
+        btn_new.clicked.connect(self._launch_new_instance)
+        h.addWidget(btn_new, 0)
 
         btn_create = QtWidgets.QPushButton("Create Node", bar)
         btn_create.setToolTip("Create a new node with type & params")
