@@ -169,6 +169,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
             if "path" not in names:
                 params.append({"name": "path", "value": ""})
                 self.model.params = params
+        elif (self.model.kind or "").lower() == "note":
+            # Ensure notes always start with at least one parameter for convenience
+            if not (self.model.params or []):
+                self.model.params = [{"name": "note", "value": ""}]
 
         self._recompute_height()
         self._build_widgets()
@@ -432,6 +436,37 @@ class NodeItem(QtWidgets.QGraphicsObject):
             pass
 
 
+    def _unique_param_name(self, base: str = "param") -> str:
+        existing = {(p.get("name") or "").strip().lower() for p in (self.model.params or [])}
+        if base.strip().lower() not in existing:
+            return base
+        i = 2
+        while True:
+            candidate = f"{base} {i}"
+            if candidate.strip().lower() not in existing:
+                return candidate
+            i += 1
+
+    def _append_param(self, name: str | None = None, value: str = ""):
+        nm = name or self._unique_param_name("param")
+        params = list(self.model.params or [])
+        params.append({"name": nm, "value": value})
+        self.model.params = params
+        # Defer scene updates to avoid re-entrancy while building widgets
+        def _apply_to_scene():
+            sc = self.scene()
+            if sc and hasattr(sc, "set_node_params"):
+                try:
+                    sc.set_node_params(self.model.name, params)
+                except Exception:
+                    pass
+        try:
+            QtCore.QTimer.singleShot(0, _apply_to_scene)
+        except Exception:
+            _apply_to_scene()
+        self._schedule_rebuild()
+
+
     def _normalize_url(self, s: str) -> str:
         s = (s or "").strip()
         if not s:
@@ -462,6 +497,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
         # Note: add a big block per featured param (prune orphans first)
         feat_heights = {}
+        add_ctrl_h = 0
         if kind == "note":
             try:
                 current_names = { (p.get("name") or "") for p in (self.model.params or []) if (p.get("name") or "") }
@@ -470,6 +506,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 params_h += sum(self._featured_block_height(nm, feat_heights) for nm in feat_set)
             except Exception:
                 pass
+            add_ctrl_h = self._PARAM_ROW_H
+            params_h += add_ctrl_h
 
         if n_params:
             params_h += self._PADDING  # breathing room below params
@@ -690,6 +728,32 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 else:
                     feat_set = set()
                     feat_heights = {}
+
+                # Quick add-param control for Note nodes
+                if kind == "note":
+                    add_row = QtWidgets.QWidget()
+                    add_row.setAttribute(QtCore.Qt.WA_TranslucentBackground)
+                    add_lay = QtWidgets.QHBoxLayout(add_row)
+                    add_lay.setContentsMargins(6, 0, 6, 0)
+                    add_lay.setSpacing(6)
+                    add_btn = QtWidgets.QToolButton()
+                    add_btn.setAutoRaise(True)
+                    add_btn.setText("+")
+                    add_btn.setToolTip("Add a new parameter to this Note")
+                    add_btn.clicked.connect(lambda _=False: self._append_param("param"))
+                    add_lay.addWidget(add_btn, 0)
+                    add_lbl = QtWidgets.QLabel("Add parameter")
+                    add_lbl.setStyleSheet("color:#cbd5e1;")
+                    add_lay.addWidget(add_lbl, 0)
+                    add_lay.addStretch(1)
+
+                    add_proxy = QtWidgets.QGraphicsProxyWidget(self)
+                    add_proxy.setWidget(add_row)
+                    add_proxy.setZValue(self.zValue() + 0.1)
+                    add_proxy.setPos(0, y_cursor)
+                    add_proxy.resize(self.width, self._PARAM_ROW_H)
+                    self._param_proxies.append(add_proxy)
+                    y_cursor += self._PARAM_ROW_H
 
                 wired_inputs = self._wired_named_inputs()
                 named_inputs = {n.strip().lower() for n in self.input_port_names()}
