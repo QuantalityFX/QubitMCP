@@ -155,11 +155,17 @@ class CreateNodeDialog(QtWidgets.QDialog):
 
         self.kind_edit = QtWidgets.QComboBox()
         self.kind_edit.setEditable(True)
-        self.kind_edit.addItems([
+        kinds = [
             "node","import","html_preview","python","switch","output","llm",
             "llm_prompt","librarian","note","append"
-        ])
-        self.kind_edit.setEditText("node")
+        ]
+        try:
+            kinds.remove("note")
+        except ValueError:
+            pass
+        kinds.insert(0, "note")
+        self.kind_edit.addItems(kinds)
+        self.kind_edit.setEditText("note")
         form.addRow("Node type:", self.kind_edit)
 
         self._llm_url_label = QtWidgets.QLabel("URL:")
