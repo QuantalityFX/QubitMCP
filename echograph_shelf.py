@@ -786,7 +786,6 @@ class GraphScene(QtWidgets.QGraphicsScene):
                 
         # Check if it's a Librarian node
         if (data["kind"] or "").lower() == "librarian":
-            node.info = "Librarian node created"
             ensure_params = [
                 ("query", ""),
                 ("docs_dir", ""),
@@ -1878,7 +1877,6 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
         # Librarian nicety (same as right-click path)
         if (data["kind"] or "").lower() == "librarian":
-            node.info = "Librarian node created"
             ensure_params = [
                 ("query", ""),
                 ("docs_dir", ""),

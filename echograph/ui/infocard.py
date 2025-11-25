@@ -106,7 +106,7 @@ class InfoCard(QtWidgets.QFrame):
         text.setMinimumHeight(80)
 
         # Hide the info block if it's just the default placeholder and not needed
-        default_info = info_str.lower() in ("", "user-created node.", "user-created node")
+        default_info = info_str.lower() in ("", "user-created node.", "user-created node", "librarian node created", "librarian node created.")
         if default_info and (node.kind or "").lower() != "output":
             text.setVisible(False)
             text.setMinimumHeight(0)
