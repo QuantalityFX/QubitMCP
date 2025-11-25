@@ -956,29 +956,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         big.textChanged.connect(_sync_big)
                         vlay.addWidget(big, 1)
 
-                        def _apply_height(new_h: float, nm=pname):
-                            h = self._clamp_featured_height(new_h)
-                            self._set_featured_height(nm, h)
-                            big_row.setMinimumHeight(h)
-                            big_row.setMaximumHeight(h)
-                            try:
-                                big_proxy.resize(self.width, h)
-                            except Exception:
-                                pass
-                            new_text_h = max(60, int(h - self._NOTE_FEATURED_HANDLE_H))
-                            big.setMinimumHeight(new_text_h)
-                            big.updateGeometry()
-
-                        def _drag_height(delta: float, nm=pname):
-                            current_h = self._featured_block_height(nm)
-                            _apply_height(current_h + float(delta))
-
-                        grip = _FeatureResizeHandle(
-                            lambda dy, nm=pname: _drag_height(dy, nm),
-                            release_cb=self._schedule_rebuild
-                        )
-                        vlay.addWidget(grip, 0)
-
                         big_row.setMinimumHeight(block_h)
                         big_row.setMaximumHeight(block_h)
 
@@ -988,6 +965,29 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         big_proxy.setPos(0, y_cursor)
                         big_proxy.resize(self.width, block_h)
                         self._param_proxies.append(big_proxy)
+
+                        def _apply_height(new_h: float, nm=pname, proxy=big_proxy, row=big_row, editor=big):
+                            h = self._clamp_featured_height(new_h)
+                            self._set_featured_height(nm, h)
+                            row.setMinimumHeight(h)
+                            row.setMaximumHeight(h)
+                            try:
+                                proxy.resize(self.width, h)
+                            except Exception:
+                                pass
+                            new_text_h = max(60, int(h - self._NOTE_FEATURED_HANDLE_H))
+                            editor.setMinimumHeight(new_text_h)
+                            editor.updateGeometry()
+
+                        def _drag_height(delta: float, nm=pname, proxy=big_proxy, row=big_row, editor=big):
+                            current_h = self._featured_block_height(nm)
+                            _apply_height(current_h + float(delta), nm, proxy, row, editor)
+
+                        grip = _FeatureResizeHandle(
+                            lambda dy, nm=pname, proxy=big_proxy, row=big_row, editor=big: _drag_height(dy, nm, proxy, row, editor),
+                            release_cb=self._schedule_rebuild
+                        )
+                        vlay.addWidget(grip, 0)
 
                         y_cursor += block_h
 
