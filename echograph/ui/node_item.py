@@ -50,9 +50,10 @@ except Exception:
 
 class _FeatureResizeHandle(QtWidgets.QWidget):
     """Thin draggable grip used to resize per-featured text blocks."""
-    def __init__(self, drag_cb, parent=None):
+    def __init__(self, drag_cb, release_cb=None, parent=None):
         super().__init__(parent)
         self._cb = drag_cb
+        self._release_cb = release_cb
         self._dragging = False
         self._start_y = 0
         self.setFixedHeight(10)
@@ -69,10 +70,13 @@ class _FeatureResizeHandle(QtWidgets.QWidget):
     def mouseMoveEvent(self, e):
         if self._dragging and callable(self._cb):
             dy = e.globalY() - self._start_y
-            try:
-                self._cb(dy)
-            except Exception:
-                pass
+            if dy != 0:
+                try:
+                    self._cb(dy)
+                except Exception:
+                    pass
+                # reset anchor so small drags accumulate smoothly
+                self._start_y = e.globalY()
             e.accept()
             return
         super().mouseMoveEvent(e)
@@ -80,6 +84,11 @@ class _FeatureResizeHandle(QtWidgets.QWidget):
     def mouseReleaseEvent(self, e):
         if self._dragging and e.button() == QtCore.Qt.LeftButton:
             self._dragging = False
+            try:
+                if callable(self._release_cb):
+                    self._release_cb()
+            except Exception:
+                pass
             e.accept()
             return
         super().mouseReleaseEvent(e)
@@ -128,8 +137,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
     _PARAM_ROW_H = 24
     _PADDING = 8
     _NOTE_FEATURED_H = 160
-    _NOTE_FEATURED_MIN_H = 100
-    _NOTE_FEATURED_MAX_H = 800
+    _NOTE_FEATURED_MIN_H = 60
+    _NOTE_FEATURED_MAX_H = 1200
     _NOTE_FEATURED_CTRL_H = 28
     _NOTE_FEATURED_HANDLE_H = 10
     _PORT_HIT_TOL = 9.0
@@ -947,13 +956,27 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         big.textChanged.connect(_sync_big)
                         vlay.addWidget(big, 1)
 
-                        def _drag_height(delta: float, nm=pname):
-                            # Amplify drag delta so small mouse moves produce meaningful height changes
-                            new_h = self._featured_block_height(nm) + float(delta) * 6.0
-                            self._set_featured_height(nm, new_h)
-                            self._schedule_rebuild()
+                        def _apply_height(new_h: float, nm=pname):
+                            h = self._clamp_featured_height(new_h)
+                            self._set_featured_height(nm, h)
+                            big_row.setMinimumHeight(h)
+                            big_row.setMaximumHeight(h)
+                            try:
+                                big_proxy.resize(self.width, h)
+                            except Exception:
+                                pass
+                            new_text_h = max(60, int(h - self._NOTE_FEATURED_HANDLE_H))
+                            big.setMinimumHeight(new_text_h)
+                            big.updateGeometry()
 
-                        grip = _FeatureResizeHandle(lambda dy, nm=pname: _drag_height(dy, nm))
+                        def _drag_height(delta: float, nm=pname):
+                            current_h = self._featured_block_height(nm)
+                            _apply_height(current_h + float(delta))
+
+                        grip = _FeatureResizeHandle(
+                            lambda dy, nm=pname: _drag_height(dy, nm),
+                            release_cb=self._schedule_rebuild
+                        )
                         vlay.addWidget(grip, 0)
 
                         big_row.setMinimumHeight(block_h)
