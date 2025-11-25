@@ -92,6 +92,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
     _PARAM_ROW_H = 24
     _PADDING = 8
     _NOTE_FEATURED_H = 160
+    _NOTE_FEATURED_MIN_H = 100
+    _NOTE_FEATURED_MAX_H = 800
+    _NOTE_FEATURED_CTRL_H = 28
     _PORT_HIT_TOL = 9.0
     
     def __init__(self, model: GraphNode):
@@ -363,17 +366,70 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
         return out
 
+    
     def _pruned_featured_set(self, valid_names: set[str]) -> set[str]:
-        """Return featured set ∩ valid_names and write back if anything was pruned."""
+        """Return featured set intersect valid_names and write back if anything was pruned."""
         feat = self._get_featured_set()
         pruned = {n for n in feat if n in valid_names}
         if pruned != feat:
             self._set_featured_set(pruned)
+        self._featured_heights_map(valid_names)  # prune heights for missing params
         return pruned
 
     def _set_featured_set(self, names: set[str]):
         """Write back a NEW set instance (copy-on-write)."""
         setattr(self.model, "_featured_params", set(names))
+
+    def _featured_heights_map(self, valid_names: set[str] | None = None) -> dict[str, float]:
+        """Return a sanitized mapping of featured heights; prune names not in valid_names."""
+        raw = getattr(self.model, "_featured_heights", None)
+        out: dict[str, float] = {}
+        if isinstance(raw, dict):
+            for k, v in raw.items():
+                name = str(k)
+                if valid_names is not None and name not in valid_names:
+                    continue
+                try:
+                    h = float(v)
+                except Exception:
+                    continue
+                if h > 0:
+                    out[name] = h
+        if valid_names is not None and isinstance(raw, dict):
+            pruned_keys = {str(k) for k in raw.keys() if str(k) in valid_names}
+            if set(out.keys()) != pruned_keys:
+                try:
+                    setattr(self.model, "_featured_heights", dict(out))
+                except Exception:
+                    pass
+        return out
+
+    def _clamp_featured_height(self, h: float | None) -> float:
+        try:
+            val = float(h)
+        except Exception:
+            val = float(self._NOTE_FEATURED_H)
+        return max(self._NOTE_FEATURED_MIN_H, min(self._NOTE_FEATURED_MAX_H, val))
+
+    def _featured_block_height(self, name: str, heights_map: dict[str, float] | None = None) -> float:
+        hm = heights_map if isinstance(heights_map, dict) else None
+        if hm is None:
+            hm = self._featured_heights_map()
+        h = hm.get(name) if isinstance(hm, dict) else None
+        return self._clamp_featured_height(h)
+
+    def _set_featured_height(self, name: str, height: float):
+        if not name:
+            return
+        h = self._clamp_featured_height(height)
+        raw = getattr(self.model, "_featured_heights", None)
+        if not isinstance(raw, dict):
+            raw = {}
+        raw[str(name)] = h
+        try:
+            setattr(self.model, "_featured_heights", raw)
+        except Exception:
+            pass
 
 
     def _normalize_url(self, s: str) -> str:
@@ -405,11 +461,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
         params_h = n_params * self._PARAM_ROW_H
 
         # Note: add a big block per featured param (prune orphans first)
+        feat_heights = {}
         if kind == "note":
             try:
                 current_names = { (p.get("name") or "") for p in (self.model.params or []) if (p.get("name") or "") }
                 feat_set = self._pruned_featured_set(current_names)
-                params_h += len(feat_set) * self._NOTE_FEATURED_H
+                feat_heights = self._featured_heights_map(current_names)
+                params_h += sum(self._featured_block_height(nm, feat_heights) for nm in feat_set)
             except Exception:
                 pass
 
@@ -628,8 +686,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 if kind == "note":
                     current_names = { (p.get("name") or "") for p in (self.model.params or []) if (p.get("name") or "") }
                     feat_set = self._pruned_featured_set(current_names)
+                    feat_heights = self._featured_heights_map(current_names)
                 else:
                     feat_set = set()
+                    feat_heights = {}
 
                 wired_inputs = self._wired_named_inputs()
                 named_inputs = {n.strip().lower() for n in self.input_port_names()}
@@ -751,8 +811,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
                     y_cursor += self._PARAM_ROW_H
 
-                    # If featured → add a SECOND row right BELOW with a large QTextEdit
+
+                    # If featured -> add a SECOND row right BELOW with a large QTextEdit (per-param adjustable height)
                     if kind == "note" and pname in feat_set:
+                        block_h = self._featured_block_height(pname, feat_heights)
+                        text_h = max(60, int(block_h - self._NOTE_FEATURED_CTRL_H))
+
                         big_row = QtWidgets.QWidget()
                         big_row.setAttribute(QtCore.Qt.WA_TranslucentBackground)
                         vlay = QtWidgets.QVBoxLayout(big_row)
@@ -762,6 +826,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         big = QtWidgets.QTextEdit()
                         big.setAcceptRichText(False)
                         big.setPlainText(pval)
+                        big.setMinimumHeight(text_h)
                         big.setStyleSheet(
                             "QTextEdit{background:#0f1216;color:#e6edf3;"
                             "border:1px solid #3c4450;border-radius:6px;padding:6px;}"
@@ -771,14 +836,48 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         big.textChanged.connect(_sync_big)
                         vlay.addWidget(big, 1)
 
+                        ctrl = QtWidgets.QHBoxLayout()
+                        ctrl.setContentsMargins(0, 0, 0, 0)
+                        ctrl.setSpacing(6)
+                        h_label = QtWidgets.QLabel(f"{int(block_h)} px")
+                        h_label.setStyleSheet("color:#94a3b8;")
+                        h_label.setToolTip("Current height for this field")
+
+                        def _adjust_height(delta: float, nm=pname, lbl=h_label):
+                            new_h = self._featured_block_height(nm) + float(delta)
+                            self._set_featured_height(nm, new_h)
+                            lbl.setText(f"{int(self._featured_block_height(nm))} px")
+                            self._schedule_rebuild()
+
+                        shrink_btn = QtWidgets.QToolButton()
+                        shrink_btn.setAutoRaise(True)
+                        shrink_btn.setText("-")
+                        shrink_btn.setToolTip("Make this field shorter")
+                        shrink_btn.clicked.connect(lambda _=False: _adjust_height(-40))
+
+                        grow_btn = QtWidgets.QToolButton()
+                        grow_btn.setAutoRaise(True)
+                        grow_btn.setText("+")
+                        grow_btn.setToolTip("Make this field taller")
+                        grow_btn.clicked.connect(lambda _=False: _adjust_height(40))
+
+                        ctrl.addWidget(h_label)
+                        ctrl.addStretch(1)
+                        ctrl.addWidget(shrink_btn)
+                        ctrl.addWidget(grow_btn)
+                        vlay.addLayout(ctrl)
+
+                        big_row.setMinimumHeight(block_h)
+                        big_row.setMaximumHeight(block_h)
+
                         big_proxy = QtWidgets.QGraphicsProxyWidget(self)
                         big_proxy.setWidget(big_row)
                         big_proxy.setZValue(self.zValue() + 0.1)
                         big_proxy.setPos(0, y_cursor)
-                        big_proxy.resize(self.width, self._NOTE_FEATURED_H)
+                        big_proxy.resize(self.width, block_h)
                         self._param_proxies.append(big_proxy)
 
-                        y_cursor += self._NOTE_FEATURED_H
+                        y_cursor += block_h
 
             kind_lower = (self.model.kind or "").lower()
             if kind_lower == "import":

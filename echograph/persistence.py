@@ -42,6 +42,18 @@ def _node_to_dict(node) -> Dict[str, Any]:
                 w = h = None
             if w is not None and h is not None:
                 d["note_size"] = [w, h]
+        fheights = getattr(node, "_featured_heights", None)
+        if isinstance(fheights, dict):
+            clean = {}
+            for name, val in fheights.items():
+                try:
+                    hv = float(val)
+                except Exception:
+                    continue
+                if hv > 0:
+                    clean[str(name)] = hv
+            if clean:
+                d["featured_heights"] = clean
 
     return d
 
@@ -113,6 +125,21 @@ def deserialize_scene(
                     setattr(n, "_note_size", (float(nsize[0]), float(nsize[1])))
                 except Exception:
                     pass
+            fheights = nd.get("featured_heights")
+            if isinstance(fheights, dict):
+                clean = {}
+                for name, val in fheights.items():
+                    try:
+                        hv = float(val)
+                    except Exception:
+                        continue
+                    if hv > 0:
+                        clean[str(name)] = hv
+                if clean:
+                    try:
+                        setattr(n, "_featured_heights", clean)
+                    except Exception:
+                        pass
 
         # position (Qt-free)
         pos = nd.get("pos", [0.0, 0.0])

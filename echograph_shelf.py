@@ -1040,6 +1040,18 @@ class GraphScene(QtWidgets.QGraphicsScene):
             feat = getattr(node, "_featured_params", None)
             if isinstance(feat, set):
                 snap["featured_params"] = sorted(feat)
+            fheights = getattr(node, "_featured_heights", None)
+            if isinstance(fheights, dict):
+                clean = {}
+                for name, val in fheights.items():
+                    try:
+                        hv = float(val)
+                    except Exception:
+                        continue
+                    if hv > 0:
+                        clean[str(name)] = hv
+                if clean:
+                    snap["featured_heights"] = clean
         return snap
 
     def copy_selection_to_clipboard(self) -> bool:
@@ -1154,11 +1166,27 @@ class GraphScene(QtWidgets.QGraphicsScene):
                 switch_index=int(entry.get("switch_index", 0) or 0),
             )
 
-            if (kind or "").lower() == "note" and entry.get("featured_params"):
-                try:
-                    setattr(node, "_featured_params", {str(x) for x in entry["featured_params"] if x})
-                except Exception:
-                    setattr(node, "_featured_params", set())
+            if (kind or "").lower() == "note":
+                if entry.get("featured_params"):
+                    try:
+                        setattr(node, "_featured_params", {str(x) for x in entry["featured_params"] if x})
+                    except Exception:
+                        setattr(node, "_featured_params", set())
+                fheights = entry.get("featured_heights")
+                if isinstance(fheights, dict):
+                    clean = {}
+                    for name, val in fheights.items():
+                        try:
+                            hv = float(val)
+                        except Exception:
+                            continue
+                        if hv > 0:
+                            clean[str(name)] = hv
+                    if clean:
+                        try:
+                            setattr(node, "_featured_heights", clean)
+                        except Exception:
+                            pass
 
             pos = entry.get("pos") or [0.0, 0.0]
             try:
@@ -1174,6 +1202,8 @@ class GraphScene(QtWidgets.QGraphicsScene):
             item = self.add_node(node, (new_x, new_y))
             if hasattr(node, "_featured_params"):
                 setattr(item.model, "_featured_params", getattr(node, "_featured_params"))
+            if hasattr(node, "_featured_heights"):
+                setattr(item.model, "_featured_heights", getattr(node, "_featured_heights"))
             new_items.append(item)
             name_map[orig_name] = new_name
 
