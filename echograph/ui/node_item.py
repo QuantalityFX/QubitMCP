@@ -48,6 +48,42 @@ except Exception:
     except Exception:
         WebEngine = None
 
+class _FeatureResizeHandle(QtWidgets.QWidget):
+    """Thin draggable grip used to resize per-featured text blocks."""
+    def __init__(self, drag_cb, parent=None):
+        super().__init__(parent)
+        self._cb = drag_cb
+        self._dragging = False
+        self._start_y = 0
+        self.setFixedHeight(10)
+        self.setCursor(QtCore.Qt.SizeVerCursor)
+
+    def mousePressEvent(self, e):
+        if e.button() == QtCore.Qt.LeftButton:
+            self._dragging = True
+            self._start_y = e.globalY()
+            e.accept()
+            return
+        super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e):
+        if self._dragging and callable(self._cb):
+            dy = e.globalY() - self._start_y
+            try:
+                self._cb(dy)
+            except Exception:
+                pass
+            e.accept()
+            return
+        super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        if self._dragging and e.button() == QtCore.Qt.LeftButton:
+            self._dragging = False
+            e.accept()
+            return
+        super().mouseReleaseEvent(e)
+
 def _top_level_parent_for_dialog() -> QtWidgets.QWidget | None:
     aw = QtWidgets.QApplication.activeWindow()
     if aw and aw.isWindow():
@@ -95,6 +131,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
     _NOTE_FEATURED_MIN_H = 100
     _NOTE_FEATURED_MAX_H = 800
     _NOTE_FEATURED_CTRL_H = 28
+    _NOTE_FEATURED_HANDLE_H = 10
     _PORT_HIT_TOL = 9.0
     
     def __init__(self, model: GraphNode):
@@ -466,6 +503,42 @@ class NodeItem(QtWidgets.QGraphicsObject):
             _apply_to_scene()
         self._schedule_rebuild()
 
+    def _pop_last_param(self):
+        params = list(self.model.params or [])
+        if len(params) <= 1:
+            return
+        removed = params.pop()
+        self.model.params = params
+        pname = (removed.get("name") or "").strip()
+        # prune featured markers/heights
+        try:
+            feat = self._get_featured_set()
+            if pname in feat:
+                feat.discard(pname)
+                self._set_featured_set(feat)
+        except Exception:
+            pass
+        raw = getattr(self.model, "_featured_heights", None)
+        if isinstance(raw, dict) and pname:
+            try:
+                raw.pop(pname, None)
+                setattr(self.model, "_featured_heights", raw)
+            except Exception:
+                pass
+
+        def _apply_to_scene():
+            sc = self.scene()
+            if sc and hasattr(sc, "set_node_params"):
+                try:
+                    sc.set_node_params(self.model.name, params)
+                except Exception:
+                    pass
+        try:
+            QtCore.QTimer.singleShot(0, _apply_to_scene)
+        except Exception:
+            _apply_to_scene()
+        self._schedule_rebuild()
+
 
     def _normalize_url(self, s: str) -> str:
         s = (s or "").strip()
@@ -729,32 +802,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     feat_set = set()
                     feat_heights = {}
 
-                # Quick add-param control for Note nodes
-                if kind == "note":
-                    add_row = QtWidgets.QWidget()
-                    add_row.setAttribute(QtCore.Qt.WA_TranslucentBackground)
-                    add_lay = QtWidgets.QHBoxLayout(add_row)
-                    add_lay.setContentsMargins(6, 0, 6, 0)
-                    add_lay.setSpacing(6)
-                    add_btn = QtWidgets.QToolButton()
-                    add_btn.setAutoRaise(True)
-                    add_btn.setText("+")
-                    add_btn.setToolTip("Add a new parameter to this Note")
-                    add_btn.clicked.connect(lambda _=False: self._append_param("param"))
-                    add_lay.addWidget(add_btn, 0)
-                    add_lbl = QtWidgets.QLabel("Add parameter")
-                    add_lbl.setStyleSheet("color:#cbd5e1;")
-                    add_lay.addWidget(add_lbl, 0)
-                    add_lay.addStretch(1)
-
-                    add_proxy = QtWidgets.QGraphicsProxyWidget(self)
-                    add_proxy.setWidget(add_row)
-                    add_proxy.setZValue(self.zValue() + 0.1)
-                    add_proxy.setPos(0, y_cursor)
-                    add_proxy.resize(self.width, self._PARAM_ROW_H)
-                    self._param_proxies.append(add_proxy)
-                    y_cursor += self._PARAM_ROW_H
-
                 wired_inputs = self._wired_named_inputs()
                 named_inputs = {n.strip().lower() for n in self.input_port_names()}
 
@@ -876,16 +923,16 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     y_cursor += self._PARAM_ROW_H
 
 
-                    # If featured -> add a SECOND row right BELOW with a large QTextEdit (per-param adjustable height)
+                    # If featured -> add a SECOND row right BELOW with a large QTextEdit (draggable resize)
                     if kind == "note" and pname in feat_set:
                         block_h = self._featured_block_height(pname, feat_heights)
-                        text_h = max(60, int(block_h - self._NOTE_FEATURED_CTRL_H))
+                        text_h = max(60, int(block_h - self._NOTE_FEATURED_HANDLE_H))
 
                         big_row = QtWidgets.QWidget()
                         big_row.setAttribute(QtCore.Qt.WA_TranslucentBackground)
                         vlay = QtWidgets.QVBoxLayout(big_row)
-                        vlay.setContentsMargins(6, 4, 6, 6)  # left flush, a bit of bottom breathing room
-                        vlay.setSpacing(4)
+                        vlay.setContentsMargins(6, 4, 6, 2)  # leave a bit for the grip
+                        vlay.setSpacing(2)
 
                         big = QtWidgets.QTextEdit()
                         big.setAcceptRichText(False)
@@ -900,36 +947,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         big.textChanged.connect(_sync_big)
                         vlay.addWidget(big, 1)
 
-                        ctrl = QtWidgets.QHBoxLayout()
-                        ctrl.setContentsMargins(0, 0, 0, 0)
-                        ctrl.setSpacing(6)
-                        h_label = QtWidgets.QLabel(f"{int(block_h)} px")
-                        h_label.setStyleSheet("color:#94a3b8;")
-                        h_label.setToolTip("Current height for this field")
-
-                        def _adjust_height(delta: float, nm=pname, lbl=h_label):
-                            new_h = self._featured_block_height(nm) + float(delta)
+                        def _drag_height(delta: float, nm=pname):
+                            # Amplify drag delta so small mouse moves produce meaningful height changes
+                            new_h = self._featured_block_height(nm) + float(delta) * 6.0
                             self._set_featured_height(nm, new_h)
-                            lbl.setText(f"{int(self._featured_block_height(nm))} px")
                             self._schedule_rebuild()
 
-                        shrink_btn = QtWidgets.QToolButton()
-                        shrink_btn.setAutoRaise(True)
-                        shrink_btn.setText("-")
-                        shrink_btn.setToolTip("Make this field shorter")
-                        shrink_btn.clicked.connect(lambda _=False: _adjust_height(-40))
-
-                        grow_btn = QtWidgets.QToolButton()
-                        grow_btn.setAutoRaise(True)
-                        grow_btn.setText("+")
-                        grow_btn.setToolTip("Make this field taller")
-                        grow_btn.clicked.connect(lambda _=False: _adjust_height(40))
-
-                        ctrl.addWidget(h_label)
-                        ctrl.addStretch(1)
-                        ctrl.addWidget(shrink_btn)
-                        ctrl.addWidget(grow_btn)
-                        vlay.addLayout(ctrl)
+                        grip = _FeatureResizeHandle(lambda dy, nm=pname: _drag_height(dy, nm))
+                        vlay.addWidget(grip, 0)
 
                         big_row.setMinimumHeight(block_h)
                         big_row.setMaximumHeight(block_h)
@@ -942,6 +967,38 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         self._param_proxies.append(big_proxy)
 
                         y_cursor += block_h
+
+                # Quick add/remove param controls for Note nodes (bottom)
+                if kind == "note":
+                    add_row = QtWidgets.QWidget()
+                    add_row.setAttribute(QtCore.Qt.WA_TranslucentBackground)
+                    add_lay = QtWidgets.QHBoxLayout(add_row)
+                    add_lay.setContentsMargins(6, 0, 6, 0)
+                    add_lay.setSpacing(6)
+
+                    add_btn = QtWidgets.QToolButton()
+                    add_btn.setAutoRaise(True)
+                    add_btn.setText("+")
+                    add_btn.setToolTip("Add a new parameter to this Note")
+                    add_btn.clicked.connect(lambda _=False: self._append_param("param"))
+                    add_lay.addWidget(add_btn, 0)
+
+                    remove_btn = QtWidgets.QToolButton()
+                    remove_btn.setAutoRaise(True)
+                    remove_btn.setText("-")
+                    remove_btn.setToolTip("Remove the last parameter (leaves at least one)")
+                    remove_btn.clicked.connect(lambda _=False: self._pop_last_param())
+                    add_lay.addWidget(remove_btn, 0)
+
+                    add_lay.addStretch(1)
+
+                    add_proxy = QtWidgets.QGraphicsProxyWidget(self)
+                    add_proxy.setWidget(add_row)
+                    add_proxy.setZValue(self.zValue() + 0.1)
+                    add_proxy.setPos(0, y_cursor)
+                    add_proxy.resize(self.width, self._PARAM_ROW_H)
+                    self._param_proxies.append(add_proxy)
+                    y_cursor += self._PARAM_ROW_H
 
             kind_lower = (self.model.kind or "").lower()
             if kind_lower == "import":
