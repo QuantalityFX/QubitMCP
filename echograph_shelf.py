@@ -781,7 +781,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
         final_name = self._unique_node_name(data.get("name", ""), data.get("kind", "node"))
         data["name"] = final_name
 
-        node = GraphNode(final_name, kind=data["kind"], info="User-created node.",
+        node = GraphNode(final_name, kind=data["kind"], info="",
                         params=data["params"], code=data.get("code"))
                 
         # Check if it's a Librarian node
@@ -1871,7 +1871,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         node = GraphNode(
             data["name"],
             kind=data["kind"],
-            info="User-created node.",
+            info="",
             params=data["params"],
             code=data.get("code"),
         )

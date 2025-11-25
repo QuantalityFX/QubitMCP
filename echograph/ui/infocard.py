@@ -99,10 +99,18 @@ class InfoCard(QtWidgets.QFrame):
         )
         text.setOpenExternalLinks(False)
         text.setOpenLinks(False)
-        safe = QtGui.QTextDocument(); safe.setPlainText(node.info or "No info.")
+        info_str = (node.info or "").strip()
+        safe = QtGui.QTextDocument(); safe.setPlainText(info_str or "No info.")
         html = _hash_to_links(safe.toPlainText())
         text.setHtml("<style>body{font-family:Segoe UI,Roboto,Helvetica,Arial,sans-serif; font-size:12px;}a{color:#60a5fa;}</style>"+html)
         text.setMinimumHeight(80)
+
+        # Hide the info block if it's just the default placeholder and not needed
+        default_info = info_str.lower() in ("", "user-created node.", "user-created node")
+        if default_info and (node.kind or "").lower() != "output":
+            text.setVisible(False)
+            text.setMinimumHeight(0)
+            text.setMaximumHeight(0)
 
         text.anchorClicked.connect(lambda url: self.requestJump.emit(url.path().lstrip("/")))
 
