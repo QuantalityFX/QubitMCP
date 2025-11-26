@@ -75,44 +75,62 @@ class _ImageCanvas(QtWidgets.QWidget):
             return
         self.paths = [p for p, _ in loaded]
 
-        n = len(loaded)
-        cols = min(3, max(1, n))
-        rows = (n + cols - 1) // cols
-        pad = 8
-        cell_w = max(1, int((self.width() - pad * (cols + 1)) / cols))
-        cell_h = max(1, int((self.height() - pad * (rows + 1)) / rows))
+        edge_pad = 4
+        gap = 4
+        avail_w = max(1, self.width() - 2 * edge_pad)
+        avail_h = max(1, self.height() - 2 * edge_pad)
 
-        scaled = []
+        base_sizes = []
+        scaled_pixmaps = []
         for _, pm in loaded:
             if pm.width() <= 0 or pm.height() <= 0:
                 continue
-            factor = min(1.0, cell_w / float(pm.width()), cell_h / float(pm.height()))
-            if factor < 1.0:
-                pm = pm.scaled(
-                    max(1, int(pm.width() * factor)),
-                    max(1, int(pm.height() * factor)),
-                    QtCore.Qt.KeepAspectRatio,
-                    QtCore.Qt.SmoothTransformation,
-                )
-            scaled.append(pm)
-        self.pixmaps = scaled
+            factor = min(1.0, avail_w / float(pm.width()), avail_h / float(pm.height()))
+            w = max(1, int(pm.width() * factor))
+            h = max(1, int(pm.height() * factor))
+            scaled_pixmaps.append(pm.scaled(w, h, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation) if factor < 1.0 else pm)
+            base_sizes.append((w, h))
 
-        self.offsets = []
-        x = pad
-        y = pad
-        max_h = 0
-        col = 0
-        for pm in self.pixmaps:
-            self.offsets.append(QtCore.QPoint(x, y))
-            max_h = max(max_h, pm.height())
-            col += 1
-            if col >= cols:
-                col = 0
-                x = pad
-                y += max_h + pad
-                max_h = 0
-            else:
-                x += cell_w + pad
+        def _layout(sizes, width_limit):
+            offs = []
+            x = edge_pad
+            y = edge_pad
+            row_h = 0
+            max_row_w = 0
+            for w, h in sizes:
+                if x + w > width_limit - edge_pad and x > edge_pad:
+                    x = edge_pad
+                    y += row_h + gap
+                    row_h = 0
+                offs.append(QtCore.QPoint(x, y))
+                row_h = max(row_h, h)
+                x += w + gap
+                max_row_w = max(max_row_w, x - edge_pad - gap)
+            total_h = y + row_h + edge_pad
+            return offs, total_h, max_row_w
+
+        offsets, total_h, max_row_w = _layout(base_sizes, self.width())
+        scale_all = 1.0
+        if total_h > self.height() or max_row_w > avail_w:
+            scale_all = min(
+                1.0,
+                float(avail_w) / float(max(1, max_row_w)),
+                float(avail_h) / float(max(1, total_h - edge_pad)),
+            )
+        if scale_all < 1.0:
+            resized_sizes = []
+            resized_pixmaps = []
+            for (w, h), pm in zip(base_sizes, scaled_pixmaps):
+                nw = max(1, int(w * scale_all))
+                nh = max(1, int(h * scale_all))
+                resized_sizes.append((nw, nh))
+                resized_pixmaps.append(pm.scaled(nw, nh, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+            base_sizes = resized_sizes
+            scaled_pixmaps = resized_pixmaps
+            offsets, total_h, max_row_w = _layout(base_sizes, self.width())
+
+        self.pixmaps = scaled_pixmaps
+        self.offsets = offsets
         self.update()
 
     def paintEvent(self, event):
