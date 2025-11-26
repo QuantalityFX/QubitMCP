@@ -81,15 +81,29 @@ class _ImageCanvas(QtWidgets.QWidget):
         avail_h = max(1, self.height() - 2 * edge_pad)
 
         base_sizes = []
-        scaled_pixmaps = []
+        base_pixmaps = []
+        max_img_w = 1
+        max_img_h = 1
         for _, pm in loaded:
             if pm.width() <= 0 or pm.height() <= 0:
                 continue
-            factor = min(1.0, avail_w / float(pm.width()), avail_h / float(pm.height()))
-            w = max(1, int(pm.width() * factor))
-            h = max(1, int(pm.height() * factor))
-            scaled_pixmaps.append(pm.scaled(w, h, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation) if factor < 1.0 else pm)
-            base_sizes.append((w, h))
+            max_img_w = max(max_img_w, pm.width())
+            max_img_h = max(max_img_h, pm.height())
+            base_sizes.append((pm.width(), pm.height()))
+            base_pixmaps.append(pm)
+
+        # Single global pre-scale so largest image fits.
+        pre_scale = min(1.0, avail_w / float(max_img_w), avail_h / float(max_img_h))
+        if pre_scale < 1.0:
+            scaled_sizes = []
+            scaled_pixmaps = []
+            for (w, h), pm in zip(base_sizes, base_pixmaps):
+                nw = max(1, int(w * pre_scale))
+                nh = max(1, int(h * pre_scale))
+                scaled_sizes.append((nw, nh))
+                scaled_pixmaps.append(pm.scaled(nw, nh, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+            base_sizes = scaled_sizes
+            base_pixmaps = scaled_pixmaps
 
         def _layout(sizes, width_limit):
             offs = []
@@ -110,26 +124,24 @@ class _ImageCanvas(QtWidgets.QWidget):
             return offs, total_h, max_row_w
 
         offsets, total_h, max_row_w = _layout(base_sizes, self.width())
-        scale_all = 1.0
-        if total_h > self.height() or max_row_w > avail_w:
-            scale_all = min(
-                1.0,
-                float(avail_w) / float(max(1, max_row_w)),
-                float(avail_h) / float(max(1, total_h - edge_pad)),
-            )
+        scale_all = min(
+            1.0,
+            float(avail_w) / float(max(1, max_row_w)),
+            float(avail_h) / float(max(1, total_h)),
+        )
         if scale_all < 1.0:
             resized_sizes = []
             resized_pixmaps = []
-            for (w, h), pm in zip(base_sizes, scaled_pixmaps):
+            for (w, h), pm in zip(base_sizes, base_pixmaps):
                 nw = max(1, int(w * scale_all))
                 nh = max(1, int(h * scale_all))
                 resized_sizes.append((nw, nh))
                 resized_pixmaps.append(pm.scaled(nw, nh, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
             base_sizes = resized_sizes
-            scaled_pixmaps = resized_pixmaps
+            base_pixmaps = resized_pixmaps
             offsets, total_h, max_row_w = _layout(base_sizes, self.width())
 
-        self.pixmaps = scaled_pixmaps
+        self.pixmaps = base_pixmaps
         self.offsets = offsets
         self.update()
 
