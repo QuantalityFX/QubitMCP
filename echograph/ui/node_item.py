@@ -157,6 +157,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
         self.height = self._BASE_H
         self.radius = 10
         self._transparent_body = (self.model.kind or "").lower() in ("image_collection", "imagecollection")
+        # Ensure the ImageCollection spec is registered even if the loader was skipped.
+        if (self.model.kind or "").strip().lower() in ("image_collection", "imagecollection"):
+            try:
+                from nodes import image_collection as _imgcol  # type: ignore
+                if hasattr(_imgcol, "register"):
+                    _imgcol.register()
+            except Exception:
+                pass
 
         self.setFlag(QtWidgets.QGraphicsItem.ItemIsMovable, True)
         self.setFlag(QtWidgets.QGraphicsItem.ItemSendsGeometryChanges, True)
@@ -722,6 +730,130 @@ class NodeItem(QtWidgets.QGraphicsObject):
         except Exception:
             pass
 
+    def _render_image_collection_inline(self, y_cursor: int) -> int:
+        """Fallback renderer if plugin registration failed; keeps button visible."""
+        try:
+            from PySide6 import QtWidgets as _QtWidgets, QtGui as _QtGui, QtCore as _QtCore
+        except Exception:
+            from PySide2 import QtWidgets as _QtWidgets, QtGui as _QtGui, QtCore as _QtCore  # type: ignore
+
+        node_item = self
+
+        class _InlineCanvas(_QtWidgets.QWidget):
+            def __init__(self, parent=None):
+                super().__init__(parent)
+                self.setAttribute(_QtCore.Qt.WA_TranslucentBackground, True)
+                self.setAutoFillBackground(False)
+                self.pixmaps = []
+                self.offsets = []
+
+            def load_images(self, paths):
+                loaded = []
+                for p in paths:
+                    pm = _QtGui.QPixmap(p)
+                    if not pm.isNull():
+                        loaded.append((p, pm))
+                if not loaded:
+                    return
+                self.pixmaps = [pm for _, pm in loaded]
+                self.offsets = []
+                col = 0
+                x_accum = 0
+                y_accum = 0
+                max_h = 0
+                pad = 10
+                for pm in self.pixmaps:
+                    self.offsets.append(_QtCore.QPoint(x_accum, y_accum))
+                    max_h = max(max_h, pm.height())
+                    col += 1
+                    if col >= 3:
+                        col = 0
+                        x_accum = 0
+                        y_accum += max_h + pad
+                        max_h = 0
+                    else:
+                        x_accum += pm.width() + pad
+                self.update()
+
+            def paintEvent(self, _ev):
+                painter = _QtGui.QPainter(self)
+                for pm, off in zip(self.pixmaps, self.offsets):
+                    painter.drawPixmap(off, pm)
+                painter.end()
+
+            def sizeHint(self):
+                return _QtCore.QSize(int(node_item._IMG_CANVAS_W), int(node_item._IMG_CANVAS_H))
+
+        body = _QtWidgets.QWidget()
+        body.setAttribute(_QtCore.Qt.WA_TranslucentBackground, True)
+        body.setAutoFillBackground(False)
+        v = _QtWidgets.QVBoxLayout(body)
+        v.setContentsMargins(6, 6, 6, 6)
+        v.setSpacing(6)
+
+        header = _QtWidgets.QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(6)
+        title = _QtWidgets.QLabel("Image Collection")
+        title.setStyleSheet("color:#e2e8f0;font-weight:bold;")
+        header.addWidget(title, 0)
+        header.addStretch(1)
+
+        btn = _QtWidgets.QPushButton("Load Images")
+        btn.setStyleSheet(
+            "QPushButton{background:#1f2937;color:#e2e8f0;border:1px solid #475569;"
+            "border-radius:4px;padding:6px 10px;}"
+            "QPushButton:hover{background:#273449;}"
+        )
+        header.addWidget(btn, 0)
+        v.addLayout(header)
+
+        canvas = _InlineCanvas()
+        v.addWidget(canvas, 1)
+
+        def _pick():
+            # Prefer a native dialog tied to the top-level window to avoid overlay artifacts.
+            try:
+                parent_win = _top_level_parent_for_dialog()
+            except Exception:
+                parent_win = None
+            paths, _ = _QtWidgets.QFileDialog.getOpenFileNames(
+                parent_win,
+                "Select Images",
+                "",
+                "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)",
+            )
+            if not paths:
+                return
+            canvas.load_images(paths)
+            try:
+                setattr(node_item.model, "_image_collection_state", {"paths": list(paths)})
+            except Exception:
+                pass
+
+        btn.clicked.connect(_pick)
+
+        # restore prior state paths
+        try:
+            st = getattr(node_item.model, "_image_collection_state", {}) or {}
+            paths = st.get("paths", [])
+            if paths:
+                canvas.load_images(paths)
+        except Exception:
+            pass
+
+        proxy = QtWidgets.QGraphicsProxyWidget(node_item)
+        proxy.setWidget(body)
+        proxy.setZValue(node_item.zValue() + 0.1)
+        proxy.setPos(0, y_cursor)
+        h = body.sizeHint().height()
+        proxy.resize(node_item.width, h)
+        try:
+            node_item._plugin_proxies.append(proxy)
+        except Exception:
+            pass
+        return y_cursor + h
+
 
     def _build_widgets(self):
         # prevent re-entrancy while we're tearing down/creating proxies
@@ -732,18 +864,31 @@ class NodeItem(QtWidgets.QGraphicsObject):
             self._clear_widget_proxies()
             y_cursor = 38 + 16 + self._PADDING
 
+            kind_lower = (self.model.kind or "").strip().lower()
+
+            # --- Inline ImageCollection body to guarantee the load button is present ---
+            if kind_lower in ("image_collection", "imagecollection"):
+                y_cursor = self._render_image_collection_inline(y_cursor)
+                # Skip plugin render; inline version is authoritative
+                kind_lower = None
+
             # --- Plugin body hook (lets specs draw a custom node body) ---
             try:
-                spec = core.get_spec((self.model.kind or "node").lower())
+                spec = core.get_spec((self.model.kind or "node").lower()) if kind_lower else None
                 render = None
                 if isinstance(spec, dict):
                     render = spec.get("render_node_body")
                 else:
                     render = getattr(spec, "render_node_body", None)
                 if callable(render):
+                    pre_plugin_count = len(getattr(self, "_plugin_proxies", []) or [])
                     new_y = render(self, y_cursor)
                     if isinstance(new_y, (int, float)):
                         y_cursor = int(new_y)
+                    post_plugin_count = len(getattr(self, "_plugin_proxies", []) or [])
+                    # If nothing was added, keep y_cursor unchanged
+                    if post_plugin_count == pre_plugin_count:
+                        y_cursor = y_cursor
             except Exception as e:
                 print("[EchoGraph] render_node_body error:", e)
 

@@ -93,6 +93,14 @@ def register_defaults() -> None:
     except Exception as exc:  # pragma: no cover - optional plugin
         print("[EchoGraph] GPT Prompt auto-register failed:", exc)
 
+    # Auto-register Image Collection so its render hook is present even if loader plugins fail later
+    try:
+        from nodes import image_collection as _img_col  # type: ignore
+        if hasattr(_img_col, "register"):
+            _img_col.register(core=sys.modules[__name__])
+    except Exception as exc:  # pragma: no cover - optional plugin
+        print("[EchoGraph] Image Collection auto-register failed:", exc)
+
 
 def apply_spec_to_item(item: Any, kind: str | Spec, *, debug: bool = False) -> Any:
     """

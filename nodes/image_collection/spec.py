@@ -13,6 +13,10 @@ from nodes.core import Spec
 DEFAULT_CANVAS_SIZE = QtCore.QSize(720, 420)
 
 
+def _default_state() -> Dict[str, Any]:
+    return {"paths": []}
+
+
 def _load_pixmaps(paths: List[str]) -> List[Tuple[str, QtGui.QPixmap]]:
     out = []
     for p in paths:
@@ -85,18 +89,37 @@ class ImageCollectionWidget(QtWidgets.QWidget):
 
         load_btn = QtWidgets.QPushButton("Load Images")
         load_btn.clicked.connect(self._pick_images)
+        load_btn.setStyleSheet(
+            "QPushButton{background:#1f2937;color:#e2e8f0;border:1px solid #475569;"
+            "border-radius:4px;padding:6px 10px;}"
+            "QPushButton:hover{background:#273449;}"
+        )
+
+        header = QtWidgets.QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(6)
+        title = QtWidgets.QLabel("Image Collection")
+        title.setStyleSheet("color:#e2e8f0;font-weight:bold;")
+        header.addWidget(title, 0)
+        header.addStretch(1)
+        header.addWidget(load_btn, 0)
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(6)
-        layout.addWidget(load_btn, 0)
+        layout.addLayout(header, 0)
         layout.addWidget(self.canvas, 1)
 
         # Reload any existing state on the model
-        state = getattr(node_item.model, "_image_collection_state", None) or {}
+        state = getattr(node_item.model, "_image_collection_state", None) or _default_state()
         paths = state.get("paths", [])
         if paths:
             self.canvas.load_images(paths)
+        try:
+            if not getattr(node_item.model, "_image_collection_state", None):
+                setattr(node_item.model, "_image_collection_state", dict(state))
+        except Exception:
+            pass
 
     def _pick_images(self):
         paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
