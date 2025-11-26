@@ -80,69 +80,62 @@ class _ImageCanvas(QtWidgets.QWidget):
         avail_w = max(1, self.width() - 2 * edge_pad)
         avail_h = max(1, self.height() - 2 * edge_pad)
 
-        base_sizes = []
-        base_pixmaps = []
-        max_img_w = 1
-        max_img_h = 1
-        for _, pm in loaded:
-            if pm.width() <= 0 or pm.height() <= 0:
+        target_row_h = max(60, min(220, int(avail_h / 2)))
+
+        items = []
+        for pth, pm in loaded:
+            w, h = pm.width(), pm.height()
+            if w <= 0 or h <= 0:
                 continue
-            max_img_w = max(max_img_w, pm.width())
-            max_img_h = max(max_img_h, pm.height())
-            base_sizes.append((pm.width(), pm.height()))
-            base_pixmaps.append(pm)
+            scaled_w = int(w * (target_row_h / float(h)))
+            items.append((pth, pm, scaled_w, target_row_h))
 
-        # Single global pre-scale so largest image fits.
-        pre_scale = min(1.0, avail_w / float(max_img_w), avail_h / float(max_img_h))
-        if pre_scale < 1.0:
-            scaled_sizes = []
-            scaled_pixmaps = []
-            for (w, h), pm in zip(base_sizes, base_pixmaps):
-                nw = max(1, int(w * pre_scale))
-                nh = max(1, int(h * pre_scale))
-                scaled_sizes.append((nw, nh))
-                scaled_pixmaps.append(pm.scaled(nw, nh, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
-            base_sizes = scaled_sizes
-            base_pixmaps = scaled_pixmaps
+        rows = []
+        row = []
+        row_w = 0
+        for pth, pm, sw, th in items:
+            est = row_w + sw if not row else row_w + gap + sw
+            if row and est > avail_w:
+                rows.append((row, row_w))
+                row = []
+                row_w = 0
+            row.append((pth, pm, sw, th))
+            row_w += sw if not row[:-1] else sw
+        if row:
+            rows.append((row, row_w))
 
-        def _layout(sizes, width_limit):
-            offs = []
+        row_heights = []
+        row_scales = []
+        for row, rw in rows:
+            n = len(row)
+            available_w = max(1, avail_w - gap * max(0, n - 1))
+            scale = available_w / float(rw) if rw > 0 else 1.0
+            row_scales.append(scale)
+            row_heights.append(int(target_row_h * scale))
+
+        total_h = sum(row_heights) + gap * max(0, len(row_heights) - 1)
+        global_scale = 1.0
+        if total_h > avail_h:
+            global_scale = float(avail_h) / float(total_h)
+
+        pixmaps_out = []
+        offsets_out = []
+        y = edge_pad
+        for (row, rw), rscale, rheight in zip(rows, row_scales, row_heights):
+            n = len(row)
+            row_scale = rscale * global_scale
             x = edge_pad
-            y = edge_pad
-            row_h = 0
-            max_row_w = 0
-            for w, h in sizes:
-                if x + w > width_limit - edge_pad and x > edge_pad:
-                    x = edge_pad
-                    y += row_h + gap
-                    row_h = 0
-                offs.append(QtCore.QPoint(x, y))
-                row_h = max(row_h, h)
-                x += w + gap
-                max_row_w = max(max_row_w, x - edge_pad - gap)
-            total_h = y + row_h + edge_pad
-            return offs, total_h, max_row_w
+            row_h_scaled = int(rheight * global_scale)
+            for pth, pm, sw, th in row:
+                final_w = max(1, int(sw * row_scale))
+                final_h = max(1, int(th * row_scale))
+                pixmaps_out.append(pm.scaled(final_w, final_h, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+                offsets_out.append(QtCore.QPoint(x, y))
+                x += final_w + gap
+            y += row_h_scaled + gap
 
-        offsets, total_h, max_row_w = _layout(base_sizes, self.width())
-        scale_all = min(
-            1.0,
-            float(avail_w) / float(max(1, max_row_w)),
-            float(avail_h) / float(max(1, total_h)),
-        )
-        if scale_all < 1.0:
-            resized_sizes = []
-            resized_pixmaps = []
-            for (w, h), pm in zip(base_sizes, base_pixmaps):
-                nw = max(1, int(w * scale_all))
-                nh = max(1, int(h * scale_all))
-                resized_sizes.append((nw, nh))
-                resized_pixmaps.append(pm.scaled(nw, nh, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
-            base_sizes = resized_sizes
-            base_pixmaps = resized_pixmaps
-            offsets, total_h, max_row_w = _layout(base_sizes, self.width())
-
-        self.pixmaps = base_pixmaps
-        self.offsets = offsets
+        self.pixmaps = pixmaps_out
+        self.offsets = offsets_out
         self.update()
 
     def paintEvent(self, event):
