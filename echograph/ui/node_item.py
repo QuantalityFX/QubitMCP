@@ -744,10 +744,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 super().__init__(parent)
                 self.setAttribute(_QtCore.Qt.WA_TranslucentBackground, True)
                 self.setAutoFillBackground(False)
-                self.setFixedSize(int(node_item._IMG_CANVAS_W), int(node_item._IMG_CANVAS_H))
+                self._apply_canvas_size()
                 self.pixmaps = []
                 self.offsets = []
                 self.paths: list[str] = []
+
+            def _apply_canvas_size(self):
+                w = max(120, int(node_item.width) - 12)
+                h = int(node_item._IMG_CANVAS_H)
+                self.setFixedSize(w, h)
 
             def load_images(self, paths, *, append: bool = True):
                 base = list(self.paths) if append else []
@@ -767,68 +772,73 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         loaded.append((p, pm))
                 if not loaded:
                     return
+                self._apply_canvas_size()
 
                 edge_pad = 4
                 gap = 4
                 avail_w = max(1, self.width() - 2 * edge_pad)
                 avail_h = max(1, self.height() - 2 * edge_pad)
 
-                target_row_h = max(60, min(220, int(avail_h / 2)))
+                # Choose an initial row height based on how many rows we expect.
+                cols_hint = 3
+                rows_est = max(1, (len(loaded) + cols_hint - 1) // cols_hint)
+                target_row_h = max(60, min(220, int(avail_h / rows_est)))
 
-                # Provisional widths at target_row_h
-                items = []
-                for pth, pm in loaded:
-                    w, h = pm.width(), pm.height()
-                    if w <= 0 or h <= 0:
-                        continue
-                    scaled_w = int(w * (target_row_h / float(h)))
-                    items.append((pth, pm, scaled_w, target_row_h))
+                def _build_layout(target_h: int):
+                    # Provisional widths at target_h
+                    items = []
+                    for pth, pm in loaded:
+                        w, h = pm.width(), pm.height()
+                        if w <= 0 or h <= 0:
+                            continue
+                        scaled_w = int(w * (target_h / float(h)))
+                        items.append((pth, pm, scaled_w, target_h))
 
-                # Build rows accounting for fixed gap
-                rows = []
-                row = []
-                row_w = 0
-                for pth, pm, sw, th in items:
-                    est = row_w + sw if not row else row_w + gap + sw
-                    if row and est > avail_w:
+                    rows = []
+                    row = []
+                    row_w = 0
+                    for pth, pm, sw, th in items:
+                        est = row_w + sw if not row else row_w + gap + sw
+                        if row and est > avail_w:
+                            rows.append((row, row_w))
+                            row = []
+                            row_w = 0
+                        row.append((pth, pm, sw, th))
+                        row_w += sw if not row[:-1] else sw
+                    if row:
                         rows.append((row, row_w))
-                        row = []
-                        row_w = 0
-                    row.append((pth, pm, sw, th))
-                    row_w += sw if not row[:-1] else sw
-                if row:
-                    rows.append((row, row_w))
 
-                # Per-row scale to fill width with fixed gaps
-                row_heights = []
-                row_scales = []
-                for row, rw in rows:
-                    n = len(row)
-                    available_w = max(1, avail_w - gap * max(0, n - 1))
-                    scale = available_w / float(rw) if rw > 0 else 1.0
-                    row_scales.append(scale)
-                    row_heights.append(int(target_row_h * scale))
+                    row_heights = []
+                    row_scales = []
+                    for row, rw in rows:
+                        n = len(row)
+                        available_w = max(1, avail_w - gap * max(0, n - 1))
+                        scale = available_w / float(rw) if rw > 0 else 1.0
+                        row_scales.append(scale)
+                        row_heights.append(int(target_h * scale))
 
-                total_h = sum(row_heights) + gap * max(0, len(row_heights) - 1)
-                global_scale = 1.0
+                    total_h = sum(row_heights) + gap * max(0, len(row_heights) - 1)
+                    return rows, row_scales, row_heights, total_h
+
+                rows, row_scales, row_heights, total_h = _build_layout(target_row_h)
+                # If too tall, reduce target_row_h proportionally and rebuild once.
                 if total_h > avail_h:
-                    global_scale = float(avail_h) / float(total_h)
+                    shrink = float(avail_h) / float(total_h)
+                    new_h = max(40, int(target_row_h * shrink))
+                    rows, row_scales, row_heights, total_h = _build_layout(new_h)
 
                 pixmaps_out = []
                 offsets_out = []
                 y = edge_pad
-                for (row, rw), rscale, rheight in zip(rows, row_scales, row_heights):
-                    n = len(row)
-                    row_scale = rscale * global_scale
+                for (row, _rw), rscale, rheight in zip(rows, row_scales, row_heights):
                     x = edge_pad
-                    row_h_scaled = int(rheight * global_scale)
                     for pth, pm, sw, th in row:
-                        final_w = max(1, int(sw * row_scale))
-                        final_h = max(1, int(th * row_scale))
+                        final_w = max(1, int(sw * rscale))
+                        final_h = max(1, int(th * rscale))
                         pixmaps_out.append(pm.scaled(final_w, final_h, _QtCore.Qt.KeepAspectRatio, _QtCore.Qt.SmoothTransformation))
                         offsets_out.append(_QtCore.QPoint(x, y))
                         x += final_w + gap
-                    y += row_h_scaled + gap
+                    y += int(rheight) + gap
 
                 self.pixmaps = pixmaps_out
                 self.paths = [p for p, _ in loaded]
