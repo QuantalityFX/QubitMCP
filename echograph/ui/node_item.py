@@ -744,6 +744,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 super().__init__(parent)
                 self.setAttribute(_QtCore.Qt.WA_TranslucentBackground, True)
                 self.setAutoFillBackground(False)
+                self.setFixedSize(int(node_item._IMG_CANVAS_W), int(node_item._IMG_CANVAS_H))
                 self.pixmaps = []
                 self.offsets = []
 
@@ -755,24 +756,44 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         loaded.append((p, pm))
                 if not loaded:
                     return
-                self.pixmaps = [pm for _, pm in loaded]
+                n = len(loaded)
+                cols = min(3, max(1, n))
+                rows = (n + cols - 1) // cols
+                pad = 6
+                cell_w = max(1, int((self.width() - pad * (cols - 1)) / cols))
+                cell_h = max(1, int((self.height() - pad * (rows - 1)) / rows))
+
+                scaled = []
+                for _, pm in loaded:
+                    if pm.width() <= 0 or pm.height() <= 0:
+                        continue
+                    factor = min(1.0, cell_w / float(pm.width()), cell_h / float(pm.height()))
+                    if factor < 1.0:
+                        pm = pm.scaled(
+                            max(1, int(pm.width() * factor)),
+                            max(1, int(pm.height() * factor)),
+                            _QtCore.Qt.KeepAspectRatio,
+                            _QtCore.Qt.SmoothTransformation,
+                        )
+                    scaled.append(pm)
+                self.pixmaps = scaled
+
                 self.offsets = []
-                col = 0
-                x_accum = 0
-                y_accum = 0
+                x = 0
+                y = 0
                 max_h = 0
-                pad = 10
+                col = 0
                 for pm in self.pixmaps:
-                    self.offsets.append(_QtCore.QPoint(x_accum, y_accum))
+                    self.offsets.append(_QtCore.QPoint(x, y))
                     max_h = max(max_h, pm.height())
                     col += 1
-                    if col >= 3:
+                    if col >= cols:
                         col = 0
-                        x_accum = 0
-                        y_accum += max_h + pad
+                        x = 0
+                        y += max_h + pad
                         max_h = 0
                     else:
-                        x_accum += pm.width() + pad
+                        x += cell_w + pad
                 self.update()
 
             def paintEvent(self, _ev):

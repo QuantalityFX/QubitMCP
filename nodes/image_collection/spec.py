@@ -54,6 +54,7 @@ class _ImageCanvas(QtWidgets.QWidget):
         super().__init__(parent)
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
         self.setAutoFillBackground(False)
+        self.setFixedSize(DEFAULT_CANVAS_SIZE)
         self.pixmaps: List[QtGui.QPixmap] = []
         self.paths: List[str] = []
         self.offsets: List[QtCore.QPoint] = []
@@ -63,8 +64,45 @@ class _ImageCanvas(QtWidgets.QWidget):
         if not loaded:
             return
         self.paths = [p for p, _ in loaded]
-        self.pixmaps = [pm for _, pm in loaded]
-        self.offsets = _mosaic_offsets(self.pixmaps)
+
+        n = len(loaded)
+        cols = min(3, max(1, n))
+        rows = (n + cols - 1) // cols
+        pad = 6
+        cell_w = max(1, int((self.width() - pad * (cols - 1)) / cols))
+        cell_h = max(1, int((self.height() - pad * (rows - 1)) / rows))
+
+        scaled = []
+        for _, pm in loaded:
+            if pm.width() <= 0 or pm.height() <= 0:
+                continue
+            factor = min(1.0, cell_w / float(pm.width()), cell_h / float(pm.height()))
+            if factor < 1.0:
+                pm = pm.scaled(
+                    max(1, int(pm.width() * factor)),
+                    max(1, int(pm.height() * factor)),
+                    QtCore.Qt.KeepAspectRatio,
+                    QtCore.Qt.SmoothTransformation,
+                )
+            scaled.append(pm)
+        self.pixmaps = scaled
+
+        self.offsets = []
+        x = 0
+        y = 0
+        max_h = 0
+        col = 0
+        for pm in self.pixmaps:
+            self.offsets.append(QtCore.QPoint(x, y))
+            max_h = max(max_h, pm.height())
+            col += 1
+            if col >= cols:
+                col = 0
+                x = 0
+                y += max_h + pad
+                max_h = 0
+            else:
+                x += cell_w + pad
         self.update()
 
     def paintEvent(self, event):

@@ -55,6 +55,13 @@ def _node_to_dict(node) -> Dict[str, Any]:
             if clean:
                 d["featured_heights"] = clean
 
+    if k in ("image_collection", "imagecollection"):
+        st = getattr(node, "_image_collection_state", None) or {}
+        if isinstance(st, dict):
+            paths = [str(p) for p in st.get("paths", []) if isinstance(p, str) and p.strip()]
+            if paths:
+                d["image_collection_paths"] = paths
+
     return d
 
 
@@ -140,6 +147,13 @@ def deserialize_scene(
                         setattr(n, "_featured_heights", clean)
                     except Exception:
                         pass
+        if (n.kind or "").lower() in ("image_collection", "imagecollection"):
+            paths = nd.get("image_collection_paths") or []
+            try:
+                paths = [str(p) for p in paths if isinstance(p, str) and p.strip()]
+            except Exception:
+                paths = []
+            setattr(n, "_image_collection_state", {"paths": paths})
 
         # position (Qt-free)
         pos = nd.get("pos", [0.0, 0.0])
