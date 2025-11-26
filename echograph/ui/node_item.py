@@ -142,6 +142,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
     _NOTE_FEATURED_CTRL_H = 28
     _NOTE_FEATURED_HANDLE_H = 10
     _PORT_HIT_TOL = 9.0
+    _IMG_CANVAS_W = 720
+    _IMG_CANVAS_H = 420
+    _IMG_CTRL_H = 40
     
     def __init__(self, model: GraphNode):
         try:
@@ -153,6 +156,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         self.width = self._BASE_W
         self.height = self._BASE_H
         self.radius = 10
+        self._transparent_body = (self.model.kind or "").lower() in ("image_collection", "imagecollection")
 
         self.setFlag(QtWidgets.QGraphicsItem.ItemIsMovable, True)
         self.setFlag(QtWidgets.QGraphicsItem.ItemSendsGeometryChanges, True)
@@ -614,6 +618,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 node_w = preview_w
             else:
                 node_w = self._BASE_W
+        elif kind in ("image_collection", "imagecollection"):
+            body_h = self._IMG_CTRL_H + self._IMG_CANVAS_H
+            node_w = max(self._BASE_W, self._IMG_CANVAS_W)
         else:
             body_h = 0
             node_w = self._BASE_W
@@ -1707,9 +1714,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
         r = QtCore.QRectF(0, 0, self.width, self.height)
         body = QtGui.QColor("#262930" if not self._hover else "#2f343c")
         try:
-            p.setBrush(QtGui.QBrush(body))
-            p.setPen(self.pen)  # outline pen set in __init__
-            p.drawRoundedRect(r, self.radius, self.radius)
+            if getattr(self, "_transparent_body", False):
+                p.setBrush(QtCore.Qt.NoBrush)
+                p.setPen(self.pen)
+                p.drawRoundedRect(r, self.radius, self.radius)
+            else:
+                p.setBrush(QtGui.QBrush(body))
+                p.setPen(self.pen)  # outline pen set in __init__
+                p.drawRoundedRect(r, self.radius, self.radius)
         except Exception as e:
             print("[EchoGraph][paint] body fail:", e)
 
