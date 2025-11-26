@@ -59,8 +59,18 @@ class _ImageCanvas(QtWidgets.QWidget):
         self.paths: List[str] = []
         self.offsets: List[QtCore.QPoint] = []
 
-    def load_images(self, paths: List[str]):
-        loaded = _load_pixmaps(paths)
+    def load_images(self, paths: List[str], append: bool = True):
+        base = list(self.paths) if append else []
+        combined = base + [p for p in paths if p]
+        seen = set()
+        dedup_paths = []
+        for p in combined:
+            if p in seen:
+                continue
+            seen.add(p)
+            dedup_paths.append(p)
+
+        loaded = _load_pixmaps(dedup_paths)
         if not loaded:
             return
         self.paths = [p for p, _ in loaded]
@@ -68,9 +78,9 @@ class _ImageCanvas(QtWidgets.QWidget):
         n = len(loaded)
         cols = min(3, max(1, n))
         rows = (n + cols - 1) // cols
-        pad = 6
-        cell_w = max(1, int((self.width() - pad * (cols - 1)) / cols))
-        cell_h = max(1, int((self.height() - pad * (rows - 1)) / rows))
+        pad = 8
+        cell_w = max(1, int((self.width() - pad * (cols + 1)) / cols))
+        cell_h = max(1, int((self.height() - pad * (rows + 1)) / rows))
 
         scaled = []
         for _, pm in loaded:
@@ -88,8 +98,8 @@ class _ImageCanvas(QtWidgets.QWidget):
         self.pixmaps = scaled
 
         self.offsets = []
-        x = 0
-        y = 0
+        x = pad
+        y = pad
         max_h = 0
         col = 0
         for pm in self.pixmaps:
@@ -98,7 +108,7 @@ class _ImageCanvas(QtWidgets.QWidget):
             col += 1
             if col >= cols:
                 col = 0
-                x = 0
+                x = pad
                 y += max_h + pad
                 max_h = 0
             else:
@@ -136,11 +146,8 @@ class ImageCollectionWidget(QtWidgets.QWidget):
         header = QtWidgets.QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(6)
-        title = QtWidgets.QLabel("Image Collection")
-        title.setStyleSheet("color:#e2e8f0;font-weight:bold;")
-        header.addWidget(title, 0)
-        header.addStretch(1)
         header.addWidget(load_btn, 0)
+        header.addStretch(1)
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
@@ -152,7 +159,7 @@ class ImageCollectionWidget(QtWidgets.QWidget):
         state = getattr(node_item.model, "_image_collection_state", None) or _default_state()
         paths = state.get("paths", [])
         if paths:
-            self.canvas.load_images(paths)
+            self.canvas.load_images(paths, append=False)
         try:
             if not getattr(node_item.model, "_image_collection_state", None):
                 setattr(node_item.model, "_image_collection_state", dict(state))
@@ -168,9 +175,19 @@ class ImageCollectionWidget(QtWidgets.QWidget):
         )
         if not paths:
             return
-        self.canvas.load_images(paths)
+        self.canvas.load_images(paths, append=True)
         try:
-            setattr(self._node_item.model, "_image_collection_state", {"paths": paths})
+            existing = getattr(self._node_item.model, "_image_collection_state", {}) or {}
+            base = list(existing.get("paths", []))
+            combined = base + list(paths)
+            seen = set()
+            dedup = []
+            for p in combined:
+                if p in seen:
+                    continue
+                seen.add(p)
+                dedup.append(p)
+            setattr(self._node_item.model, "_image_collection_state", {"paths": dedup})
         except Exception:
             pass
 

@@ -747,21 +747,33 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 self.setFixedSize(int(node_item._IMG_CANVAS_W), int(node_item._IMG_CANVAS_H))
                 self.pixmaps = []
                 self.offsets = []
+                self.paths: list[str] = []
 
-            def load_images(self, paths):
+            def load_images(self, paths, *, append: bool = True):
+                base = list(self.paths) if append else []
+                combined = base + [p for p in paths if p]
+                seen = set()
+                dedup = []
+                for p in combined:
+                    if p in seen:
+                        continue
+                    seen.add(p)
+                    dedup.append(p)
+
                 loaded = []
-                for p in paths:
+                for p in dedup:
                     pm = _QtGui.QPixmap(p)
                     if not pm.isNull():
                         loaded.append((p, pm))
                 if not loaded:
                     return
+
                 n = len(loaded)
                 cols = min(3, max(1, n))
                 rows = (n + cols - 1) // cols
-                pad = 6
-                cell_w = max(1, int((self.width() - pad * (cols - 1)) / cols))
-                cell_h = max(1, int((self.height() - pad * (rows - 1)) / rows))
+                pad = 8
+                cell_w = max(1, int((self.width() - pad * (cols + 1)) / cols))
+                cell_h = max(1, int((self.height() - pad * (rows + 1)) / rows))
 
                 scaled = []
                 for _, pm in loaded:
@@ -777,10 +789,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         )
                     scaled.append(pm)
                 self.pixmaps = scaled
+                self.paths = [p for p, _ in loaded]
 
                 self.offsets = []
-                x = 0
-                y = 0
+                x = pad
+                y = pad
                 max_h = 0
                 col = 0
                 for pm in self.pixmaps:
@@ -789,7 +802,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     col += 1
                     if col >= cols:
                         col = 0
-                        x = 0
+                        x = pad
                         y += max_h + pad
                         max_h = 0
                     else:
@@ -815,11 +828,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
         header = _QtWidgets.QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(6)
-        title = _QtWidgets.QLabel("Image Collection")
-        title.setStyleSheet("color:#e2e8f0;font-weight:bold;")
-        header.addWidget(title, 0)
-        header.addStretch(1)
-
         btn = _QtWidgets.QPushButton("Load Images")
         btn.setStyleSheet(
             "QPushButton{background:#1f2937;color:#e2e8f0;border:1px solid #475569;"
@@ -827,6 +835,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             "QPushButton:hover{background:#273449;}"
         )
         header.addWidget(btn, 0)
+        header.addStretch(1)
         v.addLayout(header)
 
         canvas = _InlineCanvas()
@@ -846,9 +855,19 @@ class NodeItem(QtWidgets.QGraphicsObject):
             )
             if not paths:
                 return
-            canvas.load_images(paths)
+            canvas.load_images(paths, append=True)
             try:
-                setattr(node_item.model, "_image_collection_state", {"paths": list(paths)})
+                existing = getattr(node_item.model, "_image_collection_state", {}) or {}
+                base = list(existing.get("paths", []))
+                combined = base + list(paths)
+                seen = set()
+                dedup = []
+                for p in combined:
+                    if p in seen:
+                        continue
+                    seen.add(p)
+                    dedup.append(p)
+                setattr(node_item.model, "_image_collection_state", {"paths": dedup})
             except Exception:
                 pass
 
@@ -859,7 +878,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             st = getattr(node_item.model, "_image_collection_state", {}) or {}
             paths = st.get("paths", [])
             if paths:
-                canvas.load_images(paths)
+                canvas.load_images(paths, append=False)
         except Exception:
             pass
 
