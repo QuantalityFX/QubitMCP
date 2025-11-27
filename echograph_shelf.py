@@ -1051,6 +1051,14 @@ class GraphScene(QtWidgets.QGraphicsScene):
                         clean[str(name)] = hv
                 if clean:
                     snap["featured_heights"] = clean
+            nsize = getattr(node, "_note_size", None)
+            if isinstance(nsize, (list, tuple)) and len(nsize) >= 2:
+                try:
+                    nw = float(nsize[0])
+                    nh = float(nsize[1])
+                    snap["note_size"] = [nw, nh]
+                except Exception:
+                    pass
         return snap
 
     def copy_selection_to_clipboard(self) -> bool:
@@ -1186,6 +1194,14 @@ class GraphScene(QtWidgets.QGraphicsScene):
                             setattr(node, "_featured_heights", clean)
                         except Exception:
                             pass
+                nsize = entry.get("note_size")
+                if isinstance(nsize, (list, tuple)) and len(nsize) >= 2:
+                    try:
+                        nw = float(nsize[0])
+                        nh = float(nsize[1])
+                        setattr(node, "_note_size", (nw, nh))
+                    except Exception:
+                        pass
 
             pos = entry.get("pos") or [0.0, 0.0]
             try:
@@ -1822,8 +1838,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         btn_save.clicked.connect(self._save_graph)
         h.addWidget(btn_save, 0)
 
-        btn_export = QtWidgets.QPushButton("Export", bar)
-        btn_export.setToolTip("Export current graph to a new .json (Save As)")
+        btn_export = QtWidgets.QPushButton("Save As", bar)
+        btn_export.setToolTip("Save current graph to a new .json (Save As)")
         btn_export.clicked.connect(self._export_graph)
         h.addWidget(btn_export, 0)
 
