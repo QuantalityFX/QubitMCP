@@ -139,6 +139,92 @@ class BigTextEditDialog(QtWidgets.QDialog):
     def text(self):
         return self.edit.toPlainText()
 
+# -------- Comment Group Dialog --------
+class CommentGroupDialog(QtWidgets.QDialog):
+    def __init__(self, parent=None, *, title="Comment", body="", color="#1f2933", color_choices=None):
+        super().__init__(parent)
+        self.setWindowTitle("Comment")
+        self.setModal(True)
+        self.setMinimumWidth(420)
+
+        self._colors = list(color_choices or [
+            "#1f2933", "#0f172a", "#312e81", "#1d4ed8", "#0ea5e9", "#22d3ee",
+            "#10b981", "#065f46", "#f59e0b", "#f97316", "#ef4444", "#f472b6",
+        ])
+        self._selected_color = self._coerce_color(color or (self._colors[0] if self._colors else "#1f2933"))
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        form = QtWidgets.QFormLayout()
+        form.setLabelAlignment(QtCore.Qt.AlignRight)
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setSpacing(8)
+
+        self.title_edit = QtWidgets.QLineEdit(title or "Comment")
+        self.body_edit = QtWidgets.QPlainTextEdit(body or "")
+        self.body_edit.setPlaceholderText("Optional description")
+        self.body_edit.setStyleSheet("QPlainTextEdit{background:#0f1216;color:#e6edf3;border:1px solid #334;}")
+        form.addRow("Title:", self.title_edit)
+        form.addRow("Body:", self.body_edit)
+        layout.addLayout(form)
+
+        color_box = QtWidgets.QGroupBox("Background color")
+        grid = QtWidgets.QGridLayout(color_box)
+        grid.setContentsMargins(10, 10, 10, 10)
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(8)
+
+        self._color_group = QtWidgets.QButtonGroup(self)
+        self._color_group.setExclusive(True)
+        for idx, hex_color in enumerate(self._colors):
+            btn = QtWidgets.QToolButton()
+            btn.setCheckable(True)
+            btn.setAutoExclusive(True)
+            btn.setCursor(QtCore.Qt.PointingHandCursor)
+            btn.setFixedSize(32, 32)
+            btn.setProperty("color_hex", hex_color)
+            btn.setStyleSheet(self._swatch_style(hex_color))
+            self._color_group.addButton(btn, idx)
+            row, col = divmod(idx, 6)
+            grid.addWidget(btn, row, col)
+            if hex_color.lower() == self._selected_color.lower():
+                btn.setChecked(True)
+        if self._color_group.checkedButton() is None and self._color_group.buttons():
+            self._color_group.buttons()[0].setChecked(True)
+            self._selected_color = self._colors[0]
+        self._color_group.buttonClicked.connect(self._on_color_chosen)
+        layout.addWidget(color_box)
+
+        bb = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        layout.addWidget(bb)
+
+    def _swatch_style(self, hex_color: str) -> str:
+        return (
+            "QToolButton{border:2px solid #0b1220;border-radius:8px;"
+            "background:" + hex_color + ";}"
+            "QToolButton:hover{border-color:#94a3b8;}"
+            "QToolButton:checked{border-color:#e2e8f0;}"
+        )
+
+    def _coerce_color(self, value: str) -> str:
+        qc = QtGui.QColor(value)
+        if not qc.isValid():
+            qc = QtGui.QColor(self._colors[0] if self._colors else "#1f2933")
+        return qc.name(QtGui.QColor.HexRgb)
+
+    def _on_color_chosen(self, btn):
+        color = btn.property("color_hex") or ""
+        self._selected_color = self._coerce_color(color)
+
+    def result_payload(self) -> dict:
+        title = (self.title_edit.text() or "").strip() or "Comment"
+        body = (self.body_edit.toPlainText() or "").strip()
+        return {"title": title, "body": body, "color": self._selected_color}
+
 # -------- Create Node Dialog --------
 class CreateNodeDialog(QtWidgets.QDialog):
     def __init__(self, parent=None, existing_names=None):

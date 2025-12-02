@@ -44,6 +44,7 @@ from echograph.ui.dialogs import (
     BigTextEditDialog,
     CreateNodeDialog,
     RecentGraphsDialog,
+    CommentGroupDialog,
 )
 
 # Keep a local mutable scale (slider edits this)
@@ -85,15 +86,35 @@ def _save_recent_graphs(paths: List[str]) -> None:
     except Exception:
         pass
 
+DEFAULT_COMMENT_COLOR = "#1f2933"
+
+def _normalize_comment_color(value: str = None) -> str:
+    qc = QtGui.QColor(value if value is not None else DEFAULT_COMMENT_COLOR)
+    if not qc.isValid():
+        qc = QtGui.QColor(DEFAULT_COMMENT_COLOR)
+    try:
+        return qc.name(QtGui.QColor.HexRgb)
+    except Exception:
+        return qc.name()
+
 class CommentGroup(QtWidgets.QGraphicsObject):
     Type = QtWidgets.QGraphicsItem.UserType + 5201
 
-    def __init__(self, scene: 'GraphScene', title: str, body: str, members: List[str], rect: QtCore.QRectF):
+    def __init__(
+        self,
+        scene: 'GraphScene',
+        title: str,
+        body: str,
+        members: List[str],
+        rect: QtCore.QRectF,
+        color: str = DEFAULT_COMMENT_COLOR,
+    ):
         super().__init__()
         self._scene_ref = scene
         self._title = (title or "").strip() or "Comment"
         self._body = (body or "").strip()
         self._members = [str(m) for m in (members or []) if m]
+        self._color_hex = _normalize_comment_color(color)
 
         rect = QtCore.QRectF(rect)
         if rect.width() < 160:
@@ -131,6 +152,7 @@ class CommentGroup(QtWidgets.QGraphicsObject):
             "title": self._title,
             "body": self._body,
             "members": list(self._members),
+            "color": self._color_hex,
             "rect": [float(pos.x()), float(pos.y()), float(self._rect.width()), float(self._rect.height())],
         }
 
@@ -146,9 +168,14 @@ class CommentGroup(QtWidgets.QGraphicsObject):
     def paint(self, p: QtGui.QPainter, option, widget=None):
         rect = QtCore.QRectF(self._rect)
         padding = 14.0
-        bg = QtGui.QColor("#1f2933")
-        bg.setAlphaF(0.45)
-        pen = QtGui.QPen(QtGui.QColor("#94a3b8"), 1.2, QtCore.Qt.DashLine)
+        base_color = QtGui.QColor(self._color_hex)
+        if not base_color.isValid():
+            base_color = QtGui.QColor(DEFAULT_COMMENT_COLOR)
+        bg = QtGui.QColor(base_color)
+        bg.setAlpha(165)
+        frame = QtGui.QColor(base_color)
+        frame.setAlpha(215)
+        pen = QtGui.QPen(frame, 1.6, QtCore.Qt.SolidLine)
         pen.setCosmetic(True)
         p.setBrush(QtGui.QBrush(bg))
         p.setPen(pen)
@@ -219,23 +246,24 @@ class CommentGroup(QtWidgets.QGraphicsObject):
 
     def mouseDoubleClickEvent(self, e: QtWidgets.QGraphicsSceneMouseEvent):
         if e.button() == QtCore.Qt.LeftButton:
-            new_title, ok = QtWidgets.QInputDialog.getText(
-                None,
-                "Edit Comment Title",
-                "Title:",
-                text=self._title,
+            parent = None
+            sc = self.scene() or getattr(self, "_scene_ref", None)
+            try:
+                parent = sc.views()[0] if sc and sc.views() else None
+            except Exception:
+                parent = None
+            dlg = CommentGroupDialog(
+                parent,
+                title=self._title,
+                body=self._body,
+                color=self._color_hex,
             )
-            if ok:
-                self._title = (new_title or "").strip() or self._title
-            new_body, ok = QtWidgets.QInputDialog.getMultiLineText(
-                None,
-                "Edit Comment Body",
-                "Body:",
-                self._body,
-            )
-            if ok:
-                self._body = (new_body or "").strip()
-            self.update()
+            if _qexec(dlg) == QtWidgets.QDialog.Accepted:
+                payload = dlg.result_payload()
+                self._title = (payload.get("title") or self._title).strip() or self._title
+                self._body = (payload.get("body") or "").strip()
+                self._color_hex = _normalize_comment_color(payload.get("color"))
+                self.update()
             e.accept()
             return
         super().mouseDoubleClickEvent(e)
@@ -1265,13 +1293,24 @@ class GraphScene(QtWidgets.QGraphicsScene):
             rect = rect.united(it.sceneBoundingRect())
         padding = 40.0
         rect = rect.adjusted(-padding, -padding, padding, padding)
-        title, ok = QtWidgets.QInputDialog.getText(None, "Comment Title", "Title:", text="Comment")
-        if not ok:
+        parent = self.views()[0] if self.views() else None
+        dlg = CommentGroupDialog(
+            parent,
+            title="Comment",
+            body="",
+            color=DEFAULT_COMMENT_COLOR,
+        )
+        if _qexec(dlg) != QtWidgets.QDialog.Accepted:
             return
-        body, ok = QtWidgets.QInputDialog.getMultiLineText(None, "Comment Body", "Body (optional):", "")
-        if not ok:
-            return
-        group = CommentGroup(self, title, body, [it.model.name for it in selected], rect)
+        payload = dlg.result_payload()
+        group = CommentGroup(
+            self,
+            payload.get("title", "Comment"),
+            payload.get("body", ""),
+            [it.model.name for it in selected],
+            rect,
+            _normalize_comment_color(payload.get("color")),
+        )
         self.addItem(group)
         self._comment_groups.append(group)
 
@@ -1338,6 +1377,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
             data.get("body", ""),
             data.get("members", []),
             rectf,
+            _normalize_comment_color(data.get("color")),
         )
         self.addItem(group)
         self._comment_groups.append(group)
