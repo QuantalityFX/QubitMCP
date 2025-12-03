@@ -184,14 +184,23 @@ class CommentGroup(QtWidgets.QGraphicsObject):
         p.setPen(pen)
         p.drawRoundedRect(rect, 14, 14)
 
-        # Header bar (drag handle)
+        # Header bar (drag handle) with rounded top corners and square bottom edge
         header_h = 32.0
-        header_rect = QtCore.QRectF(rect.x(), rect.y(), rect.width(), header_h)
+        hx, hy, hw = rect.x(), rect.y(), rect.width()
+        radius = 14.0
         header_color = QtGui.QColor(base_color.lighter(140))
         header_color.setAlpha(120)
-        p.fillRect(header_rect, header_color)
+        header_path = QtGui.QPainterPath()
+        header_path.moveTo(hx, hy + header_h)
+        header_path.lineTo(hx, hy + radius)
+        header_path.quadTo(hx, hy, hx + radius, hy)
+        header_path.lineTo(hx + hw - radius, hy)
+        header_path.quadTo(hx + hw, hy, hx + hw, hy + radius)
+        header_path.lineTo(hx + hw, hy + header_h)
+        header_path.closeSubpath()
+        p.fillPath(header_path, header_color)
 
-        title_rect = QtCore.QRectF(rect.x() + padding, rect.y() + padding, rect.width() - 2 * padding, 24)
+        title_rect = QtCore.QRectF(rect.x() + padding, rect.y() + 6.0, rect.width() - 2 * padding, header_h - 10.0)
         title_color = QtGui.QColor("#e2e8f0")
         p.setPen(QtGui.QPen(title_color))
         font = p.font()
