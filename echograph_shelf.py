@@ -125,7 +125,7 @@ class CommentGroup(QtWidgets.QGraphicsObject):
         self.setPos(rect.topLeft())
 
         self.setZValue(0.2)
-        self.setFlag(QtWidgets.QGraphicsItem.ItemIsMovable, True)
+        self.setFlag(QtWidgets.QGraphicsItem.ItemIsMovable, False)
         self.setFlag(QtWidgets.QGraphicsItem.ItemIsSelectable, True)
         self.setFlag(QtWidgets.QGraphicsItem.ItemSendsGeometryChanges, True)
         self.setAcceptHoverEvents(True)
@@ -134,6 +134,9 @@ class CommentGroup(QtWidgets.QGraphicsObject):
         self._initial_rect = QtCore.QRectF(self._rect)
         self._initial_pos = QtCore.QPointF(self.pos())
         self._suspend_member_move = False
+        self._dragging_header = False
+        self._drag_start_scene = QtCore.QPointF()
+        self._drag_start_pos = QtCore.QPointF()
 
     # --- data helpers --------------------------------------------------------
     def members(self) -> List[str]:
@@ -181,6 +184,13 @@ class CommentGroup(QtWidgets.QGraphicsObject):
         p.setPen(pen)
         p.drawRoundedRect(rect, 14, 14)
 
+        # Header bar (drag handle)
+        header_h = 32.0
+        header_rect = QtCore.QRectF(rect.x(), rect.y(), rect.width(), header_h)
+        header_color = QtGui.QColor(base_color.lighter(140))
+        header_color.setAlpha(120)
+        p.fillRect(header_rect, header_color)
+
         title_rect = QtCore.QRectF(rect.x() + padding, rect.y() + padding, rect.width() - 2 * padding, 24)
         title_color = QtGui.QColor("#e2e8f0")
         p.setPen(QtGui.QPen(title_color))
@@ -226,6 +236,14 @@ class CommentGroup(QtWidgets.QGraphicsObject):
                 self._initial_pos = QtCore.QPointF(self.pos())
                 e.accept()
                 return
+            if self._header_rect().contains(e.pos()):
+                self._dragging_header = True
+                self._drag_start_scene = QtCore.QPointF(e.scenePos())
+                self._drag_start_pos = QtCore.QPointF(self.pos())
+                if not (e.modifiers() & QtCore.Qt.ControlModifier):
+                    self._select_members()
+                e.accept()
+                return
         if e.button() == QtCore.Qt.LeftButton and not (e.modifiers() & QtCore.Qt.ControlModifier):
             self._select_members()
         super().mousePressEvent(e)
@@ -235,11 +253,20 @@ class CommentGroup(QtWidgets.QGraphicsObject):
             self._apply_resize(e.pos())
             e.accept()
             return
+        if self._dragging_header:
+            delta = QtCore.QPointF(e.scenePos()) - self._drag_start_scene
+            self.setPos(self._drag_start_pos + delta)
+            e.accept()
+            return
         super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e: QtWidgets.QGraphicsSceneMouseEvent):
         if self._resize_mode and e.button() == QtCore.Qt.LeftButton:
             self._resize_mode = None
+            e.accept()
+            return
+        if self._dragging_header and e.button() == QtCore.Qt.LeftButton:
+            self._dragging_header = False
             e.accept()
             return
         super().mouseReleaseEvent(e)
@@ -273,6 +300,8 @@ class CommentGroup(QtWidgets.QGraphicsObject):
         cursor = self._cursor_for_mode(mode)
         if cursor:
             self.setCursor(cursor)
+        elif self._header_rect().contains(e.pos()):
+            self.setCursor(QtCore.Qt.OpenHandCursor)
         else:
             self.unsetCursor()
         super().hoverMoveEvent(e)
@@ -320,6 +349,9 @@ class CommentGroup(QtWidgets.QGraphicsObject):
         if near_bottom:
             return "bottom"
         return None
+
+    def _header_rect(self) -> QtCore.QRectF:
+        return QtCore.QRectF(self._rect.x(), self._rect.y(), self._rect.width(), 32.0)
 
     def _cursor_for_mode(self, mode: str | None):
         if not mode:
@@ -1324,8 +1356,6 @@ class GraphScene(QtWidgets.QGraphicsScene):
             if group_rect.contains(rect):
                 members.append(name)
         group._members = members
-        if not members:
-            self.delete_comment_group(group)
 
     def _update_comment_membership_for_node(self, node_item: NodeItem):
         if getattr(self, "_moving_comment_group", False):
@@ -1343,11 +1373,8 @@ class GraphScene(QtWidgets.QGraphicsScene):
                 if name in cg.members():
                     cg.remove_member(name)
                     changed = True
-                    if not cg.members():
-                        self.delete_comment_group(cg)
         if changed:
             self.update()
-        group.setSelected(True)
 
     def delete_comment_group(self, group: CommentGroup):
         if group in self._comment_groups:
