@@ -137,6 +137,7 @@ class CommentGroup(QtWidgets.QGraphicsObject):
         self._dragging_header = False
         self._drag_start_scene = QtCore.QPointF()
         self._drag_start_pos = QtCore.QPointF()
+        self._drag_peer_starts: List[tuple['CommentGroup', QtCore.QPointF]] = []
 
     # --- data helpers --------------------------------------------------------
     def members(self) -> List[str]:
@@ -178,7 +179,10 @@ class CommentGroup(QtWidgets.QGraphicsObject):
         bg.setAlpha(70)
         frame = QtGui.QColor(base_color.lighter(150))
         frame.setAlpha(80)
-        pen = QtGui.QPen(frame, 2.1, QtCore.Qt.SolidLine)
+        if self.isSelected():
+            frame = QtGui.QColor(base_color.lighter(180))
+            frame.setAlpha(200)
+        pen = QtGui.QPen(frame, 2.1 if not self.isSelected() else 2.8, QtCore.Qt.SolidLine)
         pen.setCosmetic(True)
         p.setBrush(QtGui.QBrush(bg))
         p.setPen(pen)
@@ -188,7 +192,7 @@ class CommentGroup(QtWidgets.QGraphicsObject):
         header_h = 32.0
         hx, hy, hw = rect.x(), rect.y(), rect.width()
         radius = 14.0
-        header_color = QtGui.QColor(base_color.lighter(140))
+        header_color = QtGui.QColor(base_color.lighter(140 if not self.isSelected() else 180))
         header_color.setAlpha(120)
         header_path = QtGui.QPainterPath()
         header_path.moveTo(hx, hy + header_h)
@@ -256,6 +260,19 @@ class CommentGroup(QtWidgets.QGraphicsObject):
                 self._dragging_header = True
                 self._drag_start_scene = QtCore.QPointF(e.scenePos())
                 self._drag_start_pos = QtCore.QPointF(self.pos())
+                self._drag_peer_starts = []
+                sc = self.scene()
+                if sc:
+                    peers = [
+                        it for it in sc.selectedItems()
+                        if isinstance(it, CommentGroup)
+                    ]
+                    if not peers:
+                        peers = [self]
+                else:
+                    peers = [self]
+                for peer in peers:
+                    self._drag_peer_starts.append((peer, QtCore.QPointF(peer.pos())))
                 if not (e.modifiers() & QtCore.Qt.ControlModifier):
                     self._select_members()
                 e.accept()
@@ -270,7 +287,8 @@ class CommentGroup(QtWidgets.QGraphicsObject):
             return
         if self._dragging_header:
             delta = QtCore.QPointF(e.scenePos()) - self._drag_start_scene
-            self.setPos(self._drag_start_pos + delta)
+            for peer, start_pos in self._drag_peer_starts or [(self, self._drag_start_pos)]:
+                peer.setPos(start_pos + delta)
             e.accept()
             return
         super().mouseMoveEvent(e)
@@ -282,6 +300,7 @@ class CommentGroup(QtWidgets.QGraphicsObject):
             return
         if self._dragging_header and e.button() == QtCore.Qt.LeftButton:
             self._dragging_header = False
+            self._drag_peer_starts = []
             e.accept()
             return
         super().mouseReleaseEvent(e)
