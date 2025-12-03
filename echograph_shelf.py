@@ -205,6 +205,13 @@ class CommentGroup(QtWidgets.QGraphicsObject):
         p.setPen(QtGui.QPen(title_color))
         font = p.font()
         font.setBold(True)
+        base_pt = font.pointSizeF()
+        if base_pt > 0:
+            font.setPointSizeF(base_pt * 1.15)
+        else:
+            px = font.pixelSize()
+            if px > 0:
+                font.setPixelSize(px + 2)
         p.setFont(font)
         p.drawText(title_rect, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, self._title)
 
