@@ -253,9 +253,8 @@ class CommentGroup(QtWidgets.QGraphicsObject):
                     self._select_members()
                 e.accept()
                 return
-        if e.button() == QtCore.Qt.LeftButton and not (e.modifiers() & QtCore.Qt.ControlModifier):
-            self._select_members()
-        super().mousePressEvent(e)
+        # Let clicks in the body fall through so rubber-band selection can start inside the wrapper.
+        e.ignore()
 
     def mouseMoveEvent(self, e: QtWidgets.QGraphicsSceneMouseEvent):
         if self._resize_mode:
