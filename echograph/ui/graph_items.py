@@ -37,7 +37,7 @@ class EdgeItem(QtWidgets.QGraphicsPathItem):
         self.updatePath()
         self.setAcceptHoverEvents(True)
         try:
-            self.setFlag(_gi_flag("ItemIsSelectable", QtWidgets.QGraphicsItem.ItemIsSelectable), True)
+            self.setFlag(_gi_flag("ItemIsSelectable", QtWidgets.QGraphicsItem.ItemIsSelectable), False)
         except Exception:
             pass
 
