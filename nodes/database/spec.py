@@ -48,10 +48,10 @@ def _ensure_param(node_item, name: str, default: str = "") -> None:
 
 def build_ports(node_item) -> None:
     _ensure_param(node_item, "mongo_uri", "mongodb://localhost:27017")
-    _ensure_param(node_item, "project", "")
     _ensure_param(node_item, "collection", COLLECTION)
+    _ensure_param(node_item, "project", "")
     _ensure_param(node_item, "note", "")
-    for port in ("mongo_uri", "project", "collection", "note"):
+    for port in ("mongo_uri", "collection", "project", "note"):
         if hasattr(node_item, "ensure_input"):
             node_item.ensure_input(port)
 
