@@ -6,6 +6,7 @@ import re
 import threading
 import urllib.error
 import urllib.request
+import datetime
 from pathlib import Path
 from typing import List, Sequence, Tuple
 
@@ -31,7 +32,8 @@ PROMPT_NODE_ALIASES = [
 ]
 PROMPT_NODE_KINDS = {PROMPT_NODE_KIND, *PROMPT_NODE_ALIASES}
 DB_NAME = "my_database"
-PROJECTS_COLLECTION = "EchoGraph"
+# The user’s Mongo layout: database = my_database, collection = EchoGragh
+COLLECTION = "EchoGragh"
 
 def _text_from_input(card, node_item, port_name: str) -> str:
     sc = getattr(card, "_graph_scene", None)
@@ -331,23 +333,25 @@ def _connected_database(card, node_item):
         in_edges = sc._in_edges(node_item)
     except Exception:
         in_edges = []
+    fallback_db = None
     for edge in in_edges:
         port_name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
-        if (port_name or "").strip().lower() != "output_path":
-            continue
         src = getattr(edge, "src", None)
         model = getattr(src, "model", None)
         kind = (model.kind or "").strip().lower() if model else ""
         if kind == "database":
-            mongo_uri = _param_value_from_node(src, "mongo_uri") or "mongodb://localhost:27017"
-            project = _param_value_from_node(src, "project")
-            note = _param_value_from_node(src, "note")
-            return {
+            cfg = {
                 "node_name": getattr(model, "name", ""),
-                "mongo_uri": mongo_uri,
-                "project": project,
-                "note": note,
+                "mongo_uri": _param_value_from_node(src, "mongo_uri") or "mongodb://localhost:27017",
+                "project": _param_value_from_node(src, "project"),
+                "note": _param_value_from_node(src, "note"),
+                "collection": _param_value_from_node(src, "collection") or COLLECTION,
             }
+            if (port_name or "").strip().lower() == "output_path":
+                return cfg
+            # remember a non-port-matched db as fallback
+            fallback_db = fallback_db or cfg
+    return fallback_db
     return None
 
 
@@ -357,18 +361,35 @@ def _write_to_mongo(cfg: dict, prompt_text: str, response_text: str, raw_payload
     uri = cfg.get("mongo_uri") or "mongodb://localhost:27017"
     project = (cfg.get("project") or "").strip()
     note = cfg.get("note") or ""
+    collection_name = (cfg.get("collection") or COLLECTION).strip() or COLLECTION
     if not project:
         raise RuntimeError("Database node is connected but no project is selected.")
     client = MongoClient(uri)
-    coll = client[DB_NAME][PROJECTS_COLLECTION]
-    # Ensure project doc exists
+    coll = client[DB_NAME][collection_name]
+    filter_doc = {"$or": [{"project": project}, {"name": project}]}
+    # Ensure project doc exists or update legacy doc keyed by name
     coll.update_one(
-        {"name": project},
-        {"$setOnInsert": {"name": project, "created_at": QtCore.QDateTime.currentDateTimeUtc().toSecsSinceEpoch(), "note": note, "responses": []}},
+        filter_doc,
+        {
+            "$setOnInsert": {
+                "project": project,
+                "name": project,
+                "type": "project",
+                "created_at": datetime.datetime.utcnow().isoformat(),
+                "note": note,
+                "responses": [],
+            },
+            "$set": {
+                "project": project,
+                "name": project,
+            },
+        },
         upsert=True,
     )
     entry = {
-        "timestamp": QtCore.QDateTime.currentDateTimeUtc().toString(QtCore.Qt.ISODate),
+        "project": project,
+        "type": "response",
+        "timestamp": datetime.datetime.utcnow().isoformat(),
         "prompt": prompt_text,
         "response": response_text,
         "model": model,
@@ -376,7 +397,7 @@ def _write_to_mongo(cfg: dict, prompt_text: str, response_text: str, raw_payload
         "raw_payload": raw_payload,
         "note": note,
     }
-    coll.update_one({"name": project}, {"$push": {"responses": entry}})
+    coll.update_one({"$or": [{"project": project}, {"name": project}]}, {"$push": {"responses": entry}})
     return project
 
 def augment_infocard_footer(card, footer_layout) -> bool:

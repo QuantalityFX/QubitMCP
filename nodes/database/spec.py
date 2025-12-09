@@ -16,7 +16,8 @@ except Exception:
 from nodes.core import Spec
 
 DB_NAME = "my_database"
-PROJECTS_COLLECTION = "EchoGraph"  # stores projects; each project has many responses
+# The user’s Mongo layout: database = my_database, collection = EchoGragh
+COLLECTION = "EchoGragh"
 
 
 def _ensure_param(node_item, name: str, default: str = "") -> None:
@@ -48,8 +49,9 @@ def _ensure_param(node_item, name: str, default: str = "") -> None:
 def build_ports(node_item) -> None:
     _ensure_param(node_item, "mongo_uri", "mongodb://localhost:27017")
     _ensure_param(node_item, "project", "")
+    _ensure_param(node_item, "collection", COLLECTION)
     _ensure_param(node_item, "note", "")
-    for port in ("mongo_uri", "project", "note"):
+    for port in ("mongo_uri", "project", "collection", "note"):
         if hasattr(node_item, "ensure_input"):
             node_item.ensure_input(port)
 
@@ -65,9 +67,13 @@ def _list_projects(uri: str):
         return []
     try:
         client = _client(uri)
-        coll = client[DB_NAME][PROJECTS_COLLECTION]
-        names = coll.distinct("name")
-        return sorted([n for n in names if isinstance(n, str)])
+        coll = client[DB_NAME][COLLECTION]
+        names = set()
+        for field in ("project", "name"):  # honor legacy docs with 'name'
+            for n in coll.distinct(field):
+                if isinstance(n, str) and n.strip():
+                    names.add(n)
+        return sorted(names)
     except Exception:
         return []
 
@@ -80,10 +86,16 @@ def _create_project(uri: str, name: str) -> str:
         return "Install pymongo to create projects."
     try:
         client = _client(uri)
-        coll = client[DB_NAME][PROJECTS_COLLECTION]
-        if coll.find_one({"name": name}):
+        coll = client[DB_NAME][COLLECTION]
+        if coll.find_one({"$or": [{"project": name}, {"name": name}]}):
             return f"Project '{name}' already exists."
-        coll.insert_one({"name": name, "created_at": datetime.datetime.utcnow(), "responses": []})
+        coll.insert_one({
+            "project": name,
+            "type": "project",
+            "created_at": datetime.datetime.utcnow().isoformat(),
+            "note": "",
+            "responses": [],
+        })
         return f"Created project '{name}'."
     except Exception as exc:
         return f"Failed to create: {exc}"
@@ -97,10 +109,10 @@ def _delete_project(uri: str, name: str) -> str:
         return "Install pymongo to delete projects."
     try:
         client = _client(uri)
-        coll = client[DB_NAME][PROJECTS_COLLECTION]
-        res = coll.delete_one({"name": name})
+        coll = client[DB_NAME][COLLECTION]
+        res = coll.delete_many({"$or": [{"project": name}, {"name": name}]})
         if res.deleted_count:
-            return f"Deleted project '{name}'."
+            return f"Deleted project '{name}' (and related responses)."
         return "Project not found."
     except Exception as exc:
         return f"Failed to delete: {exc}"
