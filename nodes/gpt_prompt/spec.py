@@ -333,25 +333,20 @@ def _connected_database(card, node_item):
         in_edges = sc._in_edges(node_item)
     except Exception:
         in_edges = []
-    fallback_db = None
     for edge in in_edges:
         port_name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
         src = getattr(edge, "src", None)
         model = getattr(src, "model", None)
         kind = (model.kind or "").strip().lower() if model else ""
         if kind == "database":
-            cfg = {
+            return {
                 "node_name": getattr(model, "name", ""),
                 "mongo_uri": _param_value_from_node(src, "mongo_uri") or "mongodb://localhost:27017",
                 "project": _param_value_from_node(src, "project"),
                 "note": _param_value_from_node(src, "note"),
                 "collection": _param_value_from_node(src, "collection") or COLLECTION,
             }
-            if (port_name or "").strip().lower() == "output_path":
-                return cfg
-            # remember a non-port-matched db as fallback
-            fallback_db = fallback_db or cfg
-    return fallback_db
+    return None
     return None
 
 
@@ -366,38 +361,32 @@ def _write_to_mongo(cfg: dict, prompt_text: str, response_text: str, raw_payload
         raise RuntimeError("Database node is connected but no project is selected.")
     client = MongoClient(uri)
     coll = client[DB_NAME][collection_name]
-    filter_doc = {"$or": [{"project": project}, {"name": project}]}
+    filter_doc = {"$or": [{"name": project}, {"project": project}]}
     # Ensure project doc exists or update legacy doc keyed by name
     coll.update_one(
         filter_doc,
         {
             "$setOnInsert": {
-                "project": project,
                 "name": project,
+                "project": project,
                 "type": "project",
                 "created_at": datetime.datetime.utcnow().isoformat(),
-                "note": note,
-                "responses": [],
-            },
-            "$set": {
-                "project": project,
-                "name": project,
+                "history": [],
             },
         },
         upsert=True,
     )
     entry = {
-        "project": project,
-        "type": "response",
-        "timestamp": datetime.datetime.utcnow().isoformat(),
+        "role": "exchange",
         "prompt": prompt_text,
         "response": response_text,
         "model": model,
         "temperature": temperature,
-        "raw_payload": raw_payload,
-        "note": note,
+        "timestamp": datetime.datetime.utcnow().isoformat(),
     }
-    coll.update_one({"$or": [{"project": project}, {"name": project}]}, {"$push": {"responses": entry}})
+    if note:
+        entry["note"] = note
+    coll.update_one({"$or": [{"name": project}, {"project": project}]}, {"$push": {"history": entry}})
     return project
 
 def augment_infocard_footer(card, footer_layout) -> bool:

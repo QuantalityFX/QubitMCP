@@ -62,23 +62,26 @@ def _client(uri: str) -> MongoClient:
     return MongoClient(uri or "mongodb://localhost:27017")
 
 
-def _list_projects(uri: str):
+def _list_projects(uri: str, collection: str | None = None):
     if MongoClient is None:
         return []
     try:
         client = _client(uri)
-        coll = client[DB_NAME][COLLECTION]
+        coll_name = (collection or COLLECTION).strip() or COLLECTION
+        coll = client[DB_NAME][coll_name]
         names = set()
-        for field in ("project", "name"):  # honor legacy docs with 'name'
-            for n in coll.distinct(field):
-                if isinstance(n, str) and n.strip():
-                    names.add(n)
+        for n in coll.distinct("name"):
+            if isinstance(n, str) and n.strip():
+                names.add(n)
+        for n in coll.distinct("project"):  # legacy docs
+            if isinstance(n, str) and n.strip():
+                names.add(n)
         return sorted(names)
     except Exception:
         return []
 
 
-def _create_project(uri: str, name: str) -> str:
+def _create_project(uri: str, collection: str, name: str) -> str:
     name = (name or "").strip()
     if not name:
         return "Project name cannot be empty."
@@ -86,22 +89,23 @@ def _create_project(uri: str, name: str) -> str:
         return "Install pymongo to create projects."
     try:
         client = _client(uri)
-        coll = client[DB_NAME][COLLECTION]
-        if coll.find_one({"$or": [{"project": name}, {"name": name}]}):
+        coll_name = (collection or COLLECTION).strip() or COLLECTION
+        coll = client[DB_NAME][coll_name]
+        if coll.find_one({"$or": [{"name": name}, {"project": name}]}):
             return f"Project '{name}' already exists."
         coll.insert_one({
+            "name": name,
             "project": name,
             "type": "project",
             "created_at": datetime.datetime.utcnow().isoformat(),
-            "note": "",
-            "responses": [],
+            "history": [],
         })
         return f"Created project '{name}'."
     except Exception as exc:
         return f"Failed to create: {exc}"
 
 
-def _delete_project(uri: str, name: str) -> str:
+def _delete_project(uri: str, collection: str, name: str) -> str:
     name = (name or "").strip()
     if not name:
         return "Select a project to delete."
@@ -109,13 +113,51 @@ def _delete_project(uri: str, name: str) -> str:
         return "Install pymongo to delete projects."
     try:
         client = _client(uri)
-        coll = client[DB_NAME][COLLECTION]
-        res = coll.delete_many({"$or": [{"project": name}, {"name": name}]})
+        coll_name = (collection or COLLECTION).strip() or COLLECTION
+        coll = client[DB_NAME][coll_name]
+        res = coll.delete_many({"$or": [{"name": name}, {"project": name}]})
         if res.deleted_count:
-            return f"Deleted project '{name}' (and related responses)."
+            return f"Deleted project '{name}' (and related history)."
         return "Project not found."
     except Exception as exc:
         return f"Failed to delete: {exc}"
+
+
+def _save_note(uri: str, collection: str, project: str, note_text: str) -> str:
+    if MongoClient is None:
+        return "Install pymongo to save notes."
+    project = (project or "").strip()
+    collection = (collection or COLLECTION).strip() or COLLECTION
+    if not project:
+        return "Select or enter a project name first."
+    if not note_text:
+        return "Note is empty; nothing to save."
+    try:
+        client = _client(uri)
+        coll = client[DB_NAME][collection]
+        filt = {"$or": [{"name": project}, {"project": project}]}
+        coll.update_one(
+            filt,
+            {
+                "$setOnInsert": {
+                    "name": project,
+                    "project": project,
+                    "type": "project",
+                    "created_at": datetime.datetime.utcnow().isoformat(),
+                    "history": [],
+                }
+            },
+            upsert=True,
+        )
+        entry = {
+            "role": "note",
+            "timestamp": datetime.datetime.utcnow().isoformat(),
+            "content": note_text,
+        }
+        coll.update_one({"$or": [{"name": project}, {"project": project}]}, {"$push": {"history": entry}})
+        return f"Saved note to project '{project}'."
+    except Exception as exc:
+        return f"Failed to save note: {exc}"
 
 
 def augment_infocard_footer(card, footer_layout) -> bool:
@@ -151,18 +193,34 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     uri_edit.setPlaceholderText("mongodb://localhost:27017")
     uri_edit.editingFinished.connect(lambda: _set_param("mongo_uri", uri_edit.text()))
 
+    collection_edit = QtWidgets.QLineEdit(_param_val("collection") or COLLECTION)
+    collection_edit.setPlaceholderText(COLLECTION)
+    collection_edit.editingFinished.connect(lambda: _set_param("collection", collection_edit.text()))
+
     project_combo = QtWidgets.QComboBox()
     project_combo.setEditable(False)
 
     project_edit = QtWidgets.QLineEdit()
     project_edit.setPlaceholderText("New or existing project name")
 
-    status_lbl = QtWidgets.QLabel("")
-    status_lbl.setStyleSheet("color:#9ca3af;")
+    note_edit = QtWidgets.QLineEdit(_param_val("note"))
+    note_edit.setPlaceholderText("Enter note text to save")
+    note_edit.textEdited.connect(lambda txt: _set_param("note", txt))
+
+    status_lbl = QtWidgets.QTextEdit()
+    status_lbl.setReadOnly(True)
+    status_lbl.setMaximumHeight(64)
+    status_lbl.setStyleSheet("QTextEdit{color:#9ca3af;background:#0f1216;border:1px solid #334;border-radius:4px;padding:4px;}")
+    status_lbl.setTextInteractionFlags(
+        QtCore.Qt.TextSelectableByMouse
+        | QtCore.Qt.TextSelectableByKeyboard
+        | QtCore.Qt.LinksAccessibleByMouse
+    )
 
     def _refresh_list():
         uri = uri_edit.text().strip()
-        names = _list_projects(uri)
+        collection = collection_edit.text().strip() or COLLECTION
+        names = _list_projects(uri, collection)
         project_combo.clear()
         project_combo.addItem("Select project...")
         for n in names:
@@ -185,18 +243,33 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     def _create_clicked():
         name = project_edit.text().strip()
         uri = uri_edit.text().strip()
-        msg = _create_project(uri, name)
+        collection = collection_edit.text().strip() or COLLECTION
+        msg = _create_project(uri, collection, name)
         status_lbl.setText(msg)
         _refresh_list()
         if "Created" in msg or "exists" in msg:
             _set_param("project", name)
+            _set_param("collection", collection)
 
     def _delete_clicked():
         name = project_combo.currentText()
         uri = uri_edit.text().strip()
-        msg = _delete_project(uri, name)
+        collection = collection_edit.text().strip() or COLLECTION
+        msg = _delete_project(uri, collection, name)
         status_lbl.setText(msg)
         _refresh_list()
+
+    def _save_note_clicked():
+        uri = uri_edit.text().strip()
+        collection = collection_edit.text().strip() or COLLECTION
+        project_name = (project_edit.text().strip() or project_combo.currentText()).strip()
+        note_text = note_edit.text()
+        msg = _save_note(uri, collection, project_name, note_text)
+        status_lbl.setText(msg)
+        if msg.lower().startswith("saved note"):
+            _set_param("project", project_name)
+            _set_param("collection", collection)
+            _set_param("note", note_text)
 
     refresh_btn = QtWidgets.QPushButton("Refresh")
     refresh_btn.clicked.connect(_refresh_list)
@@ -207,15 +280,21 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     delete_btn = QtWidgets.QPushButton("Delete")
     delete_btn.clicked.connect(_delete_clicked)
 
+    save_note_btn = QtWidgets.QPushButton("Save Note")
+    save_note_btn.clicked.connect(_save_note_clicked)
+
     form = QtWidgets.QFormLayout()
     form.addRow("Mongo URI", uri_edit)
+    form.addRow("Collection", collection_edit)
     form.addRow("Projects", project_combo)
     form.addRow("Project name", project_edit)
+    form.addRow("Note text", note_edit)
 
     btn_row = QtWidgets.QHBoxLayout()
     btn_row.addWidget(refresh_btn)
     btn_row.addWidget(create_btn)
     btn_row.addWidget(delete_btn)
+    btn_row.addWidget(save_note_btn)
     btn_row.addStretch(1)
 
     container = QtWidgets.QWidget()
