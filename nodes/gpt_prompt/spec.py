@@ -9,6 +9,11 @@ import urllib.request
 from pathlib import Path
 from typing import List, Sequence, Tuple
 
+try:
+    from pymongo import MongoClient  # type: ignore
+except Exception:
+    MongoClient = None  # optional; DB feature disabled if missing
+
 from nodes.core import Spec
 from echograph.qt_compat import QtWidgets, QtCore, QtGui
 from echograph.constants import APP_TITLE, script_dir
@@ -25,6 +30,8 @@ PROMPT_NODE_ALIASES = [
     "gpt",
 ]
 PROMPT_NODE_KINDS = {PROMPT_NODE_KIND, *PROMPT_NODE_ALIASES}
+DB_NAME = "my_database"
+PROJECTS_COLLECTION = "EchoGraph"
 
 def _text_from_input(card, node_item, port_name: str) -> str:
     sc = getattr(card, "_graph_scene", None)
@@ -305,6 +312,73 @@ def _notify(card, message: str, *, error: bool = False) -> None:
         fn(card, APP_TITLE, message)
     QtCore.QMetaObject.invokeMethod(card, _show, QtCore.Qt.QueuedConnection)
 
+
+def _param_value_from_node(node_item, name: str) -> str:
+    model = getattr(node_item, "model", None)
+    params = getattr(model, "params", None) or []
+    key = (name or "").strip().lower()
+    for p in params:
+        if (p.get("name") or "").strip().lower() == key:
+            return p.get("value") or ""
+    return ""
+
+
+def _connected_database(card, node_item):
+    sc = getattr(card, "_graph_scene", None)
+    if sc is None or node_item is None:
+        return None
+    try:
+        in_edges = sc._in_edges(node_item)
+    except Exception:
+        in_edges = []
+    for edge in in_edges:
+        port_name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
+        if (port_name or "").strip().lower() != "output_path":
+            continue
+        src = getattr(edge, "src", None)
+        model = getattr(src, "model", None)
+        kind = (model.kind or "").strip().lower() if model else ""
+        if kind == "database":
+            mongo_uri = _param_value_from_node(src, "mongo_uri") or "mongodb://localhost:27017"
+            project = _param_value_from_node(src, "project")
+            note = _param_value_from_node(src, "note")
+            return {
+                "node_name": getattr(model, "name", ""),
+                "mongo_uri": mongo_uri,
+                "project": project,
+                "note": note,
+            }
+    return None
+
+
+def _write_to_mongo(cfg: dict, prompt_text: str, response_text: str, raw_payload: dict, model: str, temperature: float):
+    if MongoClient is None:
+        raise RuntimeError("pymongo is not installed; cannot write to Mongo. Install pymongo or disconnect the Database node.")
+    uri = cfg.get("mongo_uri") or "mongodb://localhost:27017"
+    project = (cfg.get("project") or "").strip()
+    note = cfg.get("note") or ""
+    if not project:
+        raise RuntimeError("Database node is connected but no project is selected.")
+    client = MongoClient(uri)
+    coll = client[DB_NAME][PROJECTS_COLLECTION]
+    # Ensure project doc exists
+    coll.update_one(
+        {"name": project},
+        {"$setOnInsert": {"name": project, "created_at": QtCore.QDateTime.currentDateTimeUtc().toSecsSinceEpoch(), "note": note, "responses": []}},
+        upsert=True,
+    )
+    entry = {
+        "timestamp": QtCore.QDateTime.currentDateTimeUtc().toString(QtCore.Qt.ISODate),
+        "prompt": prompt_text,
+        "response": response_text,
+        "model": model,
+        "temperature": temperature,
+        "raw_payload": raw_payload,
+        "note": note,
+    }
+    coll.update_one({"name": project}, {"$push": {"responses": entry}})
+    return project
+
 def augment_infocard_footer(card, footer_layout) -> bool:
     print(f"[llm_prompt] augment_infocard_footer for node {getattr(getattr(card, '_node_ref', None), 'name', '?')}")
     node = getattr(card, "_node_ref", None)
@@ -359,15 +433,21 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             return
 
         output_raw = _val("output_path")
-        if not output_raw.strip():
-            QtWidgets.QMessageBox.warning(card, APP_TITLE, "Output path is required.")
+        db_cfg = _connected_database(card, _node_item())
+        if not output_raw.strip() and not db_cfg:
+            QtWidgets.QMessageBox.warning(card, APP_TITLE, "Output path is required (or connect a Database node).")
+            return
+        if db_cfg and not (db_cfg.get("project") or "").strip():
+            QtWidgets.QMessageBox.warning(card, APP_TITLE, "Select or create a project on the connected Database node.")
             return
 
-        try:
-            output_path = _normalize_path(output_raw)
-        except Exception as exc:
-            QtWidgets.QMessageBox.critical(card, APP_TITLE, f"Invalid output path:\n{exc}")
-            return
+        output_path = None
+        if output_raw.strip() and not db_cfg:
+            try:
+                output_path = _normalize_path(output_raw)
+            except Exception as exc:
+                QtWidgets.QMessageBox.critical(card, APP_TITLE, f"Invalid output path:\n{exc}")
+                return
 
         files_value = _val("files")
         wired_paths = _collect_paths_from_text(files_value)
@@ -400,14 +480,20 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             try:
                 response_text, raw_payload = _call_openai(api_key, model, temperature, combined_prompt)
                 response_text = (response_text or "").strip()
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-                output_path.write_text(response_text, encoding="utf-8")
-                log_path = output_path.with_name(f"{output_path.stem}_log.json")
-                log_path.write_text(json.dumps(raw_payload, indent=2, ensure_ascii=False), encoding="utf-8")
+                if db_cfg:
+                    project = _write_to_mongo(db_cfg, combined_prompt, response_text, raw_payload, model, temperature)
+                else:
+                    output_path.parent.mkdir(parents=True, exist_ok=True)
+                    output_path.write_text(response_text, encoding="utf-8")
+                    log_path = output_path.with_name(f"{output_path.stem}_log.json")
+                    log_path.write_text(json.dumps(raw_payload, indent=2, ensure_ascii=False), encoding="utf-8")
             except Exception as exc:  # pylint: disable=broad-except
                 _notify(card, f"GPT request failed:\n{exc}", error=True)
             else:
-                message = f"Wrote response to {output_path}"
+                if db_cfg:
+                    message = f"Wrote response to Mongo project '{db_cfg.get('project', '')}'"
+                else:
+                    message = f"Wrote response to {output_path}"
                 if warnings:
                     message += "\n\nWarnings:\n" + "\n".join(warnings[:6])
                     if len(warnings) > 6:

@@ -120,7 +120,18 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] GPT Prompt plugin import failed:", e)
 
-    # 10) Image Collection
+    # 10) Database
+    try:
+        from nodes import database
+        if hasattr(database, "register"):
+            database.register()
+            _safe_probe("database")
+        else:
+            print("[EchoGraph] Database module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Database plugin import failed:", e)
+
+    # 11) Image Collection
     try:
         from nodes import image_collection
         if hasattr(image_collection, "register"):
