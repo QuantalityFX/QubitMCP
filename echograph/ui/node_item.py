@@ -8,11 +8,12 @@ if TYPE_CHECKING:
 import os
 import datetime
 import re
+from pathlib import Path
 from echograph.qt_compat import QtCore, QtGui, QtWidgets, QAction, QShortcut, QKeySequence, _qexec
 from echograph.ui.dialogs import BigTextEditDialog
 from echograph.constants import (
     LLM_URL, LLM_NODE_W_BASE, LLM_NODE_H_BASE, LLM_SCALE_DEFAULT, KEY_BIGEDIT,
-    DEFAULT_STRIPE_HEX,
+DEFAULT_STRIPE_HEX,
 )
 
 import nodes.core as core
@@ -38,6 +39,25 @@ try:
 except Exception:
     PdfReader = None
     _HAS_PYPDF = False
+
+# Optional icons
+_DB_ICON = None
+
+def _db_icon():
+    global _DB_ICON
+    if _DB_ICON is not None:
+        return _DB_ICON
+    try:
+        icon_path = Path(__file__).resolve().parents[2] / "icons" / "Database_Icon.png"
+        if icon_path.is_file():
+            pm = QtGui.QPixmap(str(icon_path))
+            if not pm.isNull():
+                _DB_ICON = pm
+                return _DB_ICON
+    except Exception:
+        pass
+    _DB_ICON = None
+    return _DB_ICON
 
 # Optional WebEngine
 try:
@@ -1921,7 +1941,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
     def boundingRect(self):
         m = 6
-        return QtCore.QRectF(-m, -m, self.width + 2 * m, self.height + 2 * m)
+        extra_top = 0.0
+        try:
+            if (self.model.kind or "").lower() == "database":
+                # Allow space for floating icon above the bar
+                extra_top = 80.0
+        except Exception:
+            pass
+        return QtCore.QRectF(-m, -m - extra_top, self.width + 2 * m, self.height + 2 * m + extra_top)
 
     def shape(self):
         path = QtGui.QPainterPath()
@@ -2009,6 +2036,29 @@ class NodeItem(QtWidgets.QGraphicsObject):
             )
         except Exception as e:
             print("[EchoGraph][paint] title fail:", e)
+
+        # --- Optional icon for specific node kinds ---
+        try:
+            kind_lower = (self.model.kind or "").lower()
+            if kind_lower == "database":
+                pm = _db_icon()
+                if pm and not pm.isNull():
+                    scale = 1.0
+                    try:
+                        view = self.scene().views()[0] if self.scene() and self.scene().views() else None
+                        if view:
+                            scale = float(view.transform().m11())
+                    except Exception:
+                        scale = 1.0
+                    # Grow when zoomed out; clamp
+                    size = int(max(32, min(96, 34 / max(scale, 0.001))))
+                    pm_scaled = pm.scaled(size, size, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
+                    x = (self.width - pm_scaled.width()) / 2.0
+                    # float above the top bar
+                    y = -pm_scaled.height() * 0.6
+                    p.drawPixmap(QtCore.QPointF(x, y), pm_scaled)
+        except Exception:
+            pass
 
         # --- Kind badge (type pill) ---
         try:
