@@ -42,6 +42,13 @@ except Exception:
 
 # Optional icons
 _DB_ICON = None
+_LLM_ICON = None
+_LLM_SERVER_ICON = None
+_APPEND_ICON = None
+_NOTE_ICON = None
+_LIBRARIAN_ICON = None
+_IMPORT_ICON = None
+_OUTPUT_ICON = None
 
 def _db_icon():
     global _DB_ICON
@@ -58,6 +65,119 @@ def _db_icon():
         pass
     _DB_ICON = None
     return _DB_ICON
+
+def _llm_icon():
+    global _LLM_ICON
+    if _LLM_ICON is not None:
+        return _LLM_ICON
+    try:
+        icon_path = Path(__file__).resolve().parents[2] / "icons" / "LLM_Icon.png"
+        if icon_path.is_file():
+            pm = QtGui.QPixmap(str(icon_path))
+            if not pm.isNull():
+                _LLM_ICON = pm
+                return _LLM_ICON
+    except Exception:
+        pass
+    _LLM_ICON = None
+    return _LLM_ICON
+
+def _llm_server_icon():
+    global _LLM_SERVER_ICON
+    if _LLM_SERVER_ICON is not None:
+        return _LLM_SERVER_ICON
+    try:
+        icon_path = Path(__file__).resolve().parents[2] / "icons" / "Server_Icon.png"
+        if icon_path.is_file():
+            pm = QtGui.QPixmap(str(icon_path))
+            if not pm.isNull():
+                _LLM_SERVER_ICON = pm
+                return _LLM_SERVER_ICON
+    except Exception:
+        pass
+    _LLM_SERVER_ICON = None
+    return _LLM_SERVER_ICON
+
+def _append_icon():
+    global _APPEND_ICON
+    if _APPEND_ICON is not None:
+        return _APPEND_ICON
+    try:
+        icon_path = Path(__file__).resolve().parents[2] / "icons" / "append_icon.png"
+        if icon_path.is_file():
+            pm = QtGui.QPixmap(str(icon_path))
+            if not pm.isNull():
+                _APPEND_ICON = pm
+                return _APPEND_ICON
+    except Exception:
+        pass
+    _APPEND_ICON = None
+    return _APPEND_ICON
+
+def _note_icon():
+    global _NOTE_ICON
+    if _NOTE_ICON is not None:
+        return _NOTE_ICON
+    try:
+        icon_path = Path(__file__).resolve().parents[2] / "icons" / "Electric_Pen_Icon.png"
+        if icon_path.is_file():
+            pm = QtGui.QPixmap(str(icon_path))
+            if not pm.isNull():
+                _NOTE_ICON = pm
+                return _NOTE_ICON
+    except Exception:
+        pass
+    _NOTE_ICON = None
+    return _NOTE_ICON
+
+def _librarian_icon():
+    global _LIBRARIAN_ICON
+    if _LIBRARIAN_ICON is not None:
+        return _LIBRARIAN_ICON
+    try:
+        #icon_path = Path(__file__).resolve().parents[2] / "nodes" / "librarian" / "icons" / "librarian_search_s.png"
+        icon_path = Path(__file__).resolve().parents[2] / "icons" / "librarian_search_Icon.png" 
+        if icon_path.is_file():
+            pm = QtGui.QPixmap(str(icon_path))
+            if not pm.isNull():
+                _LIBRARIAN_ICON = pm
+                return _LIBRARIAN_ICON
+    except Exception:
+        pass
+    _LIBRARIAN_ICON = None
+    return _LIBRARIAN_ICON
+
+def _import_icon():
+    global _IMPORT_ICON
+    if _IMPORT_ICON is not None:
+        return _IMPORT_ICON
+    try:
+        icon_path = Path(__file__).resolve().parents[2] / "icons" / "Import_File_Icon.png"
+        if icon_path.is_file():
+            pm = QtGui.QPixmap(str(icon_path))
+            if not pm.isNull():
+                _IMPORT_ICON = pm
+                return _IMPORT_ICON
+    except Exception:
+        pass
+    _IMPORT_ICON = None
+    return _IMPORT_ICON
+
+def _output_icon():
+    global _OUTPUT_ICON
+    if _OUTPUT_ICON is not None:
+        return _OUTPUT_ICON
+    try:
+        icon_path = Path(__file__).resolve().parents[2] / "icons" / "Out_Node_Icon.png"
+        if icon_path.is_file():
+            pm = QtGui.QPixmap(str(icon_path))
+            if not pm.isNull():
+                _OUTPUT_ICON = pm
+                return _OUTPUT_ICON
+    except Exception:
+        pass
+    _OUTPUT_ICON = None
+    return _OUTPUT_ICON
 
 # Optional WebEngine
 try:
@@ -1943,7 +2063,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
         m = 6
         extra_top = 0.0
         try:
-            if (self.model.kind or "").lower() == "database":
+            kind_lower = (self.model.kind or "").lower()
+            if kind_lower in ("database", "llm", "llm_prompt", "append", "note", "librarian", "import", "output"):
                 # Allow space for floating icon above the bar
                 extra_top = 80.0
         except Exception:
@@ -2040,23 +2161,38 @@ class NodeItem(QtWidgets.QGraphicsObject):
         # --- Optional icon for specific node kinds ---
         try:
             kind_lower = (self.model.kind or "").lower()
+            icon_pm = None
             if kind_lower == "database":
-                pm = _db_icon()
-                if pm and not pm.isNull():
+                icon_pm = _db_icon()
+            elif kind_lower == "llm":
+                icon_pm = _llm_server_icon()
+            elif kind_lower in ("llm_prompt",):
+                icon_pm = _llm_icon()
+            elif kind_lower == "append":
+                icon_pm = _append_icon()
+            elif kind_lower == "note":
+                icon_pm = _note_icon()
+            elif kind_lower == "librarian":
+                icon_pm = _librarian_icon()
+            elif kind_lower == "import":
+                icon_pm = _import_icon()
+            elif kind_lower == "output":
+                icon_pm = _output_icon()
+            if icon_pm and not icon_pm.isNull():
+                scale = 1.0
+                try:
+                    view = self.scene().views()[0] if self.scene() and self.scene().views() else None
+                    if view:
+                        scale = float(view.transform().m11())
+                except Exception:
                     scale = 1.0
-                    try:
-                        view = self.scene().views()[0] if self.scene() and self.scene().views() else None
-                        if view:
-                            scale = float(view.transform().m11())
-                    except Exception:
-                        scale = 1.0
-                    # Grow when zoomed out; clamp
-                    size = int(max(32, min(96, 34 / max(scale, 0.001))))
-                    pm_scaled = pm.scaled(size, size, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
-                    x = (self.width - pm_scaled.width()) / 2.0
-                    # float above the top bar
-                    y = -pm_scaled.height() * 0.6
-                    p.drawPixmap(QtCore.QPointF(x, y), pm_scaled)
+                # Grow when zoomed out; clamp with larger max
+                size = int(max(40, min(128, 38 / max(scale, 0.001))))
+                pm_scaled = icon_pm.scaled(size, size, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
+                x = (self.width - pm_scaled.width()) / 2.0
+                # float above the top bar
+                y = -pm_scaled.height() * 0.6
+                p.drawPixmap(QtCore.QPointF(x, y), pm_scaled)
         except Exception:
             pass
 
