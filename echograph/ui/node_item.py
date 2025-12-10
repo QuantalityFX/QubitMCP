@@ -49,6 +49,7 @@ _NOTE_ICON = None
 _LIBRARIAN_ICON = None
 _IMPORT_ICON = None
 _OUTPUT_ICON = None
+_PYTHON_ICON = None
 
 def _db_icon():
     global _DB_ICON
@@ -178,6 +179,22 @@ def _output_icon():
         pass
     _OUTPUT_ICON = None
     return _OUTPUT_ICON
+
+def _python_icon():
+    global _PYTHON_ICON
+    if _PYTHON_ICON is not None:
+        return _PYTHON_ICON
+    try:
+        icon_path = Path(__file__).resolve().parents[2] / "icons" / "Python_Icon.png"
+        if icon_path.is_file():
+            pm = QtGui.QPixmap(str(icon_path))
+            if not pm.isNull():
+                _PYTHON_ICON = pm
+                return _PYTHON_ICON
+    except Exception:
+        pass
+    _PYTHON_ICON = None
+    return _PYTHON_ICON
 
 # Optional WebEngine
 try:
@@ -2064,7 +2081,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         extra_top = 0.0
         try:
             kind_lower = (self.model.kind or "").lower()
-            if kind_lower in ("database", "llm", "llm_prompt", "append", "note", "librarian", "import", "output"):
+            if kind_lower in ("database", "llm", "llm_prompt", "append", "note", "librarian", "import", "output", "python"):
                 # Allow space for floating icon above the bar
                 extra_top = 80.0
         except Exception:
@@ -2178,6 +2195,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 icon_pm = _import_icon()
             elif kind_lower == "output":
                 icon_pm = _output_icon()
+            elif kind_lower == "python":
+                icon_pm = _python_icon()
             if icon_pm and not icon_pm.isNull():
                 scale = 1.0
                 try:
