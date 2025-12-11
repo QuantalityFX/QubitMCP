@@ -1052,6 +1052,32 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 else:
                     super().mousePressEvent(ev)
 
+            def selected_path(self) -> str:
+                if self.selected_index >= 0 and self.selected_index < len(self.paths):
+                    return self.paths[self.selected_index]
+                return ""
+
+            def remove_selected(self) -> str:
+                if self.selected_index < 0 or self.selected_index >= len(self.paths):
+                    return ""
+                idx = self.selected_index
+                removed_path = self.paths.pop(idx)
+                try:
+                    self.pixmaps.pop(idx)
+                    self.offsets.pop(idx)
+                    self.rects.pop(idx)
+                except Exception:
+                    pass
+                # recompute rects positions stay same; selection clears
+                self.selected_index = -1
+                try:
+                    if self._path_field is not None:
+                        self._path_field.clear()
+                except Exception:
+                    pass
+                self.update()
+                return removed_path
+
         body = _QtWidgets.QWidget()
         body.setAttribute(_QtCore.Qt.WA_TranslucentBackground, True)
         body.setAutoFillBackground(False)
@@ -1082,6 +1108,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
         header.addWidget(btn, 0)
         header.addWidget(edit_btn, 0)
         header.addStretch(1)
+        remove_btn = _QtWidgets.QPushButton("Remove")
+        remove_btn.setSizePolicy(_QtWidgets.QSizePolicy.Fixed, _QtWidgets.QSizePolicy.Fixed)
+        remove_btn.setMinimumWidth(90)
+        remove_btn.setStyleSheet(
+            "QPushButton{background:#1f2937;color:#e2e8f0;border:1px solid #475569;"
+            "border-radius:4px;padding:6px 10px;}"
+            "QPushButton:hover{background:#7f1d1d;border-color:#b91c1c;}"
+        )
+        header.addWidget(remove_btn, 0)
         v.addLayout(header)
 
         canvas = _InlineCanvas()
@@ -1167,6 +1202,31 @@ class NodeItem(QtWidgets.QGraphicsObject):
             canvas._path_field = path_field
         except Exception:
             pass
+
+        def _remove_selected():
+            if not canvas._edit_mode:
+                _QtWidgets.QMessageBox.information(node_item, "Image Collection", "Enable Edit mode and select an image first.")
+                return
+            sel_path = canvas.selected_path()
+            if not sel_path:
+                _QtWidgets.QMessageBox.information(node_item, "Image Collection", "Select an image in Edit mode to remove it.")
+                return
+            removed = canvas.remove_selected()
+            if removed:
+                try:
+                    st = getattr(node_item.model, "_image_collection_state", {}) or {}
+                    paths = list(st.get("paths", []))
+                    try:
+                        paths = [p for p in paths if p != removed]
+                    except Exception:
+                        pass
+                    setattr(node_item.model, "_image_collection_state", {"paths": paths})
+                except Exception:
+                    pass
+            else:
+                _QtWidgets.QMessageBox.information(node_item, "Image Collection", "Select an image in Edit mode to remove it.")
+
+        remove_btn.clicked.connect(_remove_selected)
 
         # restore prior state paths
         try:
