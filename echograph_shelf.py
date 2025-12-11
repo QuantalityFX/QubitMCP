@@ -2150,6 +2150,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             "QDockWidget{background:#1a1f24;color:#e6edf3;}"
             "QDockWidget::title{background:#20242b;color:#e6edf3;padding:4px 8px;}"
         )
+        try:
+            self.infoDock.setMinimumWidth(360)
+        except Exception:
+            pass
         scroll.setStyleSheet(
             "QScrollArea{background:#1a1f24;border:none;}"
             "QScrollArea>Viewport{background:#1a1f24;}"
@@ -2157,7 +2161,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._cardsContainer.setStyleSheet("QWidget{background:#1a1f24;color:#e6edf3;}")
 
         try:
-            self.resizeDocks([self.infoDock], [380], QtCore.Qt.Horizontal)
+            self.resizeDocks([self.infoDock], [400], QtCore.Qt.Horizontal)
         except Exception:
             pass
 
