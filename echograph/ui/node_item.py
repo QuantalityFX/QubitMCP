@@ -905,6 +905,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 self.pixmaps = []
                 self.offsets = []
                 self.paths: list[str] = []
+                self.rects: list[_QtCore.QRect] = []
+                self.selected_index = -1
+                self._edit_mode = False
 
             def _apply_canvas_size(self):
                 w = max(120, int(node_item.width) - 12)
@@ -1000,16 +1003,48 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 self.pixmaps = pixmaps_out
                 self.paths = [p for p, _ in loaded]
                 self.offsets = offsets_out
+                self.rects = []
+                for pm, off in zip(self.pixmaps, self.offsets):
+                    self.rects.append(_QtCore.QRect(int(off.x()), int(off.y()), pm.width(), pm.height()))
+                if self.selected_index >= len(self.pixmaps):
+                    self.selected_index = -1
                 self.update()
 
             def paintEvent(self, _ev):
                 painter = _QtGui.QPainter(self)
                 for pm, off in zip(self.pixmaps, self.offsets):
                     painter.drawPixmap(off, pm)
+                if self.selected_index >= 0 and self.selected_index < len(self.rects):
+                    pen = _QtGui.QPen(_QtGui.QColor("#60a5fa"), 2)
+                    pen.setCosmetic(True)
+                    painter.setPen(pen)
+                    painter.setBrush(_QtCore.Qt.NoBrush)
+                    painter.drawRect(self.rects[self.selected_index].adjusted(-2, -2, 2, 2))
                 painter.end()
 
             def sizeHint(self):
                 return _QtCore.QSize(int(node_item._IMG_CANVAS_W), int(node_item._IMG_CANVAS_H))
+
+            def set_edit_mode(self, enabled: bool):
+                self._edit_mode = bool(enabled)
+                if not enabled:
+                    self.selected_index = -1
+                    self.update()
+
+            def mousePressEvent(self, ev):
+                if not self._edit_mode:
+                    return super().mousePressEvent(ev)
+                pos = ev.pos()
+                hit = -1
+                for idx, rect in enumerate(self.rects):
+                    if rect.contains(pos):
+                        hit = idx
+                        break
+                if hit != -1:
+                    self.selected_index = hit
+                    self.update()
+                else:
+                    super().mousePressEvent(ev)
 
         body = _QtWidgets.QWidget()
         body.setAttribute(_QtCore.Qt.WA_TranslucentBackground, True)
@@ -1076,6 +1111,16 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 pass
 
         btn.clicked.connect(_pick)
+
+        def _toggle_edit(enabled: bool):
+            canvas.set_edit_mode(enabled)
+            try:
+                node_item.setFlag(_QtWidgets.QGraphicsItem.ItemIsMovable, not enabled)
+            except Exception:
+                pass
+
+        edit_btn.setCheckable(True)
+        edit_btn.toggled.connect(_toggle_edit)
 
         # restore prior state paths
         try:
