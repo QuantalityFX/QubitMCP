@@ -177,10 +177,19 @@ class ImageCollectionWidget(QtWidgets.QWidget):
         header.addWidget(load_btn, 0)
         header.addStretch(1)
 
+        edit_btn = QtWidgets.QPushButton("Edit")
+        edit_btn.setEnabled(True)
+        edit_btn.setStyleSheet(
+            "QPushButton{background:#1f2937;color:#e2e8f0;border:1px solid #475569;"
+            "border-radius:4px;padding:6px 10px;}"
+            "QPushButton:hover{background:#273449;}"
+        )
+
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(6)
         layout.addLayout(header, 0)
+        layout.addWidget(edit_btn, 0)
         layout.addWidget(self.canvas, 1)
 
         # Reload any existing state on the model

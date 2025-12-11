@@ -1020,14 +1020,25 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
         header = _QtWidgets.QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
-        header.setSpacing(6)
+        header.setSpacing(8)
         btn = _QtWidgets.QPushButton("Load Images")
+        btn.setSizePolicy(_QtWidgets.QSizePolicy.Fixed, _QtWidgets.QSizePolicy.Fixed)
+        btn.setMinimumWidth(100)
         btn.setStyleSheet(
             "QPushButton{background:#1f2937;color:#e2e8f0;border:1px solid #475569;"
             "border-radius:4px;padding:6px 10px;}"
             "QPushButton:hover{background:#273449;}"
         )
+        edit_btn = _QtWidgets.QPushButton("Edit")
+        edit_btn.setSizePolicy(_QtWidgets.QSizePolicy.Fixed, _QtWidgets.QSizePolicy.Fixed)
+        edit_btn.setMinimumWidth(80)
+        edit_btn.setStyleSheet(
+            "QPushButton{background:#1f2937;color:#e2e8f0;border:1px solid #475569;"
+            "border-radius:4px;padding:6px 10px;}"
+            "QPushButton:hover{background:#273449;}"
+        )
         header.addWidget(btn, 0)
+        header.addWidget(edit_btn, 0)
         header.addStretch(1)
         v.addLayout(header)
 
