@@ -908,6 +908,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 self.rects: list[_QtCore.QRect] = []
                 self.selected_index = -1
                 self._edit_mode = False
+                self._path_field = None
 
             def _apply_canvas_size(self):
                 w = max(120, int(node_item.width) - 12)
@@ -1043,6 +1044,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 if hit != -1:
                     self.selected_index = hit
                     self.update()
+                    try:
+                        if self._path_field is not None:
+                            self._path_field.setText(self.paths[hit] if hit < len(self.paths) else "")
+                    except Exception:
+                        pass
                 else:
                     super().mousePressEvent(ev)
 
@@ -1071,6 +1077,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             "QPushButton{background:#1f2937;color:#e2e8f0;border:1px solid #475569;"
             "border-radius:4px;padding:6px 10px;}"
             "QPushButton:hover{background:#273449;}"
+            "QPushButton:checked{background:#38bdf8;color:#0f172a;border-color:#38bdf8;}"
         )
         header.addWidget(btn, 0)
         header.addWidget(edit_btn, 0)
@@ -1079,6 +1086,17 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
         canvas = _InlineCanvas()
         v.addWidget(canvas, 1)
+
+        path_row = _QtWidgets.QHBoxLayout()
+        path_row.setContentsMargins(0, 0, 0, 0)
+        path_row.setSpacing(6)
+        path_row.addWidget(_QtWidgets.QLabel("Path:"))
+        path_field = _QtWidgets.QLineEdit()
+        path_field.setReadOnly(True)
+        path_field.setPlaceholderText("Select an image in Edit mode to copy its path")
+        path_field.setStyleSheet("QLineEdit{background:#0f1216;color:#e6edf3;border:1px solid #334;border-radius:4px;padding:4px 6px;}")
+        path_row.addWidget(path_field, 1)
+        v.addLayout(path_row)
 
         def _pick():
             # Prefer a native dialog tied to the top-level window to avoid overlay artifacts.
@@ -1118,9 +1136,20 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 node_item.setFlag(_QtWidgets.QGraphicsItem.ItemIsMovable, not enabled)
             except Exception:
                 pass
+            if not enabled:
+                try:
+                    path_field.clear()
+                except Exception:
+                    pass
 
         edit_btn.setCheckable(True)
         edit_btn.toggled.connect(_toggle_edit)
+
+        # give canvas a handle to update path when selecting
+        try:
+            canvas._path_field = path_field
+        except Exception:
+            pass
 
         # restore prior state paths
         try:
