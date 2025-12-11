@@ -1096,7 +1096,20 @@ class NodeItem(QtWidgets.QGraphicsObject):
         path_field.setPlaceholderText("Select an image in Edit mode to copy its path")
         path_field.setStyleSheet("QLineEdit{background:#0f1216;color:#e6edf3;border:1px solid #334;border-radius:4px;padding:4px 6px;}")
         path_row.addWidget(path_field, 1)
-        v.addLayout(path_row)
+        explorer_btn = _QtWidgets.QToolButton()
+        explorer_btn.setAutoRaise(True)
+        explorer_btn.setToolTip("Open folder")
+        try:
+            exp_icon = _QtGui.QIcon(str(Path(__file__).resolve().parents[2] / "icons" / "explorer_button_icon.png"))
+            explorer_btn.setIcon(exp_icon)
+        except Exception:
+            explorer_btn.setText("\N{OPEN FILE FOLDER}")
+        explorer_btn.clicked.connect(lambda: _open_in_explorer(path_field.text()))
+        path_row.addWidget(explorer_btn, 0)
+        path_container = _QtWidgets.QWidget()
+        path_container.setLayout(path_row)
+        path_container.setVisible(False)
+        v.addWidget(path_container)
 
         def _pick():
             # Prefer a native dialog tied to the top-level window to avoid overlay artifacts.
@@ -1141,6 +1154,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     path_field.clear()
                 except Exception:
                     pass
+            try:
+                path_container.setVisible(enabled)
+            except Exception:
+                pass
 
         edit_btn.setCheckable(True)
         edit_btn.toggled.connect(_toggle_edit)
@@ -2497,5 +2514,26 @@ class NodeItem(QtWidgets.QGraphicsObject):
             e.accept()
             return
         super().mouseReleaseEvent(e)
+
+
+def _open_in_explorer(path_str: str):
+    if not path_str:
+        return
+    try:
+        path = Path(path_str).expanduser().resolve()
+    except Exception:
+        return
+    if not path.exists():
+        return
+    try:
+        import subprocess
+        if QtCore.QSysInfo.productType().lower().startswith("win"):
+            subprocess.Popen(["explorer", "/select,", str(path)])
+        elif QtCore.QSysInfo.productType().lower() == "osx":
+            subprocess.Popen(["open", "-R", str(path)])
+        else:
+            subprocess.Popen(["xdg-open", str(path.parent if path.is_file() else path)])
+    except Exception:
+        pass
 
 
