@@ -1888,6 +1888,23 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             self._recent_files = new_list
             _save_recent_graphs(new_list)
 
+    def _frame_all_nodes(self, margin: float = 400.0):
+        sc = getattr(self, "scene", None)
+        v = getattr(self, "view", None)
+        if not sc or not v:
+            return
+        try:
+            bbox = sc._nodes_bbox()
+        except Exception:
+            bbox = None
+        if bbox is None:
+            return
+        rect = bbox.adjusted(-margin, -margin, margin, margin)
+        try:
+            v.fitInView(rect, QtCore.Qt.KeepAspectRatio)
+        except Exception:
+            pass
+
     def _maybe_show_recent_dialog(self):
         recents = [p for p in getattr(self, "_recent_files", []) if p]
         if not recents:
@@ -1943,6 +1960,11 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         btn_export.setToolTip("Save current graph to a new .json (Save As)")
         btn_export.clicked.connect(self._export_graph)
         h.addWidget(btn_export, 0)
+
+        btn_frame = QtWidgets.QPushButton("Frame", bar)
+        btn_frame.setToolTip("Fit view to all nodes")
+        btn_frame.clicked.connect(self._frame_all_nodes)
+        h.addWidget(btn_frame, 0)
 
         btn_logs = QtWidgets.QPushButton("Logs")
         btn_logs.setToolTip("Open EchoGraph log folder")
@@ -2054,9 +2076,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
         self._current_path = path
         self._remember_recent(path)
-        if self.scene._node_items:
-            first = next(iter(self.scene._node_items.values()))
-            self.view.centerOn(first)
+        self._frame_all_nodes()
         return True
 
     def _open_graph(self):
