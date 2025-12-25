@@ -7,7 +7,7 @@ import threading
 import urllib.error
 import urllib.request
 import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import List, Sequence, Tuple
 
 try:
@@ -34,6 +34,8 @@ PROMPT_NODE_KINDS = {PROMPT_NODE_KIND, *PROMPT_NODE_ALIASES}
 DB_NAME = "my_database"
 # The user’s Mongo layout: database = my_database, collection = EchoGragh
 COLLECTION = "EchoGragh"
+_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+_UNC_PATH_RE = re.compile(r"^[\\/]{2}[^\\/]+[\\/]+[^\\/]+")
 
 def _text_from_input(card, node_item, port_name: str) -> str:
     sc = getattr(card, "_graph_scene", None)
@@ -120,11 +122,63 @@ def build_ports(node_item) -> None:
     for port in ("prompt", "files", "output_path", "api_key", "model", "temperature"):
         _ensure_input(node_item, port)
 
+def _looks_like_windows_path(raw: str) -> bool:
+    return bool(_WINDOWS_DRIVE_RE.match(raw)) or bool(_UNC_PATH_RE.match(raw))
+
+def _normalize_windows_path(raw: str) -> Path:
+    win_path = PureWindowsPath(raw)
+    if os.name == "nt":
+        return Path(win_path)
+
+    parts = win_path.parts
+    drive = win_path.drive
+    if drive and len(drive) == 2 and drive[1] == ":":
+        drive_letter = drive[0].lower()
+        mnt_root = Path("/mnt") / drive_letter
+        if mnt_root.exists():
+            return mnt_root.joinpath(*parts[1:])
+        if len(parts) >= 3 and parts[1].lower() == "users":
+            return Path.home().joinpath(*parts[3:])
+        return (Path("/") / drive_letter).joinpath(*parts[1:])
+
+    if win_path.anchor.startswith("\\\\"):
+        unc_root = Path("/mnt/unc") if Path("/mnt/unc").exists() else Path("/unc")
+        anchor = win_path.anchor.strip("\\")
+        unc_parts = [part for part in anchor.split("\\") if part]
+        return unc_root.joinpath(*unc_parts, *parts[1:])
+
+    return Path(win_path.as_posix())
+
+def _normalize_posix_path(raw: str) -> Path:
+    posix_path = PurePosixPath(raw)
+    if os.name != "nt":
+        return Path(posix_path)
+
+    parts = posix_path.parts
+    if len(parts) >= 3 and parts[1].lower() in ("home", "users"):
+        return Path.home().joinpath(*parts[3:])
+    if len(parts) >= 3 and parts[1].lower() in ("mnt", "cygdrive"):
+        drive = parts[2]
+        if len(drive) == 1 and drive.isalpha():
+            return Path(f"{drive.upper()}:\\").joinpath(*parts[3:])
+    return Path(posix_path.as_posix())
+
 def _normalize_path(raw: str) -> Path:
-    candidate = (raw or "").strip().strip('"')
+    candidate = (raw or "").strip().strip('"').strip("'")
     if not candidate:
         raise ValueError("Empty path.")
-    path = Path(candidate).expanduser()
+
+    candidate = os.path.expandvars(candidate)
+    if candidate.startswith("~"):
+        candidate = os.path.expanduser(candidate)
+
+    if _looks_like_windows_path(candidate):
+        path = _normalize_windows_path(candidate)
+    elif candidate.startswith("/"):
+        path = _normalize_posix_path(candidate)
+    else:
+        path = Path(candidate)
+
     if not path.is_absolute():
         path = (script_dir() / path).resolve()
     return path
