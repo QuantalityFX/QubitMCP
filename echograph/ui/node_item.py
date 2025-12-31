@@ -2455,22 +2455,23 @@ class NodeItem(QtWidgets.QGraphicsObject):
                             sc._group_move_lock = False
 
         if change == QtWidgets.QGraphicsItem.ItemPositionHasChanged:
-            # Write both: new model (pos_xy) + legacy (pos) for compatibility
-            try:
-                if isinstance(value, QtCore.QPointF):
-                    try:
-                        self.model.pos_xy = (float(value.x()), float(value.y()))
-                    except Exception:
-                        pass
-                    try:
-                        # Keep legacy QPointF field alive until all code switches to pos_xy
-                        self.model.pos = value
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-
             sc = self.scene()
+            suppress_model = bool(sc and getattr(sc, "_suppress_node_model_updates", False))
+            if not suppress_model:
+                # Write both: new model (pos_xy) + legacy (pos) for compatibility
+                try:
+                    if isinstance(value, QtCore.QPointF):
+                        try:
+                            self.model.pos_xy = (float(value.x()), float(value.y()))
+                        except Exception:
+                            pass
+                        try:
+                            # Keep legacy QPointF field alive until all code switches to pos_xy
+                            self.model.pos = value
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
             if sc:
                 # Keep connected edges updated
                 for edge in getattr(sc, "_edges", []):
@@ -2479,17 +2480,18 @@ class NodeItem(QtWidgets.QGraphicsObject):
                             edge.updatePath()
                         except Exception:
                             pass
-                # Let the scene auto-grow to fit nodes
-                if hasattr(sc, "_reframe_to_nodes"):
-                    try:
-                        sc._reframe_to_nodes(margin=8000.0)
-                    except Exception:
-                        pass
-                if hasattr(sc, "_update_comment_membership_for_node"):
-                    try:
-                        sc._update_comment_membership_for_node(self)
-                    except Exception:
-                        pass
+                if not suppress_model:
+                    # Let the scene auto-grow to fit nodes
+                    if hasattr(sc, "_reframe_to_nodes"):
+                        try:
+                            sc._reframe_to_nodes(margin=8000.0)
+                        except Exception:
+                            pass
+                    if hasattr(sc, "_update_comment_membership_for_node"):
+                        try:
+                            sc._update_comment_membership_for_node(self)
+                        except Exception:
+                            pass
 
         return super().itemChange(change, value)
 

@@ -25,6 +25,7 @@ class GraphNode:
     switch_index: int = 0
     # Qt-free position (canonical for persistence)
     pos_xy: Tuple[float, float] = (0.0, 0.0)
+    pos_z: float = 0.0
 
     # Legacy field some code may still touch (kept for compatibility; not used by persistence)
     pos: Any = None

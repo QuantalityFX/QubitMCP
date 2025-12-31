@@ -580,6 +580,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
         self._last_paste_jitter = QtCore.QPointF(0.0, 0.0)
         self._group_drag_active = False
         self._group_move_lock = False
+        self._suppress_node_model_updates = False
 
         try:
             self.setItemIndexMethod(QtWidgets.QGraphicsScene.NoIndex)
@@ -1905,6 +1906,19 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         except Exception:
             pass
 
+    def _toggle_3d_view(self, enabled: bool):
+        view = getattr(self, "view", None)
+        if view and hasattr(view, "set_3d_mode"):
+            try:
+                view.set_3d_mode(bool(enabled))
+            except Exception:
+                pass
+        try:
+            if hasattr(self, "_btn_3d"):
+                self._btn_3d.setText("2D View" if enabled else "3D View")
+        except Exception:
+            pass
+
     def _maybe_show_recent_dialog(self):
         recents = [p for p in getattr(self, "_recent_files", []) if p]
         if not recents:
@@ -1965,6 +1979,12 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         btn_frame.setToolTip("Fit view to all nodes")
         btn_frame.clicked.connect(self._frame_all_nodes)
         h.addWidget(btn_frame, 0)
+
+        self._btn_3d = QtWidgets.QPushButton("3D View", bar)
+        self._btn_3d.setToolTip("Toggle 3D orbit/pan view (view-only)")
+        self._btn_3d.setCheckable(True)
+        self._btn_3d.toggled.connect(self._toggle_3d_view)
+        h.addWidget(self._btn_3d, 0)
 
         btn_logs = QtWidgets.QPushButton("Logs")
         btn_logs.setToolTip("Open EchoGraph log folder")

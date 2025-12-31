@@ -22,6 +22,10 @@ def _node_to_dict(node) -> Dict[str, Any]:
         "pos": pos_out,  # <- always plain numbers now
         "params": [{"name": p.get("name",""), "value": p.get("value","")} for p in (node.params or [])],
     }
+    try:
+        d["pos_z"] = float(getattr(node, "pos_z", 0.0))
+    except Exception:
+        d["pos_z"] = 0.0
 
     k = (node.kind or "").lower()
     if k in ("switch", "append"):
@@ -161,6 +165,10 @@ def deserialize_scene(
             n.pos_xy = (float(pos[0]), float(pos[1]))
         except Exception:
             n.pos_xy = (0.0, 0.0)
+        try:
+            n.pos_z = float(nd.get("pos_z", 0.0))
+        except Exception:
+            n.pos_z = 0.0
 
         # let GraphScene convert to QPointF as needed
         scene.add_node(n, n.pos_xy)
