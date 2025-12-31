@@ -64,10 +64,13 @@ class EdgeItem(QtWidgets.QGraphicsPathItem):
             try:
                 s = self.src.port_anchor(s_name, side="out")
             except Exception:
-                s = self.src.scenePos() + QtCore.QPointF(getattr(self.src, "width", 0), getattr(self.src, "_BASE_H", 0) / 2.0)
+                try:
+                    s = self.src.mapToScene(QtCore.QPointF(getattr(self.src, "width", 0), getattr(self.src, "_BASE_H", 0) / 2.0))
+                except Exception:
+                    s = self.src.scenePos() + QtCore.QPointF(getattr(self.src, "width", 0), getattr(self.src, "_BASE_H", 0) / 2.0)
         else:
             try:
-                s = self.src.scenePos() + QtCore.QPointF(self.src.width, self.src._BASE_H / 2.0)
+                s = self.src.mapToScene(QtCore.QPointF(self.src.width, self.src._BASE_H / 2.0))
             except Exception:
                 s = QtCore.QPointF(0, 0)
 
@@ -77,10 +80,13 @@ class EdgeItem(QtWidgets.QGraphicsPathItem):
             try:
                 d = self.dst.port_anchor(d_name, side="in")
             except Exception:
-                d = self.dst.scenePos() + QtCore.QPointF(0, getattr(self.dst, "_BASE_H", 0) / 2.0)
+                try:
+                    d = self.dst.mapToScene(QtCore.QPointF(0, getattr(self.dst, "_BASE_H", 0) / 2.0))
+                except Exception:
+                    d = self.dst.scenePos() + QtCore.QPointF(0, getattr(self.dst, "_BASE_H", 0) / 2.0)
         else:
             try:
-                d = self.dst.scenePos() + QtCore.QPointF(0, self.dst._BASE_H / 2.0)
+                d = self.dst.mapToScene(QtCore.QPointF(0, self.dst._BASE_H / 2.0))
             except Exception:
                 d = QtCore.QPointF(0, 0)
         return s, d

@@ -120,6 +120,54 @@ class GraphView(QtWidgets.QGraphicsView):
     def drawBackground(self, p: QtGui.QPainter, rect: QtCore.QRectF):
         p.fillRect(rect, QtGui.QColor("#1a1f24"))
 
+    def drawForeground(self, p: QtGui.QPainter, rect: QtCore.QRectF):
+        super().drawForeground(p, rect)
+        if not self._mode_3d:
+            return
+        p.save()
+        try:
+            p.resetTransform()
+        except Exception:
+            p.setTransform(QtGui.QTransform())
+        self._draw_axis_gizmo(p)
+        p.restore()
+
+    def _draw_axis_gizmo(self, p: QtGui.QPainter):
+        vp = self.viewport().rect()
+        if vp.isNull():
+            return
+        size = 58.0
+        margin = 14.0
+        origin = QtCore.QPointF(vp.right() - margin - size * 0.5, vp.top() + margin + size * 0.5)
+        radius = size * 0.45
+
+        axes = (
+            ("X", QtGui.QColor("#ef4444"), (1.0, 0.0, 0.0)),
+            ("Y", QtGui.QColor("#22c55e"), (0.0, 1.0, 0.0)),
+            ("Z", QtGui.QColor("#3b82f6"), (0.0, 0.0, 1.0)),
+        )
+        p.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        for label, color, vec in axes:
+            x2, y2, z2 = self._rotate_vec(vec[0], vec[1], vec[2])
+            v2 = QtCore.QPointF(x2, -y2)
+            length = math.hypot(v2.x(), v2.y())
+            if length <= 1e-6:
+                continue
+            v2 = QtCore.QPointF(v2.x() / length * radius, v2.y() / length * radius)
+            pen = QtGui.QPen(color, 2.2)
+            if z2 < 0.0:
+                pen.setStyle(QtCore.Qt.DotLine)
+                color = QtGui.QColor(color)
+                color.setAlpha(130)
+                pen.setColor(color)
+            p.setPen(pen)
+            p.drawLine(origin, origin + v2)
+            p.setPen(QtGui.QPen(color))
+            p.drawText(origin + v2 + QtCore.QPointF(4.0, -2.0), label)
+        p.setPen(QtGui.QPen(QtGui.QColor("#e2e8f0")))
+        p.setBrush(QtGui.QBrush(QtGui.QColor("#0f172a")))
+        p.drawEllipse(origin, 3.2, 3.2)
+
     def set_3d_mode(self, enabled: bool):
         enabled = bool(enabled)
         if enabled == self._mode_3d:
@@ -181,6 +229,10 @@ class GraphView(QtWidgets.QGraphicsView):
                     try:
                         x, y = model.pos_xy
                         item.setPos(QtCore.QPointF(float(x), float(y)))
+                    except Exception:
+                        pass
+                    try:
+                        item.setTransform(QtGui.QTransform())
                     except Exception:
                         pass
                     try:
@@ -246,22 +298,26 @@ class GraphView(QtWidgets.QGraphicsView):
         depth = max(self._near_plane, float(z_cam))
         return 1.0 + min(1.0, 1200.0 / depth)
 
+    def _rotate_vec(self, x: float, y: float, z: float):
+        cy = math.cos(self._cam_yaw)
+        sy = math.sin(self._cam_yaw)
+        cp = math.cos(self._cam_pitch)
+        sp = math.sin(self._cam_pitch)
+        x1 = x * cy + z * sy
+        z1 = -x * sy + z * cy
+        y1 = y
+        y2 = y1 * cp - z1 * sp
+        z2 = y1 * sp + z1 * cp
+        x2 = x1
+        return x2, y2, z2
+
     def _project_point(self, x: float, y: float, z: float):
         dx = x - self._cam_target.x()
         dy = y - self._cam_target.y()
         x0 = float(dx)
         y0 = float(-dy)
         z0 = float(z)
-        cy = math.cos(self._cam_yaw)
-        sy = math.sin(self._cam_yaw)
-        cp = math.cos(self._cam_pitch)
-        sp = math.sin(self._cam_pitch)
-        x1 = x0 * cy + z0 * sy
-        z1 = -x0 * sy + z0 * cy
-        y1 = y0
-        y2 = y1 * cp - z1 * sp
-        z2 = y1 * sp + z1 * cp
-        x2 = x1
+        x2, y2, z2 = self._rotate_vec(x0, y0, z0)
         z_cam = z2 + self._cam_dist
         if z_cam < self._near_plane:
             z_cam = self._near_plane
@@ -301,16 +357,25 @@ class GraphView(QtWidgets.QGraphicsView):
                 h = float(getattr(item, "height", 0.0))
             except Exception:
                 w = h = 0.0
-            cx = base_x + w / 2.0
-            cy = base_y + h / 2.0
             try:
                 depth = float(getattr(model, "pos_z", 0.0))
             except Exception:
                 depth = 0.0
-            sx, sy, z_cam = self._project_point(cx, cy, depth * self._depth_scale)
-            scene_x = anchor.x() + sx + pan.x()
-            scene_y = anchor.y() + sy + pan.y()
-            item.setPos(QtCore.QPointF(scene_x - w / 2.0, scene_y - h / 2.0))
+            depth_z = depth * self._depth_scale
+            sx0, sy0, _ = self._project_point(base_x, base_y, depth_z)
+            sx1, sy1, _ = self._project_point(base_x + 1.0, base_y, depth_z)
+            sx2, sy2, _ = self._project_point(base_x, base_y + 1.0, depth_z)
+            p0 = QtCore.QPointF(anchor.x() + sx0 + pan.x(), anchor.y() + sy0 + pan.y())
+            p1 = QtCore.QPointF(anchor.x() + sx1 + pan.x(), anchor.y() + sy1 + pan.y())
+            p2 = QtCore.QPointF(anchor.x() + sx2 + pan.x(), anchor.y() + sy2 + pan.y())
+            vx = p1 - p0
+            vy = p2 - p0
+            transform = QtGui.QTransform(vx.x(), vx.y(), vy.x(), vy.y(), 0.0, 0.0)
+            item.setTransform(transform)
+            item.setPos(p0)
+            cx = base_x + w / 2.0
+            cy = base_y + h / 2.0
+            _, _, z_cam = self._project_point(cx, cy, depth_z)
             try:
                 item.setZValue(self._depth_zvalue(z_cam))
             except Exception:
