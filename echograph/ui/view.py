@@ -61,7 +61,8 @@ class GraphView(QtWidgets.QGraphicsView):
         self._dolly_dragging = False
         self._orbit_last_pos = None
         self._pan_last_pos = None
-        self._dolly_last_pos = None
+        self._dolly_press_pos = None
+        self._dolly_start_dist = None
         self._cam_yaw = 0.45
         self._cam_pitch = -0.35
         self._cam_dist = 2400.0
@@ -539,7 +540,8 @@ class GraphView(QtWidgets.QGraphicsView):
                 return
             if e.button() == QtCore.Qt.RightButton:
                 self._dolly_dragging = True
-                self._dolly_last_pos = e.pos()
+                self._dolly_press_pos = e.pos()
+                self._dolly_start_dist = float(self._cam_dist)
                 self.viewport().setCursor(QtCore.Qt.SizeVerCursor)
                 e.accept()
                 return
@@ -593,20 +595,23 @@ class GraphView(QtWidgets.QGraphicsView):
                 self._apply_3d_projection()
                 e.accept()
                 return
-            if self._dolly_dragging and self._dolly_last_pos is not None:
+            if self._dolly_dragging and self._dolly_press_pos is not None:
                 if not (e.buttons() & QtCore.Qt.RightButton):
                     self._dolly_dragging = False
-                    self._dolly_last_pos = None
+                    self._dolly_press_pos = None
+                    self._dolly_start_dist = None
                     self.viewport().setCursor(QtCore.Qt.ArrowCursor)
                     e.accept()
                     return
-                dy = float(self._dolly_last_pos.y() - e.pos().y())
-                self._dolly_last_pos = e.pos()
-                if dy != 0.0:
-                    factor = 1.0 + (dy * 0.01)
-                    if factor < 0.1:
-                        factor = 0.1
-                    self._cam_dist = max(self._min_cam_dist, min(self._max_cam_dist, self._cam_dist / factor))
+                if self._dolly_press_pos is not None and self._dolly_start_dist is not None:
+                    dx = e.pos().x() - self._dolly_press_pos.x()
+                    dy = e.pos().y() - self._dolly_press_pos.y()
+                    distance = dy - dx
+                    exponent = abs(distance) / self._drag_divisor
+                    base = self._zoom_multiplier
+                    factor = base ** (-exponent) if distance > 0 else base ** (exponent)
+                    target = self._dolly_start_dist / factor
+                    self._cam_dist = max(self._min_cam_dist, min(self._max_cam_dist, target))
                 self._apply_3d_projection()
                 e.accept()
                 return
@@ -668,7 +673,8 @@ class GraphView(QtWidgets.QGraphicsView):
                 self._pan_last_pos = None
             if e.button() == QtCore.Qt.RightButton:
                 self._dolly_dragging = False
-                self._dolly_last_pos = None
+                self._dolly_press_pos = None
+                self._dolly_start_dist = None
             if not (self._orbit_dragging or self._pan_dragging or self._dolly_dragging):
                 self.viewport().setCursor(QtCore.Qt.ArrowCursor)
             e.accept()
