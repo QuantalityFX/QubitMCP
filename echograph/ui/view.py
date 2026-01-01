@@ -148,18 +148,29 @@ class GraphView(QtWidgets.QGraphicsView):
             ("Z", QtGui.QColor("#3b82f6"), (0.0, 0.0, 1.0)),
         )
         p.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        projected = []
+        max_len = 0.0
         for label, color, vec in axes:
             x2, y2, z2 = self._rotate_vec(vec[0], vec[1], vec[2])
-            v2 = QtCore.QPointF(x2, -y2)
-            length = math.hypot(v2.x(), v2.y())
-            if length <= 1e-6:
-                continue
-            v2 = QtCore.QPointF(v2.x() / length * radius, v2.y() / length * radius)
+            z_cam = z2 + self._cam_dist
+            if z_cam < self._near_plane:
+                z_cam = self._near_plane
+            scale = self._cam_focal / z_cam
+            vx = x2 * scale
+            vy = -y2 * scale
+            length = math.hypot(vx, vy)
+            if length > max_len:
+                max_len = length
+            projected.append((label, color, z2, vx, vy))
+        if max_len <= 1e-6:
+            return
+        norm = radius / max_len
+        for label, color, z2, vx, vy in projected:
+            v2 = QtCore.QPointF(vx * norm, vy * norm)
             pen = QtGui.QPen(color, 2.2)
             if z2 < 0.0:
-                pen.setStyle(QtCore.Qt.DotLine)
                 color = QtGui.QColor(color)
-                color.setAlpha(130)
+                color.setAlpha(140)
                 pen.setColor(color)
             p.setPen(pen)
             p.drawLine(origin, origin + v2)
@@ -386,6 +397,10 @@ class GraphView(QtWidgets.QGraphicsView):
                 edge.updatePath()
             except Exception:
                 pass
+        try:
+            self.viewport().update()
+        except Exception:
+            pass
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
