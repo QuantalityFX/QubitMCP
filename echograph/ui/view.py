@@ -574,8 +574,8 @@ class GraphView(QtWidgets.QGraphicsView):
                     return
                 delta = e.pos() - self._orbit_last_pos
                 self._orbit_last_pos = e.pos()
-                self._cam_yaw += float(delta.x()) * self._orbit_sensitivity
-                self._cam_pitch += float(delta.y()) * self._orbit_sensitivity
+                self._cam_yaw -= float(delta.x()) * self._orbit_sensitivity
+                self._cam_pitch -= float(delta.y()) * self._orbit_sensitivity
                 self._cam_pitch = max(-1.45, min(1.45, self._cam_pitch))
                 self._apply_3d_projection()
                 e.accept()
@@ -600,13 +600,13 @@ class GraphView(QtWidgets.QGraphicsView):
                     self.viewport().setCursor(QtCore.Qt.ArrowCursor)
                     e.accept()
                     return
-                dy = float(e.pos().y() - self._dolly_last_pos.y())
+                dy = float(self._dolly_last_pos.y() - e.pos().y())
                 self._dolly_last_pos = e.pos()
                 if dy != 0.0:
                     factor = 1.0 + (dy * 0.01)
                     if factor < 0.1:
                         factor = 0.1
-                    self._cam_dist = max(self._min_cam_dist, min(self._max_cam_dist, self._cam_dist * factor))
+                    self._cam_dist = max(self._min_cam_dist, min(self._max_cam_dist, self._cam_dist / factor))
                 self._apply_3d_projection()
                 e.accept()
                 return
@@ -718,8 +718,8 @@ class GraphView(QtWidgets.QGraphicsView):
     def wheelEvent(self, e: QtGui.QWheelEvent):
         if self._mode_3d:
             delta = e.angleDelta().y()
-            factor = 0.9 if delta > 0 else 1.1
-            self._cam_dist = max(self._min_cam_dist, min(self._max_cam_dist, self._cam_dist * factor))
+            factor = 1.15 if delta > 0 else 1 / 1.15
+            self._cam_dist = max(self._min_cam_dist, min(self._max_cam_dist, self._cam_dist / factor))
             self._apply_3d_projection()
             e.accept()
             return
