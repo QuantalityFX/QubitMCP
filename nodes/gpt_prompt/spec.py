@@ -20,6 +20,16 @@ from echograph.qt_compat import QtWidgets, QtCore, QtGui
 from echograph.constants import APP_TITLE, script_dir
 
 DEFAULT_MODEL = "gpt-4.1-mini"
+DEFAULT_PROVIDER = "openai"
+DEFAULT_OLLAMA_URL = "http://localhost:11434"
+DEFAULT_OLLAMA_MODEL = "deepseek-r1:14b"
+MODEL_PRESETS = [
+    ("OpenAI: gpt-5.1", "openai", "gpt-5.1"),
+    ("OpenAI: gpt-4.1", "openai", "gpt-4.1"),
+    ("OpenAI: gpt-4.1-mini", "openai", "gpt-4.1-mini"),
+    ("Ollama: deepseek-r1:14b", "ollama", "deepseek-r1:14b"),
+    ("Ollama: deepseek-r1:1.5b", "ollama", "deepseek-r1:1.5b"),
+]
 DEFAULT_TEMPERATURE = 0.2
 MAX_FILE_CHARS = 12000
 MAX_TOTAL_CHARS = 60000
@@ -117,10 +127,34 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, "files", "")
     _ensure_param(node_item, "output_path", "")
     _ensure_param(node_item, "api_key", "")
+    _ensure_param(node_item, "provider", DEFAULT_PROVIDER)
+    _ensure_param(node_item, "ollama_url", DEFAULT_OLLAMA_URL)
     _ensure_param(node_item, "model", DEFAULT_MODEL)
     _ensure_param(node_item, "temperature", str(DEFAULT_TEMPERATURE))
-    for port in ("prompt", "files", "output_path", "api_key", "model", "temperature"):
+    for port in ("prompt", "files", "output_path", "api_key", "provider", "ollama_url", "model", "temperature"):
         _ensure_input(node_item, port)
+
+def _normalize_provider(raw: str, model: str) -> str:
+    val = (raw or "").strip().lower()
+    if val in {"openai", "oa", "gpt"}:
+        return "openai"
+    if val in {"ollama", "local", "deepseek"}:
+        return "ollama"
+    if not val:
+        model_lower = (model or "").strip().lower()
+        if "deepseek" in model_lower or "ollama" in model_lower:
+            return "ollama"
+    return "openai"
+
+def _normalize_ollama_url(raw: str) -> str:
+    val = (raw or "").strip()
+    if not val:
+        val = (os.environ.get("OLLAMA_HOST") or os.environ.get("OLLAMA_URL") or "").strip()
+    if not val:
+        val = DEFAULT_OLLAMA_URL
+    if not re.match(r"^https?://", val):
+        val = f"http://{val}"
+    return val.rstrip("/")
 
 def _looks_like_windows_path(raw: str) -> bool:
     return bool(_WINDOWS_DRIVE_RE.match(raw)) or bool(_UNC_PATH_RE.match(raw))
@@ -362,6 +396,62 @@ def _call_openai(api_key: str, model: str, temperature: float, prompt_text: str)
         raise RuntimeError(f"OpenAI request failed: {err.reason}") from err
     return _extract_response_text(payload), payload
 
+def _parse_ollama_payload(raw: str) -> dict:
+    try:
+        payload = json.loads(raw)
+        if isinstance(payload, dict):
+            return payload
+    except Exception:
+        pass
+    payload = {}
+    responses: List[str] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            piece = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(piece, dict):
+            continue
+        if "response" in piece:
+            responses.append(piece.get("response") or "")
+        payload = piece
+    if responses:
+        payload = dict(payload)
+        payload["response"] = "".join(responses)
+    return payload
+
+def _call_ollama(ollama_url: str, model: str, temperature: float, prompt_text: str) -> tuple[str, dict]:
+    url = f"{(ollama_url or DEFAULT_OLLAMA_URL).rstrip('/')}/api/generate"
+    body = {
+        "model": model or DEFAULT_OLLAMA_MODEL,
+        "prompt": prompt_text,
+        "stream": False,
+        "options": {
+            "temperature": max(0.0, min(2.0, temperature)),
+        },
+    }
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            raw = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as err:
+        detail = err.read().decode("utf-8", "ignore")
+        raise RuntimeError(f"Ollama request failed: {err.code} {err.reason}\n{detail}") from err
+    except urllib.error.URLError as err:
+        raise RuntimeError(f"Ollama request failed: {err.reason}") from err
+    payload = _parse_ollama_payload(raw)
+    response_text = (payload.get("response") or "").strip()
+    return response_text, payload
+
 def _notify(card, message: str, *, error: bool = False) -> None:
     def _show():
         fn = QtWidgets.QMessageBox.critical if error else QtWidgets.QMessageBox.information
@@ -473,6 +563,31 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 return wired
         return _param_value(name)
 
+    def _set_param(name: str, value: str) -> None:
+        params = list(getattr(node, "params", None) or [])
+        key = (name or "").strip().lower()
+        found = False
+        for entry in params:
+            if (entry.get("name") or "").strip().lower() == key:
+                entry["value"] = value
+                found = True
+                break
+        if not found:
+            params.append({"name": name, "value": value})
+        node.params = params
+        sc = getattr(card, "_graph_scene", None)
+        if sc:
+            try:
+                sc.set_node_params(node.name, params)
+                sc.refresh_node_widget(node.name)
+            except Exception:
+                pass
+        try:
+            if hasattr(card, "refresh_params_from_model"):
+                card.refresh_params_from_model()
+        except Exception:
+            pass
+
     def _float_value(raw: str, default: float) -> float:
         try:
             return float(raw.strip())
@@ -485,16 +600,40 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             return wired
         return os.environ.get("OPENAI_API_KEY", "").strip()
 
+    def _ollama_url() -> str:
+        return _normalize_ollama_url(_val("ollama_url"))
+
     def _run():
         prompt_text = _val("prompt")
         if not prompt_text.strip():
             QtWidgets.QMessageBox.warning(card, APP_TITLE, "Prompt text is empty.")
             return
 
-        api_key = _api_key()
-        if not api_key:
-            QtWidgets.QMessageBox.warning(card, APP_TITLE, "Provide an API key (input port, param, or OPENAI_API_KEY env var).")
-            return
+        model_raw = (_val("model") or "").strip()
+        provider = _normalize_provider(_val("provider"), model_raw)
+        model = model_raw or (DEFAULT_OLLAMA_MODEL if provider == "ollama" else DEFAULT_MODEL)
+        provider_label = "OpenAI" if provider == "openai" else "Ollama"
+
+        api_key = ""
+        ollama_url = ""
+        if provider == "openai":
+            api_key = _api_key()
+            if not api_key:
+                QtWidgets.QMessageBox.warning(
+                    card,
+                    APP_TITLE,
+                    "Provide an API key (input port, param, or OPENAI_API_KEY env var).",
+                )
+                return
+        else:
+            ollama_url = _ollama_url()
+            if not ollama_url:
+                QtWidgets.QMessageBox.warning(
+                    card,
+                    APP_TITLE,
+                    "Provide an Ollama URL (input port, param, or OLLAMA_HOST/OLLAMA_URL env var).",
+                )
+                return
 
         output_raw = _val("output_path")
         db_cfg = _connected_database(card, _node_item())
@@ -519,7 +658,6 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         file_paths = _dedupe_paths(param_paths + wired_paths)
         contexts, warnings = _load_file_contexts(file_paths)
         combined_prompt = _compose_prompt(prompt_text, contexts)
-        model = (_val("model") or DEFAULT_MODEL).strip() or DEFAULT_MODEL
         temperature = _float_value(_val("temperature"), DEFAULT_TEMPERATURE)
         node_item = _node_item()
 
@@ -542,7 +680,10 @@ def augment_infocard_footer(card, footer_layout) -> bool:
 
         def _worker():
             try:
-                response_text, raw_payload = _call_openai(api_key, model, temperature, combined_prompt)
+                if provider == "openai":
+                    response_text, raw_payload = _call_openai(api_key, model, temperature, combined_prompt)
+                else:
+                    response_text, raw_payload = _call_ollama(ollama_url, model, temperature, combined_prompt)
                 response_text = (response_text or "").strip()
                 if db_cfg:
                     project = _write_to_mongo(db_cfg, combined_prompt, response_text, raw_payload, model, temperature)
@@ -552,7 +693,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                     log_path = output_path.with_name(f"{output_path.stem}_log.json")
                     log_path.write_text(json.dumps(raw_payload, indent=2, ensure_ascii=False), encoding="utf-8")
             except Exception as exc:  # pylint: disable=broad-except
-                _notify(card, f"GPT request failed:\n{exc}", error=True)
+                _notify(card, f"{provider_label} request failed:\n{exc}", error=True)
             else:
                 if db_cfg:
                     message = f"Wrote response to Mongo project '{db_cfg.get('project', '')}'"
@@ -570,8 +711,67 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         _set_busy(True, "sending")
         threading.Thread(target=_worker, daemon=True).start()
 
+    current_model = (_param_value("model") or DEFAULT_MODEL).strip() or DEFAULT_MODEL
+    current_provider = _normalize_provider(_param_value("provider"), current_model)
+
+    model_combo = QtWidgets.QComboBox()
+    for label, provider, model_name in MODEL_PRESETS:
+        model_combo.addItem(label, {"provider": provider, "model": model_name})
+
+    def _find_model_index(provider: str, model_name: str) -> int:
+        for i in range(model_combo.count()):
+            data = model_combo.itemData(i) or {}
+            if data.get("provider") == provider and data.get("model") == model_name:
+                return i
+        return -1
+
+    idx = _find_model_index(current_provider, current_model)
+    if idx < 0:
+        label_prefix = "OpenAI" if current_provider == "openai" else "Ollama"
+        model_combo.addItem(f"{label_prefix}: {current_model}", {"provider": current_provider, "model": current_model})
+        idx = model_combo.count() - 1
+    model_combo.setCurrentIndex(idx)
+
+    api_key_edit = QtWidgets.QLineEdit(_param_value("api_key"))
+    api_key_edit.setPlaceholderText("sk-...")
+    api_key_edit.editingFinished.connect(lambda: _set_param("api_key", api_key_edit.text().strip()))
+
+    ollama_url_edit = QtWidgets.QLineEdit(_normalize_ollama_url(_param_value("ollama_url")))
+    ollama_url_edit.setPlaceholderText(DEFAULT_OLLAMA_URL)
+    ollama_url_edit.editingFinished.connect(lambda: _set_param("ollama_url", ollama_url_edit.text().strip()))
+
+    api_label = QtWidgets.QLabel("OpenAI API Key")
+    ollama_label = QtWidgets.QLabel("Ollama URL")
+
+    form = QtWidgets.QFormLayout()
+    form.addRow("Model", model_combo)
+    form.addRow(api_label, api_key_edit)
+    form.addRow(ollama_label, ollama_url_edit)
+
+    def _apply_provider_ui(provider: str) -> None:
+        is_openai = provider == "openai"
+        api_label.setVisible(is_openai)
+        api_key_edit.setVisible(is_openai)
+        ollama_label.setVisible(not is_openai)
+        ollama_url_edit.setVisible(not is_openai)
+
+    def _select_model(_idx: int) -> None:
+        data = model_combo.currentData() or {}
+        provider = _normalize_provider(data.get("provider"), data.get("model") or "")
+        model_name = (data.get("model") or model_combo.currentText()).strip()
+        _set_param("provider", provider)
+        _set_param("model", model_name)
+        _apply_provider_ui(provider)
+
+    model_combo.currentIndexChanged.connect(_select_model)
+    _apply_provider_ui(current_provider)
+
+    controls = QtWidgets.QWidget()
+    controls.setLayout(form)
+    footer_layout.addWidget(controls)
+
     btn = QtWidgets.QPushButton("Send to GPT")
-    btn.setToolTip("Gather prompt/files/API key inputs and call the OpenAI Responses API.")
+    btn.setToolTip("Gather prompt/files inputs and call the selected OpenAI or Ollama model.")
     btn.clicked.connect(_run)
     footer_layout.addWidget(btn)
     return True
