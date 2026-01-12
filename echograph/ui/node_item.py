@@ -1282,6 +1282,29 @@ class NodeItem(QtWidgets.QGraphicsObject):
             y_cursor = 38 + 16 + self._PADDING
 
             kind_lower = (self.model.kind or "").strip().lower()
+            defer_plugin = kind_lower in ("chatbot", "chat bot", "chat_bot")
+            deferred_render = None
+            if kind_lower in ("chatbot", "chat bot", "chat_bot"):
+                try:
+                    params = list(self.model.params or [])
+                    desired = ["llm_prompt", "database"]
+                    ordered = []
+                    used = set()
+                    for name in desired:
+                        key = name.strip().lower()
+                        for idx, entry in enumerate(params):
+                            if idx in used or not isinstance(entry, dict):
+                                continue
+                            if (entry.get("name") or "").strip().lower() == key:
+                                ordered.append(entry)
+                                used.add(idx)
+                                break
+                    for idx, entry in enumerate(params):
+                        if idx not in used:
+                            ordered.append(entry)
+                    self.model.params = ordered
+                except Exception:
+                    pass
 
             # --- Inline ImageCollection body to guarantee the load button is present ---
             if kind_lower in ("image_collection", "imagecollection"):
@@ -1298,25 +1321,17 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 else:
                     render = getattr(spec, "render_node_body", None)
                 if callable(render):
-                    pre_plugin_count = len(getattr(self, "_plugin_proxies", []) or [])
-                    new_y = render(self, y_cursor)
-                    if isinstance(new_y, (int, float)):
-                        y_cursor = int(new_y)
-                    post_plugin_count = len(getattr(self, "_plugin_proxies", []) or [])
-                    # If nothing was added, keep y_cursor unchanged
-                    if post_plugin_count == pre_plugin_count:
-                        y_cursor = y_cursor
-                # Chatbot fallback if spec didn't render anything
-                if kind_lower in ("chatbot", "chat bot", "chat_bot"):
-                    try:
+                    if defer_plugin:
+                        deferred_render = render
+                    else:
                         pre_plugin_count = len(getattr(self, "_plugin_proxies", []) or [])
-                        if pre_plugin_count == 0:
-                            from nodes.chatbot import spec as _chatbot_spec  # type: ignore
-                            new_y = _chatbot_spec.render_node_body(self, y_cursor)
-                            if isinstance(new_y, (int, float)):
-                                y_cursor = int(new_y)
-                    except Exception as e:
-                        print("[EchoGraph] chatbot render fallback error:", e)
+                        new_y = render(self, y_cursor)
+                        if isinstance(new_y, (int, float)):
+                            y_cursor = int(new_y)
+                        post_plugin_count = len(getattr(self, "_plugin_proxies", []) or [])
+                        # If nothing was added, keep y_cursor unchanged
+                        if post_plugin_count == pre_plugin_count:
+                            y_cursor = y_cursor
             except Exception as e:
                 print("[EchoGraph] render_node_body error:", e)
 
@@ -1602,6 +1617,23 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     add_proxy.resize(self.width, self._PARAM_ROW_H)
                     self._param_proxies.append(add_proxy)
                     y_cursor += self._PARAM_ROW_H
+
+            # --- Deferred plugin body (Chatbot needs inputs at top) ---
+            if defer_plugin and kind_lower in ("chatbot", "chat bot", "chat_bot"):
+                try:
+                    pre_plugin_count = len(getattr(self, "_plugin_proxies", []) or [])
+                    if callable(deferred_render):
+                        new_y = deferred_render(self, y_cursor)
+                        if isinstance(new_y, (int, float)):
+                            y_cursor = int(new_y)
+                    post_plugin_count = len(getattr(self, "_plugin_proxies", []) or [])
+                    if post_plugin_count == pre_plugin_count:
+                        from nodes.chatbot import spec as _chatbot_spec  # type: ignore
+                        new_y = _chatbot_spec.render_node_body(self, y_cursor)
+                        if isinstance(new_y, (int, float)):
+                            y_cursor = int(new_y)
+                except Exception as e:
+                    print("[EchoGraph] chatbot render fallback error:", e)
 
             kind_lower = (self.model.kind or "").lower()
             if kind_lower == "import":

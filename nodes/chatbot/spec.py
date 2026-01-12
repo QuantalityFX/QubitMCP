@@ -55,9 +55,28 @@ def _ensure_param(node_item, name: str, default: str = "") -> None:
 
 
 def build_ports(node_item) -> None:
-    _ensure_param(node_item, "database", "")
     _ensure_param(node_item, "llm_prompt", "")
-    for port in ("database", "llm_prompt"):
+    _ensure_param(node_item, "database", "")
+    model = getattr(node_item, "model", None)
+    params = getattr(model, "params", None) if model is not None else None
+    if isinstance(params, list):
+        desired = ["llm_prompt", "database"]
+        ordered = []
+        used = set()
+        for name in desired:
+            key = name.strip().lower()
+            for idx, entry in enumerate(params):
+                if idx in used or not isinstance(entry, dict):
+                    continue
+                if (entry.get("name") or "").strip().lower() == key:
+                    ordered.append(entry)
+                    used.add(idx)
+                    break
+        for idx, entry in enumerate(params):
+            if idx not in used:
+                ordered.append(entry)
+        model.params = ordered
+    for port in ("llm_prompt", "database"):
         if hasattr(node_item, "ensure_input"):
             node_item.ensure_input(port)
 
@@ -349,6 +368,14 @@ class ChatbotWidget(QtWidgets.QWidget):
         except Exception:
             pass
 
+    def _schedule_scroll(self):
+        self._scroll_to_bottom()
+        try:
+            QtCore.QTimer.singleShot(0, self._scroll_to_bottom)
+            QtCore.QTimer.singleShot(50, self._scroll_to_bottom)
+        except Exception:
+            pass
+
     def _refresh_history(self):
         scene = self._ensure_scene()
         node_item = self._node_item
@@ -358,13 +385,13 @@ class ChatbotWidget(QtWidgets.QWidget):
         self._clear_history_layout()
         if not db_cfg:
             self._add_bubble("Connect a Database node to the 'database' input.", role="files")
-            self._scroll_to_bottom()
+            self._schedule_scroll()
             return
         try:
             history = _load_history(db_cfg)
         except Exception as exc:
             self._add_bubble(f"Failed to load history: {exc}", role="files")
-            self._scroll_to_bottom()
+            self._schedule_scroll()
             return
 
         for entry in history:
@@ -383,7 +410,7 @@ class ChatbotWidget(QtWidgets.QWidget):
                         self._add_bubble(f"Files: {file_list}", role="files")
             if response:
                 self._add_bubble(response, role="assistant")
-        self._scroll_to_bottom()
+        self._schedule_scroll()
 
     def _resolve_prompt_inputs(self, prompt_node_item):
         scene = self._ensure_scene()
