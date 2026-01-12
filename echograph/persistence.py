@@ -58,6 +58,16 @@ def _node_to_dict(node) -> Dict[str, Any]:
                     clean[str(name)] = hv
             if clean:
                 d["featured_heights"] = clean
+    if k in ("chatbot", "chat bot", "chat_bot"):
+        size = getattr(node, "_chatbot_size", None)
+        if isinstance(size, (list, tuple)) and len(size) >= 2:
+            try:
+                w = float(size[0])
+                h = float(size[1])
+            except Exception:
+                w = h = None
+            if w is not None and h is not None:
+                d["chatbot_size"] = [w, h]
 
     if k in ("image_collection", "imagecollection"):
         st = getattr(node, "_image_collection_state", None) or {}
@@ -151,6 +161,13 @@ def deserialize_scene(
                         setattr(n, "_featured_heights", clean)
                     except Exception:
                         pass
+        if (n.kind or "").lower() in ("chatbot", "chat bot", "chat_bot"):
+            csize = nd.get("chatbot_size")
+            if isinstance(csize, (list, tuple)) and len(csize) >= 2:
+                try:
+                    setattr(n, "_chatbot_size", (float(csize[0]), float(csize[1])))
+                except Exception:
+                    pass
         if (n.kind or "").lower() in ("image_collection", "imagecollection"):
             paths = nd.get("image_collection_paths") or []
             try:

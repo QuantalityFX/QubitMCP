@@ -231,6 +231,11 @@ class ChatbotWidget(QtWidgets.QWidget):
         self._history_layout.setSpacing(6)
         self._history_layout.addStretch(1)
         self._history_view.setWidget(self._history_container)
+        self._auto_scroll_pending = True
+        try:
+            self._history_view.verticalScrollBar().rangeChanged.connect(self._on_scroll_range_changed)
+        except Exception:
+            pass
 
         self._input = QtWidgets.QLineEdit()
         self._input.setPlaceholderText("Type a message and press Enter")
@@ -380,10 +385,22 @@ class ChatbotWidget(QtWidgets.QWidget):
             pass
 
     def _schedule_scroll(self):
+        self._auto_scroll_pending = True
         self._scroll_to_bottom()
         try:
             QtCore.QTimer.singleShot(0, self._scroll_to_bottom)
             QtCore.QTimer.singleShot(50, self._scroll_to_bottom)
+            QtCore.QTimer.singleShot(150, self._scroll_to_bottom)
+        except Exception:
+            pass
+
+    def _on_scroll_range_changed(self, _min: int, _max: int) -> None:
+        if not self._auto_scroll_pending:
+            return
+        self._auto_scroll_pending = False
+        self._scroll_to_bottom()
+        try:
+            QtCore.QTimer.singleShot(0, self._scroll_to_bottom)
         except Exception:
             pass
 
@@ -392,6 +409,7 @@ class ChatbotWidget(QtWidgets.QWidget):
         node_item = self._node_item
         if not scene or not node_item:
             return
+        self._auto_scroll_pending = True
         db_cfg = _connected_database(scene, node_item)
         self._clear_history_layout()
         if not db_cfg:
@@ -421,6 +439,11 @@ class ChatbotWidget(QtWidgets.QWidget):
                         self._add_bubble(f"Files: {file_list}", role="files")
             if response:
                 self._add_bubble(response, role="assistant")
+        try:
+            self._history_container.adjustSize()
+            self._history_container.updateGeometry()
+        except Exception:
+            pass
         self._schedule_scroll()
 
     def _resolve_prompt_inputs(self, prompt_node_item):
@@ -584,6 +607,13 @@ def render_node_body(node_item, y_cursor: int) -> int:
     proxy.setPos(0, y_cursor)
 
     h = body.sizeHint().height()
+    try:
+        pad = float(getattr(node_item, "_PADDING", 0))
+        available = float(node_item.height) - float(y_cursor) - pad
+        if available > h:
+            h = int(available)
+    except Exception:
+        pass
     proxy.resize(node_item.width, h)
     try:
         node_item._plugin_proxies.append(proxy)

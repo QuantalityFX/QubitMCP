@@ -827,6 +827,23 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     new_w = max(new_w, max(self._BASE_W, custom_w))
                 if custom_h is not None and custom_h > 0:
                     new_h = max(new_h, max(self._BASE_H, custom_h))
+        elif kind in ("chatbot", "chat bot", "chat_bot"):
+            try:
+                self._chatbot_min_w = float(new_w)
+                self._chatbot_min_h = float(new_h)
+            except Exception:
+                pass
+            custom_size = getattr(self.model, "_chatbot_size", None)
+            if isinstance(custom_size, (list, tuple)) and len(custom_size) >= 2:
+                try:
+                    custom_w = float(custom_size[0])
+                    custom_h = float(custom_size[1])
+                except Exception:
+                    custom_w = custom_h = None
+                if custom_w is not None and custom_w > 0:
+                    new_w = max(new_w, max(self._BASE_W, custom_w))
+                if custom_h is not None and custom_h > 0:
+                    new_h = max(new_h, max(self._BASE_H, custom_h))
 
         if new_w != getattr(self, "width", 0) or new_h != getattr(self, "height", 0):
             try:
@@ -2029,7 +2046,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
             self._import_path_committed = (self._param_value("path") or "").strip()
 
     def _note_resize_available(self) -> bool:
-        if (self.model.kind or "").lower() != "note":
+        kind = (self.model.kind or "").lower()
+        if kind not in ("note", "chatbot", "chat bot", "chat_bot"):
             return False
         if self._note_resize_mode:
             return True
@@ -2101,8 +2119,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
             delta = pos - self._note_resize_start
         new_rect = QtCore.QRectF(rect)
         new_pos = QtCore.QPointF(self._note_initial_pos)
-        min_w = float(self._BASE_W)
-        min_h = float(self._BASE_H)
+        kind = (self.model.kind or "").lower()
+        if kind in ("chatbot", "chat bot", "chat_bot"):
+            min_w = float(getattr(self, "_chatbot_min_w", self._BASE_W))
+            min_h = float(getattr(self, "_chatbot_min_h", self._BASE_H))
+        else:
+            min_w = float(self._BASE_W)
+            min_h = float(self._BASE_H)
         mode = self._note_resize_mode
 
         if "right" in mode:
@@ -2142,7 +2165,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
         if new_pos != self.pos():
             self.setPos(new_pos)
         try:
-            self.model._note_size = (float(self.width), float(self.height))
+            if kind == "note":
+                self.model._note_size = (float(self.width), float(self.height))
+            elif kind in ("chatbot", "chat bot", "chat_bot"):
+                self.model._chatbot_size = (float(self.width), float(self.height))
         except Exception:
             pass
         try:
@@ -2163,7 +2189,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
         if self._note_resize_mode:
             self._note_resize_mode = None
             try:
-                self.model._note_size = (float(self.width), float(self.height))
+                kind = (self.model.kind or "").lower()
+                if kind == "note":
+                    self.model._note_size = (float(self.width), float(self.height))
+                elif kind in ("chatbot", "chat bot", "chat_bot"):
+                    self.model._chatbot_size = (float(self.width), float(self.height))
             except Exception:
                 pass
             self._schedule_rebuild()
