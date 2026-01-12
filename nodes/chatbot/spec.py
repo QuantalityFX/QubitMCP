@@ -196,6 +196,17 @@ def _load_history(cfg: dict) -> list[dict]:
     return list(history) if isinstance(history, list) else []
 
 
+def _format_file_contexts(contexts) -> str:
+    if not contexts:
+        return ""
+    blocks = []
+    for path, snippet in contexts:
+        name = getattr(path, "name", str(path))
+        blocks.append(f"### {name}\n{snippet}")
+    context_blob = "\n\n".join(blocks)
+    return f"# Attached Files\n{context_blob}"
+
+
 class ChatbotWidget(QtWidgets.QWidget):
     def __init__(self, node_item, parent=None):
         super().__init__(parent)
@@ -416,9 +427,12 @@ class ChatbotWidget(QtWidgets.QWidget):
         scene = self._ensure_scene()
         def _val(name: str) -> str:
             wired = _text_from_input(scene, prompt_node_item, name)
-            if wired:
-                return wired
-            return _param_value_from_node(prompt_node_item, name)
+            param = _param_value_from_node(prompt_node_item, name)
+            if (name or "").strip().lower() == "prompt":
+                if wired and param:
+                    return f"{param.strip()}\n\n{wired.strip()}"
+                return wired or param
+            return wired or param
         return _val
 
     def _build_history_prompt(self, history: list[dict], user_prompt: str) -> str:
@@ -502,11 +516,15 @@ class ChatbotWidget(QtWidgets.QWidget):
             return
 
         history_prompt = self._build_history_prompt(history, prompt_text)
+        parts = []
         if system_prompt:
-            combined = f"System:\n{system_prompt}\n\n{history_prompt}"
-        else:
-            combined = history_prompt
-        combined_prompt = gpt_spec._compose_prompt(combined, contexts)
+            parts.append(f"System:\n{system_prompt}")
+        file_block = _format_file_contexts(contexts)
+        if file_block:
+            parts.append(file_block)
+        if history_prompt:
+            parts.append(history_prompt)
+        combined_prompt = "\n\n".join([p for p in parts if p]).strip()
 
         self._set_sending(True)
 
