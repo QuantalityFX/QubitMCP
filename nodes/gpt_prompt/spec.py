@@ -494,7 +494,15 @@ def _connected_database(card, node_item):
     return None
 
 
-def _write_to_mongo(cfg: dict, prompt_text: str, response_text: str, raw_payload: dict, model: str, temperature: float):
+def _write_to_mongo(
+    cfg: dict,
+    prompt_text: str,
+    response_text: str,
+    raw_payload: dict,
+    model: str,
+    temperature: float,
+    files: list[str] | None = None,
+):
     if MongoClient is None:
         raise RuntimeError("pymongo is not installed; cannot write to Mongo. Install pymongo or disconnect the Database node.")
     uri = cfg.get("mongo_uri") or "mongodb://localhost:27017"
@@ -530,6 +538,8 @@ def _write_to_mongo(cfg: dict, prompt_text: str, response_text: str, raw_payload
     }
     if note:
         entry["note"] = note
+    if files:
+        entry["files"] = list(files)
     coll.update_one({"$or": [{"name": project}, {"project": project}]}, {"$push": {"history": entry}})
     return project
 
@@ -656,6 +666,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         wired_paths = _collect_paths_from_text(files_value)
         param_paths = _paths_from_params(node)
         file_paths = _dedupe_paths(param_paths + wired_paths)
+        file_labels = [p.name for p in file_paths]
         contexts, warnings = _load_file_contexts(file_paths)
         combined_prompt = _compose_prompt(prompt_text, contexts)
         temperature = _float_value(_val("temperature"), DEFAULT_TEMPERATURE)
@@ -686,7 +697,15 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                     response_text, raw_payload = _call_ollama(ollama_url, model, temperature, combined_prompt)
                 response_text = (response_text or "").strip()
                 if db_cfg:
-                    project = _write_to_mongo(db_cfg, combined_prompt, response_text, raw_payload, model, temperature)
+                    project = _write_to_mongo(
+                        db_cfg,
+                        combined_prompt,
+                        response_text,
+                        raw_payload,
+                        model,
+                        temperature,
+                        files=file_labels,
+                    )
                 else:
                     output_path.parent.mkdir(parents=True, exist_ok=True)
                     output_path.write_text(response_text, encoding="utf-8")

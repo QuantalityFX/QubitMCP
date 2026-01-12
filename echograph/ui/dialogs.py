@@ -243,7 +243,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
         self.kind_edit.setEditable(True)
         kinds = [
             "node","import","html_preview","python","switch","output","llm",
-            "llm_prompt","librarian","note","append","image_collection","database"
+            "llm_prompt","chatbot","librarian","note","append","image_collection","database"
         ]
         try:
             kinds.remove("note")

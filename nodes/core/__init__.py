@@ -94,6 +94,14 @@ def register_defaults() -> None:
     except Exception as exc:  # pragma: no cover - optional plugin
         print("[EchoGraph] GPT Prompt auto-register failed:", exc)
 
+    # Auto-register Chatbot node so its body renderer is available early
+    try:
+        from nodes import chatbot as _chatbot  # type: ignore
+        if hasattr(_chatbot, "register"):
+            _chatbot.register(core=sys.modules[__name__])
+    except Exception as exc:  # pragma: no cover - optional plugin
+        print("[EchoGraph] Chatbot auto-register failed:", exc)
+
     # Auto-register Image Collection so its render hook is present even if loader plugins fail later
     try:
         from nodes import image_collection as _img_col  # type: ignore

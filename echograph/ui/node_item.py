@@ -302,6 +302,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
     _IMG_CANVAS_W = 720
     _IMG_CANVAS_H = 420
     _IMG_CTRL_H = 40
+    _CHATBOT_BODY_W = 420
+    _CHATBOT_BODY_H = 360
     
     def __init__(self, model: GraphNode):
         try:
@@ -320,6 +322,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 from nodes import image_collection as _imgcol  # type: ignore
                 if hasattr(_imgcol, "register"):
                     _imgcol.register()
+            except Exception:
+                pass
+        # Ensure Chatbot spec is registered even if the loader was skipped.
+        if (self.model.kind or "").strip().lower() in ("chatbot", "chat bot", "chat_bot"):
+            try:
+                from nodes import chatbot as _chatbot  # type: ignore
+                if hasattr(_chatbot, "register"):
+                    _chatbot.register()
             except Exception:
                 pass
 
@@ -795,6 +805,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
         elif kind in ("image_collection", "imagecollection"):
             body_h = self._IMG_CTRL_H + self._IMG_CANVAS_H
             node_w = max(self._BASE_W, self._IMG_CANVAS_W)
+        elif kind in ("chatbot", "chat bot", "chat_bot"):
+            body_h = self._CHATBOT_BODY_H
+            node_w = max(self._BASE_W, self._CHATBOT_BODY_W)
         else:
             body_h = 0
             node_w = self._BASE_W
@@ -1293,6 +1306,17 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     # If nothing was added, keep y_cursor unchanged
                     if post_plugin_count == pre_plugin_count:
                         y_cursor = y_cursor
+                # Chatbot fallback if spec didn't render anything
+                if kind_lower in ("chatbot", "chat bot", "chat_bot"):
+                    try:
+                        pre_plugin_count = len(getattr(self, "_plugin_proxies", []) or [])
+                        if pre_plugin_count == 0:
+                            from nodes.chatbot import spec as _chatbot_spec  # type: ignore
+                            new_y = _chatbot_spec.render_node_body(self, y_cursor)
+                            if isinstance(new_y, (int, float)):
+                                y_cursor = int(new_y)
+                    except Exception as e:
+                        print("[EchoGraph] chatbot render fallback error:", e)
             except Exception as e:
                 print("[EchoGraph] render_node_body error:", e)
 
