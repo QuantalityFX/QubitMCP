@@ -981,6 +981,10 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._mgl_light_intensity = 1.0
         self._mgl_wire_color = (0.25, 0.25, 0.25, 1.0)
         self._mgl_wire_line_width = 1.0
+        self._mgl_uv_overlay_enabled = False
+        self._mgl_uv_segments: List[Tuple[float, float, float, float]] = []
+        self._mgl_uv_bounds: Optional[Tuple[float, float, float, float]] = None
+        self._mgl_uv_vertex_count = 0
         self._mgl_grid_alpha = 0.35
         self._mgl_grid_size = 20.0
         self._mgl_grid_cells = 50
@@ -1113,6 +1117,10 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
                 self._mgl_wireframe_toggle.setChecked(bool(self._mgl_wireframe))
                 self._mgl_wireframe_toggle.toggled.connect(self._on_mgl_wireframe_toggled)
                 layout.addWidget(self._mgl_wireframe_toggle, 0)
+                self._mgl_uv_toggle = QtWidgets.QCheckBox("UVs")
+                self._mgl_uv_toggle.setChecked(bool(self._mgl_uv_overlay_enabled))
+                self._mgl_uv_toggle.toggled.connect(self._on_mgl_uv_toggled)
+                layout.addWidget(self._mgl_uv_toggle, 0)
             layout.addStretch(1)
             self._controls = controls
             self._controls_h = 44
@@ -1318,6 +1326,12 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         if not self._use_moderngl:
             return
         self._mgl_wireframe = bool(checked)
+        self.update()
+
+    def _on_mgl_uv_toggled(self, checked: bool) -> None:
+        if not self._use_moderngl:
+            return
+        self._mgl_uv_overlay_enabled = bool(checked)
         self.update()
 
     def _default_models_dir(self) -> Optional[Path]:
@@ -1948,6 +1962,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._mgl_index_buffer = index_buffer
         self._mgl_mesh_vertex_count = int(indices.size)
         self._mgl_mesh = mesh
+        self._mgl_set_uv_overlay(None)
         self._mgl_init_arcball(points)
 
     def _mgl_set_raw_mesh(
@@ -1980,7 +1995,31 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._mgl_index_buffer = index_buffer
         self._mgl_mesh_vertex_count = int(indices.size)
         self._mgl_mesh = None
+        self._mgl_set_uv_overlay(uvs)
         self._mgl_init_arcball(points)
+
+    def _mgl_set_uv_overlay(self, uvs: Optional["np.ndarray"]) -> None:
+        if uvs is None or uvs.size == 0 or np is None:
+            self._mgl_uv_segments = []
+            self._mgl_uv_bounds = None
+            self._mgl_uv_vertex_count = 0
+            return
+        uvs = uvs.astype("f4").reshape(-1, 2)
+        self._mgl_uv_vertex_count = int(uvs.shape[0])
+        u_min = float(np.min(uvs[:, 0]))
+        u_max = float(np.max(uvs[:, 0]))
+        v_min = float(np.min(uvs[:, 1]))
+        v_max = float(np.max(uvs[:, 1]))
+        self._mgl_uv_bounds = (u_min, u_max, v_min, v_max)
+        segments: List[Tuple[float, float, float, float]] = []
+        for i in range(0, uvs.shape[0] - 2, 3):
+            u0, v0 = uvs[i]
+            u1, v1 = uvs[i + 1]
+            u2, v2 = uvs[i + 2]
+            segments.append((float(u0), float(v0), float(u1), float(v1)))
+            segments.append((float(u1), float(v1), float(u2), float(v2)))
+            segments.append((float(u2), float(v2), float(u0), float(v0)))
+        self._mgl_uv_segments = segments
 
     def _mgl_init_arcball(self, points: "np.ndarray") -> None:
         if self._mgl_arcball is None:
@@ -2883,6 +2922,8 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         elif self._show_scene_plane and not self._scene_texture:
             painter.setPen(QtGui.QColor("#e2e8f0"))
             painter.drawText(self.rect(), QtCore.Qt.AlignCenter, "3D View: no scene texture")
+        if self._use_moderngl and self._mgl_uv_overlay_enabled:
+            self._draw_uv_overlay(painter)
         self._draw_axis_gizmo(painter)
         painter.end()
 
@@ -2932,6 +2973,8 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             else:
                 lines.append("Texture: none")
             lines.append(f"Mesh indices: {self._mgl_mesh_vertex_count}")
+            if self._mgl_uv_vertex_count:
+                lines.append(f"UV verts: {self._mgl_uv_vertex_count}")
             lines.append(f"Grid lines: {self._mgl_grid_vertex_count}")
             if self._mgl_error:
                 lines.append(f"ModernGL error: {self._mgl_error}")
@@ -2999,6 +3042,43 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         if not rect.isNull():
             lines.append(f"Scene rect: {int(rect.width())}x{int(rect.height())}")
         return lines
+
+    def _draw_uv_overlay(self, painter: QtGui.QPainter) -> None:
+        panel_size = 360.0
+        margin = 12.0
+        controls_h = float(getattr(self, "_controls_h", 0) or 0)
+        right = self.width() - margin
+        bottom = self.height() - margin - controls_h
+        panel = QtCore.QRectF(right - panel_size, bottom - panel_size, panel_size, panel_size)
+        if panel.top() < 10.0:
+            panel.moveTop(10.0)
+        if panel.left() < 10.0:
+            panel.moveLeft(10.0)
+        painter.setPen(QtCore.Qt.NoPen)
+        painter.setBrush(QtGui.QColor(12, 14, 16, 235))
+        painter.drawRoundedRect(panel, 6, 6)
+        if not self._mgl_uv_segments:
+            painter.setPen(QtGui.QColor("#e2e8f0"))
+            painter.drawText(panel, QtCore.Qt.AlignCenter, "No UVs")
+            return
+        bounds = self._mgl_uv_bounds or (0.0, 1.0, 0.0, 1.0)
+        u_min, u_max, v_min, v_max = bounds
+        du = max(u_max - u_min, 1e-6)
+        dv = max(v_max - v_min, 1e-6)
+        pad = 8.0
+        inner = QtCore.QRectF(
+            panel.left() + pad,
+            panel.top() + pad,
+            panel.width() - pad * 2,
+            panel.height() - pad * 2,
+        )
+        painter.setPen(QtGui.QPen(QtGui.QColor("#d1d5db"), 1.0))
+        for u0, v0, u1, v1 in self._mgl_uv_segments:
+            x0 = inner.left() + (u0 - u_min) / du * inner.width()
+            y0 = inner.top() + (1.0 - (v0 - v_min) / dv) * inner.height()
+            x1 = inner.left() + (u1 - u_min) / du * inner.width()
+            y1 = inner.top() + (1.0 - (v1 - v_min) / dv) * inner.height()
+            painter.drawLine(QtCore.QPointF(x0, y0), QtCore.QPointF(x1, y1))
 
     def _rotate_vec(self, x: float, y: float, z: float):
         cy = math.cos(self._cam_yaw)
