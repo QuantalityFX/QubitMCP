@@ -62,6 +62,20 @@ def _client(uri: str) -> MongoClient:
     return MongoClient(uri or "mongodb://localhost:27017")
 
 
+def _list_collections(uri: str):
+    if MongoClient is None:
+        return []
+    try:
+        client = _client(uri)
+        names = []
+        for n in client[DB_NAME].list_collection_names():
+            if isinstance(n, str) and n.strip():
+                names.append(n)
+        return sorted(set(names))
+    except Exception:
+        return []
+
+
 def _list_projects(uri: str, collection: str | None = None):
     if MongoClient is None:
         return []
@@ -193,9 +207,11 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     uri_edit.setPlaceholderText("mongodb://localhost:27017")
     uri_edit.editingFinished.connect(lambda: _set_param("mongo_uri", uri_edit.text()))
 
+    collection_combo = QtWidgets.QComboBox()
+    collection_combo.setEditable(False)
+
     collection_edit = QtWidgets.QLineEdit(_param_val("collection") or COLLECTION)
-    collection_edit.setPlaceholderText(COLLECTION)
-    collection_edit.editingFinished.connect(lambda: _set_param("collection", collection_edit.text()))
+    collection_edit.setPlaceholderText("New or existing collection name")
 
     project_combo = QtWidgets.QComboBox()
     project_combo.setEditable(False)
@@ -217,9 +233,34 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         | QtCore.Qt.LinksAccessibleByMouse
     )
 
-    def _refresh_list():
+    def _current_collection() -> str:
+        text = collection_edit.text().strip()
+        if text:
+            return text
+        combo_text = collection_combo.currentText()
+        if combo_text and not combo_text.startswith("Select"):
+            return combo_text
+        return _param_val("collection") or COLLECTION
+
+    def _refresh_collections():
         uri = uri_edit.text().strip()
-        collection = collection_edit.text().strip() or COLLECTION
+        names = _list_collections(uri)
+        collection_combo.clear()
+        collection_combo.addItem("Select collection...")
+        for n in names:
+            collection_combo.addItem(n)
+        current = _param_val("collection")
+        if current:
+            idx = collection_combo.findText(current)
+            if idx >= 0:
+                collection_combo.setCurrentIndex(idx)
+        if not collection_edit.text().strip() and current:
+            collection_edit.setText(current)
+        return names
+
+    def _refresh_projects():
+        uri = uri_edit.text().strip()
+        collection = _current_collection()
         names = _list_projects(uri, collection)
         project_combo.clear()
         project_combo.addItem("Select project...")
@@ -232,6 +273,26 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 project_combo.setCurrentIndex(idx)
         return names
 
+    def _refresh_list():
+        _refresh_collections()
+        return _refresh_projects()
+
+    def _select_collection_from_combo(idx: int):
+        if idx <= 0:
+            return
+        name = collection_combo.currentText()
+        if not name:
+            return
+        collection_edit.setText(name)
+        _set_param("collection", name)
+        status_lbl.setText(f"Using collection '{name}'.")
+        _refresh_projects()
+
+    def _collection_edit_finished():
+        name = collection_edit.text().strip() or COLLECTION
+        _set_param("collection", name)
+        _refresh_projects()
+
     def _select_from_combo(idx: int):
         if idx <= 0:
             return
@@ -243,7 +304,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     def _create_clicked():
         name = project_edit.text().strip()
         uri = uri_edit.text().strip()
-        collection = collection_edit.text().strip() or COLLECTION
+        collection = _current_collection()
         msg = _create_project(uri, collection, name)
         status_lbl.setText(msg)
         _refresh_list()
@@ -254,14 +315,14 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     def _delete_clicked():
         name = project_combo.currentText()
         uri = uri_edit.text().strip()
-        collection = collection_edit.text().strip() or COLLECTION
+        collection = _current_collection()
         msg = _delete_project(uri, collection, name)
         status_lbl.setText(msg)
         _refresh_list()
 
     def _save_note_clicked():
         uri = uri_edit.text().strip()
-        collection = collection_edit.text().strip() or COLLECTION
+        collection = _current_collection()
         project_name = (project_edit.text().strip() or project_combo.currentText()).strip()
         note_text = note_edit.text()
         msg = _save_note(uri, collection, project_name, note_text)
@@ -285,7 +346,8 @@ def augment_infocard_footer(card, footer_layout) -> bool:
 
     form = QtWidgets.QFormLayout()
     form.addRow("Mongo URI", uri_edit)
-    form.addRow("Collection", collection_edit)
+    form.addRow("Collections", collection_combo)
+    form.addRow("Collection name", collection_edit)
     form.addRow("Projects", project_combo)
     form.addRow("Project name", project_edit)
     form.addRow("Note text", note_edit)
@@ -307,6 +369,8 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     footer_layout.addWidget(container)
 
     _refresh_list()
+    collection_combo.currentIndexChanged.connect(_select_collection_from_combo)
+    collection_edit.editingFinished.connect(_collection_edit_finished)
     project_combo.currentIndexChanged.connect(_select_from_combo)
 
     if MongoClient is None:
