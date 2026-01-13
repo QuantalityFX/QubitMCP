@@ -48,7 +48,7 @@ def _ensure_param(node_item, name: str, default: str = "") -> None:
 
 def build_ports(node_item) -> None:
     _ensure_param(node_item, "mongo_uri", "mongodb://localhost:27017")
-    _ensure_param(node_item, "collection", COLLECTION)
+    _ensure_param(node_item, "collection", "")
     _ensure_param(node_item, "project", "")
     _ensure_param(node_item, "note", "")
     for port in ("mongo_uri", "collection", "project", "note"):
@@ -74,6 +74,24 @@ def _list_collections(uri: str):
         return sorted(set(names))
     except Exception:
         return []
+
+
+def _delete_collection(uri: str, name: str) -> str:
+    name = (name or "").strip()
+    if not name:
+        return "Select a collection to delete."
+    if MongoClient is None:
+        return "Install pymongo to delete collections."
+    try:
+        client = _client(uri)
+        db = client[DB_NAME]
+        existing = db.list_collection_names()
+        if name not in existing:
+            return f"Collection '{name}' not found."
+        db.drop_collection(name)
+        return f"Deleted collection '{name}'."
+    except Exception as exc:
+        return f"Failed to delete collection: {exc}"
 
 
 def _list_projects(uri: str, collection: str | None = None):
@@ -210,8 +228,8 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     collection_combo = QtWidgets.QComboBox()
     collection_combo.setEditable(False)
 
-    collection_edit = QtWidgets.QLineEdit(_param_val("collection") or COLLECTION)
-    collection_edit.setPlaceholderText("New or existing collection name")
+    collection_edit = QtWidgets.QLineEdit(_param_val("collection"))
+    collection_edit.setPlaceholderText(f"Default: {COLLECTION}")
 
     project_combo = QtWidgets.QComboBox()
     project_combo.setEditable(False)
@@ -241,6 +259,15 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         if combo_text and not combo_text.startswith("Select"):
             return combo_text
         return _param_val("collection") or COLLECTION
+
+    def _collection_for_delete() -> str:
+        text = collection_edit.text().strip()
+        if text:
+            return text
+        combo_text = collection_combo.currentText()
+        if combo_text and not combo_text.startswith("Select"):
+            return combo_text
+        return ""
 
     def _refresh_collections():
         uri = uri_edit.text().strip()
@@ -289,7 +316,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         _refresh_projects()
 
     def _collection_edit_finished():
-        name = collection_edit.text().strip() or COLLECTION
+        name = collection_edit.text().strip()
         _set_param("collection", name)
         _refresh_projects()
 
@@ -320,6 +347,16 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         status_lbl.setText(msg)
         _refresh_list()
 
+    def _delete_collection_clicked():
+        uri = uri_edit.text().strip()
+        name = _collection_for_delete()
+        msg = _delete_collection(uri, name)
+        status_lbl.setText(msg)
+        if msg.lower().startswith("deleted collection"):
+            _set_param("collection", "")
+            collection_edit.setText("")
+        _refresh_list()
+
     def _save_note_clicked():
         uri = uri_edit.text().strip()
         collection = _current_collection()
@@ -338,11 +375,30 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     create_btn = QtWidgets.QPushButton("Create/Use")
     create_btn.clicked.connect(_create_clicked)
 
-    delete_btn = QtWidgets.QPushButton("Delete")
+    delete_btn = QtWidgets.QPushButton("Delete Project")
     delete_btn.clicked.connect(_delete_clicked)
 
     save_note_btn = QtWidgets.QPushButton("Save Note")
     save_note_btn.clicked.connect(_save_note_clicked)
+
+    delete_collection_btn = QtWidgets.QPushButton("Delete Collection")
+    delete_collection_btn.clicked.connect(_delete_collection_clicked)
+
+    def _style_danger(btn: QtWidgets.QPushButton) -> None:
+        btn.setStyleSheet(
+            "QPushButton{background:#7f1d1d;color:#f8fafc;border:1px solid #4c0519;"
+            "border-radius:4px;padding:4px 10px;}"
+            "QPushButton:hover{background:#991b1b;}"
+        )
+
+    _style_danger(delete_btn)
+    _style_danger(delete_collection_btn)
+
+    create_btn.setStyleSheet(
+        "QPushButton{background:#1e3a8a;color:#f8fafc;border:1px solid #1e40af;"
+        "border-radius:4px;padding:4px 10px;}"
+        "QPushButton:hover{background:#1e40af;}"
+    )
 
     form = QtWidgets.QFormLayout()
     form.addRow("Mongo URI", uri_edit)
@@ -355,9 +411,20 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     btn_row = QtWidgets.QHBoxLayout()
     btn_row.addWidget(refresh_btn)
     btn_row.addWidget(create_btn)
-    btn_row.addWidget(delete_btn)
     btn_row.addWidget(save_note_btn)
     btn_row.addStretch(1)
+
+    delete_row = QtWidgets.QHBoxLayout()
+    delete_row.addWidget(delete_btn)
+    delete_row.addWidget(delete_collection_btn)
+    delete_row.addStretch(1)
+
+    all_buttons = [refresh_btn, create_btn, save_note_btn, delete_btn, delete_collection_btn]
+    max_w = max(btn.sizeHint().width() for btn in all_buttons)
+    max_h = max(btn.sizeHint().height() for btn in all_buttons)
+    for btn in all_buttons:
+        btn.setFixedWidth(max_w)
+        btn.setFixedHeight(max_h)
 
     container = QtWidgets.QWidget()
     v = QtWidgets.QVBoxLayout(container)
@@ -365,6 +432,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     v.setSpacing(6)
     v.addLayout(form)
     v.addLayout(btn_row)
+    v.addLayout(delete_row)
     v.addWidget(status_lbl)
     footer_layout.addWidget(container)
 
