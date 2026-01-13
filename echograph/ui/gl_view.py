@@ -508,10 +508,11 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._mesh_meta: Dict[str, dict] = {}
         self._model_scale_multiplier = 1.0
         self._manual_model_path: Optional[Path] = None
+        self._auto_frame_on_scale = True
         self._drag_divisor = 13.0
         self._zoom_multiplier = 1.1
         self._min_cam_dist = 200.0
-        self._max_cam_dist = 20000000.0
+        self._max_cam_dist = 200000000.0
         self._orbit_sensitivity = 0.005
 
         self._cam_yaw = 0.45
@@ -586,6 +587,10 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             self._model_pick_btn.clicked.connect(self._on_pick_model)
             layout.addWidget(self._model_pick_btn, 0)
 
+            self._frame_btn = QtWidgets.QPushButton("Frame")
+            self._frame_btn.clicked.connect(self._on_frame_clicked)
+            layout.addWidget(self._frame_btn, 0)
+
             self._model_scale_label = QtWidgets.QLabel("Scale 1.00x")
             self._model_scale_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
             self._model_scale_slider.setRange(1, 1000)
@@ -637,6 +642,12 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._rebuild_mesh_transforms()
         self._debug_mesh_scale = self._debug_mesh_scale_base * self._model_scale_multiplier
         self._update_quad_vbo()
+        if self._auto_frame_on_scale:
+            self._reset_camera()
+        self.update()
+
+    def _on_frame_clicked(self) -> None:
+        self._reset_camera()
         self.update()
 
     def _default_models_dir(self) -> Optional[Path]:
