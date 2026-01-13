@@ -166,6 +166,119 @@ class ModelData:
     bounds: Tuple[float, float, float, float, float, float]
 
 
+def _resolve_obj_index(value: Optional[int], total: int) -> Optional[int]:
+    if value is None:
+        return None
+    if value < 0:
+        value = total + value + 1
+    if value <= 0 or value > total:
+        return None
+    return value - 1
+
+
+def _load_obj_mesh_arrays(path: Path) -> Tuple["np.ndarray", "np.ndarray", "np.ndarray"]:
+    if np is None:
+        raise RuntimeError("numpy unavailable")
+    positions: List[Tuple[float, float, float]] = []
+    texcoords: List[Tuple[float, float]] = []
+    normals: List[Tuple[float, float, float]] = []
+    out_pos: List[float] = []
+    out_uv: List[float] = []
+    out_norm: List[float] = []
+
+    try:
+        raw = path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        raw = path.read_text(errors="ignore")
+
+    faces: List[List[Tuple[Optional[int], Optional[int], Optional[int]]]] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if not parts:
+            continue
+        head = parts[0].lower()
+        if head == "v" and len(parts) >= 4:
+            try:
+                positions.append((float(parts[1]), float(parts[2]), float(parts[3])))
+            except Exception:
+                continue
+        elif head == "vt" and len(parts) >= 3:
+            try:
+                texcoords.append((float(parts[1]), float(parts[2])))
+            except Exception:
+                continue
+        elif head == "vn" and len(parts) >= 4:
+            try:
+                normals.append((float(parts[1]), float(parts[2]), float(parts[3])))
+            except Exception:
+                continue
+        elif head == "f" and len(parts) >= 4:
+            face: List[Tuple[Optional[int], Optional[int], Optional[int]]] = []
+            for token in parts[1:]:
+                if not token:
+                    continue
+                vals = token.split("/")
+                v_idx = int(vals[0]) if vals[0] else None
+                vt_idx = int(vals[1]) if len(vals) > 1 and vals[1] else None
+                vn_idx = int(vals[2]) if len(vals) > 2 and vals[2] else None
+                face.append((v_idx, vt_idx, vn_idx))
+            if len(face) >= 3:
+                faces.append(face)
+
+    use_normals = bool(normals)
+    for face in faces:
+        root = face[0]
+        for i in range(1, len(face) - 1):
+            tri = (root, face[i], face[i + 1])
+            tri_pos: List[Tuple[float, float, float]] = []
+            tri_uv: List[Tuple[float, float]] = []
+            tri_norm: List[Tuple[float, float, float]] = []
+            for v_idx, vt_idx, vn_idx in tri:
+                pos_idx = _resolve_obj_index(v_idx, len(positions))
+                if pos_idx is None:
+                    continue
+                vx, vy, vz = positions[pos_idx]
+                tri_pos.append((vx, vy, vz))
+                uv_idx = _resolve_obj_index(vt_idx, len(texcoords))
+                if uv_idx is not None:
+                    u, v = texcoords[uv_idx]
+                else:
+                    u, v = 0.0, 0.0
+                tri_uv.append((u, v))
+                if use_normals:
+                    n_idx = _resolve_obj_index(vn_idx, len(normals))
+                    if n_idx is not None:
+                        nx, ny, nz = normals[n_idx]
+                    else:
+                        nx, ny, nz = 0.0, 0.0, 0.0
+                else:
+                    nx, ny, nz = 0.0, 0.0, 0.0
+                tri_norm.append((nx, ny, nz))
+            if len(tri_pos) != 3:
+                continue
+            if not use_normals or all((nx == 0.0 and ny == 0.0 and nz == 0.0) for nx, ny, nz in tri_norm):
+                ax, ay, az = tri_pos[0]
+                bx, by, bz = tri_pos[1]
+                cx, cy, cz = tri_pos[2]
+                n = np.cross(np.array([bx - ax, by - ay, bz - az], dtype="f4"), np.array([cx - ax, cy - ay, cz - az], dtype="f4"))
+                length = float(np.linalg.norm(n))
+                if length > 1e-6:
+                    n = n / length
+                tri_norm = [(float(n[0]), float(n[1]), float(n[2]))] * 3
+            for (vx, vy, vz), (u, v), (nx, ny, nz) in zip(tri_pos, tri_uv, tri_norm):
+                out_pos.extend([vx, vy, vz])
+                out_uv.extend([u, v])
+                out_norm.extend([nx, ny, nz])
+
+    pos_arr = np.array(out_pos, dtype="f4").reshape(-1, 3)
+    norm_arr = np.array(out_norm, dtype="f4").reshape(-1, 3)
+    uv_arr = np.array(out_uv, dtype="f4").reshape(-1, 2)
+    return pos_arr, norm_arr, uv_arr
+
+
 class _GLMesh:
     def __init__(self, vertices: List[float]):
         self.vertices = vertices
@@ -750,6 +863,8 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._mgl_mesh_vbos = []
         self._mgl_index_buffer = None
         self._mgl_mesh_path = ""
+        self._mgl_texture = None
+        self._mgl_texture_path = ""
         self._mgl_error = ""
         self._mgl_wireframe = False
         self._mgl_cull_enabled = False
@@ -859,6 +974,11 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             else:
                 self._example_model_btn.clicked.connect(self._on_example_pick_model)
             layout.addWidget(self._example_model_btn, 0)
+            if self._use_moderngl:
+                layout.addWidget(QtWidgets.QLabel("Texture"), 0)
+                self._mgl_texture_btn = QtWidgets.QPushButton("Texture...")
+                self._mgl_texture_btn.clicked.connect(self._on_mgl_pick_texture)
+                layout.addWidget(self._mgl_texture_btn, 0)
             self._example_scale_label = QtWidgets.QLabel("Scale 1.00x")
             self._example_scale_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
             self._example_scale_slider.setRange(1, 2000)
@@ -974,6 +1094,78 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         if not path:
             return
         self._mgl_load_mesh(Path(path))
+        self.update()
+
+    def _on_mgl_pick_texture(self) -> None:
+        if not self._use_moderngl:
+            return
+        if not _HAS_MGL:
+            self._mgl_error = "ModernGL dependencies unavailable"
+            self.update()
+            return
+        base = None
+        if self._mgl_mesh_path:
+            try:
+                base = Path(self._mgl_mesh_path).parent
+            except Exception:
+                base = None
+        if base is None:
+            base = Path(__file__).resolve().parents[1] / "3dmodels"
+        start_dir = str(base) if base and base.exists() else str(Path.home())
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Open Texture",
+            start_dir,
+            "Image files (*.png *.jpg *.jpeg *.bmp *.tga);;All Files (*.*)",
+        )
+        if not path:
+            return
+        image = QtGui.QImage(path)
+        if image.isNull():
+            self._mgl_error = "Texture load failed"
+            self.update()
+            return
+        if hasattr(QtGui.QImage, "Format_RGBA8888"):
+            image = image.convertToFormat(QtGui.QImage.Format_RGBA8888)
+        else:
+            image = image.convertToFormat(QtGui.QImage.Format_ARGB32)
+        image = image.mirrored(False, True)
+        try:
+            self.makeCurrent()
+            if self._mgl_texture is not None:
+                try:
+                    self._mgl_texture.release()
+                except Exception:
+                    pass
+            ptr = image.bits()
+            try:
+                ptr.setsize(image.sizeInBytes())
+                data = bytes(ptr)
+            except Exception:
+                data = image.bits().tobytes()
+            self._mgl_texture = self._mgl_ctx.texture(
+                (image.width(), image.height()),
+                4,
+                data,
+            )
+            self._mgl_texture.build_mipmaps()
+            self._mgl_texture.filter = (moderngl.LINEAR_MIPMAP_LINEAR, moderngl.LINEAR)
+            self._mgl_texture.repeat_x = True
+            self._mgl_texture.repeat_y = True
+            self._mgl_texture_path = path
+            if self._mgl_prog is not None:
+                try:
+                    self._mgl_prog["UseTexture"].value = 1
+                except Exception:
+                    pass
+            self._mgl_error = ""
+        except Exception as exc:
+            self._mgl_error = f"Texture upload failed: {exc}"
+        finally:
+            try:
+                self.doneCurrent()
+            except Exception:
+                pass
         self.update()
 
     def _on_mgl_scale_changed(self, value: int) -> None:
@@ -1508,11 +1700,14 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
                 uniform mat4 Mvp;
                 in vec3 in_position;
                 in vec3 in_normal;
+                in vec2 in_uv;
                 out vec3 v_norm;
                 out vec3 v_vert;
+                out vec2 v_uv;
                 void main() {
                     v_norm = in_normal;
                     v_vert = in_position;
+                    v_uv = in_uv;
                     gl_Position = Mvp * vec4(in_position, 1.0);
                 }
             """
@@ -1520,8 +1715,11 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
                 #version 330
                 uniform vec4 Color;
                 uniform vec3 Light;
+                uniform sampler2D Texture;
+                uniform int UseTexture;
                 in vec3 v_norm;
                 in vec3 v_vert;
+                in vec2 v_uv;
                 out vec4 f_color;
                 void main() {
                     float lum = -dot(normalize(v_norm), normalize(v_vert + Light));
@@ -1531,7 +1729,8 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
                     lum = smoothstep(0.0, 1.0, lum);
                     lum *= smoothstep(0.0, 80.0, v_vert.z) * 0.3 + 0.7;
                     lum = lum * 0.8 + 0.2;
-                    f_color = vec4(Color.rgb * lum, Color.a);
+                    vec4 base = (UseTexture == 1) ? texture(Texture, v_uv) : Color;
+                    f_color = vec4(base.rgb * lum, base.a);
                 }
             """
             grid_vertex = """
@@ -1554,6 +1753,11 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             self._mgl_grid_prog = self._mgl_ctx.program(vertex_shader=grid_vertex, fragment_shader=grid_fragment)
             self._mgl_prog["Light"].value = (1.0, 1.0, 1.0)
             self._mgl_prog["Color"].value = self._mgl_mesh_color
+            try:
+                self._mgl_prog["Texture"].value = 0
+                self._mgl_prog["UseTexture"].value = 0
+            except Exception:
+                pass
             self._mgl_grid_prog["Color"].value = (1.0, 1.0, 1.0, self._mgl_grid_alpha)
             self._mgl_arcball = _ArcBallUtil(self.width(), self.height())
             self._mgl_center = np.zeros(3, dtype="f4")
@@ -1580,37 +1784,50 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         points = np.array(mesh.points(), dtype="f4")
         normals = np.array(mesh.vertex_normals(), dtype="f4")
         indices = np.array(mesh.face_vertex_indices(), dtype="u4").ravel()
+        uvs = np.zeros((points.shape[0], 2), dtype="f4")
         index_buffer = self._mgl_ctx.buffer(indices.tobytes())
         pos_buf = self._mgl_ctx.buffer(points.tobytes())
         norm_buf = self._mgl_ctx.buffer(normals.tobytes())
+        uv_buf = self._mgl_ctx.buffer(uvs.tobytes())
         vao_content = [
             (pos_buf, "3f", "in_position"),
             (norm_buf, "3f", "in_normal"),
+            (uv_buf, "2f", "in_uv"),
         ]
         self._mgl_vao = self._mgl_ctx.vertex_array(self._mgl_prog, vao_content, index_buffer, 4)
-        self._mgl_mesh_vbos = [pos_buf, norm_buf]
+        self._mgl_mesh_vbos = [pos_buf, norm_buf, uv_buf]
         self._mgl_index_buffer = index_buffer
         self._mgl_mesh_vertex_count = int(indices.size)
         self._mgl_mesh = mesh
         self._mgl_init_arcball(points)
 
-    def _mgl_set_raw_mesh(self, points: "np.ndarray", normals: "np.ndarray") -> None:
+    def _mgl_set_raw_mesh(
+        self,
+        points: "np.ndarray",
+        normals: "np.ndarray",
+        uvs: Optional["np.ndarray"] = None,
+    ) -> None:
         if not _HAS_MGL or self._mgl_ctx is None:
             return
         if points.size == 0:
             return
         points = points.astype("f4").reshape(-1, 3)
         normals = normals.astype("f4").reshape(-1, 3)
+        if uvs is None or uvs.size == 0:
+            uvs = np.zeros((points.shape[0], 2), dtype="f4")
+        uvs = uvs.astype("f4").reshape(-1, 2)
         indices = np.arange(points.shape[0], dtype="u4")
         index_buffer = self._mgl_ctx.buffer(indices.tobytes())
         pos_buf = self._mgl_ctx.buffer(points.tobytes())
         norm_buf = self._mgl_ctx.buffer(normals.tobytes())
+        uv_buf = self._mgl_ctx.buffer(uvs.tobytes())
         vao_content = [
             (pos_buf, "3f", "in_position"),
             (norm_buf, "3f", "in_normal"),
+            (uv_buf, "2f", "in_uv"),
         ]
         self._mgl_vao = self._mgl_ctx.vertex_array(self._mgl_prog, vao_content, index_buffer, 4)
-        self._mgl_mesh_vbos = [pos_buf, norm_buf]
+        self._mgl_mesh_vbos = [pos_buf, norm_buf, uv_buf]
         self._mgl_index_buffer = index_buffer
         self._mgl_mesh_vertex_count = int(indices.size)
         self._mgl_mesh = None
@@ -1663,26 +1880,33 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
                 mesh = None
         points = None
         normals = None
+        uvs = None
         if mesh is None:
-            model_data = load_model(path)
-            if model_data is None or not model_data.vertices:
-                self._mgl_error = "Mesh load failed"
-                return
-            points = np.array(model_data.vertices, dtype="f4").reshape(-1, 3)
-            normals = np.zeros_like(points)
-            for i in range(0, points.shape[0], 3):
-                a, b, c = points[i:i + 3]
-                n = np.cross(b - a, c - a)
-                norm = np.linalg.norm(n)
-                if norm > 1e-6:
-                    n = n / norm
-                normals[i:i + 3] = n
+            if path.suffix.lower() == ".obj":
+                try:
+                    points, normals, uvs = _load_obj_mesh_arrays(path)
+                except Exception:
+                    points = None
+            if points is None:
+                model_data = load_model(path)
+                if model_data is None or not model_data.vertices:
+                    self._mgl_error = "Mesh load failed"
+                    return
+                points = np.array(model_data.vertices, dtype="f4").reshape(-1, 3)
+                normals = np.zeros_like(points)
+                for i in range(0, points.shape[0], 3):
+                    a, b, c = points[i:i + 3]
+                    n = np.cross(b - a, c - a)
+                    norm = np.linalg.norm(n)
+                    if norm > 1e-6:
+                        n = n / norm
+                    normals[i:i + 3] = n
         try:
             self.makeCurrent()
             if mesh is not None:
                 self._mgl_set_mesh(mesh)
             else:
-                self._mgl_set_raw_mesh(points, normals)
+                self._mgl_set_raw_mesh(points, normals, uvs)
             self._mgl_mesh_path = str(path)
             self._mgl_error = ""
         except Exception as exc:
@@ -1740,6 +1964,16 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             mvp = proj * lookat * transform
         self._mgl_prog["Mvp"].write(mvp.astype("f4"))
         self._mgl_prog["Color"].value = self._mgl_mesh_color
+        use_texture = self._mgl_texture is not None
+        try:
+            self._mgl_prog["UseTexture"].value = 1 if use_texture else 0
+        except Exception:
+            pass
+        if use_texture:
+            try:
+                self._mgl_texture.use(location=0)
+            except Exception:
+                pass
         if self._mgl_vao is not None:
             self._mgl_vao.render()
         if self._mgl_grid_vao is not None:
@@ -2509,6 +2743,10 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             lines.append(f"Camera zoom: {self._mgl_camera_zoom:.2f}")
             if self._mgl_mesh_path:
                 lines.append(f"Model: {Path(self._mgl_mesh_path).name}")
+            if self._mgl_texture_path:
+                lines.append(f"Texture: {Path(self._mgl_texture_path).name}")
+            else:
+                lines.append("Texture: none")
             lines.append(f"Mesh indices: {self._mgl_mesh_vertex_count}")
             lines.append(f"Grid lines: {self._mgl_grid_vertex_count}")
             if self._mgl_error:
