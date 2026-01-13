@@ -341,6 +341,18 @@ def augment_infocard_footer(card, footer_layout) -> bool:
 
     def _delete_clicked():
         name = project_combo.currentText()
+        if not name or name.startswith("Select"):
+            status_lbl.setText("Select a project to delete.")
+            return
+        confirm = QtWidgets.QMessageBox.question(
+            card,
+            "Delete Project",
+            f"Delete project '{name}'?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.Cancel,
+            QtWidgets.QMessageBox.Cancel,
+        )
+        if confirm != QtWidgets.QMessageBox.Yes:
+            return
         uri = uri_edit.text().strip()
         collection = _current_collection()
         msg = _delete_project(uri, collection, name)
@@ -350,6 +362,18 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     def _delete_collection_clicked():
         uri = uri_edit.text().strip()
         name = _collection_for_delete()
+        if not name:
+            status_lbl.setText("Select a collection to delete.")
+            return
+        confirm = QtWidgets.QMessageBox.question(
+            card,
+            "Delete Collection",
+            f"Delete collection '{name}'?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.Cancel,
+            QtWidgets.QMessageBox.Cancel,
+        )
+        if confirm != QtWidgets.QMessageBox.Yes:
+            return
         msg = _delete_collection(uri, name)
         status_lbl.setText(msg)
         if msg.lower().startswith("deleted collection"):
