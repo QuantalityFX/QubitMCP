@@ -985,6 +985,8 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._mgl_uv_segments: List[Tuple[float, float, float, float]] = []
         self._mgl_uv_bounds: Optional[Tuple[float, float, float, float]] = None
         self._mgl_uv_vertex_count = 0
+        self._mgl_uv_cache = None
+        self._mgl_uv_cache_rect = QtCore.QRectF()
         self._mgl_grid_alpha = 0.35
         self._mgl_grid_size = 20.0
         self._mgl_grid_cells = 50
@@ -1029,6 +1031,8 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         btn = getattr(self, "_debug_copy_btn", None)
         if btn is not None:
             btn.setGeometry(10, 10, 46, 22)
+        if getattr(self, "_mgl_uv_cache", None) is not None:
+            self._mgl_uv_cache = None
 
     def paintEvent(self, event):
         if QOpenGLWidget is None:
@@ -1332,6 +1336,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         if not self._use_moderngl:
             return
         self._mgl_uv_overlay_enabled = bool(checked)
+        self._mgl_uv_cache = None
         self.update()
 
     def _default_models_dir(self) -> Optional[Path]:
@@ -2003,6 +2008,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             self._mgl_uv_segments = []
             self._mgl_uv_bounds = None
             self._mgl_uv_vertex_count = 0
+            self._mgl_uv_cache = None
             return
         uvs = uvs.astype("f4").reshape(-1, 2)
         self._mgl_uv_vertex_count = int(uvs.shape[0])
@@ -2020,6 +2026,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             segments.append((float(u1), float(v1), float(u2), float(v2)))
             segments.append((float(u2), float(v2), float(u0), float(v0)))
         self._mgl_uv_segments = segments
+        self._mgl_uv_cache = None
 
     def _mgl_init_arcball(self, points: "np.ndarray") -> None:
         if self._mgl_arcball is None:
@@ -3054,31 +3061,45 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             panel.moveTop(10.0)
         if panel.left() < 10.0:
             panel.moveLeft(10.0)
-        painter.setPen(QtCore.Qt.NoPen)
-        painter.setBrush(QtGui.QColor(12, 14, 16, 235))
-        painter.drawRoundedRect(panel, 6, 6)
-        if not self._mgl_uv_segments:
-            painter.setPen(QtGui.QColor("#e2e8f0"))
-            painter.drawText(panel, QtCore.Qt.AlignCenter, "No UVs")
-            return
-        bounds = self._mgl_uv_bounds or (0.0, 1.0, 0.0, 1.0)
-        u_min, u_max, v_min, v_max = bounds
-        du = max(u_max - u_min, 1e-6)
-        dv = max(v_max - v_min, 1e-6)
-        pad = 8.0
-        inner = QtCore.QRectF(
-            panel.left() + pad,
-            panel.top() + pad,
-            panel.width() - pad * 2,
-            panel.height() - pad * 2,
-        )
-        painter.setPen(QtGui.QPen(QtGui.QColor("#d1d5db"), 1.0))
-        for u0, v0, u1, v1 in self._mgl_uv_segments:
-            x0 = inner.left() + (u0 - u_min) / du * inner.width()
-            y0 = inner.top() + (1.0 - (v0 - v_min) / dv) * inner.height()
-            x1 = inner.left() + (u1 - u_min) / du * inner.width()
-            y1 = inner.top() + (1.0 - (v1 - v_min) / dv) * inner.height()
-            painter.drawLine(QtCore.QPointF(x0, y0), QtCore.QPointF(x1, y1))
+        if (
+            self._mgl_uv_cache is None
+            or not self._mgl_uv_cache_rect.isValid()
+            or self._mgl_uv_cache_rect != panel
+        ):
+            self._mgl_uv_cache_rect = QtCore.QRectF(panel)
+            cache = QtGui.QPixmap(int(panel.width()), int(panel.height()))
+            cache.fill(QtCore.Qt.transparent)
+            uv_painter = QtGui.QPainter(cache)
+            uv_painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+            uv_painter.setPen(QtCore.Qt.NoPen)
+            uv_painter.setBrush(QtGui.QColor(12, 14, 16, 235))
+            uv_painter.drawRoundedRect(QtCore.QRectF(0, 0, panel.width(), panel.height()), 6, 6)
+            if not self._mgl_uv_segments:
+                uv_painter.setPen(QtGui.QColor("#e2e8f0"))
+                uv_painter.drawText(QtCore.QRectF(0, 0, panel.width(), panel.height()), QtCore.Qt.AlignCenter, "No UVs")
+            else:
+                bounds = self._mgl_uv_bounds or (0.0, 1.0, 0.0, 1.0)
+                u_min, u_max, v_min, v_max = bounds
+                du = max(u_max - u_min, 1e-6)
+                dv = max(v_max - v_min, 1e-6)
+                pad = 8.0
+                inner = QtCore.QRectF(
+                    pad,
+                    pad,
+                    panel.width() - pad * 2,
+                    panel.height() - pad * 2,
+                )
+                uv_painter.setPen(QtGui.QPen(QtGui.QColor("#d1d5db"), 1.0))
+                for u0, v0, u1, v1 in self._mgl_uv_segments:
+                    x0 = inner.left() + (u0 - u_min) / du * inner.width()
+                    y0 = inner.top() + (1.0 - (v0 - v_min) / dv) * inner.height()
+                    x1 = inner.left() + (u1 - u_min) / du * inner.width()
+                    y1 = inner.top() + (1.0 - (v1 - v_min) / dv) * inner.height()
+                    uv_painter.drawLine(QtCore.QPointF(x0, y0), QtCore.QPointF(x1, y1))
+            uv_painter.end()
+            self._mgl_uv_cache = cache
+        if self._mgl_uv_cache is not None:
+            painter.drawPixmap(int(panel.left()), int(panel.top()), self._mgl_uv_cache)
 
     def _rotate_vec(self, x: float, y: float, z: float):
         cy = math.cos(self._cam_yaw)
