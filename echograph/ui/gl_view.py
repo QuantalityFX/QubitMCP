@@ -510,7 +510,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._drag_divisor = 13.0
         self._zoom_multiplier = 1.1
         self._min_cam_dist = 200.0
-        self._max_cam_dist = 200000.0
+        self._max_cam_dist = 20000000.0
         self._orbit_sensitivity = 0.005
 
         self._cam_yaw = 0.45
@@ -531,6 +531,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self.setMouseTracking(True)
         self.setFocusPolicy(QtCore.Qt.StrongFocus)
         self._build_scale_controls()
+        self._build_debug_copy_button()
 
     def set_scene(self, scene) -> None:
         self._scene = scene
@@ -540,6 +541,9 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         if getattr(self, "_controls", None) is not None:
             h = int(getattr(self, "_controls_h", 44))
             self._controls.setGeometry(0, max(0, self.height() - h), self.width(), h)
+        btn = getattr(self, "_debug_copy_btn", None)
+        if btn is not None:
+            btn.setGeometry(10, 10, 46, 22)
 
     def paintEvent(self, event):
         if QOpenGLWidget is None:
@@ -576,7 +580,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
 
             self._model_scale_label = QtWidgets.QLabel("Scale 1.00x")
             self._model_scale_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-            self._model_scale_slider.setRange(10, 400)
+            self._model_scale_slider.setRange(1, 1000)
             self._model_scale_slider.setValue(int(self._model_scale_multiplier * 100))
             self._model_scale_slider.setFixedWidth(160)
             self._model_scale_slider.valueChanged.connect(self._on_model_scale_changed)
@@ -590,6 +594,29 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         except Exception:
             self._controls = None
             self._controls_h = 0
+
+    def _build_debug_copy_button(self) -> None:
+        try:
+            btn = QtWidgets.QToolButton(self)
+            btn.setText("Copy")
+            btn.setCursor(QtCore.Qt.PointingHandCursor)
+            btn.setStyleSheet(
+                "QToolButton{background:rgba(15,23,42,210);border:1px solid #334155;"
+                "color:#e2e8f0;padding:2px 6px;border-radius:4px;font-size:10px;}"
+                "QToolButton:hover{background:rgba(30,41,59,230);}"
+            )
+            btn.clicked.connect(self._copy_debug_details)
+            self._debug_copy_btn = btn
+            btn.show()
+        except Exception:
+            self._debug_copy_btn = None
+
+    def _copy_debug_details(self) -> None:
+        try:
+            lines = self._debug_status_lines(include_paths=True)
+            QtWidgets.QApplication.clipboard().setText("\n".join(lines))
+        except Exception:
+            pass
 
     def _on_model_scale_changed(self, value: int) -> None:
         try:
@@ -782,9 +809,6 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             model_data = load_model(path)
             if not model_data or not model_data.vertices:
                 continue
-            mesh = _GLMesh(model_data.vertices)
-            self._meshes[name] = mesh
-            self._mesh_colors[name] = QtGui.QColor("#60a5fa")
             tx, ty = 0.0, 0.0
             tz = 0.0
             try:
@@ -795,13 +819,16 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
                 tz = float(getattr(model, "pos_z", 0.0))
             except Exception:
                 tz = 0.0
+            mesh = _GLMesh(model_data.vertices)
+            self._meshes[name] = mesh
+            self._mesh_colors[name] = QtGui.QColor("#60a5fa")
             model_mat = QtGui.QMatrix4x4()
             min_x, min_y, min_z, max_x, max_y, max_z = model_data.bounds
             cx = (min_x + max_x) * 0.5
             cy = (min_y + max_y) * 0.5
             cz = (min_z + max_z) * 0.5
             extent = max(max_x - min_x, max_y - min_y, max_z - min_z, 1.0)
-            base_scale = 180.0 / extent
+            base_scale = 18.0 / extent
             scale = base_scale * self._model_scale_multiplier
             model_mat.translate(float(tx), float(ty), float(tz))
             model_mat.scale(scale, scale, scale)
@@ -809,8 +836,10 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             self._mesh_transforms[name] = model_mat
             self._mesh_meta[name] = {
                 "center": (cx, cy, cz),
+                "bounds": model_data.bounds,
                 "pos": (float(tx), float(ty), float(tz)),
                 "base_scale": base_scale,
+                "path": str(path),
             }
 
     def _rebuild_mesh_transforms(self) -> None:
@@ -827,6 +856,29 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             model_mat.scale(scale, scale, scale)
             model_mat.translate(-cx, -cy, -cz)
             self._mesh_transforms[name] = model_mat
+
+    def _mesh_bounds_world(self) -> Optional[Tuple[float, float, float, float, float, float]]:
+        if not self._mesh_meta:
+            return None
+        min_x = min_y = min_z = float("inf")
+        max_x = max_y = max_z = float("-inf")
+        for meta in self._mesh_meta.values():
+            bounds = meta.get("bounds")
+            if not bounds:
+                continue
+            cx, cy, cz = meta.get("center", (0.0, 0.0, 0.0))
+            tx, ty, tz = meta.get("pos", (0.0, 0.0, 0.0))
+            base_scale = float(meta.get("base_scale", 1.0))
+            scale = base_scale * self._model_scale_multiplier
+            min_x = min(min_x, tx + (bounds[0] - cx) * scale)
+            max_x = max(max_x, tx + (bounds[3] - cx) * scale)
+            min_y = min(min_y, ty + (bounds[1] - cy) * scale)
+            max_y = max(max_y, ty + (bounds[4] - cy) * scale)
+            min_z = min(min_z, tz + (bounds[2] - cz) * scale)
+            max_z = max(max_z, tz + (bounds[5] - cz) * scale)
+        if min_x == float("inf"):
+            return None
+        return min_x, min_y, min_z, max_x, max_y, max_z
 
     def initializeGL(self) -> None:
         ctx = self.context()
@@ -969,19 +1021,13 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         rect = self._scene_src_rect
         x0, y0 = rect.left(), rect.top()
         x1, y1 = rect.right(), rect.bottom()
-        scale = float(self._model_scale_multiplier)
-        if abs(scale - 1.0) > 1e-3:
-            cx = (x0 + x1) * 0.5
-            cy = (y0 + y1) * 0.5
-            x0 = cx + (x0 - cx) * scale
-            x1 = cx + (x1 - cx) * scale
-            y0 = cy + (y0 - cy) * scale
-            y1 = cy + (y1 - cy) * scale
+        extent = max(abs(x1 - x0), abs(y1 - y0), 1.0)
+        plane_z = -max(10.0, extent * 0.05)
         verts = [
-            x0, y0, 0.0, 0.0, 1.0,
-            x1, y0, 0.0, 1.0, 1.0,
-            x0, y1, 0.0, 0.0, 0.0,
-            x1, y1, 0.0, 1.0, 0.0,
+            x0, y0, plane_z, 0.0, 1.0,
+            x1, y0, plane_z, 1.0, 1.0,
+            x0, y1, plane_z, 0.0, 0.0,
+            x1, y1, plane_z, 1.0, 0.0,
         ]
         data = QtCore.QByteArray(struct.pack(f"{len(verts)}f", *verts))
         if self._quad_vbo.bind():
@@ -993,7 +1039,9 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         w = max(1, self.width())
         h = max(1, self.height())
         proj = QtGui.QMatrix4x4()
-        proj.perspective(float(self._fov_deg), w / float(h), 0.1, 1000000.0)
+        far_plane = max(1000000.0, float(self._cam_dist) * 10.0)
+        far_plane = max(1000000.0, float(self._cam_dist) * 50.0)
+        proj.perspective(float(self._fov_deg), w / float(h), 0.1, far_plane)
         return proj
 
     def _view_matrix(self) -> QtGui.QMatrix4x4:
@@ -1134,7 +1182,11 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
                     text_width = max(metrics.width(line) for line in lines)
                 text_height = len(lines) * metrics.height() + max(0, len(lines) - 1) * 2
                 pad = 8
-                panel = QtCore.QRectF(10, 10, text_width + pad * 2, text_height + pad * 2)
+                panel_top = 10.0
+                btn = getattr(self, "_debug_copy_btn", None)
+                if btn is not None and btn.isVisible():
+                    panel_top = btn.geometry().bottom() + 6.0
+                panel = QtCore.QRectF(10, panel_top, text_width + pad * 2, text_height + pad * 2)
                 painter.setPen(QtCore.Qt.NoPen)
                 painter.setBrush(QtGui.QColor(15, 23, 42, 210))
                 painter.drawRoundedRect(panel, 6, 6)
@@ -1153,7 +1205,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._draw_axis_gizmo(painter)
         painter.end()
 
-    def _debug_status_lines(self) -> List[str]:
+    def _debug_status_lines(self, include_paths: bool = False) -> List[str]:
         lines = ["3D View Debug"]
         lines.append(f"Viewport: {self.width()}x{self.height()}")
         lines.append(f"QOpenGLWidget: {'OK' if QOpenGLWidget is not None else 'missing'}")
@@ -1174,6 +1226,21 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             lines.append("Scene tex: ready")
         else:
             lines.append("Scene tex: none")
+        lines.append(f"Meshes: {len(self._meshes)}")
+        mesh_paths = []
+        for meta in self._mesh_meta.values():
+            path_val = meta.get("path")
+            if path_val:
+                mesh_paths.append(str(path_val))
+        if mesh_paths:
+            names = [Path(p).name for p in mesh_paths if p]
+            if names:
+                shown = ", ".join(names[:3])
+                if len(names) > 3:
+                    shown += f" +{len(names) - 3}"
+                lines.append(f"Mesh files: {shown}")
+        if include_paths and mesh_paths:
+            lines.append("Mesh paths: " + "; ".join(mesh_paths))
         lines.append(f"Scene content: {'blank' if self._scene_content_blank else 'ok'}")
         if self._grid_count:
             lines.append(f"Grid lines: {self._grid_count}")
@@ -1236,13 +1303,19 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         p.drawEllipse(origin, 3.2, 3.2)
 
     def _reset_camera(self) -> None:
-        rect = QtCore.QRectF(self._scene_src_rect)
-        if rect.isNull():
-            self._cam_target = QtCore.QPointF(0.0, 0.0)
-            extent = 1000.0
+        bounds = self._mesh_bounds_world()
+        if bounds is not None:
+            min_x, min_y, min_z, max_x, max_y, max_z = bounds
+            self._cam_target = QtCore.QPointF((min_x + max_x) * 0.5, (min_y + max_y) * 0.5)
+            extent = max(max_x - min_x, max_y - min_y, max_z - min_z, 1.0)
         else:
-            self._cam_target = rect.center()
-            extent = max(rect.width(), rect.height(), 1.0)
+            rect = QtCore.QRectF(self._scene_src_rect)
+            if rect.isNull():
+                self._cam_target = QtCore.QPointF(0.0, 0.0)
+                extent = 1000.0
+            else:
+                self._cam_target = rect.center()
+                extent = max(rect.width(), rect.height(), 1.0)
         if self._scene_content_blank:
             self._cam_target = QtCore.QPointF(0.0, 0.0)
             extent = 1000.0
@@ -1251,9 +1324,9 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         half_extent = extent * 0.5
         fov_rad = math.radians(self._fov_deg)
         fit_dist = half_extent / max(1e-3, math.tan(fov_rad * 0.5))
-        self._cam_dist = max(1200.0, fit_dist * 1.15)
+        self._cam_dist = max(1200.0, fit_dist * 2.0)
         self._cam_focal = max(800.0, self.height() * 0.5 / max(1e-3, math.tan(fov_rad * 0.5)))
-        self._debug_mesh_scale_base = max(120.0, min(600.0, extent * 0.2))
+        self._debug_mesh_scale_base = max(12.0, min(60.0, extent * 0.02))
         self._debug_mesh_scale = self._debug_mesh_scale_base * self._model_scale_multiplier
         self._debug_mesh_center = QtCore.QPointF(self._cam_target)
         self._grid_center = QtCore.QPointF(self._cam_target)
