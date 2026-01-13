@@ -1627,10 +1627,10 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._mgl_arcball.Transform = np.identity(4, "f4")
         self._mgl_arcball.Transform[:3, :3] /= scale
         self._mgl_arcball.Transform[3, :3] = -self._mgl_center / scale
-        self._mgl_camera_zoom = self._mgl_camera_distance(self._mgl_fov)
+        self._mgl_camera_zoom = self._mgl_camera_distance(self._mgl_fov) * max(0.01, self._mgl_scale_multiplier)
 
     def _mgl_frame_camera(self) -> None:
-        self._mgl_camera_zoom = self._mgl_camera_distance(self._mgl_fov)
+        self._mgl_camera_zoom = self._mgl_camera_distance(self._mgl_fov) * max(0.01, self._mgl_scale_multiplier)
 
     def _sync_mgl_gizmo(self, transform: "Matrix44") -> None:
         if np is None:
@@ -2780,13 +2780,17 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             if e.buttons() & QtCore.Qt.RightButton and self._mgl_zoom_press_pos is not None:
                 dx = e.pos().x() - self._mgl_zoom_press_pos.x()
                 dy = e.pos().y() - self._mgl_zoom_press_pos.y()
-                distance = dy - dx
+                distance = dx - dy
                 exponent = abs(distance) / self._drag_divisor
                 base = self._zoom_multiplier
-                factor = base ** (-exponent) if distance > 0 else base ** (exponent)
+                factor = base ** exponent
                 start = self._mgl_zoom_start if self._mgl_zoom_start is not None else self._mgl_camera_zoom
-                target = start / factor
+                if distance > 0:
+                    target = start / factor
+                else:
+                    target = start * factor
                 self._mgl_camera_zoom = max(0.1, min(10000.0, target))
+                self._mgl_zoom_start = self._mgl_camera_zoom
                 self._mgl_zoom_press_pos = e.pos()
                 self.update()
                 e.accept()
