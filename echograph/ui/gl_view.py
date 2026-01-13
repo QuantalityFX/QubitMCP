@@ -606,6 +606,10 @@ class _ArcBallUtil(_ArcBall):
     def _quat_to_mat3(self, q: "np.ndarray") -> "np.ndarray":
         if np.sum(np.dot(q, q)) < self.Epsilon:
             return np.identity(3, "f4")
+        norm = np.linalg.norm(q)
+        if norm <= self.Epsilon:
+            return np.identity(3, "f4")
+        q = q / norm
         x, y, z, w = q
         xx = x * x
         yy = y * y
@@ -764,6 +768,8 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._mgl_mesh_vertex_count = 0
         self._mgl_prev_x = 0
         self._mgl_prev_y = 0
+        self._mgl_zoom_press_pos = None
+        self._mgl_zoom_start = None
 
         if self._use_moderngl and not _HAS_MGL:
             self._use_moderngl = False
@@ -2599,9 +2605,6 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             ("Y", QtGui.QColor("#4ade80"), (0.0, 1.0, 0.0)),
             ("Z", QtGui.QColor("#38bdf8"), (0.0, 0.0, 1.0)),
         )
-        p.setPen(QtCore.Qt.NoPen)
-        p.setBrush(QtGui.QColor(15, 23, 42, 180))
-        p.drawEllipse(origin, radius + 6.0, radius + 6.0)
         projected = []
         max_len = 0.0
         for label, color, vec in axes:
@@ -2705,10 +2708,16 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
                 self.setCursor(QtCore.Qt.ClosedHandCursor)
                 e.accept()
                 return
-            if e.button() == QtCore.Qt.RightButton:
+            if e.button() == QtCore.Qt.MiddleButton:
                 self._mgl_prev_x = e.x()
                 self._mgl_prev_y = e.y()
                 self.setCursor(QtCore.Qt.OpenHandCursor)
+                e.accept()
+                return
+            if e.button() == QtCore.Qt.RightButton:
+                self._mgl_zoom_press_pos = e.pos()
+                self._mgl_zoom_start = float(self._mgl_camera_zoom)
+                self.setCursor(QtCore.Qt.SizeVerCursor)
                 e.accept()
                 return
         if self._use_example_pipeline:
@@ -2758,13 +2767,27 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
                 self.update()
                 e.accept()
                 return
-            if e.buttons() & QtCore.Qt.RightButton and self._mgl_center is not None:
+            if e.buttons() & QtCore.Qt.MiddleButton and self._mgl_center is not None:
                 dx = e.x() - self._mgl_prev_x
                 dy = e.y() - self._mgl_prev_y
                 self._mgl_center[0] -= dx * 0.01
                 self._mgl_center[1] += dy * 0.01
                 self._mgl_prev_x = e.x()
                 self._mgl_prev_y = e.y()
+                self.update()
+                e.accept()
+                return
+            if e.buttons() & QtCore.Qt.RightButton and self._mgl_zoom_press_pos is not None:
+                dx = e.pos().x() - self._mgl_zoom_press_pos.x()
+                dy = e.pos().y() - self._mgl_zoom_press_pos.y()
+                distance = dy - dx
+                exponent = abs(distance) / self._drag_divisor
+                base = self._zoom_multiplier
+                factor = base ** (-exponent) if distance > 0 else base ** (exponent)
+                start = self._mgl_zoom_start if self._mgl_zoom_start is not None else self._mgl_camera_zoom
+                target = start / factor
+                self._mgl_camera_zoom = max(0.1, min(10000.0, target))
+                self._mgl_zoom_press_pos = e.pos()
                 self.update()
                 e.accept()
                 return
@@ -2866,6 +2889,9 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         if self._use_moderngl:
             if e.button() == QtCore.Qt.LeftButton and self._mgl_arcball is not None:
                 self._mgl_arcball.onClickLeftUp()
+            if e.button() == QtCore.Qt.RightButton:
+                self._mgl_zoom_press_pos = None
+                self._mgl_zoom_start = None
             self.setCursor(QtCore.Qt.ArrowCursor)
             super().mouseReleaseEvent(e)
             return
