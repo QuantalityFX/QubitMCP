@@ -493,6 +493,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._debug_mesh = None
         self._debug_mesh_color = QtGui.QColor("#f59e0b")
         self._debug_mesh_scale = 200.0
+        self._debug_mesh_scale_base = 200.0
         self._debug_mesh_center = QtCore.QPointF(0.0, 0.0)
         self._grid_vertices: List[float] = []
         self._grid_vbo = None
@@ -504,6 +505,8 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._meshes: Dict[str, _GLMesh] = {}
         self._mesh_colors: Dict[str, QtGui.QColor] = {}
         self._mesh_transforms: Dict[str, QtGui.QMatrix4x4] = {}
+        self._mesh_meta: Dict[str, dict] = {}
+        self._model_scale_multiplier = 1.0
         self._drag_divisor = 13.0
         self._zoom_multiplier = 1.1
         self._min_cam_dist = 200.0
@@ -527,9 +530,16 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
 
         self.setMouseTracking(True)
         self.setFocusPolicy(QtCore.Qt.StrongFocus)
+        self._build_scale_controls()
 
     def set_scene(self, scene) -> None:
         self._scene = scene
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if getattr(self, "_controls", None) is not None:
+            h = int(getattr(self, "_controls_h", 44))
+            self._controls.setGeometry(0, max(0, self.height() - h), self.width(), h)
 
     def paintEvent(self, event):
         if QOpenGLWidget is None:
@@ -550,6 +560,47 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._capture_scene_texture()
         self._load_scene_models()
         self._reset_camera()
+        self.update()
+
+    def _build_scale_controls(self) -> None:
+        try:
+            controls = QtWidgets.QFrame(self)
+            controls.setObjectName("GLControls")
+            controls.setStyleSheet(
+                "#GLControls{background:rgba(15,23,42,210);border-top:1px solid #334155;}"
+                "#GLControls QLabel{color:#e2e8f0;font-size:11px;}"
+            )
+            layout = QtWidgets.QHBoxLayout(controls)
+            layout.setContentsMargins(10, 6, 10, 6)
+            layout.setSpacing(10)
+
+            self._model_scale_label = QtWidgets.QLabel("Scale 1.00x")
+            self._model_scale_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+            self._model_scale_slider.setRange(10, 400)
+            self._model_scale_slider.setValue(int(self._model_scale_multiplier * 100))
+            self._model_scale_slider.setFixedWidth(160)
+            self._model_scale_slider.valueChanged.connect(self._on_model_scale_changed)
+
+            layout.addWidget(self._model_scale_label, 0)
+            layout.addWidget(self._model_scale_slider, 0)
+            layout.addStretch(1)
+            self._controls = controls
+            self._controls_h = 44
+            self._controls.show()
+        except Exception:
+            self._controls = None
+            self._controls_h = 0
+
+    def _on_model_scale_changed(self, value: int) -> None:
+        try:
+            scale = max(0.1, float(value) / 100.0)
+        except Exception:
+            scale = 1.0
+        self._model_scale_multiplier = scale
+        if hasattr(self, "_model_scale_label"):
+            self._model_scale_label.setText(f"Scale {scale:.2f}x")
+        self._rebuild_mesh_transforms()
+        self._debug_mesh_scale = self._debug_mesh_scale_base * self._model_scale_multiplier
         self.update()
 
     def _capture_scene_texture(self) -> None:
@@ -710,6 +761,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._meshes.clear()
         self._mesh_colors.clear()
         self._mesh_transforms.clear()
+        self._mesh_meta.clear()
         if self._scene is None:
             return
         for name, item in getattr(self._scene, "_node_items", {}).items():
@@ -748,7 +800,28 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             cy = (min_y + max_y) * 0.5
             cz = (min_z + max_z) * 0.5
             extent = max(max_x - min_x, max_y - min_y, max_z - min_z, 1.0)
-            scale = 180.0 / extent
+            base_scale = 180.0 / extent
+            scale = base_scale * self._model_scale_multiplier
+            model_mat.translate(float(tx), float(ty), float(tz))
+            model_mat.scale(scale, scale, scale)
+            model_mat.translate(-cx, -cy, -cz)
+            self._mesh_transforms[name] = model_mat
+            self._mesh_meta[name] = {
+                "center": (cx, cy, cz),
+                "pos": (float(tx), float(ty), float(tz)),
+                "base_scale": base_scale,
+            }
+
+    def _rebuild_mesh_transforms(self) -> None:
+        if not self._mesh_meta:
+            return
+        self._mesh_transforms.clear()
+        for name, meta in self._mesh_meta.items():
+            cx, cy, cz = meta.get("center", (0.0, 0.0, 0.0))
+            tx, ty, tz = meta.get("pos", (0.0, 0.0, 0.0))
+            base_scale = float(meta.get("base_scale", 1.0))
+            scale = base_scale * self._model_scale_multiplier
+            model_mat = QtGui.QMatrix4x4()
             model_mat.translate(float(tx), float(ty), float(tz))
             model_mat.scale(scale, scale, scale)
             model_mat.translate(-cx, -cy, -cz)
@@ -1171,7 +1244,8 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         fit_dist = half_extent / max(1e-3, math.tan(fov_rad * 0.5))
         self._cam_dist = max(1200.0, fit_dist * 1.15)
         self._cam_focal = max(800.0, self.height() * 0.5 / max(1e-3, math.tan(fov_rad * 0.5)))
-        self._debug_mesh_scale = max(120.0, min(600.0, extent * 0.2))
+        self._debug_mesh_scale_base = max(120.0, min(600.0, extent * 0.2))
+        self._debug_mesh_scale = self._debug_mesh_scale_base * self._model_scale_multiplier
         self._debug_mesh_center = QtCore.QPointF(self._cam_target)
         self._grid_center = QtCore.QPointF(self._cam_target)
         self._update_grid(extent)
@@ -1248,8 +1322,8 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             fov_rad = math.radians(self._fov_deg)
             scale = (2.0 * self._cam_dist * math.tan(fov_rad * 0.5)) / max(1.0, self.height())
             self._cam_target = QtCore.QPointF(
-                self._cam_target.x() - float(delta.x()) * scale,
-                self._cam_target.y() + float(delta.y()) * scale,
+                self._cam_target.x() + float(delta.x()) * scale,
+                self._cam_target.y() - float(delta.y()) * scale,
             )
             self.update()
             e.accept()
