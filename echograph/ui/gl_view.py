@@ -507,6 +507,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._mesh_transforms: Dict[str, QtGui.QMatrix4x4] = {}
         self._mesh_meta: Dict[str, dict] = {}
         self._model_scale_multiplier = 1.0
+        self._manual_model_path: Optional[Path] = None
         self._drag_divisor = 13.0
         self._zoom_multiplier = 1.1
         self._min_cam_dist = 200.0
@@ -573,10 +574,17 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             controls.setStyleSheet(
                 "#GLControls{background:rgba(15,23,42,210);border-top:1px solid #334155;}"
                 "#GLControls QLabel{color:#e2e8f0;font-size:11px;}"
+                "#GLControls QPushButton{padding:3px 10px;font-weight:600;color:#e2e8f0;"
+                "background:#1f2937;border-radius:4px;}"
+                "#GLControls QPushButton:hover{background:#334155;}"
             )
             layout = QtWidgets.QHBoxLayout(controls)
             layout.setContentsMargins(10, 6, 10, 6)
             layout.setSpacing(10)
+
+            self._model_pick_btn = QtWidgets.QPushButton("Model...")
+            self._model_pick_btn.clicked.connect(self._on_pick_model)
+            layout.addWidget(self._model_pick_btn, 0)
 
             self._model_scale_label = QtWidgets.QLabel("Scale 1.00x")
             self._model_scale_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
@@ -629,6 +637,38 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._rebuild_mesh_transforms()
         self._debug_mesh_scale = self._debug_mesh_scale_base * self._model_scale_multiplier
         self._update_quad_vbo()
+        self.update()
+
+    def _default_models_dir(self) -> Optional[Path]:
+        try:
+            root = Path(__file__).resolve().parents[2]
+        except Exception:
+            return None
+        candidate = root / "echograph" / "3dmodels"
+        if candidate.is_dir():
+            return candidate
+        return None
+
+    def _on_pick_model(self) -> None:
+        try:
+            start_dir = self._default_models_dir()
+            directory = str(start_dir) if start_dir is not None else ""
+            filename, _ = QtWidgets.QFileDialog.getOpenFileName(
+                self,
+                "Select Model",
+                directory,
+                "3D Models (*.obj *.gltf *.glb);;All Files (*)",
+            )
+        except Exception:
+            filename = ""
+        if not filename:
+            return
+        try:
+            self._manual_model_path = Path(filename)
+        except Exception:
+            self._manual_model_path = None
+        self._load_scene_models()
+        self._reset_camera()
         self.update()
 
     def _capture_scene_texture(self) -> None:
@@ -792,6 +832,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._mesh_meta.clear()
         if self._scene is None:
             return
+        used_paths = set()
         for name, item in getattr(self._scene, "_node_items", {}).items():
             model = getattr(item, "model", None)
             if model is None:
@@ -809,6 +850,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             model_data = load_model(path)
             if not model_data or not model_data.vertices:
                 continue
+            used_paths.add(str(path))
             tx, ty = 0.0, 0.0
             tz = 0.0
             try:
@@ -841,6 +883,34 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
                 "base_scale": base_scale,
                 "path": str(path),
             }
+
+        manual_path = self._manual_model_path
+        if manual_path is not None and manual_path.is_file():
+            if str(manual_path) not in used_paths:
+                model_data = load_model(manual_path)
+                if model_data and model_data.vertices:
+                    mesh = _GLMesh(model_data.vertices)
+                    self._meshes["__manual__"] = mesh
+                    self._mesh_colors["__manual__"] = QtGui.QColor("#f59e0b")
+                    min_x, min_y, min_z, max_x, max_y, max_z = model_data.bounds
+                    cx = (min_x + max_x) * 0.5
+                    cy = (min_y + max_y) * 0.5
+                    cz = (min_z + max_z) * 0.5
+                    extent = max(max_x - min_x, max_y - min_y, max_z - min_z, 1.0)
+                    base_scale = 18.0 / extent
+                    scale = base_scale * self._model_scale_multiplier
+                    model_mat = QtGui.QMatrix4x4()
+                    model_mat.translate(0.0, 0.0, 0.0)
+                    model_mat.scale(scale, scale, scale)
+                    model_mat.translate(-cx, -cy, -cz)
+                    self._mesh_transforms["__manual__"] = model_mat
+                    self._mesh_meta["__manual__"] = {
+                        "center": (cx, cy, cz),
+                        "bounds": model_data.bounds,
+                        "pos": (0.0, 0.0, 0.0),
+                        "base_scale": base_scale,
+                        "path": str(manual_path),
+                    }
 
     def _rebuild_mesh_transforms(self) -> None:
         if not self._mesh_meta:
@@ -1227,6 +1297,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         else:
             lines.append("Scene tex: none")
         lines.append(f"Meshes: {len(self._meshes)}")
+        lines.append(f"Model scale: {self._model_scale_multiplier:.2f}x")
         mesh_paths = []
         for meta in self._mesh_meta.values():
             path_val = meta.get("path")
