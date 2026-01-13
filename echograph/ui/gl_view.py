@@ -510,7 +510,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._drag_divisor = 13.0
         self._zoom_multiplier = 1.1
         self._min_cam_dist = 200.0
-        self._max_cam_dist = 20000.0
+        self._max_cam_dist = 200000.0
         self._orbit_sensitivity = 0.005
 
         self._cam_yaw = 0.45
@@ -601,6 +601,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             self._model_scale_label.setText(f"Scale {scale:.2f}x")
         self._rebuild_mesh_transforms()
         self._debug_mesh_scale = self._debug_mesh_scale_base * self._model_scale_multiplier
+        self._update_quad_vbo()
         self.update()
 
     def _capture_scene_texture(self) -> None:
@@ -968,6 +969,14 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         rect = self._scene_src_rect
         x0, y0 = rect.left(), rect.top()
         x1, y1 = rect.right(), rect.bottom()
+        scale = float(self._model_scale_multiplier)
+        if abs(scale - 1.0) > 1e-3:
+            cx = (x0 + x1) * 0.5
+            cy = (y0 + y1) * 0.5
+            x0 = cx + (x0 - cx) * scale
+            x1 = cx + (x1 - cx) * scale
+            y0 = cy + (y0 - cy) * scale
+            y1 = cy + (y1 - cy) * scale
         verts = [
             x0, y0, 0.0, 0.0, 1.0,
             x1, y0, 0.0, 1.0, 1.0,
@@ -984,7 +993,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         w = max(1, self.width())
         h = max(1, self.height())
         proj = QtGui.QMatrix4x4()
-        proj.perspective(float(self._fov_deg), w / float(h), 0.1, 100000.0)
+        proj.perspective(float(self._fov_deg), w / float(h), 0.1, 1000000.0)
         return proj
 
     def _view_matrix(self) -> QtGui.QMatrix4x4:
@@ -1322,7 +1331,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             fov_rad = math.radians(self._fov_deg)
             scale = (2.0 * self._cam_dist * math.tan(fov_rad * 0.5)) / max(1.0, self.height())
             self._cam_target = QtCore.QPointF(
-                self._cam_target.x() + float(delta.x()) * scale,
+                self._cam_target.x() - float(delta.x()) * scale,
                 self._cam_target.y() - float(delta.y()) * scale,
             )
             self.update()
