@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import ctypes
 import json
 import math
 import struct
@@ -104,9 +105,11 @@ GL_TRIANGLES = 0x0004
 GL_TRIANGLE_STRIP = 0x0005
 GL_LINES = 0x0001
 GL_FLOAT = 0x1406
+GL_UNSIGNED_SHORT = 0x1403
 GL_BLEND = 0x0BE2
 GL_SRC_ALPHA = 0x0302
 GL_ONE_MINUS_SRC_ALPHA = 0x0303
+GL_CULL_FACE = 0x0B44
 GL_COLOR_BUFFER_BIT = 0x00004000
 GL_DEPTH_BUFFER_BIT = 0x00000100
 GL_DEPTH_TEST = 0x0B71
@@ -491,17 +494,19 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._capture_view = None
         self._scene_content_blank = False
         self._debug_mesh = None
-        self._debug_mesh_color = QtGui.QColor("#f59e0b")
-        self._debug_mesh_scale = 200.0
-        self._debug_mesh_scale_base = 200.0
+        self._debug_wire = None
+        self._debug_mesh_color = QtGui.QColor("#94a3b8")
+        self._debug_wire_color = QtGui.QColor("#f97316")
+        self._debug_mesh_scale = 1.0
+        self._debug_mesh_scale_base = 1.0
         self._debug_mesh_center = QtCore.QPointF(0.0, 0.0)
         self._grid_vertices: List[float] = []
         self._grid_vbo = None
         self._grid_count = 0
         self._grid_dirty = True
-        self._grid_color = QtGui.QColor("#334155")
+        self._grid_color = QtGui.QColor("#e2e8f0")
         self._grid_center = QtCore.QPointF(0.0, 0.0)
-        self._grid_z = 0.5
+        self._grid_z = -0.6
         self._meshes: Dict[str, _GLMesh] = {}
         self._mesh_colors: Dict[str, QtGui.QColor] = {}
         self._mesh_transforms: Dict[str, QtGui.QMatrix4x4] = {}
@@ -509,20 +514,48 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._model_scale_multiplier = 1.0
         self._manual_model_path: Optional[Path] = None
         self._auto_frame_on_scale = False
-        self._show_scene_plane = True
+        self._world_extent = 100.0
+        self._cube_size = 1.0
+        self._render_scene_plane = False
+        self._render_scene_models = False
+        self._show_test_cube = False
+        self._show_scene_plane = False
+        self._use_ortho = True
+        self._test_cam_locked = False
+        self._use_example_pipeline = True
         self._model_load_pending = False
+        self._render_paused = False
         self._drag_divisor = 13.0
         self._zoom_multiplier = 1.1
-        self._min_cam_dist = 200.0
-        self._max_cam_dist = 200000000.0
+        self._min_cam_dist = 5.0
+        self._max_cam_dist = 500.0
         self._orbit_sensitivity = 0.005
 
         self._cam_yaw = 0.45
         self._cam_pitch = -0.35
-        self._cam_dist = 2400.0
+        self._cam_dist = 10.0
         self._cam_focal = 1200.0
         self._fov_deg = 50.0
         self._cam_target = QtCore.QPointF(0.0, 0.0)
+
+        self._example_program = None
+        self._example_vbo = None
+        self._example_ibo = None
+        self._example_index_count = 0
+        self._example_draw_count = 0
+        self._example_proj = QtGui.QMatrix4x4()
+        self._example_transform = QtGui.QMatrix4x4()
+        self._example_cam_pos = QtGui.QVector3D(-30.0, 30.0, 40.0)
+        self._example_cam_look = QtGui.QVector3D(0.0, 0.0, 0.0)
+        self._example_cam_up = QtGui.QVector3D(0.0, 1.0, 0.0)
+        self._example_cam_right = QtGui.QVector3D(1.0, 0.0, 0.0)
+        self._example_fov = 30.0
+        self._example_near = 2.0
+        self._example_far = 200.0
+        self._example_pan_speed = 0.02
+        self._example_rotate_speed = 0.3
+        self._example_zoom_step = 2.0
+        self._example_clear_color = QtGui.QColor("#111827")
 
         self._orbit_dragging = False
         self._pan_dragging = False
@@ -565,8 +598,21 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._draw_overlay()
 
     def refresh_from_scene(self) -> None:
-        self._capture_scene_texture()
-        self._load_scene_models()
+        if self._render_scene_plane:
+            self._capture_scene_texture()
+        else:
+            self._scene_texture = None
+            self._scene_texture_dirty = False
+            self._pending_image = None
+            self._scene_src_rect = QtCore.QRectF()
+            self._scene_content_blank = True
+        if self._render_scene_models:
+            self._load_scene_models()
+        else:
+            self._meshes.clear()
+            self._mesh_colors.clear()
+            self._mesh_transforms.clear()
+            self._mesh_meta.clear()
         self._reset_camera()
         self.update()
 
@@ -585,28 +631,10 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             layout.setContentsMargins(10, 6, 10, 6)
             layout.setSpacing(10)
 
-            self._model_pick_btn = QtWidgets.QPushButton("Model...")
-            self._model_pick_btn.clicked.connect(self._on_pick_model)
-            layout.addWidget(self._model_pick_btn, 0)
-
             self._frame_btn = QtWidgets.QPushButton("Frame")
             self._frame_btn.clicked.connect(self._on_frame_clicked)
             layout.addWidget(self._frame_btn, 0)
-
-            self._plane_toggle = QtWidgets.QCheckBox("Plane")
-            self._plane_toggle.setChecked(True)
-            self._plane_toggle.toggled.connect(self._on_plane_toggled)
-            layout.addWidget(self._plane_toggle, 0)
-
-            self._model_scale_label = QtWidgets.QLabel("Scale 1.00x")
-            self._model_scale_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-            self._model_scale_slider.setRange(1, 10000)
-            self._model_scale_slider.setValue(int(self._model_scale_multiplier * 100))
-            self._model_scale_slider.setFixedWidth(160)
-            self._model_scale_slider.valueChanged.connect(self._on_model_scale_changed)
-
-            layout.addWidget(self._model_scale_label, 0)
-            layout.addWidget(self._model_scale_slider, 0)
+            layout.addWidget(QtWidgets.QLabel("Example Cube"), 0)
             layout.addStretch(1)
             self._controls = controls
             self._controls_h = 44
@@ -658,6 +686,9 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self.update()
 
     def _on_plane_toggled(self, checked: bool) -> None:
+        if not self._render_scene_plane:
+            self._show_scene_plane = False
+            return
         self._show_scene_plane = bool(checked)
         if not self._show_scene_plane:
             self._scene_texture = None
@@ -681,40 +712,30 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         return None
 
     def _on_pick_model(self) -> None:
-        try:
-            self.setUpdatesEnabled(False)
-        except Exception:
-            pass
-        try:
-            start_dir = self._default_models_dir()
-            directory = str(start_dir) if start_dir is not None else ""
-            options = QtWidgets.QFileDialog.Options()
-            try:
-                options |= QtWidgets.QFileDialog.DontUseNativeDialog
-            except Exception:
-                pass
-            filename, _ = QtWidgets.QFileDialog.getOpenFileName(
-                self,
-                "Select Model",
-                directory,
-                "3D Models (*.obj *.gltf *.glb);;All Files (*)",
-                options=options,
-            )
-        except Exception:
-            filename = ""
-        finally:
-            try:
-                self.setUpdatesEnabled(True)
-            except Exception:
-                pass
-        if not filename:
+        if not self._render_scene_models:
             return
         if self._model_load_pending:
             return
+        start_dir = ""
+        root = self._default_models_dir()
+        if root is not None:
+            start_dir = str(root)
         try:
-            self._manual_model_path = Path(filename)
+            parent = self.window()
         except Exception:
-            self._manual_model_path = None
+            parent = self
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            parent,
+            "Select Model",
+            start_dir,
+            "3D Models (*.obj *.gltf *.glb);;All Files (*.*)",
+        )
+        if not path:
+            return
+        try:
+            self._manual_model_path = Path(path)
+        except Exception:
+            return
         self._show_scene_plane = False
         if getattr(self, "_plane_toggle", None) is not None:
             try:
@@ -728,15 +749,22 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         QtCore.QTimer.singleShot(0, self._apply_manual_model)
 
     def _apply_manual_model(self) -> None:
+        if not self._render_scene_models:
+            return
         self._model_load_pending = False
+        self._render_paused = True
         try:
             self._load_scene_models()
         except Exception:
+            self._render_paused = False
             return
         self._reset_camera()
+        self._render_paused = False
         self.update()
 
     def _capture_scene_texture(self) -> None:
+        if not self._render_scene_plane:
+            return
         if not self._show_scene_plane:
             return
         if self._scene is None:
@@ -870,6 +898,249 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._grid_vbo.release()
         self._grid_dirty = False
 
+    def _example_cube_data(self) -> Tuple[List[float], List[int]]:
+        colors = [
+            (0.94, 0.41, 0.41, 1.0),
+            (0.40, 0.84, 0.47, 1.0),
+            (0.39, 0.56, 0.92, 1.0),
+            (0.96, 0.78, 0.33, 1.0),
+            (0.34, 0.87, 0.84, 1.0),
+            (0.86, 0.47, 0.92, 1.0),
+        ]
+        faces = [
+            [(-1.0, -1.0,  1.0), (1.0, -1.0,  1.0), (-1.0,  1.0,  1.0), (1.0,  1.0,  1.0)],
+            [(1.0, -1.0,  1.0), (1.0, -1.0, -1.0), (1.0,  1.0,  1.0), (1.0,  1.0, -1.0)],
+            [(1.0, -1.0, -1.0), (-1.0, -1.0, -1.0), (1.0,  1.0, -1.0), (-1.0,  1.0, -1.0)],
+            [(-1.0, -1.0, -1.0), (-1.0, -1.0,  1.0), (-1.0,  1.0, -1.0), (-1.0,  1.0,  1.0)],
+            [(-1.0, -1.0, -1.0), (1.0, -1.0, -1.0), (-1.0, -1.0,  1.0), (1.0, -1.0,  1.0)],
+            [(-1.0,  1.0,  1.0), (1.0,  1.0,  1.0), (-1.0,  1.0, -1.0), (1.0,  1.0, -1.0)],
+        ]
+        vertices: List[float] = []
+        for face_index, face in enumerate(faces):
+            color = colors[face_index % len(colors)]
+            a, b, c, d = face
+            for x, y, z in (a, b, c):
+                vertices.extend([x, y, z, color[0], color[1], color[2], color[3]])
+            for x, y, z in (c, b, d):
+                vertices.extend([x, y, z, color[0], color[1], color[2], color[3]])
+        return vertices, []
+
+    def _build_example_program(
+        self, vertex_src: str, fragment_src: str
+    ) -> Optional[QtGui.QOpenGLShaderProgram]:
+        if QOpenGLShaderProgram is None or QOpenGLShader is None:
+            return None
+        program = QOpenGLShaderProgram()
+        if not program.addShaderFromSourceCode(QOpenGLShader.Vertex, vertex_src):
+            self._shader_error = program.log().strip() or "Vertex shader failed"
+            return None
+        if not program.addShaderFromSourceCode(QOpenGLShader.Fragment, fragment_src):
+            self._shader_error = program.log().strip() or "Fragment shader failed"
+            return None
+        if not program.link():
+            self._shader_error = program.log().strip() or "Shader link failed"
+            return None
+        return program
+
+    def _init_example_pipeline(self) -> None:
+        if self._gl is None:
+            self._shader_error = "GL functions unavailable"
+            return
+        if QOpenGLShaderProgram is None or QOpenGLShader is None:
+            self._shader_error = "Shaders unavailable"
+            return
+        try:
+            self._gl.glEnable(GL_DEPTH_TEST)
+            self._gl.glClearColor(0.8, 0.8, 0.8, 1.0)
+        except Exception:
+            self._shader_error = "OpenGL state init failed"
+            return
+
+        self._shader_error = ""
+        vertex_330 = """
+        #version 330
+        layout(location = 0) in vec3 a_position;
+        layout(location = 1) in vec4 a_color;
+        uniform mat4 u_proj;
+        uniform mat4 u_view;
+        uniform mat4 u_trans;
+        out vec4 v_color;
+        void main() {
+            gl_Position = u_proj * u_view * u_trans * vec4(a_position, 1.0);
+            v_color = a_color;
+        }
+        """
+        fragment_330 = """
+        #version 330
+        in vec4 v_color;
+        out vec4 fragColor;
+        void main() {
+            fragColor = v_color;
+        }
+        """
+        vertex_legacy = """
+        attribute vec3 a_position;
+        attribute vec4 a_color;
+        uniform mat4 u_proj;
+        uniform mat4 u_view;
+        uniform mat4 u_trans;
+        varying vec4 v_color;
+        void main() {
+            gl_Position = u_proj * u_view * u_trans * vec4(a_position, 1.0);
+            v_color = a_color;
+        }
+        """
+        fragment_legacy = """
+        varying vec4 v_color;
+        void main() {
+            gl_FragColor = v_color;
+        }
+        """
+        program = self._build_example_program(vertex_330, fragment_330)
+        if program is None:
+            program = self._build_example_program(vertex_legacy, fragment_legacy)
+        if program is None:
+            if not self._shader_error:
+                self._shader_error = "Shader compile failed"
+            return
+        self._shader_error = ""
+        self._example_program = program
+
+        vertices, indices = self._example_cube_data()
+        if QOpenGLBuffer is None:
+            self._shader_error = "OpenGL buffers unavailable"
+            return
+        self._example_vbo = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
+        self._example_ibo = None
+        self._example_vbo.create()
+        if self._example_vbo.bind():
+            data = QtCore.QByteArray(struct.pack(f"{len(vertices)}f", *vertices))
+            self._example_vbo.allocate(data, data.size())
+            self._example_vbo.release()
+        self._example_index_count = 0
+        self._example_draw_count = len(vertices) // 7
+        self._example_transform.setToIdentity()
+        self._update_example_projection()
+
+    def _update_example_projection(self) -> None:
+        w = max(1, self.width())
+        h = max(1, self.height())
+        self._example_proj.setToIdentity()
+        self._example_proj.perspective(self._example_fov, w / float(h), self._example_near, self._example_far)
+
+    def _update_example_camera_basis(self) -> None:
+        direction = self._example_cam_pos - self._example_cam_look
+        if direction.lengthSquared() < 1e-6:
+            direction = QtGui.QVector3D(0.0, 0.0, 1.0)
+        direction.normalize()
+        world_up = QtGui.QVector3D(0.0, 1.0, 0.0)
+        right = QtGui.QVector3D.crossProduct(world_up, direction)
+        if right.lengthSquared() < 1e-6:
+            right = QtGui.QVector3D(1.0, 0.0, 0.0)
+        right.normalize()
+        up = QtGui.QVector3D.crossProduct(direction, right)
+        up.normalize()
+        self._example_cam_right = right
+        self._example_cam_up = up
+
+    def _example_view_matrix(self) -> QtGui.QMatrix4x4:
+        self._update_example_camera_basis()
+        self._sync_example_gizmo()
+        view = QtGui.QMatrix4x4()
+        view.lookAt(self._example_cam_pos, self._example_cam_look, self._example_cam_up)
+        return view
+
+    def _sync_example_gizmo(self) -> None:
+        direction = self._example_cam_pos - self._example_cam_look
+        if direction.lengthSquared() < 1e-6:
+            return
+        dist = direction.length()
+        if dist <= 1e-6:
+            return
+        try:
+            self._cam_yaw = math.atan2(direction.x(), direction.z())
+            self._cam_pitch = math.asin(direction.y() / dist)
+        except Exception:
+            return
+
+    def _example_orbit(self, delta: QtCore.QPointF) -> None:
+        if delta is None:
+            return
+        self._update_example_camera_basis()
+        axis_up = self._example_cam_up
+        axis_right = self._example_cam_right
+        yaw_deg = -float(delta.x()) * self._example_rotate_speed
+        pitch_deg = -float(delta.y()) * self._example_rotate_speed
+        direction = self._example_cam_pos - self._example_cam_look
+        if direction.lengthSquared() < 1e-6:
+            return
+        q_yaw = QtGui.QQuaternion.fromAxisAndAngle(axis_up, yaw_deg)
+        q_pitch = QtGui.QQuaternion.fromAxisAndAngle(axis_right, pitch_deg)
+        direction = q_yaw.rotatedVector(direction)
+        direction = q_pitch.rotatedVector(direction)
+        self._example_cam_pos = self._example_cam_look + direction
+
+    def _example_pan(self, delta: QtCore.QPointF) -> None:
+        if delta is None:
+            return
+        self._update_example_camera_basis()
+        distance = (self._example_cam_pos - self._example_cam_look).length()
+        scale = max(0.1, distance) * self._example_pan_speed
+        offset = (-float(delta.x()) * self._example_cam_right + float(delta.y()) * self._example_cam_up) * scale
+        self._example_cam_pos += offset
+        self._example_cam_look += offset
+
+    def _example_zoom(self, delta_steps: float) -> None:
+        if abs(delta_steps) < 1e-6:
+            return
+        self._example_fov -= delta_steps * self._example_zoom_step
+        self._example_fov = max(10.0, min(120.0, self._example_fov))
+        self._update_example_projection()
+
+    def _paint_example(self) -> None:
+        if self._example_program is None or self._gl is None:
+            return
+        if self._shader_error:
+            self._gl.glClearColor(0.12, 0.12, 0.12, 1.0)
+            self._gl.glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+            return
+        fov = max(10.0, min(120.0, float(self._example_fov)))
+        if abs(fov - self._example_fov) > 0.01:
+            self._example_fov = fov
+            self._update_example_projection()
+        clear = self._example_clear_color
+        self._gl.glClearColor(clear.redF(), clear.greenF(), clear.blueF(), 1.0)
+        self._gl.glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+        view = self._example_view_matrix()
+        self._example_program.bind()
+        self._example_program.setUniformValue("u_proj", self._example_proj)
+        self._example_program.setUniformValue("u_view", view)
+        self._example_program.setUniformValue("u_trans", self._example_transform)
+
+        stride = 7 * 4
+        if self._example_vbo and self._example_vbo.bind():
+            pos_loc = self._example_program.attributeLocation("a_position")
+            color_loc = self._example_program.attributeLocation("a_color")
+            if pos_loc >= 0:
+                self._example_program.enableAttributeArray(pos_loc)
+                self._example_program.setAttributeBuffer(pos_loc, GL_FLOAT, 0, 3, stride)
+            if color_loc >= 0:
+                self._example_program.enableAttributeArray(color_loc)
+                self._example_program.setAttributeBuffer(color_loc, GL_FLOAT, 12, 4, stride)
+            if self._example_index_count > 0 and self._example_ibo and self._example_ibo.bind():
+                indices_ptr = ctypes.c_void_p(0)
+                self._gl.glDrawElements(
+                    GL_TRIANGLE_STRIP,
+                    self._example_index_count,
+                    GL_UNSIGNED_SHORT,
+                    indices_ptr,
+                )
+                self._example_ibo.release()
+            else:
+                self._gl.glDrawArrays(GL_TRIANGLES, 0, self._example_draw_count)
+            self._example_vbo.release()
+        self._example_program.release()
+
     def _estimate_scene_blank(self, image: QtGui.QImage, bg: QtGui.QColor) -> bool:
         if image is None or image.isNull():
             return True
@@ -897,6 +1168,8 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._mesh_colors.clear()
         self._mesh_transforms.clear()
         self._mesh_meta.clear()
+        if not self._render_scene_models:
+            return
         if self._scene is None:
             return
         used_paths = set()
@@ -1021,6 +1294,9 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         ctx = self.context()
         if ctx is not None:
             self._gl = ctx.functions()
+        if self._use_example_pipeline:
+            self._init_example_pipeline()
+            return
         if QOpenGLShaderProgram is None:
             return
         self._gl.glEnable(GL_BLEND)
@@ -1095,16 +1371,21 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             self._quad_vbo = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
             self._quad_vbo.create()
         self._debug_mesh = _GLMesh(self._debug_cube_vertices())
+        self._debug_wire = _GLMesh(self._debug_cube_wire_vertices())
 
         self._upload_scene_texture()
         for mesh in self._meshes.values():
             mesh.upload()
         if self._debug_mesh is not None:
             self._debug_mesh.upload()
+        if self._debug_wire is not None:
+            self._debug_wire.upload()
 
     def resizeGL(self, w: int, h: int) -> None:
         if hasattr(self, "_gl"):
             self._gl.glViewport(0, 0, w, h)
+        if self._use_example_pipeline:
+            self._update_example_projection()
 
     def _upload_scene_texture(self) -> None:
         if not getattr(self, "_scene_texture_dirty", False):
@@ -1176,20 +1457,49 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         w = max(1, self.width())
         h = max(1, self.height())
         proj = QtGui.QMatrix4x4()
-        far_plane = max(1000000.0, float(self._cam_dist) * 10.0)
-        far_plane = max(1000000.0, float(self._cam_dist) * 50.0)
-        proj.perspective(float(self._fov_deg), w / float(h), 0.1, far_plane)
+        if self._use_ortho:
+            aspect = w / float(h)
+            half = max(self._cube_size * 2.5, float(self._cam_dist))
+            if aspect >= 1.0:
+                left = -half * aspect
+                right = half * aspect
+                bottom = -half
+                top = half
+            else:
+                left = -half
+                right = half
+                bottom = -half / max(1e-6, aspect)
+                top = half / max(1e-6, aspect)
+            far_plane = max(self._world_extent * 20.0, float(self._cam_dist) * 10.0, 200.0)
+            proj.ortho(left, right, bottom, top, 0.001, far_plane)
+        else:
+            far_plane = max(self._world_extent * 20.0, float(self._cam_dist) * 10.0, 200.0)
+            proj.perspective(float(self._fov_deg), w / float(h), 0.1, far_plane)
         return proj
 
     def _view_matrix(self) -> QtGui.QMatrix4x4:
         target = self._cam_target
-        cy = math.cos(self._cam_yaw)
-        sy = math.sin(self._cam_yaw)
-        cp = math.cos(self._cam_pitch)
-        sp = math.sin(self._cam_pitch)
-        cam_x = target.x() + self._cam_dist * cp * sy
-        cam_y = target.y() + self._cam_dist * sp
-        cam_z = self._cam_dist * cp * cy
+        cam_dist = self._cam_dist
+        yaw = self._cam_yaw
+        pitch = self._cam_pitch
+        if (
+            self._use_ortho
+            and self._show_test_cube
+            and self._test_cam_locked
+            and not self._render_scene_models
+            and not self._render_scene_plane
+        ):
+            target = QtCore.QPointF(0.0, 0.0)
+            cam_dist = max(cam_dist, self._cube_size * 8.0)
+            yaw = 0.785398
+            pitch = -0.61548
+        cy = math.cos(yaw)
+        sy = math.sin(yaw)
+        cp = math.cos(pitch)
+        sp = math.sin(pitch)
+        cam_x = target.x() + cam_dist * cp * sy
+        cam_y = target.y() + cam_dist * sp
+        cam_z = cam_dist * cp * cy
         m = QtGui.QMatrix4x4()
         m.lookAt(
             QtGui.QVector3D(cam_x, cam_y, cam_z),
@@ -1200,6 +1510,13 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
 
     def paintGL(self) -> None:
         if not hasattr(self, "_gl"):
+            return
+        if self._render_paused:
+            self._gl.glClearColor(0.10, 0.12, 0.14, 1.0)
+            self._gl.glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+            return
+        if self._use_example_pipeline:
+            self._paint_example()
             return
         self._upload_scene_texture()
         self._upload_grid()
@@ -1245,15 +1562,27 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
                 "u_color",
                 QtGui.QVector4D(color.redF(), color.greenF(), color.blueF(), 0.55),
             )
+            depth_disabled = False
+            if self._show_test_cube and not self._render_scene_models and not self._render_scene_plane:
+                try:
+                    self._gl.glDisable(GL_DEPTH_TEST)
+                    depth_disabled = True
+                except Exception:
+                    depth_disabled = False
             if self._grid_vbo.bind():
                 if self._mesh_pos_loc >= 0:
                     self._mesh_program.enableAttributeArray(self._mesh_pos_loc)
                     self._mesh_program.setAttributeBuffer(self._mesh_pos_loc, GL_FLOAT, 0, 3, 0)
                 self._gl.glDrawArrays(GL_LINES, 0, self._grid_count)
                 self._grid_vbo.release()
+            if depth_disabled:
+                try:
+                    self._gl.glEnable(GL_DEPTH_TEST)
+                except Exception:
+                    pass
             self._mesh_program.release()
 
-        if self._mesh_program:
+        if self._mesh_program and self._render_scene_models:
             for name, mesh in self._meshes.items():
                 if mesh.count == 0:
                     continue
@@ -1277,7 +1606,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
                     self._gl.glDrawArrays(GL_TRIANGLES, 0, mesh.count)
                     mesh.vbo.release()
                 self._mesh_program.release()
-        if self._mesh_program and self._debug_mesh and (self._scene_content_blank or not self._scene_texture):
+        if self._mesh_program and self._debug_mesh and self._show_test_cube:
             if self._debug_mesh.vbo is None:
                 self._debug_mesh.upload()
             if self._debug_mesh.vbo is not None:
@@ -1298,6 +1627,39 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
                         self._mesh_program.setAttributeBuffer(self._mesh_pos_loc, GL_FLOAT, 0, 3, 0)
                     self._gl.glDrawArrays(GL_TRIANGLES, 0, self._debug_mesh.count)
                     self._debug_mesh.vbo.release()
+                self._mesh_program.release()
+        if self._mesh_program and self._debug_wire and self._show_test_cube:
+            if self._debug_wire.vbo is None:
+                self._debug_wire.upload()
+            if self._debug_wire.vbo is not None:
+                model = QtGui.QMatrix4x4()
+                model.translate(self._debug_mesh_center.x(), self._debug_mesh_center.y(), 0.0)
+                model.scale(self._debug_mesh_scale)
+                mvp = proj * view * model
+                self._mesh_program.bind()
+                self._mesh_program.setUniformValue("u_mvp", mvp)
+                color = self._debug_wire_color
+                self._mesh_program.setUniformValue(
+                    "u_color",
+                    QtGui.QVector4D(color.redF(), color.greenF(), color.blueF(), 1.0),
+                )
+                depth_disabled = False
+                try:
+                    self._gl.glDisable(GL_DEPTH_TEST)
+                    depth_disabled = True
+                except Exception:
+                    depth_disabled = False
+                if self._debug_wire.vbo.bind():
+                    if self._mesh_pos_loc >= 0:
+                        self._mesh_program.enableAttributeArray(self._mesh_pos_loc)
+                        self._mesh_program.setAttributeBuffer(self._mesh_pos_loc, GL_FLOAT, 0, 3, 0)
+                    self._gl.glDrawArrays(GL_LINES, 0, self._debug_wire.count)
+                    self._debug_wire.vbo.release()
+                if depth_disabled:
+                    try:
+                        self._gl.glEnable(GL_DEPTH_TEST)
+                    except Exception:
+                        pass
                 self._mesh_program.release()
         if self._vao is not None:
             try:
@@ -1351,6 +1713,8 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             lines.append("Shaders: unavailable")
         elif self._shader_error:
             lines.append("Shaders: error")
+        elif self._use_example_pipeline and self._example_program:
+            lines.append("Shaders: OK")
         elif self._quad_program and self._mesh_program:
             lines.append("Shaders: OK")
         else:
@@ -1359,12 +1723,31 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         lines.append(f"QOpenGLBuffer: {'OK' if QOpenGLBuffer is not None else 'missing'}")
         lines.append(f"VAO: {'OK' if self._vao is not None else 'none'}")
         lines.append(f"Mipmaps: {'on' if self._mipmaps_enabled else 'off'}")
-        if self._scene_texture is not None:
+        lines.append(f"Render paused: {'on' if self._render_paused else 'off'}")
+        if self._use_example_pipeline:
+            lines.append("Example pipeline: on")
+            shader_state = "error" if self._shader_error else ("OK" if self._example_program else "init")
+            lines.append(f"Example shaders: {shader_state}")
+            lines.append(f"Camera FOV: {self._example_fov:.1f}")
+        if not self._render_scene_plane:
+            lines.append("Scene tex: disabled")
+        elif self._scene_texture is not None:
             lines.append("Scene tex: ready")
         else:
             lines.append("Scene tex: none")
-        lines.append(f"Meshes: {len(self._meshes)}")
+        if not self._render_scene_models:
+            lines.append("Meshes: disabled")
+        else:
+            lines.append(f"Meshes: {len(self._meshes)}")
         lines.append(f"Model scale: {self._model_scale_multiplier:.2f}x")
+        if self._show_test_cube:
+            lines.append("Test cube: on (1x1)")
+        if self._debug_wire is not None and self._show_test_cube:
+            lines.append("Cube wire: on")
+        if self._use_example_pipeline:
+            lines.append("Projection: perspective")
+        else:
+            lines.append(f"Projection: {'ortho' if self._use_ortho else 'perspective'}")
         mesh_paths = []
         for meta in self._mesh_meta.values():
             path_val = meta.get("path")
@@ -1410,10 +1793,13 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         radius = size * 0.45
 
         axes = (
-            ("X", QtGui.QColor("#ef4444"), (1.0, 0.0, 0.0)),
-            ("Y", QtGui.QColor("#22c55e"), (0.0, 1.0, 0.0)),
-            ("Z", QtGui.QColor("#3b82f6"), (0.0, 0.0, 1.0)),
+            ("X", QtGui.QColor("#f87171"), (1.0, 0.0, 0.0)),
+            ("Y", QtGui.QColor("#4ade80"), (0.0, 1.0, 0.0)),
+            ("Z", QtGui.QColor("#38bdf8"), (0.0, 0.0, 1.0)),
         )
+        p.setPen(QtCore.Qt.NoPen)
+        p.setBrush(QtGui.QColor(15, 23, 42, 180))
+        p.drawEllipse(origin, radius + 6.0, radius + 6.0)
         projected = []
         max_len = 0.0
         for label, color, vec in axes:
@@ -1441,34 +1827,33 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         p.drawEllipse(origin, 3.2, 3.2)
 
     def _reset_camera(self) -> None:
-        bounds = self._mesh_bounds_world()
+        bounds = self._mesh_bounds_world() if self._render_scene_models else None
         if bounds is not None:
             min_x, min_y, min_z, max_x, max_y, max_z = bounds
             self._cam_target = QtCore.QPointF((min_x + max_x) * 0.5, (min_y + max_y) * 0.5)
-            extent = max(max_x - min_x, max_y - min_y, max_z - min_z, 1.0)
+            extent = max(max_x - min_x, max_y - min_y, max_z - min_z, self._cube_size)
         else:
-            rect = QtCore.QRectF(self._scene_src_rect)
-            if rect.isNull():
-                self._cam_target = QtCore.QPointF(0.0, 0.0)
-                extent = 1000.0
-            else:
-                self._cam_target = rect.center()
-                extent = max(rect.width(), rect.height(), 1.0)
-        if self._scene_content_blank:
             self._cam_target = QtCore.QPointF(0.0, 0.0)
-            extent = 1000.0
-        self._cam_yaw = 0.45
-        self._cam_pitch = -0.35
+            extent = self._cube_size
+        if self._render_scene_plane:
+            rect = QtCore.QRectF(self._scene_src_rect)
+            if not rect.isNull():
+                self._cam_target = rect.center()
+                extent = max(rect.width(), rect.height(), self._cube_size)
+        self._cam_yaw = 0.785398
+        self._cam_pitch = -0.61548
         half_extent = extent * 0.5
         fov_rad = math.radians(self._fov_deg)
         fit_dist = half_extent / max(1e-3, math.tan(fov_rad * 0.5))
-        self._cam_dist = max(1200.0, fit_dist * 4.0)
+        self._cam_dist = max(self._min_cam_dist, fit_dist * 2.0)
+        if self._show_test_cube and not self._render_scene_models and not self._render_scene_plane:
+            self._cam_dist = max(self._cam_dist, 10.0)
         self._cam_focal = max(800.0, self.height() * 0.5 / max(1e-3, math.tan(fov_rad * 0.5)))
-        self._debug_mesh_scale_base = max(12.0, min(60.0, extent * 0.02))
+        self._debug_mesh_scale_base = self._cube_size
         self._debug_mesh_scale = self._debug_mesh_scale_base * self._model_scale_multiplier
         self._debug_mesh_center = QtCore.QPointF(self._cam_target)
         self._grid_center = QtCore.QPointF(self._cam_target)
-        self._update_grid(extent)
+        self._update_grid(self._world_extent)
 
     def _debug_cube_vertices(self) -> List[float]:
         return [
@@ -1492,7 +1877,45 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             -0.5, -0.5, -0.5,  0.5, -0.5,  0.5, -0.5, -0.5,  0.5,
         ]
 
+    def _debug_cube_wire_vertices(self) -> List[float]:
+        return [
+            # bottom square
+            -0.5, -0.5, -0.5,  0.5, -0.5, -0.5,
+             0.5, -0.5, -0.5,  0.5, -0.5,  0.5,
+             0.5, -0.5,  0.5, -0.5, -0.5,  0.5,
+            -0.5, -0.5,  0.5, -0.5, -0.5, -0.5,
+            # top square
+            -0.5,  0.5, -0.5,  0.5,  0.5, -0.5,
+             0.5,  0.5, -0.5,  0.5,  0.5,  0.5,
+             0.5,  0.5,  0.5, -0.5,  0.5,  0.5,
+            -0.5,  0.5,  0.5, -0.5,  0.5, -0.5,
+            # vertical edges
+            -0.5, -0.5, -0.5, -0.5,  0.5, -0.5,
+             0.5, -0.5, -0.5,  0.5,  0.5, -0.5,
+             0.5, -0.5,  0.5,  0.5,  0.5,  0.5,
+            -0.5, -0.5,  0.5, -0.5,  0.5,  0.5,
+        ]
+
     def mousePressEvent(self, e):
+        if self._use_example_pipeline:
+            if e.button() == QtCore.Qt.LeftButton:
+                self._orbit_dragging = True
+                self._orbit_last_pos = e.pos()
+                self.setCursor(QtCore.Qt.ClosedHandCursor)
+                e.accept()
+                return
+            if e.button() == QtCore.Qt.MiddleButton:
+                self._pan_dragging = True
+                self._pan_last_pos = e.pos()
+                self.setCursor(QtCore.Qt.OpenHandCursor)
+                e.accept()
+                return
+            if e.button() == QtCore.Qt.RightButton:
+                self._dolly_dragging = True
+                self._dolly_press_pos = e.pos()
+                self.setCursor(QtCore.Qt.SizeVerCursor)
+                e.accept()
+                return
         if e.button() == QtCore.Qt.LeftButton:
             self._orbit_dragging = True
             self._orbit_last_pos = e.pos()
@@ -1515,6 +1938,46 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e):
+        if self._use_example_pipeline:
+            if self._orbit_dragging and self._orbit_last_pos is not None:
+                if not (e.buttons() & QtCore.Qt.LeftButton):
+                    self._orbit_dragging = False
+                    self._orbit_last_pos = None
+                    self.setCursor(QtCore.Qt.ArrowCursor)
+                    e.accept()
+                    return
+                delta = e.pos() - self._orbit_last_pos
+                self._orbit_last_pos = e.pos()
+                self._example_orbit(QtCore.QPointF(delta))
+                self.update()
+                e.accept()
+                return
+            if self._pan_dragging and self._pan_last_pos is not None:
+                if not (e.buttons() & QtCore.Qt.MiddleButton):
+                    self._pan_dragging = False
+                    self._pan_last_pos = None
+                    self.setCursor(QtCore.Qt.ArrowCursor)
+                    e.accept()
+                    return
+                delta = e.pos() - self._pan_last_pos
+                self._pan_last_pos = e.pos()
+                self._example_pan(QtCore.QPointF(delta))
+                self.update()
+                e.accept()
+                return
+            if self._dolly_dragging and self._dolly_press_pos is not None:
+                if not (e.buttons() & QtCore.Qt.RightButton):
+                    self._dolly_dragging = False
+                    self._dolly_press_pos = None
+                    self.setCursor(QtCore.Qt.ArrowCursor)
+                    e.accept()
+                    return
+                delta = e.pos() - self._dolly_press_pos
+                self._dolly_press_pos = e.pos()
+                self._example_zoom(-float(delta.y()) / 60.0)
+                self.update()
+                e.accept()
+                return
         if self._orbit_dragging and self._orbit_last_pos is not None:
             if not (e.buttons() & QtCore.Qt.LeftButton):
                 self._orbit_dragging = False
@@ -1570,6 +2033,19 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e):
+        if self._use_example_pipeline:
+            if e.button() == QtCore.Qt.LeftButton:
+                self._orbit_dragging = False
+                self._orbit_last_pos = None
+            if e.button() == QtCore.Qt.MiddleButton:
+                self._pan_dragging = False
+                self._pan_last_pos = None
+            if e.button() == QtCore.Qt.RightButton:
+                self._dolly_dragging = False
+                self._dolly_press_pos = None
+            self.setCursor(QtCore.Qt.ArrowCursor)
+            super().mouseReleaseEvent(e)
+            return
         if e.button() == QtCore.Qt.LeftButton:
             self._orbit_dragging = False
             self._orbit_last_pos = None
@@ -1582,3 +2058,13 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             self._dolly_start_dist = None
         self.setCursor(QtCore.Qt.ArrowCursor)
         super().mouseReleaseEvent(e)
+
+    def wheelEvent(self, e):
+        if self._use_example_pipeline:
+            delta = e.angleDelta().y() / 120.0
+            if delta:
+                self._example_zoom(delta)
+                self.update()
+            e.accept()
+            return
+        super().wheelEvent(e)
