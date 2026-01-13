@@ -2,12 +2,33 @@ from __future__ import annotations
 
 import base64
 import ctypes
+from array import array
 import json
 import math
 import struct
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
+
+try:
+    import numpy as np
+except Exception:
+    np = None
+
+try:
+    import moderngl
+except Exception:
+    moderngl = None
+
+try:
+    from pyrr import Matrix44
+except Exception:
+    Matrix44 = None
+
+try:
+    import openmesh
+except Exception:
+    openmesh = None
 
 try:
     from PySide6 import QtCore, QtGui, QtWidgets
@@ -110,6 +131,7 @@ GL_BLEND = 0x0BE2
 GL_SRC_ALPHA = 0x0302
 GL_ONE_MINUS_SRC_ALPHA = 0x0303
 GL_CULL_FACE = 0x0B44
+GL_LESS = 0x0201
 GL_COLOR_BUFFER_BIT = 0x00004000
 GL_DEPTH_BUFFER_BIT = 0x00000100
 GL_DEPTH_TEST = 0x0B71
@@ -472,10 +494,154 @@ def _load_obj_model(path: Path) -> ModelData:
 register_model_loader([".gltf", ".glb"], _load_gltf_model)
 register_model_loader([".obj"], _load_obj_model)
 
+_HAS_MGL = moderngl is not None and np is not None and Matrix44 is not None
+
+
+def _mgl_grid(size: float, steps: int) -> "np.ndarray":
+    if np is None:
+        raise RuntimeError("numpy unavailable")
+    u = np.repeat(np.linspace(-size, size, steps), 2)
+    v = np.tile([-size, size], steps)
+    w = np.zeros(steps * 2)
+    grid = np.concatenate([np.dstack([u, v, w]), np.dstack([v, u, w])])
+    lower_grid = 0.135
+    rotation = np.array(
+        [
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.0],
+            [0.0, lower_grid, 0.0],
+        ],
+        dtype="f4",
+    )
+    return np.dot(grid, rotation)
+
+
+class _ArcBall:
+    def __init__(self, width: float, height: float):
+        if np is None:
+            raise RuntimeError("numpy unavailable")
+        self.StVec = np.zeros(3, "f4")
+        self.EnVec = np.zeros(3, "f4")
+        self.AdjustWidth = 0.0
+        self.AdjustHeight = 0.0
+        self.Epsilon = 1.0e-5
+        self.setBounds(width, height)
+
+    def setBounds(self, width: float, height: float) -> None:
+        width = max(2.0, float(width))
+        height = max(2.0, float(height))
+        self.AdjustWidth = 1.0 / ((width - 1.0) * 0.5)
+        self.AdjustHeight = 1.0 / ((height - 1.0) * 0.5)
+
+    def click(self, point: "np.ndarray") -> None:
+        self._mapToSphere(point, self.StVec)
+
+    def drag(self, point: "np.ndarray") -> "np.ndarray":
+        new_rot = np.zeros((4,), "f4")
+        self._mapToSphere(point, self.EnVec)
+        perp = np.cross(self.StVec, self.EnVec)
+        if np.linalg.norm(perp) > self.Epsilon:
+            new_rot[:3] = perp[:3]
+            new_rot[3] = np.dot(self.StVec, self.EnVec)
+        return new_rot
+
+    def _mapToSphere(self, point: "np.ndarray", new_vec: "np.ndarray") -> None:
+        temp = point.copy()
+        temp[0] = (temp[0] * self.AdjustWidth) - 1.0
+        temp[1] = 1.0 - (temp[1] * self.AdjustHeight)
+        length2 = np.dot(temp, temp)
+        if length2 > 1.0:
+            norm = 1.0 / np.sqrt(length2)
+            new_vec[0] = temp[0] * norm
+            new_vec[1] = temp[1] * norm
+            new_vec[2] = 0.0
+        else:
+            new_vec[0] = temp[0]
+            new_vec[1] = temp[1]
+            new_vec[2] = np.sqrt(1.0 - length2)
+
+
+class _ArcBallUtil(_ArcBall):
+    def __init__(self, width: float, height: float):
+        if np is None:
+            raise RuntimeError("numpy unavailable")
+        self.Transform = np.identity(4, "f4")
+        self.LastRot = np.identity(3, "f4")
+        self.ThisRot = np.identity(3, "f4")
+        self.isDragging = False
+        super().__init__(width, height)
+
+    def onDrag(self, cursor_x: float, cursor_y: float) -> None:
+        if not self.isDragging:
+            return
+        mouse_pt = np.array([cursor_x, cursor_y], "f4")
+        quat = self.drag(mouse_pt)
+        quat[0] *= 0.5
+        self.ThisRot = self._quat_to_mat3(quat)
+        self.ThisRot = np.matmul(self.LastRot, self.ThisRot)
+        self.Transform = self._set_rotation(self.Transform, self.ThisRot)
+
+    def resetRotation(self) -> None:
+        self.isDragging = False
+        self.LastRot = np.identity(3, "f4")
+        self.ThisRot = np.identity(3, "f4")
+        self.Transform = self._set_rotation(self.Transform, self.ThisRot)
+
+    def onClickLeftUp(self) -> None:
+        self.isDragging = False
+        self.LastRot = self.ThisRot.copy()
+
+    def onClickLeftDown(self, cursor_x: float, cursor_y: float) -> None:
+        self.LastRot = self.ThisRot.copy()
+        self.isDragging = True
+        mouse_pt = np.array([cursor_x, cursor_y], "f4")
+        self.click(mouse_pt)
+
+    @staticmethod
+    def _set_rotation(obj: "np.ndarray", m3x3: "np.ndarray") -> "np.ndarray":
+        scale = np.linalg.norm(obj[:3, :3], ord="fro") / np.sqrt(3)
+        obj[0:3, 0:3] = m3x3 * scale
+        return obj
+
+    def _quat_to_mat3(self, q: "np.ndarray") -> "np.ndarray":
+        if np.sum(np.dot(q, q)) < self.Epsilon:
+            return np.identity(3, "f4")
+        x, y, z, w = q
+        xx = x * x
+        yy = y * y
+        zz = z * z
+        xy = x * y
+        xz = x * z
+        yz = y * z
+        wx = w * x
+        wy = w * y
+        wz = w * z
+        return np.array(
+            [
+                [1.0 - 2.0 * (yy + zz), 2.0 * (xy - wz), 2.0 * (xz + wy)],
+                [2.0 * (xy + wz), 1.0 - 2.0 * (xx + zz), 2.0 * (yz - wx)],
+                [2.0 * (xz - wy), 2.0 * (yz + wx), 1.0 - 2.0 * (xx + yy)],
+            ],
+            dtype="f4",
+        ).T
+
 
 class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWidget):
     def __init__(self, scene, parent=None):
         super().__init__(parent)
+        if QOpenGLWidget is not None:
+            try:
+                fmt = QtGui.QSurfaceFormat()
+                fmt.setDepthBufferSize(24)
+                fmt.setStencilBufferSize(8)
+                self.setFormat(fmt)
+            except Exception:
+                pass
+            try:
+                if hasattr(self, "setUpdateBehavior") and hasattr(QOpenGLWidget, "NoPartialUpdate"):
+                    self.setUpdateBehavior(QOpenGLWidget.NoPartialUpdate)
+            except Exception:
+                pass
         self._scene = scene
         self._scene_texture = None
         self._scene_texture_dirty = False
@@ -522,7 +688,8 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._show_scene_plane = False
         self._use_ortho = True
         self._test_cam_locked = False
-        self._use_example_pipeline = True
+        self._use_moderngl = True
+        self._use_example_pipeline = False
         self._model_load_pending = False
         self._render_paused = False
         self._drag_divisor = 13.0
@@ -541,6 +708,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._example_program = None
         self._example_vbo = None
         self._example_ibo = None
+        self._example_vao = None
         self._example_index_count = 0
         self._example_draw_count = 0
         self._example_pending_vertices: Optional[List[float]] = None
@@ -549,6 +717,8 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._example_model_base_scale = 1.0
         self._example_model_scale = 1.0
         self._example_model_path = ""
+        self._example_model_extent = 1.0
+        self._example_pending_count = 0
         self._example_proj = QtGui.QMatrix4x4()
         self._example_transform = QtGui.QMatrix4x4()
         self._example_cam_pos = QtGui.QVector3D(-30.0, 30.0, 40.0)
@@ -562,6 +732,42 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._example_rotate_speed = 0.3
         self._example_zoom_step = 2.0
         self._example_clear_color = QtGui.QColor("#111827")
+        self._example_grid_vbo = None
+        self._example_grid_count = 0
+        self._example_grid_extent = 12.0
+
+        self._mgl_ctx = None
+        self._mgl_prog = None
+        self._mgl_grid_prog = None
+        self._mgl_mesh = None
+        self._mgl_vao = None
+        self._mgl_grid_vao = None
+        self._mgl_grid_vbo = None
+        self._mgl_mesh_vbos = []
+        self._mgl_index_buffer = None
+        self._mgl_mesh_path = ""
+        self._mgl_error = ""
+        self._mgl_wireframe = False
+        self._mgl_cull_enabled = False
+        self._mgl_bg_color = (0.1, 0.1, 0.1, 1.0)
+        self._mgl_mesh_color = (0.85, 0.88, 0.95, 1.0)
+        self._mgl_grid_alpha = 0.35
+        self._mgl_grid_size = 20.0
+        self._mgl_grid_cells = 50
+        self._mgl_fov = 60.0
+        self._mgl_camera_zoom = 2.0
+        self._mgl_center = None
+        self._mgl_scale = 1.0
+        self._mgl_scale_multiplier = 1.0
+        self._mgl_arcball = None
+        self._mgl_grid_vertex_count = 0
+        self._mgl_mesh_vertex_count = 0
+        self._mgl_prev_x = 0
+        self._mgl_prev_y = 0
+
+        if self._use_moderngl and not _HAS_MGL:
+            self._use_moderngl = False
+            self._use_example_pipeline = True
 
         self._orbit_dragging = False
         self._pan_dragging = False
@@ -640,16 +846,23 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             self._frame_btn = QtWidgets.QPushButton("Frame")
             self._frame_btn.clicked.connect(self._on_frame_clicked)
             layout.addWidget(self._frame_btn, 0)
-            layout.addWidget(QtWidgets.QLabel("Example Cube"), 0)
+            layout.addWidget(QtWidgets.QLabel("Model"), 0)
             self._example_model_btn = QtWidgets.QPushButton("Model...")
-            self._example_model_btn.clicked.connect(self._on_example_pick_model)
+            if self._use_moderngl:
+                self._example_model_btn.clicked.connect(self._on_mgl_pick_model)
+            else:
+                self._example_model_btn.clicked.connect(self._on_example_pick_model)
             layout.addWidget(self._example_model_btn, 0)
             self._example_scale_label = QtWidgets.QLabel("Scale 1.00x")
             self._example_scale_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
             self._example_scale_slider.setRange(1, 2000)
-            self._example_scale_slider.setValue(int(self._example_model_scale * 100))
+            scale_val = self._mgl_scale_multiplier if self._use_moderngl else self._example_model_scale
+            self._example_scale_slider.setValue(int(scale_val * 100))
             self._example_scale_slider.setFixedWidth(160)
-            self._example_scale_slider.valueChanged.connect(self._on_example_scale_changed)
+            if self._use_moderngl:
+                self._example_scale_slider.valueChanged.connect(self._on_mgl_scale_changed)
+            else:
+                self._example_scale_slider.valueChanged.connect(self._on_example_scale_changed)
             layout.addWidget(self._example_scale_label, 0)
             layout.addWidget(self._example_scale_slider, 0)
             layout.addStretch(1)
@@ -699,6 +912,14 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self.update()
 
     def _on_frame_clicked(self) -> None:
+        if self._use_moderngl:
+            self._mgl_frame_camera()
+            self.update()
+            return
+        if self._use_example_pipeline:
+            self._frame_example_camera()
+            self.update()
+            return
         self._reset_camera()
         self.update()
 
@@ -726,6 +947,39 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         if getattr(self, "_example_scale_label", None) is not None:
             self._example_scale_label.setText(f"Scale {scale:.2f}x")
         self._update_example_transform()
+        self.update()
+        self.update()
+
+    def _on_mgl_pick_model(self) -> None:
+        if not self._use_moderngl:
+            return
+        if not _HAS_MGL:
+            self._mgl_error = "ModernGL dependencies unavailable"
+            self.update()
+            return
+        base = Path(__file__).resolve().parents[1] / "3dmodels"
+        start_dir = str(base) if base.exists() else str(Path.home())
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Open Model",
+            start_dir,
+            "Mesh files (*.obj *.stl *.ply *.off *.om)",
+        )
+        if not path:
+            return
+        self._mgl_load_mesh(Path(path))
+        self.update()
+
+    def _on_mgl_scale_changed(self, value: int) -> None:
+        if not self._use_moderngl:
+            return
+        try:
+            scale = max(0.01, float(value) / 100.0)
+        except Exception:
+            scale = 1.0
+        self._mgl_scale_multiplier = scale
+        if getattr(self, "_example_scale_label", None) is not None:
+            self._example_scale_label.setText(f"Scale {scale:.2f}x")
         self.update()
 
     def _default_models_dir(self) -> Optional[Path]:
@@ -973,8 +1227,46 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
                 vertices.extend([x, y, z, color[0], color[1], color[2], color[3]])
         return vertices, []
 
+    def _example_grid_data(self, extent: float = 12.0, step: float = 1.0) -> List[float]:
+        color = (0.36, 0.42, 0.52, 0.65)
+        step = max(0.1, float(step))
+        count = max(1, int(extent / step))
+        size = count * step
+        verts: List[float] = []
+        for i in range(-count, count + 1):
+            x = i * step
+            verts.extend([x, 0.0, -size, color[0], color[1], color[2], color[3]])
+            verts.extend([x, 0.0,  size, color[0], color[1], color[2], color[3]])
+            z = i * step
+            verts.extend([-size, 0.0, z, color[0], color[1], color[2], color[3]])
+            verts.extend([ size, 0.0, z, color[0], color[1], color[2], color[3]])
+        return verts
+
+    def _upload_example_grid(self, vertices: List[float]) -> bool:
+        if QOpenGLBuffer is None:
+            return False
+        if not vertices:
+            return False
+        if self._example_grid_vbo is None:
+            self._example_grid_vbo = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
+            self._example_grid_vbo.create()
+        if not self._example_grid_vbo.bind():
+            return False
+        try:
+            data = self._float_bytes(vertices)
+        except Exception:
+            self._example_grid_vbo.release()
+            return False
+        self._example_grid_vbo.allocate(data, data.size())
+        self._example_grid_vbo.release()
+        self._example_grid_count = len(vertices) // 7
+        return True
+
     def _build_example_program(
-        self, vertex_src: str, fragment_src: str
+        self,
+        vertex_src: str,
+        fragment_src: str,
+        bind_locations: Optional[Dict[str, int]] = None,
     ) -> Optional[QtGui.QOpenGLShaderProgram]:
         if QOpenGLShaderProgram is None or QOpenGLShader is None:
             return None
@@ -985,10 +1277,45 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         if not program.addShaderFromSourceCode(QOpenGLShader.Fragment, fragment_src):
             self._shader_error = program.log().strip() or "Fragment shader failed"
             return None
+        if bind_locations:
+            for name, loc in bind_locations.items():
+                try:
+                    program.bindAttributeLocation(name, int(loc))
+                except Exception:
+                    pass
         if not program.link():
             self._shader_error = program.log().strip() or "Shader link failed"
             return None
         return program
+
+    def _float_bytes(self, values: List[float]) -> QtCore.QByteArray:
+        buf = array("f", values).tobytes()
+        return QtCore.QByteArray(buf)
+
+    def _upload_example_vertices(self, vertices: List[float]) -> bool:
+        if QOpenGLBuffer is None:
+            self._shader_error = "OpenGL buffers unavailable"
+            return False
+        if not vertices:
+            self._shader_error = "No vertices to upload"
+            return False
+        if self._example_vbo is None:
+            self._example_vbo = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
+            self._example_vbo.create()
+        if not self._example_vbo.bind():
+            self._shader_error = "Vertex buffer bind failed"
+            return False
+        try:
+            data = self._float_bytes(vertices)
+        except Exception:
+            self._shader_error = "Vertex buffer build failed"
+            self._example_vbo.release()
+            return False
+        self._example_vbo.allocate(data, data.size())
+        self._example_vbo.release()
+        self._example_draw_count = len(vertices) // 7
+        self._example_index_count = 0
+        return True
 
     def _init_example_pipeline(self) -> None:
         if self._gl is None:
@@ -1003,6 +1330,12 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         except Exception:
             self._shader_error = "OpenGL state init failed"
             return
+        if QOpenGLVertexArrayObject is not None:
+            self._example_vao = QOpenGLVertexArrayObject()
+            try:
+                self._example_vao.create()
+            except Exception:
+                self._example_vao = None
 
         self._shader_error = ""
         vertex_330 = """
@@ -1044,15 +1377,27 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             gl_FragColor = v_color;
         }
         """
-        program = self._build_example_program(vertex_330, fragment_330)
+        bind_locations = {"a_position": 0, "a_color": 1}
+        program = self._build_example_program(vertex_330, fragment_330, bind_locations)
         if program is None:
-            program = self._build_example_program(vertex_legacy, fragment_legacy)
+            program = self._build_example_program(vertex_legacy, fragment_legacy, bind_locations)
         if program is None:
             if not self._shader_error:
                 self._shader_error = "Shader compile failed"
             return
         self._shader_error = ""
         self._example_program = program
+
+        vertices, _ = self._example_cube_data()
+        if not self._upload_example_vertices(vertices):
+            return
+        grid_vertices = self._example_grid_data(self._example_grid_extent, 1.0)
+        self._upload_example_grid(grid_vertices)
+        self._example_model_center = (0.0, 0.0, 0.0)
+        self._example_model_base_scale = 1.0
+        self._example_model_scale = 1.0
+        self._update_example_transform()
+        self._update_example_projection()
 
     def _queue_example_model(self, path: Path) -> None:
         try:
@@ -1070,6 +1415,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._example_pending_vertices = vertices
         self._example_pending_bounds = model_data.bounds
         self._example_model_path = str(path)
+        self._example_pending_count = len(vertices) // 7
         self.update()
 
     def _apply_example_bounds(self, bounds: Tuple[float, float, float, float, float, float]) -> None:
@@ -1080,7 +1426,18 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         extent = max(max_x - min_x, max_y - min_y, max_z - min_z, 1.0)
         self._example_model_center = (cx, cy, cz)
         self._example_model_base_scale = 18.0 / extent
+        self._example_model_extent = extent
+        scaled_extent = self._example_scaled_extent()
+        self._example_grid_extent = max(6.0, scaled_extent * 1.2)
+        step = max(0.5, self._example_grid_extent / 20.0)
+        self._upload_example_grid(self._example_grid_data(self._example_grid_extent, step))
         self._update_example_transform()
+        self._update_example_projection()
+
+    def _example_scaled_extent(self) -> float:
+        extent = max(1.0, float(self._example_model_extent))
+        scale = max(1e-4, float(self._example_model_base_scale * self._example_model_scale))
+        return max(0.1, extent * scale)
 
     def _update_example_transform(self) -> None:
         if not self._use_example_pipeline:
@@ -1090,51 +1447,299 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._example_transform.setToIdentity()
         self._example_transform.scale(scale, scale, scale)
         self._example_transform.translate(-cx, -cy, -cz)
+        self._update_example_projection()
+
+    def _frame_example_camera(self) -> None:
+        center = QtGui.QVector3D(*self._example_model_center)
+        extent = self._example_scaled_extent()
+        direction = QtGui.QVector3D(1.0, 1.0, 1.0)
+        direction.normalize()
+        distance = max(12.0, extent * 2.5)
+        self._example_cam_look = center
+        self._example_cam_pos = center + direction * distance
+        self._update_example_projection()
 
     def _apply_example_pending(self) -> None:
         if self._example_pending_vertices is None:
             return
-        if self._example_vbo is None:
-            self._example_pending_vertices = None
-            self._example_pending_bounds = None
-            return
         vertices = self._example_pending_vertices
-        if self._example_vbo.bind():
-            data = QtCore.QByteArray(struct.pack(f"{len(vertices)}f", *vertices))
-            self._example_vbo.allocate(data, data.size())
-            self._example_vbo.release()
-        self._example_draw_count = len(vertices) // 7
-        self._example_index_count = 0
+        if not self._upload_example_vertices(vertices):
+            return
         bounds = self._example_pending_bounds
         if bounds is not None:
             self._apply_example_bounds(bounds)
+            self._frame_example_camera()
         self._example_pending_vertices = None
         self._example_pending_bounds = None
-
-        vertices, indices = self._example_cube_data()
-        if QOpenGLBuffer is None:
-            self._shader_error = "OpenGL buffers unavailable"
-            return
-        self._example_vbo = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
-        self._example_ibo = None
-        self._example_vbo.create()
-        if self._example_vbo.bind():
-            data = QtCore.QByteArray(struct.pack(f"{len(vertices)}f", *vertices))
-            self._example_vbo.allocate(data, data.size())
-            self._example_vbo.release()
-        self._example_index_count = 0
-        self._example_draw_count = len(vertices) // 7
-        self._example_model_center = (0.0, 0.0, 0.0)
-        self._example_model_base_scale = 1.0
-        self._example_model_scale = 1.0
-        self._update_example_transform()
-        self._update_example_projection()
+        self._example_pending_count = 0
 
     def _update_example_projection(self) -> None:
         w = max(1, self.width())
         h = max(1, self.height())
+        distance = (self._example_cam_pos - self._example_cam_look).length()
+        extent = self._example_scaled_extent()
+        near = max(0.02, distance - extent * 4.0)
+        far = max(distance + extent * 4.0, near + extent * 8.0)
+        self._example_near = near
+        self._example_far = far
         self._example_proj.setToIdentity()
         self._example_proj.perspective(self._example_fov, w / float(h), self._example_near, self._example_far)
+
+    @staticmethod
+    def _mgl_camera_distance(fov: float) -> float:
+        return 1.0 / max(1e-6, math.tan(math.radians(float(fov) / 2.0)))
+
+    def _init_mgl_renderer(self) -> None:
+        if not _HAS_MGL:
+            self._mgl_error = "ModernGL dependencies unavailable"
+            return
+        try:
+            self._mgl_ctx = moderngl.create_context()
+            self._mgl_ctx.enable(moderngl.BLEND | moderngl.DEPTH_TEST)
+            self._mgl_ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
+            mesh_vertex = """
+                #version 330
+                uniform mat4 Mvp;
+                in vec3 in_position;
+                in vec3 in_normal;
+                out vec3 v_norm;
+                out vec3 v_vert;
+                void main() {
+                    v_norm = in_normal;
+                    v_vert = in_position;
+                    gl_Position = Mvp * vec4(in_position, 1.0);
+                }
+            """
+            mesh_fragment = """
+                #version 330
+                uniform vec4 Color;
+                uniform vec3 Light;
+                in vec3 v_norm;
+                in vec3 v_vert;
+                out vec4 f_color;
+                void main() {
+                    float lum = -dot(normalize(v_norm), normalize(v_vert + Light));
+                    lum = acos(lum) / 3.14159265;
+                    lum = clamp(lum, 0.0, 1.0);
+                    lum = lum * lum;
+                    lum = smoothstep(0.0, 1.0, lum);
+                    lum *= smoothstep(0.0, 80.0, v_vert.z) * 0.3 + 0.7;
+                    lum = lum * 0.8 + 0.2;
+                    f_color = vec4(Color.rgb * lum, Color.a);
+                }
+            """
+            grid_vertex = """
+                #version 330
+                uniform mat4 Mvp;
+                in vec3 in_position;
+                void main() {
+                    gl_Position = Mvp * vec4(in_position, 1.0);
+                }
+            """
+            grid_fragment = """
+                #version 330
+                uniform vec4 Color;
+                out vec4 f_color;
+                void main() {
+                    f_color = Color;
+                }
+            """
+            self._mgl_prog = self._mgl_ctx.program(vertex_shader=mesh_vertex, fragment_shader=mesh_fragment)
+            self._mgl_grid_prog = self._mgl_ctx.program(vertex_shader=grid_vertex, fragment_shader=grid_fragment)
+            self._mgl_prog["Light"].value = (1.0, 1.0, 1.0)
+            self._mgl_prog["Color"].value = self._mgl_mesh_color
+            self._mgl_grid_prog["Color"].value = (1.0, 1.0, 1.0, self._mgl_grid_alpha)
+            self._mgl_arcball = _ArcBallUtil(self.width(), self.height())
+            self._mgl_center = np.zeros(3, dtype="f4")
+            self._mgl_camera_zoom = self._mgl_camera_distance(self._mgl_fov)
+            self._mgl_update_grid()
+            self._mgl_error = ""
+        except Exception as exc:
+            self._mgl_error = str(exc)
+
+    def _mgl_update_grid(self) -> None:
+        if not _HAS_MGL or self._mgl_ctx is None:
+            return
+        grid = _mgl_grid(self._mgl_grid_size, int(self._mgl_grid_cells))
+        grid = grid.astype("f4").reshape(-1, 3)
+        self._mgl_grid_vertex_count = int(grid.shape[0])
+        self._mgl_grid_vbo = self._mgl_ctx.buffer(grid.tobytes())
+        if self._mgl_grid_prog is not None:
+            self._mgl_grid_vao = self._mgl_ctx.simple_vertex_array(self._mgl_grid_prog, self._mgl_grid_vbo, "in_position")
+
+    def _mgl_set_mesh(self, mesh) -> None:
+        if not _HAS_MGL or self._mgl_ctx is None or mesh is None:
+            return
+        mesh.update_normals()
+        points = np.array(mesh.points(), dtype="f4")
+        normals = np.array(mesh.vertex_normals(), dtype="f4")
+        indices = np.array(mesh.face_vertex_indices(), dtype="u4").ravel()
+        index_buffer = self._mgl_ctx.buffer(indices.tobytes())
+        pos_buf = self._mgl_ctx.buffer(points.tobytes())
+        norm_buf = self._mgl_ctx.buffer(normals.tobytes())
+        vao_content = [
+            (pos_buf, "3f", "in_position"),
+            (norm_buf, "3f", "in_normal"),
+        ]
+        self._mgl_vao = self._mgl_ctx.vertex_array(self._mgl_prog, vao_content, index_buffer, 4)
+        self._mgl_mesh_vbos = [pos_buf, norm_buf]
+        self._mgl_index_buffer = index_buffer
+        self._mgl_mesh_vertex_count = int(indices.size)
+        self._mgl_mesh = mesh
+        self._mgl_init_arcball(points)
+
+    def _mgl_set_raw_mesh(self, points: "np.ndarray", normals: "np.ndarray") -> None:
+        if not _HAS_MGL or self._mgl_ctx is None:
+            return
+        if points.size == 0:
+            return
+        points = points.astype("f4").reshape(-1, 3)
+        normals = normals.astype("f4").reshape(-1, 3)
+        indices = np.arange(points.shape[0], dtype="u4")
+        index_buffer = self._mgl_ctx.buffer(indices.tobytes())
+        pos_buf = self._mgl_ctx.buffer(points.tobytes())
+        norm_buf = self._mgl_ctx.buffer(normals.tobytes())
+        vao_content = [
+            (pos_buf, "3f", "in_position"),
+            (norm_buf, "3f", "in_normal"),
+        ]
+        self._mgl_vao = self._mgl_ctx.vertex_array(self._mgl_prog, vao_content, index_buffer, 4)
+        self._mgl_mesh_vbos = [pos_buf, norm_buf]
+        self._mgl_index_buffer = index_buffer
+        self._mgl_mesh_vertex_count = int(indices.size)
+        self._mgl_mesh = None
+        self._mgl_init_arcball(points)
+
+    def _mgl_init_arcball(self, points: "np.ndarray") -> None:
+        if self._mgl_arcball is None:
+            self._mgl_arcball = _ArcBallUtil(self.width(), self.height())
+        bbox_min = np.min(points, axis=0)
+        bbox_max = np.max(points, axis=0)
+        self._mgl_center = 0.5 * (bbox_max + bbox_min)
+        self._mgl_scale = float(np.linalg.norm(bbox_max - self._mgl_center))
+        scale = max(self._mgl_scale, 1e-6)
+        self._mgl_arcball.Transform = np.identity(4, "f4")
+        self._mgl_arcball.Transform[:3, :3] /= scale
+        self._mgl_arcball.Transform[3, :3] = -self._mgl_center / scale
+        self._mgl_camera_zoom = self._mgl_camera_distance(self._mgl_fov)
+
+    def _mgl_frame_camera(self) -> None:
+        self._mgl_camera_zoom = self._mgl_camera_distance(self._mgl_fov)
+
+    def _sync_mgl_gizmo(self, transform: "Matrix44") -> None:
+        if np is None:
+            return
+        mat = np.array(transform, dtype="f4")
+        if mat.shape[0] < 3 or mat.shape[1] < 3:
+            return
+        rot = mat[:3, :3]
+        scale = np.linalg.norm(rot, axis=0)
+        denom = float(scale.mean()) if scale.size else 1.0
+        if denom > 1e-6:
+            rot = rot / denom
+        direction = rot @ np.array([0.0, 0.0, 1.0], dtype="f4")
+        dist = float(np.linalg.norm(direction))
+        if dist <= 1e-6:
+            return
+        self._cam_yaw = math.atan2(float(direction[0]), float(direction[2]))
+        pitch = float(direction[1]) / dist
+        self._cam_pitch = math.asin(max(-1.0, min(1.0, pitch)))
+
+    def _mgl_load_mesh(self, path: Path) -> None:
+        if self._mgl_ctx is None:
+            self._mgl_error = "ModernGL context not ready"
+            return
+        mesh = None
+        if openmesh is not None:
+            try:
+                mesh = openmesh.read_trimesh(str(path))
+            except Exception:
+                mesh = None
+        points = None
+        normals = None
+        if mesh is None:
+            model_data = load_model(path)
+            if model_data is None or not model_data.vertices:
+                self._mgl_error = "Mesh load failed"
+                return
+            points = np.array(model_data.vertices, dtype="f4").reshape(-1, 3)
+            normals = np.zeros_like(points)
+            for i in range(0, points.shape[0], 3):
+                a, b, c = points[i:i + 3]
+                n = np.cross(b - a, c - a)
+                norm = np.linalg.norm(n)
+                if norm > 1e-6:
+                    n = n / norm
+                normals[i:i + 3] = n
+        try:
+            self.makeCurrent()
+            if mesh is not None:
+                self._mgl_set_mesh(mesh)
+            else:
+                self._mgl_set_raw_mesh(points, normals)
+            self._mgl_mesh_path = str(path)
+            self._mgl_error = ""
+        except Exception as exc:
+            self._mgl_error = f"Mesh upload failed: {exc}"
+        finally:
+            try:
+                self.doneCurrent()
+            except Exception:
+                pass
+
+    def _paint_mgl(self) -> None:
+        if not _HAS_MGL or self._mgl_ctx is None:
+            try:
+                self._gl.glClearColor(0.10, 0.12, 0.14, 1.0)
+                self._gl.glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+            except Exception:
+                pass
+            return
+        try:
+            target = self._mgl_ctx.detect_framebuffer()
+            target.use()
+        except Exception as exc:
+            self._mgl_error = f"ModernGL framebuffer error: {exc}"
+            return
+        self._mgl_ctx.viewport = (0, 0, max(2, self.width()), max(2, self.height()))
+        target.clear(*self._mgl_bg_color, depth=1.0)
+        flags = moderngl.BLEND | moderngl.DEPTH_TEST
+        if self._mgl_cull_enabled:
+            flags |= moderngl.CULL_FACE
+        self._mgl_ctx.enable(flags)
+        self._mgl_ctx.wireframe = bool(self._mgl_wireframe)
+        if self._mgl_prog is None or self._mgl_grid_prog is None:
+            return
+        aspect = self.width() / max(1.0, self.height())
+        proj = Matrix44.perspective_projection(self._mgl_fov, aspect, 0.1, 1000.0)
+        lookat = Matrix44.look_at(
+            (0.0, 0.0, float(self._mgl_camera_zoom)),
+            (0.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+        )
+        if self._mgl_arcball is not None and self._mgl_center is not None:
+            self._mgl_arcball.Transform[3, :3] = -self._mgl_arcball.Transform[:3, :3].T @ self._mgl_center
+            transform = Matrix44(self._mgl_arcball.Transform, dtype="f4")
+        else:
+            transform = Matrix44.identity(dtype="f4")
+        if np is not None:
+            self._sync_mgl_gizmo(transform)
+        if self._mgl_scale_multiplier != 1.0:
+            scale_mat = Matrix44.from_scale(
+                [self._mgl_scale_multiplier] * 3,
+                dtype="f4",
+            )
+            mvp = proj * lookat * transform * scale_mat
+        else:
+            mvp = proj * lookat * transform
+        self._mgl_prog["Mvp"].write(mvp.astype("f4"))
+        self._mgl_prog["Color"].value = self._mgl_mesh_color
+        if self._mgl_vao is not None:
+            self._mgl_vao.render()
+        if self._mgl_grid_vao is not None:
+            self._mgl_grid_prog["Mvp"].write(mvp.astype("f4"))
+            self._mgl_grid_prog["Color"].value = (1.0, 1.0, 1.0, self._mgl_grid_alpha)
+            self._mgl_grid_vao.render(moderngl.LINES)
 
     def _update_example_camera_basis(self) -> None:
         direction = self._example_cam_pos - self._example_cam_look
@@ -1201,8 +1806,23 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
     def _example_zoom(self, delta_steps: float) -> None:
         if abs(delta_steps) < 1e-6:
             return
-        self._example_fov -= delta_steps * self._example_zoom_step
-        self._example_fov = max(10.0, min(120.0, self._example_fov))
+        direction = self._example_cam_pos - self._example_cam_look
+        dist = direction.length()
+        if dist < 1e-6:
+            return
+        direction.normalize()
+        base = 1.0 + 0.12 * self._example_zoom_step
+        if base <= 1.0:
+            base = 1.05
+        zoom = math.pow(base, abs(delta_steps))
+        if delta_steps > 0.0:
+            dist = dist / zoom
+        else:
+            dist = dist * zoom
+        min_dist = 0.1
+        max_dist = max(min_dist * 2.0, self._example_far * 0.95)
+        dist = max(min_dist, min(max_dist, dist))
+        self._example_cam_pos = self._example_cam_look + direction * dist
         self._update_example_projection()
 
     def _paint_example(self) -> None:
@@ -1212,6 +1832,15 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             self._gl.glClearColor(0.12, 0.12, 0.12, 1.0)
             self._gl.glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
             return
+        try:
+            self._gl.glEnable(GL_DEPTH_TEST)
+            self._gl.glDepthFunc(GL_LESS)
+            self._gl.glDisable(GL_CULL_FACE)
+        except Exception:
+            pass
+        if self._example_draw_count == 0 and self._example_pending_vertices is None:
+            vertices, _ = self._example_cube_data()
+            self._upload_example_vertices(vertices)
         self._apply_example_pending()
         fov = max(10.0, min(120.0, float(self._example_fov)))
         if abs(fov - self._example_fov) > 0.01:
@@ -1221,34 +1850,44 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._gl.glClearColor(clear.redF(), clear.greenF(), clear.blueF(), 1.0)
         self._gl.glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         view = self._example_view_matrix()
+        if self._example_vao is not None:
+            try:
+                self._example_vao.bind()
+            except Exception:
+                pass
         self._example_program.bind()
         self._example_program.setUniformValue("u_proj", self._example_proj)
         self._example_program.setUniformValue("u_view", view)
-        self._example_program.setUniformValue("u_trans", self._example_transform)
 
         stride = 7 * 4
-        if self._example_vbo and self._example_vbo.bind():
-            pos_loc = self._example_program.attributeLocation("a_position")
-            color_loc = self._example_program.attributeLocation("a_color")
-            if pos_loc >= 0:
-                self._example_program.enableAttributeArray(pos_loc)
-                self._example_program.setAttributeBuffer(pos_loc, GL_FLOAT, 0, 3, stride)
-            if color_loc >= 0:
-                self._example_program.enableAttributeArray(color_loc)
-                self._example_program.setAttributeBuffer(color_loc, GL_FLOAT, 12, 4, stride)
-            if self._example_index_count > 0 and self._example_ibo and self._example_ibo.bind():
-                indices_ptr = ctypes.c_void_p(0)
-                self._gl.glDrawElements(
-                    GL_TRIANGLE_STRIP,
-                    self._example_index_count,
-                    GL_UNSIGNED_SHORT,
-                    indices_ptr,
-                )
-                self._example_ibo.release()
-            else:
+
+        def bind_attributes(vbo: QOpenGLBuffer) -> bool:
+            if vbo is None or not vbo.bind():
+                return False
+            self._example_program.enableAttributeArray(0)
+            self._example_program.setAttributeBuffer(0, GL_FLOAT, 0, 3, stride)
+            self._example_program.enableAttributeArray(1)
+            self._example_program.setAttributeBuffer(1, GL_FLOAT, 12, 4, stride)
+            return True
+
+        if self._example_grid_vbo and self._example_grid_count > 0:
+            grid_transform = QtGui.QMatrix4x4()
+            self._example_program.setUniformValue("u_trans", grid_transform)
+            if bind_attributes(self._example_grid_vbo):
+                self._gl.glDrawArrays(GL_LINES, 0, self._example_grid_count)
+                self._example_grid_vbo.release()
+
+        if self._example_draw_count > 0 and self._example_vbo is not None:
+            self._example_program.setUniformValue("u_trans", self._example_transform)
+            if bind_attributes(self._example_vbo):
                 self._gl.glDrawArrays(GL_TRIANGLES, 0, self._example_draw_count)
-            self._example_vbo.release()
+                self._example_vbo.release()
         self._example_program.release()
+        if self._example_vao is not None:
+            try:
+                self._example_vao.release()
+            except Exception:
+                pass
 
     def _estimate_scene_blank(self, image: QtGui.QImage, bg: QtGui.QColor) -> bool:
         if image is None or image.isNull():
@@ -1403,6 +2042,9 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         ctx = self.context()
         if ctx is not None:
             self._gl = ctx.functions()
+        if self._use_moderngl:
+            self._init_mgl_renderer()
+            return
         if self._use_example_pipeline:
             self._init_example_pipeline()
             return
@@ -1493,6 +2135,10 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
     def resizeGL(self, w: int, h: int) -> None:
         if hasattr(self, "_gl"):
             self._gl.glViewport(0, 0, w, h)
+        if self._use_moderngl and self._mgl_ctx is not None:
+            self._mgl_ctx.viewport = (0, 0, max(2, w), max(2, h))
+            if self._mgl_arcball is not None:
+                self._mgl_arcball.setBounds(w, h)
         if self._use_example_pipeline:
             self._update_example_projection()
 
@@ -1623,6 +2269,9 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         if self._render_paused:
             self._gl.glClearColor(0.10, 0.12, 0.14, 1.0)
             self._gl.glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+            return
+        if self._use_moderngl:
+            self._paint_mgl()
             return
         if self._use_example_pipeline:
             self._paint_example()
@@ -1818,28 +2467,63 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         lines.append(f"Viewport: {self.width()}x{self.height()}")
         lines.append(f"QOpenGLWidget: {'OK' if QOpenGLWidget is not None else 'missing'}")
         lines.append(f"GL context: {'OK' if hasattr(self, '_gl') else 'missing'}")
-        if QOpenGLShaderProgram is None:
-            lines.append("Shaders: unavailable")
-        elif self._shader_error:
-            lines.append("Shaders: error")
-        elif self._use_example_pipeline and self._example_program:
-            lines.append("Shaders: OK")
-        elif self._quad_program and self._mesh_program:
-            lines.append("Shaders: OK")
+        ctx = None
+        try:
+            ctx = self.context()
+        except Exception:
+            ctx = None
+        if ctx is not None:
+            try:
+                fmt = ctx.format()
+                lines.append(f"Depth buffer: {fmt.depthBufferSize()}")
+            except Exception:
+                pass
+        if self._use_moderngl:
+            lines.append(f"Shaders: {'OK' if self._mgl_prog is not None else 'init'}")
         else:
-            lines.append("Shaders: init")
+            if QOpenGLShaderProgram is None:
+                lines.append("Shaders: unavailable")
+            elif self._shader_error:
+                lines.append("Shaders: error")
+            elif self._use_example_pipeline and self._example_program:
+                lines.append("Shaders: OK")
+            elif self._quad_program and self._mesh_program:
+                lines.append("Shaders: OK")
+            else:
+                lines.append("Shaders: init")
         lines.append(f"QOpenGLTexture: {'OK' if QOpenGLTexture is not None else 'missing'}")
         lines.append(f"QOpenGLBuffer: {'OK' if QOpenGLBuffer is not None else 'missing'}")
         lines.append(f"VAO: {'OK' if self._vao is not None else 'none'}")
         lines.append(f"Mipmaps: {'on' if self._mipmaps_enabled else 'off'}")
         lines.append(f"Render paused: {'on' if self._render_paused else 'off'}")
-        if self._use_example_pipeline:
+        if self._use_moderngl:
+            lines.append("Renderer: ModernGL")
+            lines.append(f"ModernGL: {'OK' if self._mgl_ctx is not None else 'missing'}")
+            lines.append(f"Camera FOV: {self._mgl_fov:.1f}")
+            lines.append(f"Camera zoom: {self._mgl_camera_zoom:.2f}")
+            if self._mgl_mesh_path:
+                lines.append(f"Model: {Path(self._mgl_mesh_path).name}")
+            lines.append(f"Mesh indices: {self._mgl_mesh_vertex_count}")
+            lines.append(f"Grid lines: {self._mgl_grid_vertex_count}")
+            if self._mgl_error:
+                lines.append(f"ModernGL error: {self._mgl_error}")
+        elif self._use_example_pipeline:
             lines.append("Example pipeline: on")
             shader_state = "error" if self._shader_error else ("OK" if self._example_program else "init")
             lines.append(f"Example shaders: {shader_state}")
             lines.append(f"Camera FOV: {self._example_fov:.1f}")
+            distance = (self._example_cam_pos - self._example_cam_look).length()
+            lines.append(f"Camera dist: {distance:.2f}")
+            lines.append(f"Clip range: {self._example_near:.2f}-{self._example_far:.1f}")
+            lines.append(f"Model extent: {self._example_model_extent:.2f}")
+            lines.append(f"Scaled extent: {self._example_scaled_extent():.2f}")
             if self._example_model_path:
                 lines.append(f"Example model: {Path(self._example_model_path).name}")
+            if self._example_vao is not None:
+                lines.append("Example VAO: OK")
+            lines.append(f"Example verts: {self._example_draw_count}")
+            if self._shader_error:
+                lines.append(f"Example error: {self._shader_error}")
         if not self._render_scene_plane:
             lines.append("Scene tex: disabled")
         elif self._scene_texture is not None:
@@ -1855,7 +2539,9 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             lines.append("Test cube: on (1x1)")
         if self._debug_wire is not None and self._show_test_cube:
             lines.append("Cube wire: on")
-        if self._use_example_pipeline:
+        if self._use_moderngl:
+            lines.append("Projection: perspective")
+        elif self._use_example_pipeline:
             lines.append("Projection: perspective")
         else:
             lines.append(f"Projection: {'ortho' if self._use_ortho else 'perspective'}")
@@ -1874,7 +2560,12 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         if include_paths and mesh_paths:
             lines.append("Mesh paths: " + "; ".join(mesh_paths))
         lines.append(f"Scene content: {'blank' if self._scene_content_blank else 'ok'}")
-        if self._grid_count:
+        if self._use_moderngl:
+            pass
+        elif self._use_example_pipeline:
+            if self._example_grid_count:
+                lines.append(f"Example grid lines: {self._example_grid_count}")
+        elif self._grid_count:
             lines.append(f"Grid lines: {self._grid_count}")
         rect = QtCore.QRectF(self._scene_src_rect)
         if not rect.isNull():
@@ -2008,6 +2699,18 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         ]
 
     def mousePressEvent(self, e):
+        if self._use_moderngl:
+            if e.button() == QtCore.Qt.LeftButton and self._mgl_arcball is not None:
+                self._mgl_arcball.onClickLeftDown(e.x(), e.y())
+                self.setCursor(QtCore.Qt.ClosedHandCursor)
+                e.accept()
+                return
+            if e.button() == QtCore.Qt.RightButton:
+                self._mgl_prev_x = e.x()
+                self._mgl_prev_y = e.y()
+                self.setCursor(QtCore.Qt.OpenHandCursor)
+                e.accept()
+                return
         if self._use_example_pipeline:
             if e.button() == QtCore.Qt.LeftButton:
                 self._orbit_dragging = True
@@ -2049,6 +2752,22 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e):
+        if self._use_moderngl:
+            if e.buttons() & QtCore.Qt.LeftButton and self._mgl_arcball is not None:
+                self._mgl_arcball.onDrag(e.x(), e.y())
+                self.update()
+                e.accept()
+                return
+            if e.buttons() & QtCore.Qt.RightButton and self._mgl_center is not None:
+                dx = e.x() - self._mgl_prev_x
+                dy = e.y() - self._mgl_prev_y
+                self._mgl_center[0] -= dx * 0.01
+                self._mgl_center[1] += dy * 0.01
+                self._mgl_prev_x = e.x()
+                self._mgl_prev_y = e.y()
+                self.update()
+                e.accept()
+                return
         if self._use_example_pipeline:
             if self._orbit_dragging and self._orbit_last_pos is not None:
                 if not (e.buttons() & QtCore.Qt.LeftButton):
@@ -2144,6 +2863,12 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e):
+        if self._use_moderngl:
+            if e.button() == QtCore.Qt.LeftButton and self._mgl_arcball is not None:
+                self._mgl_arcball.onClickLeftUp()
+            self.setCursor(QtCore.Qt.ArrowCursor)
+            super().mouseReleaseEvent(e)
+            return
         if self._use_example_pipeline:
             if e.button() == QtCore.Qt.LeftButton:
                 self._orbit_dragging = False
@@ -2171,6 +2896,15 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         super().mouseReleaseEvent(e)
 
     def wheelEvent(self, e):
+        if self._use_moderngl:
+            delta = e.angleDelta().y()
+            if delta:
+                self._mgl_camera_zoom += delta * 0.001
+                if self._mgl_camera_zoom < 0.1:
+                    self._mgl_camera_zoom = 0.1
+                self.update()
+            e.accept()
+            return
         if self._use_example_pipeline:
             delta = e.angleDelta().y() / 120.0
             if delta:
