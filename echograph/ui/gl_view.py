@@ -1103,7 +1103,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             self,
             "Open Model",
             start_dir,
-            "Mesh files (*.obj *.stl *.ply *.off *.om)",
+            "Mesh files (*.obj *.gltf *.glb *.stl *.ply *.off *.om)",
         )
         if not path:
             return
