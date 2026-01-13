@@ -451,6 +451,13 @@ def _apply_mat4(m: List[float], x: float, y: float, z: float) -> Tuple[float, fl
     return nx, ny, nz
 
 
+def _apply_mat3(m: List[float], x: float, y: float, z: float) -> Tuple[float, float, float]:
+    nx = x * m[0] + y * m[4] + z * m[8]
+    ny = x * m[1] + y * m[5] + z * m[9]
+    nz = x * m[2] + y * m[6] + z * m[10]
+    return nx, ny, nz
+
+
 def _gltf_collect_nodes(gltf: dict, node_indices: List[int], parent: List[float]) -> List[List[float]]:
     out: List[List[float]] = []
     nodes = gltf.get("nodes", []) or []
@@ -539,6 +546,107 @@ def _load_gltf_model(path: Path) -> ModelData:
     if not vertices:
         bounds = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     return ModelData(vertices=vertices, bounds=tuple(bounds))
+
+
+def _load_gltf_mesh_arrays(path: Path) -> Tuple["np.ndarray", "np.ndarray", "np.ndarray"]:
+    if np is None:
+        raise RuntimeError("numpy unavailable")
+    if path.suffix.lower() == ".glb":
+        gltf, buffers = _read_glb(path)
+    else:
+        gltf, buffers = _read_gltf(path)
+    meshes = gltf.get("meshes", []) or []
+    nodes = gltf.get("nodes", []) or []
+    scene_index = gltf.get("scene", 0) or 0
+    scenes = gltf.get("scenes", []) or []
+    node_roots = []
+    if scenes and scene_index < len(scenes):
+        node_roots = scenes[scene_index].get("nodes", []) or []
+    elif nodes:
+        node_roots = list(range(len(nodes)))
+
+    identity = [
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+        0.0, 0.0, 0.0, 1.0,
+    ]
+    node_pairs = _gltf_collect_nodes(gltf, node_roots, identity)
+
+    out_pos: List[float] = []
+    out_uv: List[float] = []
+    out_norm: List[float] = []
+
+    for node, world in node_pairs:
+        mesh_index = node.get("mesh")
+        if mesh_index is None or mesh_index >= len(meshes):
+            continue
+        mesh = meshes[mesh_index]
+        for prim in mesh.get("primitives", []) or []:
+            attrs = prim.get("attributes") or {}
+            pos_accessor = attrs.get("POSITION")
+            if pos_accessor is None:
+                continue
+            positions = _read_accessor(gltf, buffers, int(pos_accessor))
+            normals = None
+            if "NORMAL" in attrs:
+                normals = _read_accessor(gltf, buffers, int(attrs["NORMAL"]))
+            uvs = None
+            if "TEXCOORD_0" in attrs:
+                uvs = _read_accessor(gltf, buffers, int(attrs["TEXCOORD_0"]))
+            indices = None
+            if "indices" in prim:
+                idx_data = _read_accessor(gltf, buffers, int(prim["indices"]))
+                indices = [int(i) for i in idx_data]
+            tri_mode = int(prim.get("mode", 4))
+            if tri_mode != 4:
+                continue
+            if indices is None:
+                indices = list(range(len(positions) // 3))
+            for idx in indices:
+                base = idx * 3
+                vx, vy, vz = positions[base], positions[base + 1], positions[base + 2]
+                vx, vy, vz = _apply_mat4(world, vx, vy, vz)
+                out_pos.extend([vx, vy, vz])
+                if uvs is not None:
+                    ub = idx * 2
+                    if ub + 1 < len(uvs):
+                        out_uv.extend([uvs[ub], 1.0 - uvs[ub + 1]])
+                    else:
+                        out_uv.extend([0.0, 0.0])
+                else:
+                    out_uv.extend([0.0, 0.0])
+                if normals is not None:
+                    nb = idx * 3
+                    if nb + 2 < len(normals):
+                        nx, ny, nz = normals[nb], normals[nb + 1], normals[nb + 2]
+                    else:
+                        nx, ny, nz = 0.0, 0.0, 0.0
+                    nx, ny, nz = _apply_mat3(world, nx, ny, nz)
+                    nlen = math.sqrt(nx * nx + ny * ny + nz * nz)
+                    if nlen > 1e-6:
+                        nx, ny, nz = nx / nlen, ny / nlen, nz / nlen
+                    out_norm.extend([nx, ny, nz])
+                else:
+                    out_norm.extend([0.0, 0.0, 0.0])
+
+    if not out_pos:
+        return np.zeros((0, 3), dtype="f4"), np.zeros((0, 3), dtype="f4"), np.zeros((0, 2), dtype="f4")
+
+    pos_arr = np.array(out_pos, dtype="f4").reshape(-1, 3)
+    norm_arr = np.array(out_norm, dtype="f4").reshape(-1, 3)
+    uv_arr = np.array(out_uv, dtype="f4").reshape(-1, 2)
+
+    if not np.any(norm_arr):
+        for i in range(0, pos_arr.shape[0], 3):
+            a, b, c = pos_arr[i:i + 3]
+            n = np.cross(b - a, c - a)
+            length = float(np.linalg.norm(n))
+            if length > 1e-6:
+                n = n / length
+            norm_arr[i:i + 3] = n
+
+    return pos_arr, norm_arr, uv_arr
 
 
 def _load_obj_model(path: Path) -> ModelData:
@@ -1926,6 +2034,11 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             if path.suffix.lower() == ".obj":
                 try:
                     points, normals, uvs = _load_obj_mesh_arrays(path)
+                except Exception:
+                    points = None
+            elif path.suffix.lower() in (".gltf", ".glb"):
+                try:
+                    points, normals, uvs = _load_gltf_mesh_arrays(path)
                 except Exception:
                     points = None
             if points is None:
