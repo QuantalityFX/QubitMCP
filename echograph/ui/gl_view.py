@@ -543,6 +543,12 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._example_ibo = None
         self._example_index_count = 0
         self._example_draw_count = 0
+        self._example_pending_vertices: Optional[List[float]] = None
+        self._example_pending_bounds: Optional[Tuple[float, float, float, float, float, float]] = None
+        self._example_model_center = (0.0, 0.0, 0.0)
+        self._example_model_base_scale = 1.0
+        self._example_model_scale = 1.0
+        self._example_model_path = ""
         self._example_proj = QtGui.QMatrix4x4()
         self._example_transform = QtGui.QMatrix4x4()
         self._example_cam_pos = QtGui.QVector3D(-30.0, 30.0, 40.0)
@@ -635,6 +641,17 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             self._frame_btn.clicked.connect(self._on_frame_clicked)
             layout.addWidget(self._frame_btn, 0)
             layout.addWidget(QtWidgets.QLabel("Example Cube"), 0)
+            self._example_model_btn = QtWidgets.QPushButton("Model...")
+            self._example_model_btn.clicked.connect(self._on_example_pick_model)
+            layout.addWidget(self._example_model_btn, 0)
+            self._example_scale_label = QtWidgets.QLabel("Scale 1.00x")
+            self._example_scale_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+            self._example_scale_slider.setRange(1, 2000)
+            self._example_scale_slider.setValue(int(self._example_model_scale * 100))
+            self._example_scale_slider.setFixedWidth(160)
+            self._example_scale_slider.valueChanged.connect(self._on_example_scale_changed)
+            layout.addWidget(self._example_scale_label, 0)
+            layout.addWidget(self._example_scale_slider, 0)
             layout.addStretch(1)
             self._controls = controls
             self._controls_h = 44
@@ -701,6 +718,16 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
                 pass
         self.update()
 
+    def _on_example_scale_changed(self, value: int) -> None:
+        if not self._use_example_pipeline:
+            return
+        scale = max(0.01, float(value) / 100.0)
+        self._example_model_scale = scale
+        if getattr(self, "_example_scale_label", None) is not None:
+            self._example_scale_label.setText(f"Scale {scale:.2f}x")
+        self._update_example_transform()
+        self.update()
+
     def _default_models_dir(self) -> Optional[Path]:
         try:
             root = Path(__file__).resolve().parents[2]
@@ -747,6 +774,27 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._pending_image = None
         self._model_load_pending = True
         QtCore.QTimer.singleShot(0, self._apply_manual_model)
+
+    def _on_example_pick_model(self) -> None:
+        if not self._use_example_pipeline:
+            return
+        start_dir = ""
+        root = self._default_models_dir()
+        if root is not None:
+            start_dir = str(root)
+        try:
+            parent = self.window()
+        except Exception:
+            parent = self
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            parent,
+            "Select Model",
+            start_dir,
+            "3D Models (*.obj *.gltf *.glb);;All Files (*.*)",
+        )
+        if not path:
+            return
+        self._queue_example_model(Path(path))
 
     def _apply_manual_model(self) -> None:
         if not self._render_scene_models:
@@ -1006,6 +1054,63 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._shader_error = ""
         self._example_program = program
 
+    def _queue_example_model(self, path: Path) -> None:
+        try:
+            model_data = load_model(path)
+        except Exception:
+            model_data = None
+        if not model_data or not model_data.vertices:
+            self._shader_error = "Model load failed"
+            return
+        color = (0.56, 0.86, 0.98, 1.0)
+        vertices: List[float] = []
+        src = model_data.vertices
+        for i in range(0, len(src), 3):
+            vertices.extend([src[i], src[i + 1], src[i + 2], color[0], color[1], color[2], color[3]])
+        self._example_pending_vertices = vertices
+        self._example_pending_bounds = model_data.bounds
+        self._example_model_path = str(path)
+        self.update()
+
+    def _apply_example_bounds(self, bounds: Tuple[float, float, float, float, float, float]) -> None:
+        min_x, min_y, min_z, max_x, max_y, max_z = bounds
+        cx = (min_x + max_x) * 0.5
+        cy = (min_y + max_y) * 0.5
+        cz = (min_z + max_z) * 0.5
+        extent = max(max_x - min_x, max_y - min_y, max_z - min_z, 1.0)
+        self._example_model_center = (cx, cy, cz)
+        self._example_model_base_scale = 18.0 / extent
+        self._update_example_transform()
+
+    def _update_example_transform(self) -> None:
+        if not self._use_example_pipeline:
+            return
+        cx, cy, cz = self._example_model_center
+        scale = self._example_model_base_scale * self._example_model_scale
+        self._example_transform.setToIdentity()
+        self._example_transform.scale(scale, scale, scale)
+        self._example_transform.translate(-cx, -cy, -cz)
+
+    def _apply_example_pending(self) -> None:
+        if self._example_pending_vertices is None:
+            return
+        if self._example_vbo is None:
+            self._example_pending_vertices = None
+            self._example_pending_bounds = None
+            return
+        vertices = self._example_pending_vertices
+        if self._example_vbo.bind():
+            data = QtCore.QByteArray(struct.pack(f"{len(vertices)}f", *vertices))
+            self._example_vbo.allocate(data, data.size())
+            self._example_vbo.release()
+        self._example_draw_count = len(vertices) // 7
+        self._example_index_count = 0
+        bounds = self._example_pending_bounds
+        if bounds is not None:
+            self._apply_example_bounds(bounds)
+        self._example_pending_vertices = None
+        self._example_pending_bounds = None
+
         vertices, indices = self._example_cube_data()
         if QOpenGLBuffer is None:
             self._shader_error = "OpenGL buffers unavailable"
@@ -1019,7 +1124,10 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             self._example_vbo.release()
         self._example_index_count = 0
         self._example_draw_count = len(vertices) // 7
-        self._example_transform.setToIdentity()
+        self._example_model_center = (0.0, 0.0, 0.0)
+        self._example_model_base_scale = 1.0
+        self._example_model_scale = 1.0
+        self._update_example_transform()
         self._update_example_projection()
 
     def _update_example_projection(self) -> None:
@@ -1104,6 +1212,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             self._gl.glClearColor(0.12, 0.12, 0.12, 1.0)
             self._gl.glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
             return
+        self._apply_example_pending()
         fov = max(10.0, min(120.0, float(self._example_fov)))
         if abs(fov - self._example_fov) > 0.01:
             self._example_fov = fov
@@ -1729,6 +1838,8 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             shader_state = "error" if self._shader_error else ("OK" if self._example_program else "init")
             lines.append(f"Example shaders: {shader_state}")
             lines.append(f"Camera FOV: {self._example_fov:.1f}")
+            if self._example_model_path:
+                lines.append(f"Example model: {Path(self._example_model_path).name}")
         if not self._render_scene_plane:
             lines.append("Scene tex: disabled")
         elif self._scene_texture is not None:
