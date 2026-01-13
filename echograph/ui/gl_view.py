@@ -508,7 +508,9 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._mesh_meta: Dict[str, dict] = {}
         self._model_scale_multiplier = 1.0
         self._manual_model_path: Optional[Path] = None
-        self._auto_frame_on_scale = True
+        self._auto_frame_on_scale = False
+        self._show_scene_plane = True
+        self._model_load_pending = False
         self._drag_divisor = 13.0
         self._zoom_multiplier = 1.1
         self._min_cam_dist = 200.0
@@ -591,9 +593,14 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             self._frame_btn.clicked.connect(self._on_frame_clicked)
             layout.addWidget(self._frame_btn, 0)
 
+            self._plane_toggle = QtWidgets.QCheckBox("Plane")
+            self._plane_toggle.setChecked(True)
+            self._plane_toggle.toggled.connect(self._on_plane_toggled)
+            layout.addWidget(self._plane_toggle, 0)
+
             self._model_scale_label = QtWidgets.QLabel("Scale 1.00x")
             self._model_scale_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-            self._model_scale_slider.setRange(1, 1000)
+            self._model_scale_slider.setRange(1, 10000)
             self._model_scale_slider.setValue(int(self._model_scale_multiplier * 100))
             self._model_scale_slider.setFixedWidth(160)
             self._model_scale_slider.valueChanged.connect(self._on_model_scale_changed)
@@ -633,7 +640,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
 
     def _on_model_scale_changed(self, value: int) -> None:
         try:
-            scale = max(0.1, float(value) / 100.0)
+            scale = max(0.01, float(value) / 100.0)
         except Exception:
             scale = 1.0
         self._model_scale_multiplier = scale
@@ -650,6 +657,19 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._reset_camera()
         self.update()
 
+    def _on_plane_toggled(self, checked: bool) -> None:
+        self._show_scene_plane = bool(checked)
+        if not self._show_scene_plane:
+            self._scene_texture = None
+            self._scene_texture_dirty = False
+            self._pending_image = None
+        else:
+            try:
+                self._capture_scene_texture()
+            except Exception:
+                pass
+        self.update()
+
     def _default_models_dir(self) -> Optional[Path]:
         try:
             root = Path(__file__).resolve().parents[2]
@@ -662,27 +682,63 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
 
     def _on_pick_model(self) -> None:
         try:
+            self.setUpdatesEnabled(False)
+        except Exception:
+            pass
+        try:
             start_dir = self._default_models_dir()
             directory = str(start_dir) if start_dir is not None else ""
+            options = QtWidgets.QFileDialog.Options()
+            try:
+                options |= QtWidgets.QFileDialog.DontUseNativeDialog
+            except Exception:
+                pass
             filename, _ = QtWidgets.QFileDialog.getOpenFileName(
                 self,
                 "Select Model",
                 directory,
                 "3D Models (*.obj *.gltf *.glb);;All Files (*)",
+                options=options,
             )
         except Exception:
             filename = ""
+        finally:
+            try:
+                self.setUpdatesEnabled(True)
+            except Exception:
+                pass
         if not filename:
+            return
+        if self._model_load_pending:
             return
         try:
             self._manual_model_path = Path(filename)
         except Exception:
             self._manual_model_path = None
-        self._load_scene_models()
+        self._show_scene_plane = False
+        if getattr(self, "_plane_toggle", None) is not None:
+            try:
+                self._plane_toggle.setChecked(False)
+            except Exception:
+                pass
+        self._scene_texture = None
+        self._scene_texture_dirty = False
+        self._pending_image = None
+        self._model_load_pending = True
+        QtCore.QTimer.singleShot(0, self._apply_manual_model)
+
+    def _apply_manual_model(self) -> None:
+        self._model_load_pending = False
+        try:
+            self._load_scene_models()
+        except Exception:
+            return
         self._reset_camera()
         self.update()
 
     def _capture_scene_texture(self) -> None:
+        if not self._show_scene_plane:
+            return
         if self._scene is None:
             return
         rect = QtCore.QRectF(self._scene.itemsBoundingRect())
@@ -1159,7 +1215,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         proj = self._projection_matrix()
         view = self._view_matrix()
 
-        if self._scene_texture and self._quad_program and self._quad_ready:
+        if self._show_scene_plane and self._scene_texture and self._quad_program and self._quad_ready:
             self._quad_program.bind()
             mvp = proj * view
             self._quad_program.setUniformValue("u_mvp", mvp)
@@ -1280,7 +1336,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         if self._shader_error:
             painter.setPen(QtGui.QColor("#fca5a5"))
             painter.drawText(self.rect(), QtCore.Qt.AlignCenter, "3D View: shader error")
-        elif not self._scene_texture:
+        elif self._show_scene_plane and not self._scene_texture:
             painter.setPen(QtGui.QColor("#e2e8f0"))
             painter.drawText(self.rect(), QtCore.Qt.AlignCenter, "3D View: no scene texture")
         self._draw_axis_gizmo(painter)
@@ -1406,7 +1462,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         half_extent = extent * 0.5
         fov_rad = math.radians(self._fov_deg)
         fit_dist = half_extent / max(1e-3, math.tan(fov_rad * 0.5))
-        self._cam_dist = max(1200.0, fit_dist * 2.0)
+        self._cam_dist = max(1200.0, fit_dist * 4.0)
         self._cam_focal = max(800.0, self.height() * 0.5 / max(1e-3, math.tan(fov_rad * 0.5)))
         self._debug_mesh_scale_base = max(12.0, min(60.0, extent * 0.02))
         self._debug_mesh_scale = self._debug_mesh_scale_base * self._model_scale_multiplier
