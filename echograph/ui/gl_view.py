@@ -871,6 +871,8 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._mgl_bg_color = (0.1, 0.1, 0.1, 1.0)
         self._mgl_mesh_color = (0.85, 0.88, 0.95, 1.0)
         self._mgl_light_intensity = 1.0
+        self._mgl_wire_color = (0.25, 0.25, 0.25, 1.0)
+        self._mgl_wire_line_width = 1.0
         self._mgl_grid_alpha = 0.35
         self._mgl_grid_size = 20.0
         self._mgl_grid_cells = 50
@@ -968,7 +970,6 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             self._frame_btn = QtWidgets.QPushButton("Frame")
             self._frame_btn.clicked.connect(self._on_frame_clicked)
             layout.addWidget(self._frame_btn, 0)
-            layout.addWidget(QtWidgets.QLabel("Model"), 0)
             self._example_model_btn = QtWidgets.QPushButton("Model...")
             if self._use_moderngl:
                 self._example_model_btn.clicked.connect(self._on_mgl_pick_model)
@@ -976,7 +977,6 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
                 self._example_model_btn.clicked.connect(self._on_example_pick_model)
             layout.addWidget(self._example_model_btn, 0)
             if self._use_moderngl:
-                layout.addWidget(QtWidgets.QLabel("Texture"), 0)
                 self._mgl_texture_btn = QtWidgets.QPushButton("Texture...")
                 self._mgl_texture_btn.clicked.connect(self._on_mgl_pick_texture)
                 layout.addWidget(self._mgl_texture_btn, 0)
@@ -995,12 +995,16 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             if self._use_moderngl:
                 self._mgl_light_label = QtWidgets.QLabel("Light 1.00x")
                 self._mgl_light_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-                self._mgl_light_slider.setRange(0, 200)
+                self._mgl_light_slider.setRange(0, 1000)
                 self._mgl_light_slider.setValue(int(self._mgl_light_intensity * 100))
                 self._mgl_light_slider.setFixedWidth(140)
                 self._mgl_light_slider.valueChanged.connect(self._on_mgl_light_changed)
                 layout.addWidget(self._mgl_light_label, 0)
                 layout.addWidget(self._mgl_light_slider, 0)
+                self._mgl_wireframe_toggle = QtWidgets.QCheckBox("Wireframe")
+                self._mgl_wireframe_toggle.setChecked(bool(self._mgl_wireframe))
+                self._mgl_wireframe_toggle.toggled.connect(self._on_mgl_wireframe_toggled)
+                layout.addWidget(self._mgl_wireframe_toggle, 0)
             layout.addStretch(1)
             self._controls = controls
             self._controls_h = 44
@@ -1194,12 +1198,18 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         if not self._use_moderngl:
             return
         try:
-            intensity = max(0.0, float(value) / 100.0)
+            intensity = min(10.0, max(0.0, float(value) / 100.0))
         except Exception:
             intensity = 1.0
         self._mgl_light_intensity = intensity
         if getattr(self, "_mgl_light_label", None) is not None:
             self._mgl_light_label.setText(f"Light {intensity:.2f}x")
+        self.update()
+
+    def _on_mgl_wireframe_toggled(self, checked: bool) -> None:
+        if not self._use_moderngl:
+            return
+        self._mgl_wireframe = bool(checked)
         self.update()
 
     def _default_models_dir(self) -> Optional[Path]:
@@ -1740,19 +1750,24 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
                 uniform float LightIntensity;
                 uniform sampler2D Texture;
                 uniform int UseTexture;
+                uniform int UseLighting;
                 in vec3 v_norm;
                 in vec3 v_vert;
                 in vec2 v_uv;
                 out vec4 f_color;
                 void main() {
-                    float lum = -dot(normalize(v_norm), normalize(v_vert + Light));
-                    lum = acos(lum) / 3.14159265;
-                    lum = clamp(lum, 0.0, 1.0);
-                    lum = lum * lum;
-                    lum = smoothstep(0.0, 1.0, lum);
-                    lum *= smoothstep(0.0, 80.0, v_vert.z) * 0.3 + 0.7;
-                    lum = lum * 0.8 + 0.2;
-                    lum = mix(0.2, lum, clamp(LightIntensity, 0.0, 2.0));
+                    float lum = 1.0;
+                    if (UseLighting == 1) {
+                        lum = -dot(normalize(v_norm), normalize(v_vert + Light));
+                        lum = acos(lum) / 3.14159265;
+                        lum = clamp(lum, 0.0, 1.0);
+                        lum = lum * lum;
+                        lum = smoothstep(0.0, 1.0, lum);
+                        lum *= smoothstep(0.0, 80.0, v_vert.z) * 0.3 + 0.7;
+                        lum = lum * 0.8 + 0.2;
+                        lum = 0.2 + lum * max(LightIntensity, 0.0);
+                        lum = clamp(lum, 0.0, 10.0);
+                    }
                     vec4 base = (UseTexture == 1) ? texture(Texture, v_uv) : Color;
                     f_color = vec4(base.rgb * lum, base.a);
                 }
@@ -1781,6 +1796,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
                 self._mgl_prog["Texture"].value = 0
                 self._mgl_prog["UseTexture"].value = 0
                 self._mgl_prog["LightIntensity"].value = float(self._mgl_light_intensity)
+                self._mgl_prog["UseLighting"].value = 1
             except Exception:
                 pass
             self._mgl_grid_prog["Color"].value = (1.0, 1.0, 1.0, self._mgl_grid_alpha)
@@ -1962,7 +1978,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         if self._mgl_cull_enabled:
             flags |= moderngl.CULL_FACE
         self._mgl_ctx.enable(flags)
-        self._mgl_ctx.wireframe = bool(self._mgl_wireframe)
+        self._mgl_ctx.wireframe = False
         if self._mgl_prog is None or self._mgl_grid_prog is None:
             return
         aspect = self.width() / max(1.0, self.height())
@@ -1987,11 +2003,18 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             mvp = proj * lookat * transform * scale_mat
         else:
             mvp = proj * lookat * transform
+        wire_overlay = bool(self._mgl_wireframe and self._mgl_vao is not None)
+        if wire_overlay:
+            try:
+                self._mgl_ctx.polygon_offset = (1.0, 1.0)
+            except Exception:
+                pass
         self._mgl_prog["Mvp"].write(mvp.astype("f4"))
         self._mgl_prog["Color"].value = self._mgl_mesh_color
         use_texture = self._mgl_texture is not None
         try:
             self._mgl_prog["UseTexture"].value = 1 if use_texture else 0
+            self._mgl_prog["UseLighting"].value = 1
             self._mgl_prog["LightIntensity"].value = float(self._mgl_light_intensity)
         except Exception:
             pass
@@ -2002,6 +2025,28 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
                 pass
         if self._mgl_vao is not None:
             self._mgl_vao.render()
+        if wire_overlay and self._mgl_vao is not None:
+            try:
+                self._mgl_ctx.polygon_offset = (0.0, 0.0)
+            except Exception:
+                pass
+            try:
+                self._mgl_ctx.line_width = float(self._mgl_wire_line_width)
+            except Exception:
+                pass
+            self._mgl_ctx.wireframe = True
+            try:
+                self._mgl_prog["UseTexture"].value = 0
+                self._mgl_prog["UseLighting"].value = 0
+                self._mgl_prog["Color"].value = self._mgl_wire_color
+            except Exception:
+                pass
+            self._mgl_vao.render()
+            self._mgl_ctx.wireframe = False
+            try:
+                self._mgl_ctx.line_width = 1.0
+            except Exception:
+                pass
         if self._mgl_grid_vao is not None:
             self._mgl_grid_prog["Mvp"].write(mvp.astype("f4"))
             self._mgl_grid_prog["Color"].value = (1.0, 1.0, 1.0, self._mgl_grid_alpha)
