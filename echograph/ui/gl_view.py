@@ -2770,8 +2770,19 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             if e.buttons() & QtCore.Qt.MiddleButton and self._mgl_center is not None:
                 dx = e.x() - self._mgl_prev_x
                 dy = e.y() - self._mgl_prev_y
-                self._mgl_center[0] -= dx * 0.01
-                self._mgl_center[1] += dy * 0.01
+                pan_scale = 0.01
+                right = np.array([1.0, 0.0, 0.0], dtype="f4")
+                up = np.array([0.0, 1.0, 0.0], dtype="f4")
+                if self._mgl_arcball is not None:
+                    rot = np.array(self._mgl_arcball.Transform[:3, :3], dtype="f4")
+                    scale = np.linalg.norm(rot, axis=0)
+                    denom = float(scale.mean()) if scale.size else 1.0
+                    if denom > 1e-6:
+                        rot = rot / denom
+                    right = rot @ right
+                    up = rot @ up
+                delta = (-dx * pan_scale) * right + (dy * pan_scale) * up
+                self._mgl_center += delta
                 self._mgl_prev_x = e.x()
                 self._mgl_prev_y = e.y()
                 self.update()
