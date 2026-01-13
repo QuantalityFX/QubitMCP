@@ -14,6 +14,7 @@ from typing import List, Dict, Any
 from echograph.ui.infocard import InfoCard
 from echograph.ui.graph_items import _gi_flag, EdgeItem, TempWire
 from echograph.ui.view import GraphView
+from echograph.ui.gl_view import GraphGLView
 from echograph.ui.node_item import NodeItem
 from echograph import persistence
 from echograph.model import GraphNode
@@ -115,6 +116,10 @@ class CommentGroup(QtWidgets.QGraphicsObject):
         self._body = (body or "").strip()
         self._members = [str(m) for m in (members or []) if m]
         self._color_hex = _normalize_comment_color(color)
+        try:
+            self.setData(0xC0DE, "comment_group")
+        except Exception:
+            pass
 
         rect = QtCore.QRectF(rect)
         if rect.width() < 160:
@@ -1812,9 +1817,13 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         set_global_llm_scale(0.5, self.scene)  # ← apply global LLM scale here
         
         self.view = GraphView(self.scene)
+        self.gl_view = GraphGLView(self.scene)
 
         self.view.setMinimumSize(400, 300)
+        self.gl_view.setMinimumSize(400, 300)
+        self.gl_view.hide()
         v.addWidget(self.view, 1)
+        v.addWidget(self.gl_view, 1)
 
         self.setCentralWidget(central)
 
@@ -1908,9 +1917,37 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
     def _toggle_3d_view(self, enabled: bool):
         view = getattr(self, "view", None)
+        gl_view = getattr(self, "gl_view", None)
+        if enabled:
+            if gl_view:
+                try:
+                    gl_view.set_scene(self.scene)
+                    gl_view.refresh_from_scene()
+                except Exception:
+                    pass
+                try:
+                    if view:
+                        view.hide()
+                except Exception:
+                    pass
+                try:
+                    gl_view.show()
+                except Exception:
+                    pass
+        else:
+            try:
+                if gl_view:
+                    gl_view.hide()
+            except Exception:
+                pass
+            try:
+                if view:
+                    view.show()
+            except Exception:
+                pass
         if view and hasattr(view, "set_3d_mode"):
             try:
-                view.set_3d_mode(bool(enabled))
+                view.set_3d_mode(False)
             except Exception:
                 pass
         try:

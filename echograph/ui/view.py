@@ -207,7 +207,10 @@ class GraphView(QtWidgets.QGraphicsView):
                 sc._suppress_node_model_updates = True
                 for cg in getattr(sc, "_comment_groups", []):
                     try:
-                        cg.setVisible(False)
+                        cg.setVisible(True)
+                        cg._suspend_member_move = True
+                        pos = cg.pos()
+                        cg._base_pos_2d = (float(pos.x()), float(pos.y()))
                     except Exception:
                         pass
             self._reset_3d_camera()
@@ -216,6 +219,12 @@ class GraphView(QtWidgets.QGraphicsView):
             if sc is not None:
                 for cg in getattr(sc, "_comment_groups", []):
                     try:
+                        base = getattr(cg, "_base_pos_2d", None)
+                        if isinstance(base, (list, tuple)) and len(base) >= 2:
+                            cg.setPos(QtCore.QPointF(float(base[0]), float(base[1])))
+                        cg.setTransform(QtGui.QTransform())
+                        cg.setZValue(0.2)
+                        cg._suspend_member_move = False
                         cg.setVisible(True)
                     except Exception:
                         pass
@@ -390,6 +399,60 @@ class GraphView(QtWidgets.QGraphicsView):
             _, _, z_cam = self._project_point(cx, cy, depth_z)
             try:
                 item.setZValue(self._depth_zvalue(z_cam))
+            except Exception:
+                pass
+        for cg in getattr(sc, "_comment_groups", []):
+            try:
+                cg.setVisible(True)
+            except Exception:
+                pass
+            try:
+                cg._suspend_member_move = True
+            except Exception:
+                pass
+            base_pos = getattr(cg, "_base_pos_2d", None)
+            if isinstance(base_pos, (list, tuple)) and len(base_pos) >= 2:
+                base_x = float(base_pos[0])
+                base_y = float(base_pos[1])
+            else:
+                try:
+                    pos = cg.pos()
+                    base_x = float(pos.x())
+                    base_y = float(pos.y())
+                except Exception:
+                    continue
+            rect = getattr(cg, "_rect", None)
+            if isinstance(rect, QtCore.QRectF):
+                w = float(rect.width())
+                h = float(rect.height())
+            else:
+                try:
+                    br = cg.boundingRect()
+                    w = float(br.width())
+                    h = float(br.height())
+                except Exception:
+                    w = h = 0.0
+            try:
+                depth = float(getattr(cg, "pos_z", 0.0))
+            except Exception:
+                depth = 0.0
+            depth_z = depth * self._depth_scale
+            sx0, sy0, _ = self._project_point(base_x, base_y, depth_z)
+            sx1, sy1, _ = self._project_point(base_x + 1.0, base_y, depth_z)
+            sx2, sy2, _ = self._project_point(base_x, base_y + 1.0, depth_z)
+            p0 = QtCore.QPointF(anchor.x() + sx0 + pan.x(), anchor.y() + sy0 + pan.y())
+            p1 = QtCore.QPointF(anchor.x() + sx1 + pan.x(), anchor.y() + sy1 + pan.y())
+            p2 = QtCore.QPointF(anchor.x() + sx2 + pan.x(), anchor.y() + sy2 + pan.y())
+            vx = p1 - p0
+            vy = p2 - p0
+            transform = QtGui.QTransform(vx.x(), vx.y(), vy.x(), vy.y(), 0.0, 0.0)
+            cg.setTransform(transform)
+            cg.setPos(p0)
+            cx = base_x + w / 2.0
+            cy = base_y + h / 2.0
+            _, _, z_cam = self._project_point(cx, cy, depth_z)
+            try:
+                cg.setZValue(self._depth_zvalue(z_cam) - 0.05)
             except Exception:
                 pass
         for edge in getattr(sc, "_edges", []):
