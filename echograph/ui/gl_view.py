@@ -1724,7 +1724,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self.update()
         self.update()
 
-    def load_model_path(self, path: str | Path) -> None:
+    def load_model_path(self, path: str | Path, texture_path: str | Path | None = None) -> None:
         if not path:
             return
         try:
@@ -1733,8 +1733,16 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             return
         if not model_path.exists():
             return
+        texture_str = ""
+        if texture_path:
+            try:
+                texture_str = str(Path(texture_path))
+            except Exception:
+                texture_str = str(texture_path)
         if self._use_moderngl:
             self._mgl_load_mesh(model_path)
+            if texture_str:
+                self._apply_texture_path(texture_str)
             self.update()
             return
         if self._use_example_pipeline:
@@ -1868,6 +1876,33 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._mgl_upload_texture(image, str(path))
         return True
 
+    def _apply_texture_path(self, path: str) -> None:
+        if not self._use_moderngl:
+            return
+        if not _HAS_MGL:
+            self._mgl_error = "ModernGL dependencies unavailable"
+            return
+        if self._mgl_ctx is None:
+            self._mgl_error = "ModernGL context not ready"
+            return
+        image = QtGui.QImage(path)
+        if image.isNull():
+            self._mgl_error = "Texture load failed"
+            return
+        try:
+            self.makeCurrent()
+            self._mgl_upload_texture(image, path)
+            self._mgl_texture_override = True
+            self._mgl_texture_paths = [str(path)]
+            self._mgl_error = ""
+        except Exception as exc:
+            self._mgl_error = f"Texture upload failed: {exc}"
+        finally:
+            try:
+                self.doneCurrent()
+            except Exception:
+                pass
+
     def _on_mgl_pick_texture(self) -> None:
         if not self._use_moderngl:
             return
@@ -1892,24 +1927,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         )
         if not path:
             return
-        image = QtGui.QImage(path)
-        if image.isNull():
-            self._mgl_error = "Texture load failed"
-            self.update()
-            return
-        try:
-            self.makeCurrent()
-            self._mgl_upload_texture(image, path)
-            self._mgl_texture_override = True
-            self._mgl_texture_paths = [str(path)]
-            self._mgl_error = ""
-        except Exception as exc:
-            self._mgl_error = f"Texture upload failed: {exc}"
-        finally:
-            try:
-                self.doneCurrent()
-            except Exception:
-                pass
+        self._apply_texture_path(path)
         self.update()
 
     def _on_mgl_scale_changed(self, value: int) -> None:

@@ -762,7 +762,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
         switch_h = self._PARAM_ROW_H if kind == "switch" else 0
 
         # Params block (regular rows)
-        n_params = len(self.model.params or [])
+        params = list(self.model.params or [])
+        if kind == "import":
+            params = [p for p in params if (p.get("name", "") or "").strip().lower() != "texture"]
+        n_params = len(params)
         params_h = n_params * self._PARAM_ROW_H
 
         # Note: add a big block per featured param (prune orphans first)
@@ -793,6 +796,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
             node_w = self._BASE_W
         elif kind == "import":
             body_h = self._PARAM_ROW_H * 2 + self._PADDING
+            path = (self._param_value("path") or "").strip()
+            ext = os.path.splitext(path)[1].lower()
+            if ext == ".obj":
+                body_h += self._PARAM_ROW_H
             node_w = self._BASE_W
         elif kind == "html_preview":
             body_h = self._html_preview_body_height()
@@ -1430,6 +1437,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     pname = p.get("name", "")
                     pval  = p.get("value", "")
                     pname_key = (pname or "").strip().lower()
+                    if kind == "import" and pname_key == "texture":
+                        continue
                     has_port = pname_key in named_inputs
                     wired = has_port and pname_key in wired_inputs
 
@@ -1724,7 +1733,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
     def _build_import_summary(self, y_cursor: int) -> int:
         path = self._param_value("path")
         detail, btn_enabled = self._file_detail_for_path(path)
-        return self._render_file_summary(y_cursor, detail, btn_enabled, path)
+        y_cursor = self._render_file_summary(y_cursor, detail, btn_enabled, path)
+        ext = os.path.splitext((path or "").strip())[1].lower()
+        if ext == ".obj":
+            y_cursor = self._build_import_texture_row(y_cursor, self._param_value("texture"))
+        return y_cursor
 
     def _build_html_preview(self, y_cursor: int) -> int:
         path = self._param_value("path")
@@ -1753,6 +1766,45 @@ class NodeItem(QtWidgets.QGraphicsObject):
         self._plugin_proxies.append(proxy)
 
         return y_cursor + preview_h + self._PADDING
+
+    def _build_import_texture_row(self, y_cursor: int, texture_path: str) -> int:
+        row = QtWidgets.QWidget()
+        row.setAttribute(QtCore.Qt.WA_TranslucentBackground)
+        lay = QtWidgets.QHBoxLayout(row)
+        lay.setContentsMargins(6, 0, 6, 0)
+        lay.setSpacing(6)
+
+        lab = QtWidgets.QLabel("Texture")
+        lab.setStyleSheet("color:#cbd5e1;")
+        lab.setMinimumWidth(50)
+        lay.addWidget(lab, 0)
+
+        edit = QtWidgets.QLineEdit(texture_path or "")
+        edit.setPlaceholderText("Texture file")
+        edit.setStyleSheet(
+            "QLineEdit{background:#12151a;color:#e6edf3;"
+            "border:1px solid #3c4450;border-radius:4px;padding:2px 6px;}"
+        )
+        edit.editingFinished.connect(lambda e=edit: self._set_param_value("texture", e.text()))
+        lay.addWidget(edit, 1)
+
+        browse_btn = QtWidgets.QToolButton()
+        btn_style = QtWidgets.QApplication.style()
+        if btn_style:
+            browse_btn.setIcon(btn_style.standardIcon(QtWidgets.QStyle.SP_DialogOpenButton))
+        browse_btn.setToolTip("Choose texture")
+        browse_btn.setFixedSize(22, 22)
+        browse_btn.clicked.connect(lambda _=False: self._browse_import_texture(self._param_value("texture")))
+        lay.addWidget(browse_btn, 0)
+
+        proxy = QtWidgets.QGraphicsProxyWidget(self)
+        proxy.setWidget(row)
+        proxy.setZValue(self.zValue() + 0.1)
+        proxy.setPos(0, y_cursor)
+        proxy.resize(self.width, self._PARAM_ROW_H)
+        self._param_proxies.append(proxy)
+
+        return y_cursor + self._PARAM_ROW_H
 
     def _html_preview_dimensions(self) -> tuple[int, int]:
         scale = max(0.25, float(self._current_llm_scale()))
@@ -1945,6 +1997,17 @@ class NodeItem(QtWidgets.QGraphicsObject):
         if file_path:
             QtCore.QTimer.singleShot(0, lambda p=file_path: self._set_param_value("path", p))
 
+    def _browse_import_texture(self, current: str):
+        start = current or os.path.expanduser("~")
+        file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            _top_level_parent_for_dialog(),
+            "Select Texture",
+            start,
+            "Image files (*.png *.jpg *.jpeg *.bmp *.tga);;All Files (*.*)",
+        )
+        if file_path:
+            QtCore.QTimer.singleShot(0, lambda p=file_path: self._set_param_value("texture", p))
+
     def _open_import_preview(self, path: str):
         path = (path or "").strip()
         if not path:
@@ -2004,6 +2067,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
         if not os.path.exists(path):
             QtWidgets.QMessageBox.warning(_top_level_parent_for_dialog(), "Import", "3D file not found.")
             return True
+        texture = ""
+        if ext == ".obj":
+            texture = (self._param_value("texture") or "").strip()
         parent = _top_level_parent_for_dialog()
         if parent is None:
             QtWidgets.QMessageBox.warning(_top_level_parent_for_dialog(), "Import", "3D view is not available.")
@@ -2011,7 +2077,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         handler = getattr(parent, "open_3d_model", None)
         if callable(handler):
             try:
-                handler(path)
+                handler(path, texture if texture else None)
                 return True
             except Exception:
                 pass

@@ -2019,7 +2019,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             btn.setText("2D/3D View")
             btn.setToolTip("Split view active")
 
-    def open_3d_model(self, path: str) -> None:
+    def open_3d_model(self, path: str, texture_path: str | None = None) -> None:
         path = (path or "").strip()
         if not path:
             return
@@ -2039,7 +2039,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         loader = getattr(gl_view, "load_model_path", None)
         if callable(loader):
             try:
-                loader(path)
+                loader(path, texture_path)
             except Exception:
                 pass
 
