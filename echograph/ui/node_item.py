@@ -1733,11 +1733,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
     def _build_import_summary(self, y_cursor: int) -> int:
         path = self._param_value("path")
         detail, btn_enabled = self._file_detail_for_path(path)
-        y_cursor = self._render_file_summary(y_cursor, detail, btn_enabled, path)
         ext = os.path.splitext((path or "").strip())[1].lower()
+        extra = None
         if ext == ".obj":
-            y_cursor = self._build_import_texture_row(y_cursor, self._param_value("texture"))
-        return y_cursor
+            extra = self._make_import_texture_widget(self._param_value("texture"))
+        return self._render_file_summary(y_cursor, detail, btn_enabled, path, extra_widget=extra)
 
     def _build_html_preview(self, y_cursor: int) -> int:
         path = self._param_value("path")
@@ -1767,11 +1767,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
         return y_cursor + preview_h + self._PADDING
 
-    def _build_import_texture_row(self, y_cursor: int, texture_path: str) -> int:
+    def _make_import_texture_widget(self, texture_path: str) -> QtWidgets.QWidget:
         row = QtWidgets.QWidget()
         row.setAttribute(QtCore.Qt.WA_TranslucentBackground)
         lay = QtWidgets.QHBoxLayout(row)
-        lay.setContentsMargins(6, 0, 6, 0)
+        lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(6)
 
         lab = QtWidgets.QLabel("Texture")
@@ -1797,14 +1797,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         browse_btn.clicked.connect(lambda _=False: self._browse_import_texture(self._param_value("texture")))
         lay.addWidget(browse_btn, 0)
 
-        proxy = QtWidgets.QGraphicsProxyWidget(self)
-        proxy.setWidget(row)
-        proxy.setZValue(self.zValue() + 0.1)
-        proxy.setPos(0, y_cursor)
-        proxy.resize(self.width, self._PARAM_ROW_H)
-        self._param_proxies.append(proxy)
-
-        return y_cursor + self._PARAM_ROW_H
+        return row
 
     def _html_preview_dimensions(self) -> tuple[int, int]:
         scale = max(0.25, float(self._current_llm_scale()))
@@ -1820,7 +1813,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
             return summary_h
         return summary_h + preview_h + self._PADDING
 
-    def _render_file_summary(self, y_cursor: int, detail: str, btn_enabled: bool, path: str) -> int:
+    def _render_file_summary(
+        self,
+        y_cursor: int,
+        detail: str,
+        btn_enabled: bool,
+        path: str,
+        extra_widget: QtWidgets.QWidget | None = None,
+    ) -> int:
         row = QtWidgets.QWidget()
         row.setAttribute(QtCore.Qt.WA_TranslucentBackground)
         outer = QtWidgets.QVBoxLayout(row)
@@ -1831,6 +1831,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
         label.setStyleSheet("color:#cbd5e1;")
         label.setWordWrap(True)
         outer.addWidget(label, 0)
+
+        if extra_widget is not None:
+            outer.addWidget(extra_widget, 0)
 
         btn_row = QtWidgets.QHBoxLayout()
         btn_row.setContentsMargins(0, 0, 0, 0)
@@ -1860,7 +1863,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         proxy.setWidget(row)
         proxy.setZValue(self.zValue() + 0.1)
         proxy.setPos(0, y_cursor)
-        summary_h = self._PARAM_ROW_H * 2
+        summary_h = max(self._PARAM_ROW_H * 2, row.sizeHint().height())
         proxy.resize(self.width, summary_h)
         self._plugin_proxies.append(proxy)
 
