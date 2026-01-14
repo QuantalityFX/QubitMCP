@@ -1936,9 +1936,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
         start = current or os.path.expanduser("~")
         file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
             _top_level_parent_for_dialog(),
-            "Select HTML File",
+            "Select File",
             start,
-            "HTML Files (*.html *.htm);;All Files (*.*)",
+            "3D Models (*.fbx *.obj *.gltf *.glb);;"
+            "Documents (*.html *.htm *.txt *.md *.json *.py *.pdf);;"
+            "All Files (*.*)",
         )
         if file_path:
             QtCore.QTimer.singleShot(0, lambda p=file_path: self._set_param_value("path", p))
@@ -1950,6 +1952,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
             return
 
         ext = os.path.splitext(path)[1].lower()
+        if self._open_import_model(path, ext):
+            return
 
         if ext == ".pdf":
             text = self.read_import_text(path)
@@ -1989,6 +1993,30 @@ class NodeItem(QtWidgets.QGraphicsObject):
         dlg = BigTextEditDialog(_top_level_parent_for_dialog(), title=f"Preview: {os.path.basename(path)}", initial=text)
         dlg.edit.setReadOnly(True)
         self._show_modeless_dialog(dlg)
+
+    @staticmethod
+    def _is_3d_model_ext(ext: str) -> bool:
+        return ext in (".fbx", ".obj", ".gltf", ".glb")
+
+    def _open_import_model(self, path: str, ext: str) -> bool:
+        if not self._is_3d_model_ext(ext):
+            return False
+        if not os.path.exists(path):
+            QtWidgets.QMessageBox.warning(_top_level_parent_for_dialog(), "Import", "3D file not found.")
+            return True
+        parent = _top_level_parent_for_dialog()
+        if parent is None:
+            QtWidgets.QMessageBox.warning(_top_level_parent_for_dialog(), "Import", "3D view is not available.")
+            return True
+        handler = getattr(parent, "open_3d_model", None)
+        if callable(handler):
+            try:
+                handler(path)
+                return True
+            except Exception:
+                pass
+        QtWidgets.QMessageBox.warning(_top_level_parent_for_dialog(), "Import", "3D view is not available.")
+        return True
 
     def _highlight_html_content(self, text: str, filename: str) -> str | None:
         if not _HAS_PYGMENTS:

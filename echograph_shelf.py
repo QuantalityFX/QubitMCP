@@ -2019,6 +2019,30 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             btn.setText("2D/3D View")
             btn.setToolTip("Split view active")
 
+    def open_3d_model(self, path: str) -> None:
+        path = (path or "").strip()
+        if not path:
+            return
+        try:
+            if not os.path.exists(path):
+                return
+        except Exception:
+            return
+        mode = getattr(self, "_view_mode", "2d")
+        if mode == "split":
+            self._set_view_mode("split")
+        else:
+            self._set_view_mode("3d")
+        gl_view = getattr(self, "gl_view", None)
+        if gl_view is None:
+            return
+        loader = getattr(gl_view, "load_model_path", None)
+        if callable(loader):
+            try:
+                loader(path)
+            except Exception:
+                pass
+
     def _maybe_show_recent_dialog(self):
         recents = [p for p in getattr(self, "_recent_files", []) if p]
         if not recents:

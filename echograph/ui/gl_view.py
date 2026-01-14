@@ -1724,6 +1724,37 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self.update()
         self.update()
 
+    def load_model_path(self, path: str | Path) -> None:
+        if not path:
+            return
+        try:
+            model_path = Path(path)
+        except Exception:
+            return
+        if not model_path.exists():
+            return
+        if self._use_moderngl:
+            self._mgl_load_mesh(model_path)
+            self.update()
+            return
+        if self._use_example_pipeline:
+            self._queue_example_model(model_path)
+            self.update()
+            return
+        self._render_scene_models = True
+        self._manual_model_path = model_path
+        self._show_scene_plane = False
+        if getattr(self, "_plane_toggle", None) is not None:
+            try:
+                self._plane_toggle.setChecked(False)
+            except Exception:
+                pass
+        self._scene_texture = None
+        self._scene_texture_dirty = False
+        self._pending_image = None
+        self._model_load_pending = True
+        QtCore.QTimer.singleShot(0, self._apply_manual_model)
+
     def _on_mgl_pick_model(self) -> None:
         if not self._use_moderngl:
             return
