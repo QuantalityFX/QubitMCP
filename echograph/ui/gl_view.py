@@ -1303,7 +1303,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._quad_uv_loc = -1
         self._mesh_pos_loc = -1
         self._shader_error = ""
-        self._debug_overlay = True
+        self._debug_overlay = False
         self._mipmaps_enabled = False
         self._capture_view = None
         self._scene_content_blank = False
@@ -1440,10 +1440,13 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._pan_last_pos = None
         self._dolly_press_pos = None
         self._dolly_start_dist = None
+        self._debug_toggle_icon_active = None
+        self._debug_toggle_icon_inactive = None
 
         self.setMouseTracking(True)
         self.setFocusPolicy(QtCore.Qt.StrongFocus)
         self._build_scale_controls()
+        self._build_debug_toggle_button()
         self._build_debug_copy_button()
 
     def set_scene(self, scene) -> None:
@@ -1454,9 +1457,12 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         if getattr(self, "_controls", None) is not None:
             h = int(getattr(self, "_controls_h", 44))
             self._controls.setGeometry(0, max(0, self.height() - h), self.width(), h)
+        toggle = getattr(self, "_debug_toggle_btn", None)
+        if toggle is not None:
+            toggle.setGeometry(10, 10, 22, 22)
         btn = getattr(self, "_debug_copy_btn", None)
         if btn is not None:
-            btn.setGeometry(10, 10, 46, 22)
+            btn.setGeometry(38, 10, 46, 22)
         if getattr(self, "_mgl_uv_cache", None) is not None:
             self._mgl_uv_cache = None
 
@@ -1559,6 +1565,89 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             self._controls = None
             self._controls_h = 0
 
+    def _build_debug_toggle_button(self) -> None:
+        try:
+            btn = QtWidgets.QToolButton(self)
+            btn.setCursor(QtCore.Qt.PointingHandCursor)
+            btn.setToolTip("Stats")
+            btn.setIconSize(QtCore.QSize(14, 14))
+            btn.clicked.connect(self._toggle_debug_overlay)
+            self._debug_toggle_btn = btn
+            self._update_debug_toggle_button()
+            btn.show()
+        except Exception:
+            self._debug_toggle_btn = None
+
+    def _load_debug_toggle_icons(self) -> None:
+        if self._debug_toggle_icon_active is not None:
+            return
+        icon_path = None
+        try:
+            root = Path(__file__).resolve().parents[2]
+            candidate = root / "icons" / "TabIcon.png"
+            if candidate.exists():
+                icon_path = candidate
+        except Exception:
+            icon_path = None
+        if not icon_path:
+            return
+        pixmap = QtGui.QPixmap(str(icon_path))
+        if pixmap.isNull():
+            return
+        self._debug_toggle_icon_active = self._tint_toggle_icon(pixmap, 1.15, 0.8)
+        self._debug_toggle_icon_inactive = self._tint_toggle_icon(pixmap, 0.65, 0.8)
+
+    def _tint_toggle_icon(self, pixmap: QtGui.QPixmap, brightness: float, opacity: float) -> QtGui.QIcon:
+        image = pixmap.toImage().convertToFormat(QtGui.QImage.Format_ARGB32)
+        w = image.width()
+        h = image.height()
+        for y in range(h):
+            for x in range(w):
+                color = image.pixelColor(x, y)
+                if color.alpha() == 0:
+                    continue
+                r = min(255, max(0, int(color.red() * brightness)))
+                g = min(255, max(0, int(color.green() * brightness)))
+                b = min(255, max(0, int(color.blue() * brightness)))
+                a = min(255, max(0, int(color.alpha() * opacity)))
+                color.setRed(r)
+                color.setGreen(g)
+                color.setBlue(b)
+                color.setAlpha(a)
+                image.setPixelColor(x, y, color)
+        return QtGui.QIcon(QtGui.QPixmap.fromImage(image))
+
+    def _update_debug_toggle_button(self) -> None:
+        btn = getattr(self, "_debug_toggle_btn", None)
+        if btn is None:
+            return
+        btn.setToolTip("Hide stats" if self._debug_overlay else "Show stats")
+        self._load_debug_toggle_icons()
+        if self._debug_toggle_icon_active is not None:
+            icon = self._debug_toggle_icon_active if self._debug_overlay else self._debug_toggle_icon_inactive
+            btn.setIcon(icon)
+            btn.setText("")
+        else:
+            btn.setText("^" if self._debug_overlay else "v")
+        if self._debug_overlay:
+            bg = "rgba(30,41,59,230)"
+        else:
+            bg = "rgba(15,23,42,210)"
+        btn.setStyleSheet(
+            "QToolButton{background:%s;border:1px solid #334155;"
+            "color:#e2e8f0;padding:0px;border-radius:4px;font-size:11px;}"
+            "QToolButton:hover{background:rgba(51,65,85,230);}"
+            % bg
+        )
+
+    def _toggle_debug_overlay(self) -> None:
+        self._debug_overlay = not self._debug_overlay
+        btn = getattr(self, "_debug_copy_btn", None)
+        if btn is not None:
+            btn.setVisible(self._debug_overlay)
+        self._update_debug_toggle_button()
+        self.update()
+
     def _build_debug_copy_button(self) -> None:
         try:
             btn = QtWidgets.QToolButton(self)
@@ -1571,7 +1660,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             )
             btn.clicked.connect(self._copy_debug_details)
             self._debug_copy_btn = btn
-            btn.show()
+            btn.setVisible(self._debug_overlay)
         except Exception:
             self._debug_copy_btn = None
 
@@ -3576,28 +3665,19 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
     def _draw_overlay(self) -> None:
         painter = QtGui.QPainter(self)
         painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
-        show_debug = self._debug_overlay or self._shader_error or not self._scene_texture
+        show_debug = self._debug_overlay
         if show_debug:
             lines = self._debug_status_lines()
             if lines:
                 metrics = painter.fontMetrics()
-                if hasattr(metrics, "horizontalAdvance"):
-                    text_width = max(metrics.horizontalAdvance(line) for line in lines)
-                else:
-                    text_width = max(metrics.width(line) for line in lines)
-                text_height = len(lines) * metrics.height() + max(0, len(lines) - 1) * 2
                 pad = 8
                 panel_top = 10.0
                 btn = getattr(self, "_debug_copy_btn", None)
                 if btn is not None and btn.isVisible():
                     panel_top = btn.geometry().bottom() + 6.0
-                panel = QtCore.QRectF(10, panel_top, text_width + pad * 2, text_height + pad * 2)
-                painter.setPen(QtCore.Qt.NoPen)
-                painter.setBrush(QtGui.QColor(15, 23, 42, 210))
-                painter.drawRoundedRect(panel, 6, 6)
                 painter.setPen(QtGui.QColor("#e2e8f0"))
-                x = panel.left() + pad
-                y = panel.top() + pad + metrics.ascent()
+                x = 10 + pad
+                y = panel_top + pad + metrics.ascent()
                 for line in lines:
                     painter.drawText(QtCore.QPointF(x, y), line)
                     y += metrics.height() + 2
