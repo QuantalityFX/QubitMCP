@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import ctypes
+import io
+import os
 from array import array
 import json
 import math
@@ -9,6 +11,48 @@ import struct
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
+
+_ASSIMP_DLL_READY = False
+
+
+def _ensure_assimp_dll() -> None:
+    global _ASSIMP_DLL_READY
+    if _ASSIMP_DLL_READY:
+        return
+    if os.name != "nt":
+        _ASSIMP_DLL_READY = True
+        return
+    candidates: List[Path] = []
+    try:
+        root = Path(__file__).resolve().parents[2]
+        vcpkg_bin = root / "vcpkg" / "installed" / "x64-windows" / "bin"
+        if vcpkg_bin.exists():
+            candidates.append(vcpkg_bin)
+    except Exception:
+        pass
+    env_path = os.environ.get("ASSIMP_LIBRARY_PATH") or os.environ.get("ASSIMP_LIBRARY")
+    if env_path:
+        try:
+            env_candidate = Path(env_path)
+            if env_candidate.is_file():
+                env_candidate = env_candidate.parent
+            candidates.append(env_candidate)
+        except Exception:
+            pass
+    for candidate in candidates:
+        try:
+            if candidate and candidate.exists():
+                if hasattr(os, "add_dll_directory"):
+                    os.add_dll_directory(str(candidate))
+                os.environ["PATH"] = str(candidate) + os.pathsep + os.environ.get("PATH", "")
+                if "ASSIMP_LIBRARY" not in os.environ:
+                    dlls = list(candidate.glob("assimp*.dll"))
+                    if dlls:
+                        os.environ["ASSIMP_LIBRARY"] = str(dlls[0])
+                break
+        except Exception:
+            continue
+    _ASSIMP_DLL_READY = True
 
 try:
     import numpy as np
@@ -29,6 +73,18 @@ try:
     import openmesh
 except Exception:
     openmesh = None
+
+_ensure_assimp_dll()
+
+try:
+    import trimesh
+except Exception:
+    trimesh = None
+
+try:
+    from PIL import Image as PILImage
+except Exception:
+    PILImage = None
 
 try:
     from PySide6 import QtCore, QtGui, QtWidgets
@@ -164,6 +220,16 @@ def load_model(path: Path) -> Optional["ModelData"]:
 class ModelData:
     vertices: List[float]
     bounds: Tuple[float, float, float, float, float, float]
+
+
+@dataclass
+class MeshArrays:
+    points: "np.ndarray"
+    normals: "np.ndarray"
+    uvs: "np.ndarray"
+    texture_path: Optional[Path] = None
+    texture_image: Optional[object] = None
+    base_color: Optional[Tuple[float, float, float, float]] = None
 
 
 def _resolve_obj_index(value: Optional[int], total: int) -> Optional[int]:
@@ -712,8 +778,315 @@ def _load_obj_model(path: Path) -> ModelData:
     return ModelData(vertices=vertices, bounds=tuple(bounds))
 
 
+def _normalize_color(value: object) -> Optional[Tuple[float, float, float, float]]:
+    try:
+        vals = [float(v) for v in value]
+    except Exception:
+        return None
+    if not vals:
+        return None
+    if len(vals) == 3:
+        vals.append(1.0)
+    vals = vals[:4]
+    if max(vals) > 1.0:
+        vals = [v / 255.0 for v in vals]
+    return tuple(max(0.0, min(1.0, v)) for v in vals)
+
+
+def _extract_trimesh_material(mesh, path: Path) -> Tuple[Optional[Path], Optional[object], Optional[Tuple[float, float, float, float]]]:
+    material = getattr(getattr(mesh, "visual", None), "material", None)
+    if material is None:
+        colors = getattr(getattr(mesh, "visual", None), "vertex_colors", None)
+        if np is not None and colors is not None:
+            try:
+                avg = np.mean(np.asarray(colors), axis=0)
+                return None, None, _normalize_color(avg)
+            except Exception:
+                pass
+        return None, None, None
+    base_color = None
+    for attr in ("baseColorFactor", "diffuse", "ambient", "color"):
+        val = getattr(material, attr, None)
+        if val is not None:
+            base_color = _normalize_color(val)
+            if base_color is not None:
+                break
+    texture_path = None
+    image_path = getattr(material, "image_path", None)
+    if image_path:
+        candidate = Path(str(image_path))
+        if not candidate.is_absolute():
+            candidate = (path.parent / candidate).resolve()
+        if candidate.exists():
+            texture_path = candidate
+    texture_image = getattr(material, "image", None)
+    return texture_path, texture_image, base_color
+
+
+def _load_fbx_mesh_arrays(path: Path) -> MeshArrays:
+    if np is None:
+        raise RuntimeError("numpy unavailable")
+    _ensure_assimp_dll()
+    use_trimesh = trimesh is not None
+    if use_trimesh:
+        try:
+            from trimesh.exchange import load as trimesh_load
+            if "fbx" not in trimesh_load.mesh_loaders:
+                use_trimesh = False
+        except Exception:
+            use_trimesh = False
+
+    if use_trimesh:
+        scene = trimesh.load(path, force="scene")
+        meshes = []
+        if isinstance(scene, trimesh.Scene):
+            for geom in scene.geometry.values():
+                if getattr(geom, "faces", None) is not None:
+                    meshes.append(geom)
+        else:
+            meshes = [scene]
+        if not meshes:
+            raise RuntimeError("FBX mesh missing")
+    else:
+        return _load_fbx_mesh_arrays_pyassimp(path)
+
+    points_all: List["np.ndarray"] = []
+    normals_all: List["np.ndarray"] = []
+    uvs_all: List["np.ndarray"] = []
+    texture_path = None
+    texture_image = None
+    base_color = None
+
+    for mesh in meshes:
+        faces = getattr(mesh, "faces", None)
+        vertices = getattr(mesh, "vertices", None)
+        if faces is None or vertices is None:
+            continue
+        faces = np.asarray(faces, dtype=np.int64)
+        if faces.size == 0:
+            continue
+        vertices = np.asarray(vertices, dtype="f4")
+        tri_vertices = vertices[faces].reshape(-1, 3)
+
+        mesh_normals = getattr(mesh, "vertex_normals", None)
+        if mesh_normals is None or len(mesh_normals) != len(vertices):
+            v0 = vertices[faces[:, 0]]
+            v1 = vertices[faces[:, 1]]
+            v2 = vertices[faces[:, 2]]
+            n = np.cross(v1 - v0, v2 - v0)
+            lengths = np.linalg.norm(n, axis=1)
+            lengths[lengths < 1e-6] = 1.0
+            n = (n.T / lengths).T
+            tri_normals = np.repeat(n[:, None, :], 3, axis=1).reshape(-1, 3)
+        else:
+            normals = np.asarray(mesh_normals, dtype="f4")
+            tri_normals = normals[faces].reshape(-1, 3)
+
+        uv = None
+        visual = getattr(mesh, "visual", None)
+        if visual is not None and getattr(visual, "uv", None) is not None:
+            uv_raw = np.asarray(visual.uv, dtype="f4")
+            if uv_raw.shape[0] == vertices.shape[0]:
+                uv = uv_raw[faces].reshape(-1, 2)
+        if uv is None:
+            uv = np.zeros((tri_vertices.shape[0], 2), dtype="f4")
+
+        points_all.append(tri_vertices.astype("f4"))
+        normals_all.append(tri_normals.astype("f4"))
+        uvs_all.append(uv.astype("f4"))
+
+        if texture_path is None and texture_image is None:
+            t_path, t_image, color = _extract_trimesh_material(mesh, path)
+            if t_path is not None or t_image is not None:
+                texture_path = t_path
+                texture_image = t_image
+            if base_color is None and color is not None:
+                base_color = color
+        elif base_color is None:
+            _, _, color = _extract_trimesh_material(mesh, path)
+            if color is not None:
+                base_color = color
+
+    if not points_all:
+        raise RuntimeError("FBX mesh empty")
+
+    points = np.concatenate(points_all, axis=0)
+    normals = np.concatenate(normals_all, axis=0)
+    uvs = np.concatenate(uvs_all, axis=0)
+    return MeshArrays(
+        points=points,
+        normals=normals,
+        uvs=uvs,
+        texture_path=texture_path,
+        texture_image=texture_image,
+        base_color=base_color,
+    )
+
+
+def _pyassimp_texture_to_image(texture: object) -> Optional[object]:
+    if PILImage is None or texture is None:
+        return None
+    try:
+        width = int(texture.mWidth)
+        height = int(texture.mHeight)
+    except Exception:
+        return None
+    if width <= 0:
+        return None
+    try:
+        data_ptr = ctypes.cast(texture.pcData, ctypes.POINTER(ctypes.c_ubyte))
+    except Exception:
+        return None
+    if height == 0:
+        try:
+            raw = ctypes.string_at(data_ptr, width)
+            return PILImage.open(io.BytesIO(raw)).convert("RGBA")
+        except Exception:
+            return None
+    size = width * height * 4
+    try:
+        raw = ctypes.string_at(data_ptr, size)
+        img = PILImage.frombytes("RGBA", (width, height), raw, "raw", "ARGB")
+        return img
+    except Exception:
+        return None
+
+
+def _load_fbx_mesh_arrays_pyassimp(path: Path) -> MeshArrays:
+    if np is None:
+        raise RuntimeError("numpy unavailable")
+    _ensure_assimp_dll()
+    try:
+        import pyassimp
+        from pyassimp import material as ai_material
+    except Exception as exc:
+        raise RuntimeError(f"pyassimp unavailable: {exc}")
+    try:
+        from pyassimp import postprocess as ai_post
+        processing = (
+            ai_post.aiProcess_Triangulate
+            | ai_post.aiProcess_PreTransformVertices
+            | ai_post.aiProcess_JoinIdenticalVertices
+        )
+        with pyassimp.load(str(path), file_type="fbx", processing=processing) as scene:
+            points_all: List["np.ndarray"] = []
+            normals_all: List["np.ndarray"] = []
+            uvs_all: List["np.ndarray"] = []
+            texture_path = None
+            texture_image = None
+            base_color = None
+            for mesh in scene.meshes or []:
+                vertices = np.asarray(getattr(mesh, "vertices", []), dtype="f4")
+                faces = np.asarray(getattr(mesh, "faces", []), dtype=np.int64)
+                if vertices.size == 0 or faces.size == 0:
+                    continue
+                tri_vertices = vertices[faces].reshape(-1, 3)
+                normals = getattr(mesh, "normals", None)
+                if normals is not None and len(normals) == len(vertices):
+                    norm_arr = np.asarray(normals, dtype="f4")[faces].reshape(-1, 3)
+                else:
+                    v0 = vertices[faces[:, 0]]
+                    v1 = vertices[faces[:, 1]]
+                    v2 = vertices[faces[:, 2]]
+                    n = np.cross(v1 - v0, v2 - v0)
+                    lengths = np.linalg.norm(n, axis=1)
+                    lengths[lengths < 1e-6] = 1.0
+                    n = (n.T / lengths).T
+                    norm_arr = np.repeat(n[:, None, :], 3, axis=1).reshape(-1, 3)
+
+                uv = None
+                texcoords = getattr(mesh, "texturecoords", None)
+                if texcoords is not None and len(texcoords) > 0:
+                    uv_raw = np.asarray(texcoords[0], dtype="f4")
+                    if uv_raw.shape[0] == vertices.shape[0] and uv_raw.shape[1] >= 2:
+                        uv = uv_raw[:, :2]
+                if uv is None:
+                    uv = np.zeros((vertices.shape[0], 2), dtype="f4")
+                tri_uv = uv[faces].reshape(-1, 2)
+
+                points_all.append(tri_vertices.astype("f4"))
+                normals_all.append(norm_arr.astype("f4"))
+                uvs_all.append(tri_uv.astype("f4"))
+
+                material = getattr(mesh, "material", None)
+                if material is None and hasattr(scene, "materials"):
+                    try:
+                        material = scene.materials[mesh.materialindex]
+                    except Exception:
+                        material = None
+                props = getattr(material, "properties", {}) if material is not None else {}
+                if texture_path is None and texture_image is None and props:
+                    tex_value = None
+                    for semantic in (
+                        ai_material.aiTextureType_DIFFUSE,
+                        ai_material.aiTextureType_UNKNOWN,
+                        ai_material.aiTextureType_EMISSIVE,
+                    ):
+                        tex_value = props.get(("file", semantic))
+                        if isinstance(tex_value, str) and tex_value:
+                            break
+                        tex_value = None
+                    if tex_value is None:
+                        for (key, _semantic), value in props.items():
+                            if key == "file" and isinstance(value, str) and value:
+                                tex_value = value
+                                break
+                    if isinstance(tex_value, str) and tex_value.startswith("*"):
+                        try:
+                            tex_index = int(tex_value[1:])
+                            if 0 <= tex_index < len(scene.textures):
+                                texture_image = _pyassimp_texture_to_image(scene.textures[tex_index])
+                        except Exception:
+                            texture_image = None
+                    elif isinstance(tex_value, str) and tex_value:
+                        candidate = Path(tex_value)
+                        if not candidate.is_absolute():
+                            candidate = (path.parent / candidate).resolve()
+                        if candidate.exists():
+                            texture_path = candidate
+
+                if base_color is None and props:
+                    color_val = props.get(("diffuse", ai_material.aiTextureType_NONE)) if props else None
+                    if color_val is None:
+                        color_val = props.get(("color", ai_material.aiTextureType_NONE)) if props else None
+                    if color_val is not None:
+                        base_color = _normalize_color(color_val)
+
+            if not points_all:
+                raise RuntimeError("FBX mesh empty")
+            points = np.concatenate(points_all, axis=0)
+            normals = np.concatenate(normals_all, axis=0)
+            uvs = np.concatenate(uvs_all, axis=0)
+            return MeshArrays(
+                points=points,
+                normals=normals,
+                uvs=uvs,
+                texture_path=texture_path,
+                texture_image=texture_image,
+                base_color=base_color,
+            )
+    except Exception as exc:
+        raise RuntimeError(str(exc))
+
+
+def _load_fbx_model(path: Path) -> ModelData:
+    mesh_arrays = _load_fbx_mesh_arrays(path)
+    points = mesh_arrays.points
+    bounds = [
+        float(np.min(points[:, 0])),
+        float(np.min(points[:, 1])),
+        float(np.min(points[:, 2])),
+        float(np.max(points[:, 0])),
+        float(np.max(points[:, 1])),
+        float(np.max(points[:, 2])),
+    ]
+    vertices = points.reshape(-1).astype("f4").tolist()
+    return ModelData(vertices=vertices, bounds=tuple(bounds))
+
+
 register_model_loader([".gltf", ".glb"], _load_gltf_model)
 register_model_loader([".obj"], _load_obj_model)
+register_model_loader([".fbx"], _load_fbx_model)
 
 _HAS_MGL = moderngl is not None and np is not None and Matrix44 is not None
 
@@ -1223,12 +1596,99 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             self,
             "Open Model",
             start_dir,
-            "Mesh files (*.obj *.gltf *.glb *.stl *.ply *.off *.om)",
+            "Mesh files (*.obj *.gltf *.glb *.fbx *.stl *.ply *.off *.om)",
         )
         if not path:
             return
         self._mgl_load_mesh(Path(path))
         self.update()
+
+    def _mgl_qimage_from_texture(self, texture: object) -> Optional[QtGui.QImage]:
+        if isinstance(texture, QtGui.QImage):
+            return texture
+        if PILImage is not None and isinstance(texture, PILImage.Image):
+            image = texture
+            if image.mode not in ("RGB", "RGBA"):
+                image = image.convert("RGBA")
+            mode = image.mode
+            data = image.tobytes()
+            if mode == "RGB":
+                fmt = QtGui.QImage.Format_RGB888
+                stride = image.width * 3
+            else:
+                fmt = (
+                    QtGui.QImage.Format_RGBA8888
+                    if hasattr(QtGui.QImage, "Format_RGBA8888")
+                    else QtGui.QImage.Format_ARGB32
+                )
+                stride = image.width * 4
+            qimg = QtGui.QImage(data, image.width, image.height, stride, fmt)
+            return qimg.copy()
+        if np is not None and isinstance(texture, np.ndarray):
+            arr = texture
+            if arr.ndim == 2:
+                arr = np.stack([arr] * 3, axis=-1)
+            if arr.ndim != 3 or arr.shape[2] not in (3, 4):
+                return None
+            if arr.dtype != np.uint8:
+                arr = np.clip(arr, 0.0, 1.0)
+                arr = (arr * 255.0).astype(np.uint8)
+            h, w = arr.shape[:2]
+            if arr.shape[2] == 3:
+                fmt = QtGui.QImage.Format_RGB888
+                stride = w * 3
+            else:
+                fmt = (
+                    QtGui.QImage.Format_RGBA8888
+                    if hasattr(QtGui.QImage, "Format_RGBA8888")
+                    else QtGui.QImage.Format_ARGB32
+                )
+                stride = w * 4
+            qimg = QtGui.QImage(arr.tobytes(), w, h, stride, fmt)
+            return qimg.copy()
+        return None
+
+    def _mgl_upload_texture(self, image: QtGui.QImage, source_path: str = "") -> None:
+        if image.isNull():
+            raise RuntimeError("Texture load failed")
+        if hasattr(QtGui.QImage, "Format_RGBA8888"):
+            image = image.convertToFormat(QtGui.QImage.Format_RGBA8888)
+        else:
+            image = image.convertToFormat(QtGui.QImage.Format_ARGB32)
+        image = image.mirrored(False, True)
+        if self._mgl_texture is not None:
+            try:
+                self._mgl_texture.release()
+            except Exception:
+                pass
+        ptr = image.bits()
+        try:
+            ptr.setsize(image.sizeInBytes())
+            data = bytes(ptr)
+        except Exception:
+            data = image.bits().tobytes()
+        self._mgl_texture = self._mgl_ctx.texture(
+            (image.width(), image.height()),
+            4,
+            data,
+        )
+        self._mgl_texture.build_mipmaps()
+        self._mgl_texture.filter = (moderngl.LINEAR_MIPMAP_LINEAR, moderngl.LINEAR)
+        self._mgl_texture.repeat_x = True
+        self._mgl_texture.repeat_y = True
+        self._mgl_texture_path = source_path
+        if self._mgl_prog is not None:
+            try:
+                self._mgl_prog["UseTexture"].value = 1
+            except Exception:
+                pass
+
+    def _mgl_upload_texture_path(self, path: Path) -> bool:
+        image = QtGui.QImage(str(path))
+        if image.isNull():
+            return False
+        self._mgl_upload_texture(image, str(path))
+        return True
 
     def _on_mgl_pick_texture(self) -> None:
         if not self._use_moderngl:
@@ -1259,39 +1719,9 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             self._mgl_error = "Texture load failed"
             self.update()
             return
-        if hasattr(QtGui.QImage, "Format_RGBA8888"):
-            image = image.convertToFormat(QtGui.QImage.Format_RGBA8888)
-        else:
-            image = image.convertToFormat(QtGui.QImage.Format_ARGB32)
-        image = image.mirrored(False, True)
         try:
             self.makeCurrent()
-            if self._mgl_texture is not None:
-                try:
-                    self._mgl_texture.release()
-                except Exception:
-                    pass
-            ptr = image.bits()
-            try:
-                ptr.setsize(image.sizeInBytes())
-                data = bytes(ptr)
-            except Exception:
-                data = image.bits().tobytes()
-            self._mgl_texture = self._mgl_ctx.texture(
-                (image.width(), image.height()),
-                4,
-                data,
-            )
-            self._mgl_texture.build_mipmaps()
-            self._mgl_texture.filter = (moderngl.LINEAR_MIPMAP_LINEAR, moderngl.LINEAR)
-            self._mgl_texture.repeat_x = True
-            self._mgl_texture.repeat_y = True
-            self._mgl_texture_path = path
-            if self._mgl_prog is not None:
-                try:
-                    self._mgl_prog["UseTexture"].value = 1
-                except Exception:
-                    pass
+            self._mgl_upload_texture(image, path)
             self._mgl_error = ""
         except Exception as exc:
             self._mgl_error = f"Texture upload failed: {exc}"
@@ -1366,7 +1796,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             parent,
             "Select Model",
             start_dir,
-            "3D Models (*.obj *.gltf *.glb);;All Files (*.*)",
+            "3D Models (*.obj *.gltf *.glb *.fbx);;All Files (*.*)",
         )
         if not path:
             return
@@ -1401,7 +1831,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             parent,
             "Select Model",
             start_dir,
-            "3D Models (*.obj *.gltf *.glb);;All Files (*.*)",
+            "3D Models (*.obj *.gltf *.glb *.fbx);;All Files (*.*)",
         )
         if not path:
             return
@@ -2068,7 +2498,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             self._mgl_error = "ModernGL context not ready"
             return
         mesh = None
-        if openmesh is not None:
+        if openmesh is not None and path.suffix.lower() != ".fbx":
             try:
                 mesh = openmesh.read_trimesh(str(path))
             except Exception:
@@ -2076,8 +2506,23 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         points = None
         normals = None
         uvs = None
+        fbx_texture_path = None
+        fbx_texture_image = None
+        fbx_color = None
         if mesh is None:
-            if path.suffix.lower() == ".obj":
+            if path.suffix.lower() == ".fbx":
+                try:
+                    mesh_arrays = _load_fbx_mesh_arrays(path)
+                    points = mesh_arrays.points
+                    normals = mesh_arrays.normals
+                    uvs = mesh_arrays.uvs
+                    fbx_texture_path = mesh_arrays.texture_path
+                    fbx_texture_image = mesh_arrays.texture_image
+                    fbx_color = mesh_arrays.base_color
+                except Exception as exc:
+                    self._mgl_error = f"FBX load failed: {exc}"
+                    return
+            elif path.suffix.lower() == ".obj":
                 try:
                     points, normals, uvs = _load_obj_mesh_arrays(path)
                 except Exception:
@@ -2103,12 +2548,27 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
                     normals[i:i + 3] = n
         try:
             self.makeCurrent()
+            self._mgl_error = ""
             if mesh is not None:
                 self._mgl_set_mesh(mesh)
             else:
                 self._mgl_set_raw_mesh(points, normals, uvs)
+                if fbx_color is not None:
+                    self._mgl_mesh_color = fbx_color
+                if fbx_texture_path is not None:
+                    try:
+                        if not self._mgl_upload_texture_path(fbx_texture_path):
+                            self._mgl_error = "Texture load failed"
+                    except Exception as exc:
+                        self._mgl_error = f"Texture upload failed: {exc}"
+                elif fbx_texture_image is not None:
+                    qimg = self._mgl_qimage_from_texture(fbx_texture_image)
+                    if qimg is not None:
+                        try:
+                            self._mgl_upload_texture(qimg, str(path))
+                        except Exception as exc:
+                            self._mgl_error = f"Texture upload failed: {exc}"
             self._mgl_mesh_path = str(path)
-            self._mgl_error = ""
         except Exception as exc:
             self._mgl_error = f"Mesh upload failed: {exc}"
         finally:
