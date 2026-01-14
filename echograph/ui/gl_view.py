@@ -1479,7 +1479,6 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             painter = QtGui.QPainter(self)
             painter.fillRect(self.rect(), QtGui.QColor("#0f172a"))
             painter.end()
-        self._draw_overlay()
 
     def refresh_from_scene(self) -> None:
         if self._render_scene_plane:
@@ -3506,18 +3505,22 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         if self._render_paused:
             self._gl.glClearColor(0.10, 0.12, 0.14, 1.0)
             self._gl.glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+            self._draw_overlay()
             return
         if self._use_moderngl:
             self._paint_mgl()
+            self._draw_overlay()
             return
         if self._use_example_pipeline:
             self._paint_example()
+            self._draw_overlay()
             return
         self._upload_scene_texture()
         self._upload_grid()
         self._gl.glClearColor(0.10, 0.12, 0.14, 1.0)
         self._gl.glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         if QOpenGLShaderProgram is None:
+            self._draw_overlay()
             return
         if self._vao is not None:
             try:
@@ -3661,10 +3664,15 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
                 self._vao.release()
             except Exception:
                 pass
+        self._draw_overlay()
 
-    def _draw_overlay(self) -> None:
-        painter = QtGui.QPainter(self)
+    def _draw_overlay(self, painter: Optional[QtGui.QPainter] = None) -> None:
+        owns_painter = False
+        if painter is None:
+            painter = QtGui.QPainter(self)
+            owns_painter = True
         painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        painter.setRenderHint(QtGui.QPainter.TextAntialiasing, True)
         show_debug = self._debug_overlay
         if show_debug:
             lines = self._debug_status_lines()
@@ -3690,7 +3698,8 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         if self._use_moderngl and self._mgl_uv_overlay_enabled:
             self._draw_uv_overlay(painter)
         self._draw_axis_gizmo(painter)
-        painter.end()
+        if owns_painter:
+            painter.end()
 
     def _debug_status_lines(self, include_paths: bool = False) -> List[str]:
         lines = ["3D View Debug"]
