@@ -1821,13 +1821,21 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
         self.view.setMinimumSize(400, 300)
         self.gl_view.setMinimumSize(400, 300)
+        self._view_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        self._view_splitter.setObjectName("ViewSplitter")
+        self._view_splitter.setHandleWidth(6)
+        self._view_splitter.addWidget(self.gl_view)
+        self._view_splitter.addWidget(self.view)
+        self._view_splitter.setStretchFactor(0, 1)
+        self._view_splitter.setStretchFactor(1, 1)
         self.gl_view.hide()
-        v.addWidget(self.view, 1)
-        v.addWidget(self.gl_view, 1)
+        self._view_mode = "2d"
+        v.addWidget(self._view_splitter, 1)
 
         self.setCentralWidget(central)
 
         self._init_info_dock()
+        self._set_view_mode("2d")
 
         # App-level Ctrl+B filter (focus-only)
         self._ctrlb_filter = _CtrlBEventFilter(self)
@@ -1915,34 +1923,28 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         except Exception:
             pass
 
-    def _toggle_3d_view(self, enabled: bool):
+    def _cycle_view_mode(self) -> None:
+        mode = getattr(self, "_view_mode", "2d")
+        if mode == "2d":
+            next_mode = "3d"
+        elif mode == "3d":
+            next_mode = "split"
+        else:
+            next_mode = "2d"
+        self._set_view_mode(next_mode)
+
+    def _set_view_mode(self, mode: str) -> None:
+        mode = (mode or "2d").lower()
+        if mode not in {"2d", "3d", "split"}:
+            mode = "2d"
+        self._view_mode = mode
         view = getattr(self, "view", None)
         gl_view = getattr(self, "gl_view", None)
-        if enabled:
-            if gl_view:
-                try:
-                    gl_view.set_scene(self.scene)
-                    gl_view.refresh_from_scene()
-                except Exception:
-                    pass
-                try:
-                    if view:
-                        view.hide()
-                except Exception:
-                    pass
-                try:
-                    gl_view.show()
-                except Exception:
-                    pass
-        else:
+        splitter = getattr(self, "_view_splitter", None)
+        if gl_view and mode in {"3d", "split"}:
             try:
-                if gl_view:
-                    gl_view.hide()
-            except Exception:
-                pass
-            try:
-                if view:
-                    view.show()
+                gl_view.set_scene(self.scene)
+                gl_view.refresh_from_scene()
             except Exception:
                 pass
         if view and hasattr(view, "set_3d_mode"):
@@ -1950,11 +1952,72 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 view.set_3d_mode(False)
             except Exception:
                 pass
-        try:
-            if hasattr(self, "_btn_3d"):
-                self._btn_3d.setText("2D View" if enabled else "3D View")
-        except Exception:
-            pass
+        if mode == "2d":
+            if gl_view:
+                try:
+                    gl_view.hide()
+                except Exception:
+                    pass
+            if view:
+                try:
+                    view.show()
+                except Exception:
+                    pass
+            if splitter:
+                try:
+                    splitter.setSizes([0, 1])
+                except Exception:
+                    pass
+        elif mode == "3d":
+            if view:
+                try:
+                    view.hide()
+                except Exception:
+                    pass
+            if gl_view:
+                try:
+                    gl_view.show()
+                except Exception:
+                    pass
+            if splitter:
+                try:
+                    splitter.setSizes([1, 0])
+                except Exception:
+                    pass
+        else:
+            if view:
+                try:
+                    view.show()
+                except Exception:
+                    pass
+            if gl_view:
+                try:
+                    gl_view.show()
+                except Exception:
+                    pass
+            if splitter:
+                try:
+                    total = max(2, splitter.width())
+                    left = total // 2
+                    splitter.setSizes([left, total - left])
+                except Exception:
+                    pass
+        self._update_view_mode_button()
+
+    def _update_view_mode_button(self) -> None:
+        btn = getattr(self, "_btn_3d", None)
+        if btn is None:
+            return
+        mode = getattr(self, "_view_mode", "2d")
+        if mode == "2d":
+            btn.setText("2D View")
+            btn.setToolTip("2D view active")
+        elif mode == "3d":
+            btn.setText("3D View")
+            btn.setToolTip("3D view active")
+        else:
+            btn.setText("2D/3D View")
+            btn.setToolTip("Split view active")
 
     def _maybe_show_recent_dialog(self):
         recents = [p for p in getattr(self, "_recent_files", []) if p]
@@ -2018,9 +2081,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         h.addWidget(btn_frame, 0)
 
         self._btn_3d = QtWidgets.QPushButton("3D View", bar)
-        self._btn_3d.setToolTip("Toggle 3D orbit/pan view (view-only)")
-        self._btn_3d.setCheckable(True)
-        self._btn_3d.toggled.connect(self._toggle_3d_view)
+        self._btn_3d.setToolTip("Switch to 3D viewport")
+        self._btn_3d.clicked.connect(self._cycle_view_mode)
         h.addWidget(self._btn_3d, 0)
 
         btn_logs = QtWidgets.QPushButton("Logs")
