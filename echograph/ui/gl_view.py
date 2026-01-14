@@ -230,6 +230,17 @@ class MeshArrays:
     texture_path: Optional[Path] = None
     texture_image: Optional[object] = None
     base_color: Optional[Tuple[float, float, float, float]] = None
+    submeshes: Optional[List["SubMeshData"]] = None
+
+
+@dataclass
+class SubMeshData:
+    points: "np.ndarray"
+    normals: "np.ndarray"
+    uvs: "np.ndarray"
+    texture_path: Optional[Path] = None
+    texture_image: Optional[object] = None
+    base_color: Optional[Tuple[float, float, float, float]] = None
 
 
 def _resolve_obj_index(value: Optional[int], total: int) -> Optional[int]:
@@ -853,6 +864,7 @@ def _load_fbx_mesh_arrays(path: Path) -> MeshArrays:
     points_all: List["np.ndarray"] = []
     normals_all: List["np.ndarray"] = []
     uvs_all: List["np.ndarray"] = []
+    submeshes: List[SubMeshData] = []
     texture_path = None
     texture_image = None
     base_color = None
@@ -891,21 +903,31 @@ def _load_fbx_mesh_arrays(path: Path) -> MeshArrays:
         if uv is None:
             uv = np.zeros((tri_vertices.shape[0], 2), dtype="f4")
 
-        points_all.append(tri_vertices.astype("f4"))
-        normals_all.append(tri_normals.astype("f4"))
-        uvs_all.append(uv.astype("f4"))
+        tri_vertices = tri_vertices.astype("f4")
+        tri_normals = tri_normals.astype("f4")
+        uv = uv.astype("f4")
+        points_all.append(tri_vertices)
+        normals_all.append(tri_normals)
+        uvs_all.append(uv)
+
+        t_path, t_image, color = _extract_trimesh_material(mesh, path)
+        submeshes.append(
+            SubMeshData(
+                points=tri_vertices,
+                normals=tri_normals,
+                uvs=uv,
+                texture_path=t_path,
+                texture_image=t_image,
+                base_color=color,
+            )
+        )
 
         if texture_path is None and texture_image is None:
-            t_path, t_image, color = _extract_trimesh_material(mesh, path)
             if t_path is not None or t_image is not None:
                 texture_path = t_path
                 texture_image = t_image
-            if base_color is None and color is not None:
-                base_color = color
-        elif base_color is None:
-            _, _, color = _extract_trimesh_material(mesh, path)
-            if color is not None:
-                base_color = color
+        if base_color is None and color is not None:
+            base_color = color
 
     if not points_all:
         raise RuntimeError("FBX mesh empty")
@@ -920,6 +942,7 @@ def _load_fbx_mesh_arrays(path: Path) -> MeshArrays:
         texture_path=texture_path,
         texture_image=texture_image,
         base_color=base_color,
+        submeshes=submeshes if submeshes else None,
     )
 
 
@@ -972,6 +995,7 @@ def _load_fbx_mesh_arrays_pyassimp(path: Path) -> MeshArrays:
             points_all: List["np.ndarray"] = []
             normals_all: List["np.ndarray"] = []
             uvs_all: List["np.ndarray"] = []
+            submeshes: List[SubMeshData] = []
             texture_path = None
             texture_image = None
             base_color = None
@@ -1004,9 +1028,12 @@ def _load_fbx_mesh_arrays_pyassimp(path: Path) -> MeshArrays:
                     uv = np.zeros((vertices.shape[0], 2), dtype="f4")
                 tri_uv = uv[faces].reshape(-1, 2)
 
-                points_all.append(tri_vertices.astype("f4"))
-                normals_all.append(norm_arr.astype("f4"))
-                uvs_all.append(tri_uv.astype("f4"))
+                tri_vertices = tri_vertices.astype("f4")
+                norm_arr = norm_arr.astype("f4")
+                tri_uv = tri_uv.astype("f4")
+                points_all.append(tri_vertices)
+                normals_all.append(norm_arr)
+                uvs_all.append(tri_uv)
 
                 material = getattr(mesh, "material", None)
                 if material is None and hasattr(scene, "materials"):
@@ -1015,7 +1042,10 @@ def _load_fbx_mesh_arrays_pyassimp(path: Path) -> MeshArrays:
                     except Exception:
                         material = None
                 props = getattr(material, "properties", {}) if material is not None else {}
-                if texture_path is None and texture_image is None and props:
+                mesh_texture_path = None
+                mesh_texture_image = None
+                mesh_color = None
+                if props:
                     tex_value = None
                     for semantic in (
                         ai_material.aiTextureType_DIFFUSE,
@@ -1035,22 +1065,41 @@ def _load_fbx_mesh_arrays_pyassimp(path: Path) -> MeshArrays:
                         try:
                             tex_index = int(tex_value[1:])
                             if 0 <= tex_index < len(scene.textures):
-                                texture_image = _pyassimp_texture_to_image(scene.textures[tex_index])
+                                mesh_texture_image = _pyassimp_texture_to_image(scene.textures[tex_index])
                         except Exception:
-                            texture_image = None
+                            mesh_texture_image = None
                     elif isinstance(tex_value, str) and tex_value:
                         candidate = Path(tex_value)
                         if not candidate.is_absolute():
                             candidate = (path.parent / candidate).resolve()
                         if candidate.exists():
-                            texture_path = candidate
+                            mesh_texture_path = candidate
 
-                if base_color is None and props:
+                if props:
                     color_val = props.get(("diffuse", ai_material.aiTextureType_NONE)) if props else None
                     if color_val is None:
                         color_val = props.get(("color", ai_material.aiTextureType_NONE)) if props else None
                     if color_val is not None:
-                        base_color = _normalize_color(color_val)
+                        mesh_color = _normalize_color(color_val)
+
+                submeshes.append(
+                    SubMeshData(
+                        points=tri_vertices,
+                        normals=norm_arr,
+                        uvs=tri_uv,
+                        texture_path=mesh_texture_path,
+                        texture_image=mesh_texture_image,
+                        base_color=mesh_color,
+                    )
+                )
+
+                if texture_path is None and texture_image is None:
+                    if mesh_texture_path is not None or mesh_texture_image is not None:
+                        texture_path = mesh_texture_path
+                        texture_image = mesh_texture_image
+
+                if base_color is None and mesh_color is not None:
+                    base_color = mesh_color
 
             if not points_all:
                 raise RuntimeError("FBX mesh empty")
@@ -1064,6 +1113,7 @@ def _load_fbx_mesh_arrays_pyassimp(path: Path) -> MeshArrays:
                 texture_path=texture_path,
                 texture_image=texture_image,
                 base_color=base_color,
+                submeshes=submeshes if submeshes else None,
             )
     except Exception as exc:
         raise RuntimeError(str(exc))
@@ -1346,6 +1396,9 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._mgl_mesh_path = ""
         self._mgl_texture = None
         self._mgl_texture_path = ""
+        self._mgl_texture_paths: List[str] = []
+        self._mgl_texture_override = False
+        self._mgl_submeshes: List[Dict[str, object]] = []
         self._mgl_error = ""
         self._mgl_wireframe = False
         self._mgl_cull_enabled = False
@@ -1661,27 +1714,33 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
                 self._mgl_texture.release()
             except Exception:
                 pass
-        ptr = image.bits()
-        try:
-            ptr.setsize(image.sizeInBytes())
-            data = bytes(ptr)
-        except Exception:
-            data = image.bits().tobytes()
-        self._mgl_texture = self._mgl_ctx.texture(
-            (image.width(), image.height()),
-            4,
-            data,
-        )
-        self._mgl_texture.build_mipmaps()
-        self._mgl_texture.filter = (moderngl.LINEAR_MIPMAP_LINEAR, moderngl.LINEAR)
-        self._mgl_texture.repeat_x = True
-        self._mgl_texture.repeat_y = True
+        self._mgl_texture = self._mgl_make_texture(image)
         self._mgl_texture_path = source_path
         if self._mgl_prog is not None:
             try:
                 self._mgl_prog["UseTexture"].value = 1
             except Exception:
                 pass
+
+    def _mgl_make_texture(self, image: QtGui.QImage):
+        if image.isNull():
+            raise RuntimeError("Texture load failed")
+        ptr = image.bits()
+        try:
+            ptr.setsize(image.sizeInBytes())
+            data = bytes(ptr)
+        except Exception:
+            data = image.bits().tobytes()
+        texture = self._mgl_ctx.texture(
+            (image.width(), image.height()),
+            4,
+            data,
+        )
+        texture.build_mipmaps()
+        texture.filter = (moderngl.LINEAR_MIPMAP_LINEAR, moderngl.LINEAR)
+        texture.repeat_x = True
+        texture.repeat_y = True
+        return texture
 
     def _mgl_upload_texture_path(self, path: Path) -> bool:
         image = QtGui.QImage(str(path))
@@ -1722,6 +1781,8 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         try:
             self.makeCurrent()
             self._mgl_upload_texture(image, path)
+            self._mgl_texture_override = True
+            self._mgl_texture_paths = [str(path)]
             self._mgl_error = ""
         except Exception as exc:
             self._mgl_error = f"Texture upload failed: {exc}"
@@ -2378,6 +2439,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
     def _mgl_set_mesh(self, mesh) -> None:
         if not _HAS_MGL or self._mgl_ctx is None or mesh is None:
             return
+        self._mgl_clear_submeshes()
         mesh.update_normals()
         points = np.array(mesh.points(), dtype="f4")
         normals = np.array(mesh.vertex_normals(), dtype="f4")
@@ -2400,6 +2462,31 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._mgl_set_uv_overlay(None)
         self._mgl_init_arcball(points)
 
+    def _mgl_clear_submeshes(self) -> None:
+        if not self._mgl_submeshes:
+            return
+        for item in self._mgl_submeshes:
+            tex = item.get("texture")
+            if tex is not None:
+                try:
+                    tex.release()
+                except Exception:
+                    pass
+            for key in ("vbo", "nbo", "tbo", "ibo"):
+                buf = item.get(key)
+                if buf is not None:
+                    try:
+                        buf.release()
+                    except Exception:
+                        pass
+            vao = item.get("vao")
+            if vao is not None:
+                try:
+                    vao.release()
+                except Exception:
+                    pass
+        self._mgl_submeshes = []
+
     def _mgl_set_raw_mesh(
         self,
         points: "np.ndarray",
@@ -2410,6 +2497,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             return
         if points.size == 0:
             return
+        self._mgl_clear_submeshes()
         points = points.astype("f4").reshape(-1, 3)
         normals = normals.astype("f4").reshape(-1, 3)
         if uvs is None or uvs.size == 0:
@@ -2432,6 +2520,80 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._mgl_mesh = None
         self._mgl_set_uv_overlay(uvs)
         self._mgl_init_arcball(points)
+
+    def _mgl_set_submeshes(self, submeshes: List[SubMeshData]) -> None:
+        if not _HAS_MGL or self._mgl_ctx is None:
+            return
+        self._mgl_clear_submeshes()
+        if not submeshes:
+            return
+        combined_points: List["np.ndarray"] = []
+        combined_uvs: List["np.ndarray"] = []
+        total_indices = 0
+        texture_paths: List[str] = []
+        for sub in submeshes:
+            points = sub.points.astype("f4").reshape(-1, 3)
+            normals = sub.normals.astype("f4").reshape(-1, 3)
+            uvs = sub.uvs.astype("f4").reshape(-1, 2)
+            indices = np.arange(points.shape[0], dtype="u4")
+            ibo = self._mgl_ctx.buffer(indices.tobytes())
+            vbo = self._mgl_ctx.buffer(points.tobytes())
+            nbo = self._mgl_ctx.buffer(normals.tobytes())
+            tbo = self._mgl_ctx.buffer(uvs.tobytes())
+            vao_content = [
+                (vbo, "3f", "in_position"),
+                (nbo, "3f", "in_normal"),
+                (tbo, "2f", "in_uv"),
+            ]
+            vao = self._mgl_ctx.vertex_array(self._mgl_prog, vao_content, ibo, 4)
+
+            texture = None
+            if not self._mgl_texture_override:
+                if sub.texture_path is not None and sub.texture_path.exists():
+                    qimg = QtGui.QImage(str(sub.texture_path))
+                    if not qimg.isNull():
+                        if hasattr(QtGui.QImage, "Format_RGBA8888"):
+                            qimg = qimg.convertToFormat(QtGui.QImage.Format_RGBA8888)
+                        else:
+                            qimg = qimg.convertToFormat(QtGui.QImage.Format_ARGB32)
+                        qimg = qimg.mirrored(False, True)
+                        texture = self._mgl_make_texture(qimg)
+                        texture_paths.append(str(sub.texture_path))
+                elif sub.texture_image is not None:
+                    qimg = self._mgl_qimage_from_texture(sub.texture_image)
+                    if qimg is not None:
+                        if hasattr(QtGui.QImage, "Format_RGBA8888"):
+                            qimg = qimg.convertToFormat(QtGui.QImage.Format_RGBA8888)
+                        else:
+                            qimg = qimg.convertToFormat(QtGui.QImage.Format_ARGB32)
+                        qimg = qimg.mirrored(False, True)
+                        texture = self._mgl_make_texture(qimg)
+                        texture_paths.append("embedded")
+
+            color = sub.base_color if sub.base_color is not None else self._mgl_mesh_color
+            self._mgl_submeshes.append(
+                {
+                    "vao": vao,
+                    "vbo": vbo,
+                    "nbo": nbo,
+                    "tbo": tbo,
+                    "ibo": ibo,
+                    "texture": texture,
+                    "color": color,
+                    "count": int(indices.size),
+                }
+            )
+            total_indices += int(indices.size)
+            combined_points.append(points)
+            combined_uvs.append(uvs)
+
+        self._mgl_mesh_vertex_count = total_indices
+        self._mgl_mesh = None
+        if combined_uvs:
+            self._mgl_set_uv_overlay(np.concatenate(combined_uvs, axis=0))
+        if combined_points:
+            self._mgl_init_arcball(np.concatenate(combined_points, axis=0))
+        self._mgl_texture_paths = texture_paths
 
     def _mgl_set_uv_overlay(self, uvs: Optional["np.ndarray"]) -> None:
         if uvs is None or uvs.size == 0 or np is None:
@@ -2497,6 +2659,15 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         if self._mgl_ctx is None:
             self._mgl_error = "ModernGL context not ready"
             return
+        if self._mgl_texture is not None:
+            try:
+                self._mgl_texture.release()
+            except Exception:
+                pass
+        self._mgl_texture = None
+        self._mgl_texture_path = ""
+        self._mgl_texture_paths = []
+        self._mgl_texture_override = False
         mesh = None
         if openmesh is not None and path.suffix.lower() != ".fbx":
             try:
@@ -2506,19 +2677,14 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         points = None
         normals = None
         uvs = None
-        fbx_texture_path = None
-        fbx_texture_image = None
-        fbx_color = None
+        fbx_mesh_arrays = None
         if mesh is None:
             if path.suffix.lower() == ".fbx":
                 try:
-                    mesh_arrays = _load_fbx_mesh_arrays(path)
-                    points = mesh_arrays.points
-                    normals = mesh_arrays.normals
-                    uvs = mesh_arrays.uvs
-                    fbx_texture_path = mesh_arrays.texture_path
-                    fbx_texture_image = mesh_arrays.texture_image
-                    fbx_color = mesh_arrays.base_color
+                    fbx_mesh_arrays = _load_fbx_mesh_arrays(path)
+                    points = fbx_mesh_arrays.points
+                    normals = fbx_mesh_arrays.normals
+                    uvs = fbx_mesh_arrays.uvs
                 except Exception as exc:
                     self._mgl_error = f"FBX load failed: {exc}"
                     return
@@ -2552,22 +2718,27 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             if mesh is not None:
                 self._mgl_set_mesh(mesh)
             else:
-                self._mgl_set_raw_mesh(points, normals, uvs)
-                if fbx_color is not None:
-                    self._mgl_mesh_color = fbx_color
-                if fbx_texture_path is not None:
-                    try:
-                        if not self._mgl_upload_texture_path(fbx_texture_path):
-                            self._mgl_error = "Texture load failed"
-                    except Exception as exc:
-                        self._mgl_error = f"Texture upload failed: {exc}"
-                elif fbx_texture_image is not None:
-                    qimg = self._mgl_qimage_from_texture(fbx_texture_image)
-                    if qimg is not None:
+                if fbx_mesh_arrays is not None and fbx_mesh_arrays.submeshes:
+                    self._mgl_set_submeshes(fbx_mesh_arrays.submeshes)
+                    if fbx_mesh_arrays.base_color is not None:
+                        self._mgl_mesh_color = fbx_mesh_arrays.base_color
+                else:
+                    self._mgl_set_raw_mesh(points, normals, uvs)
+                    if fbx_mesh_arrays is not None and fbx_mesh_arrays.base_color is not None:
+                        self._mgl_mesh_color = fbx_mesh_arrays.base_color
+                    if fbx_mesh_arrays is not None and fbx_mesh_arrays.texture_path is not None:
                         try:
-                            self._mgl_upload_texture(qimg, str(path))
+                            if not self._mgl_upload_texture_path(fbx_mesh_arrays.texture_path):
+                                self._mgl_error = "Texture load failed"
                         except Exception as exc:
                             self._mgl_error = f"Texture upload failed: {exc}"
+                    elif fbx_mesh_arrays is not None and fbx_mesh_arrays.texture_image is not None:
+                        qimg = self._mgl_qimage_from_texture(fbx_mesh_arrays.texture_image)
+                        if qimg is not None:
+                            try:
+                                self._mgl_upload_texture(qimg, str(path))
+                            except Exception as exc:
+                                self._mgl_error = f"Texture upload failed: {exc}"
             self._mgl_mesh_path = str(path)
         except Exception as exc:
             self._mgl_error = f"Mesh upload failed: {exc}"
@@ -2622,50 +2793,97 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             mvp = proj * lookat * transform * scale_mat
         else:
             mvp = proj * lookat * transform
-        wire_overlay = bool(self._mgl_wireframe and self._mgl_vao is not None)
+        wire_overlay = bool(self._mgl_wireframe and (self._mgl_submeshes or self._mgl_vao is not None))
         if wire_overlay:
             try:
                 self._mgl_ctx.polygon_offset = (1.0, 1.0)
             except Exception:
                 pass
         self._mgl_prog["Mvp"].write(mvp.astype("f4"))
-        self._mgl_prog["Color"].value = self._mgl_mesh_color
-        use_texture = self._mgl_texture is not None
-        try:
-            self._mgl_prog["UseTexture"].value = 1 if use_texture else 0
-            self._mgl_prog["UseLighting"].value = 1
-            self._mgl_prog["LightIntensity"].value = float(self._mgl_light_intensity)
-        except Exception:
-            pass
-        if use_texture:
+        if self._mgl_submeshes:
+            manual_texture = self._mgl_texture if self._mgl_texture_override else None
+            for sub in self._mgl_submeshes:
+                color = sub.get("color") or self._mgl_mesh_color
+                tex = manual_texture or sub.get("texture")
+                use_texture = tex is not None
+                try:
+                    self._mgl_prog["UseTexture"].value = 1 if use_texture else 0
+                    self._mgl_prog["UseLighting"].value = 1
+                    self._mgl_prog["LightIntensity"].value = float(self._mgl_light_intensity)
+                    self._mgl_prog["Color"].value = color
+                except Exception:
+                    pass
+                if use_texture:
+                    try:
+                        tex.use(location=0)
+                    except Exception:
+                        pass
+                vao = sub.get("vao")
+                if vao is not None:
+                    vao.render()
+            if wire_overlay:
+                try:
+                    self._mgl_ctx.polygon_offset = (0.0, 0.0)
+                except Exception:
+                    pass
+                try:
+                    self._mgl_ctx.line_width = float(self._mgl_wire_line_width)
+                except Exception:
+                    pass
+                self._mgl_ctx.wireframe = True
+                try:
+                    self._mgl_prog["UseTexture"].value = 0
+                    self._mgl_prog["UseLighting"].value = 0
+                    self._mgl_prog["Color"].value = self._mgl_wire_color
+                except Exception:
+                    pass
+                for sub in self._mgl_submeshes:
+                    vao = sub.get("vao")
+                    if vao is not None:
+                        vao.render()
+                self._mgl_ctx.wireframe = False
+                try:
+                    self._mgl_ctx.line_width = 1.0
+                except Exception:
+                    pass
+        else:
+            self._mgl_prog["Color"].value = self._mgl_mesh_color
+            use_texture = self._mgl_texture is not None
             try:
-                self._mgl_texture.use(location=0)
+                self._mgl_prog["UseTexture"].value = 1 if use_texture else 0
+                self._mgl_prog["UseLighting"].value = 1
+                self._mgl_prog["LightIntensity"].value = float(self._mgl_light_intensity)
             except Exception:
                 pass
-        if self._mgl_vao is not None:
-            self._mgl_vao.render()
-        if wire_overlay and self._mgl_vao is not None:
-            try:
-                self._mgl_ctx.polygon_offset = (0.0, 0.0)
-            except Exception:
-                pass
-            try:
-                self._mgl_ctx.line_width = float(self._mgl_wire_line_width)
-            except Exception:
-                pass
-            self._mgl_ctx.wireframe = True
-            try:
-                self._mgl_prog["UseTexture"].value = 0
-                self._mgl_prog["UseLighting"].value = 0
-                self._mgl_prog["Color"].value = self._mgl_wire_color
-            except Exception:
-                pass
-            self._mgl_vao.render()
-            self._mgl_ctx.wireframe = False
-            try:
-                self._mgl_ctx.line_width = 1.0
-            except Exception:
-                pass
+            if use_texture:
+                try:
+                    self._mgl_texture.use(location=0)
+                except Exception:
+                    pass
+            if self._mgl_vao is not None:
+                self._mgl_vao.render()
+            if wire_overlay and self._mgl_vao is not None:
+                try:
+                    self._mgl_ctx.polygon_offset = (0.0, 0.0)
+                except Exception:
+                    pass
+                try:
+                    self._mgl_ctx.line_width = float(self._mgl_wire_line_width)
+                except Exception:
+                    pass
+                self._mgl_ctx.wireframe = True
+                try:
+                    self._mgl_prog["UseTexture"].value = 0
+                    self._mgl_prog["UseLighting"].value = 0
+                    self._mgl_prog["Color"].value = self._mgl_wire_color
+                except Exception:
+                    pass
+                self._mgl_vao.render()
+                self._mgl_ctx.wireframe = False
+                try:
+                    self._mgl_ctx.line_width = 1.0
+                except Exception:
+                    pass
         if self._mgl_grid_vao is not None:
             self._mgl_grid_prog["Mvp"].write(mvp.astype("f4"))
             self._mgl_grid_prog["Color"].value = (1.0, 1.0, 1.0, self._mgl_grid_alpha)
@@ -3435,8 +3653,15 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             lines.append(f"Camera zoom: {self._mgl_camera_zoom:.2f}")
             if self._mgl_mesh_path:
                 lines.append(f"Model: {Path(self._mgl_mesh_path).name}")
-            if self._mgl_texture_path:
+            if self._mgl_texture_override and self._mgl_texture_path:
                 lines.append(f"Texture: {Path(self._mgl_texture_path).name}")
+            elif self._mgl_texture_paths:
+                names = [Path(p).name for p in self._mgl_texture_paths if p]
+                if len(names) > 3:
+                    shown = ", ".join(names[:3])
+                    lines.append(f"Textures: {shown} (+{len(names) - 3} more)")
+                else:
+                    lines.append("Textures: " + ", ".join(names))
             else:
                 lines.append("Texture: none")
             lines.append(f"Mesh indices: {self._mgl_mesh_vertex_count}")
