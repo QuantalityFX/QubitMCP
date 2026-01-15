@@ -1389,7 +1389,16 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._example_pan_speed = 0.02
         self._example_rotate_speed = 0.3
         self._example_zoom_step = 2.0
-        self._example_clear_color = QtGui.QColor("#111827")
+
+        self._viewport_bg = QtGui.QColor("#b0b0b0")  # light gray
+        self._example_clear_color = QtGui.QColor(self._viewport_bg)
+        self._mgl_bg_color = (
+            self._viewport_bg.redF(),
+            self._viewport_bg.greenF(),
+            self._viewport_bg.blueF(),
+            1.0,
+        )
+        
         self._example_grid_vbo = None
         self._example_grid_count = 0
         self._example_grid_extent = 12.0
@@ -2943,8 +2952,8 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
     def _paint_mgl(self) -> None:
         if not _HAS_MGL or self._mgl_ctx is None:
             try:
-                self._gl.glClearColor(0.10, 0.12, 0.14, 1.0)
-                self._gl.glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+                c = self._viewport_bg
+                self._gl.glClearColor(c.redF(), c.greenF(), c.blueF(), 1.0)
             except Exception:
                 pass
             return
@@ -3607,7 +3616,8 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         if not hasattr(self, "_gl"):
             return
         if self._render_paused:
-            self._gl.glClearColor(0.10, 0.12, 0.14, 1.0)
+            bg = getattr(self, "_viewport_bg", QtGui.QColor("#1a1f24"))
+            self._gl.glClearColor(bg.redF(), bg.greenF(), bg.blueF(), 1.0)
             self._gl.glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
             return
         if self._use_moderngl:
@@ -3618,7 +3628,8 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             return
         self._upload_scene_texture()
         self._upload_grid()
-        self._gl.glClearColor(0.10, 0.12, 0.14, 1.0)
+        bg = getattr(self, "_viewport_bg", QtGui.QColor("#1a1f24"))
+        self._gl.glClearColor(bg.redF(), bg.greenF(), bg.blueF(), 1.0)
         self._gl.glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         if QOpenGLShaderProgram is None:
             return

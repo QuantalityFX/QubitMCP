@@ -1987,8 +1987,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 return
 
             # output thumbnail size (1:1)
-            OUT_W = 512
-            OUT_H = 512
+            OUT_W = 1024
+            OUT_H = 1024
 
             w = int(image.width())
             h = int(image.height())
