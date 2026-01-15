@@ -816,15 +816,19 @@ class NodeItem(QtWidgets.QGraphicsObject):
             body_h = 6 + count * self._PARAM_ROW_H
             node_w = self._BASE_W
         elif kind == "import":
+            node_w = self._BASE_W  # define first
+
             body_h = self._PARAM_ROW_H * 2 + self._PADDING
             path = (self._param_value("path") or "").strip()
             ext = os.path.splitext(path)[1].lower()
+
             if ext == ".obj":
                 body_h += self._PARAM_ROW_H
+
             thumb = (self._param_value("thumbnail") or "").strip()
             if ext in (".fbx", ".obj", ".gltf", ".glb") and thumb and os.path.exists(thumb):
-                body_h += self._IMPORT_THUMB_H + self._PADDING
-            node_w = self._BASE_W
+                inner_w = max(40, int(node_w) - 12)  # matches preview inner width
+                body_h += inner_w + self._PADDING    # square preview height
         elif kind == "html_preview":
             body_h = self._html_preview_body_height()
             preview_w, _ = self._html_preview_dimensions()
@@ -1764,14 +1768,28 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
         thumb_path = (self._param_value("thumbnail") or "").strip()
         thumb_widget = None
+
         if ext in (".fbx", ".obj", ".gltf", ".glb") and thumb_path and os.path.exists(thumb_path):
+            # full-width square preview inside the node
+            inner_w = max(40, int(self.width) - 12)  # same idea as recompute_height
+
             thumb_widget = QtWidgets.QLabel()
-            thumb_widget.setMinimumHeight(self._IMPORT_THUMB_H)
             thumb_widget.setAlignment(QtCore.Qt.AlignCenter)
+            thumb_widget.setFixedSize(inner_w, inner_w)
+
             pixmap = QtGui.QPixmap(thumb_path)
             if not pixmap.isNull():
-                scaled_pixmap = pixmap.scaledToHeight(self._IMPORT_THUMB_H, QtCore.Qt.SmoothTransformation)
-                thumb_widget.setPixmap(scaled_pixmap)
+                # scale to cover the square, then center-crop to exactly inner_w x inner_w
+                scaled = pixmap.scaled(
+                    inner_w, inner_w,
+                    QtCore.Qt.KeepAspectRatioByExpanding,
+                    QtCore.Qt.SmoothTransformation
+                )
+                x = max(0, (scaled.width() - inner_w) // 2)
+                y = max(0, (scaled.height() - inner_w) // 2)
+                cropped = scaled.copy(x, y, inner_w, inner_w)
+
+                thumb_widget.setPixmap(cropped)
 
         return self._render_file_summary(y_cursor, detail, btn_enabled, path, extra_widget=extra, thumb_widget=thumb_widget)
 
@@ -1968,6 +1986,30 @@ class NodeItem(QtWidgets.QGraphicsObject):
             if image is None or image.isNull():
                 return
 
+            # output thumbnail size (1:1)
+            OUT_W = 512
+            OUT_H = 512
+
+            w = int(image.width())
+            h = int(image.height())
+            if w <= 0 or h <= 0:
+                return
+
+            # centered square crop (top/bottom if tall, left/right if wide)
+            side = min(w, h)
+            x = max(0, (w - side) // 2)
+            y = max(0, (h - side) // 2)
+            cropped = image.copy(x, y, side, side)
+            if cropped.isNull():
+                return
+
+            # scale to fixed thumbnail size, no letterbox
+            out = cropped.scaled(
+                OUT_W, OUT_H,
+                QtCore.Qt.IgnoreAspectRatio,
+                QtCore.Qt.SmoothTransformation
+            )
+
             scene_path = getattr(self.scene(), "_filename", None)
             workflow_path = getattr(parent, "_current_path", None) or scene_path
             if not workflow_path:
@@ -1984,7 +2026,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             image_path = snapshots_dir / f"{model_filename}.png"
 
             try:
-                image.save(str(image_path))
+                out.save(str(image_path))
             except Exception:
                 return
 

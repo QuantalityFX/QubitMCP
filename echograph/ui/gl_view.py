@@ -1781,7 +1781,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
                 texture_str = str(texture_path)
 
         # store whether we should frame when the model actually applies
-        self._frame_on_load = bool(frame)
+        self._manual_model_frame = bool(frame)
 
         if self._use_moderngl:
             self._mgl_load_mesh(model_path)
@@ -2084,20 +2084,24 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
     def _apply_manual_model(self) -> None:
         if not self._render_scene_models:
             return
+
         self._model_load_pending = False
         self._render_paused = True
+
         try:
             self._load_scene_models()
+
+            # Only frame/reset if requested
+            if bool(getattr(self, "_manual_model_frame", True)):
+                self._reset_camera()
+
         except Exception:
-            self._render_paused = False
+            # Keep it silent like your original
             return
 
-        # only frame/reset if requested
-        if bool(getattr(self, "_manual_model_frame", True)):
-            self._reset_camera()
-
-        self._render_paused = False
-        self.update()
+        finally:
+            self._render_paused = False
+            self.update()
 
 
     def _capture_scene_texture(self) -> None:
