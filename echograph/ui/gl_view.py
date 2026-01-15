@@ -1390,7 +1390,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._example_rotate_speed = 0.3
         self._example_zoom_step = 2.0
 
-        self._viewport_bg = QtGui.QColor("#b0b0b0")  # light gray
+        self._viewport_bg = QtGui.QColor("#535353")  # light gray
         self._example_clear_color = QtGui.QColor(self._viewport_bg)
         self._mgl_bg_color = (
             self._viewport_bg.redF(),
@@ -1421,7 +1421,12 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._mgl_error = ""
         self._mgl_wireframe = False
         self._mgl_cull_enabled = False
-        self._mgl_bg_color = (0.1, 0.1, 0.1, 1.0)
+        self._mgl_bg_color = (
+            self._viewport_bg.redF(),
+            self._viewport_bg.greenF(),
+            self._viewport_bg.blueF(),
+            1.0,
+        )
         self._mgl_mesh_color = (0.85, 0.88, 0.95, 1.0)
         self._mgl_light_intensity = 1.0
         self._mgl_wire_color = (0.25, 0.25, 0.25, 1.0)
