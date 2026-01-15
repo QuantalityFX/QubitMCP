@@ -1505,6 +1505,12 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             painter = QtGui.QPainter(self)
             painter.fillRect(self.rect(), QtGui.QColor("#0f172a"))
             painter.end()
+        # Reset GL texture unit for Qt's QPainter overlay (prevents textured/black stats panel)
+        if hasattr(self, "_gl"):
+            try:
+                self._gl.glActiveTexture(0x84C0)  # GL_TEXTURE0
+            except Exception:
+                pass
         self._draw_overlay()
 
     def refresh_from_scene(self) -> None:
