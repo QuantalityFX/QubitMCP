@@ -1762,8 +1762,8 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._update_example_transform()
         self.update()
         self.update()
-
-    def load_model_path(self, path: str | Path, texture_path: str | Path | None = None) -> None:
+    
+    def load_model_path(self, path: str | Path, texture_path: str | Path | None = None, frame: bool = True) -> None:
         if not path:
             return
         try:
@@ -1772,22 +1772,29 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             return
         if not model_path.exists():
             return
+
         texture_str = ""
         if texture_path:
             try:
                 texture_str = str(Path(texture_path))
             except Exception:
                 texture_str = str(texture_path)
+
+        # store whether we should frame when the model actually applies
+        self._frame_on_load = bool(frame)
+
         if self._use_moderngl:
             self._mgl_load_mesh(model_path)
             if texture_str:
                 self._apply_texture_path(texture_str)
             self.update()
             return
+
         if self._use_example_pipeline:
             self._queue_example_model(model_path)
             self.update()
             return
+
         self._render_scene_models = True
         self._manual_model_path = model_path
         self._show_scene_plane = False
@@ -2084,9 +2091,14 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         except Exception:
             self._render_paused = False
             return
-        self._reset_camera()
+
+        # only frame/reset if requested
+        if bool(getattr(self, "_manual_model_frame", True)):
+            self._reset_camera()
+
         self._render_paused = False
         self.update()
+
 
     def _capture_scene_texture(self) -> None:
         if not self._render_scene_plane:

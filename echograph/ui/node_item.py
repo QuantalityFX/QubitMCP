@@ -1950,45 +1950,48 @@ class NodeItem(QtWidgets.QGraphicsObject):
             return
 
         gl_view = getattr(parent, "gl_view", None)
-        if not gl_view:
+        if gl_view is None or not hasattr(gl_view, "grabFramebuffer"):
             return
 
-        ext = os.path.splitext(path)[1].lower()
-        texture = ""
-        if ext == ".obj":
-            texture = (self._param_value("texture") or "").strip()
-
-        if hasattr(parent, "_set_view_mode"):
-            parent._set_view_mode("3d")
-
-        gl_view.load_model_path(path, texture if texture else None)
+        # Optional safety: only capture if the GL view is actually visible
+        try:
+            if hasattr(gl_view, "isVisible") and not gl_view.isVisible():
+                return
+        except Exception:
+            pass
 
         def capture():
-            image = gl_view.grabFramebuffer()
-            if image.isNull():
+            try:
+                image = gl_view.grabFramebuffer()
+            except Exception:
+                return
+            if image is None or image.isNull():
                 return
 
             scene_path = getattr(self.scene(), "_filename", None)
-
             workflow_path = getattr(parent, "_current_path", None) or scene_path
             if not workflow_path:
                 return
 
             base_dir = Path(workflow_path).parent
             snapshots_dir = base_dir / "snapshots"
-            snapshots_dir.mkdir(exist_ok=True, parents=True)
+            try:
+                snapshots_dir.mkdir(exist_ok=True, parents=True)
+            except Exception:
+                return
 
             model_filename = Path(path).stem
             image_path = snapshots_dir / f"{model_filename}.png"
 
-            image.save(str(image_path))
+            try:
+                image.save(str(image_path))
+            except Exception:
+                return
 
             self._set_param_value("thumbnail", str(image_path))
-
             self._schedule_rebuild()
 
-        QtCore.QTimer.singleShot(200, capture)
-
+        QtCore.QTimer.singleShot(0, capture)
 
     def _file_detail_for_path(self, path: str) -> tuple[str, bool]:
         path = (path or "").strip()
