@@ -1761,7 +1761,19 @@ class NodeItem(QtWidgets.QGraphicsObject):
         extra = None
         if ext == ".obj":
             extra = self._make_import_texture_widget(self._param_value("texture"))
-        return self._render_file_summary(y_cursor, detail, btn_enabled, path, extra_widget=extra)
+
+        thumb_path = (self._param_value("thumbnail") or "").strip()
+        thumb_widget = None
+        if ext in (".fbx", ".obj", ".gltf", ".glb") and thumb_path and os.path.exists(thumb_path):
+            thumb_widget = QtWidgets.QLabel()
+            thumb_widget.setMinimumHeight(self._IMPORT_THUMB_H)
+            thumb_widget.setAlignment(QtCore.Qt.AlignCenter)
+            pixmap = QtGui.QPixmap(thumb_path)
+            if not pixmap.isNull():
+                scaled_pixmap = pixmap.scaledToHeight(self._IMPORT_THUMB_H, QtCore.Qt.SmoothTransformation)
+                thumb_widget.setPixmap(scaled_pixmap)
+
+        return self._render_file_summary(y_cursor, detail, btn_enabled, path, extra_widget=extra, thumb_widget=thumb_widget)
 
     def _build_html_preview(self, y_cursor: int) -> int:
         path = self._param_value("path")
@@ -1844,12 +1856,16 @@ class NodeItem(QtWidgets.QGraphicsObject):
         btn_enabled: bool,
         path: str,
         extra_widget: QtWidgets.QWidget | None = None,
+        thumb_widget: QtWidgets.QWidget | None = None,
     ) -> int:
         row = QtWidgets.QWidget()
         row.setAttribute(QtCore.Qt.WA_TranslucentBackground)
         outer = QtWidgets.QVBoxLayout(row)
         outer.setContentsMargins(6, 0, 6, 0)
         outer.setSpacing(4)
+
+        if thumb_widget:
+            outer.addWidget(thumb_widget, 0)
 
         label = QtWidgets.QLabel(detail)
         label.setStyleSheet("color:#cbd5e1;")
@@ -1879,6 +1895,29 @@ class NodeItem(QtWidgets.QGraphicsObject):
             reload_btn.setFixedSize(24, 24)
             reload_btn.clicked.connect(lambda _=False: self._reload_import_path())
             btn_row.addWidget(reload_btn, 0, QtCore.Qt.AlignLeft)
+
+            is_3d = self._is_3d_model_ext(os.path.splitext(path)[1].lower())
+            if is_3d:
+                screengrab_btn = QtWidgets.QToolButton()
+                icon = _screengrab_icon()
+                if icon:
+                    screengrab_btn.setIcon(QtGui.QIcon(icon))
+                screengrab_btn.setToolTip("Capture thumbnail from 3D view")
+                screengrab_btn.setEnabled(bool(path))
+                screengrab_btn.setFixedSize(24, 24)
+                screengrab_btn.clicked.connect(lambda _=False, p=path: self._on_screengrab_clicked(p))
+                btn_row.addWidget(screengrab_btn, 0, QtCore.Qt.AlignLeft)
+
+                snabgrab_btn = QtWidgets.QToolButton()
+                # icon = _snabgrab_icon() # Or some other icon
+                # if icon:
+                #     snabgrab_btn.setIcon(QtGui.QIcon(icon))
+                snabgrab_btn.setText("Sn")
+                snabgrab_btn.setToolTip("Snabgrab a thing")
+                snabgrab_btn.setEnabled(bool(path))
+                snabgrab_btn.setFixedSize(24, 24)
+                snabgrab_btn.clicked.connect(lambda _=False, p=path: self._on_snabgrab_clicked(p))
+                btn_row.addWidget(snabgrab_btn, 0, QtCore.Qt.AlignLeft)
 
         btn_row.addStretch(1)
         outer.addLayout(btn_row)
@@ -1911,6 +1950,56 @@ class NodeItem(QtWidgets.QGraphicsObject):
             return
         value = (self._param_value("path") or "").strip()
         QtCore.QTimer.singleShot(0, lambda v=value: self._set_param_value("path", v))
+
+    def _on_screengrab_clicked(self, path: str):
+        path = (path or "").strip()
+        if not path or not os.path.exists(path):
+            return
+
+        parent = _top_level_parent_for_dialog()
+        if parent is None:
+            return
+
+        gl_view = getattr(parent, "gl_view", None)
+        if not gl_view:
+            return
+
+        ext = os.path.splitext(path)[1].lower()
+        texture = ""
+        if ext == ".obj":
+            texture = (self._param_value("texture") or "").strip()
+
+        if hasattr(parent, "_set_view_mode"):
+            parent._set_view_mode("3d")
+
+        gl_view.load_model_path(path, texture if texture else None)
+
+        def capture():
+            image = gl_view.grabFramebuffer()
+            if image.isNull():
+                return
+
+            scene_path = getattr(self.scene(), "_filename", None)
+            if not scene_path:
+                return
+
+            base_dir = Path(scene_path).parent
+            snapshots_dir = base_dir / "snapshots"
+            snapshots_dir.mkdir(exist_ok=True)
+
+            model_filename = Path(path).stem
+            image_path = snapshots_dir / f"{model_filename}.png"
+
+            image.save(str(image_path))
+
+            self._set_param_value("thumbnail", str(image_path))
+
+            self._schedule_rebuild()
+
+        QtCore.QTimer.singleShot(200, capture)
+
+    def _on_snabgrab_clicked(self, path: str):
+        print(f"Snabgrab clicked for path: {path}")
 
     def _file_detail_for_path(self, path: str) -> tuple[str, bool]:
         path = (path or "").strip()

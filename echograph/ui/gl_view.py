@@ -1530,6 +1530,15 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             self._frame_btn = QtWidgets.QPushButton("Frame")
             self._frame_btn.clicked.connect(self._on_frame_clicked)
             layout.addWidget(self._frame_btn, 0)
+
+            self._snapgrab_btn = QtWidgets.QPushButton()
+            self._snapgrab_btn.setToolTip("Snapshot")
+            icon_path = Path(__file__).resolve().parents[2] / "icons" / "screengrab _Icon_s_001.png"
+            if icon_path.exists():
+                self._snapgrab_btn.setIcon(QtGui.QIcon(str(icon_path)))
+            self._snapgrab_btn.clicked.connect(self._on_snapgrab_clicked)
+            layout.addWidget(self._snapgrab_btn, 0)
+            
             self._example_model_btn = QtWidgets.QPushButton("Model...")
             if self._use_moderngl:
                 self._example_model_btn.clicked.connect(self._on_mgl_pick_model)
@@ -1709,6 +1718,23 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             return
         self._reset_camera()
         self.update()
+
+    def _on_snapgrab_clicked(self) -> None:
+        image = self.grabFramebuffer()
+        if image.isNull():
+            return
+        
+        start_dir = str(Path.home() / "Pictures")
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Save Snapshot",
+            start_dir,
+            "Images (*.png *.jpg)",
+        )
+        if not path:
+            return
+        
+        image.save(path)
 
     def _on_plane_toggled(self, checked: bool) -> None:
         if not self._render_scene_plane:
