@@ -1908,17 +1908,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 screengrab_btn.clicked.connect(lambda _=False, p=path: self._on_screengrab_clicked(p))
                 btn_row.addWidget(screengrab_btn, 0, QtCore.Qt.AlignLeft)
 
-                snabgrab_btn = QtWidgets.QToolButton()
-                # icon = _snabgrab_icon() # Or some other icon
-                # if icon:
-                #     snabgrab_btn.setIcon(QtGui.QIcon(icon))
-                snabgrab_btn.setText("Sn")
-                snabgrab_btn.setToolTip("Snabgrab a thing")
-                snabgrab_btn.setEnabled(bool(path))
-                snabgrab_btn.setFixedSize(24, 24)
-                snabgrab_btn.clicked.connect(lambda _=False, p=path: self._on_snabgrab_clicked(p))
-                btn_row.addWidget(snabgrab_btn, 0, QtCore.Qt.AlignLeft)
-
         btn_row.addStretch(1)
         outer.addLayout(btn_row)
 
@@ -1980,12 +1969,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 return
 
             scene_path = getattr(self.scene(), "_filename", None)
-            if not scene_path:
+
+            workflow_path = getattr(parent, "_current_path", None) or scene_path
+            if not workflow_path:
                 return
 
-            base_dir = Path(scene_path).parent
+            base_dir = Path(workflow_path).parent
             snapshots_dir = base_dir / "snapshots"
-            snapshots_dir.mkdir(exist_ok=True)
+            snapshots_dir.mkdir(exist_ok=True, parents=True)
 
             model_filename = Path(path).stem
             image_path = snapshots_dir / f"{model_filename}.png"
@@ -1998,8 +1989,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
         QtCore.QTimer.singleShot(200, capture)
 
-    def _on_snabgrab_clicked(self, path: str):
-        print(f"Snabgrab clicked for path: {path}")
 
     def _file_detail_for_path(self, path: str) -> tuple[str, bool]:
         path = (path or "").strip()
