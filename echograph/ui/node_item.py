@@ -50,6 +50,7 @@ _LIBRARIAN_ICON = None
 _IMPORT_ICON = None
 _OUTPUT_ICON = None
 _PYTHON_ICON = None
+_SCREENGRAB_ICON = None
 
 def _db_icon():
     global _DB_ICON
@@ -196,6 +197,22 @@ def _python_icon():
     _PYTHON_ICON = None
     return _PYTHON_ICON
 
+def _screengrab_icon():
+    global _SCREENGRAB_ICON
+    if _SCREENGRAB_ICON is not None:
+        return _SCREENGRAB_ICON
+    try:
+        icon_path = Path(__file__).resolve().parents[2] / "icons" / "screengrab _Icon_s_001.png"
+        if icon_path.is_file():
+            pm = QtGui.QPixmap(str(icon_path))
+            if not pm.isNull():
+                _SCREENGRAB_ICON = pm
+                return _SCREENGRAB_ICON
+    except Exception:
+        pass
+    _SCREENGRAB_ICON = None
+    return _SCREENGRAB_ICON
+
 # Optional WebEngine
 try:
     from PySide6 import QtWebEngineWidgets as WebEngine
@@ -304,6 +321,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
     _IMG_CTRL_H = 40
     _CHATBOT_BODY_W = 420
     _CHATBOT_BODY_H = 360
+    _IMPORT_THUMB_H = 120
     
     def __init__(self, model: GraphNode):
         try:
@@ -764,7 +782,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
         # Params block (regular rows)
         params = list(self.model.params or [])
         if kind == "import":
-            params = [p for p in params if (p.get("name", "") or "").strip().lower() != "texture"]
+            params = [
+                p for p in params
+                if (p.get("name", "") or "").strip().lower() not in ("texture", "thumbnail")
+            ]
         n_params = len(params)
         params_h = n_params * self._PARAM_ROW_H
 
@@ -800,6 +821,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
             ext = os.path.splitext(path)[1].lower()
             if ext == ".obj":
                 body_h += self._PARAM_ROW_H
+            thumb = (self._param_value("thumbnail") or "").strip()
+            if ext in (".fbx", ".obj", ".gltf", ".glb") and thumb and os.path.exists(thumb):
+                body_h += self._IMPORT_THUMB_H + self._PADDING
             node_w = self._BASE_W
         elif kind == "html_preview":
             body_h = self._html_preview_body_height()
@@ -1437,7 +1461,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     pname = p.get("name", "")
                     pval  = p.get("value", "")
                     pname_key = (pname or "").strip().lower()
-                    if kind == "import" and pname_key == "texture":
+                    if kind == "import" and pname_key in ("texture", "thumbnail"):
                         continue
                     has_port = pname_key in named_inputs
                     wired = has_port and pname_key in wired_inputs
