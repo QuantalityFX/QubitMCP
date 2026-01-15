@@ -1286,8 +1286,18 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             except Exception:
                 pass
             try:
-                if hasattr(self, "setUpdateBehavior") and hasattr(QOpenGLWidget, "NoPartialUpdate"):
-                    self.setUpdateBehavior(QOpenGLWidget.NoPartialUpdate)
+                if hasattr(self, "setUpdateBehavior"):
+                    behavior = None
+                    if hasattr(QOpenGLWidget, "NoPartialUpdate"):
+                        behavior = QOpenGLWidget.NoPartialUpdate
+                    else:
+                        behavior = getattr(
+                            getattr(QOpenGLWidget, "UpdateBehavior", None),
+                            "NoPartialUpdate",
+                            None,
+                        )
+                    if behavior is not None:
+                        self.setUpdateBehavior(behavior)
             except Exception:
                 pass
         self._scene = scene
@@ -1442,6 +1452,8 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._dolly_start_dist = None
         self._debug_toggle_icon_active = None
         self._debug_toggle_icon_inactive = None
+        self._debug_overlay_cache = None
+        self._debug_overlay_cache_key = None
 
         self.setMouseTracking(True)
         self.setFocusPolicy(QtCore.Qt.StrongFocus)
@@ -1479,6 +1491,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             painter = QtGui.QPainter(self)
             painter.fillRect(self.rect(), QtGui.QColor("#0f172a"))
             painter.end()
+        self._draw_overlay()
 
     def refresh_from_scene(self) -> None:
         if self._render_scene_plane:
@@ -3554,22 +3567,18 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         if self._render_paused:
             self._gl.glClearColor(0.10, 0.12, 0.14, 1.0)
             self._gl.glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-            self._draw_overlay()
             return
         if self._use_moderngl:
             self._paint_mgl()
-            self._draw_overlay()
             return
         if self._use_example_pipeline:
             self._paint_example()
-            self._draw_overlay()
             return
         self._upload_scene_texture()
         self._upload_grid()
         self._gl.glClearColor(0.10, 0.12, 0.14, 1.0)
         self._gl.glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         if QOpenGLShaderProgram is None:
-            self._draw_overlay()
             return
         if self._vao is not None:
             try:
@@ -3713,9 +3722,15 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
                 self._vao.release()
             except Exception:
                 pass
-        self._draw_overlay()
 
     def _draw_overlay(self, painter: Optional[QtGui.QPainter] = None) -> None:
+        depth_disabled = False
+        if hasattr(self, "_gl"):
+            try:
+                self._gl.glDisable(GL_DEPTH_TEST)
+                depth_disabled = True
+            except Exception:
+                depth_disabled = False
         owns_painter = False
         if painter is None:
             painter = QtGui.QPainter(self)
@@ -3726,18 +3741,47 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         if show_debug:
             lines = self._debug_status_lines()
             if lines:
-                metrics = painter.fontMetrics()
+                metrics = QtGui.QFontMetrics(painter.font())
+                if hasattr(metrics, "horizontalAdvance"):
+                    text_width = max(metrics.horizontalAdvance(line) for line in lines)
+                else:
+                    text_width = max(metrics.width(line) for line in lines)
+                text_height = len(lines) * metrics.height() + max(0, len(lines) - 1) * 2
                 pad = 8
                 panel_top = 10.0
                 btn = getattr(self, "_debug_copy_btn", None)
                 if btn is not None and btn.isVisible():
                     panel_top = btn.geometry().bottom() + 6.0
-                painter.setPen(QtGui.QColor("#e2e8f0"))
-                x = 10 + pad
-                y = panel_top + pad + metrics.ascent()
-                for line in lines:
-                    painter.drawText(QtCore.QPointF(x, y), line)
-                    y += metrics.height() + 2
+                panel_w = text_width + pad * 2
+                panel_h = text_height + pad * 2
+                dpr = 1.0
+                try:
+                    dpr = float(self.devicePixelRatioF())
+                except Exception:
+                    dpr = 1.0
+                cache_key = (tuple(lines), painter.font().toString(), panel_w, panel_h, dpr)
+                if self._debug_overlay_cache is None or self._debug_overlay_cache_key != cache_key:
+                    img_w = max(1, int(panel_w * dpr))
+                    img_h = max(1, int(panel_h * dpr))
+                    image = QtGui.QImage(img_w, img_h, QtGui.QImage.Format_ARGB32_Premultiplied)
+                    image.setDevicePixelRatio(dpr)
+                    image.fill(QtCore.Qt.transparent)
+                    ip = QtGui.QPainter(image)
+                    ip.setRenderHint(QtGui.QPainter.Antialiasing, True)
+                    ip.setRenderHint(QtGui.QPainter.TextAntialiasing, True)
+                    ip.setPen(QtCore.Qt.NoPen)
+                    ip.setBrush(QtCore.Qt.NoBrush)
+                    ip.drawRoundedRect(QtCore.QRectF(0, 0, panel_w, panel_h), 6, 6)
+                    ip.setPen(QtGui.QColor("#e2e8f0"))
+                    x = pad
+                    y = pad + metrics.ascent()
+                    for line in lines:
+                        ip.drawText(QtCore.QPointF(x, y), line)
+                        y += metrics.height() + 2
+                    ip.end()
+                    self._debug_overlay_cache = image
+                    self._debug_overlay_cache_key = cache_key
+                painter.drawImage(QtCore.QPointF(10, panel_top), self._debug_overlay_cache)
         if self._shader_error:
             painter.setPen(QtGui.QColor("#fca5a5"))
             painter.drawText(self.rect(), QtCore.Qt.AlignCenter, "3D View: shader error")
@@ -3749,6 +3793,11 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._draw_axis_gizmo(painter)
         if owns_painter:
             painter.end()
+        if depth_disabled:
+            try:
+                self._gl.glEnable(GL_DEPTH_TEST)
+            except Exception:
+                pass
 
     def _debug_status_lines(self, include_paths: bool = False) -> List[str]:
         lines = ["3D View Debug"]
