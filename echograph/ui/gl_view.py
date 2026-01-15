@@ -2835,14 +2835,23 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
     def _mgl_init_arcball(self, points: "np.ndarray") -> None:
         if self._mgl_arcball is None:
             self._mgl_arcball = _ArcBallUtil(self.width(), self.height())
+
         bbox_min = np.min(points, axis=0)
         bbox_max = np.max(points, axis=0)
         self._mgl_center = 0.5 * (bbox_max + bbox_min)
         self._mgl_scale = float(np.linalg.norm(bbox_max - self._mgl_center))
         scale = max(self._mgl_scale, 1e-6)
+
         self._mgl_arcball.Transform = np.identity(4, "f4")
         self._mgl_arcball.Transform[:3, :3] /= scale
         self._mgl_arcball.Transform[3, :3] = -self._mgl_center / scale
+
+        # ✅ keep internal arcball rotation state in sync with the forced Transform
+        try:
+            self._mgl_arcball.resetRotation()
+        except Exception:
+            pass
+
         self._mgl_camera_zoom = self._mgl_camera_distance(self._mgl_fov) * max(0.01, self._mgl_scale_multiplier)
 
     def _mgl_frame_camera(self) -> None:
