@@ -2721,21 +2721,28 @@ void main() {
         splats_np = self._mgl_pending_splats
         self._mgl_pending_splats = None
 
-        # frame arcball/camera to the splat bounds (so it appears on screen)
-        self._mgl_init_arcball(splats_np[:, :3])
-        
-        # frame arcball/camera to the splat bounds
-        self._mgl_init_arcball(splats_np[:, :3])
+        # --- frame camera from bounds ---
+        pos = splats_np[:, :3]
+        mins = pos.min(axis=0)
+        maxs = pos.max(axis=0)
+        center = (mins + maxs) * 0.5
+        extent = (maxs - mins) * 0.5
+        radius = float(extent.max())
 
-        # set zoom based on scene radius (simple, works)
-        r = float(self._mgl_scale)
-        self._mgl_camera_zoom = max(0.1, r * 3.0)
+        self._mgl_center = center.astype("f4")
+        # simple "fit" distance
+        self._mgl_camera_zoom = max(0.1, radius * 3.0)
 
-        print("[SPLAT] framed center:", self._mgl_center, "scale:", self._mgl_scale, "zoom:", self._mgl_camera_zoom)
+        # update arcball size
+        if self._mgl_arcball is not None:
+            try:
+                self._mgl_arcball.setBounds(self.width(), self.height())
+            except Exception:
+                pass
 
+        # --- upload buffers ---
         self._mgl_splat_count = int(splats_np.shape[0])
 
-        # release old buffers
         if self._mgl_splat_vao is not None:
             try:
                 self._mgl_splat_vao.release()
@@ -2750,8 +2757,9 @@ void main() {
                 pass
             self._mgl_splat_vbo = None
 
-        # upload new
+        print("[SPLAT] framed center:", self._mgl_center, "radius:", radius, "zoom:", self._mgl_camera_zoom)
         print("[SPLAT] uploading:", self._mgl_splat_count, "ctx:", self._mgl_ctx is not None)
+
         self._mgl_splat_vbo = self._mgl_ctx.buffer(splats_np.tobytes())
         self._mgl_splat_vao = self._mgl_ctx.vertex_array(
             self._mgl_splat_prog,
