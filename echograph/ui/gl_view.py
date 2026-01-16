@@ -2653,9 +2653,12 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             splat_vertex = """
 #version 330
 uniform mat4 Mvp;
+uniform float SplatSizeMul;
+
 in vec3 in_pos;
 in vec4 in_col;
 in float in_rad;
+
 out vec4 v_col;
 
 void main() {
@@ -2663,7 +2666,7 @@ void main() {
     gl_Position = clip;
 
     float w = max(1e-6, clip.w);
-    float px = in_rad * (800.0 / w);     // 800 is a tunable screen scale
+    float px = in_rad * SplatSizeMul * (800.0 / w);
     gl_PointSize = clamp(px, 1.0, 256.0);
 
     v_col = in_col;
@@ -3232,7 +3235,6 @@ void main() {
         if self._mgl_render_splats and self._mgl_splat_vao is not None and self._mgl_splat_count:
             self._mgl_ctx.enable(moderngl.PROGRAM_POINT_SIZE)
 
-            # enable point sprite coords so gl_PointCoord works
             try:
                 self._mgl_ctx.enable(moderngl.POINT_SPRITE)
             except Exception:
@@ -3242,19 +3244,14 @@ void main() {
             except Exception:
                 pass
 
-            # real splat state: blend ON, depth OFF (for now)
             self._mgl_ctx.enable(moderngl.BLEND)
-            self._mgl_ctx.disable(moderngl.DEPTH_TEST)
+            self._mgl_ctx.enable(moderngl.DEPTH_TEST)  # <- change: enable depth
 
-            # better blend for splats (reduces white halo)
             self._mgl_ctx.blend_func = moderngl.ONE, moderngl.ONE_MINUS_SRC_ALPHA
 
             self._mgl_splat_prog["Mvp"].write(mvp.astype("f4"))
+            self._mgl_splat_prog["SplatSizeMul"].value = 1.0 / max(1e-6, float(self._mgl_scale_multiplier))
             self._mgl_splat_vao.render(mode=moderngl.POINTS, vertices=self._mgl_splat_count)
-
-            # restore for rest of scene
-            self._mgl_ctx.enable(moderngl.DEPTH_TEST)
-
 
         # grid (only once)
         if self._mgl_grid_vao is not None:
