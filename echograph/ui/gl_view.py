@@ -2711,18 +2711,17 @@ uniform mat4 View;
 uniform mat4 Model;
 uniform float SplatWorldScale;
 
-in vec2 in_corner;   // per-vertex (-1..1)
-in vec3 in_pos;      // per-instance
-in vec4 in_col;      // per-instance
-in float in_rad;     // per-instance
-in vec2 in_scale;    // per-instance (sx, sy)
-in vec4 in_rot;      // per-instance quaternion (x,y,z,w)
+in vec2 in_corner;     // per-vertex (-1..1)
+in vec3 in_pos;        // per-instance
+in vec4 in_col;        // per-instance
+in float in_rad;       // per-instance
+in vec3 in_scale3;     // per-instance (sx, sy, sz)  <-- MUST match VAO
+in vec4 in_rot;        // per-instance quaternion (x,y,z,w)
 
 out vec2 v_corner;
 out vec4 v_col;
 
 vec3 quat_rotate(vec3 v, vec4 q) {
-    // q = (x,y,z,w)
     vec3 t = 2.0 * cross(q.xyz, v);
     return v + q.w * t + cross(q.xyz, t);
 }
@@ -2737,34 +2736,30 @@ void main() {
     vec4 view_p = View * Model * vec4(in_pos, 1.0);
     float s = in_rad * SplatWorldScale;
 
-    // rotate local X/Y axes by quaternion, then transform into view space
     mat3 VM = mat3(View * Model);
 
     vec3 ax3 = VM * quat_rotate(vec3(1.0, 0.0, 0.0), in_rot);
     vec3 ay3 = VM * quat_rotate(vec3(0.0, 1.0, 0.0), in_rot);
 
-    // project to view plane and normalize safely
     vec2 ax = safe_normalize(ax3.xy);
     vec2 ay = safe_normalize(ay3.xy);
 
-    // if degenerate (nearly parallel), force orthogonal basis
     if (abs(dot(ax, ay)) > 0.999) {
         ay = vec2(-ax.y, ax.x);
     }
 
-    // expand along oriented axes in the view plane
-    view_p.xy += ax * (in_corner.x * in_scale.x * s)
-              +  ay * (in_corner.y * in_scale.y * s);
+    view_p.xy += ax * (in_corner.x * in_scale3.x * s)
+              +  ay * (in_corner.y * in_scale3.y * s);
 
     gl_Position = Proj * view_p;
     v_corner = in_corner;
     v_col = in_col;
 }
+
 """
 
             splatq_fragment = """
 #version 330
-
 in vec2 v_corner;
 in vec4 v_col;
 out vec4 f_color;
@@ -2773,13 +2768,15 @@ void main() {
     float r2 = dot(v_corner, v_corner);
     if (r2 > 1.0) discard;
 
-    float a = exp(-r2 * 2.5);
-
-    // fade to zero near the edge to avoid bright ring
+    float g = exp(-r2 * 2.5);
     float edge = smoothstep(1.0, 0.85, r2);
-    a *= edge;
+    g *= edge;
 
-    // premultiplied alpha
+    float oa = clamp(v_col.a, 0.0, 1.0);
+    oa = max(oa, 0.08);
+    oa = min(oa * 1.5, 1.0);
+
+    float a = oa * g;
     f_color = vec4(v_col.rgb * a, a);
 }
 """
@@ -2807,9 +2804,12 @@ void main() {
 
     def set_splats(self, splats_np) -> None:
         """Queue splat instance data for GL-thread upload.
-        Accepts (N,8) or (N,10) float32 arrays.
+        Accepts (N,8), (N,10), (N,14), or (N,15) float32 arrays.
+
         (N,8):  [x,y,z, r,g,b,a, radius]
         (N,10): [x,y,z, r,g,b,a, radius, sx, sy]
+        (N,14): [x,y,z, r,g,b,a, radius, sx, sy, qx, qy, qz, qw]
+        (N,15): [x,y,z, r,g,b,a, radius, sx, sy, sz, qx, qy, qz, qw]
         """
         if splats_np is None:
             self._mgl_pending_splats = None
@@ -2820,8 +2820,10 @@ void main() {
         import numpy as np
 
         arr = np.asarray(splats_np, dtype=np.float32)
-        if arr.ndim != 2 or arr.shape[1] not in (8, 10, 14):
-            raise ValueError(f"Expected splats_np shape (N,8) or (N,10) or (N,14), got {arr.shape}")
+        if arr.ndim != 2 or arr.shape[1] not in (8, 10, 14, 15):
+            raise ValueError(
+                f"Expected splats_np shape (N,8) or (N,10) or (N,14) or (N,15), got {arr.shape}"
+            )
 
         self._mgl_pending_splats = arr
         self._mgl_render_splats = True
@@ -2874,7 +2876,7 @@ void main() {
                 pass
             self._mgl_splat_vbo = None
 
-        # release old quad-splat objects (new path)
+        # release old quad-splat objects
         if self._mgl_splatq_vao is not None:
             try:
                 self._mgl_splatq_vao.release()
@@ -2890,46 +2892,71 @@ void main() {
             self._mgl_splatq_vbo = None
 
         print("[SPLAT] framed center:", self._mgl_center, "radius:", radius, "zoom:", self._mgl_camera_zoom)
-        print("[SPLAT] uploading:", self._mgl_splat_count, "ctx:", self._mgl_ctx is not None)
+        print("[SPLAT] uploading:", self._mgl_splat_count, "ctx:", self._mgl_ctx is not None, "shape:", splats_np.shape)
 
-        # point-sprite upload (existing path)
-        self._mgl_splat_vbo = self._mgl_ctx.buffer(splats_np.tobytes())
+        # IMPORTANT: point-sprite buffer must be Nx8 packed: [pos3, col4, rad1]
+        splats8 = splats_np[:, :8].astype(np.float32, copy=False)
+
+        self._mgl_splat_vbo = self._mgl_ctx.buffer(splats8.tobytes())
         self._mgl_splat_vao = self._mgl_ctx.vertex_array(
             self._mgl_splat_prog,
             [(self._mgl_splat_vbo, "3f 4f 1f", "in_pos", "in_col", "in_rad")],
         )
 
+
         # instanced-quad upload (new path)
         if self._mgl_splatq_prog is not None and self._mgl_splatq_quad_vbo is not None:
             import numpy as np
 
-            if splats_np.shape[1] == 14:
-                splats14 = splats_np
-            else:
-                # ensure Nx10 first
-                if splats_np.shape[1] == 10:
-                    base = splats_np
-                else:
-                    n = splats_np.shape[0]
-                    scale = np.empty((n, 2), dtype=np.float32)
-                    scale[:, 0] = 0.5  # sx
-                    scale[:, 1] = 1.0  # sy
-                    base = np.concatenate([splats_np, scale], axis=1).astype(np.float32, copy=False)
+            # Build/ensure Nx15: [pos3 col4 rad1 sx sy sz quat4]
+            if splats_np.shape[1] == 15:
+                splats15 = splats_np.astype(np.float32, copy=False)
 
-                # identity quaternion x,y,z,w
-                n = base.shape[0]
+            elif splats_np.shape[1] == 14:
+                # Nx14 -> Nx15 by inserting sz=1.0 at column 10
+                n = splats_np.shape[0]
+                sz = np.ones((n, 1), dtype=np.float32)
+                splats15 = np.concatenate(
+                    [splats_np[:, :10], sz, splats_np[:, 10:14]],
+                    axis=1
+                ).astype(np.float32, copy=False)
+
+            elif splats_np.shape[1] == 10:
+                # Nx10 -> add sz + identity quat
+                n = splats_np.shape[0]
+                sz = np.ones((n, 1), dtype=np.float32)
                 q = np.zeros((n, 4), dtype=np.float32)
                 q[:, 3] = 1.0
-                splats14 = np.concatenate([base, q], axis=1).astype(np.float32, copy=False)
+                splats15 = np.concatenate([splats_np, sz, q], axis=1).astype(np.float32, copy=False)
 
-            self._mgl_splatq_vbo = self._mgl_ctx.buffer(splats14.tobytes())
-            self._mgl_splatq_vao = self._mgl_ctx.vertex_array(
-                self._mgl_splatq_prog,
-                [
-                    (self._mgl_splatq_quad_vbo, "2f", "in_corner"),
-                    (self._mgl_splatq_vbo, "3f 4f 1f 2f 4f /i", "in_pos", "in_col", "in_rad", "in_scale", "in_rot"),
-                ],
-            )
+            elif splats_np.shape[1] == 8:
+                # Nx8 -> add default sx,sy + sz + identity quat
+                n = splats_np.shape[0]
+                scale2 = np.empty((n, 2), dtype=np.float32)
+                scale2[:, 0] = 0.5
+                scale2[:, 1] = 1.0
+                sz = np.ones((n, 1), dtype=np.float32)
+                q = np.zeros((n, 4), dtype=np.float32)
+                q[:, 3] = 1.0
+                splats15 = np.concatenate([splats_np, scale2, sz, q], axis=1).astype(np.float32, copy=False)
+
+            else:
+                splats15 = None
+
+            if splats15 is not None:
+                print("[SPLATQ] upload shape:", splats15.shape, "dtype:", splats15.dtype)
+                assert splats15.shape[1] == 15
+
+                self._mgl_splatq_vbo = self._mgl_ctx.buffer(splats15.tobytes())
+                self._mgl_splatq_vao = self._mgl_ctx.vertex_array(
+                    self._mgl_splatq_prog,
+                    [
+                        (self._mgl_splatq_quad_vbo, "2f", "in_corner"),
+                        (self._mgl_splatq_vbo, "3f 4f 1f 3f 4f /i",
+                        "in_pos", "in_col", "in_rad", "in_scale3", "in_rot"),
+                    ],
+                )
+
 
     def _mgl_update_grid(self) -> None:
         if not _HAS_MGL or self._mgl_ctx is None:
@@ -3433,10 +3460,16 @@ void main() {
                 self._mgl_splatq_prog["SplatWorldScale"].value = float(self._mgl_splat_world_scale * self._mgl_scale_multiplier)
 
 
+                max_instances = 50000  # TEMP: prevent GPU TDR while debugging
+                inst = min(int(self._mgl_splat_count), max_instances)
+
+                # optional debug
+                # print("[SPLATQ] draw instances:", inst, "/", self._mgl_splat_count)
+
                 self._mgl_splatq_vao.render(
                     mode=moderngl.TRIANGLE_STRIP,
                     vertices=4,
-                    instances=self._mgl_splat_count,
+                    instances=inst,
                 )
 
                 try:

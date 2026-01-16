@@ -23,8 +23,7 @@ def read_header(p: Path):
                 count = int(s.split()[-1])
             elif s.startswith("property"):
                 parts = s.split()
-                # property float name
-                props.append(parts[-1])
+                props.append(parts[-1])  # property float name
             elif s == "end_header":
                 header_end = f.tell()
                 break
@@ -47,7 +46,6 @@ def load_gs_ply_sample(ply_path: str, n: int = 200_000) -> np.ndarray:
 
     with p.open("rb") as f:
         f.seek(header_end)
-        # read only first n vertices
         raw = np.fromfile(f, dtype="<f4", count=n * floats_per_vertex)
 
     raw = raw.reshape(n, floats_per_vertex)
@@ -66,31 +64,32 @@ def load_gs_ply_sample(ply_path: str, n: int = 200_000) -> np.ndarray:
     s1 = raw[:, idx["scale_1"]]
     s2 = raw[:, idx["scale_2"]]
 
-    # In GS PLY these are typically stored in log-space, so exp() gives linear scale
-    radius = np.exp((s0 + s1 + s2) / 3.0).astype(np.float32)  # base size
-
-    # axis sizes in linear units
+    # axis sizes in linear units (scales are typically log-space)
     axis_x = np.exp(s0).astype(np.float32)
     axis_y = np.exp(s1).astype(np.float32)
+    axis_z = np.exp(s2).astype(np.float32)
 
-    # normalize so shader's (in_scale * in_rad) equals axis size:
-    # (sx * radius) == axis_x, (sy * radius) == axis_y
+    # base size (viewer knob)
+    radius = np.exp((s0 + s1 + s2) / 3.0).astype(np.float32)
+
+    # normalize so shader's (in_scale * in_rad) equals axis size
     eps = np.float32(1e-8)
-    sx = axis_x / np.maximum(radius, eps)
-    sy = axis_y / np.maximum(radius, eps)
+    denom = np.maximum(radius, eps)
 
-    # quaternion (assume rot_0..3 = x,y,z,w)
-    #q = raw[:, [idx["rot_0"], idx["rot_1"], idx["rot_2"], idx["rot_3"]]].astype(np.float32)
-    # quaternion possibly stored as (w,x,y,z). Convert to (x,y,z,w).
+    sx = axis_x / denom
+    sy = axis_y / denom
+    sz = axis_z / denom
+
+    # quaternion: many GS PLYs store (w,x,y,z) -> convert to (x,y,z,w)
     q = raw[:, [idx["rot_1"], idx["rot_2"], idx["rot_3"], idx["rot_0"]]].astype(np.float32)
-    
-    # normalize quaternion to be safe
+
+    # normalize quaternion
     qn = np.linalg.norm(q, axis=1, keepdims=True).astype(np.float32)
     q = q / np.maximum(qn, eps)
 
-    # Nx14: [x,y,z, r,g,b, a, radius, sx, sy, qx, qy, qz, qw]
+    # Nx15: [x,y,z, r,g,b, a, radius, sx, sy, sz, qx, qy, qz, qw]
     splats = np.concatenate(
-        [pos, rgb, a[:, None], radius[:, None], sx[:, None], sy[:, None], q],
+        [pos, rgb, a[:, None], radius[:, None], sx[:, None], sy[:, None], sz[:, None], q],
         axis=1,
     ).astype(np.float32)
 
@@ -98,7 +97,7 @@ def load_gs_ply_sample(ply_path: str, n: int = 200_000) -> np.ndarray:
 
 
 if __name__ == "__main__":
-    ply = r"E:\GaussingSplats\models\bicycle\point_cloud\iteration_30000\point_cloud.ply"
+    ply = r"E:\GaussingSplats\models\bicycle\point_cloud\iteration_7000\point_cloud.ply"
     splats = load_gs_ply_sample(ply, n=200_000)
     print("splats shape:", splats.shape)
     print("pos min/max:", splats[:, :3].min(axis=0), splats[:, :3].max(axis=0))
@@ -107,4 +106,5 @@ if __name__ == "__main__":
     print("r min/max:", splats[:, 7].min(), splats[:, 7].max())
     print("sx min/max:", splats[:, 8].min(), splats[:, 8].max())
     print("sy min/max:", splats[:, 9].min(), splats[:, 9].max())
-    print("q first:", splats[0, 10:14])
+    print("sz min/max:", splats[:, 10].min(), splats[:, 10].max())
+    print("q first:", splats[0, 11:15])
