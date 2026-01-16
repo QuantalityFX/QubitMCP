@@ -2669,7 +2669,18 @@ void main() {
 in vec4 v_col;
 out vec4 f_color;
 void main() {
-    f_color = vec4(v_col.rgb, 1.0);
+    vec2 p = gl_PointCoord * 2.0 - 1.0;
+    float r2 = dot(p, p);
+    if (r2 > 1.0) discard;
+
+    // gaussian core
+    float a = exp(-r2 * 2.5);
+
+    // fade to zero near the edge to avoid bright ring
+    float edge = smoothstep(1.0, 0.7, r2);  // 1 at center -> 0 at rim
+    a *= edge;
+
+    f_color = vec4(v_col.rgb * a, a);
 }
 """
 
@@ -3214,12 +3225,22 @@ void main() {
         if self._mgl_render_splats and self._mgl_splat_vao is not None and self._mgl_splat_count:
             self._mgl_ctx.enable(moderngl.PROGRAM_POINT_SIZE)
 
+            # enable point sprite coords so gl_PointCoord works
+            try:
+                self._mgl_ctx.enable(moderngl.POINT_SPRITE)
+            except Exception:
+                pass
+            try:
+                self._gl.glEnable(0x8861)  # GL_POINT_SPRITE
+            except Exception:
+                pass
+
             # real splat state: blend ON, depth OFF (for now)
             self._mgl_ctx.enable(moderngl.BLEND)
             self._mgl_ctx.disable(moderngl.DEPTH_TEST)
 
-            # remove the debug print once you're happy
-            # print("[SPLAT] drawing:", self._mgl_splat_count)
+            # better blend for splats (reduces white halo)
+            self._mgl_ctx.blend_func = moderngl.ONE, moderngl.ONE_MINUS_SRC_ALPHA
 
             self._mgl_splat_prog["Mvp"].write(mvp.astype("f4"))
             self._mgl_splat_vao.render(mode=moderngl.POINTS, vertices=self._mgl_splat_count)
