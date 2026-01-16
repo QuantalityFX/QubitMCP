@@ -62,9 +62,25 @@ def load_gs_ply_sample(ply_path: str, n: int = 200_000) -> np.ndarray:
     s0 = raw[:, idx["scale_0"]]
     s1 = raw[:, idx["scale_1"]]
     s2 = raw[:, idx["scale_2"]]
-    radius = np.exp((s0 + s1 + s2) / 3.0)  # simple average radius for first pass
+    # In GS PLY these are typically stored in log-space, so exp() gives linear scale
+    radius = np.exp((s0 + s1 + s2) / 3.0).astype(np.float32)  # base size
 
-    splats = np.concatenate([pos, rgb, a[:, None], radius[:, None]], axis=1).astype(np.float32)
+    # axis sizes in linear units
+    axis_x = np.exp(s0).astype(np.float32)
+    axis_y = np.exp(s1).astype(np.float32)
+
+    # normalize so shader's (in_scale * in_rad) equals axis size:
+    # (sx * radius) == axis_x, (sy * radius) == axis_y
+    eps = np.float32(1e-8)
+    sx = axis_x / np.maximum(radius, eps)
+    sy = axis_y / np.maximum(radius, eps)
+
+    # Nx10: [x,y,z, r,g,b, a, radius, sx, sy]
+    splats = np.concatenate(
+        [pos, rgb, a[:, None], radius[:, None], sx[:, None], sy[:, None]],
+        axis=1,
+    ).astype(np.float32)
+
     return splats
 
 if __name__ == "__main__":

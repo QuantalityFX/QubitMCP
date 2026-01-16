@@ -1403,6 +1403,14 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._mgl_splat_prog = None
         self._mgl_splat_vbo = None
         self._mgl_splat_vao = None
+
+        # instanced-quad splats (new path)
+        self._mgl_splatq_prog = None
+        self._mgl_splatq_quad_vbo = None   # static quad corners
+        self._mgl_splatq_vbo = None        # instance buffer (Nx8)
+        self._mgl_splatq_vao = None
+        self._mgl_splat_world_scale = 3.0  # tuning knob
+
         self._mgl_splat_count = 0
         self._mgl_pending_splats = None
         self._mgl_render_splats = False
@@ -2684,7 +2692,7 @@ void main() {
     if (r2 > 1.0) discard;
 
     // gaussian core
-    float a = exp(-r2 * 2.5);
+    float a = exp(-r2 * 1.2);
 
     // fade to zero near the edge to avoid bright ring
     float edge = smoothstep(1.0, 0.7, r2);  // 1 at center -> 0 at rim
@@ -2694,23 +2702,104 @@ void main() {
 }
 """
 
+            # --- instanced-quad splat program (new path) ---
+            splatq_vertex = """
+#version 330
+
+uniform mat4 Proj;
+uniform mat4 View;
+uniform mat4 Model;
+uniform float SplatWorldScale;
+
+in vec2 in_corner;   // per-vertex (-1..1)
+in vec3 in_pos;      // per-instance
+in vec4 in_col;      // per-instance
+in float in_rad;     // per-instance
+in vec2 in_scale;    // per-instance (sx, sy)
+
+out vec2 v_corner;
+out vec4 v_col;
+
+void main() {
+    // go to view space
+    vec4 view_p = View * Model * vec4(in_pos, 1.0);
+
+    // expand in view-space X/Y (billboard in camera plane)
+    float s = in_rad * SplatWorldScale;
+    view_p.xy += in_corner.xy * (in_scale * s);
+
+    gl_Position = Proj * view_p;
+
+    v_corner = in_corner;
+    v_col = in_col;
+}
+"""
+
+            splatq_fragment = """
+#version 330
+
+in vec2 v_corner;
+in vec4 v_col;
+out vec4 f_color;
+
+void main() {
+    float r2 = dot(v_corner, v_corner);
+    if (r2 > 1.0) discard;
+
+    float a = exp(-r2 * 2.5);
+
+    // fade to zero near the edge to avoid bright ring
+    float edge = smoothstep(1.0, 0.85, r2);
+    a *= edge;
+
+    // premultiplied alpha
+    f_color = vec4(v_col.rgb * a, a);
+}
+"""
             self._mgl_splat_prog = self._mgl_ctx.program(
                 vertex_shader=splat_vertex,
                 fragment_shader=splat_fragment,
             )
 
+            self._mgl_splatq_prog = self._mgl_ctx.program(
+                vertex_shader=splatq_vertex,
+                fragment_shader=splatq_fragment,
+            )
+
+            # Static quad corners (TRIANGLE_STRIP, 4 verts)
+            quad = np.array([
+                -1.0, -1.0,
+                1.0, -1.0,
+                -1.0,  1.0,
+                1.0,  1.0,
+            ], dtype="f4")
+            self._mgl_splatq_quad_vbo = self._mgl_ctx.buffer(quad.tobytes())
+
         except Exception as exc:
             self._mgl_error = str(exc)
 
     def set_splats(self, splats_np) -> None:
-        import numpy as np
-        splats_np = np.asarray(splats_np, dtype=np.float32)
-        if splats_np.ndim != 2 or splats_np.shape[1] != 8:
-            raise ValueError("Expected (N,8) float32: [x y z r g b a radius]")
+        """Queue splat instance data for GL-thread upload.
+        Accepts (N,8) or (N,10) float32 arrays.
+        (N,8):  [x,y,z, r,g,b,a, radius]
+        (N,10): [x,y,z, r,g,b,a, radius, sx, sy]
+        """
+        if splats_np is None:
+            self._mgl_pending_splats = None
+            self._mgl_render_splats = False
+            self.update()
+            return
 
-        self._mgl_pending_splats = splats_np
+        import numpy as np
+
+        arr = np.asarray(splats_np, dtype=np.float32)
+        if arr.ndim != 2 or arr.shape[1] not in (8, 10):
+            raise ValueError(f"Expected splats_np shape (N,8) or (N,10), got {arr.shape}")
+
+        self._mgl_pending_splats = arr
         self._mgl_render_splats = True
         self.update()
+
 
     def _mgl_upload_pending_splats(self) -> None:
         if self._mgl_pending_splats is None:
@@ -2743,6 +2832,7 @@ void main() {
         # --- upload buffers ---
         self._mgl_splat_count = int(splats_np.shape[0])
 
+        # release old point-splat objects
         if self._mgl_splat_vao is not None:
             try:
                 self._mgl_splat_vao.release()
@@ -2757,15 +2847,54 @@ void main() {
                 pass
             self._mgl_splat_vbo = None
 
+        # release old quad-splat objects (new path)
+        if self._mgl_splatq_vao is not None:
+            try:
+                self._mgl_splatq_vao.release()
+            except Exception:
+                pass
+            self._mgl_splatq_vao = None
+
+        if self._mgl_splatq_vbo is not None:
+            try:
+                self._mgl_splatq_vbo.release()
+            except Exception:
+                pass
+            self._mgl_splatq_vbo = None
+
         print("[SPLAT] framed center:", self._mgl_center, "radius:", radius, "zoom:", self._mgl_camera_zoom)
         print("[SPLAT] uploading:", self._mgl_splat_count, "ctx:", self._mgl_ctx is not None)
 
+        # point-sprite upload (existing path)
         self._mgl_splat_vbo = self._mgl_ctx.buffer(splats_np.tobytes())
         self._mgl_splat_vao = self._mgl_ctx.vertex_array(
             self._mgl_splat_prog,
             [(self._mgl_splat_vbo, "3f 4f 1f", "in_pos", "in_col", "in_rad")],
         )
 
+        # instanced-quad upload (new path)
+        if self._mgl_splatq_prog is not None and self._mgl_splatq_quad_vbo is not None:
+            import numpy as np
+
+            # Build Nx10 for quad path: [pos3, col4, rad1, sx, sy]
+            if splats_np.shape[1] == 10:
+                splats10 = splats_np
+            else:
+                # default ellipse until loader provides real sx/sy
+                n = splats_np.shape[0]
+                scale = np.empty((n, 2), dtype=np.float32)
+                scale[:, 0] = 0.5  # sx
+                scale[:, 1] = 1.0  # sy
+                splats10 = np.concatenate([splats_np, scale], axis=1).astype(np.float32, copy=False)
+
+            self._mgl_splatq_vbo = self._mgl_ctx.buffer(splats10.tobytes())
+            self._mgl_splatq_vao = self._mgl_ctx.vertex_array(
+                self._mgl_splatq_prog,
+                [
+                    (self._mgl_splatq_quad_vbo, "2f", "in_corner"),
+                    (self._mgl_splatq_vbo, "3f 4f 1f 2f /i", "in_pos", "in_col", "in_rad", "in_scale"),
+                ],
+            )
 
     def _mgl_update_grid(self) -> None:
         if not _HAS_MGL or self._mgl_ctx is None:
@@ -3240,26 +3369,62 @@ void main() {
                 
         # draw splats BEFORE the grid
         # --- SPLATS ---
-        if self._mgl_render_splats and self._mgl_splat_vao is not None and self._mgl_splat_count:
-            self._mgl_ctx.enable(moderngl.PROGRAM_POINT_SIZE)
+        if self._mgl_render_splats and self._mgl_splat_count:
 
-            try:
-                self._mgl_ctx.enable(moderngl.POINT_SPRITE)
-            except Exception:
-                pass
-            try:
-                self._gl.glEnable(0x8861)  # GL_POINT_SPRITE
-            except Exception:
-                pass
-
+            # common state for both paths
             self._mgl_ctx.enable(moderngl.BLEND)
-            self._mgl_ctx.enable(moderngl.DEPTH_TEST)  # <- change: enable depth
-
+            self._mgl_ctx.enable(moderngl.DEPTH_TEST)
             self._mgl_ctx.blend_func = moderngl.ONE, moderngl.ONE_MINUS_SRC_ALPHA
 
-            self._mgl_splat_prog["Mvp"].write(mvp.astype("f4"))
-            self._mgl_splat_prog["SplatSizeMul"].value = 1.0 
-            self._mgl_splat_vao.render(mode=moderngl.POINTS, vertices=self._mgl_splat_count)
+            # try the new instanced-quad path first
+            if self._mgl_splatq_vao is not None and self._mgl_splatq_prog is not None:
+                # depth test ON, but don't write depth (transparent)
+                old_depth_mask = getattr(self._mgl_ctx, "depth_mask", True)
+                try:
+                    self._mgl_ctx.depth_mask = False
+                except Exception:
+                    old_depth_mask = True
+
+                # build Model exactly like your mesh pass does
+                # (uses the same 'transform' and '_mgl_scale_multiplier' variables you already have above)
+                if self._mgl_scale_multiplier != 1.0:
+                    model = transform * Matrix44.from_scale([self._mgl_scale_multiplier] * 3, dtype="f4")
+                else:
+                    model = transform
+
+                self._mgl_splatq_prog["Proj"].write(proj.astype("f4"))
+                self._mgl_splatq_prog["View"].write(lookat.astype("f4"))
+                self._mgl_splatq_prog["Model"].write(model.astype("f4"))
+                self._mgl_splatq_prog["SplatWorldScale"].value = float(self._mgl_splat_world_scale * self._mgl_scale_multiplier)
+
+
+                self._mgl_splatq_vao.render(
+                    mode=moderngl.TRIANGLE_STRIP,
+                    vertices=4,
+                    instances=self._mgl_splat_count,
+                )
+
+                try:
+                    self._mgl_ctx.depth_mask = old_depth_mask
+                except Exception:
+                    pass
+
+            # fallback: old point sprites
+            elif self._mgl_splat_vao is not None and self._mgl_splat_prog is not None:
+                self._mgl_ctx.enable(moderngl.PROGRAM_POINT_SIZE)
+
+                try:
+                    self._mgl_ctx.enable(moderngl.POINT_SPRITE)
+                except Exception:
+                    pass
+                try:
+                    self._gl.glEnable(0x8861)  # GL_POINT_SPRITE
+                except Exception:
+                    pass
+
+                self._mgl_splat_prog["Mvp"].write(mvp.astype("f4"))
+                self._mgl_splat_prog["SplatSizeMul"].value = 1.0
+                self._mgl_splat_vao.render(mode=moderngl.POINTS, vertices=self._mgl_splat_count)
 
         # grid (only once)
         if self._mgl_grid_vao is not None:
