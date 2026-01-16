@@ -2657,11 +2657,18 @@ in vec3 in_pos;
 in vec4 in_col;
 in float in_rad;
 out vec4 v_col;
+
 void main() {
-    gl_Position = Mvp * vec4(in_pos, 1.0);
-    gl_PointSize = 16.0;
+    vec4 clip = Mvp * vec4(in_pos, 1.0);
+    gl_Position = clip;
+
+    float w = max(1e-6, clip.w);
+    float px = in_rad * (800.0 / w);     // 800 is a tunable screen scale
+    gl_PointSize = clamp(px, 1.0, 256.0);
+
     v_col = in_col;
 }
+
 """
 
             splat_fragment = """
