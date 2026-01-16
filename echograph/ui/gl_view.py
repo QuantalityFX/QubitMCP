@@ -1389,20 +1389,23 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._example_pan_speed = 0.02
         self._example_rotate_speed = 0.3
         self._example_zoom_step = 2.0
-
         self._viewport_bg = QtGui.QColor("#535353")  # light gray
         self._example_clear_color = QtGui.QColor(self._viewport_bg)
+        self._example_grid_vbo = None
+        self._example_grid_count = 0
+        self._example_grid_extent = 12.0
         self._mgl_bg_color = (
             self._viewport_bg.redF(),
             self._viewport_bg.greenF(),
             self._viewport_bg.blueF(),
             1.0,
         )
-        
-        self._example_grid_vbo = None
-        self._example_grid_count = 0
-        self._example_grid_extent = 12.0
-
+        self._mgl_splat_prog = None
+        self._mgl_splat_vbo = None
+        self._mgl_splat_vao = None
+        self._mgl_splat_count = 0
+        self._mgl_pending_splats = None
+        self._mgl_render_splats = False
         self._mgl_ctx = None
         self._mgl_prog = None
         self._mgl_grid_prog = None
@@ -1474,6 +1477,15 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._build_scale_controls()
         self._build_debug_toggle_button()
         self._build_debug_copy_button()
+
+    def debug_points(self) -> None:
+        import numpy as np
+        pts = np.array([
+            [0.0, 0.0, 0.0,  1.0, 0.0, 1.0, 1.0,  1.0],
+            [10.0, 0.0, 0.0,  1.0, 0.0, 1.0, 1.0,  1.0],
+            [0.0, 10.0, 0.0,  1.0, 0.0, 1.0, 1.0,  1.0],
+        ], dtype=np.float32)
+        self.set_splats(pts)
 
     def set_scene(self, scene) -> None:
         self._scene = scene
@@ -1827,7 +1839,9 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._scene_texture_dirty = False
         self._pending_image = None
         self._model_load_pending = True
-        QtCore.QTimer.singleShot(0, self._apply_manual_model)
+
+        #QtCore.QTimer.singleShot(0, self._apply_manual_model)
+        #QtCore.QTimer.singleShot(0, lambda: self.gl_view.debug_points())
 
     def _on_mgl_pick_model(self) -> None:
         if not self._use_moderngl:
@@ -2635,8 +2649,94 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             self._mgl_camera_zoom = self._mgl_camera_distance(self._mgl_fov)
             self._mgl_update_grid()
             self._mgl_error = ""
+
+            splat_vertex = """
+#version 330
+uniform mat4 Mvp;
+in vec3 in_pos;
+in vec4 in_col;
+in float in_rad;
+out vec4 v_col;
+void main() {
+    gl_Position = Mvp * vec4(in_pos, 1.0);
+    gl_PointSize = 16.0;
+    v_col = in_col;
+}
+"""
+
+            splat_fragment = """
+#version 330
+in vec4 v_col;
+out vec4 f_color;
+void main() {
+    f_color = vec4(v_col.rgb, 1.0);
+}
+"""
+
+            self._mgl_splat_prog = self._mgl_ctx.program(
+                vertex_shader=splat_vertex,
+                fragment_shader=splat_fragment,
+            )
+
         except Exception as exc:
             self._mgl_error = str(exc)
+
+    def set_splats(self, splats_np) -> None:
+        import numpy as np
+        splats_np = np.asarray(splats_np, dtype=np.float32)
+        if splats_np.ndim != 2 or splats_np.shape[1] != 8:
+            raise ValueError("Expected (N,8) float32: [x y z r g b a radius]")
+
+        self._mgl_pending_splats = splats_np
+        self._mgl_render_splats = True
+        self.update()
+
+    def _mgl_upload_pending_splats(self) -> None:
+        if self._mgl_pending_splats is None:
+            return
+        if not _HAS_MGL or self._mgl_ctx is None or self._mgl_splat_prog is None:
+            return
+
+        splats_np = self._mgl_pending_splats
+        self._mgl_pending_splats = None
+
+        # frame arcball/camera to the splat bounds (so it appears on screen)
+        self._mgl_init_arcball(splats_np[:, :3])
+        
+        # frame arcball/camera to the splat bounds
+        self._mgl_init_arcball(splats_np[:, :3])
+
+        # set zoom based on scene radius (simple, works)
+        r = float(self._mgl_scale)
+        self._mgl_camera_zoom = max(0.1, r * 3.0)
+
+        print("[SPLAT] framed center:", self._mgl_center, "scale:", self._mgl_scale, "zoom:", self._mgl_camera_zoom)
+
+        self._mgl_splat_count = int(splats_np.shape[0])
+
+        # release old buffers
+        if self._mgl_splat_vao is not None:
+            try:
+                self._mgl_splat_vao.release()
+            except Exception:
+                pass
+            self._mgl_splat_vao = None
+
+        if self._mgl_splat_vbo is not None:
+            try:
+                self._mgl_splat_vbo.release()
+            except Exception:
+                pass
+            self._mgl_splat_vbo = None
+
+        # upload new
+        print("[SPLAT] uploading:", self._mgl_splat_count, "ctx:", self._mgl_ctx is not None)
+        self._mgl_splat_vbo = self._mgl_ctx.buffer(splats_np.tobytes())
+        self._mgl_splat_vao = self._mgl_ctx.vertex_array(
+            self._mgl_splat_prog,
+            [(self._mgl_splat_vbo, "3f 4f 1f", "in_pos", "in_col", "in_rad")],
+        )
+
 
     def _mgl_update_grid(self) -> None:
         if not _HAS_MGL or self._mgl_ctx is None:
@@ -3020,7 +3120,10 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
                 self._mgl_ctx.polygon_offset = (1.0, 1.0)
             except Exception:
                 pass
+
         self._mgl_prog["Mvp"].write(mvp.astype("f4"))
+        self._mgl_upload_pending_splats()
+
         if self._mgl_submeshes:
             manual_texture = self._mgl_texture if self._mgl_texture_override else None
             for sub in self._mgl_submeshes:
@@ -3105,6 +3208,27 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
                     self._mgl_ctx.line_width = 1.0
                 except Exception:
                     pass
+                
+        # draw splats BEFORE the grid
+        # --- SPLATS ---
+        if self._mgl_render_splats and self._mgl_splat_vao is not None and self._mgl_splat_count:
+            self._mgl_ctx.enable(moderngl.PROGRAM_POINT_SIZE)
+
+            # real splat state: blend ON, depth OFF (for now)
+            self._mgl_ctx.enable(moderngl.BLEND)
+            self._mgl_ctx.disable(moderngl.DEPTH_TEST)
+
+            # remove the debug print once you're happy
+            # print("[SPLAT] drawing:", self._mgl_splat_count)
+
+            self._mgl_splat_prog["Mvp"].write(mvp.astype("f4"))
+            self._mgl_splat_vao.render(mode=moderngl.POINTS, vertices=self._mgl_splat_count)
+
+            # restore for rest of scene
+            self._mgl_ctx.enable(moderngl.DEPTH_TEST)
+
+
+        # grid (only once)
         if self._mgl_grid_vao is not None:
             self._mgl_grid_prog["Mvp"].write(mvp.astype("f4"))
             self._mgl_grid_prog["Color"].value = (1.0, 1.0, 1.0, self._mgl_grid_alpha)

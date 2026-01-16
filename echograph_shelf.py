@@ -1818,7 +1818,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         
         self.view = GraphView(self.scene)
         self.gl_view = GraphGLView(self.scene)
-
+        QtCore.QTimer.singleShot(
+            0,
+            lambda: self.open_splat_model(r"E:\GaussingSplats\models\bicycle\point_cloud\iteration_7000\point_cloud.ply")
+        )
         self.view.setMinimumSize(400, 300)
         self.gl_view.setMinimumSize(400, 300)
         self._view_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
@@ -2042,6 +2045,19 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 loader(path, texture_path)
             except Exception:
                 pass
+            
+    def open_splat_model(self, ply_path: str) -> None:
+        import traceback
+        try:
+            print("[SPLAT] open:", ply_path)
+            from echograph.util.load_gs_ply_sample import load_gs_ply_sample
+            splats = load_gs_ply_sample(ply_path, n=200_000)
+            print("[SPLAT] loaded:", splats.shape, splats.dtype)
+            self.gl_view.set_splats(splats)
+            print("[SPLAT] set_splats done")
+        except Exception:
+            print("[SPLAT] ERROR:\n", traceback.format_exc())
+
 
     def _maybe_show_recent_dialog(self):
         recents = [p for p in getattr(self, "_recent_files", []) if p]
