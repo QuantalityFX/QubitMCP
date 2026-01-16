@@ -2716,20 +2716,47 @@ in vec3 in_pos;      // per-instance
 in vec4 in_col;      // per-instance
 in float in_rad;     // per-instance
 in vec2 in_scale;    // per-instance (sx, sy)
+in vec4 in_rot;      // per-instance quaternion (x,y,z,w)
 
 out vec2 v_corner;
 out vec4 v_col;
 
-void main() {
-    // go to view space
-    vec4 view_p = View * Model * vec4(in_pos, 1.0);
+vec3 quat_rotate(vec3 v, vec4 q) {
+    // q = (x,y,z,w)
+    vec3 t = 2.0 * cross(q.xyz, v);
+    return v + q.w * t + cross(q.xyz, t);
+}
 
-    // expand in view-space X/Y (billboard in camera plane)
+vec2 safe_normalize(vec2 v) {
+    float l = length(v);
+    if (l < 1e-6) return vec2(1.0, 0.0);
+    return v / l;
+}
+
+void main() {
+    vec4 view_p = View * Model * vec4(in_pos, 1.0);
     float s = in_rad * SplatWorldScale;
-    view_p.xy += in_corner.xy * (in_scale * s);
+
+    // rotate local X/Y axes by quaternion, then transform into view space
+    mat3 VM = mat3(View * Model);
+
+    vec3 ax3 = VM * quat_rotate(vec3(1.0, 0.0, 0.0), in_rot);
+    vec3 ay3 = VM * quat_rotate(vec3(0.0, 1.0, 0.0), in_rot);
+
+    // project to view plane and normalize safely
+    vec2 ax = safe_normalize(ax3.xy);
+    vec2 ay = safe_normalize(ay3.xy);
+
+    // if degenerate (nearly parallel), force orthogonal basis
+    if (abs(dot(ax, ay)) > 0.999) {
+        ay = vec2(-ax.y, ax.x);
+    }
+
+    // expand along oriented axes in the view plane
+    view_p.xy += ax * (in_corner.x * in_scale.x * s)
+              +  ay * (in_corner.y * in_scale.y * s);
 
     gl_Position = Proj * view_p;
-
     v_corner = in_corner;
     v_col = in_col;
 }
@@ -2793,8 +2820,8 @@ void main() {
         import numpy as np
 
         arr = np.asarray(splats_np, dtype=np.float32)
-        if arr.ndim != 2 or arr.shape[1] not in (8, 10):
-            raise ValueError(f"Expected splats_np shape (N,8) or (N,10), got {arr.shape}")
+        if arr.ndim != 2 or arr.shape[1] not in (8, 10, 14):
+            raise ValueError(f"Expected splats_np shape (N,8) or (N,10) or (N,14), got {arr.shape}")
 
         self._mgl_pending_splats = arr
         self._mgl_render_splats = True
@@ -2876,23 +2903,31 @@ void main() {
         if self._mgl_splatq_prog is not None and self._mgl_splatq_quad_vbo is not None:
             import numpy as np
 
-            # Build Nx10 for quad path: [pos3, col4, rad1, sx, sy]
-            if splats_np.shape[1] == 10:
-                splats10 = splats_np
+            if splats_np.shape[1] == 14:
+                splats14 = splats_np
             else:
-                # default ellipse until loader provides real sx/sy
-                n = splats_np.shape[0]
-                scale = np.empty((n, 2), dtype=np.float32)
-                scale[:, 0] = 0.5  # sx
-                scale[:, 1] = 1.0  # sy
-                splats10 = np.concatenate([splats_np, scale], axis=1).astype(np.float32, copy=False)
+                # ensure Nx10 first
+                if splats_np.shape[1] == 10:
+                    base = splats_np
+                else:
+                    n = splats_np.shape[0]
+                    scale = np.empty((n, 2), dtype=np.float32)
+                    scale[:, 0] = 0.5  # sx
+                    scale[:, 1] = 1.0  # sy
+                    base = np.concatenate([splats_np, scale], axis=1).astype(np.float32, copy=False)
 
-            self._mgl_splatq_vbo = self._mgl_ctx.buffer(splats10.tobytes())
+                # identity quaternion x,y,z,w
+                n = base.shape[0]
+                q = np.zeros((n, 4), dtype=np.float32)
+                q[:, 3] = 1.0
+                splats14 = np.concatenate([base, q], axis=1).astype(np.float32, copy=False)
+
+            self._mgl_splatq_vbo = self._mgl_ctx.buffer(splats14.tobytes())
             self._mgl_splatq_vao = self._mgl_ctx.vertex_array(
                 self._mgl_splatq_prog,
                 [
                     (self._mgl_splatq_quad_vbo, "2f", "in_corner"),
-                    (self._mgl_splatq_vbo, "3f 4f 1f 2f /i", "in_pos", "in_col", "in_rad", "in_scale"),
+                    (self._mgl_splatq_vbo, "3f 4f 1f 2f 4f /i", "in_pos", "in_col", "in_rad", "in_scale", "in_rot"),
                 ],
             )
 

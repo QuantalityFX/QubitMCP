@@ -5,8 +5,10 @@ import numpy as np
 
 C0 = 0.28209479177387814  # SH constant for l=0
 
+
 def sigmoid(x: np.ndarray) -> np.ndarray:
     return 1.0 / (1.0 + np.exp(-x))
+
 
 def read_header(p: Path):
     props = []
@@ -27,6 +29,7 @@ def read_header(p: Path):
                 header_end = f.tell()
                 break
     return count, props, header_end
+
 
 def load_gs_ply_sample(ply_path: str, n: int = 200_000) -> np.ndarray:
     p = Path(ply_path)
@@ -62,6 +65,7 @@ def load_gs_ply_sample(ply_path: str, n: int = 200_000) -> np.ndarray:
     s0 = raw[:, idx["scale_0"]]
     s1 = raw[:, idx["scale_1"]]
     s2 = raw[:, idx["scale_2"]]
+
     # In GS PLY these are typically stored in log-space, so exp() gives linear scale
     radius = np.exp((s0 + s1 + s2) / 3.0).astype(np.float32)  # base size
 
@@ -75,13 +79,23 @@ def load_gs_ply_sample(ply_path: str, n: int = 200_000) -> np.ndarray:
     sx = axis_x / np.maximum(radius, eps)
     sy = axis_y / np.maximum(radius, eps)
 
-    # Nx10: [x,y,z, r,g,b, a, radius, sx, sy]
+    # quaternion (assume rot_0..3 = x,y,z,w)
+    #q = raw[:, [idx["rot_0"], idx["rot_1"], idx["rot_2"], idx["rot_3"]]].astype(np.float32)
+    # quaternion possibly stored as (w,x,y,z). Convert to (x,y,z,w).
+    q = raw[:, [idx["rot_1"], idx["rot_2"], idx["rot_3"], idx["rot_0"]]].astype(np.float32)
+    
+    # normalize quaternion to be safe
+    qn = np.linalg.norm(q, axis=1, keepdims=True).astype(np.float32)
+    q = q / np.maximum(qn, eps)
+
+    # Nx14: [x,y,z, r,g,b, a, radius, sx, sy, qx, qy, qz, qw]
     splats = np.concatenate(
-        [pos, rgb, a[:, None], radius[:, None], sx[:, None], sy[:, None]],
+        [pos, rgb, a[:, None], radius[:, None], sx[:, None], sy[:, None], q],
         axis=1,
     ).astype(np.float32)
 
     return splats
+
 
 if __name__ == "__main__":
     ply = r"E:\GaussingSplats\models\bicycle\point_cloud\iteration_30000\point_cloud.ply"
@@ -91,3 +105,6 @@ if __name__ == "__main__":
     print("rgb min/max:", splats[:, 3:6].min(), splats[:, 3:6].max())
     print("a min/max:", splats[:, 6].min(), splats[:, 6].max())
     print("r min/max:", splats[:, 7].min(), splats[:, 7].max())
+    print("sx min/max:", splats[:, 8].min(), splats[:, 8].max())
+    print("sy min/max:", splats[:, 9].min(), splats[:, 9].max())
+    print("q first:", splats[0, 10:14])
