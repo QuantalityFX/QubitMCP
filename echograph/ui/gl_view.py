@@ -2666,8 +2666,8 @@ void main() {
     gl_Position = clip;
 
     float w = max(1e-6, clip.w);
-    float px = in_rad * SplatSizeMul * (800.0 / w);
-    gl_PointSize = clamp(px, 1.0, 256.0);
+    float px = in_rad * SplatSizeMul * (200.0 / w);
+    gl_PointSize = clamp(px, 1.0, 32.0);
 
     v_col = in_col;
 }
@@ -3250,7 +3250,7 @@ void main() {
             self._mgl_ctx.blend_func = moderngl.ONE, moderngl.ONE_MINUS_SRC_ALPHA
 
             self._mgl_splat_prog["Mvp"].write(mvp.astype("f4"))
-            self._mgl_splat_prog["SplatSizeMul"].value = 1.0 / max(1e-6, float(self._mgl_scale_multiplier))
+            self._mgl_splat_prog["SplatSizeMul"].value = 1.0 
             self._mgl_splat_vao.render(mode=moderngl.POINTS, vertices=self._mgl_splat_count)
 
         # grid (only once)
