@@ -2715,10 +2715,10 @@ in vec2 in_corner;     // per-vertex (-1..1)
 in vec3 in_pos;        // per-instance
 in vec4 in_col;        // per-instance
 in float in_rad;       // per-instance
-in vec3 in_scale3;     // per-instance (sx, sy, sz)  <-- MUST match VAO
+in vec3 in_scale3;     // per-instance (sx, sy, sz)
 in vec4 in_rot;        // per-instance quaternion (x,y,z,w)
 
-out vec2 v_corner;
+out vec2 v_uv;         // scaled ellipse coords
 out vec4 v_col;
 
 vec3 quat_rotate(vec3 v, vec4 q) {
@@ -2734,49 +2734,72 @@ vec2 safe_normalize(vec2 v) {
 
 void main() {
     vec4 view_p = View * Model * vec4(in_pos, 1.0);
+
     float s = in_rad * SplatWorldScale;
 
     mat3 VM = mat3(View * Model);
 
     vec3 ax3 = VM * quat_rotate(vec3(1.0, 0.0, 0.0), in_rot);
     vec3 ay3 = VM * quat_rotate(vec3(0.0, 1.0, 0.0), in_rot);
+    vec3 az3 = VM * quat_rotate(vec3(0.0, 0.0, 1.0), in_rot);
 
-    vec2 ax = safe_normalize(ax3.xy);
-    vec2 ay = safe_normalize(ay3.xy);
+    vec2 ax2 = ax3.xy;
+    vec2 ay2 = ay3.xy;
+    vec2 az2 = az3.xy;
 
-    if (abs(dot(ax, ay)) > 0.999) {
-        ay = vec2(-ax.y, ax.x);
+    float sx = in_scale3.x;
+    float sy = in_scale3.y;
+    float sz = in_scale3.z;
+
+    // pick 2 largest scales
+    vec2 u = ax2; float su = sx;
+    vec2 v = ay2; float sv = sy;
+
+    if (sz > su && sz > sv) {
+        if (su < sv) { u = az2; su = sz; }
+        else         { v = az2; sv = sz; }
     }
 
-    view_p.xy += ax * (in_corner.x * in_scale3.x * s)
-              +  ay * (in_corner.y * in_scale3.y * s);
+    vec2 U = safe_normalize(u);
+    vec2 V = safe_normalize(v);
+
+    if (abs(dot(U, V)) > 0.999) {
+        V = vec2(-U.y, U.x);
+    }
+
+    // Expand geometry
+    view_p.xy += U * (in_corner.x * su * s)
+              +  V * (in_corner.y * sv * s);
+
+    // Pass scaled ellipse coords to fragment (this fixes the "card edges")
+    v_uv = vec2(in_corner.x * su, in_corner.y * sv);
 
     gl_Position = Proj * view_p;
-    v_corner = in_corner;
     v_col = in_col;
 }
-
 """
 
             splatq_fragment = """
 #version 330
-in vec2 v_corner;
+
+in vec2 v_uv;     // scaled ellipse coords
 in vec4 v_col;
 out vec4 f_color;
 
 void main() {
-    float r2 = dot(v_corner, v_corner);
-    if (r2 > 1.0) discard;
+    float r2 = dot(v_uv, v_uv);
 
-    float g = exp(-r2 * 2.5);
-    float edge = smoothstep(1.0, 0.85, r2);
-    g *= edge;
+    // Steep enough that corners go invisible
+    float a = exp(-r2 * 6.0);
 
-    float oa = clamp(v_col.a, 0.0, 1.0);
-    oa = max(oa, 0.08);
-    oa = min(oa * 1.5, 1.0);
+    // use per-splat opacity
+    a *= v_col.a;
 
-    float a = oa * g;
+    // global tuning
+    a *= 0.8;
+
+    if (a < 1e-4) discard;
+
     f_color = vec4(v_col.rgb * a, a);
 }
 """
@@ -2895,14 +2918,9 @@ void main() {
         print("[SPLAT] uploading:", self._mgl_splat_count, "ctx:", self._mgl_ctx is not None, "shape:", splats_np.shape)
 
         # IMPORTANT: point-sprite buffer must be Nx8 packed: [pos3, col4, rad1]
-        splats8 = splats_np[:, :8].astype(np.float32, copy=False)
-
-        self._mgl_splat_vbo = self._mgl_ctx.buffer(splats8.tobytes())
-        self._mgl_splat_vao = self._mgl_ctx.vertex_array(
-            self._mgl_splat_prog,
-            [(self._mgl_splat_vbo, "3f 4f 1f", "in_pos", "in_col", "in_rad")],
-        )
-
+        # TEMP: disable point-sprite path while debugging quad path
+        self._mgl_splat_vbo = None
+        self._mgl_splat_vao = None
 
         # instanced-quad upload (new path)
         if self._mgl_splatq_prog is not None and self._mgl_splatq_quad_vbo is not None:
@@ -2946,6 +2964,14 @@ void main() {
             if splats15 is not None:
                 print("[SPLATQ] upload shape:", splats15.shape, "dtype:", splats15.dtype)
                 assert splats15.shape[1] == 15
+
+                # TEMP safety: cap upload while we debug
+                splats15 = splats15[:10000].copy()
+                self._mgl_splat_count = int(splats15.shape[0])
+                print("[SPLATQ] upload shape:", splats15.shape)
+
+                # Keep CPU copy so we can sort per-frame (10k is fine)
+                self._mgl_splats15_cpu = splats15
 
                 self._mgl_splatq_vbo = self._mgl_ctx.buffer(splats15.tobytes())
                 self._mgl_splatq_vao = self._mgl_ctx.vertex_array(
@@ -3438,7 +3464,7 @@ void main() {
             self._mgl_ctx.enable(moderngl.DEPTH_TEST)
             self._mgl_ctx.blend_func = moderngl.ONE, moderngl.ONE_MINUS_SRC_ALPHA
 
-            # try the new instanced-quad path first
+            # ONLY the instanced-quad path (disable point fallback while debugging)
             if self._mgl_splatq_vao is not None and self._mgl_splatq_prog is not None:
                 # depth test ON, but don't write depth (transparent)
                 old_depth_mask = getattr(self._mgl_ctx, "depth_mask", True)
@@ -3447,8 +3473,6 @@ void main() {
                 except Exception:
                     old_depth_mask = True
 
-                # build Model exactly like your mesh pass does
-                # (uses the same 'transform' and '_mgl_scale_multiplier' variables you already have above)
                 if self._mgl_scale_multiplier != 1.0:
                     model = transform * Matrix44.from_scale([self._mgl_scale_multiplier] * 3, dtype="f4")
                 else:
@@ -3459,12 +3483,9 @@ void main() {
                 self._mgl_splatq_prog["Model"].write(model.astype("f4"))
                 self._mgl_splatq_prog["SplatWorldScale"].value = float(self._mgl_splat_world_scale * self._mgl_scale_multiplier)
 
-
-                max_instances = 50000  # TEMP: prevent GPU TDR while debugging
+                max_instances = 10000  # TEMP safety cap
                 inst = min(int(self._mgl_splat_count), max_instances)
-
-                # optional debug
-                # print("[SPLATQ] draw instances:", inst, "/", self._mgl_splat_count)
+                print("[SPLATQ] draw:", inst, "/", int(self._mgl_splat_count))
 
                 self._mgl_splatq_vao.render(
                     mode=moderngl.TRIANGLE_STRIP,
@@ -3477,22 +3498,9 @@ void main() {
                 except Exception:
                     pass
 
-            # fallback: old point sprites
-            elif self._mgl_splat_vao is not None and self._mgl_splat_prog is not None:
-                self._mgl_ctx.enable(moderngl.PROGRAM_POINT_SIZE)
-
-                try:
-                    self._mgl_ctx.enable(moderngl.POINT_SPRITE)
-                except Exception:
-                    pass
-                try:
-                    self._gl.glEnable(0x8861)  # GL_POINT_SPRITE
-                except Exception:
-                    pass
-
-                self._mgl_splat_prog["Mvp"].write(mvp.astype("f4"))
-                self._mgl_splat_prog["SplatSizeMul"].value = 1.0
-                self._mgl_splat_vao.render(mode=moderngl.POINTS, vertices=self._mgl_splat_count)
+            # fallback: old point sprites (TEMP DISABLED while debugging)
+            elif False:
+                pass
 
         # grid (only once)
         if self._mgl_grid_vao is not None:
