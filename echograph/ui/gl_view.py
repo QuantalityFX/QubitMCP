@@ -1271,11 +1271,13 @@ class _ArcBallUtil(_ArcBall):
                 [2.0 * (xz - wy), 2.0 * (yz + wx), 1.0 - 2.0 * (xx + yy)],
             ],
             dtype="f4",
-        ).T
-
+        ).T\
+        
+print("[GL_VIEW] LOADED FROM:", __file__)
 
 class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWidget):
     def __init__(self, scene, parent=None):
+        print("[GL_VIEW] INIT FROM:", __file__)
         super().__init__(parent)
         if QOpenGLWidget is not None:
             try:
@@ -1403,14 +1405,14 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._mgl_splat_prog = None
         self._mgl_splat_vbo = None
         self._mgl_splat_vao = None
-
+        
         # instanced-quad splats (new path)
         self._mgl_splatq_prog = None
         self._mgl_splatq_quad_vbo = None   # static quad corners
         self._mgl_splatq_vbo = None        # instance buffer (Nx8)
         self._mgl_splatq_vao = None
         self._mgl_splat_world_scale = 3.0  # tuning knob
-
+        self._mgl_splat_sort_tick = 0
         self._mgl_splat_count = 0
         self._mgl_pending_splats = None
         self._mgl_render_splats = False
@@ -2848,12 +2850,17 @@ void main() {
                 f"Expected splats_np shape (N,8) or (N,10) or (N,14) or (N,15), got {arr.shape}"
             )
 
+        # TEMP: cap to avoid driver nuking while we locate the crash
+        arr = arr[:2000].copy()
+
+        print("[SPLAT] set_splats queue:", arr.shape, arr.dtype, flush=True)
         self._mgl_pending_splats = arr
         self._mgl_render_splats = True
         self.update()
-
+        print("[SPLAT] set_splats update() called", flush=True)
 
     def _mgl_upload_pending_splats(self) -> None:
+        print("[MGL] ENTER _mgl_upload_pending_splats", flush=True)
         if self._mgl_pending_splats is None:
             return
         if not _HAS_MGL or self._mgl_ctx is None or self._mgl_splat_prog is None:
@@ -3316,6 +3323,8 @@ void main() {
                 pass
 
     def _paint_mgl(self) -> None:
+        print("[MGL] ENTER _paint_mgl", flush=True)
+        print("[MGL] ctx ok", flush=True)
         if not _HAS_MGL or self._mgl_ctx is None:
             try:
                 c = self._viewport_bg
@@ -3324,13 +3333,26 @@ void main() {
                 pass
             return
         try:
+            print("[MGL] detect_framebuffer", flush=True)
             target = self._mgl_ctx.detect_framebuffer()
-            target.use()
+            print("[MGL] target ok", flush=True)
+
+            # IMPORTANT: don't call target.use() here.
+            # ModernGL will render to the default framebuffer already for QOpenGLWidget.
+            # Calling use() can hard-crash on some drivers.
+            print("[MGL] set viewport", flush=True)
+            self._mgl_ctx.viewport = (0, 0, max(2, self.width()), max(2, self.height()))
+
+            print("[MGL] clear", flush=True)
+            target.clear(*self._mgl_bg_color, depth=1.0)
+
         except Exception as exc:
+            import traceback
             self._mgl_error = f"ModernGL framebuffer error: {exc}"
+            print("[MGL] framebuffer exception:", exc, flush=True)
+            traceback.print_exc()
             return
-        self._mgl_ctx.viewport = (0, 0, max(2, self.width()), max(2, self.height()))
-        target.clear(*self._mgl_bg_color, depth=1.0)
+
         flags = moderngl.BLEND | moderngl.DEPTH_TEST
         if self._mgl_cull_enabled:
             flags |= moderngl.CULL_FACE
@@ -3454,25 +3476,32 @@ void main() {
                     self._mgl_ctx.line_width = 1.0
                 except Exception:
                     pass
-                
-        # draw splats BEFORE the grid
-        # --- SPLATS ---
-        if self._mgl_render_splats and self._mgl_splat_count:
+        # --- SPLATS (instanced-quad only) ---
+        try:
+            if self._mgl_render_splats and self._mgl_splatq_vao is not None and self._mgl_splatq_prog is not None and self._mgl_splat_count:
 
-            # common state for both paths
-            self._mgl_ctx.enable(moderngl.BLEND)
-            self._mgl_ctx.enable(moderngl.DEPTH_TEST)
-            self._mgl_ctx.blend_func = moderngl.ONE, moderngl.ONE_MINUS_SRC_ALPHA
+                # common state for splats
+                self._mgl_ctx.enable(moderngl.BLEND)
+                self._mgl_ctx.blend_func = moderngl.ONE, moderngl.ONE_MINUS_SRC_ALPHA
 
-            # ONLY the instanced-quad path (disable point fallback while debugging)
-            if self._mgl_splatq_vao is not None and self._mgl_splatq_prog is not None:
-                # depth test ON, but don't write depth (transparent)
+                # disable depth test for transparent splats (guarded)
+                try:
+                    self._mgl_ctx.disable(moderngl.DEPTH_TEST)
+                except Exception:
+                    # fallback that works on more ModernGL versions
+                    try:
+                        self._mgl_ctx.enable_only(moderngl.BLEND)
+                    except Exception:
+                        pass
+
+                # disable depth writes (guarded)
                 old_depth_mask = getattr(self._mgl_ctx, "depth_mask", True)
                 try:
                     self._mgl_ctx.depth_mask = False
                 except Exception:
                     old_depth_mask = True
 
+                # model matrix (same as mesh path)
                 if self._mgl_scale_multiplier != 1.0:
                     model = transform * Matrix44.from_scale([self._mgl_scale_multiplier] * 3, dtype="f4")
                 else:
@@ -3483,9 +3512,35 @@ void main() {
                 self._mgl_splatq_prog["Model"].write(model.astype("f4"))
                 self._mgl_splatq_prog["SplatWorldScale"].value = float(self._mgl_splat_world_scale * self._mgl_scale_multiplier)
 
-                max_instances = 10000  # TEMP safety cap
+                # tick + gate sorting
+                self._mgl_splat_sort_tick = (self._mgl_splat_sort_tick + 1) % 1000000
+                do_sort = False # sort every 10th frame
+
+                # SORT (only sometimes)
+                try:
+                    import numpy as np
+
+                    if do_sort:
+                        cpu = getattr(self, "_mgl_splats15_cpu", None)
+                        if cpu is not None and self._mgl_splatq_vbo is not None and cpu.shape[0] > 1:
+                            view_model = (lookat * model).astype("f4")
+
+                            pos = cpu[:, 0:3].astype(np.float32, copy=False)
+                            ones = np.ones((pos.shape[0], 1), dtype=np.float32)
+                            pos4 = np.concatenate([pos, ones], axis=1)
+
+                            viewp = pos4 @ view_model.T
+                            z = viewp[:, 2]
+
+                            order = np.argsort(z)  # far first
+                            self._mgl_splatq_vbo.write(cpu[order].tobytes())
+
+                except Exception as exc:
+                    print("[SPLATQ] sort error:", exc)
+
+                # draw
+                max_instances = 2000
                 inst = min(int(self._mgl_splat_count), max_instances)
-                print("[SPLATQ] draw:", inst, "/", int(self._mgl_splat_count))
 
                 self._mgl_splatq_vao.render(
                     mode=moderngl.TRIANGLE_STRIP,
@@ -3493,20 +3548,26 @@ void main() {
                     instances=inst,
                 )
 
+                # restore depth mask (IMPORTANT)
                 try:
                     self._mgl_ctx.depth_mask = old_depth_mask
                 except Exception:
                     pass
 
-            # fallback: old point sprites (TEMP DISABLED while debugging)
-            elif False:
-                pass
+                # restore depth test for everything after
+                self._mgl_ctx.enable(moderngl.DEPTH_TEST)
 
-        # grid (only once)
+        except Exception as exc:
+            import traceback
+            print("[SPLATQ] PAINT CRASH:", exc)
+            traceback.print_exc()
+
+        # --- GRID ---
         if self._mgl_grid_vao is not None:
             self._mgl_grid_prog["Mvp"].write(mvp.astype("f4"))
             self._mgl_grid_prog["Color"].value = (1.0, 1.0, 1.0, self._mgl_grid_alpha)
             self._mgl_grid_vao.render(moderngl.LINES)
+                    
 
     def _update_example_camera_basis(self) -> None:
         direction = self._example_cam_pos - self._example_cam_look
