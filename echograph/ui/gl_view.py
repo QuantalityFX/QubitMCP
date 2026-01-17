@@ -1492,7 +1492,8 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._build_debug_copy_button()
 
     def debug_points(self) -> None:
-        import numpy as np
+        if np is None:
+            return
         pts = np.array([
             [0.0, 0.0, 0.0,  1.0, 0.0, 1.0, 1.0,  1.0],
             [10.0, 0.0, 0.0,  1.0, 0.0, 1.0, 1.0,  1.0],
@@ -2834,13 +2835,11 @@ void main() {
         (N,14): [x,y,z, r,g,b,a, radius, sx, sy, qx, qy, qz, qw]
         (N,15): [x,y,z, r,g,b,a, radius, sx, sy, sz, qx, qy, qz, qw]
         """
-        if splats_np is None:
+        if np is None:
             self._mgl_pending_splats = None
             self._mgl_render_splats = False
             self.update()
             return
-
-        import numpy as np
 
         arr = np.asarray(splats_np, dtype=np.float32)
         if arr.ndim != 2 or arr.shape[1] not in (8, 10, 14, 15):
@@ -2927,8 +2926,9 @@ void main() {
 
         # instanced-quad upload (new path)
         if self._mgl_splatq_prog is not None and self._mgl_splatq_quad_vbo is not None:
-            import numpy as np
-
+            if np is None:
+                self._mgl_render_splats = False
+                return
             # Build/ensure Nx15: [pos3 col4 rad1 sx sy sz quat4]
             if splats_np.shape[1] == 15:
                 splats15 = splats_np.astype(np.float32, copy=False)
@@ -3595,11 +3595,11 @@ void main() {
                 self._mgl_splat_sort_tick = (self._mgl_splat_sort_tick + 1) % 1000000
                 do_sort = (self._mgl_splat_sort_tick % 10) == 0  # sort every 10th frame
 
+                dbg = bool(getattr(self, "_mgl_debug", False))
+                #do_sort = True
                 # SORT (only sometimes)
                 try:
-                    import numpy as np
-
-                    if do_sort:
+                    if do_sort and np is not None:
                         cpu = getattr(self, "_mgl_splats15_cpu", None)
                         if cpu is not None and self._mgl_splatq_vbo is not None and cpu.shape[0] > 1:
                             view_model = (lookat * model).astype("f4")
@@ -3611,12 +3611,15 @@ void main() {
                             viewp = pos4 @ view_model.T
                             z = viewp[:, 2]
 
-                            order = np.argsort(z)  # far first
+                            order = np.argsort(z)  # keep this
+                            if dbg:
+                                print("[SPLATQ] sort ran. zmin/zmax:", float(z.min()), float(z.max()),
+                                    "count:", int(cpu.shape[0]), flush=True)
+
                             self._mgl_splatq_vbo.write(cpu[order].tobytes())
-
                 except Exception as exc:
-                    print("[SPLATQ] sort error:", exc)
-
+                    if dbg:
+                        print("[SPLATQ] sort error:", exc, flush=True)
                 # draw
                 inst = int(self._mgl_splat_count)
 
