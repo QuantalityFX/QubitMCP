@@ -1489,6 +1489,11 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._fps = 0.0
         self._fps_last_t = time.perf_counter()
         self._fps_ema = 0.0   # smoothed dt
+        self._fps_timer = QtCore.QTimer(self)
+        self._fps_timer.setInterval(16)  # ~60hz
+        #self._fps_timer.setInterval(100)  # 10hz idle refresh
+        self._fps_timer.timeout.connect(self.update)
+        #self._fps_timer.start()
 
         self.setMouseTracking(True)
         self.setFocusPolicy(QtCore.Qt.StrongFocus)
@@ -1522,6 +1527,16 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             btn.setGeometry(38, 10, 46, 22)
         if getattr(self, "_mgl_uv_cache", None) is not None:
             self._mgl_uv_cache = None
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        if hasattr(self, "_fps_timer"):
+            self._fps_timer.start()
+
+    def hideEvent(self, e):
+        super().hideEvent(e)
+        if hasattr(self, "_fps_timer"):
+            self._fps_timer.stop()
 
     def paintEvent(self, event):
         if QOpenGLWidget is None:
