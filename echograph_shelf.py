@@ -1822,6 +1822,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             0,
             lambda: self.open_splat_model(r"E:\GaussingSplats\models\bicycle\point_cloud\iteration_30000\point_cloud.ply")
             #lambda: self.open_splat_model(r"E:\GaussingSplats\models\bonsai\point_cloud\iteration_30000\point_cloud.ply")
+            #lambda: self.open_splat_model(r"E:\GaussingSplats\models\garden\point_cloud\iteration_30000\point_cloud.ply")
+           
         )
         self.view.setMinimumSize(400, 300)
         self.gl_view.setMinimumSize(400, 300)

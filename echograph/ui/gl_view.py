@@ -2723,7 +2723,7 @@ in float in_rad;       // per-instance
 in vec3 in_scale3;     // per-instance (sx, sy, sz)
 in vec4 in_rot;        // per-instance quaternion (x,y,z,w)
 
-out vec2 v_uv;         // normalized quad coords (-1..1)
+out vec2 v_uv;         // ellipse coords for gaussian test
 out vec4 v_col;
 
 vec3 quat_rotate(vec3 v, vec4 q) {
@@ -2731,52 +2731,53 @@ vec3 quat_rotate(vec3 v, vec4 q) {
     return v + q.w * t + cross(q.xyz, t);
 }
 
-vec2 safe_normalize(vec2 v) {
-    float l = length(v);
-    if (l < 1e-6) return vec2(1.0, 0.0);
-    return v / l;
-}
-
 void main() {
+    // splat center in view space
     vec4 view_p = View * Model * vec4(in_pos, 1.0);
 
     float s = in_rad * SplatWorldScale;
 
     mat3 VM = mat3(View * Model);
 
+    // rotated local axes, then into view space
     vec3 ax3 = VM * quat_rotate(vec3(1.0, 0.0, 0.0), in_rot);
     vec3 ay3 = VM * quat_rotate(vec3(0.0, 1.0, 0.0), in_rot);
     vec3 az3 = VM * quat_rotate(vec3(0.0, 0.0, 1.0), in_rot);
 
-    vec2 ax2 = ax3.xy;
-    vec2 ay2 = ay3.xy;
-    vec2 az2 = az3.xy;
+    // project to screen plane (view x/y)
+    vec2 ax2 = ax3.xy * in_scale3.x;
+    vec2 ay2 = ay3.xy * in_scale3.y;
+    vec2 az2 = az3.xy * in_scale3.z;
 
-    float sx = in_scale3.x;
-    float sy = in_scale3.y;
-    float sz = in_scale3.z;
+    float lax = length(ax2);
+    float lay = length(ay2);
+    float laz = length(az2);
 
-    // pick 2 largest scales
-    vec2 u = ax2; float su = sx;
-    vec2 v = ay2; float sv = sy;
+    // pick two longest projected axes (already includes anisotropic scale)
+    vec2 u = ax2;
+    vec2 v = ay2;
 
-    if (sz > su && sz > sv) {
-        if (su < sv) { u = az2; su = sz; }
-        else         { v = az2; sv = sz; }
+    if (laz > lax && laz > lay) {
+        if (lax < lay) u = az2;
+        else          v = az2;
+    } else if (lay > lax && lay > laz) {
+        v = ay2;
+        u = (lax > laz) ? ax2 : az2;
+    } else {
+        u = ax2;
+        v = (lay > laz) ? ay2 : az2;
     }
 
-    vec2 U = safe_normalize(u);
-    vec2 V = safe_normalize(v);
+    // if an axis points into camera, its projection can vanish: stabilize
+    if (length(u) < 1e-6) u = vec2(1.0, 0.0);
+    if (length(v) < 1e-6) v = vec2(0.0, 1.0);
 
-    if (abs(dot(U, V)) > 0.999) {
-        V = vec2(-U.y, U.x);
-    }
+    // expand quad in view space using scaled projected axes
+    vec2 offs = (u * in_corner.x + v * in_corner.y) * s;
+    view_p.xy += offs;
 
-    // Expand geometry
-    view_p.xy += U * (in_corner.x * su * s)
-              +  V * (in_corner.y * sv * s);
-
-    // Pass scaled ellipse coords to fragment (this fixes the "card edges")
+    // gaussian should match the ellipse we drew: measure in ellipse space
+    // u and v already contain scale, so normalize by their lengths
     v_uv = in_corner;
 
     gl_Position = Proj * view_p;
@@ -2795,7 +2796,7 @@ void main() {
     float r2 = dot(v_uv, v_uv);
     if (r2 > 1.0) discard;
 
-    float a = exp(-r2 * 1.2);
+    float a = exp(-r2 * 2.0);
     a *= v_col.a;
 
     if (a < 1e-4) discard;
