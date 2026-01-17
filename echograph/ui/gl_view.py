@@ -2723,7 +2723,7 @@ in float in_rad;       // per-instance
 in vec3 in_scale3;     // per-instance (sx, sy, sz)
 in vec4 in_rot;        // per-instance quaternion (x,y,z,w)
 
-out vec2 v_uv;         // scaled ellipse coords
+out vec2 v_uv;         // normalized quad coords (-1..1)
 out vec4 v_col;
 
 vec3 quat_rotate(vec3 v, vec4 q) {
@@ -2777,7 +2777,7 @@ void main() {
               +  V * (in_corner.y * sv * s);
 
     // Pass scaled ellipse coords to fragment (this fixes the "card edges")
-    v_uv = vec2(in_corner.x * su, in_corner.y * sv);
+    v_uv = in_corner;
 
     gl_Position = Proj * view_p;
     v_col = in_col;
@@ -2787,21 +2787,16 @@ void main() {
             splatq_fragment = """
 #version 330
 
-in vec2 v_uv;     // scaled ellipse coords
+in vec2 v_uv;     // normalized quad coords (-1..1)
 in vec4 v_col;
 out vec4 f_color;
 
 void main() {
     float r2 = dot(v_uv, v_uv);
+    if (r2 > 1.0) discard;
 
-    // Steep enough that corners go invisible
-    float a = exp(-r2 * 6.0);
-
-    // use per-splat opacity
+    float a = exp(-r2 * 1.2);
     a *= v_col.a;
-
-    // global tuning
-    a *= 0.8;
 
     if (a < 1e-4) discard;
 
