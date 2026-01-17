@@ -3439,8 +3439,9 @@ void main() {
             (0.0, 0.0, 0.0),
             (0.0, 1.0, 0.0),
         )
-        self._dbgprint(dbg,"[MGL] after lookat", flush=True)
-        self._dbgprint(dbg,"[MGL] before transform build", flush=True)
+        self._dbgprint(dbg, "[MGL] after lookat", flush=True)
+        self._dbgprint(dbg, "[MGL] before transform build", flush=True)
+        
         if self._mgl_arcball is not None and self._mgl_center is not None:
             self._mgl_arcball.Transform[3, :3] = -self._mgl_arcball.Transform[:3, :3].T @ self._mgl_center
 
