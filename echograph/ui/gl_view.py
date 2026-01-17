@@ -1279,6 +1279,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
     def __init__(self, scene, parent=None):
         print("[GL_VIEW] INIT FROM:", __file__)
         super().__init__(parent)
+        
         if QOpenGLWidget is not None:
             try:
                 fmt = QtGui.QSurfaceFormat()
@@ -1302,6 +1303,8 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
                         self.setUpdateBehavior(behavior)
             except Exception:
                 pass
+        #DEBUG LOG Toggle
+        self._mgl_debug = False
         self._scene = scene
         self._scene_texture = None
         self._scene_texture_dirty = False
@@ -2860,7 +2863,8 @@ void main() {
         print("[SPLAT] set_splats update() called", flush=True)
 
     def _mgl_upload_pending_splats(self) -> None:
-        print("[MGL] ENTER _mgl_upload_pending_splats", flush=True)
+        dbg = bool(getattr(self, "_mgl_debug", False))
+        self._dbgprint(dbg, "[MGL] ENTER _mgl_upload_pending_splats", flush=True)
         if self._mgl_pending_splats is None:
             return
         if not _HAS_MGL or self._mgl_ctx is None or self._mgl_splat_prog is None:
@@ -3326,9 +3330,16 @@ void main() {
             except Exception:
                 pass
 
+    def _dbgprint(self, enabled: bool, *a, **k) -> None:
+        if enabled:
+            print(*a, **k)
+
     def _paint_mgl(self) -> None:
-        print("[MGL] ENTER _paint_mgl", flush=True)
-        print("[MGL] ctx ok", flush=True)
+        dbg = bool(getattr(self, "_mgl_debug", False))
+
+        self._dbgprint(dbg, "[MGL] ENTER _paint_mgl", flush=True)
+        self._dbgprint(dbg, "[MGL] ctx ok", flush=True)
+
         if not _HAS_MGL or self._mgl_ctx is None:
             try:
                 c = self._viewport_bg
@@ -3339,9 +3350,9 @@ void main() {
         try:
             # QOpenGLWidget already has the correct default framebuffer bound.
             # Avoid Framebuffer.clear() because it may bind/use() internally and can hard-crash some drivers.
-            print("[MGL] set viewport", flush=True)
+            self._dbgprint(dbg,"[MGL] set viewport", flush=True)
             self._mgl_ctx.viewport = (0, 0, max(2, self.width()), max(2, self.height()))
-            print("[MGL] after viewport assign", flush=True)
+            self._dbgprint(dbg,"[MGL] after viewport assign", flush=True)
 
             col = self._mgl_bg_color or (0.15, 0.15, 0.15, 1.0)
             if len(col) >= 4:
@@ -3354,17 +3365,17 @@ void main() {
                 if self._gl is not None:
                     w = max(2, self.width())
                     h = max(2, self.height())
-                    print("[MGL] before glViewport", flush=True)
+                    self._dbgprint(dbg,"[MGL] before glViewport", flush=True)
                     self._gl.glViewport(0, 0, w, h)
-                    print("[MGL] after glViewport", flush=True)
+                    self._dbgprint(dbg,"[MGL] after glViewport", flush=True)
 
-                    print("[MGL] before glClearColor", flush=True)
+                    self._dbgprint(dbg,"[MGL] before glClearColor", flush=True)
                     self._gl.glClearColor(r, g, b, a)
-                    print("[MGL] after glClearColor", flush=True)
+                    self._dbgprint(dbg,"[MGL] after glClearColor", flush=True)
 
-                    print("[MGL] before glClear", flush=True)
+                    self._dbgprint(dbg,"[MGL] before glClear", flush=True)
                     self._gl.glClear(GL_COLOR_BUFFER_BIT)
-                    print("[MGL] after glClear", flush=True)
+                    self._dbgprint(dbg,"[MGL] after glClear", flush=True)
 
             except Exception:
                 # Fallback: raw GL clear
@@ -3375,40 +3386,40 @@ void main() {
                 except Exception:
                     pass
 
-            print("[MGL] after raw gl clear block", flush=True)
+            self._dbgprint(dbg,"[MGL] after raw gl clear block", flush=True)
 
         except Exception as exc:
             import traceback
             self._mgl_error = f"ModernGL framebuffer error: {exc}"
-            print("[MGL] framebuffer exception:", exc, flush=True)
+            self._dbgprint(dbg,"[MGL] framebuffer exception:", exc, flush=True)
             traceback.print_exc()
             return
 
         flags = moderngl.BLEND | moderngl.DEPTH_TEST
         if self._mgl_cull_enabled:
             flags |= moderngl.CULL_FACE
-        print("[MGL] before mgl enable", flush=True)
+        self._dbgprint(dbg,"[MGL] before mgl enable", flush=True)
         self._mgl_ctx.enable(flags)
-        print("[MGL] after mgl enable", flush=True)
+        self._dbgprint(dbg,"[MGL] after mgl enable", flush=True)
         
         self._mgl_ctx.wireframe = False
-        print("[MGL] after wireframe", flush=True)
+        self._dbgprint(dbg,"[MGL] after wireframe", flush=True)
         if self._mgl_prog is None or self._mgl_grid_prog is None:
             return
-        print("[MGL] prog ok", flush=True)
+        self._dbgprint(dbg,"[MGL] prog ok", flush=True)
         
         aspect = self.width() / max(1.0, self.height())
         proj = Matrix44.perspective_projection(self._mgl_fov, aspect, 0.1, 1000.0)
-        print("[MGL] proj ok", flush=True)
+        self._dbgprint(dbg,"[MGL] proj ok", flush=True)
 
-        print("[MGL] before lookat", flush=True)
+        self._dbgprint(dbg,"[MGL] before lookat", flush=True)
         lookat = Matrix44.look_at(
             (0.0, 0.0, float(self._mgl_camera_zoom)),
             (0.0, 0.0, 0.0),
             (0.0, 1.0, 0.0),
         )
-        print("[MGL] after lookat", flush=True)
-        print("[MGL] before transform build", flush=True)
+        self._dbgprint(dbg,"[MGL] after lookat", flush=True)
+        self._dbgprint(dbg,"[MGL] before transform build", flush=True)
         if self._mgl_arcball is not None and self._mgl_center is not None:
             self._mgl_arcball.Transform[3, :3] = -self._mgl_arcball.Transform[:3, :3].T @ self._mgl_center
 
@@ -3422,11 +3433,26 @@ void main() {
         else:
             transform = Matrix44.identity(dtype="f4")
 
-        print("[MGL] after transform build", flush=True)
-        # TEMP: gizmo update disabled (crash isolate)
-        pass
+        self._dbgprint(dbg,"[MGL] after transform build", flush=True)
 
-        print("[MGL] before mvp compute", flush=True)
+        # Safe gizmo yaw/pitch from Matrix44 'transform' (do NOT touch self._mgl_arcball.Transform)
+        try:
+            # Matrix44 supports indexing [row][col]
+            dx = float(transform[0][2])
+            dy = float(transform[1][2])
+            dz = float(transform[2][2])
+            dist2 = dx*dx + dy*dy + dz*dz
+            if dist2 > 1e-12:
+                dist = math.sqrt(dist2)
+                self._cam_yaw = math.atan2(dx, dz)
+                pitch = dy / dist
+                if pitch < -1.0: pitch = -1.0
+                if pitch >  1.0: pitch =  1.0
+                self._cam_pitch = math.asin(pitch)
+        except Exception:
+            pass
+
+        self._dbgprint(dbg,"[MGL] before mvp compute", flush=True)
                 
         if self._mgl_scale_multiplier != 1.0:
             scale_mat = Matrix44.from_scale(
@@ -3436,7 +3462,7 @@ void main() {
             mvp = proj * lookat * transform * scale_mat
         else:
             mvp = proj * lookat * transform
-        print("[MGL] after mvp compute", flush=True)
+        self._dbgprint(dbg,"[MGL] after mvp compute", flush=True)
 
         wire_overlay = bool(self._mgl_wireframe and (self._mgl_submeshes or self._mgl_vao is not None))
         if wire_overlay:
@@ -3445,9 +3471,9 @@ void main() {
             except Exception:
                 pass
 
-        print("[MGL] before Mvp write", flush=True)
+        self._dbgprint(dbg,"[MGL] before Mvp write", flush=True)
         self._mgl_prog["Mvp"].write(mvp.astype("f4").tobytes())
-        print("[MGL] after Mvp write", flush=True)
+        self._dbgprint(dbg,"[MGL] after Mvp write", flush=True)
 
         self._mgl_upload_pending_splats()
 
