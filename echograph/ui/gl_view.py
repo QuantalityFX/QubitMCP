@@ -11,6 +11,7 @@ import struct
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
+import time
 
 _ASSIMP_DLL_READY = False
 
@@ -1484,6 +1485,10 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._debug_toggle_icon_inactive = None
         self._debug_overlay_cache = None
         self._debug_overlay_cache_key = None
+
+        self._fps = 0.0
+        self._fps_last_t = time.perf_counter()
+        self._fps_ema = 0.0   # smoothed dt
 
         self.setMouseTracking(True)
         self.setFocusPolicy(QtCore.Qt.StrongFocus)
@@ -3327,10 +3332,19 @@ void main() {
             print(*a, **k)
 
     def _paint_mgl(self) -> None:
-        dbg = bool(getattr(self, "_mgl_debug", False))
+        now = time.perf_counter()
+        dt = now - getattr(self, "_fps_last_t", now)
+        self._fps_last_t = now
 
+        if dt > 0.0:
+            if self._fps_ema <= 0.0:
+                self._fps_ema = dt
+            else:
+                self._fps_ema = self._fps_ema * 0.9 + dt * 0.1
+            self._fps = 1.0 / max(self._fps_ema, 1e-6)
+
+        dbg = bool(getattr(self, "_mgl_debug", False))
         self._dbgprint(dbg, "[MGL] ENTER _paint_mgl", flush=True)
-        self._dbgprint(dbg, "[MGL] ctx ok", flush=True)
 
         if not _HAS_MGL or self._mgl_ctx is None:
             try:
@@ -4418,8 +4432,12 @@ void main() {
                 pass
 
     def _debug_status_lines(self, include_paths: bool = False) -> List[str]:
+        w = int(self.width())
+        h = int(self.height())
+
         lines = ["3D View Debug"]
-        lines.append(f"Viewport: {self.width()}x{self.height()}")
+        lines.append(f"Viewport: {w}x{h}")
+        lines.append(f"FPS: {self._fps:5.1f}")
         lines.append(f"QOpenGLWidget: {'OK' if QOpenGLWidget is not None else 'missing'}")
         lines.append(f"GL context: {'OK' if hasattr(self, '_gl') else 'missing'}")
         ctx = None
