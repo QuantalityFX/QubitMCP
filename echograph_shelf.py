@@ -1953,8 +1953,13 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         splitter = getattr(self, "_view_splitter", None)
         if gl_view and mode in {"3d", "split"}:
             try:
-                gl_view.set_scene(self.scene)
-                gl_view.refresh_from_scene()
+                sc = getattr(self, "scene", None)
+                gl_view.set_scene(sc)
+
+                # Only refresh when the scene object changes (prevents slow toggle stalls)
+                if getattr(gl_view, "_last_refresh_scene_obj", None) is not sc:
+                    gl_view._last_refresh_scene_obj = sc
+                    gl_view.refresh_from_scene()
             except Exception:
                 pass
         if view and hasattr(view, "set_3d_mode"):
