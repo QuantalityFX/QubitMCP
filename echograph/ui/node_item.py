@@ -1780,6 +1780,17 @@ class NodeItem(QtWidgets.QGraphicsObject):
             extra = self._make_import_texture_widget(self._param_value("texture"))
 
         thumb_path = (self._param_value("thumbnail") or "").strip()
+
+        if not hasattr(self, "_thumb_dbg_once"):
+            self._thumb_dbg_once = True
+            print(
+                "[THUMB] node:", getattr(self.model, "name", ""),
+                "ext:", os.path.splitext((path or "").strip())[1].lower(),
+                "thumb_path:", thumb_path,
+                "exists:", bool(thumb_path and os.path.exists(thumb_path)),
+                flush=True
+            )
+            
         thumb_widget = None
 
         if ext in (".fbx", ".obj", ".gltf", ".glb", ".ply") and thumb_path and os.path.exists(thumb_path):
@@ -1985,13 +1996,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
             return
 
         # Ensure the 3D view is actually visible before grabbing
+        # Do not change the UI mode. Only grab if the GL view is already visible.
         try:
-            if hasattr(parent, "_set_view_mode"):
-                parent._set_view_mode("3d")
-            if hasattr(gl_view, "show"):
-                gl_view.show()
+            if hasattr(gl_view, "isVisible") and not gl_view.isVisible():
+                print("[SNAP] gl_view not visible, skipping capture", flush=True)
+                return
         except Exception:
             pass
+
 
         print("[SNAP] screengrab clicked ->", path, flush=True)
 
@@ -2001,26 +2013,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
             if glv is None:
                 return
 
-            paused = False
             try:
-                # optional: pause ModernGL paint for this grab (see handoff)
-                if hasattr(glv, "_render_paused"):
-                    glv._render_paused = True
-                    paused = True
-
-                # ensure Qt's GL context is current for grabFramebuffer()
                 if hasattr(glv, "makeCurrent"):
                     glv.makeCurrent()
 
-                try:
-                    glv.update()
-                    glv.repaint()
-                    QtWidgets.QApplication.processEvents()
-                except Exception:
-                    pass
                 image = glv.grabFramebuffer()
 
-                # force completion before releasing context (driver stability)
                 try:
                     ctx = glv.context()
                     if ctx is not None:
@@ -2039,12 +2037,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         glv.doneCurrent()
                 except Exception:
                     pass
-
-                if paused:
-                    try:
-                        glv._render_paused = False
-                    except Exception:
-                        pass
 
             if image is None or image.isNull():
                 return
@@ -2141,8 +2133,18 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 pass
 
             self._set_param_value("thumbnail", thumb)
+            print("[SNAP] param thumbnail set ->", self._param_value("thumbnail"), flush=True)
             self._set_param_value("thumbnail_rev", str(time.time()))
-
+            try:
+                self.update()                 # repaint this node item
+            except Exception:
+                pass
+            try:
+                s = self.scene()
+                if s is not None and hasattr(s, "update"):
+                    s.update()
+            except Exception:
+                pass
             # save camera state beside the thumbnail: same name, .json
             try:
                 parent = _top_level_parent_for_dialog()
