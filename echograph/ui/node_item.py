@@ -826,7 +826,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 body_h += self._PARAM_ROW_H
 
             thumb = (self._param_value("thumbnail") or "").strip()
-            if ext in (".fbx", ".obj", ".gltf", ".glb") and thumb and os.path.exists(thumb):
+            if ext in (".fbx", ".obj", ".gltf", ".glb", ".ply") and thumb and os.path.exists(thumb):
                 inner_w = max(40, int(node_w) - 12)  # matches preview inner width
                 body_h += inner_w + self._PADDING    # square preview height
         elif kind == "html_preview":
@@ -1769,7 +1769,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         thumb_path = (self._param_value("thumbnail") or "").strip()
         thumb_widget = None
 
-        if ext in (".fbx", ".obj", ".gltf", ".glb") and thumb_path and os.path.exists(thumb_path):
+        if ext in (".fbx", ".obj", ".gltf", ".glb", ".ply") and thumb_path and os.path.exists(thumb_path):
             # full-width square preview inside the node
             inner_w = max(40, int(self.width) - 12)  # same idea as recompute_height
 
@@ -2140,7 +2140,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             _top_level_parent_for_dialog(),
             "Select File",
             start,
-            "3D Models (*.fbx *.obj *.gltf *.glb);;"
+            "3D Models (*.fbx *.obj *.gltf *.glb *.ply);;"
             "Documents (*.html *.htm *.txt *.md *.json *.py *.pdf);;"
             "All Files (*.*)",
         )
@@ -2209,7 +2209,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
     @staticmethod
     def _is_3d_model_ext(ext: str) -> bool:
-        return ext in (".fbx", ".obj", ".gltf", ".glb")
+        return ext in (".fbx", ".obj", ".gltf", ".glb", ".ply")
 
     def _open_import_model(self, path: str, ext: str) -> bool:
         if not self._is_3d_model_ext(ext):

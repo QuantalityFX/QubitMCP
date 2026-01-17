@@ -2030,41 +2030,107 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             btn.setToolTip("Split view active")
 
     def open_3d_model(self, path: str, texture_path: str | None = None) -> None:
+        import traceback
+
         path = (path or "").strip()
         if not path:
+            print("[open_3d_model] empty path", flush=True)
             return
+
         try:
             if not os.path.exists(path):
+                print(f"[open_3d_model] missing file: {path}", flush=True)
                 return
-        except Exception:
+        except Exception as exc:
+            print(f"[open_3d_model] exists check failed: {exc}", flush=True)
             return
+
+        ext = os.path.splitext(path)[1].lower()
+        print(f"[open_3d_model] path={path} ext={ext} texture={texture_path}", flush=True)
+
+        # switch to 3D view
         mode = getattr(self, "_view_mode", "2d")
         if mode == "split":
             self._set_view_mode("split")
         else:
             self._set_view_mode("3d")
+
+        # splat PLY path
+        if ext == ".ply":
+            try:
+                self.open_splat_model(path)
+            except Exception:
+                print("[open_3d_model] open_splat_model failed:\n" + traceback.format_exc(), flush=True)
+            return
+
+        # regular mesh path
         gl_view = getattr(self, "gl_view", None)
         if gl_view is None:
+            print("[open_3d_model] gl_view is None", flush=True)
             return
+
+        # When loading a mesh, hide splats so they don't cover the mesh render
+        try:
+            gl_view._mgl_render_splats = False
+            gl_view._mgl_splat_count = 0
+
+            # cancel pending splat upload (otherwise it can stomp center/zoom mid-frame)
+            gl_view._mgl_pending_splats = None
+            gl_view._mgl_splats15_cpu = None
+
+            gl_view._mgl_splatq_vao = None
+            gl_view._mgl_splatq_vbo = None
+        except Exception:
+            pass
+
+        # ensure mesh rendering is enabled when opening a mesh
+        try:
+            gl_view._render_scene_models = True
+        except Exception:
+            pass
+
         loader = getattr(gl_view, "load_model_path", None)
-        if callable(loader):
+        if not callable(loader):
+            print("[open_3d_model] gl_view.load_model_path missing or not callable", flush=True)
+            return
+
+        try:
+            loader(path, texture_path)
+            print("[open_3d_model] loader finished", flush=True)
+
+            # frame after loading so zoom/center are sane
             try:
-                loader(path, texture_path)
+                if hasattr(gl_view, "_on_frame_clicked"):
+                    gl_view._on_frame_clicked()
             except Exception:
                 pass
-            
+
+        except Exception:
+            print("[open_3d_model] loader error:\n" + traceback.format_exc(), flush=True)
+
+
     def open_splat_model(self, ply_path: str) -> None:
         import traceback
         try:
-            print("[SPLAT] open:", ply_path)
+            print("[SPLAT] open:", ply_path, flush=True)
+
+            # When loading splats, hide any mesh so splats don't "mask" it later
+            try:
+                gv = getattr(self, "gl_view", None)
+                if gv is not None:
+                    gv._mgl_vao = None
+                    gv._mgl_submeshes = []
+            except Exception:
+                pass
+
             from echograph.util.load_gs_ply_sample import load_gs_ply_sample
             splats = load_gs_ply_sample(ply_path, n=200_000)
-            print("[SPLAT] loaded:", splats.shape, splats.dtype)
-            self.gl_view.set_splats(splats)
-            print("[SPLAT] set_splats done")
-        except Exception:
-            print("[SPLAT] ERROR:\n", traceback.format_exc())
+            print("[SPLAT] loaded:", splats.shape, splats.dtype, flush=True)
 
+            self.gl_view.set_splats(splats)
+            print("[SPLAT] set_splats done", flush=True)
+        except Exception:
+            print("[SPLAT] ERROR:\n", traceback.format_exc(), flush=True)
 
     def _maybe_show_recent_dialog(self):
         recents = [p for p in getattr(self, "_recent_files", []) if p]
