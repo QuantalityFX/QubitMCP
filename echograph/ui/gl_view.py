@@ -3210,24 +3210,28 @@ void main() {
     def _mgl_frame_camera(self) -> None:
         self._mgl_camera_zoom = self._mgl_camera_distance(self._mgl_fov) * max(0.01, self._mgl_scale_multiplier)
 
-    def _sync_mgl_gizmo(self, transform: "Matrix44") -> None:
-        if np is None:
+    def _sync_mgl_gizmo(self, transform) -> None:
+        # ultra-safe: do nothing unless we can read 3x3 floats safely
+        try:
+            r00 = float(transform[0][0]); r01 = float(transform[0][1]); r02 = float(transform[0][2])
+            r10 = float(transform[1][0]); r11 = float(transform[1][1]); r12 = float(transform[1][2])
+            r20 = float(transform[2][0]); r21 = float(transform[2][1]); r22 = float(transform[2][2])
+        except Exception:
             return
-        mat = np.array(transform, dtype="f4")
-        if mat.shape[0] < 3 or mat.shape[1] < 3:
+
+        # forward = rot * (0,0,1) -> third column
+        dx, dy, dz = r02, r12, r22
+        dist2 = dx*dx + dy*dy + dz*dz
+        if dist2 <= 1e-12:
             return
-        rot = mat[:3, :3]
-        scale = np.linalg.norm(rot, axis=0)
-        denom = float(scale.mean()) if scale.size else 1.0
-        if denom > 1e-6:
-            rot = rot / denom
-        direction = rot @ np.array([0.0, 0.0, 1.0], dtype="f4")
-        dist = float(np.linalg.norm(direction))
-        if dist <= 1e-6:
-            return
-        self._cam_yaw = math.atan2(float(direction[0]), float(direction[2]))
-        pitch = float(direction[1]) / dist
-        self._cam_pitch = math.asin(max(-1.0, min(1.0, pitch)))
+        dist = math.sqrt(dist2)
+
+        self._cam_yaw = math.atan2(dx, dz)
+        pitch = dy / dist
+        if pitch < -1.0: pitch = -1.0
+        if pitch >  1.0: pitch =  1.0
+        self._cam_pitch = math.asin(pitch)
+
 
     def _mgl_load_mesh(self, path: Path) -> None:
         if self._mgl_ctx is None:
@@ -3333,18 +3337,45 @@ void main() {
                 pass
             return
         try:
-            print("[MGL] detect_framebuffer", flush=True)
-            target = self._mgl_ctx.detect_framebuffer()
-            print("[MGL] target ok", flush=True)
-
-            # IMPORTANT: don't call target.use() here.
-            # ModernGL will render to the default framebuffer already for QOpenGLWidget.
-            # Calling use() can hard-crash on some drivers.
+            # QOpenGLWidget already has the correct default framebuffer bound.
+            # Avoid Framebuffer.clear() because it may bind/use() internally and can hard-crash some drivers.
             print("[MGL] set viewport", flush=True)
             self._mgl_ctx.viewport = (0, 0, max(2, self.width()), max(2, self.height()))
+            print("[MGL] after viewport assign", flush=True)
 
-            print("[MGL] clear", flush=True)
-            target.clear(*self._mgl_bg_color, depth=1.0)
+            col = self._mgl_bg_color or (0.15, 0.15, 0.15, 1.0)
+            if len(col) >= 4:
+                r, g, b, a = col[:4]
+            else:
+                r, g, b = col[:3]
+                a = 1.0
+
+            try:
+                if self._gl is not None:
+                    w = max(2, self.width())
+                    h = max(2, self.height())
+                    print("[MGL] before glViewport", flush=True)
+                    self._gl.glViewport(0, 0, w, h)
+                    print("[MGL] after glViewport", flush=True)
+
+                    print("[MGL] before glClearColor", flush=True)
+                    self._gl.glClearColor(r, g, b, a)
+                    print("[MGL] after glClearColor", flush=True)
+
+                    print("[MGL] before glClear", flush=True)
+                    self._gl.glClear(GL_COLOR_BUFFER_BIT)
+                    print("[MGL] after glClear", flush=True)
+
+            except Exception:
+                # Fallback: raw GL clear
+                try:
+                    if self._gl is not None:
+                        self._gl.glClearColor(r, g, b, a)
+                        self._gl.glClear(GL_COLOR_BUFFER_BIT)
+                except Exception:
+                    pass
+
+            print("[MGL] after raw gl clear block", flush=True)
 
         except Exception as exc:
             import traceback
@@ -3356,24 +3387,47 @@ void main() {
         flags = moderngl.BLEND | moderngl.DEPTH_TEST
         if self._mgl_cull_enabled:
             flags |= moderngl.CULL_FACE
+        print("[MGL] before mgl enable", flush=True)
         self._mgl_ctx.enable(flags)
+        print("[MGL] after mgl enable", flush=True)
+        
         self._mgl_ctx.wireframe = False
+        print("[MGL] after wireframe", flush=True)
         if self._mgl_prog is None or self._mgl_grid_prog is None:
             return
+        print("[MGL] prog ok", flush=True)
+        
         aspect = self.width() / max(1.0, self.height())
         proj = Matrix44.perspective_projection(self._mgl_fov, aspect, 0.1, 1000.0)
+        print("[MGL] proj ok", flush=True)
+
+        print("[MGL] before lookat", flush=True)
         lookat = Matrix44.look_at(
             (0.0, 0.0, float(self._mgl_camera_zoom)),
             (0.0, 0.0, 0.0),
             (0.0, 1.0, 0.0),
         )
+        print("[MGL] after lookat", flush=True)
+        print("[MGL] before transform build", flush=True)
         if self._mgl_arcball is not None and self._mgl_center is not None:
             self._mgl_arcball.Transform[3, :3] = -self._mgl_arcball.Transform[:3, :3].T @ self._mgl_center
-            transform = Matrix44(self._mgl_arcball.Transform, dtype="f4")
+
+        # TEMP: avoid Matrix44(...) from arcball matrix (crash isolate)
+        if self._mgl_arcball is not None:
+            try:
+                # convert numpy 4x4 to plain list to avoid Matrix44 wrapping crash
+                transform = Matrix44(self._mgl_arcball.Transform.tolist(), dtype="f4")
+            except Exception:
+                transform = Matrix44.identity(dtype="f4")
         else:
             transform = Matrix44.identity(dtype="f4")
-        if np is not None:
-            self._sync_mgl_gizmo(transform)
+
+        print("[MGL] after transform build", flush=True)
+        # TEMP: gizmo update disabled (crash isolate)
+        pass
+
+        print("[MGL] before mvp compute", flush=True)
+                
         if self._mgl_scale_multiplier != 1.0:
             scale_mat = Matrix44.from_scale(
                 [self._mgl_scale_multiplier] * 3,
@@ -3382,6 +3436,8 @@ void main() {
             mvp = proj * lookat * transform * scale_mat
         else:
             mvp = proj * lookat * transform
+        print("[MGL] after mvp compute", flush=True)
+
         wire_overlay = bool(self._mgl_wireframe and (self._mgl_submeshes or self._mgl_vao is not None))
         if wire_overlay:
             try:
@@ -3389,7 +3445,10 @@ void main() {
             except Exception:
                 pass
 
-        self._mgl_prog["Mvp"].write(mvp.astype("f4"))
+        print("[MGL] before Mvp write", flush=True)
+        self._mgl_prog["Mvp"].write(mvp.astype("f4").tobytes())
+        print("[MGL] after Mvp write", flush=True)
+
         self._mgl_upload_pending_splats()
 
         if self._mgl_submeshes:
@@ -3870,6 +3929,11 @@ void main() {
         ctx = self.context()
         if ctx is not None:
             self._gl = ctx.functions()
+            try:
+                self._gl.initializeOpenGLFunctions()
+            except Exception:
+                pass
+
         if self._use_moderngl:
             self._init_mgl_renderer()
             return
