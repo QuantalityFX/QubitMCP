@@ -2059,12 +2059,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
             self._set_param_value("thumbnail", str(image_path))
 
-            # save camera state with the thumbnail
+            # save camera state beside the thumbnail: same name, .json
             try:
-                if hasattr(gl_view, "_mgl_get_camera_state"):
-                    cam = gl_view._mgl_get_camera_state()
-                    # store as JSON string so workflow save/load is stable
-                    self._set_param_value("camera_state", json.dumps(cam))
+                parent = _top_level_parent_for_dialog()
+                glv = getattr(parent, "gl_view", None) if parent is not None else None
+                if glv is not None and hasattr(glv, "_mgl_get_camera_state"):
+                    cam = glv._mgl_get_camera_state()
+                    cam_path = Path(str(image_path)).with_suffix(".json")
+                    with open(cam_path, "w", encoding="utf-8") as f:
+                        json.dump(cam, f, indent=2)
             except Exception:
                 pass
 
@@ -2261,10 +2264,27 @@ class NodeItem(QtWidgets.QGraphicsObject):
         if parent is None:
             QtWidgets.QMessageBox.warning(_top_level_parent_for_dialog(), "Import", "3D view is not available.")
             return True
+            
         handler = getattr(parent, "open_3d_model", None)
         if callable(handler):
             try:
                 handler(path, texture if texture else None)
+
+                # restore camera from sidecar json next to thumbnail (if present)
+                try:
+                    thumb = (self._param_value("thumbnail") or "").strip()
+                    if thumb:
+                        cam_path = Path(thumb).with_suffix(".json")
+                        if cam_path.exists():
+                            with open(cam_path, "r", encoding="utf-8") as f:
+                                cam = json.load(f)
+
+                            glv = getattr(parent, "gl_view", None)
+                            if glv is not None and hasattr(glv, "_mgl_apply_camera_state"):
+                                glv._mgl_apply_camera_state(cam)
+                except Exception as exc2:
+                    print("[IMPORT] camera restore failed:", exc2, flush=True)
+
                 return True
             except Exception as exc:
                 import traceback
