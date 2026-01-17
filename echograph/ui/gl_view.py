@@ -1908,21 +1908,46 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self.update()
 
     def _on_snapgrab_clicked(self) -> None:
-        image = self.grabFramebuffer()
-        if image.isNull():
-            return
-        
+        paused = False
+        try:
+            self._render_paused = True
+            paused = True
+
+            if hasattr(self, "makeCurrent"):
+                self.makeCurrent()
+
+            image = self.grabFramebuffer()
+            if image is None or image.isNull():
+                return
+
+            # force GPU completion (driver stability)
+            try:
+                ctx = self.context()
+                if ctx is not None:
+                    f = ctx.functions()
+                    if f is not None and hasattr(f, "glFinish"):
+                        f.glFinish()
+            except Exception:
+                pass
+
+        finally:
+            try:
+                if hasattr(self, "doneCurrent"):
+                    self.doneCurrent()
+            except Exception:
+                pass
+            if paused:
+                self._render_paused = False
+                self.update()
+
         start_dir = str(Path.home() / "Pictures")
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self,
-            "Save Snapshot",
-            start_dir,
-            "Images (*.png *.jpg)",
+            self, "Save Snapshot", start_dir, "Images (*.png *.jpg)"
         )
         if not path:
             return
-        
         image.save(path)
+
 
     def _on_plane_toggled(self, checked: bool) -> None:
         if not self._render_scene_plane:
@@ -3486,7 +3511,16 @@ void main() {
         if enabled:
             print(*a, **k)
 
+    def _mgl_bind_default_fbo(self) -> None:
+        try:
+            if self._gl is not None and hasattr(self, "defaultFramebufferObject"):
+                self._gl.glBindFramebuffer(0x8D40, int(self.defaultFramebufferObject()))  # GL_FRAMEBUFFER
+        except Exception:
+            pass
+
     def _paint_mgl(self) -> None:
+        if getattr(self, "_render_paused", False):
+          return
         now = time.perf_counter()
         dt = now - getattr(self, "_fps_last_t", now)
         self._fps_last_t = now
@@ -3509,6 +3543,7 @@ void main() {
                 pass
             return
         try:
+            self._mgl_bind_default_fbo()
             # QOpenGLWidget already has the correct default framebuffer bound.
             # Avoid Framebuffer.clear() because it may bind/use() internally and can hard-crash some drivers.
             self._dbgprint(dbg,"[MGL] set viewport", flush=True)
@@ -3939,14 +3974,15 @@ void main() {
                 self._mgl_center = [float(c[0]), float(c[1]), float(c[2])]
             except Exception:
                 pass
-
+            
         # arcball transform
         arc = getattr(self, "_mgl_arcball", None)
         t = state.get("arcball_transform", None)
-        if arc is not None and t is not None:
+        if arc is not None and t is not None and np is not None:
             try:
-                # expects 4x4 nested list
-                arc.Transform = t
+                arr = np.array(t, dtype="f4")
+                if arr.shape == (4, 4):
+                    arc.Transform[...] = arr  # keep numpy matrix type
             except Exception:
                 pass
 

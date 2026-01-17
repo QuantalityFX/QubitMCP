@@ -1984,18 +1984,68 @@ class NodeItem(QtWidgets.QGraphicsObject):
         if gl_view is None or not hasattr(gl_view, "grabFramebuffer"):
             return
 
-        # Optional safety: only capture if the GL view is actually visible
+        # Ensure the 3D view is actually visible before grabbing
         try:
-            if hasattr(gl_view, "isVisible") and not gl_view.isVisible():
-                return
+            if hasattr(parent, "_set_view_mode"):
+                parent._set_view_mode("3d")
+            if hasattr(gl_view, "show"):
+                gl_view.show()
         except Exception:
             pass
 
+        print("[SNAP] screengrab clicked ->", path, flush=True)
+
         def capture():
+            print("[SNAP] capture start", flush=True)
+            glv = gl_view
+            if glv is None:
+                return
+
+            paused = False
             try:
-                image = gl_view.grabFramebuffer()
+                # optional: pause ModernGL paint for this grab (see handoff)
+                if hasattr(glv, "_render_paused"):
+                    glv._render_paused = True
+                    paused = True
+
+                # ensure Qt's GL context is current for grabFramebuffer()
+                if hasattr(glv, "makeCurrent"):
+                    glv.makeCurrent()
+
+                try:
+                    glv.update()
+                    glv.repaint()
+                    QtWidgets.QApplication.processEvents()
+                except Exception:
+                    pass
+                image = glv.grabFramebuffer()
+
+                # force completion before releasing context (driver stability)
+                try:
+                    ctx = glv.context()
+                    if ctx is not None:
+                        f = ctx.functions()
+                        if f is not None and hasattr(f, "glFinish"):
+                            f.glFinish()
+                except Exception:
+                    pass
+
             except Exception:
                 return
+
+            finally:
+                try:
+                    if hasattr(glv, "doneCurrent"):
+                        glv.doneCurrent()
+                except Exception:
+                    pass
+
+                if paused:
+                    try:
+                        glv._render_paused = False
+                    except Exception:
+                        pass
+
             if image is None or image.isNull():
                 return
 
@@ -2040,7 +2090,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 snapshots_dir.mkdir(exist_ok=True, parents=True)
             except Exception:
                 return
-            
+
             p = str(Path(path).expanduser())
             try:
                 ap = str(Path(p).resolve())
@@ -2081,7 +2131,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 print("[SNAP] out.save FAILED ->", str(image_path), flush=True)
                 print("[SNAP] snapshots_dir exists:", snapshots_dir.exists(), "dir:", str(snapshots_dir), flush=True)
                 return
-            
+
             thumb = str(Path(image_path).resolve())
             print("[SNAP] saved ->", thumb, flush=True)
 
@@ -2108,7 +2158,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
             self._schedule_rebuild()
 
-        QtCore.QTimer.singleShot(0, capture)
+
+        QtCore.QTimer.singleShot(30, capture)
 
     def _file_detail_for_path(self, path: str) -> tuple[str, bool]:
         path = (path or "").strip()
