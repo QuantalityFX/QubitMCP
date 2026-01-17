@@ -1733,6 +1733,33 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             except Exception:
                 pass
 
+            # --- splat visibility stats (CPU) ---
+            try:
+                cpu = getattr(self, "_mgl_splats15_cpu", None)
+                if cpu is not None and np is not None and cpu.shape[0] > 0:
+                    view_model = np.array(vm, dtype=np.float32) if "vm" in locals() else None
+                    if view_model is None:
+                        raise RuntimeError("vm not available")
+
+                    pos = cpu[:, 0:3].astype(np.float32, copy=False)
+                    ones = np.ones((pos.shape[0], 1), dtype=np.float32)
+                    pos4 = np.concatenate([pos, ones], axis=1)
+
+                    viewp = pos4 @ view_model.T
+                    z = viewp[:, 2]
+                    wv = viewp[:, 3]
+
+                    z_gt0 = int(np.count_nonzero(z > 0.0))
+                    w_bad = int(np.count_nonzero(wv <= 0.0))
+
+                    lines.append(f"splats_count: {int(cpu.shape[0])}")
+                    lines.append(f"view_z min/max: {float(z.min())} / {float(z.max())}")
+                    lines.append(f"view_z > 0 count (behind?): {z_gt0}")
+                    lines.append(f"view_w <= 0 count (bad): {w_bad}")
+            except Exception as exc:
+                lines.append(f"splat_stats_error: {exc}")
+            # -------------------------------
+
             path = getattr(self, "_cam_debug_log_path", None)
             if not path:
                 path = Path(tempfile.gettempdir()) / "EchoGraph" / f"echograph_cam_debug_{time.strftime('%Y%m%d')}.log"
