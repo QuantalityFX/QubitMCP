@@ -8,6 +8,7 @@ if TYPE_CHECKING:
 import os
 import datetime
 import re
+import hashlib
 from pathlib import Path
 from echograph.qt_compat import QtCore, QtGui, QtWidgets, QAction, QShortcut, QKeySequence, _qexec
 from echograph.ui.dialogs import BigTextEditDialog
@@ -2021,9 +2022,34 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 snapshots_dir.mkdir(exist_ok=True, parents=True)
             except Exception:
                 return
+            
+            p = str(Path(path).expanduser())
+            try:
+                ap = str(Path(p).resolve())
+            except Exception:
+                ap = os.path.abspath(p)
 
-            model_filename = Path(path).stem
-            image_path = snapshots_dir / f"{model_filename}.png"
+            # include file stamp so changes produce a new thumb automatically
+            try:
+                st = os.stat(ap)
+                stamp = f"{int(st.st_mtime)}|{int(st.st_size)}"
+            except Exception:
+                stamp = "nostat"
+
+            # include texture too for .obj if you want different thumbs per texture
+            tex = (self._param_value("texture") or "").strip()
+            tex_key = ""
+            if tex:
+                try:
+                    tex_key = str(Path(tex).expanduser().resolve())
+                except Exception:
+                    tex_key = os.path.abspath(tex)
+
+            key_src = f"{ap}|{stamp}|{tex_key}".encode("utf-8", errors="ignore")
+            key = hashlib.sha1(key_src).hexdigest()[:10]
+
+            model_filename = Path(ap).stem
+            image_path = snapshots_dir / f"{model_filename}_{key}.png"
 
             try:
                 out.save(str(image_path))
