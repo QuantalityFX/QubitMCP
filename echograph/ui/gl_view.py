@@ -3621,8 +3621,7 @@ void main() {
                     print("[SPLATQ] sort error:", exc)
 
                 # draw
-                max_instances = 2000
-                inst = min(int(self._mgl_splat_count), max_instances)
+                inst = int(self._mgl_splat_count)
 
                 self._mgl_splatq_vao.render(
                     mode=moderngl.TRIANGLE_STRIP,
