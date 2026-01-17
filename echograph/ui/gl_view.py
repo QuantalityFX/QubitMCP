@@ -11,7 +11,7 @@ import struct
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
-import time
+import time, tempfile
 
 _ASSIMP_DLL_READY = False
 
@@ -216,12 +216,10 @@ def load_model(path: Path) -> Optional["ModelData"]:
     except Exception:
         return None
 
-
 @dataclass
 class ModelData:
     vertices: List[float]
     bounds: Tuple[float, float, float, float, float, float]
-
 
 @dataclass
 class MeshArrays:
@@ -233,7 +231,6 @@ class MeshArrays:
     base_color: Optional[Tuple[float, float, float, float]] = None
     submeshes: Optional[List["SubMeshData"]] = None
 
-
 @dataclass
 class SubMeshData:
     points: "np.ndarray"
@@ -242,7 +239,6 @@ class SubMeshData:
     texture_path: Optional[Path] = None
     texture_image: Optional[object] = None
     base_color: Optional[Tuple[float, float, float, float]] = None
-
 
 def _resolve_obj_index(value: Optional[int], total: int) -> Optional[int]:
     if value is None:
@@ -1306,6 +1302,13 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
                 pass
         #DEBUG LOG Toggle
         self._mgl_debug = False
+        # camera debug log (same folder as the main EchoGraph log)
+        try:
+            log_dir = Path(tempfile.gettempdir()) / "EchoGraph"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            self._cam_debug_log_path = log_dir / f"echograph_cam_debug_{time.strftime('%Y%m%d')}.log"
+        except Exception:
+            self._cam_debug_log_path = Path("echograph_cam_debug.log")
         self._scene = scene
         self._scene_texture = None
         self._scene_texture_dirty = False
@@ -1597,6 +1600,11 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             self._frame_btn.clicked.connect(self._on_frame_clicked)
             layout.addWidget(self._frame_btn, 0)
 
+            self._camlog_btn = QtWidgets.QPushButton("LogCam")
+            self._camlog_btn.setToolTip("Write current camera/orbit state to log")
+            self._camlog_btn.clicked.connect(self._on_camlog_clicked)
+            layout.addWidget(self._camlog_btn, 0)
+
             self._snapgrab_btn = QtWidgets.QPushButton()
             self._snapgrab_btn.setToolTip("Snapshot")
             icon_path = Path(__file__).resolve().parents[2] / "icons" / "screengrab _Icon_s_001.png"
@@ -1651,6 +1659,93 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         except Exception:
             self._controls = None
             self._controls_h = 0
+
+    def _on_camlog_clicked(self) -> None:
+        self._write_camera_debug_snapshot()
+
+    def _write_camera_debug_snapshot(self) -> None:
+        try:
+            # rebuild the same matrices used in _paint_mgl
+            zoom = float(getattr(self, "_mgl_camera_zoom", 0.0))
+
+            lookat = Matrix44.look_at(
+                (0.0, 0.0, zoom),
+                (0.0, 0.0, 0.0),
+                (0.0, 1.0, 0.0),
+            )
+
+            # arcball transform (same recenter logic)
+            transform = Matrix44.identity(dtype="f4")
+            center = getattr(self, "_mgl_center", None)
+            arc = getattr(self, "_mgl_arcball", None)
+            if arc is not None:
+                try:
+                    if center is not None and np is not None:
+                        arc.Transform[3, :3] = -arc.Transform[:3, :3].T @ center
+                except Exception:
+                    pass
+                try:
+                    src = arc.Transform
+                    if hasattr(src, "tolist"):
+                        transform = Matrix44(src.tolist(), dtype="f4")
+                    else:
+                        transform = Matrix44(src, dtype="f4")
+                except Exception:
+                    transform = Matrix44.identity(dtype="f4")
+
+            # optional: determinant of rotation part (detect flips/mirroring)
+            det = None
+            try:
+                if np is not None:
+                    rot3 = np.array(transform[:3, :3], dtype=np.float32)
+                    det = float(np.linalg.det(rot3))
+            except Exception:
+                det = None
+
+            # write a compact snapshot
+            ts = time.strftime("%Y-%m-%d %H:%M:%S")
+            lines = []
+            lines.append(f"\n=== CAM SNAPSHOT {ts} ===")
+            lines.append(f"zoom: {zoom}")
+            if center is not None:
+                try:
+                    lines.append(f"center: {tuple(float(x) for x in center)}")
+                except Exception:
+                    lines.append(f"center: {center}")
+            if det is not None:
+                lines.append(f"arcball_rot_det: {det}")
+
+            # dump matrices
+            try:
+                lines.append("lookat(view):")
+                lines.append(str(lookat))
+            except Exception:
+                pass
+            try:
+                lines.append("transform(model/arcball):")
+                lines.append(str(transform))
+            except Exception:
+                pass
+            try:
+                vm = (lookat * transform).astype("f4")
+                lines.append("view_model:")
+                lines.append(str(vm))
+            except Exception:
+                pass
+
+            path = getattr(self, "_cam_debug_log_path", None)
+            if not path:
+                path = Path(tempfile.gettempdir()) / "EchoGraph" / f"echograph_cam_debug_{time.strftime('%Y%m%d')}.log"
+
+            path.parent.mkdir(parents=True, exist_ok=True)
+
+            with open(path, "a", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+
+            print(f"[CAMLOG] wrote snapshot -> {path}", flush=True)
+
+        except Exception as exc:
+            print("[CAMLOG] failed:", exc, flush=True)
 
     def _build_debug_toggle_button(self) -> None:
         try:
@@ -3616,18 +3711,18 @@ void main() {
 
                 # IMPORTANT: do NOT multiply by _mgl_scale_multiplier here
                 self._mgl_splatq_prog["SplatWorldScale"].value = float(self._mgl_splat_world_scale)
-                                
                 # tick + gate sorting
                 self._mgl_splat_sort_tick = (self._mgl_splat_sort_tick + 1) % 1000000
                 do_sort = (self._mgl_splat_sort_tick % 10) == 0  # sort every 10th frame
 
                 dbg = bool(getattr(self, "_mgl_debug", False))
-                #do_sort = True
+
                 # SORT (only sometimes)
                 try:
                     if do_sort and np is not None:
                         cpu = getattr(self, "_mgl_splats15_cpu", None)
                         if cpu is not None and self._mgl_splatq_vbo is not None and cpu.shape[0] > 1:
+
                             view_model = (lookat * model).astype("f4")
 
                             pos = cpu[:, 0:3].astype(np.float32, copy=False)
@@ -3635,39 +3730,67 @@ void main() {
                             pos4 = np.concatenate([pos, ones], axis=1)
 
                             viewp = pos4 @ view_model.T
-                            z = viewp[:, 2]
+                            z = viewp[:, 2].astype(np.float32, copy=False)
 
-                            order = np.argsort(z)  # keep this
+                            # back-to-front for OpenGL-style view where forward is -Z:
+                            # far has more negative z, so ascending draws far -> near
+                            order = np.argsort(z)
+
                             if dbg:
-                                print("[SPLATQ] sort ran. zmin/zmax:", float(z.min()), float(z.max()),
-                                    "count:", int(cpu.shape[0]), flush=True)
+                                print(
+                                    "[SPLATQ] sort(viewZ). zmin/zmax:",
+                                    float(z.min()), float(z.max()),
+                                    "count:", int(cpu.shape[0]),
+                                    flush=True
+                                )
 
                             self._mgl_splatq_vbo.write(cpu[order].tobytes())
                 except Exception as exc:
                     if dbg:
                         print("[SPLATQ] sort error:", exc, flush=True)
+
+
                 # draw
                 inst = int(self._mgl_splat_count)
 
-                self._mgl_splatq_vao.render(
-                    mode=moderngl.TRIANGLE_STRIP,
-                    vertices=4,
-                    instances=inst,
-                )
-
-                # restore depth mask (IMPORTANT)
+                # IMPORTANT: culling can leak from mesh pass; disable it for splats
+                had_cull = bool(getattr(self, "_mgl_cull_enabled", False))
                 try:
-                    self._mgl_ctx.depth_mask = old_depth_mask
+                    self._mgl_ctx.disable(moderngl.CULL_FACE)
                 except Exception:
                     pass
 
-                # restore depth test for everything after
-                self._mgl_ctx.enable(moderngl.DEPTH_TEST)
+                try:
+                    self._mgl_splatq_vao.render(
+                        mode=moderngl.TRIANGLE_STRIP,
+                        vertices=4,
+                        instances=inst,
+                    )
+                finally:
+                    # restore cull state
+                    if had_cull:
+                        try:
+                            self._mgl_ctx.enable(moderngl.CULL_FACE)
+                        except Exception:
+                            pass
+
+                    # restore depth mask (IMPORTANT)
+                    try:
+                        self._mgl_ctx.depth_mask = old_depth_mask
+                    except Exception:
+                        pass
+
+                    # restore depth test for everything after
+                    try:
+                        self._mgl_ctx.enable(moderngl.DEPTH_TEST)
+                    except Exception:
+                        pass
 
         except Exception as exc:
             import traceback
             print("[SPLATQ] PAINT CRASH:", exc)
             traceback.print_exc()
+
 
         # --- GRID ---
         if self._mgl_grid_vao is not None:
