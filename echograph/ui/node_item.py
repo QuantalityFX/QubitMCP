@@ -10,6 +10,7 @@ import datetime
 import re
 import hashlib
 import json
+import time
 from pathlib import Path
 from echograph.qt_compat import QtCore, QtGui, QtWidgets, QAction, QShortcut, QKeySequence, _qexec
 from echograph.ui.dialogs import BigTextEditDialog
@@ -361,6 +362,16 @@ class NodeItem(QtWidgets.QGraphicsObject):
             self.setCacheMode(QtWidgets.QGraphicsItem.CacheMode.DeviceCoordinateCache)
         except AttributeError:
             self.setCacheMode(QtWidgets.QGraphicsItem.DeviceCoordinateCache)
+
+        # QGraphicsItem cache can block proxy-widget visuals (thumbnail) from refreshing
+        if (self.model.kind or "").strip().lower() == "import":
+            try:
+                self.setCacheMode(QtWidgets.QGraphicsItem.CacheMode.NoCache)
+            except Exception:
+                try:
+                    self.setCacheMode(QtWidgets.QGraphicsItem.NoCache)
+                except Exception:
+                    pass
 
         self.setZValue(1)
 
@@ -2012,8 +2023,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 QtCore.Qt.SmoothTransformation
             )
 
-            scene_path = getattr(self.scene(), "_filename", None)
-            workflow_path = getattr(parent, "_current_path", None) or scene_path
+            scene = self.scene()
+            scene_path = getattr(scene, "_filename", None) if scene is not None else None
+
+            # parent can be missing depending on how/when capture() runs
+            parent = _top_level_parent_for_dialog()
+            workflow_path = getattr(parent, "_current_path", None) if parent is not None else None
+            workflow_path = workflow_path or scene_path
+
             if not workflow_path:
                 return
 
@@ -2050,14 +2067,31 @@ class NodeItem(QtWidgets.QGraphicsObject):
             key = hashlib.sha1(key_src).hexdigest()[:10]
 
             model_filename = Path(ap).stem
-            image_path = snapshots_dir / f"{model_filename}_{key}.png"
+            snap_stamp = time.strftime("%Y%m%d_%H%M%S")
+            image_path = snapshots_dir / f"{model_filename}_{key}_{snap_stamp}.png"
+
+            ok = False
+            try:
+                ok = out.save(str(image_path))
+            except Exception as exc:
+                print("[SNAP] out.save exception:", exc, flush=True)
+                ok = False
+
+            if not ok:
+                print("[SNAP] out.save FAILED ->", str(image_path), flush=True)
+                print("[SNAP] snapshots_dir exists:", snapshots_dir.exists(), "dir:", str(snapshots_dir), flush=True)
+                return
+            
+            thumb = str(Path(image_path).resolve())
+            print("[SNAP] saved ->", thumb, flush=True)
 
             try:
-                out.save(str(image_path))
+                QtGui.QPixmapCache.remove(thumb)
             except Exception:
-                return
+                pass
 
-            self._set_param_value("thumbnail", str(image_path))
+            self._set_param_value("thumbnail", thumb)
+            self._set_param_value("thumbnail_rev", str(time.time()))
 
             # save camera state beside the thumbnail: same name, .json
             try:
@@ -2065,11 +2099,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 glv = getattr(parent, "gl_view", None) if parent is not None else None
                 if glv is not None and hasattr(glv, "_mgl_get_camera_state"):
                     cam = glv._mgl_get_camera_state()
-                    cam_path = Path(str(image_path)).with_suffix(".json")
+                    cam_path = Path(thumb).with_suffix(".json")
                     with open(cam_path, "w", encoding="utf-8") as f:
                         json.dump(cam, f, indent=2)
-            except Exception:
-                pass
+                    print("[SNAP] cam saved ->", str(cam_path), flush=True)
+            except Exception as exc:
+                print("[SNAP] cam save failed:", exc, flush=True)
 
             self._schedule_rebuild()
 
