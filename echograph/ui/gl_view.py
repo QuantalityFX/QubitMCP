@@ -2718,7 +2718,7 @@ uniform float SplatWorldScale;
 
 in vec2 in_corner;     // per-vertex (-1..1)
 in vec3 in_pos;        // per-instance
-in vec4 in_col;        // per-instance
+in vec4 in_col;        // per-instance (rgb,a)
 in float in_rad;       // per-instance
 in vec3 in_scale3;     // per-instance (sx, sy, sz)
 in vec4 in_rot;        // per-instance quaternion (x,y,z,w)
@@ -2732,56 +2732,55 @@ vec3 quat_rotate(vec3 v, vec4 q) {
 }
 
 void main() {
-    // splat center in view space
+    // center in view space
     vec4 view_p = View * Model * vec4(in_pos, 1.0);
 
     float s = in_rad * SplatWorldScale;
 
     mat3 VM = mat3(View * Model);
 
-    // rotated local axes, then into view space
-    vec3 ax3 = VM * quat_rotate(vec3(1.0, 0.0, 0.0), in_rot);
-    vec3 ay3 = VM * quat_rotate(vec3(0.0, 1.0, 0.0), in_rot);
-    vec3 az3 = VM * quat_rotate(vec3(0.0, 0.0, 1.0), in_rot);
+    // Build a view-space linear transform A that maps unit sphere -> ellipsoid axes in view space
+    // Columns are the 3 view-space axes scaled by anisotropy and overall scale.
+    vec3 ax = VM * quat_rotate(vec3(1.0, 0.0, 0.0), in_rot) * (in_scale3.x * s);
+    vec3 ay = VM * quat_rotate(vec3(0.0, 1.0, 0.0), in_rot) * (in_scale3.y * s);
+    vec3 az = VM * quat_rotate(vec3(0.0, 0.0, 1.0), in_rot) * (in_scale3.z * s);
 
-    // project to screen plane (view x/y)
-    vec2 ax2 = ax3.xy * in_scale3.x;
-    vec2 ay2 = ay3.xy * in_scale3.y;
-    vec2 az2 = az3.xy * in_scale3.z;
+    // Project to screen plane (view x/y). Take only xy components of each column.
+    vec2 a0 = ax.xy;
+    vec2 a1 = ay.xy;
+    vec2 a2 = az.xy;
 
-    float lax = length(ax2);
-    float lay = length(ay2);
-    float laz = length(az2);
+    // 2x2 covariance in screen plane: C = sum_i (ai * ai^T)
+    float c00 = dot(a0, vec2(a0.x, 0.0)) + dot(a1, vec2(a1.x, 0.0)) + dot(a2, vec2(a2.x, 0.0));
+    float c01 = a0.x*a0.y + a1.x*a1.y + a2.x*a2.y;
+    float c11 = dot(a0, vec2(0.0, a0.y)) + dot(a1, vec2(0.0, a1.y)) + dot(a2, vec2(0.0, a2.y));
 
-    // pick two longest projected axes (already includes anisotropic scale)
-    vec2 u = ax2;
-    vec2 v = ay2;
+    // Eigen decomposition of symmetric 2x2 [c00 c01; c01 c11]
+    float tr  = c00 + c11;
+    float det = c00*c11 - c01*c01;
+    float disc = max(tr*tr*0.25 - det, 0.0);
+    float root = sqrt(disc);
 
-    if (laz > lax && laz > lay) {
-        if (lax < lay) u = az2;
-        else          v = az2;
-    } else if (lay > lax && lay > laz) {
-        v = ay2;
-        u = (lax > laz) ? ax2 : az2;
-    } else {
-        u = ax2;
-        v = (lay > laz) ? ay2 : az2;
-    }
+    float l1 = max(tr*0.5 + root, 1e-12);
+    float l2 = max(tr*0.5 - root, 1e-12);
 
-    // if an axis points into camera, its projection can vanish: stabilize
-    if (length(u) < 1e-6) u = vec2(1.0, 0.0);
-    if (length(v) < 1e-6) v = vec2(0.0, 1.0);
+    // Eigenvector for l1: (c01, l1 - c00) or fallback
+    vec2 v1 = vec2(c01, l1 - c00);
+    if (length(v1) < 1e-8) v1 = vec2(1.0, 0.0);
+    v1 = normalize(v1);
+    vec2 v2 = vec2(-v1.y, v1.x);
 
-    // expand quad in view space using scaled projected axes
-    vec2 offs = (u * in_corner.x + v * in_corner.y) * s;
-    view_p.xy += offs;
+    float r1 = sqrt(l1);
+    float r2 = sqrt(l2);
 
-    // gaussian should match the ellipse we drew: measure in ellipse space
-    // u and v already contain scale, so normalize by their lengths
+    // Expand quad in view space using ellipse axes
+    view_p.xy += v1 * (in_corner.x * r1) + v2 * (in_corner.y * r2);
+
+    // Ellipse test in fragment: unit circle in in_corner space
     v_uv = in_corner;
+    v_col = in_col;
 
     gl_Position = Proj * view_p;
-    v_col = in_col;
 }
 """
 
