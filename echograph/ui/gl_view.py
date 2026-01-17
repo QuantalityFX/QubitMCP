@@ -1975,6 +1975,11 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             self._mgl_load_mesh(model_path)
             if texture_str:
                 self._apply_texture_path(texture_str)
+
+            # auto-frame after loading (prevents zoom=10000 keeping the model offscreen)
+            if self._manual_model_frame:
+                self._mgl_frame_camera()
+
             self.update()
             return
 
@@ -3517,7 +3522,11 @@ void main() {
                     self._dbgprint(dbg,"[MGL] after glClearColor", flush=True)
 
                     self._dbgprint(dbg,"[MGL] before glClear", flush=True)
-                    self._gl.glClear(GL_COLOR_BUFFER_BIT)
+                    try:
+                        self._gl.glClearDepth(1.0)
+                    except Exception:
+                        pass
+                    self._gl.glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
                     self._dbgprint(dbg,"[MGL] after glClear", flush=True)
 
             except Exception:
@@ -3525,7 +3534,11 @@ void main() {
                 try:
                     if self._gl is not None:
                         self._gl.glClearColor(r, g, b, a)
-                        self._gl.glClear(GL_COLOR_BUFFER_BIT)
+                        try:
+                            self._gl.glClearDepth(1.0)
+                        except Exception:
+                            pass
+                        self._gl.glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
                 except Exception:
                     pass
 
