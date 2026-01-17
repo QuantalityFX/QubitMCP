@@ -3444,34 +3444,30 @@ void main() {
         if self._mgl_arcball is not None and self._mgl_center is not None:
             self._mgl_arcball.Transform[3, :3] = -self._mgl_arcball.Transform[:3, :3].T @ self._mgl_center
 
-        # TEMP: avoid Matrix44(...) from arcball matrix (crash isolate)
+        # build transform safely
         if self._mgl_arcball is not None:
             try:
-                # convert numpy 4x4 to plain list to avoid Matrix44 wrapping crash
-                transform = Matrix44(self._mgl_arcball.Transform.tolist(), dtype="f4")
+                src = self._mgl_arcball.Transform
+                if hasattr(src, "tolist"):
+                    transform = Matrix44(src.tolist(), dtype="f4")
+                else:
+                    transform = Matrix44(src, dtype="f4")
             except Exception:
                 transform = Matrix44.identity(dtype="f4")
         else:
             transform = Matrix44.identity(dtype="f4")
 
-        self._dbgprint(dbg,"[MGL] after transform build", flush=True)
-
-        # Safe gizmo yaw/pitch from Matrix44 'transform' (do NOT touch self._mgl_arcball.Transform)
+        # cache stable 3x3 rotation for gizmo (no yaw/pitch)
         try:
-            # Matrix44 supports indexing [row][col]
-            dx = float(transform[0][2])
-            dy = float(transform[1][2])
-            dz = float(transform[2][2])
-            dist2 = dx*dx + dy*dy + dz*dz
-            if dist2 > 1e-12:
-                dist = math.sqrt(dist2)
-                self._cam_yaw = math.atan2(dx, dz)
-                pitch = dy / dist
-                if pitch < -1.0: pitch = -1.0
-                if pitch >  1.0: pitch =  1.0
-                self._cam_pitch = math.asin(pitch)
+            self._gizmo_rot3 = (
+                (float(transform[0][0]), float(transform[0][1]), float(transform[0][2])),
+                (float(transform[1][0]), float(transform[1][1]), float(transform[1][2])),
+                (float(transform[2][0]), float(transform[2][1]), float(transform[2][2])),
+            )
         except Exception:
-            pass
+            self._gizmo_rot3 = None
+
+        self._dbgprint(dbg,"[MGL] after transform build", flush=True)
 
         self._dbgprint(dbg,"[MGL] before mvp compute", flush=True)
                 
@@ -4654,7 +4650,15 @@ void main() {
         projected = []
         max_len = 0.0
         for label, color, vec in axes:
-            x2, y2, z2 = self._rotate_vec(vec[0], vec[1], vec[2])
+            rot = getattr(self, "_gizmo_rot3", None)
+            if rot is not None:
+                # Use inverse(camera) = transpose(model-rot) because orbit is done by rotating the model
+                x, y, z = vec
+                x2 = rot[0][0]*x + rot[1][0]*y + rot[2][0]*z
+                y2 = rot[0][1]*x + rot[1][1]*y + rot[2][1]*z
+                z2 = rot[0][2]*x + rot[1][2]*y + rot[2][2]*z
+            else:
+                x2, y2, z2 = self._rotate_vec(x, y, z)
             length = math.hypot(x2, y2)
             if length > max_len:
                 max_len = length
