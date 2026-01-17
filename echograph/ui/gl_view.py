@@ -2853,9 +2853,6 @@ void main() {
                 f"Expected splats_np shape (N,8) or (N,10) or (N,14) or (N,15), got {arr.shape}"
             )
 
-        # TEMP: cap to avoid driver nuking while we locate the crash
-        arr = arr[:2000].copy()
-
         print("[SPLAT] set_splats queue:", arr.shape, arr.dtype, flush=True)
         self._mgl_pending_splats = arr
         self._mgl_render_splats = True
@@ -2977,7 +2974,7 @@ void main() {
                 assert splats15.shape[1] == 15
 
                 # TEMP safety: cap upload while we debug
-                splats15 = splats15[:10000].copy()
+                #splats15 = splats15[:200000].copy()
                 self._mgl_splat_count = int(splats15.shape[0])
                 print("[SPLATQ] upload shape:", splats15.shape)
 
