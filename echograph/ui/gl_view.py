@@ -3587,12 +3587,13 @@ void main() {
                 self._mgl_splatq_prog["Proj"].write(proj.astype("f4"))
                 self._mgl_splatq_prog["View"].write(lookat.astype("f4"))
                 self._mgl_splatq_prog["Model"].write(model.astype("f4"))
+
+                # IMPORTANT: do NOT multiply by _mgl_scale_multiplier here
                 self._mgl_splatq_prog["SplatWorldScale"].value = float(self._mgl_splat_world_scale)
-
-
+                                
                 # tick + gate sorting
                 self._mgl_splat_sort_tick = (self._mgl_splat_sort_tick + 1) % 1000000
-                do_sort = False # sort every 10th frame
+                do_sort = (self._mgl_splat_sort_tick % 10) == 0  # sort every 10th frame
 
                 # SORT (only sometimes)
                 try:
