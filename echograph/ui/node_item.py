@@ -9,6 +9,7 @@ import os
 import datetime
 import re
 import hashlib
+import json
 from pathlib import Path
 from echograph.qt_compat import QtCore, QtGui, QtWidgets, QAction, QShortcut, QKeySequence, _qexec
 from echograph.ui.dialogs import BigTextEditDialog
@@ -1466,7 +1467,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     pname = p.get("name", "")
                     pval  = p.get("value", "")
                     pname_key = (pname or "").strip().lower()
-                    if kind == "import" and pname_key in ("texture", "thumbnail"):
+                    if kind == "import" and pname_key in ("texture", "thumbnail", "camera_state"):
                         continue
                     has_port = pname_key in named_inputs
                     wired = has_port and pname_key in wired_inputs
@@ -2057,6 +2058,16 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 return
 
             self._set_param_value("thumbnail", str(image_path))
+
+            # save camera state with the thumbnail
+            try:
+                if hasattr(gl_view, "_mgl_get_camera_state"):
+                    cam = gl_view._mgl_get_camera_state()
+                    # store as JSON string so workflow save/load is stable
+                    self._set_param_value("camera_state", json.dumps(cam))
+            except Exception:
+                pass
+
             self._schedule_rebuild()
 
         QtCore.QTimer.singleShot(0, capture)
@@ -2255,8 +2266,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
             try:
                 handler(path, texture if texture else None)
                 return True
-            except Exception:
-                pass
+            except Exception as exc:
+                import traceback
+                print("[IMPORT] open_3d_model failed:", exc, flush=True)
+                print(traceback.format_exc(), flush=True)
+
         QtWidgets.QMessageBox.warning(_top_level_parent_for_dialog(), "Import", "3D view is not available.")
         return True
 

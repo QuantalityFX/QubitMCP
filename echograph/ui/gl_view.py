@@ -3838,6 +3838,98 @@ void main() {
             self._mgl_grid_prog["Color"].value = (1.0, 1.0, 1.0, self._mgl_grid_alpha)
             self._mgl_grid_vao.render(moderngl.LINES)
                     
+    def _mgl_get_camera_state(self) -> dict:
+        """Return a JSON-serializable camera/orbit state (ModernGL path)."""
+        state: dict = {}
+        try:
+            state["zoom"] = float(getattr(self, "_mgl_camera_zoom", 0.0))
+        except Exception:
+            state["zoom"] = 0.0
+
+        # center can be None
+        c = getattr(self, "_mgl_center", None)
+        if c is None:
+            state["center"] = None
+        else:
+            try:
+                state["center"] = [float(c[0]), float(c[1]), float(c[2])]
+            except Exception:
+                state["center"] = None
+
+        # arcball transform (4x4)
+        arc = getattr(self, "_mgl_arcball", None)
+        if arc is not None and hasattr(arc, "Transform"):
+            try:
+                t = arc.Transform
+                # numpy array or nested list
+                if hasattr(t, "tolist"):
+                    state["arcball_transform"] = t.tolist()
+                else:
+                    state["arcball_transform"] = [[float(x) for x in row] for row in t]
+            except Exception:
+                state["arcball_transform"] = None
+        else:
+            state["arcball_transform"] = None
+
+        # optional extras
+        try:
+            state["fov"] = float(getattr(self, "_mgl_fov", 60.0))
+        except Exception:
+            state["fov"] = 60.0
+
+        try:
+            state["projection"] = str(getattr(self, "_mgl_projection", "perspective"))
+        except Exception:
+            state["projection"] = "perspective"
+
+        return state
+
+    def _mgl_apply_camera_state(self, state: dict) -> None:
+        """Apply a camera/orbit state produced by _mgl_get_camera_state()."""
+        if not isinstance(state, dict):
+            return
+
+        # zoom
+        try:
+            self._mgl_camera_zoom = float(state.get("zoom", getattr(self, "_mgl_camera_zoom", 0.0)))
+        except Exception:
+            pass
+
+        # center
+        c = state.get("center", None)
+        if c is None:
+            self._mgl_center = None
+        else:
+            try:
+                self._mgl_center = [float(c[0]), float(c[1]), float(c[2])]
+            except Exception:
+                pass
+
+        # arcball transform
+        arc = getattr(self, "_mgl_arcball", None)
+        t = state.get("arcball_transform", None)
+        if arc is not None and t is not None:
+            try:
+                # expects 4x4 nested list
+                arc.Transform = t
+            except Exception:
+                pass
+
+        # optional extras
+        try:
+            self._mgl_fov = float(state.get("fov", getattr(self, "_mgl_fov", 60.0)))
+        except Exception:
+            pass
+
+        try:
+            self._mgl_projection = str(state.get("projection", getattr(self, "_mgl_projection", "perspective")))
+        except Exception:
+            pass
+
+        try:
+            self.update()
+        except Exception:
+            pass
 
     def _update_example_camera_basis(self) -> None:
         direction = self._example_cam_pos - self._example_cam_look
