@@ -1744,8 +1744,8 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
                     pos = cpu[:, 0:3].astype(np.float32, copy=False)
                     ones = np.ones((pos.shape[0], 1), dtype=np.float32)
                     pos4 = np.concatenate([pos, ones], axis=1)
-
-                    viewp = pos4 @ view_model.T
+                    
+                    viewp = pos4 @ view_model
                     z = viewp[:, 2]
                     wv = viewp[:, 3]
 
@@ -3756,7 +3756,7 @@ void main() {
                             ones = np.ones((pos.shape[0], 1), dtype=np.float32)
                             pos4 = np.concatenate([pos, ones], axis=1)
 
-                            viewp = pos4 @ view_model.T
+                            viewp = pos4 @ view_model
                             z = viewp[:, 2].astype(np.float32, copy=False)
 
                             # back-to-front for OpenGL-style view where forward is -Z:
