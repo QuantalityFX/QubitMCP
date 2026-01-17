@@ -3123,6 +3123,20 @@ void main() {
                 # Keep CPU copy so we can sort per-frame (10k is fine)
                 self._mgl_splats15_cpu = splats15
 
+                # IMPORTANT: release previous GPU objects before replacing them (prevents hard driver crashes)
+                try:
+                    if self._mgl_splatq_vao is not None and hasattr(self._mgl_splatq_vao, "release"):
+                        self._mgl_splatq_vao.release()
+                except Exception:
+                    pass
+                try:
+                    if self._mgl_splatq_vbo is not None and hasattr(self._mgl_splatq_vbo, "release"):
+                        self._mgl_splatq_vbo.release()
+                except Exception:
+                    pass
+                self._mgl_splatq_vao = None
+                self._mgl_splatq_vbo = None
+
                 self._mgl_splatq_vbo = self._mgl_ctx.buffer(splats15.tobytes())
                 self._mgl_splatq_vao = self._mgl_ctx.vertex_array(
                     self._mgl_splatq_prog,
@@ -3132,7 +3146,6 @@ void main() {
                         "in_pos", "in_col", "in_rad", "in_scale3", "in_rot"),
                     ],
                 )
-
 
     def _mgl_update_grid(self) -> None:
         if not _HAS_MGL or self._mgl_ctx is None:
@@ -3513,26 +3526,39 @@ void main() {
                 if self._gl is not None:
                     w = max(2, self.width())
                     h = max(2, self.height())
-                    self._dbgprint(dbg,"[MGL] before glViewport", flush=True)
+                    self._dbgprint(dbg, "[MGL] before glViewport", flush=True)
                     self._gl.glViewport(0, 0, w, h)
-                    self._dbgprint(dbg,"[MGL] after glViewport", flush=True)
+                    self._dbgprint(dbg, "[MGL] after glViewport", flush=True)
 
-                    self._dbgprint(dbg,"[MGL] before glClearColor", flush=True)
+                    self._dbgprint(dbg, "[MGL] before glClearColor", flush=True)
                     self._gl.glClearColor(r, g, b, a)
-                    self._dbgprint(dbg,"[MGL] after glClearColor", flush=True)
+                    self._dbgprint(dbg, "[MGL] after glClearColor", flush=True)
 
-                    self._dbgprint(dbg,"[MGL] before glClear", flush=True)
+                    # bind Qt's default FBO (snapshot/grab can change the bound framebuffer)
+                    try:
+                        fbo = int(self.defaultFramebufferObject())
+                        self._gl.glBindFramebuffer(0x8D40, fbo)  # GL_FRAMEBUFFER
+                    except Exception:
+                        pass
+
+                    self._dbgprint(dbg, "[MGL] before glClear", flush=True)
                     try:
                         self._gl.glClearDepth(1.0)
                     except Exception:
                         pass
                     self._gl.glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-                    self._dbgprint(dbg,"[MGL] after glClear", flush=True)
+                    self._dbgprint(dbg, "[MGL] after glClear", flush=True)
 
             except Exception:
                 # Fallback: raw GL clear
                 try:
                     if self._gl is not None:
+                        try:
+                            fbo = int(self.defaultFramebufferObject())
+                            self._gl.glBindFramebuffer(0x8D40, fbo)  # GL_FRAMEBUFFER
+                        except Exception:
+                            pass
+
                         self._gl.glClearColor(r, g, b, a)
                         try:
                             self._gl.glClearDepth(1.0)
@@ -3542,7 +3568,15 @@ void main() {
                 except Exception:
                     pass
 
-            self._dbgprint(dbg,"[MGL] after raw gl clear block", flush=True)
+            self._dbgprint(dbg, "[MGL] after raw gl clear block", flush=True)
+
+            # Ensure Qt's default framebuffer is bound (snapshot/grab can change FBO binding)
+            try:
+                if self._gl is not None and hasattr(self, "defaultFramebufferObject"):
+                    fbo = int(self.defaultFramebufferObject())
+                    self._gl.glBindFramebuffer(0x8D40, fbo)  # GL_FRAMEBUFFER
+            except Exception:
+                pass
 
         except Exception as exc:
             import traceback
@@ -3557,8 +3591,9 @@ void main() {
         self._dbgprint(dbg,"[MGL] before mgl enable", flush=True)
         self._mgl_ctx.enable(flags)
         self._dbgprint(dbg,"[MGL] after mgl enable", flush=True)
-        
+
         self._mgl_ctx.wireframe = False
+
         self._dbgprint(dbg,"[MGL] after wireframe", flush=True)
         if self._mgl_prog is None or self._mgl_grid_prog is None:
             return
