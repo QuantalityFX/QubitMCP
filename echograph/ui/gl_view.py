@@ -6,58 +6,25 @@ import io
 import json
 import math
 import os
+from pathlib import Path
 import struct
 import tempfile
 import time
 from array import array
-from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from echograph.ui import hotkeys
 from .gl_arcball import _ArcBallUtil
 from .gl_shaders import SHADERS
 from .gl_types import ModelData, MeshArrays, SubMeshData
-
-_ASSIMP_DLL_READY = False
-
-def _ensure_assimp_dll() -> None:
-    global _ASSIMP_DLL_READY
-    if _ASSIMP_DLL_READY:
-        return
-    if os.name != "nt":
-        _ASSIMP_DLL_READY = True
-        return
-    candidates: List[Path] = []
-    try:
-        root = Path(__file__).resolve().parents[2]
-        vcpkg_bin = root / "vcpkg" / "installed" / "x64-windows" / "bin"
-        if vcpkg_bin.exists():
-            candidates.append(vcpkg_bin)
-    except Exception:
-        pass
-    env_path = os.environ.get("ASSIMP_LIBRARY_PATH") or os.environ.get("ASSIMP_LIBRARY")
-    if env_path:
-        try:
-            env_candidate = Path(env_path)
-            if env_candidate.is_file():
-                env_candidate = env_candidate.parent
-            candidates.append(env_candidate)
-        except Exception:
-            pass
-    for candidate in candidates:
-        try:
-            if candidate and candidate.exists():
-                if hasattr(os, "add_dll_directory"):
-                    os.add_dll_directory(str(candidate))
-                os.environ["PATH"] = str(candidate) + os.pathsep + os.environ.get("PATH", "")
-                if "ASSIMP_LIBRARY" not in os.environ:
-                    dlls = list(candidate.glob("assimp*.dll"))
-                    if dlls:
-                        os.environ["ASSIMP_LIBRARY"] = str(dlls[0])
-                break
-        except Exception:
-            continue
-    _ASSIMP_DLL_READY = True
+from .gl_glutils import build_qt_program
+from .gl_glutils import upload_scene_texture
+from .gl_glutils import update_quad_vbo
+from .gl_glutils import float_bytes
+from .gl_debug_geo import debug_cube_vertices, debug_cube_wire_vertices
+from .gl_mesh import _GLMesh
+from .gl_loaders import ensure_assimp_dll
+from .gl_loaders import load_fbx_mesh_arrays_pyassimp
 
 try:
     import numpy as np
@@ -79,7 +46,7 @@ try:
 except Exception:
     openmesh = None
 
-_ensure_assimp_dll()
+ensure_assimp_dll()
 
 try:
     import trimesh
@@ -332,25 +299,6 @@ def _load_obj_mesh_arrays(path: Path) -> Tuple["np.ndarray", "np.ndarray", "np.n
     norm_arr = np.array(out_norm, dtype="f4").reshape(-1, 3)
     uv_arr = np.array(out_uv, dtype="f4").reshape(-1, 2)
     return pos_arr, norm_arr, uv_arr
-
-
-class _GLMesh:
-    def __init__(self, vertices: List[float]):
-        self.vertices = vertices
-        self.count = max(0, len(vertices) // 3)
-        self.vbo = None
-
-    def upload(self):
-        if QOpenGLBuffer is None:
-            return
-        if self.vbo is None:
-            self.vbo = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
-            self.vbo.create()
-        if not self.vbo.bind():
-            return
-        data = QtCore.QByteArray(struct.pack(f"{len(self.vertices)}f", *self.vertices))
-        self.vbo.allocate(data, data.size())
-        self.vbo.release()
 
 
 def _decode_data_uri(uri: str) -> bytes:
@@ -815,7 +763,7 @@ def _extract_trimesh_material(mesh, path: Path) -> Tuple[Optional[Path], Optiona
 def _load_fbx_mesh_arrays(path: Path) -> MeshArrays:
     if np is None:
         raise RuntimeError("numpy unavailable")
-    _ensure_assimp_dll()
+    ensure_assimp_dll()
     use_trimesh = trimesh is not None
     if use_trimesh:
         try:
@@ -837,7 +785,7 @@ def _load_fbx_mesh_arrays(path: Path) -> MeshArrays:
         if not meshes:
             raise RuntimeError("FBX mesh missing")
     else:
-        return _load_fbx_mesh_arrays_pyassimp(path)
+        return load_fbx_mesh_arrays_pyassimp(path)
 
     points_all: List["np.ndarray"] = []
     normals_all: List["np.ndarray"] = []
@@ -951,151 +899,6 @@ def _pyassimp_texture_to_image(texture: object) -> Optional[object]:
         return img
     except Exception:
         return None
-
-
-def _load_fbx_mesh_arrays_pyassimp(path: Path) -> MeshArrays:
-    if np is None:
-        raise RuntimeError("numpy unavailable")
-    _ensure_assimp_dll()
-    try:
-        import pyassimp
-        from pyassimp import material as ai_material
-    except Exception as exc:
-        raise RuntimeError(f"pyassimp unavailable: {exc}")
-    try:
-        from pyassimp import postprocess as ai_post
-        processing = (
-            ai_post.aiProcess_Triangulate
-            | ai_post.aiProcess_PreTransformVertices
-            | ai_post.aiProcess_JoinIdenticalVertices
-        )
-        with pyassimp.load(str(path), file_type="fbx", processing=processing) as scene:
-            points_all: List["np.ndarray"] = []
-            normals_all: List["np.ndarray"] = []
-            uvs_all: List["np.ndarray"] = []
-            submeshes: List[SubMeshData] = []
-            texture_path = None
-            texture_image = None
-            base_color = None
-            for mesh in scene.meshes or []:
-                vertices = np.asarray(getattr(mesh, "vertices", []), dtype="f4")
-                faces = np.asarray(getattr(mesh, "faces", []), dtype=np.int64)
-                if vertices.size == 0 or faces.size == 0:
-                    continue
-                tri_vertices = vertices[faces].reshape(-1, 3)
-                normals = getattr(mesh, "normals", None)
-                if normals is not None and len(normals) == len(vertices):
-                    norm_arr = np.asarray(normals, dtype="f4")[faces].reshape(-1, 3)
-                else:
-                    v0 = vertices[faces[:, 0]]
-                    v1 = vertices[faces[:, 1]]
-                    v2 = vertices[faces[:, 2]]
-                    n = np.cross(v1 - v0, v2 - v0)
-                    lengths = np.linalg.norm(n, axis=1)
-                    lengths[lengths < 1e-6] = 1.0
-                    n = (n.T / lengths).T
-                    norm_arr = np.repeat(n[:, None, :], 3, axis=1).reshape(-1, 3)
-
-                uv = None
-                texcoords = getattr(mesh, "texturecoords", None)
-                if texcoords is not None and len(texcoords) > 0:
-                    uv_raw = np.asarray(texcoords[0], dtype="f4")
-                    if uv_raw.shape[0] == vertices.shape[0] and uv_raw.shape[1] >= 2:
-                        uv = uv_raw[:, :2]
-                if uv is None:
-                    uv = np.zeros((vertices.shape[0], 2), dtype="f4")
-                tri_uv = uv[faces].reshape(-1, 2)
-
-                tri_vertices = tri_vertices.astype("f4")
-                norm_arr = norm_arr.astype("f4")
-                tri_uv = tri_uv.astype("f4")
-                points_all.append(tri_vertices)
-                normals_all.append(norm_arr)
-                uvs_all.append(tri_uv)
-
-                material = getattr(mesh, "material", None)
-                if material is None and hasattr(scene, "materials"):
-                    try:
-                        material = scene.materials[mesh.materialindex]
-                    except Exception:
-                        material = None
-                props = getattr(material, "properties", {}) if material is not None else {}
-                mesh_texture_path = None
-                mesh_texture_image = None
-                mesh_color = None
-                if props:
-                    tex_value = None
-                    for semantic in (
-                        ai_material.aiTextureType_DIFFUSE,
-                        ai_material.aiTextureType_UNKNOWN,
-                        ai_material.aiTextureType_EMISSIVE,
-                    ):
-                        tex_value = props.get(("file", semantic))
-                        if isinstance(tex_value, str) and tex_value:
-                            break
-                        tex_value = None
-                    if tex_value is None:
-                        for (key, _semantic), value in props.items():
-                            if key == "file" and isinstance(value, str) and value:
-                                tex_value = value
-                                break
-                    if isinstance(tex_value, str) and tex_value.startswith("*"):
-                        try:
-                            tex_index = int(tex_value[1:])
-                            if 0 <= tex_index < len(scene.textures):
-                                mesh_texture_image = _pyassimp_texture_to_image(scene.textures[tex_index])
-                        except Exception:
-                            mesh_texture_image = None
-                    elif isinstance(tex_value, str) and tex_value:
-                        candidate = Path(tex_value)
-                        if not candidate.is_absolute():
-                            candidate = (path.parent / candidate).resolve()
-                        if candidate.exists():
-                            mesh_texture_path = candidate
-
-                if props:
-                    color_val = props.get(("diffuse", ai_material.aiTextureType_NONE)) if props else None
-                    if color_val is None:
-                        color_val = props.get(("color", ai_material.aiTextureType_NONE)) if props else None
-                    if color_val is not None:
-                        mesh_color = _normalize_color(color_val)
-
-                submeshes.append(
-                    SubMeshData(
-                        points=tri_vertices,
-                        normals=norm_arr,
-                        uvs=tri_uv,
-                        texture_path=mesh_texture_path,
-                        texture_image=mesh_texture_image,
-                        base_color=mesh_color,
-                    )
-                )
-
-                if texture_path is None and texture_image is None:
-                    if mesh_texture_path is not None or mesh_texture_image is not None:
-                        texture_path = mesh_texture_path
-                        texture_image = mesh_texture_image
-
-                if base_color is None and mesh_color is not None:
-                    base_color = mesh_color
-
-            if not points_all:
-                raise RuntimeError("FBX mesh empty")
-            points = np.concatenate(points_all, axis=0)
-            normals = np.concatenate(normals_all, axis=0)
-            uvs = np.concatenate(uvs_all, axis=0)
-            return MeshArrays(
-                points=points,
-                normals=normals,
-                uvs=uvs,
-                texture_path=texture_path,
-                texture_image=texture_image,
-                base_color=base_color,
-                submeshes=submeshes if submeshes else None,
-            )
-    except Exception as exc:
-        raise RuntimeError(str(exc))
-
 
 def _load_fbx_model(path: Path) -> ModelData:
     mesh_arrays = _load_fbx_mesh_arrays(path)
@@ -2398,29 +2201,20 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         fragment_src: str,
         bind_locations: Optional[Dict[str, int]] = None,
     ) -> Optional[QtGui.QOpenGLShaderProgram]:
-        if QOpenGLShaderProgram is None or QOpenGLShader is None:
-            return None
-        program = QOpenGLShaderProgram()
-        if not program.addShaderFromSourceCode(QOpenGLShader.Vertex, vertex_src):
-            self._shader_error = program.log().strip() or "Vertex shader failed"
-            return None
-        if not program.addShaderFromSourceCode(QOpenGLShader.Fragment, fragment_src):
-            self._shader_error = program.log().strip() or "Fragment shader failed"
-            return None
-        if bind_locations:
-            for name, loc in bind_locations.items():
-                try:
-                    program.bindAttributeLocation(name, int(loc))
-                except Exception:
-                    pass
-        if not program.link():
-            self._shader_error = program.log().strip() or "Shader link failed"
+        program, err = build_qt_program(
+            QOpenGLShaderProgram,
+            QOpenGLShader,
+            vertex_src,
+            fragment_src,
+            bind_locations,
+        )
+        if program is None:
+            self._shader_error = err
             return None
         return program
 
     def _float_bytes(self, values: List[float]) -> QtCore.QByteArray:
-        buf = array("f", values).tobytes()
-        return QtCore.QByteArray(buf)
+        return float_bytes(QtCore, array, values)
 
     def _upload_example_vertices(self, vertices: List[float]) -> bool:
         if QOpenGLBuffer is None:
@@ -4171,64 +3965,40 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             except Exception:
                 self._vao = None
 
-        self._quad_program = QOpenGLShaderProgram()
-        self._quad_program.addShaderFromSourceCode(
-            QOpenGLShader.Vertex,
-            """
-            attribute vec3 a_pos;
-            attribute vec2 a_uv;
-            uniform mat4 u_mvp;
-            varying vec2 v_uv;
-            void main() {
-                gl_Position = u_mvp * vec4(a_pos, 1.0);
-                v_uv = a_uv;
-            }
-            """,
+        # Quad program
+        self._quad_program, err = build_qt_program(
+            QOpenGLShaderProgram,
+            QOpenGLShader,
+            SHADERS["quad_vert"],
+            SHADERS["quad_frag"],
+            bind_locations={"a_pos": 0, "a_uv": 1},
         )
-        self._quad_program.addShaderFromSourceCode(
-            QOpenGLShader.Fragment,
-            """
-            uniform sampler2D u_tex;
-            varying vec2 v_uv;
-            void main() {
-                gl_FragColor = texture2D(u_tex, v_uv);
-            }
-            """,
-        )
-        if not self._quad_program.link():
-            self._shader_error = self._quad_program.log()
+        if self._quad_program is None:
+            self._shader_error = err
+            return
+
         self._quad_pos_loc = self._quad_program.attributeLocation("a_pos")
         self._quad_uv_loc = self._quad_program.attributeLocation("a_uv")
 
-        self._mesh_program = QOpenGLShaderProgram()
-        self._mesh_program.addShaderFromSourceCode(
-            QOpenGLShader.Vertex,
-            """
-            attribute vec3 a_pos;
-            uniform mat4 u_mvp;
-            void main() {
-                gl_Position = u_mvp * vec4(a_pos, 1.0);
-            }
-            """,
+        # Mesh program
+        self._mesh_program, err = build_qt_program(
+            QOpenGLShaderProgram,
+            QOpenGLShader,
+            SHADERS["mesh_vert"],
+            SHADERS["mesh_frag"],
+            bind_locations={"a_pos": 0},
         )
-        self._mesh_program.addShaderFromSourceCode(
-            QOpenGLShader.Fragment,
-            """
-            uniform vec4 u_color;
-            void main() {
-                gl_FragColor = u_color;
-            }
-            """,
-        )
-        if not self._mesh_program.link():
-            self._shader_error = (self._shader_error + "\n" + self._mesh_program.log()).strip()
+        if self._mesh_program is None:
+            self._shader_error = (self._shader_error + "\n" + err).strip()
+            return
+
         self._mesh_pos_loc = self._mesh_program.attributeLocation("a_pos")
 
         if QOpenGLBuffer is not None:
             self._quad_vbo = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
             self._quad_vbo.create()
-        self._debug_mesh = _GLMesh(self._debug_cube_vertices())
-        self._debug_wire = _GLMesh(self._debug_cube_wire_vertices())
+        self._debug_mesh = _GLMesh(debug_cube_vertices())
+        self._debug_wire = _GLMesh(debug_cube_wire_vertices())
 
         self._upload_scene_texture()
         for mesh in self._meshes.values():
@@ -4254,65 +4024,24 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         image = getattr(self, "_pending_image", None)
         if image is None:
             return
-        if QOpenGLTexture is None:
-            return
-        if self._scene_texture is not None:
-            try:
-                self._scene_texture.destroy()
-            except Exception:
-                pass
-        if hasattr(QtGui.QImage, "Format_RGBA8888"):
-            image = image.convertToFormat(QtGui.QImage.Format_RGBA8888)
-        else:
-            image = image.convertToFormat(QtGui.QImage.Format_ARGB32)
-        image = image.mirrored()
-        self._scene_texture = QOpenGLTexture(image)
-        self._scene_texture.setMagnificationFilter(QOpenGLTexture.Linear)
-        try:
-            self._scene_texture.setWrapMode(QOpenGLTexture.ClampToEdge)
-        except Exception:
-            pass
-        self._mipmaps_enabled = False
-        try:
-            if hasattr(self._scene_texture, "setAutoMipMapGenerationEnabled"):
-                self._scene_texture.setAutoMipMapGenerationEnabled(True)
-            if hasattr(self._scene_texture, "generateMipMaps"):
-                self._scene_texture.generateMipMaps()
-            mip_levels = None
-            if hasattr(self._scene_texture, "mipLevels"):
-                mip_levels = int(self._scene_texture.mipLevels())
-            if hasattr(self._scene_texture, "hasMipMaps"):
-                self._mipmaps_enabled = bool(self._scene_texture.hasMipMaps())
-            elif mip_levels is not None:
-                self._mipmaps_enabled = mip_levels > 1
-        except Exception:
-            self._mipmaps_enabled = False
-        if self._mipmaps_enabled and hasattr(QOpenGLTexture, "LinearMipMapLinear"):
-            self._scene_texture.setMinificationFilter(QOpenGLTexture.LinearMipMapLinear)
-        else:
-            self._scene_texture.setMinificationFilter(QOpenGLTexture.Linear)
+
+        self._scene_texture, self._mipmaps_enabled = upload_scene_texture(
+            QtGui,
+            QOpenGLTexture,
+            image,
+            getattr(self, "_scene_texture", None),
+        )
+
         self._scene_texture_dirty = False
         self._update_quad_vbo()
 
     def _update_quad_vbo(self) -> None:
-        if self._quad_vbo is None:
-            return
-        rect = self._scene_src_rect
-        x0, y0 = rect.left(), rect.top()
-        x1, y1 = rect.right(), rect.bottom()
-        extent = max(abs(x1 - x0), abs(y1 - y0), 1.0)
-        plane_z = -max(10.0, extent * 0.05)
-        verts = [
-            x0, y0, plane_z, 0.0, 1.0,
-            x1, y0, plane_z, 1.0, 1.0,
-            x0, y1, plane_z, 0.0, 0.0,
-            x1, y1, plane_z, 1.0, 0.0,
-        ]
-        data = QtCore.QByteArray(struct.pack(f"{len(verts)}f", *verts))
-        if self._quad_vbo.bind():
-            self._quad_vbo.allocate(data, data.size())
-            self._quad_vbo.release()
-        self._quad_ready = True
+        self._quad_ready = update_quad_vbo(
+            QtCore,
+            struct,
+            getattr(self, "_quad_vbo", None),
+            getattr(self, "_scene_src_rect", None),
+        )
 
     def _projection_matrix(self) -> QtGui.QMatrix4x4:
         w = max(1, self.width())
@@ -4876,47 +4605,6 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._debug_mesh_center = QtCore.QPointF(self._cam_target)
         self._grid_center = QtCore.QPointF(self._cam_target)
         self._update_grid(self._world_extent)
-
-    def _debug_cube_vertices(self) -> List[float]:
-        return [
-            # front
-            -0.5, -0.5,  0.5,  0.5, -0.5,  0.5,  0.5,  0.5,  0.5,
-            -0.5, -0.5,  0.5,  0.5,  0.5,  0.5, -0.5,  0.5,  0.5,
-            # back
-             0.5, -0.5, -0.5, -0.5, -0.5, -0.5, -0.5,  0.5, -0.5,
-             0.5, -0.5, -0.5, -0.5,  0.5, -0.5,  0.5,  0.5, -0.5,
-            # left
-            -0.5, -0.5, -0.5, -0.5, -0.5,  0.5, -0.5,  0.5,  0.5,
-            -0.5, -0.5, -0.5, -0.5,  0.5,  0.5, -0.5,  0.5, -0.5,
-            # right
-             0.5, -0.5,  0.5,  0.5, -0.5, -0.5,  0.5,  0.5, -0.5,
-             0.5, -0.5,  0.5,  0.5,  0.5, -0.5,  0.5,  0.5,  0.5,
-            # top
-            -0.5,  0.5,  0.5,  0.5,  0.5,  0.5,  0.5,  0.5, -0.5,
-            -0.5,  0.5,  0.5,  0.5,  0.5, -0.5, -0.5,  0.5, -0.5,
-            # bottom
-            -0.5, -0.5, -0.5,  0.5, -0.5, -0.5,  0.5, -0.5,  0.5,
-            -0.5, -0.5, -0.5,  0.5, -0.5,  0.5, -0.5, -0.5,  0.5,
-        ]
-
-    def _debug_cube_wire_vertices(self) -> List[float]:
-        return [
-            # bottom square
-            -0.5, -0.5, -0.5,  0.5, -0.5, -0.5,
-             0.5, -0.5, -0.5,  0.5, -0.5,  0.5,
-             0.5, -0.5,  0.5, -0.5, -0.5,  0.5,
-            -0.5, -0.5,  0.5, -0.5, -0.5, -0.5,
-            # top square
-            -0.5,  0.5, -0.5,  0.5,  0.5, -0.5,
-             0.5,  0.5, -0.5,  0.5,  0.5,  0.5,
-             0.5,  0.5,  0.5, -0.5,  0.5,  0.5,
-            -0.5,  0.5,  0.5, -0.5,  0.5, -0.5,
-            # vertical edges
-            -0.5, -0.5, -0.5, -0.5,  0.5, -0.5,
-             0.5, -0.5, -0.5,  0.5,  0.5, -0.5,
-             0.5, -0.5,  0.5,  0.5,  0.5,  0.5,
-            -0.5, -0.5,  0.5, -0.5,  0.5,  0.5,
-        ]
 
     def mousePressEvent(self, e):
         if self._use_moderngl:
