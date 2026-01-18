@@ -3,11 +3,35 @@ from __future__ import annotations
 from echograph.qt_compat import QtCore, QtGui, QtWidgets
 from echograph.ui import hotkeys_config
 
+def _focus_is_text_input() -> bool:
+    try:
+        fw = QtWidgets.QApplication.focusWidget()
+        if fw is None:
+            return False
+        text_widgets = (
+            QtWidgets.QLineEdit,
+            QtWidgets.QTextEdit,
+            QtWidgets.QPlainTextEdit,
+            QtWidgets.QTextBrowser,
+            QtWidgets.QSpinBox,
+            QtWidgets.QDoubleSpinBox,
+            QtWidgets.QComboBox,
+        )
+        if isinstance(fw, QtWidgets.QComboBox):
+            return bool(fw.isEditable())
+        return isinstance(fw, text_widgets)
+    except Exception:
+        return False
+
+
 def copy_selected_nodes_from_window(win) -> bool:
     try:
+        if _focus_is_text_input():
+            return False  # let Qt handle normal text copy
         graph_scene = getattr(win, "scene", None)
         if graph_scene and hasattr(graph_scene, "copy_selection_to_clipboard"):
-            return bool(graph_scene.copy_selection_to_clipboard())
+            graph_scene.copy_selection_to_clipboard()
+            return True
     except Exception:
         pass
     return False
@@ -15,9 +39,12 @@ def copy_selected_nodes_from_window(win) -> bool:
 
 def paste_nodes_from_window(win) -> bool:
     try:
+        if _focus_is_text_input():
+            return False  # let Qt handle normal text paste
         graph_scene = getattr(win, "scene", None)
         if graph_scene and hasattr(graph_scene, "paste_from_clipboard"):
-            return bool(graph_scene.paste_from_clipboard())
+            graph_scene.paste_from_clipboard()
+            return True
     except Exception:
         pass
     return False
@@ -87,13 +114,12 @@ def wire_big_editor_for_lineedit(node_item, edit: QtWidgets.QLineEdit, param_nam
     act.triggered.connect(open_big_editor)
     edit.addAction(act)
     edit.setContextMenuPolicy(QtCore.Qt.ActionsContextMenu)
-
+    
     def _find_main_window():
-        # 1) Prefer the GraphicsView -> window (best in proxy-widget setup)
         try:
-            sc = node_item.scene()
-            if sc:
-                views = sc.views()
+            graph_scene = node_item.scene()
+            if graph_scene:
+                views = graph_scene.views()
                 if views:
                     win = views[0].window()
                     if win and hasattr(win, "_register_bigedit_target"):
@@ -101,7 +127,6 @@ def wire_big_editor_for_lineedit(node_item, edit: QtWidgets.QLineEdit, param_nam
         except Exception:
             pass
 
-        # 2) Fallback: activeWindow
         try:
             win = QtWidgets.QApplication.activeWindow()
             if win and hasattr(win, "_register_bigedit_target"):
@@ -109,7 +134,6 @@ def wire_big_editor_for_lineedit(node_item, edit: QtWidgets.QLineEdit, param_nam
         except Exception:
             pass
 
-        # 3) Last resort: scan top-level widgets
         try:
             for w in QtWidgets.QApplication.topLevelWidgets():
                 if hasattr(w, "_register_bigedit_target"):
@@ -118,6 +142,21 @@ def wire_big_editor_for_lineedit(node_item, edit: QtWidgets.QLineEdit, param_nam
             pass
 
         return None
+
+    def _on_destroyed(*_):
+        try:
+            win = _find_main_window()
+            if win and hasattr(win, "_bigedit_registry"):
+                win._bigedit_registry.pop(edit, None)
+                if getattr(win, "_bigedit_last", None) is edit:
+                    win._bigedit_last = None
+        except Exception:
+            pass
+
+    try:
+        edit.destroyed.connect(_on_destroyed)
+    except Exception:
+        pass
 
     def _late_register():
         try:
@@ -128,5 +167,4 @@ def wire_big_editor_for_lineedit(node_item, edit: QtWidgets.QLineEdit, param_nam
             pass
 
     QtCore.QTimer.singleShot(0, _late_register)
-    QtCore.QTimer.singleShot(50, _late_register)  # extra tick for slow builds
-
+    QtCore.QTimer.singleShot(50, _late_register)
