@@ -675,6 +675,11 @@ class MGLRendererMixin:
         if not isinstance(state, dict):
             return
 
+        if getattr(self, "_mgl_pending_splats", None) is None:
+            self._mgl_pending_cam_state = None
+            self._mgl_apply_camera_state(state)
+            return
+
         self._mgl_pending_cam_state = dict(state)
 
         dbg = bool(getattr(self, "_mgl_cam_debug", False))
@@ -1433,6 +1438,25 @@ class MGLRendererMixin:
         self._mgl_camera_zoom = self._mgl_camera_distance(self._mgl_fov) * max(0.01, self._mgl_scale_multiplier)
 
     def _mgl_frame_camera(self) -> None:
+        if bool(getattr(self, "_mgl_render_splats", False)) and np is not None:
+            cpu = getattr(self, "_mgl_splats15_cpu", None)
+            if cpu is not None and getattr(cpu, "size", 0) > 0:
+                pos = cpu[:, :3]
+                mins = pos.min(axis=0)
+                maxs = pos.max(axis=0)
+                center = (mins + maxs) * 0.5
+                extent = (maxs - mins) * 0.5
+                radius = float(extent.max())
+                self._mgl_center = center.astype("f4")
+                try:
+                    self._mgl_base_center = self._mgl_center.copy()
+                except Exception:
+                    self._mgl_base_center = self._mgl_center
+                base_zoom = max(0.1, radius * 3.0)
+                self._mgl_base_zoom = base_zoom
+                self._mgl_camera_zoom = float(base_zoom) * max(0.01, self._mgl_scale_multiplier)
+                return
+
         base_center = getattr(self, "_mgl_base_center", None)
         if base_center is not None:
             try:
