@@ -2106,7 +2106,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
     def open_splat_model(self, ply_path: str) -> None:
         import traceback
         try:
-            print("[SPLAT] open:", ply_path, flush=True)
+            gv = getattr(self, "gl_view", None)
+            dbg = bool(getattr(gv, "_mgl_debug", False)) if gv is not None else False
+            if dbg:
+                print("[SPLAT] open:", ply_path, flush=True)
 
             # When loading splats, hide any mesh so splats don't "mask" it later
             try:
@@ -2119,10 +2122,12 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
             from echograph.util.splats_io import load_splats_ply
             splats = load_splats_ply(ply_path, n=200_000)
-            print("[SPLAT] loaded:", splats.shape, splats.dtype, flush=True)
+            if dbg:
+                print("[SPLAT] loaded:", splats.shape, splats.dtype, flush=True)
 
             self.gl_view.set_splats(splats)
-            print("[SPLAT] set_splats done", flush=True)
+            if dbg:
+                print("[SPLAT] set_splats done", flush=True)
         except Exception:
             print("[SPLAT] ERROR:\n", traceback.format_exc(), flush=True)
 

@@ -1781,7 +1781,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
         thumb_path = (self._param_value("thumbnail") or "").strip()
 
-        if not hasattr(self, "_thumb_dbg_once"):
+        thumb_dbg = bool(getattr(self, "_thumb_debug", False))
+        if thumb_dbg and not hasattr(self, "_thumb_dbg_once"):
             self._thumb_dbg_once = True
             print(
                 "[THUMB] node:", getattr(self.model, "name", ""),
@@ -1790,7 +1791,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "exists:", bool(thumb_path and os.path.exists(thumb_path)),
                 flush=True
             )
-            
         thumb_widget = None
 
         if ext in (".fbx", ".obj", ".gltf", ".glb", ".ply") and thumb_path and os.path.exists(thumb_path):
@@ -2383,7 +2383,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
                 except Exception as exc2:
                     print("[IMPORT] camera restore failed:", exc2, flush=True)
-
 
                 return True
             except Exception as exc:

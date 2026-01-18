@@ -1303,6 +1303,7 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         #DEBUG LOG Toggle
         self._mgl_debug = False
         self._mgl_cam_debug = False
+        self._thumb_debug = False
         # camera debug log (same folder as the main EchoGraph log)
         try:
             log_dir = Path(tempfile.gettempdir()) / "EchoGraph"
@@ -3020,12 +3021,14 @@ void main() {
             raise ValueError(
                 f"Expected splats_np shape (N,8) or (N,10) or (N,14) or (N,15), got {arr.shape}"
             )
-
-        print("[SPLAT] set_splats queue:", arr.shape, arr.dtype, flush=True)
+        dbg = bool(getattr(self, "_mgl_debug", False))
+        if dbg:
+            print("[SPLAT] set_splats queue:", arr.shape, arr.dtype, flush=True)
         self._mgl_pending_splats = arr
         self._mgl_render_splats = True
         self.update()
-        print("[SPLAT] set_splats update() called", flush=True)
+        if dbg:
+            print("[SPLAT] set_splats update() called", flush=True)
 
     def _mgl_upload_pending_splats(self) -> None:
         dbg = bool(getattr(self, "_mgl_debug", False))
@@ -3113,9 +3116,9 @@ void main() {
             except Exception:
                 pass
             self._mgl_splatq_vbo = None
-
-        print("[SPLAT] framed center:", self._mgl_center, "radius:", radius, "zoom:", self._mgl_camera_zoom)
-        print("[SPLAT] uploading:", self._mgl_splat_count, "ctx:", self._mgl_ctx is not None, "shape:", splats_np.shape)
+        if dbg:
+            print("[SPLAT] framed center:", self._mgl_center, "radius:", radius, "zoom:", self._mgl_camera_zoom)
+            print("[SPLAT] uploading:", self._mgl_splat_count, "ctx:", self._mgl_ctx is not None, "shape:", splats_np.shape)
 
         # IMPORTANT: point-sprite buffer must be Nx8 packed: [pos3, col4, rad1]
         # TEMP: disable point-sprite path while debugging quad path
@@ -3163,13 +3166,16 @@ void main() {
                 splats15 = None
 
             if splats15 is not None:
-                print("[SPLATQ] upload shape:", splats15.shape, "dtype:", splats15.dtype)
+            
+                if dbg:
+                    print("[SPLATQ] upload shape:", splats15.shape, "dtype:", splats15.dtype)
                 assert splats15.shape[1] == 15
 
                 # TEMP safety: cap upload while we debug
                 #splats15 = splats15[:200000].copy()
                 self._mgl_splat_count = int(splats15.shape[0])
-                print("[SPLATQ] upload shape:", splats15.shape)
+                if dbg:
+                    print("[SPLATQ] upload shape:", splats15.shape)
 
                 # Keep CPU copy so we can sort per-frame (10k is fine)
                 self._mgl_splats15_cpu = splats15
@@ -3928,7 +3934,8 @@ void main() {
 
         except Exception as exc:
             import traceback
-            print("[SPLATQ] PAINT CRASH:", exc)
+            if dbg:
+                print("[SPLATQ] PAINT CRASH:", exc)
             traceback.print_exc()
 
 
