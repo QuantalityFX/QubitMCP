@@ -1,4 +1,4 @@
-# echograph/util/load_gs_ply_sample.py
+# echograph/util/load_gs_ply.py
 from __future__ import annotations
 from pathlib import Path
 import numpy as np
@@ -30,7 +30,7 @@ def read_header(p: Path):
     return count, props, header_end
 
 
-def load_gs_ply_sample(ply_path: str, n: int = 200_000) -> np.ndarray:
+def load_gs_ply(ply_path: str, n: int = 200_000) -> np.ndarray:
     p = Path(ply_path)
     vcount, props, header_end = read_header(p)
 
@@ -98,7 +98,7 @@ def load_gs_ply_sample(ply_path: str, n: int = 200_000) -> np.ndarray:
 
 if __name__ == "__main__":
     ply = r"E:\GaussingSplats\models\bonsai\point_cloud\iteration_30000\point_cloud.ply"
-    splats = load_gs_ply_sample(ply, n=200_000)
+    splats = load_gs_ply(ply, n=200_000)
     print("splats shape:", splats.shape)
     print("pos min/max:", splats[:, :3].min(axis=0), splats[:, :3].max(axis=0))
     print("rgb min/max:", splats[:, 3:6].min(), splats[:, 3:6].max())

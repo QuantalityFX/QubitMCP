@@ -1818,17 +1818,6 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         
         self.view = GraphView(self.scene)
         self.gl_view = GraphGLView(self.scene)
-        QtCore.QTimer.singleShot(
-            0,
-            #ambda: self.open_splat_model(r"E:\GaussingSplats\models\bicycle\point_cloud\iteration_30000\point_cloud.ply")
-            #lambda: self.open_splat_model(r"E:\GaussingSplats\models\bonsai\point_cloud\iteration_30000\point_cloud.ply")
-            #lambda: self.open_splat_model(r"E:\GaussingSplats\models\garden\point_cloud\iteration_30000\point_cloud.ply")
-            #lambda: self.open_splat_model(r"E:\GaussingSplats\models\train\point_cloud\iteration_30000\point_cloud.ply")
-            #lambda: self.open_splat_model(r"E:\GaussingSplats\models\treehill\point_cloud\iteration_30000\point_cloud.ply")
-            lambda: self.open_splat_model(r"E:\GaussingSplats\models\truck\point_cloud\iteration_30000\point_cloud.ply")
-      
-            
-        )
         self.view.setMinimumSize(400, 300)
         self.gl_view.setMinimumSize(400, 300)
         self._view_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
@@ -2128,8 +2117,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             except Exception:
                 pass
 
-            from echograph.util.load_gs_ply_sample import load_gs_ply_sample
-            splats = load_gs_ply_sample(ply_path, n=200_000)
+            from echograph.util.splats_io import load_splats_ply
+            splats = load_splats_ply(ply_path, n=200_000)
             print("[SPLAT] loaded:", splats.shape, splats.dtype, flush=True)
 
             self.gl_view.set_splats(splats)

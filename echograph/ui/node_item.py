@@ -2377,11 +2377,16 @@ class NodeItem(QtWidgets.QGraphicsObject):
                                     flush=True
 )
                             glv = getattr(parent, "gl_view", None)
-                            if glv is not None and hasattr(glv, "_mgl_apply_camera_state"):
+                            if glv is not None:
+                                # Apply AFTER splats upload (otherwise _mgl_upload_pending_splats re-frames and overwrites)
                                 if hasattr(glv, "_mgl_queue_camera_state"):
                                     glv._mgl_queue_camera_state(cam)
                                 else:
-                                    glv._mgl_apply_camera_state(cam)
+                                    glv._mgl_pending_cam_state = cam
+                                    try:
+                                        glv.update()
+                                    except Exception:
+                                        pass
 
                 except Exception as exc2:
                     print("[IMPORT] camera restore failed:", exc2, flush=True)
