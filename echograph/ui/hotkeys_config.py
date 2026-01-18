@@ -12,8 +12,8 @@ DEFAULT_KEYMAP = {
     "big_editor": "Ctrl+B",
     "app_save": "Ctrl+S",
     "node_delete": "Del",
+    "comment_group": "C",
 }
-
 
 def _log(*args):
     print("[HOTKEYS]", *args, flush=True)

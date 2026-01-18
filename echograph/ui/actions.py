@@ -3,6 +3,27 @@ from __future__ import annotations
 from echograph.qt_compat import QtCore, QtGui, QtWidgets
 from echograph.ui import hotkeys_config
 
+def create_comment_group_from_window(win) -> bool:
+    try:
+        graph_scene = getattr(win, "scene", None)
+        if graph_scene and hasattr(graph_scene, "create_comment_group_from_selection"):
+            graph_scene.create_comment_group_from_selection()
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def delete_selected_nodes_from_window(win) -> bool:
+    try:
+        graph_scene = getattr(win, "scene", None)
+        if graph_scene and hasattr(graph_scene, "delete_selected_nodes"):
+            graph_scene.delete_selected_nodes()
+            return True
+    except Exception:
+        pass
+    return False
+
 def open_big_editor_from_window(win) -> bool:
     """
     Called by the app-level eventFilter when the big_editor hotkey is pressed.
@@ -90,3 +111,4 @@ def wire_big_editor_for_lineedit(node_item, edit: QtWidgets.QLineEdit, param_nam
 
     QtCore.QTimer.singleShot(0, _late_register)
     QtCore.QTimer.singleShot(50, _late_register)  # extra tick for slow builds
+

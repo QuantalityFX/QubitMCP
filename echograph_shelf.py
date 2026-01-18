@@ -1873,6 +1873,29 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         except Exception:
             self._shortcut_save = None
 
+        # GraphView-only shortcuts (avoid firing while typing in param line edits)
+        try:
+            self._shortcut_comment_group = hotkeys.add_shortcut(
+                self.view,
+                "comment_group",
+                "C",
+                lambda: actions.create_comment_group_from_window(self),
+                context=QtCore.Qt.WidgetWithChildrenShortcut,
+            )
+        except Exception:
+            self._shortcut_comment_group = None
+
+        try:
+            self._shortcut_node_delete = hotkeys.add_shortcut(
+                self.view,
+                "node_delete",
+                "Del",
+                lambda: actions.delete_selected_nodes_from_window(self),
+                context=QtCore.Qt.WidgetWithChildrenShortcut,
+            )
+        except Exception:
+            self._shortcut_node_delete = None
+
         if HOST == "standalone":
             if not _SKIP_RECENT_DIALOG:
                 QtCore.QTimer.singleShot(0, self._maybe_show_recent_dialog)

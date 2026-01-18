@@ -9,7 +9,7 @@ def add_shortcut(widget, action_id: str, fallback_seq: str, callback, *, context
     Works across PySide6/PySide2 differences (QShortcut location).
     """
     seq = hotkeys_config.keyseq(action_id, fallback_seq)
-
+    print("[HOTKEYS] BIND:", action_id, "->", seq, "fallback=", fallback_seq, flush=True)
     QShortcut = getattr(QtGui, "QShortcut", None) or getattr(QtWidgets, "QShortcut", None)
     if QShortcut is None:
         raise RuntimeError("QShortcut not found in QtGui or QtWidgets")
