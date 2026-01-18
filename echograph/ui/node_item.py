@@ -2368,7 +2368,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         if cam_path.exists():
                             with open(cam_path, "r", encoding="utf-8") as f:
                                 cam = json.load(f)
-
+                                if bool(getattr(glv, "_mgl_cam_debug", False)):
+                                    print(
+                                    "[IMPORT] cam loaded ->", str(cam_path),
+                                    "keys:", sorted(list(cam.keys())),
+                                    "scale_multiplier:", cam.get("scale_multiplier", None),
+                                    "zoom:", cam.get("zoom", None),
+                                    flush=True
+)
                             glv = getattr(parent, "gl_view", None)
                             if glv is not None and hasattr(glv, "_mgl_apply_camera_state"):
                                 if hasattr(glv, "_mgl_queue_camera_state"):
