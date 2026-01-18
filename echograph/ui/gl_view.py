@@ -2611,15 +2611,22 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         vp = self.rect()
         if vp.isNull():
             return
-        size = 58.0
-        margin = 14.0
-        origin = QtCore.QPointF(vp.right() - margin - size * 0.5, vp.top() + margin + size * 0.5)
-        radius = size * 0.45
+        size = 50.0
+        margin = 2.0
+        radius = size * 0.405
+        controls_h = 0.0
+        controls = getattr(self, "_controls", None)
+        if controls is not None and controls.isVisible():
+            controls_h = float(getattr(self, "_controls_h", 0))
+        origin = QtCore.QPointF(
+            vp.left() + margin + radius,
+            vp.bottom() - margin - radius - controls_h,
+        )
 
         axes = (
-            ("X", QtGui.QColor("#f87171"), (1.0, 0.0, 0.0)),
-            ("Y", QtGui.QColor("#4ade80"), (0.0, 1.0, 0.0)),
-            ("Z", QtGui.QColor("#38bdf8"), (0.0, 0.0, 1.0)),
+            ("X", QtGui.QColor("#ff3b30"), (1.0, 0.0, 0.0)),
+            ("Y", QtGui.QColor("#32d74b"), (0.0, 1.0, 0.0)),
+            ("Z", QtGui.QColor("#0a84ff"), (0.0, 0.0, 1.0)),
         )
         projected = []
         max_len = 0.0
@@ -2642,7 +2649,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         norm = radius / max_len
         for label, color, z2, vx, vy in projected:
             v2 = QtCore.QPointF(vx * norm, -vy * norm)
-            pen = QtGui.QPen(color, 2.2)
+            pen = QtGui.QPen(color, 1.6)
             if z2 < 0.0:
                 faded = QtGui.QColor(color)
                 faded.setAlpha(140)
@@ -2651,9 +2658,6 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             p.drawLine(origin, origin + v2)
             p.setPen(QtGui.QPen(color))
             p.drawText(origin + v2 + QtCore.QPointF(4.0, -2.0), label)
-        p.setPen(QtGui.QPen(QtGui.QColor("#e2e8f0")))
-        p.setBrush(QtGui.QBrush(QtGui.QColor("#0f172a")))
-        p.drawEllipse(origin, 3.2, 3.2)
 
     def _reset_camera(self) -> None:
         bounds = self._mesh_bounds_world() if self._render_scene_models else None
