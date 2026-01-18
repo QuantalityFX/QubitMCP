@@ -15,8 +15,7 @@ from pathlib import Path
 from echograph.qt_compat import QtCore, QtGui, QtWidgets, QAction, QShortcut, QKeySequence, _qexec
 from echograph.ui.dialogs import BigTextEditDialog
 from echograph.ui import node_icons
-from echograph.ui import hotkeys
-from echograph.ui import hotkeys_config
+from echograph.ui import actions
 
 from echograph.constants import (
     LLM_URL, LLM_NODE_W_BASE, LLM_NODE_H_BASE, LLM_SCALE_DEFAULT,
@@ -1400,28 +1399,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         )
                         lay.addWidget(browse_btn, 0)
 
-                    # Ctrl+B shortcut + context action
+                    # Big editor wiring
                     nm = p.get("name", "value")
-
-                    def open_big_editor():
-                        self._open_big_param_editor(f"Edit: {nm}", edit.text(), edit)
-
-                    hotkeys.keep_ref(self, hotkeys.add_shortcut(edit, "big_editor", "Ctrl+B", open_big_editor))
-                    
-                    seq = hotkeys_config.keyseq("big_editor", "Ctrl+B")
-                    act = QAction(f"Open Big Editor ({seq})", edit)
-                    act.triggered.connect(open_big_editor)
-                    edit.addAction(act)
-                    edit.setContextMenuPolicy(QtCore.Qt.ActionsContextMenu)
-
-                    # IMPORTANT: register with the main window so the view can route the shortcut correctly
-                    try:
-                        v = self.scene().views()[0] if self.scene() and self.scene().views() else None
-                        win = v.window() if v else None
-                        if win and hasattr(win, "_register_bigedit_target"):
-                            win._register_bigedit_target(edit, self, nm)
-                    except Exception:
-                        pass
+                    actions.wire_big_editor_for_lineedit(self, edit, nm)
 
                     row_center_y = y_cursor + self._PARAM_ROW_H / 2.0
                     proxy = QtWidgets.QGraphicsProxyWidget(self)

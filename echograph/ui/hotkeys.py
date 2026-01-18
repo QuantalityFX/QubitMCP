@@ -54,3 +54,6 @@ def add_keypress_filter(widget, key, mods, callback):
     widget.installEventFilter(hf)
     return hf
 
+def keyseq(action_id: str, fallback_seq: str) -> str:
+    # Compatibility wrapper (old code calls hotkeys.keyseq)
+    return hotkeys_config.keyseq(action_id, fallback_seq)
