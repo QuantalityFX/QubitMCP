@@ -19,6 +19,9 @@ from echograph.ui.node_item import NodeItem
 from echograph import persistence
 from echograph.model import GraphNode
 from echograph.ui import hotkeys
+from echograph.ui import actions
+from echograph.ui import hotkeys_config
+
 
 from echograph.qt_compat import (
     QtCore, QtGui, QtWidgets,
@@ -1764,30 +1767,32 @@ class _BigEditEventFilter(QtCore.QObject):
         self.win = win
 
     def eventFilter(self, obj, ev):
-        et = ev.type()
-        seq = hotkeys.keyseq("big_editor", "Ctrl+B")
+        try:
+            et = ev.type()
+            seq = hotkeys_config.keyseq("big_editor", "Ctrl+B")
 
-        if et == QtCore.QEvent.ShortcutOverride:
-            if isinstance(ev, QtGui.QKeyEvent) and _matches_hotkey(ev, seq):
-                ev.accept()
-                return True
+            # Swallow override so we don't double-trigger
+            if et == QtCore.QEvent.ShortcutOverride:
+                if isinstance(ev, QtGui.QKeyEvent) and _matches_hotkey(ev, seq):
+                    ev.accept()
+                    return True
+                return False
+
+            # Perform action only on KeyPress (once)
+            if et == QtCore.QEvent.KeyPress:
+                if isinstance(ev, QtGui.QKeyEvent):
+                    if ev.isAutoRepeat():
+                        return False
+
+                    if _matches_hotkey(ev, seq):
+                        if actions.open_big_editor_from_window(self.win):
+                            ev.accept()
+                            return True
+
+            return False
+        except Exception:
             return False
 
-        if et == QtCore.QEvent.KeyPress:
-            if isinstance(ev, QtGui.QKeyEvent):
-                if ev.isAutoRepeat():
-                    return False
-
-                if _matches_hotkey(ev, seq):
-                    reg = getattr(self.win, "_bigedit_registry", {})
-                    target = getattr(self.win, "_bigedit_last", None)
-                    if target and target in reg:
-                        node_item, param_name = reg[target]
-                        node_item._open_big_param_editor(f"Edit: {param_name}", target.text(), target)
-                        ev.accept()
-                        return True
-
-        return False
 
 # main window
 class EchoGraphWindow(QtWidgets.QMainWindow):

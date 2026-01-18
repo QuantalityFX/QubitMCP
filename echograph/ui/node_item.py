@@ -16,6 +16,8 @@ from echograph.qt_compat import QtCore, QtGui, QtWidgets, QAction, QShortcut, QK
 from echograph.ui.dialogs import BigTextEditDialog
 from echograph.ui import node_icons
 from echograph.ui import hotkeys
+from echograph.ui import hotkeys_config
+
 from echograph.constants import (
     LLM_URL, LLM_NODE_W_BASE, LLM_NODE_H_BASE, LLM_SCALE_DEFAULT,
     DEFAULT_STRIPE_HEX,
@@ -1406,7 +1408,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
                     hotkeys.keep_ref(self, hotkeys.add_shortcut(edit, "big_editor", "Ctrl+B", open_big_editor))
                     
-                    seq = hotkeys.keyseq("big_editor", "Ctrl+B")
+                    seq = hotkeys_config.keyseq("big_editor", "Ctrl+B")
                     act = QAction(f"Open Big Editor ({seq})", edit)
                     act.triggered.connect(open_big_editor)
                     edit.addAction(act)

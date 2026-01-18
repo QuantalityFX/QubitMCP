@@ -5,13 +5,13 @@ import json
 from pathlib import Path
 
 from echograph.qt_compat import QtCore
+_KEYMAP_CACHE = None
 
 # Action ids -> default key sequences
 DEFAULT_KEYMAP = {
     "big_editor": "Ctrl+B",
     "app_save": "Ctrl+S",
-    "gl_frame": "F",
-    "gl_reset_view": "R",
+    "node_delete": "Del",
 }
 
 
@@ -52,3 +52,18 @@ def load_keymap() -> dict:
 
     _log("LOADED:", str(p))
     return merged
+
+def keyseq(action_id: str, fallback_seq: str) -> str:
+    """
+    Return configured key sequence for action_id (from hotkeys.json),
+    falling back to fallback_seq if not present.
+    Caches the loaded keymap.
+    """
+    global _KEYMAP_CACHE
+    if _KEYMAP_CACHE is None:
+        _KEYMAP_CACHE = load_keymap()
+    try:
+        v = _KEYMAP_CACHE.get(action_id, fallback_seq)
+        return str(v or fallback_seq)
+    except Exception:
+        return str(fallback_seq)

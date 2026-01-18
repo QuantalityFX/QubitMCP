@@ -1,26 +1,20 @@
 # echograph/ui/hotkeys.py
 from __future__ import annotations
-
 from echograph.qt_compat import QtCore, QtGui, QtWidgets
-from echograph.ui.hotkeys_config import load_keymap
-
-
-_KEYMAP = None
-
-
-def _keyseq_for(action_id: str, fallback: str) -> str:
-    global _KEYMAP
-    if _KEYMAP is None:
-        _KEYMAP = load_keymap()
-    return str(_KEYMAP.get(action_id, fallback) or fallback)
-
+from echograph.ui import hotkeys_config
 
 def add_shortcut(widget, action_id: str, fallback_seq: str, callback, *, context=None):
     """
-    Bind an action id to a shortcut using hotkeys.json (created on first run).
+    Bind an action id to a shortcut using hotkeys.json.
+    Works across PySide6/PySide2 differences (QShortcut location).
     """
-    seq = _keyseq_for(action_id, fallback_seq)
-    sc = QtGui.QShortcut(QtGui.QKeySequence(seq), widget)
+    seq = hotkeys_config.keyseq(action_id, fallback_seq)
+
+    QShortcut = getattr(QtGui, "QShortcut", None) or getattr(QtWidgets, "QShortcut", None)
+    if QShortcut is None:
+        raise RuntimeError("QShortcut not found in QtGui or QtWidgets")
+
+    sc = QShortcut(QtGui.QKeySequence(seq), widget)
     sc.setContext(context if context is not None else QtCore.Qt.WidgetWithChildrenShortcut)
     sc.activated.connect(callback)
     return sc
@@ -60,8 +54,3 @@ def add_keypress_filter(widget, key, mods, callback):
     widget.installEventFilter(hf)
     return hf
 
-def keyseq(action_id: str, fallback_seq: str) -> str:
-    """
-    Returns the configured key sequence string for an action id.
-    """
-    return _keyseq_for(action_id, fallback_seq)
