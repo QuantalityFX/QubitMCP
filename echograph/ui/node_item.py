@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 from echograph.qt_compat import QtCore, QtGui, QtWidgets, QAction, QShortcut, QKeySequence, _qexec
 from echograph.ui.dialogs import BigTextEditDialog
+from echograph.ui import node_icons
 from echograph.constants import (
     LLM_URL, LLM_NODE_W_BASE, LLM_NODE_H_BASE, LLM_SCALE_DEFAULT, KEY_BIGEDIT,
 DEFAULT_STRIPE_HEX,
@@ -42,179 +43,6 @@ try:
 except Exception:
     PdfReader = None
     _HAS_PYPDF = False
-
-# Optional icons
-_DB_ICON = None
-_LLM_ICON = None
-_LLM_SERVER_ICON = None
-_APPEND_ICON = None
-_NOTE_ICON = None
-_LIBRARIAN_ICON = None
-_IMPORT_ICON = None
-_OUTPUT_ICON = None
-_PYTHON_ICON = None
-_SCREENGRAB_ICON = None
-
-def _db_icon():
-    global _DB_ICON
-    if _DB_ICON is not None:
-        return _DB_ICON
-    try:
-        icon_path = Path(__file__).resolve().parents[2] / "icons" / "Database_Icon.png"
-        if icon_path.is_file():
-            pm = QtGui.QPixmap(str(icon_path))
-            if not pm.isNull():
-                _DB_ICON = pm
-                return _DB_ICON
-    except Exception:
-        pass
-    _DB_ICON = None
-    return _DB_ICON
-
-def _llm_icon():
-    global _LLM_ICON
-    if _LLM_ICON is not None:
-        return _LLM_ICON
-    try:
-        icon_path = Path(__file__).resolve().parents[2] / "icons" / "LLM_Icon.png"
-        if icon_path.is_file():
-            pm = QtGui.QPixmap(str(icon_path))
-            if not pm.isNull():
-                _LLM_ICON = pm
-                return _LLM_ICON
-    except Exception:
-        pass
-    _LLM_ICON = None
-    return _LLM_ICON
-
-def _llm_server_icon():
-    global _LLM_SERVER_ICON
-    if _LLM_SERVER_ICON is not None:
-        return _LLM_SERVER_ICON
-    try:
-        icon_path = Path(__file__).resolve().parents[2] / "icons" / "Server_Icon.png"
-        if icon_path.is_file():
-            pm = QtGui.QPixmap(str(icon_path))
-            if not pm.isNull():
-                _LLM_SERVER_ICON = pm
-                return _LLM_SERVER_ICON
-    except Exception:
-        pass
-    _LLM_SERVER_ICON = None
-    return _LLM_SERVER_ICON
-
-def _append_icon():
-    global _APPEND_ICON
-    if _APPEND_ICON is not None:
-        return _APPEND_ICON
-    try:
-        icon_path = Path(__file__).resolve().parents[2] / "icons" / "append_icon.png"
-        if icon_path.is_file():
-            pm = QtGui.QPixmap(str(icon_path))
-            if not pm.isNull():
-                _APPEND_ICON = pm
-                return _APPEND_ICON
-    except Exception:
-        pass
-    _APPEND_ICON = None
-    return _APPEND_ICON
-
-def _note_icon():
-    global _NOTE_ICON
-    if _NOTE_ICON is not None:
-        return _NOTE_ICON
-    try:
-        icon_path = Path(__file__).resolve().parents[2] / "icons" / "Electric_Pen_Icon.png"
-        if icon_path.is_file():
-            pm = QtGui.QPixmap(str(icon_path))
-            if not pm.isNull():
-                _NOTE_ICON = pm
-                return _NOTE_ICON
-    except Exception:
-        pass
-    _NOTE_ICON = None
-    return _NOTE_ICON
-
-def _librarian_icon():
-    global _LIBRARIAN_ICON
-    if _LIBRARIAN_ICON is not None:
-        return _LIBRARIAN_ICON
-    try:
-        #icon_path = Path(__file__).resolve().parents[2] / "nodes" / "librarian" / "icons" / "librarian_search_s.png"
-        icon_path = Path(__file__).resolve().parents[2] / "icons" / "librarian_search_Icon.png" 
-        if icon_path.is_file():
-            pm = QtGui.QPixmap(str(icon_path))
-            if not pm.isNull():
-                _LIBRARIAN_ICON = pm
-                return _LIBRARIAN_ICON
-    except Exception:
-        pass
-    _LIBRARIAN_ICON = None
-    return _LIBRARIAN_ICON
-
-def _import_icon():
-    global _IMPORT_ICON
-    if _IMPORT_ICON is not None:
-        return _IMPORT_ICON
-    try:
-        icon_path = Path(__file__).resolve().parents[2] / "icons" / "Import_File_Icon.png"
-        if icon_path.is_file():
-            pm = QtGui.QPixmap(str(icon_path))
-            if not pm.isNull():
-                _IMPORT_ICON = pm
-                return _IMPORT_ICON
-    except Exception:
-        pass
-    _IMPORT_ICON = None
-    return _IMPORT_ICON
-
-def _output_icon():
-    global _OUTPUT_ICON
-    if _OUTPUT_ICON is not None:
-        return _OUTPUT_ICON
-    try:
-        icon_path = Path(__file__).resolve().parents[2] / "icons" / "Out_Node_Icon.png"
-        if icon_path.is_file():
-            pm = QtGui.QPixmap(str(icon_path))
-            if not pm.isNull():
-                _OUTPUT_ICON = pm
-                return _OUTPUT_ICON
-    except Exception:
-        pass
-    _OUTPUT_ICON = None
-    return _OUTPUT_ICON
-
-def _python_icon():
-    global _PYTHON_ICON
-    if _PYTHON_ICON is not None:
-        return _PYTHON_ICON
-    try:
-        icon_path = Path(__file__).resolve().parents[2] / "icons" / "Python_Icon.png"
-        if icon_path.is_file():
-            pm = QtGui.QPixmap(str(icon_path))
-            if not pm.isNull():
-                _PYTHON_ICON = pm
-                return _PYTHON_ICON
-    except Exception:
-        pass
-    _PYTHON_ICON = None
-    return _PYTHON_ICON
-
-def _screengrab_icon():
-    global _SCREENGRAB_ICON
-    if _SCREENGRAB_ICON is not None:
-        return _SCREENGRAB_ICON
-    try:
-        icon_path = Path(__file__).resolve().parents[2] / "icons" / "screengrab _Icon_s_001.png"
-        if icon_path.is_file():
-            pm = QtGui.QPixmap(str(icon_path))
-            if not pm.isNull():
-                _SCREENGRAB_ICON = pm
-                return _SCREENGRAB_ICON
-    except Exception:
-        pass
-    _SCREENGRAB_ICON = None
-    return _SCREENGRAB_ICON
 
 # Optional WebEngine
 try:
@@ -1941,7 +1769,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             is_3d = self._is_3d_model_ext(os.path.splitext(path)[1].lower())
             if is_3d:
                 screengrab_btn = QtWidgets.QToolButton()
-                icon = _screengrab_icon()
+                icon = node_icons._screengrab_icon()
                 if icon:
                     screengrab_btn.setIcon(QtGui.QIcon(icon))
                 screengrab_btn.setToolTip("Capture thumbnail from 3D view")
@@ -2840,23 +2668,23 @@ class NodeItem(QtWidgets.QGraphicsObject):
             kind_lower = (self.model.kind or "").lower()
             icon_pm = None
             if kind_lower == "database":
-                icon_pm = _db_icon()
+                icon_pm = node_icons._db_icon()
             elif kind_lower == "llm":
-                icon_pm = _llm_server_icon()
+                icon_pm = node_icons._llm_server_icon()
             elif kind_lower in ("llm_prompt",):
-                icon_pm = _llm_icon()
+                icon_pm = node_icons._llm_icon()
             elif kind_lower == "append":
-                icon_pm = _append_icon()
+                icon_pm = node_icons._append_icon()
             elif kind_lower == "note":
-                icon_pm = _note_icon()
+                icon_pm = node_icons._note_icon()
             elif kind_lower == "librarian":
-                icon_pm = _librarian_icon()
+                icon_pm = node_icons._librarian_icon()
             elif kind_lower == "import":
-                icon_pm = _import_icon()
+                icon_pm = node_icons._import_icon()
             elif kind_lower == "output":
-                icon_pm = _output_icon()
+                icon_pm = node_icons._output_icon()
             elif kind_lower == "python":
-                icon_pm = _python_icon()
+                icon_pm = node_icons._python_icon()
             if icon_pm and not icon_pm.isNull():
                 scale = 1.0
                 try:
