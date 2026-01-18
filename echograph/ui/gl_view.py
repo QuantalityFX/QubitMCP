@@ -2611,8 +2611,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         vp = self.rect()
         if vp.isNull():
             return
-        size = 50.0
-        margin = 2.0
+        size = 46.0
+        margin = 3.0
         radius = size * 0.405
         controls_h = 0.0
         controls = getattr(self, "_controls", None)
