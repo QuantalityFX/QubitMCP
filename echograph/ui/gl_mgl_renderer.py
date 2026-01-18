@@ -1056,8 +1056,13 @@ class MGLRendererMixin:
         radius = float(extent.max())
 
         self._mgl_center = center.astype("f4")
+        try:
+            self._mgl_base_center = self._mgl_center.copy()
+        except Exception:
+            self._mgl_base_center = self._mgl_center
+        self._mgl_base_zoom = max(0.1, radius * 3.0)
         # simple "fit" distance
-        self._mgl_camera_zoom = max(0.1, radius * 3.0)
+        self._mgl_camera_zoom = self._mgl_base_zoom
 
         # update arcball size
         if self._mgl_arcball is not None:
@@ -1413,6 +1418,11 @@ class MGLRendererMixin:
         self._mgl_arcball.Transform = np.identity(4, "f4")
         self._mgl_arcball.Transform[:3, :3] /= scale
         self._mgl_arcball.Transform[3, :3] = -self._mgl_center / scale
+        try:
+            self._mgl_base_center = self._mgl_center.copy()
+        except Exception:
+            self._mgl_base_center = self._mgl_center
+        self._mgl_base_zoom = self._mgl_camera_distance(self._mgl_fov)
 
         # keep internal arcball rotation state in sync with the forced Transform
         try:
@@ -1423,7 +1433,16 @@ class MGLRendererMixin:
         self._mgl_camera_zoom = self._mgl_camera_distance(self._mgl_fov) * max(0.01, self._mgl_scale_multiplier)
 
     def _mgl_frame_camera(self) -> None:
-        self._mgl_camera_zoom = self._mgl_camera_distance(self._mgl_fov) * max(0.01, self._mgl_scale_multiplier)
+        base_center = getattr(self, "_mgl_base_center", None)
+        if base_center is not None:
+            try:
+                self._mgl_center = base_center.copy()
+            except Exception:
+                self._mgl_center = base_center
+        base_zoom = getattr(self, "_mgl_base_zoom", None)
+        if base_zoom is None:
+            base_zoom = self._mgl_camera_distance(self._mgl_fov)
+        self._mgl_camera_zoom = float(base_zoom) * max(0.01, self._mgl_scale_multiplier)
 
     def _sync_mgl_gizmo(self, transform) -> None:
         # ultra-safe: do nothing unless we can read 3x3 floats safely

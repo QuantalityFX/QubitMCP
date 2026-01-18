@@ -664,6 +664,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._mgl_fov = 60.0
         self._mgl_camera_zoom = 2.0
         self._mgl_center = None
+        self._mgl_base_center = None
+        self._mgl_base_zoom = None
         self._mgl_scale = 1.0
         self._mgl_scale_multiplier = 1.0
         self._mgl_arcball = None
