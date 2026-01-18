@@ -825,6 +825,12 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 self._mgl_texture_btn.clicked.connect(self._on_mgl_pick_texture)
                 layout.addWidget(self._mgl_texture_btn, 0)
             self._example_scale_label = QtWidgets.QLabel("Scale 1.00x")
+            try:
+                fm = self._example_scale_label.fontMetrics()
+                self._example_scale_label.setFixedWidth(fm.horizontalAdvance("Scale 20.00x") + 6)
+                self._example_scale_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+            except Exception:
+                pass
             self._example_scale_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
             self._example_scale_slider.setRange(1, 2000)
             scale_val = self._mgl_scale_multiplier if self._use_moderngl else self._example_model_scale
