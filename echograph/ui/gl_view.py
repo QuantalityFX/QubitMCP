@@ -2490,14 +2490,14 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         points = None
         normals = None
         uvs = None
-        fbx_mesh_arrays = None
+        mesh_arrays = None
         if mesh is None:
             if path.suffix.lower() == ".fbx":
                 try:
-                    fbx_mesh_arrays = load_fbx_mesh_arrays_pyassimp(path)
-                    points = fbx_mesh_arrays.points
-                    normals = fbx_mesh_arrays.normals
-                    uvs = fbx_mesh_arrays.uvs
+                    mesh_arrays = load_fbx_mesh_arrays_pyassimp(path)
+                    points = mesh_arrays.points
+                    normals = mesh_arrays.normals
+                    uvs = mesh_arrays.uvs
                 except Exception as exc:
                     self._mgl_error = f"FBX load failed: {exc}"
                     return
@@ -2508,7 +2508,10 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
                     points = None
             elif path.suffix.lower() in (".gltf", ".glb"):
                 try:
-                    points, normals, uvs = load_gltf_mesh_arrays(path)
+                    mesh_arrays = load_gltf_mesh_arrays(path)
+                    points = mesh_arrays.points
+                    normals = mesh_arrays.normals
+                    uvs = mesh_arrays.uvs
                 except Exception:
                     points = None
             if points is None:
@@ -2531,22 +2534,22 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             if mesh is not None:
                 self._mgl_set_mesh(mesh)
             else:
-                if fbx_mesh_arrays is not None and fbx_mesh_arrays.submeshes:
-                    self._mgl_set_submeshes(fbx_mesh_arrays.submeshes)
-                    if fbx_mesh_arrays.base_color is not None:
-                        self._mgl_mesh_color = fbx_mesh_arrays.base_color
+                if mesh_arrays is not None and mesh_arrays.submeshes:
+                    self._mgl_set_submeshes(mesh_arrays.submeshes)
+                    if mesh_arrays.base_color is not None:
+                        self._mgl_mesh_color = mesh_arrays.base_color
                 else:
                     self._mgl_set_raw_mesh(points, normals, uvs)
-                    if fbx_mesh_arrays is not None and fbx_mesh_arrays.base_color is not None:
-                        self._mgl_mesh_color = fbx_mesh_arrays.base_color
-                    if fbx_mesh_arrays is not None and fbx_mesh_arrays.texture_path is not None:
+                    if mesh_arrays is not None and mesh_arrays.base_color is not None:
+                        self._mgl_mesh_color = mesh_arrays.base_color
+                    if mesh_arrays is not None and mesh_arrays.texture_path is not None:
                         try:
-                            if not self._mgl_upload_texture_path(fbx_mesh_arrays.texture_path):
+                            if not self._mgl_upload_texture_path(mesh_arrays.texture_path):
                                 self._mgl_error = "Texture load failed"
                         except Exception as exc:
                             self._mgl_error = f"Texture upload failed: {exc}"
-                    elif fbx_mesh_arrays is not None and fbx_mesh_arrays.texture_image is not None:
-                        qimg = self._mgl_qimage_from_texture(fbx_mesh_arrays.texture_image)
+                    elif mesh_arrays is not None and mesh_arrays.texture_image is not None:
+                        qimg = self._mgl_qimage_from_texture(mesh_arrays.texture_image)
                         if qimg is not None:
                             try:
                                 self._mgl_upload_texture(qimg, str(path))

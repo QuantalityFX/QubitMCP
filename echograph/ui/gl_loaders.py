@@ -537,7 +537,166 @@ def _gltf_collect_nodes(gltf: dict, node_indices: List[int], parent: List[float]
         out.extend(_gltf_collect_nodes(gltf, list(children), world))
     return out
 
-def load_gltf_mesh_arrays(path: Path) -> Tuple["np.ndarray", "np.ndarray", "np.ndarray"]:
+def _buffer_view_bytes(gltf: dict, buffers: List[bytes], view_index: int) -> Optional[bytes]:
+    buffer_views = gltf.get("bufferViews", []) or []
+    if view_index < 0 or view_index >= len(buffer_views):
+        return None
+    view = buffer_views[view_index]
+    buffer_index = int(view.get("buffer", 0))
+    if buffer_index < 0 or buffer_index >= len(buffers):
+        return None
+    data = buffers[buffer_index]
+    byte_offset = int(view.get("byteOffset", 0))
+    byte_length = view.get("byteLength")
+    if byte_length is None:
+        byte_length = len(data) - byte_offset
+    try:
+        byte_length = int(byte_length)
+    except Exception:
+        return None
+    if byte_offset < 0 or byte_offset + byte_length > len(data):
+        return None
+    return data[byte_offset : byte_offset + byte_length]
+
+
+def _as_int(value: object) -> Optional[int]:
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
+def _gltf_image_source(
+    image_index: int,
+    gltf: dict,
+    buffers: List[bytes],
+    path: Path,
+    image_cache: Dict[int, Tuple[Optional[Path], Optional[object]]],
+) -> Tuple[Optional[Path], Optional[object]]:
+    images = gltf.get("images", []) or []
+    if image_index < 0 or image_index >= len(images):
+        return None, None
+    cached = image_cache.get(image_index)
+    if cached is not None:
+        return cached
+    image_def = images[image_index] or {}
+    uri = image_def.get("uri")
+    if isinstance(uri, str) and uri:
+        if uri.startswith("data:"):
+            try:
+                data = _decode_data_uri(uri)
+                img = PILImage.open(io.BytesIO(data)).convert("RGBA")
+                result = (None, img)
+            except Exception:
+                result = (None, None)
+        else:
+            candidate = (path.parent / uri).resolve()
+            if candidate.exists():
+                result = (candidate, None)
+            else:
+                result = (None, None)
+        image_cache[image_index] = result
+        return result
+    buffer_view_index = image_def.get("bufferView")
+    if buffer_view_index is not None:
+        bv_bytes = _buffer_view_bytes(gltf, buffers, int(buffer_view_index))
+        if bv_bytes:
+            try:
+                img = PILImage.open(io.BytesIO(bv_bytes)).convert("RGBA")
+                result = (None, img)
+            except Exception:
+                result = (None, None)
+            image_cache[image_index] = result
+            return result
+    image_cache[image_index] = (None, None)
+    return None, None
+
+
+def _gltf_texture_image(
+    texture_index: int,
+    gltf: dict,
+    buffers: List[bytes],
+    path: Path,
+    image_cache: Dict[int, Tuple[Optional[Path], Optional[object]]],
+) -> Tuple[Optional[Path], Optional[object]]:
+    textures = gltf.get("textures", []) or []
+    if texture_index < 0 or texture_index >= len(textures):
+        return None, None
+    tex = textures[texture_index] or {}
+    image_index = tex.get("source")
+    image_idx = _as_int(image_index)
+    if image_idx is None:
+        return None, None
+    return _gltf_image_source(image_idx, gltf, buffers, path, image_cache)
+
+
+def _gltf_material_info(
+    material_index: Optional[int],
+    gltf: dict,
+    buffers: List[bytes],
+    path: Path,
+    image_cache: Dict[int, Tuple[Optional[Path], Optional[object]]],
+    material_cache: Dict[int, Tuple[Optional[Path], Optional[object], Optional[Tuple[float, float, float, float]]]],
+) -> Tuple[Optional[Path], Optional[object], Optional[Tuple[float, float, float, float]]]:
+    if material_index is None:
+        return None, None, None
+    if material_index in material_cache:
+        return material_cache[material_index]
+    materials = gltf.get("materials", []) or []
+    if material_index < 0 or material_index >= len(materials):
+        material_cache[material_index] = (None, None, None)
+        return None, None, None
+    material = materials[material_index] or {}
+    texture_path = None
+    texture_image = None
+    base_color: Optional[Tuple[float, float, float, float]] = None
+    pbr = material.get("pbrMetallicRoughness") or {}
+    color_factor = pbr.get("baseColorFactor")
+    if color_factor is not None:
+        base_color = _normalize_color(color_factor)
+
+    def try_texture(info: object) -> Tuple[Optional[Path], Optional[object]]:
+        if not isinstance(info, dict):
+            return None, None
+        tex_index = _as_int(info.get("index"))
+        if tex_index is not None:
+            return _gltf_texture_image(tex_index, gltf, buffers, path, image_cache)
+        extensions = info.get("extensions") or {}
+        basisu = extensions.get("KHR_texture_basisu")
+        if isinstance(basisu, dict):
+            source = _as_int(basisu.get("source"))
+            if source is not None:
+                return _gltf_image_source(source, gltf, buffers, path, image_cache)
+        return None, None
+
+    tex_info = pbr.get("baseColorTexture")
+    if tex_info:
+        texture_path, texture_image = try_texture(tex_info)
+    if texture_path is None and texture_image is None:
+        for key in ("diffuseTexture", "emissiveTexture", "normalTexture"):
+            info = material.get(key)
+            if info:
+                texture_path, texture_image = try_texture(info)
+            if texture_path or texture_image:
+                break
+    material_cache[material_index] = (texture_path, texture_image, base_color)
+    return texture_path, texture_image, base_color
+
+
+def _ensure_normals(points: "np.ndarray", normals: "np.ndarray") -> None:
+    if points.size == 0 or normals.size == 0:
+        return
+    if np.any(normals):
+        return
+    for i in range(0, points.shape[0], 3):
+        a, b, c = points[i : i + 3]
+        n = np.cross(b - a, c - a)
+        length = float(np.linalg.norm(n))
+        if length > 1e-6:
+            n = n / length
+        normals[i : i + 3] = n
+
+def load_gltf_mesh_arrays(path: Path) -> MeshArrays:
     if np is None:
         raise RuntimeError("numpy unavailable")
     if path.suffix.lower() == ".glb":
@@ -565,6 +724,12 @@ def load_gltf_mesh_arrays(path: Path) -> Tuple["np.ndarray", "np.ndarray", "np.n
     out_pos: List[float] = []
     out_uv: List[float] = []
     out_norm: List[float] = []
+    submeshes: List[SubMeshData] = []
+    image_cache: Dict[int, Tuple[Optional[Path], Optional[object]]] = {}
+    material_cache: Dict[int, Tuple[Optional[Path], Optional[object], Optional[Tuple[float, float, float, float]]]] = {}
+    texture_path: Optional[Path] = None
+    texture_image: Optional[object] = None
+    base_color: Optional[Tuple[float, float, float, float]] = None
 
     for node, world in node_pairs:
         mesh_index = node.get("mesh")
@@ -592,19 +757,47 @@ def load_gltf_mesh_arrays(path: Path) -> Tuple["np.ndarray", "np.ndarray", "np.n
                 continue
             if indices is None:
                 indices = list(range(len(positions) // 3))
+
+            material_index = _as_int(prim.get("material"))
+            mat_texture_path, mat_texture_image, mat_color = _gltf_material_info(
+                material_index,
+                gltf,
+                buffers,
+                path,
+                image_cache,
+                material_cache,
+            )
+            if base_color is None and mat_color is not None:
+                base_color = mat_color
+            if texture_path is None and texture_image is None and (mat_texture_path is not None or mat_texture_image is not None):
+                texture_path = mat_texture_path
+                texture_image = mat_texture_image
+
+            prim_points: List[float] = []
+            prim_uvs: List[float] = []
+            prim_normals: List[float] = []
+
             for idx in indices:
                 base = idx * 3
                 vx, vy, vz = positions[base], positions[base + 1], positions[base + 2]
                 vx, vy, vz = _apply_mat4(world, vx, vy, vz)
                 out_pos.extend([vx, vy, vz])
+                prim_points.extend([vx, vy, vz])
+
                 if uvs is not None:
                     ub = idx * 2
                     if ub + 1 < len(uvs):
-                        out_uv.extend([uvs[ub], 1.0 - uvs[ub + 1]])
+                        u_val = uvs[ub]
+                        v_val = 1.0 - uvs[ub + 1]
                     else:
-                        out_uv.extend([0.0, 0.0])
+                        u_val = 0.0
+                        v_val = 0.0
                 else:
-                    out_uv.extend([0.0, 0.0])
+                    u_val = 0.0
+                    v_val = 0.0
+                out_uv.extend([u_val, v_val])
+                prim_uvs.extend([u_val, v_val])
+
                 if normals is not None:
                     nb = idx * 3
                     if nb + 2 < len(normals):
@@ -615,27 +808,46 @@ def load_gltf_mesh_arrays(path: Path) -> Tuple["np.ndarray", "np.ndarray", "np.n
                     nlen = math.sqrt(nx * nx + ny * ny + nz * nz)
                     if nlen > 1e-6:
                         nx, ny, nz = nx / nlen, ny / nlen, nz / nlen
-                    out_norm.extend([nx, ny, nz])
                 else:
-                    out_norm.extend([0.0, 0.0, 0.0])
+                    nx, ny, nz = 0.0, 0.0, 0.0
+                out_norm.extend([nx, ny, nz])
+                prim_normals.extend([nx, ny, nz])
+
+            if prim_points:
+                prim_points_arr = np.array(prim_points, dtype="f4").reshape(-1, 3)
+                prim_uv_arr = np.array(prim_uvs, dtype="f4").reshape(-1, 2)
+                prim_norm_arr = np.array(prim_normals, dtype="f4").reshape(-1, 3)
+                _ensure_normals(prim_points_arr, prim_norm_arr)
+                submeshes.append(
+                    SubMeshData(
+                        points=prim_points_arr,
+                        normals=prim_norm_arr,
+                        uvs=prim_uv_arr,
+                        texture_path=mat_texture_path,
+                        texture_image=mat_texture_image,
+                        base_color=mat_color,
+                    )
+                )
 
     if not out_pos:
-        return np.zeros((0, 3), dtype="f4"), np.zeros((0, 3), dtype="f4"), np.zeros((0, 2), dtype="f4")
+        pos_arr = np.zeros((0, 3), dtype="f4")
+        norm_arr = np.zeros((0, 3), dtype="f4")
+        uv_arr = np.zeros((0, 2), dtype="f4")
+    else:
+        pos_arr = np.array(out_pos, dtype="f4").reshape(-1, 3)
+        norm_arr = np.array(out_norm, dtype="f4").reshape(-1, 3)
+        uv_arr = np.array(out_uv, dtype="f4").reshape(-1, 2)
+        _ensure_normals(pos_arr, norm_arr)
 
-    pos_arr = np.array(out_pos, dtype="f4").reshape(-1, 3)
-    norm_arr = np.array(out_norm, dtype="f4").reshape(-1, 3)
-    uv_arr = np.array(out_uv, dtype="f4").reshape(-1, 2)
-
-    if not np.any(norm_arr):
-        for i in range(0, pos_arr.shape[0], 3):
-            a, b, c = pos_arr[i:i + 3]
-            n = np.cross(b - a, c - a)
-            length = float(np.linalg.norm(n))
-            if length > 1e-6:
-                n = n / length
-            norm_arr[i:i + 3] = n
-
-    return pos_arr, norm_arr, uv_arr
+    return MeshArrays(
+        points=pos_arr,
+        normals=norm_arr,
+        uvs=uv_arr,
+        texture_path=texture_path,
+        texture_image=texture_image,
+        base_color=base_color,
+        submeshes=submeshes if submeshes else None,
+    )
 
 
 def load_gltf_model(path: Path) -> ModelData:
