@@ -18,6 +18,7 @@ from echograph.ui.gl_view import GraphGLView
 from echograph.ui.node_item import NodeItem
 from echograph import persistence
 from echograph.model import GraphNode
+from echograph.ui import hotkeys
 
 from echograph.qt_compat import (
     QtCore, QtGui, QtWidgets,
@@ -143,7 +144,7 @@ class CommentGroup(QtWidgets.QGraphicsObject):
         self._drag_start_scene = QtCore.QPointF()
         self._drag_start_pos = QtCore.QPointF()
         self._drag_peer_starts: List[tuple['CommentGroup', QtCore.QPointF]] = []
-
+        
     # --- data helpers --------------------------------------------------------
     def members(self) -> List[str]:
         return list(self._members)
@@ -1746,31 +1747,46 @@ class GraphScene(QtWidgets.QGraphicsScene):
                 out.append((it.model.name, t))
         return out
 
-# App-level Ctrl+B catcher (focus-only)
-class _CtrlBEventFilter(QtCore.QObject):
+def _matches_hotkey(ev: QtGui.QKeyEvent, seq: str) -> bool:
+    try:
+        wanted = QtGui.QKeySequence(seq)
+        if hasattr(ev, "keyCombination"):
+            pressed = QtGui.QKeySequence(ev.keyCombination())
+            return pressed.matches(wanted) == QtGui.QKeySequence.ExactMatch
+        return False
+    except Exception:
+        return False
+
+# App-level Big Editor catcher (focus-only)
+class _BigEditEventFilter(QtCore.QObject):
     def __init__(self, win):
         super().__init__(win)
-        self.win = win  # EchoGraphWindow
+        self.win = win
 
     def eventFilter(self, obj, ev):
         et = ev.type()
-        if et in (QtCore.QEvent.ShortcutOverride, QtCore.QEvent.KeyPress):
-            if isinstance(ev, QtGui.QKeyEvent) and ev.key() == QtCore.Qt.Key_B and (ev.modifiers() & QtCore.Qt.ControlModifier):
-                fw = QtWidgets.QApplication.focusWidget()
-                w = fw
-                target = None
-                for _ in range(6):
-                    if w in self.win._bigedit_registry:
-                        target = w
-                        break
-                    w = w.parent() if isinstance(w, QtWidgets.QWidget) else None
-                    if w is None:
-                        break
-                if target:
-                    node_item, param_name = self.win._bigedit_registry[target]
-                    node_item._open_big_param_editor(f"Edit: {param_name}", target.text(), target)
-                    ev.accept()
-                    return True
+        seq = hotkeys.keyseq("big_editor", "Ctrl+B")
+
+        if et == QtCore.QEvent.ShortcutOverride:
+            if isinstance(ev, QtGui.QKeyEvent) and _matches_hotkey(ev, seq):
+                ev.accept()
+                return True
+            return False
+
+        if et == QtCore.QEvent.KeyPress:
+            if isinstance(ev, QtGui.QKeyEvent):
+                if ev.isAutoRepeat():
+                    return False
+
+                if _matches_hotkey(ev, seq):
+                    reg = getattr(self.win, "_bigedit_registry", {})
+                    target = getattr(self.win, "_bigedit_last", None)
+                    if target and target in reg:
+                        node_item, param_name = reg[target]
+                        node_item._open_big_param_editor(f"Edit: {param_name}", target.text(), target)
+                        ev.accept()
+                        return True
+
         return False
 
 # main window
@@ -1836,15 +1852,19 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._init_info_dock()
         self._set_view_mode("2d")
 
-        # App-level Ctrl+B filter (focus-only)
-        self._ctrlb_filter = _CtrlBEventFilter(self)
-        QtWidgets.QApplication.instance().installEventFilter(self._ctrlb_filter)
+        # App-level Big Editor hotkey catcher (focus-only)
+        self._bigedit_filter = _BigEditEventFilter(self)
+        QtWidgets.QApplication.instance().installEventFilter(self._bigedit_filter)
 
         # Global shortcuts
         try:
-            self._shortcut_save = QShortcut(QKeySequence("Ctrl+S"), self)
-            self._shortcut_save.setContext(QtCore.Qt.ApplicationShortcut)
-            self._shortcut_save.activated.connect(self._save_graph)
+            self._shortcut_save = hotkeys.add_shortcut(
+                self,
+                "app_save",
+                "Ctrl+S",
+                self._save_graph,
+                context=QtCore.Qt.ApplicationShortcut,
+            )
         except Exception:
             self._shortcut_save = None
 
@@ -1853,8 +1873,26 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 QtCore.QTimer.singleShot(0, self._maybe_show_recent_dialog)
             QtCore.QTimer.singleShot(0, self.showMaximized)
 
-    def _register_bigedit_target(self, lineedit: QtWidgets.QLineEdit, node_item: 'NodeItem', param_name: str):
-        self._bigedit_registry[lineedit] = (node_item, param_name)
+    def _register_bigedit_target(self, edit: QtWidgets.QWidget, node_item, param_name: str):
+        if not hasattr(self, "_bigedit_registry"):
+            self._bigedit_registry = {}
+        self._bigedit_registry[edit] = (node_item, param_name)
+
+        # set a safe default target immediately
+        self._bigedit_last = edit
+
+        # Track last focused edit reliably (GraphicsView focus is usually GraphView)
+        try:
+            orig = getattr(edit, "focusInEvent", None)
+            if orig and not getattr(edit, "_bigedit_focus_hooked", False):
+                def _focus_in_hook(ev, _orig=orig, _w=edit, _self=self):
+                    _self._bigedit_last = _w
+                    return _orig(ev)
+                edit.focusInEvent = _focus_in_hook
+                edit._bigedit_focus_hooked = True
+        except Exception:
+            pass
+
 
     def _remember_recent(self, path: str):
         path = (path or "").strip()

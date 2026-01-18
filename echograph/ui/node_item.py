@@ -15,9 +15,10 @@ from pathlib import Path
 from echograph.qt_compat import QtCore, QtGui, QtWidgets, QAction, QShortcut, QKeySequence, _qexec
 from echograph.ui.dialogs import BigTextEditDialog
 from echograph.ui import node_icons
+from echograph.ui import hotkeys
 from echograph.constants import (
-    LLM_URL, LLM_NODE_W_BASE, LLM_NODE_H_BASE, LLM_SCALE_DEFAULT, KEY_BIGEDIT,
-DEFAULT_STRIPE_HEX,
+    LLM_URL, LLM_NODE_W_BASE, LLM_NODE_H_BASE, LLM_SCALE_DEFAULT,
+    DEFAULT_STRIPE_HEX,
 )
 
 import nodes.core as core
@@ -1398,14 +1399,27 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         lay.addWidget(browse_btn, 0)
 
                     # Ctrl+B shortcut + context action
-                    self._wire_bigedit_shortcut(edit, p.get("name", "value"))
-                    act = QAction("Open Big Editor (Ctrl+B)", edit)
-                    act.triggered.connect(
-                        lambda _=False, e=edit, nm=p.get("name","value"):
-                            self._open_big_param_editor(f"Edit: {nm}", e.text(), e)
-                    )
+                    nm = p.get("name", "value")
+
+                    def open_big_editor():
+                        self._open_big_param_editor(f"Edit: {nm}", edit.text(), edit)
+
+                    hotkeys.keep_ref(self, hotkeys.add_shortcut(edit, "big_editor", "Ctrl+B", open_big_editor))
+                    
+                    seq = hotkeys.keyseq("big_editor", "Ctrl+B")
+                    act = QAction(f"Open Big Editor ({seq})", edit)
+                    act.triggered.connect(open_big_editor)
                     edit.addAction(act)
                     edit.setContextMenuPolicy(QtCore.Qt.ActionsContextMenu)
+
+                    # IMPORTANT: register with the main window so the view can route the shortcut correctly
+                    try:
+                        v = self.scene().views()[0] if self.scene() and self.scene().views() else None
+                        win = v.window() if v else None
+                        if win and hasattr(win, "_register_bigedit_target"):
+                            win._register_bigedit_target(edit, self, nm)
+                    except Exception:
+                        pass
 
                     row_center_y = y_cursor + self._PARAM_ROW_H / 2.0
                     proxy = QtWidgets.QGraphicsProxyWidget(self)
@@ -2467,48 +2481,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         self._llm_sampler.set_url(QtCore.QUrl(norm))
                     except Exception:
                         pass
-
-    def _wire_bigedit_shortcut(self, edit: QtWidgets.QLineEdit, param_name: str):
-        # Focus-only hotkey path:
-        edit.setFocusPolicy(QtCore.Qt.StrongFocus)
-        row = edit.parent() if isinstance(edit.parent(), QtWidgets.QWidget) else None
-        if row:
-            row.setFocusPolicy(QtCore.Qt.StrongFocus)
-
-        def _activate_bigedit(e=edit, nm=param_name):
-            self._open_big_param_editor(f"Edit: {nm}", e.text(), e)
-
-        class _HotkeyFilter(QtCore.QObject):
-            def eventFilter(self, obj, ev):
-                if ev.type() == QtCore.QEvent.KeyPress:
-                    if (ev.key() == QtCore.Qt.Key_B) and (ev.modifiers() & QtCore.Qt.ControlModifier):
-                        _activate_bigedit()
-                        return True
-                return super().eventFilter(obj, ev)
-
-        hf = _HotkeyFilter(edit)
-        edit.installEventFilter(hf)
-
-        if not hasattr(self, "_hotkey_refs"):
-            self._hotkey_refs = []
-        self._hotkey_refs.append(hf)
-
-        try:
-            seq = QKeySequence(KEY_BIGEDIT)
-            sc = QShortcut(seq, edit)
-            sc.setContext(QtCore.Qt.WidgetShortcut)  # requires the edit itself to have focus
-            sc.activated.connect(_activate_bigedit)
-            self._hotkey_refs.append(sc)
-        except Exception:
-            pass
-
-        try:
-            v = self.scene().views()[0] if self.scene() and self.scene().views() else None
-            win = v.window() if v else None
-            if win and hasattr(win, "_register_bigedit_target"):
-                win._register_bigedit_target(edit, self, param_name)
-        except Exception:
-            pass
 
     # (Deliberately NO NodeItem.eventFilter override — avoids accidental second path.)
 

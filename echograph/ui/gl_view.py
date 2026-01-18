@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 from .gl_shaders import SHADERS
+from echograph.ui import hotkeys
 
 _ASSIMP_DLL_READY = False
 
