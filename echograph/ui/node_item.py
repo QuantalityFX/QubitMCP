@@ -2368,28 +2368,22 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         if cam_path.exists():
                             with open(cam_path, "r", encoding="utf-8") as f:
                                 cam = json.load(f)
-                                if bool(getattr(glv, "_mgl_cam_debug", False)):
-                                    print(
-                                    "[IMPORT] cam loaded ->", str(cam_path),
-                                    "keys:", sorted(list(cam.keys())),
-                                    "scale_multiplier:", cam.get("scale_multiplier", None),
-                                    "zoom:", cam.get("zoom", None),
-                                    flush=True
-)
-                            glv = getattr(parent, "gl_view", None)
+
+                            glv = None
+                            try:
+                                glv = getattr(parent, "gl_view", None)
+                            except Exception:
+                                glv = None
+
                             if glv is not None:
-                                # Apply AFTER splats upload (otherwise _mgl_upload_pending_splats re-frames and overwrites)
                                 if hasattr(glv, "_mgl_queue_camera_state"):
                                     glv._mgl_queue_camera_state(cam)
-                                else:
-                                    glv._mgl_pending_cam_state = cam
-                                    try:
-                                        glv.update()
-                                    except Exception:
-                                        pass
+                                elif hasattr(glv, "_mgl_apply_camera_state"):
+                                    glv._mgl_apply_camera_state(cam)
 
                 except Exception as exc2:
                     print("[IMPORT] camera restore failed:", exc2, flush=True)
+
 
                 return True
             except Exception as exc:

@@ -3057,6 +3057,30 @@ void main() {
             except Exception:
                 pass
 
+        # apply any queued camera state AFTER framing, BEFORE creating buffers/vaos
+        pending = getattr(self, "_mgl_pending_cam_state", None)
+        if isinstance(pending, dict):
+            self._mgl_pending_cam_state = None
+
+            dbg = bool(getattr(self, "_mgl_cam_debug", False))
+            if dbg:
+                print(
+                    "[CAMAP] BEFORE apply",
+                    "pending zoom:", pending.get("zoom", None),
+                    "pending scale_multiplier:", pending.get("scale_multiplier", None),
+                    flush=True
+                )
+
+            self._mgl_apply_camera_state(pending)
+
+            if dbg:
+                print(
+                    "[CAMAP] AFTER apply",
+                    "zoom now:", getattr(self, "_mgl_camera_zoom", None),
+                    "scale now:", getattr(self, "_mgl_scale_multiplier", None),
+                    flush=True
+                )
+
         # --- upload buffers ---
         self._mgl_splat_count = int(splats_np.shape[0])
 
@@ -3173,11 +3197,6 @@ void main() {
                         "in_pos", "in_col", "in_rad", "in_scale3", "in_rot"),
                     ],
                 )
-
-                pending = getattr(self, "_mgl_pending_cam_state", None)
-                if isinstance(pending, dict):
-                    self._mgl_pending_cam_state = None
-                    self._mgl_apply_camera_state(pending)
 
     def _mgl_update_grid(self) -> None:
         if not _HAS_MGL or self._mgl_ctx is None:
@@ -3977,7 +3996,26 @@ void main() {
 
     def _mgl_queue_camera_state(self, state: dict) -> None:
         """Queue camera state to apply after splats finish uploading/framing."""
-        self._mgl_pending_cam_state = state if isinstance(state, dict) else None
+        if not isinstance(state, dict):
+            return
+
+        self._mgl_pending_cam_state = dict(state)
+
+        dbg = bool(getattr(self, "_mgl_cam_debug", False))
+        if dbg:
+            print(
+                "[CAMQ] queued keys:", sorted(list(state.keys())),
+                "zoom:", state.get("zoom", None),
+                "scale_multiplier:", state.get("scale_multiplier", None),
+                "splat_scale:", state.get("splat_scale", None),
+                flush=True
+            )
+
+        try:
+            self.update()
+        except Exception:
+            pass
+
 
     def _mgl_apply_camera_state(self, state: dict) -> None:
         """Apply a camera/orbit state produced by _mgl_get_camera_state()."""
