@@ -4081,9 +4081,43 @@ void main() {
             try:
                 arr = np.array(t, dtype="f4")
                 if arr.shape == (4, 4):
-                    arc.Transform[...] = arr  # keep numpy matrix type
+                    arc.Transform[...] = arr
+
+                    # make sure arcball bounds match current widget size
+                    try:
+                        if hasattr(arc, "setBounds"):
+                            arc.setBounds(self.width(), self.height())
+                    except Exception:
+                        pass
+
+                    # sync orientation using a CLEAN rotation matrix (no scale/shear)
+                    try:
+                        R = arr[:3, :3].astype("f4", copy=False)
+
+                        # Orthonormalize R -> nearest proper rotation
+                        U, _, Vt = np.linalg.svd(R)
+                        Rn = (U @ Vt).astype("f4", copy=False)
+
+                        # Fix reflection if det < 0
+                        if np.linalg.det(Rn) < 0:
+                            U[:, -1] *= -1.0
+                            Rn = (U @ Vt).astype("f4", copy=False)
+
+                        if hasattr(arc, "LastRot") and arc.LastRot is not None:
+                            arc.LastRot[...] = Rn
+                        # some arcballs also use ThisRot
+                        if hasattr(arc, "ThisRot") and getattr(arc, "ThisRot") is not None:
+                            arc.ThisRot[...] = Rn
+
+                        if hasattr(arc, "isDragging"):
+                            arc.isDragging = False
+                    except Exception:
+                        pass
+
+                    # IMPORTANT: do NOT touch arc.click (it's a method)
             except Exception:
                 pass
+
 
         # optional extras
         try:
@@ -4100,6 +4134,73 @@ void main() {
             self.update()
         except Exception:
             pass
+
+    def _mgl_arcball_sync_after_set_transform(self) -> None:
+        arc = getattr(self, "_mgl_arcball", None)
+        if arc is None or not hasattr(arc, "Transform") or np is None:
+            return
+
+        try:
+            t = np.array(arc.Transform, dtype="f4", copy=False)
+            R = t[:3, :3]
+
+            # matrix -> quaternion (x,y,z,w)
+            tr = float(R[0, 0] + R[1, 1] + R[2, 2])
+            if tr > 0.0:
+                s = (tr + 1.0) ** 0.5 * 2.0
+                qw = 0.25 * s
+                qx = (R[2, 1] - R[1, 2]) / s
+                qy = (R[0, 2] - R[2, 0]) / s
+                qz = (R[1, 0] - R[0, 1]) / s
+            elif (R[0, 0] > R[1, 1]) and (R[0, 0] > R[2, 2]):
+                s = (1.0 + R[0, 0] - R[1, 1] - R[2, 2]) ** 0.5 * 2.0
+                qw = (R[2, 1] - R[1, 2]) / s
+                qx = 0.25 * s
+                qy = (R[0, 1] + R[1, 0]) / s
+                qz = (R[0, 2] + R[2, 0]) / s
+            elif R[1, 1] > R[2, 2]:
+                s = (1.0 + R[1, 1] - R[0, 0] - R[2, 2]) ** 0.5 * 2.0
+                qw = (R[0, 2] - R[2, 0]) / s
+                qx = (R[0, 1] + R[1, 0]) / s
+                qy = 0.25 * s
+                qz = (R[1, 2] + R[2, 1]) / s
+            else:
+                s = (1.0 + R[2, 2] - R[0, 0] - R[1, 1]) ** 0.5 * 2.0
+                qw = (R[1, 0] - R[0, 1]) / s
+                qx = (R[0, 2] + R[2, 0]) / s
+                qy = (R[1, 2] + R[2, 1]) / s
+                qz = 0.25 * s
+
+            q = np.array([qx, qy, qz, qw], dtype="f4")
+            n = float(np.linalg.norm(q))
+            if n > 1e-8:
+                q /= n
+
+            # Sync common arcball internal fields so first drag does not "jump"
+            for name in ("_qnow", "qnow", "_q_now", "q_now"):
+                if hasattr(arc, name):
+                    try: setattr(arc, name, q.copy())
+                    except Exception: pass
+
+            for name in ("_qdown", "qdown", "_q_down", "q_down"):
+                if hasattr(arc, name):
+                    try: setattr(arc, name, q.copy())
+                    except Exception: pass
+
+            # Also clear typical drag state if present
+            for name, val in (
+                ("_dragging", False),
+                ("dragging", False),
+                ("_isDragging", False),
+                ("isDragging", False),
+            ):
+                if hasattr(arc, name):
+                    try: setattr(arc, name, val)
+                    except Exception: pass
+
+        except Exception:
+            pass
+
 
     def _update_example_camera_basis(self) -> None:
         direction = self._example_cam_pos - self._example_cam_look
