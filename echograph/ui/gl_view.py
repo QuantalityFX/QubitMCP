@@ -4,14 +4,15 @@ import base64
 import ctypes
 import io
 import os
-from array import array
 import json
 import math
 import struct
+import time, tempfile
+from array import array
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
-import time, tempfile
+from .gl_shaders import SHADERS
 
 _ASSIMP_DLL_READY = False
 
@@ -2600,46 +2601,13 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             except Exception:
                 self._example_vao = None
 
+        # Example Vertex Debug Shader
         self._shader_error = ""
-        vertex_330 = """
-        #version 330
-        layout(location = 0) in vec3 a_position;
-        layout(location = 1) in vec4 a_color;
-        uniform mat4 u_proj;
-        uniform mat4 u_view;
-        uniform mat4 u_trans;
-        out vec4 v_color;
-        void main() {
-            gl_Position = u_proj * u_view * u_trans * vec4(a_position, 1.0);
-            v_color = a_color;
-        }
-        """
-        fragment_330 = """
-        #version 330
-        in vec4 v_color;
-        out vec4 fragColor;
-        void main() {
-            fragColor = v_color;
-        }
-        """
-        vertex_legacy = """
-        attribute vec3 a_position;
-        attribute vec4 a_color;
-        uniform mat4 u_proj;
-        uniform mat4 u_view;
-        uniform mat4 u_trans;
-        varying vec4 v_color;
-        void main() {
-            gl_Position = u_proj * u_view * u_trans * vec4(a_position, 1.0);
-            v_color = a_color;
-        }
-        """
-        fragment_legacy = """
-        varying vec4 v_color;
-        void main() {
-            gl_FragColor = v_color;
-        }
-        """
+        vertex_330 = SHADERS["example_vertex_330"]
+        fragment_330 = SHADERS["example_fragment_330"]
+        vertex_legacy = SHADERS["example_vertex_legacy"]
+        fragment_legacy = SHADERS["example_fragment_legacy"]
+
         bind_locations = {"a_position": 0, "a_color": 1}
         program = self._build_example_program(vertex_330, fragment_330, bind_locations)
         if program is None:
@@ -2760,67 +2728,13 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             self._mgl_ctx = moderngl.create_context()
             self._mgl_ctx.enable(moderngl.BLEND | moderngl.DEPTH_TEST)
             self._mgl_ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
-            mesh_vertex = """
-                #version 330
-                uniform mat4 Mvp;
-                in vec3 in_position;
-                in vec3 in_normal;
-                in vec2 in_uv;
-                out vec3 v_norm;
-                out vec3 v_vert;
-                out vec2 v_uv;
-                void main() {
-                    v_norm = in_normal;
-                    v_vert = in_position;
-                    v_uv = in_uv;
-                    gl_Position = Mvp * vec4(in_position, 1.0);
-                }
-            """
-            mesh_fragment = """
-                #version 330
-                uniform vec4 Color;
-                uniform vec3 Light;
-                uniform float LightIntensity;
-                uniform sampler2D Texture;
-                uniform int UseTexture;
-                uniform int UseLighting;
-                in vec3 v_norm;
-                in vec3 v_vert;
-                in vec2 v_uv;
-                out vec4 f_color;
-                void main() {
-                    float lum = 1.0;
-                    if (UseLighting == 1) {
-                        lum = -dot(normalize(v_norm), normalize(v_vert + Light));
-                        lum = acos(lum) / 3.14159265;
-                        lum = clamp(lum, 0.0, 1.0);
-                        lum = lum * lum;
-                        lum = smoothstep(0.0, 1.0, lum);
-                        lum *= smoothstep(0.0, 80.0, v_vert.z) * 0.3 + 0.7;
-                        lum = lum * 0.8 + 0.2;
-                        lum = 0.2 + lum * max(LightIntensity, 0.0);
-                        lum = clamp(lum, 0.0, 10.0);
-                    }
-                    vec4 base = (UseTexture == 1) ? texture(Texture, v_uv) : Color;
-                    f_color = vec4(base.rgb * lum, base.a);
-                }
-            """
-            grid_vertex = """
-                #version 330
-                uniform mat4 Mvp;
-                in vec3 in_position;
-                void main() {
-                    gl_Position = Mvp * vec4(in_position, 1.0);
-                }
-            """
-            grid_fragment = """
-                #version 330
-                uniform vec4 Color;
-                out vec4 f_color;
-                void main() {
-                    f_color = Color;
-                }
-            """
+
+            # mersh shaders
+            mesh_vertex = SHADERS["mesh_vertex"]
+            mesh_fragment = SHADERS["mesh_fragment"]
+            grid_vertex = SHADERS["grid_vertex"]
+            grid_fragment = SHADERS["grid_fragment"]
+
             self._mgl_prog = self._mgl_ctx.program(vertex_shader=mesh_vertex, fragment_shader=mesh_fragment)
             self._mgl_grid_prog = self._mgl_ctx.program(vertex_shader=grid_vertex, fragment_shader=grid_fragment)
             self._mgl_prog["Light"].value = (1.0, 1.0, 1.0)
@@ -2839,155 +2753,15 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
             self._mgl_update_grid()
             self._mgl_error = ""
 
-            splat_vertex = """
-#version 330
-uniform mat4 Mvp;
-uniform float SplatSizeMul;
+            # splat shaders
+            splat_vertex = SHADERS["splat_vertex"]
+            splat_fragment = SHADERS["splat_fragment"]
+            splatq_vertex = SHADERS["splatq_vertex"]
+            splatq_fragment = SHADERS["splatq_fragment"]
 
-in vec3 in_pos;
-in vec4 in_col;
-in float in_rad;
-
-out vec4 v_col;
-
-void main() {
-    vec4 clip = Mvp * vec4(in_pos, 1.0);
-    gl_Position = clip;
-
-    float w = max(1e-6, clip.w);
-    float px = in_rad * SplatSizeMul * (200.0 / w);
-    gl_PointSize = clamp(px, 1.0, 32.0);
-
-    v_col = in_col;
-}
-
-"""
-
-            splat_fragment = """
-#version 330
-in vec4 v_col;
-out vec4 f_color;
-void main() {
-    vec2 p = gl_PointCoord * 2.0 - 1.0;
-    float r2 = dot(p, p);
-    if (r2 > 1.0) discard;
-
-    // gaussian core
-    float a = exp(-r2 * 1.2);
-
-    // fade to zero near the edge to avoid bright ring
-    float edge = smoothstep(1.0, 0.7, r2);  // 1 at center -> 0 at rim
-    a *= edge;
-
-    f_color = vec4(v_col.rgb * a, a);
-}
-"""
-
-            # --- instanced-quad splat program (new path) ---
-            splatq_vertex = """
-#version 330
-
-uniform mat4 Proj;
-uniform mat4 View;
-uniform mat4 Model;
-uniform float SplatWorldScale;
-
-in vec2 in_corner;     // per-vertex (-1..1)
-in vec3 in_pos;        // per-instance
-in vec4 in_col;        // per-instance (rgb,a)
-in float in_rad;       // per-instance
-in vec3 in_scale3;     // per-instance (sx, sy, sz)
-in vec4 in_rot;        // per-instance quaternion (x,y,z,w)
-
-out vec2 v_uv;         // ellipse coords for gaussian test
-out vec4 v_col;
-
-vec3 quat_rotate(vec3 v, vec4 q) {
-    vec3 t = 2.0 * cross(q.xyz, v);
-    return v + q.w * t + cross(q.xyz, t);
-}
-
-void main() {
-    // center in view space
-    vec4 view_p = View * Model * vec4(in_pos, 1.0);
-
-    float s = in_rad * SplatWorldScale;
-
-    mat3 VM = mat3(View * Model);
-
-    // Build a view-space linear transform A that maps unit sphere -> ellipsoid axes in view space
-    // Columns are the 3 view-space axes scaled by anisotropy and overall scale.
-    vec3 ax = VM * quat_rotate(vec3(1.0, 0.0, 0.0), in_rot) * (in_scale3.x * s);
-    vec3 ay = VM * quat_rotate(vec3(0.0, 1.0, 0.0), in_rot) * (in_scale3.y * s);
-    vec3 az = VM * quat_rotate(vec3(0.0, 0.0, 1.0), in_rot) * (in_scale3.z * s);
-
-    // Project to screen plane (view x/y). Take only xy components of each column.
-    vec2 a0 = ax.xy;
-    vec2 a1 = ay.xy;
-    vec2 a2 = az.xy;
-
-    // 2x2 covariance in screen plane: C = sum_i (ai * ai^T)
-    float c00 = dot(a0, vec2(a0.x, 0.0)) + dot(a1, vec2(a1.x, 0.0)) + dot(a2, vec2(a2.x, 0.0));
-    float c01 = a0.x*a0.y + a1.x*a1.y + a2.x*a2.y;
-    float c11 = dot(a0, vec2(0.0, a0.y)) + dot(a1, vec2(0.0, a1.y)) + dot(a2, vec2(0.0, a2.y));
-
-    // Eigen decomposition of symmetric 2x2 [c00 c01; c01 c11]
-    float tr  = c00 + c11;
-    float det = c00*c11 - c01*c01;
-    float disc = max(tr*tr*0.25 - det, 0.0);
-    float root = sqrt(disc);
-
-    float l1 = max(tr*0.5 + root, 1e-12);
-    float l2 = max(tr*0.5 - root, 1e-12);
-
-    // Eigenvector for l1: (c01, l1 - c00) or fallback
-    vec2 v1 = vec2(c01, l1 - c00);
-    if (length(v1) < 1e-8) v1 = vec2(1.0, 0.0);
-    v1 = normalize(v1);
-    vec2 v2 = vec2(-v1.y, v1.x);
-
-    float r1 = sqrt(l1);
-    float r2 = sqrt(l2);
-
-    // Expand quad in view space using ellipse axes
-    view_p.xy += v1 * (in_corner.x * r1) + v2 * (in_corner.y * r2);
-
-    // Ellipse test in fragment: unit circle in in_corner space
-    v_uv = in_corner;
-    v_col = in_col;
-
-    gl_Position = Proj * view_p;
-}
-"""
-
-            splatq_fragment = """
-#version 330
-
-in vec2 v_uv;     // normalized quad coords (-1..1)
-in vec4 v_col;
-out vec4 f_color;
-
-void main() {
-    float r2 = dot(v_uv, v_uv);
-    if (r2 > 1.0) discard;
-
-    float a = exp(-r2 * 2.0);
-    a *= v_col.a;
-
-    if (a < 1e-4) discard;
-
-    f_color = vec4(v_col.rgb * a, a);
-}
-"""
-            self._mgl_splat_prog = self._mgl_ctx.program(
-                vertex_shader=splat_vertex,
-                fragment_shader=splat_fragment,
-            )
-
-            self._mgl_splatq_prog = self._mgl_ctx.program(
-                vertex_shader=splatq_vertex,
-                fragment_shader=splatq_fragment,
-            )
+            # 2) compile programs (this part already existed)
+            self._mgl_splat_prog  = self._mgl_ctx.program(vertex_shader=splat_vertex,  fragment_shader=splat_fragment)
+            self._mgl_splatq_prog = self._mgl_ctx.program(vertex_shader=splatq_vertex, fragment_shader=splatq_fragment)
 
             # Static quad corners (TRIANGLE_STRIP, 4 verts)
             quad = np.array([
