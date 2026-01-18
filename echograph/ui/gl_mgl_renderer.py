@@ -337,7 +337,14 @@ class MGLRendererMixin:
         self._dbgprint(dbg, "[MGL] prog ok", flush=True)
 
         aspect = self.width() / max(1.0, self.height())
-        proj = Matrix44.perspective_projection(self._mgl_fov, aspect, 0.1, 1000.0)
+        near = 0.1
+        try:
+            far = float(getattr(self, "_mgl_clip_far", 1000.0))
+        except Exception:
+            far = 1000.0
+        if far <= near:
+            far = near + 1.0
+        proj = Matrix44.perspective_projection(self._mgl_fov, aspect, near, far)
         self._dbgprint(dbg, "[MGL] proj ok", flush=True)
 
         self._dbgprint(dbg, "[MGL] before lookat", flush=True)
@@ -681,6 +688,11 @@ class MGLRendererMixin:
             state["projection"] = "perspective"
 
         try:
+            state["clip_far"] = float(getattr(self, "_mgl_clip_far", 1000.0))
+        except Exception:
+            state["clip_far"] = 1000.0
+
+        try:
             state["scale_multiplier"] = float(getattr(self, "_mgl_scale_multiplier", 1.0))
         except Exception:
             state["scale_multiplier"] = 1.0
@@ -828,6 +840,15 @@ class MGLRendererMixin:
             pass
 
         try:
+            clip_far = state.get("clip_far", None)
+            if clip_far is not None:
+                self._mgl_clip_far = float(clip_far)
+                if hasattr(self, "_mgl_clip_input") and self._mgl_clip_input is not None:
+                    self._mgl_clip_input.setText(str(int(self._mgl_clip_far)))
+        except Exception:
+            pass
+
+        try:
             self.update()
         except Exception:
             pass
@@ -953,6 +974,33 @@ class MGLRendererMixin:
         self._mgl_light_intensity = intensity
         if getattr(self, "_mgl_light_label", None) is not None:
             self._mgl_light_label.setText(f"Light {intensity:.2f}x")
+        self.update()
+
+    def _on_mgl_clip_changed(self, value: int | None = None) -> None:
+        if not self._use_moderngl:
+            return
+        if value is None:
+            text = ""
+            widget = getattr(self, "_mgl_clip_input", None)
+            if widget is not None:
+                try:
+                    text = widget.text().strip()
+                except Exception:
+                    text = ""
+            try:
+                value = int(text) if text else int(getattr(self, "_mgl_clip_far", 1000.0))
+            except Exception:
+                value = int(getattr(self, "_mgl_clip_far", 1000.0))
+        try:
+            clip_far = max(10.0, float(value))
+        except Exception:
+            clip_far = 1000.0
+        self._mgl_clip_far = clip_far
+        if getattr(self, "_mgl_clip_input", None) is not None:
+            try:
+                self._mgl_clip_input.setText(str(int(clip_far)))
+            except Exception:
+                pass
         self.update()
 
     def _on_mgl_wireframe_toggled(self, checked: bool) -> None:

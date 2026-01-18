@@ -664,6 +664,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._mgl_grid_size = 20.0
         self._mgl_grid_cells = 50
         self._mgl_fov = 60.0
+        self._mgl_clip_far = 1000.0
         self._mgl_camera_zoom = 2.0
         self._mgl_center = None
         self._mgl_base_center = None
@@ -855,6 +856,17 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 self._mgl_light_slider.valueChanged.connect(self._on_mgl_light_changed)
                 layout.addWidget(self._mgl_light_label, 0)
                 layout.addWidget(self._mgl_light_slider, 0)
+                self._mgl_clip_label = QtWidgets.QLabel("Clip")
+                self._mgl_clip_input = QtWidgets.QLineEdit(str(int(self._mgl_clip_far)))
+                self._mgl_clip_input.setFixedWidth(70)
+                self._mgl_clip_input.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+                try:
+                    self._mgl_clip_input.setValidator(QtGui.QIntValidator(100, 100000, self))
+                except Exception:
+                    pass
+                self._mgl_clip_input.editingFinished.connect(self._on_mgl_clip_changed)
+                layout.addWidget(self._mgl_clip_label, 0)
+                layout.addWidget(self._mgl_clip_input, 0)
                 self._mgl_wireframe_toggle = QtWidgets.QCheckBox("Wireframe")
                 self._mgl_wireframe_toggle.setChecked(bool(self._mgl_wireframe))
                 self._mgl_wireframe_toggle.toggled.connect(self._on_mgl_wireframe_toggled)
