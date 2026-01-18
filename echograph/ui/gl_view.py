@@ -1359,12 +1359,13 @@ class GraphGLView(QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWid
         self._use_example_pipeline = False
         self._model_load_pending = False
         self._render_paused = False
+        self._mgl_pending_cam_state = None
         self._drag_divisor = 13.0
         self._zoom_multiplier = 1.1
         self._min_cam_dist = 5.0
         self._max_cam_dist = 500.0
         self._orbit_sensitivity = 0.005
-
+        
         self._cam_yaw = 0.45
         self._cam_pitch = -0.35
         self._cam_dist = 10.0
@@ -3952,7 +3953,15 @@ void main() {
         except Exception:
             state["projection"] = "perspective"
 
+        try:
+            state["splat_scale"] = float(getattr(self, "_splat_scale", 1.0))
+        except Exception:
+            state["splat_scale"] = 1.0
         return state
+
+    def _mgl_queue_camera_state(self, state: dict) -> None:
+        """Queue camera state to apply after splats finish uploading/framing."""
+        self._mgl_pending_cam_state = state if isinstance(state, dict) else None
 
     def _mgl_apply_camera_state(self, state: dict) -> None:
         """Apply a camera/orbit state produced by _mgl_get_camera_state()."""
@@ -3974,7 +3983,18 @@ void main() {
                 self._mgl_center = [float(c[0]), float(c[1]), float(c[2])]
             except Exception:
                 pass
-            
+
+        # splat scale
+        try:
+            ss = state.get("splat_scale", None)
+            if ss is not None:
+                self._splat_scale = float(ss)
+                # if you have a slider widget, keep it in sync
+                if hasattr(self, "_splat_scale_slider") and self._splat_scale_slider is not None:
+                    self._splat_scale_slider.setValue(int(self._splat_scale * 100.0))
+        except Exception:
+            pass
+
         # arcball transform
         arc = getattr(self, "_mgl_arcball", None)
         t = state.get("arcball_transform", None)
@@ -3996,7 +4016,7 @@ void main() {
             self._mgl_projection = str(state.get("projection", getattr(self, "_mgl_projection", "perspective")))
         except Exception:
             pass
-
+        
         try:
             self.update()
         except Exception:
