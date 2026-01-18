@@ -3,6 +3,25 @@ from __future__ import annotations
 from echograph.qt_compat import QtCore, QtGui, QtWidgets
 from echograph.ui import hotkeys_config
 
+def copy_selected_nodes_from_window(win) -> bool:
+    try:
+        graph_scene = getattr(win, "scene", None)
+        if graph_scene and hasattr(graph_scene, "copy_selection_to_clipboard"):
+            return bool(graph_scene.copy_selection_to_clipboard())
+    except Exception:
+        pass
+    return False
+
+
+def paste_nodes_from_window(win) -> bool:
+    try:
+        graph_scene = getattr(win, "scene", None)
+        if graph_scene and hasattr(graph_scene, "paste_from_clipboard"):
+            return bool(graph_scene.paste_from_clipboard())
+    except Exception:
+        pass
+    return False
+
 def create_comment_group_from_window(win) -> bool:
     try:
         graph_scene = getattr(win, "scene", None)
@@ -12,7 +31,6 @@ def create_comment_group_from_window(win) -> bool:
     except Exception:
         pass
     return False
-
 
 def delete_selected_nodes_from_window(win) -> bool:
     try:

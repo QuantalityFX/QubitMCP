@@ -13,6 +13,10 @@ DEFAULT_KEYMAP = {
     "app_save": "Ctrl+S",
     "node_delete": "Del",
     "comment_group": "C",
+    "node_copy": "Ctrl+C",
+    "node_paste": "Ctrl+V",
+    "gl_frame": "F",
+    "gl_reset_view": "R",
 }
 
 def _log(*args):

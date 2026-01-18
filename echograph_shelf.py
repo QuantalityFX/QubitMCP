@@ -1896,6 +1896,28 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         except Exception:
             self._shortcut_node_delete = None
 
+        try:
+            self._shortcut_node_copy = hotkeys.add_shortcut(
+                self.view,
+                "node_copy",
+                "Ctrl+C",
+                lambda: actions.copy_selected_nodes_from_window(self),
+                context=QtCore.Qt.WidgetWithChildrenShortcut,
+            )
+        except Exception:
+            self._shortcut_node_copy = None
+
+        try:
+            self._shortcut_node_paste = hotkeys.add_shortcut(
+                self.view,
+                "node_paste",
+                "Ctrl+V",
+                lambda: actions.paste_nodes_from_window(self),
+                context=QtCore.Qt.WidgetWithChildrenShortcut,
+            )
+        except Exception:
+            self._shortcut_node_paste = None
+
         if HOST == "standalone":
             if not _SKIP_RECENT_DIALOG:
                 QtCore.QTimer.singleShot(0, self._maybe_show_recent_dialog)

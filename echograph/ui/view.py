@@ -472,10 +472,6 @@ class GraphView(QtWidgets.QGraphicsView):
 
     def keyPressEvent(self, e: QtGui.QKeyEvent):
         if self._mode_3d:
-            if e.key() == QtCore.Qt.Key_R:
-                self._reset_3d_camera()
-                self._apply_3d_projection()
-            e.accept()
             return
         def _unwrap_proxy(obj):
             if isinstance(obj, QtWidgets.QGraphicsProxyWidget):
@@ -564,26 +560,6 @@ class GraphView(QtWidgets.QGraphicsView):
             super().keyPressEvent(e)
             return
 
-        if e.matches(QtGui.QKeySequence.Copy):
-            sc = self.scene()
-            if (
-                sc
-                and hasattr(sc, "copy_selection_to_clipboard")
-                and not _text_widget_wants_copy()
-                and sc.copy_selection_to_clipboard()
-            ):
-                e.accept()
-                return
-        if e.matches(QtGui.QKeySequence.Paste):
-            sc = self.scene()
-            if (
-                sc
-                and hasattr(sc, "paste_from_clipboard")
-                and not _text_widget_wants_paste()
-                and sc.paste_from_clipboard()
-            ):
-                e.accept()
-                return
         super().keyPressEvent(e)
 
     def mousePressEvent(self, e):
