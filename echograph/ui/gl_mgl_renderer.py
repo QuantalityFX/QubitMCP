@@ -38,6 +38,7 @@ except Exception:
     _HAS_QT6 = False
 
 from .gl_arcball import _ArcBallUtil
+from .gl_debug_geo import debug_cube_wire_vertices
 from .gl_loaders import load_fbx_mesh_arrays_pyassimp
 from .gl_loaders import load_gltf_mesh_arrays
 from .gl_loaders import load_model
@@ -609,6 +610,26 @@ class MGLRendererMixin:
                 print("[SPLATQ] PAINT CRASH:", exc)
             traceback.print_exc()
 
+        if (
+            self._mgl_wireframe
+            and self._mgl_render_splats
+            and self._mgl_splat_bbox_vao is not None
+        ):
+            try:
+                self._mgl_ctx.line_width = float(self._mgl_wire_line_width)
+            except Exception:
+                pass
+            try:
+                self._mgl_grid_prog["Mvp"].write(mvp.astype("f4"))
+                self._mgl_grid_prog["Color"].value = self._mgl_wire_color
+            except Exception:
+                pass
+            self._mgl_splat_bbox_vao.render(moderngl.LINES)
+            try:
+                self._mgl_ctx.line_width = 1.0
+            except Exception:
+                pass
+
         # --- GRID ---
         if self._mgl_grid_vao is not None:
             self._mgl_grid_prog["Mvp"].write(mvp.astype("f4"))
@@ -1068,6 +1089,34 @@ class MGLRendererMixin:
         self._mgl_base_zoom = max(0.1, radius * 3.0)
         # simple "fit" distance
         self._mgl_camera_zoom = self._mgl_base_zoom
+
+        # build/update splat bounds wireframe (box)
+        if self._mgl_ctx is not None and self._mgl_grid_prog is not None:
+            try:
+                verts = np.array(debug_cube_wire_vertices(), dtype="f4").reshape(-1, 3)
+                size = (maxs - mins).astype("f4")
+                ctr = ((mins + maxs) * 0.5).astype("f4")
+                verts = verts * size + ctr
+
+                if self._mgl_splat_bbox_vao is not None:
+                    try:
+                        self._mgl_splat_bbox_vao.release()
+                    except Exception:
+                        pass
+                if self._mgl_splat_bbox_vbo is not None:
+                    try:
+                        self._mgl_splat_bbox_vbo.release()
+                    except Exception:
+                        pass
+                self._mgl_splat_bbox_vbo = self._mgl_ctx.buffer(verts.tobytes())
+                self._mgl_splat_bbox_vao = self._mgl_ctx.simple_vertex_array(
+                    self._mgl_grid_prog,
+                    self._mgl_splat_bbox_vbo,
+                    "in_position",
+                )
+            except Exception:
+                self._mgl_splat_bbox_vao = None
+                self._mgl_splat_bbox_vbo = None
 
         # update arcball size
         if self._mgl_arcball is not None:

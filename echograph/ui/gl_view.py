@@ -631,6 +631,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._mgl_vao = None
         self._mgl_grid_vao = None
         self._mgl_grid_vbo = None
+        self._mgl_splat_bbox_vao = None
+        self._mgl_splat_bbox_vbo = None
         self._mgl_mesh_vbos = []
         self._mgl_index_buffer = None
         self._mgl_mesh_path = ""
