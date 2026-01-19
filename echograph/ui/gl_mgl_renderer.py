@@ -316,6 +316,16 @@ class MGLRendererMixin:
         vao = payload.get("vao")
         if vao is None:
             return
+        prev_wireframe = False
+        prev_line_width = None
+        try:
+            prev_wireframe = bool(getattr(self._mgl_ctx, "wireframe", False))
+        except Exception:
+            prev_wireframe = False
+        try:
+            prev_line_width = getattr(self._mgl_ctx, "line_width")
+        except Exception:
+            prev_line_width = None
         base_color = payload.get("color")
         if base_color is None:
             color = (1.0, 1.0, 1.0, float(self._mgl_grid_alpha))
@@ -330,6 +340,14 @@ class MGLRendererMixin:
         except Exception:
             pass
         try:
+            try:
+                self._mgl_ctx.wireframe = True
+            except Exception:
+                pass
+            try:
+                self._mgl_ctx.line_width = float(getattr(self, "_mgl_wire_line_width", 1.0))
+            except Exception:
+                pass
             mode = payload.get("mode")
             if mode is None:
                 vao.render()
@@ -337,6 +355,16 @@ class MGLRendererMixin:
                 vao.render(mode)
         except Exception as exc:
             self._mgl_error = f"Scene grid draw failed: {exc}"
+        finally:
+            try:
+                self._mgl_ctx.wireframe = prev_wireframe
+            except Exception:
+                pass
+            if prev_line_width is not None:
+                try:
+                    self._mgl_ctx.line_width = prev_line_width
+                except Exception:
+                    pass
 
     def _mgl_build_mesh_entry(
         self,
