@@ -1419,6 +1419,8 @@ class GraphScene(QtWidgets.QGraphicsScene):
             return
         if delta.manhattanLength() <= 0.0:
             return
+        if getattr(self, "_comment_drag_active", False) and not getattr(group, "_dragging_header", False):
+            return
         self._moving_comment_group = True
         try:
             base_groups = [group]
