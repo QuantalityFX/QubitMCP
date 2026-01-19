@@ -97,6 +97,14 @@ def serialize_scene(scene) -> Dict[str, Any]:
         dst_port = getattr(e, "dst_port_name", None)
         if dst_port:
             entry["dst_port"] = dst_port
+        try:
+            pins = []
+            if hasattr(e, "pin_positions"):
+                pins = e.pin_positions()
+            if pins:
+                entry["pins"] = pins
+        except Exception:
+            pass
         edges.append(entry)
     comments = []
     if hasattr(scene, "comment_groups_data"):
@@ -210,11 +218,18 @@ def deserialize_scene(
     # 4) rebuild edges
     for ed in data.get("edges", []):
         try:
-            scene._add_edge_and_update_switch(
+            edge = scene._add_edge_and_update_switch(
                 ed["src"],
                 ed["dst"],
                 dst_port_name=ed.get("dst_port"),
             )
+            if edge is not None:
+                try:
+                    pins = ed.get("pins") or []
+                    if pins and hasattr(edge, "add_pins_from_positions"):
+                        edge.add_pins_from_positions(pins)
+                except Exception:
+                    pass
         except Exception:
             pass
 

@@ -1055,6 +1055,11 @@ class GraphScene(QtWidgets.QGraphicsScene):
     def _on_edge_removed(self, edge: 'EdgeItem'):
         dst = edge.dst; src = edge.src
         dst_kind = (dst.model.kind or "").lower()
+        try:
+            if hasattr(edge, "clear_pins"):
+                edge.clear_pins()
+        except Exception:
+            pass
 
         if dst_kind in ("append", "switch"):
             try:

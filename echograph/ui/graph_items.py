@@ -44,7 +44,27 @@ def _rounded_polyline_path(points, radius: float) -> QtGui.QPainterPath:
     return path
 
 
-def _elbow_path(start: QtCore.QPointF, end: QtCore.QPointF) -> QtGui.QPainterPath:
+def _lead_for_dx(total_dx: float) -> float:
+    abs_dx = abs(total_dx)
+    lead_base = 24.0
+    min_lead = 8.0
+    lead = lead_base
+    if abs_dx < lead_base * 2.0:
+        lead = max(min_lead, abs_dx * 0.35)
+    if total_dx > 0.0:
+        min_mid = max(10.0, lead_base * 0.5)
+        max_lead = (total_dx - min_mid) * 0.5
+        if max_lead < lead:
+            lead = max(min_lead, max_lead)
+    return max(min_lead, lead)
+
+
+def _elbow_path(
+    start: QtCore.QPointF,
+    end: QtCore.QPointF,
+    lead_out: float | None = None,
+    lead_in: float | None = None,
+) -> QtGui.QPainterPath:
     sx = float(start.x())
     sy = float(start.y())
     dx = float(end.x())
@@ -54,11 +74,11 @@ def _elbow_path(start: QtCore.QPointF, end: QtCore.QPointF) -> QtGui.QPainterPat
 
     abs_dx = abs(total_dx)
     abs_dy = abs(total_dy)
-    lead_base = 24.0
-    if abs_dx < lead_base * 2.0:
-        lead_base = max(12.0, abs_dx * 0.45)
-    lead_out = lead_base
-    lead_in = lead_base
+    if lead_out is None:
+        lead_out = _lead_for_dx(total_dx)
+    if lead_in is None:
+        lead_in = _lead_for_dx(total_dx)
+    lead_base = max(12.0, float(lead_out), float(lead_in))
 
     # Always step out to the right from the source pin, and approach the
     # destination pin from the left so the wire never bends back into a node.
@@ -95,6 +115,34 @@ def _elbow_path(start: QtCore.QPointF, end: QtCore.QPointF) -> QtGui.QPainterPat
     return _rounded_polyline_path(filtered, corner)
 
 
+class EdgePin(QtWidgets.QGraphicsEllipseItem):
+    def __init__(self, edge, scene_pos: QtCore.QPointF, radius: float = 5.0):
+        super().__init__(-radius, -radius, radius * 2.0, radius * 2.0)
+        self._edge = edge
+        self.setBrush(QtGui.QColor("#60a5fa"))
+        pen = QtGui.QPen(QtGui.QColor("#1f2937"), 1.0)
+        pen.setCosmetic(True)
+        self.setPen(pen)
+        self.setZValue(0.6)
+        self.setFlag(QtWidgets.QGraphicsItem.ItemIsMovable, True)
+        self.setFlag(QtWidgets.QGraphicsItem.ItemSendsGeometryChanges, True)
+        try:
+            self.setAcceptedMouseButtons(QtCore.Qt.LeftButton)
+        except Exception:
+            pass
+        self.setPos(scene_pos)
+
+    def itemChange(self, change, value):
+        if change == QtWidgets.QGraphicsItem.ItemPositionHasChanged:
+            edge = getattr(self, "_edge", None)
+            if edge is not None:
+                try:
+                    edge.updatePath()
+                except Exception:
+                    pass
+        return super().itemChange(change, value)
+
+
 def _gi_flag(enum_name, fallback_enum):
     if hasattr(QtWidgets.QGraphicsItem, enum_name):
         return getattr(QtWidgets.QGraphicsItem, enum_name)
@@ -127,6 +175,7 @@ class EdgeItem(QtWidgets.QGraphicsPathItem):
         self.pen_click  = QtGui.QPen(QtGui.QColor("#60a5fa"), 3.5)
         self._highlight = False
         self._click_highlight = False
+        self._pins = []
         self._apply_pen_state()
         self.setBrush(QtCore.Qt.NoBrush)
         self.updatePath()
@@ -158,6 +207,73 @@ class EdgeItem(QtWidgets.QGraphicsPathItem):
             self.setPen(self.pen_click)
         else:
             self.setPen(self.pen_path if self._highlight else self.pen_normal)
+
+    def _pin_sort_key(self, s: QtCore.QPointF, d: QtCore.QPointF, p: QtCore.QPointF) -> float:
+        vx = float(d.x() - s.x())
+        vy = float(d.y() - s.y())
+        denom = vx * vx + vy * vy
+        if denom <= 1e-6:
+            return float(p.y())
+        return ((p.x() - s.x()) * vx + (p.y() - s.y()) * vy) / denom
+
+    def _sorted_pin_points(self, s: QtCore.QPointF, d: QtCore.QPointF) -> list[QtCore.QPointF]:
+        pins = [p for p in self._pins if p is not None]
+        if not pins:
+            return []
+        points = []
+        for pin in pins:
+            try:
+                points.append(pin.scenePos())
+            except Exception:
+                pass
+        if not points:
+            return []
+        return sorted(points, key=lambda pt: self._pin_sort_key(s, d, pt))
+
+    def add_pin(self, scene_pos: QtCore.QPointF) -> None:
+        sc = self.scene()
+        if sc is None:
+            return
+        pin = EdgePin(self, scene_pos)
+        sc.addItem(pin)
+        self._pins.append(pin)
+        self.updatePath()
+
+    def pin_positions(self) -> list[list[float]]:
+        points = []
+        for pin in list(self._pins):
+            if pin is None:
+                continue
+            try:
+                pos = pin.scenePos()
+            except Exception:
+                continue
+            points.append([float(pos.x()), float(pos.y())])
+        return points
+
+    def add_pins_from_positions(self, positions) -> None:
+        sc = self.scene()
+        if sc is None:
+            return
+        for pos in positions or []:
+            try:
+                x = float(pos[0])
+                y = float(pos[1])
+            except Exception:
+                continue
+            self.add_pin(QtCore.QPointF(x, y))
+
+    def clear_pins(self) -> None:
+        sc = self.scene()
+        for pin in list(self._pins):
+            if pin is None:
+                continue
+            try:
+                if sc is not None:
+                    sc.removeItem(pin)
+            except Exception:
+                pass
+        self._pins = []
 
     def _attach_points(self):
         """
@@ -199,7 +315,27 @@ class EdgeItem(QtWidgets.QGraphicsPathItem):
 
     def updatePath(self):
         s, d = self._attach_points()
-        self.setPath(_elbow_path(s, d))
+        pins = self._sorted_pin_points(s, d)
+        if not pins:
+            self.setPath(_elbow_path(s, d))
+            return
+
+        def _append_path(base: QtGui.QPainterPath, extra: QtGui.QPainterPath) -> QtGui.QPainterPath:
+            if hasattr(base, "connectPath"):
+                base.connectPath(extra)
+            else:
+                base.addPath(extra)
+            return base
+
+        first = pins[0]
+        path = _elbow_path(s, first, lead_out=_lead_for_dx(first.x() - s.x()), lead_in=0.0)
+        for idx in range(len(pins) - 1):
+            seg = _elbow_path(pins[idx], pins[idx + 1], lead_out=0.0, lead_in=0.0)
+            path = _append_path(path, seg)
+        last = pins[-1]
+        tail = _elbow_path(last, d, lead_out=0.0, lead_in=_lead_for_dx(d.x() - last.x()))
+        path = _append_path(path, tail)
+        self.setPath(path)
 
     def hoverEnterEvent(self, e):
         # Thicken a bit + show tooltip with port names if available
@@ -231,6 +367,10 @@ class EdgeItem(QtWidgets.QGraphicsPathItem):
             sc = self.scene()
             if sc and hasattr(sc, "_edges"):
                 try:
+                    self.clear_pins()
+                except Exception:
+                    pass
+                try:
                     sc.removeItem(self)
                 except Exception:
                     pass
@@ -245,6 +385,14 @@ class EdgeItem(QtWidgets.QGraphicsPathItem):
                     pass
                 e.accept()
                 return
+        if e.button() == QtCore.Qt.LeftButton and (e.modifiers() & QtCore.Qt.ControlModifier):
+            try:
+                self.add_pin(QtCore.QPointF(e.scenePos()))
+            except Exception:
+                self.add_pin(e.scenePos())
+            self.setClickHighlighted(True)
+            e.accept()
+            return
         if e.button() == QtCore.Qt.LeftButton:
             sc = self.scene()
             if sc and hasattr(sc, "_edges"):
