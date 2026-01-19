@@ -16,6 +16,9 @@ DEFAULT_KEYMAP = {
     "node_copy": "Ctrl+C",
     "node_paste": "Ctrl+V",
     "node_menu": "Tab",
+    "view_mode_2d": "1",
+    "view_mode_split": "2",
+    "view_mode_3d": "3",
     "gl_frame": "F",
     "gl_reset_view": "R",
 }

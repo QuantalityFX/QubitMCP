@@ -1920,6 +1920,39 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             self._shortcut_node_menu = None
 
         try:
+            self._shortcut_view_mode_2d = hotkeys.add_shortcut(
+                self,
+                "view_mode_2d",
+                "1",
+                lambda: self._set_view_mode_from_hotkey("2d"),
+                context=QtCore.Qt.WidgetWithChildrenShortcut,
+            )
+        except Exception:
+            self._shortcut_view_mode_2d = None
+
+        try:
+            self._shortcut_view_mode_split = hotkeys.add_shortcut(
+                self,
+                "view_mode_split",
+                "2",
+                lambda: self._set_view_mode_from_hotkey("split"),
+                context=QtCore.Qt.WidgetWithChildrenShortcut,
+            )
+        except Exception:
+            self._shortcut_view_mode_split = None
+
+        try:
+            self._shortcut_view_mode_3d = hotkeys.add_shortcut(
+                self,
+                "view_mode_3d",
+                "3",
+                lambda: self._set_view_mode_from_hotkey("3d"),
+                context=QtCore.Qt.WidgetWithChildrenShortcut,
+            )
+        except Exception:
+            self._shortcut_view_mode_3d = None
+
+        try:
             self._shortcut_node_delete = hotkeys.add_shortcut(
                 self.view,
                 "node_delete",
@@ -2512,6 +2545,17 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             scene_pos = QtCore.QPointF(0, 0)
         try:
             sc.show_create_dialog_at(scene_pos)
+        except Exception:
+            pass
+
+    def _set_view_mode_from_hotkey(self, mode: str) -> None:
+        try:
+            if actions._focus_is_text_input():
+                return
+        except Exception:
+            pass
+        try:
+            self._set_view_mode(mode)
         except Exception:
             pass
 
