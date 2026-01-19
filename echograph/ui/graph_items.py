@@ -297,9 +297,7 @@ class EdgePin(QtWidgets.QGraphicsEllipseItem):
         painter.drawEllipse(rect)
 
     def mousePressEvent(self, e):
-        if e.button() == QtCore.Qt.LeftButton:
-            if not (e.modifiers() & QtCore.Qt.ShiftModifier) and not self.isSelected():
-                _deselect_node_items(self.scene())
+        sc = self.scene()
         if e.button() == QtCore.Qt.LeftButton and (e.modifiers() & QtCore.Qt.ControlModifier):
             edge = getattr(self, "_edge", None)
             if edge is not None and hasattr(edge, "remove_pin"):
@@ -307,7 +305,6 @@ class EdgePin(QtWidgets.QGraphicsEllipseItem):
                     edge.remove_pin(self)
                 except Exception:
                     pass
-            sc = self.scene()
             if sc is not None:
                 try:
                     sc.removeItem(self)
@@ -319,6 +316,60 @@ class EdgePin(QtWidgets.QGraphicsEllipseItem):
                     pass
             e.accept()
             return
+        shift_like = False
+        if e.button() == QtCore.Qt.LeftButton:
+            shift_like = bool(e.modifiers() & QtCore.Qt.ShiftModifier)
+            if not shift_like:
+                try:
+                    shift_like = bool(QtWidgets.QApplication.keyboardModifiers() & QtCore.Qt.ShiftModifier)
+                except Exception:
+                    shift_like = False
+            if not shift_like and sc is not None:
+                shift_like = getattr(sc, "_shift_select_snapshot", None) is not None
+        if e.button() == QtCore.Qt.LeftButton and shift_like:
+            snapshot = None
+            if sc is not None:
+                snapshot = getattr(sc, "_shift_select_snapshot", None)
+            if snapshot is None:
+                try:
+                    snapshot = list(sc.selectedItems()) if sc is not None else []
+                except Exception:
+                    snapshot = []
+            was_selected = False
+            for it in snapshot:
+                if it is self:
+                    was_selected = True
+                    break
+            self.setSelected(not was_selected)
+            for it in snapshot:
+                if it is self:
+                    continue
+                name = getattr(it, "__class__", type(it)).__name__
+                if name in ("NodeItem", "CommentGroup", "EdgePin"):
+                    try:
+                        it.setSelected(True)
+                    except Exception:
+                        pass
+            if sc is not None:
+                try:
+                    sc._shift_select_snapshot = None
+                except Exception:
+                    pass
+                try:
+                    sc._group_drag_active = False
+                except Exception:
+                    pass
+            edge = getattr(self, "_edge", None)
+            if edge is not None and self.isSelected():
+                try:
+                    edge.setClickHighlighted(True)
+                except Exception:
+                    pass
+            e.accept()
+            return
+        if e.button() == QtCore.Qt.LeftButton:
+            if not shift_like and not self.isSelected():
+                _deselect_node_items(sc)
         if e.button() == QtCore.Qt.LeftButton:
             edge = getattr(self, "_edge", None)
             if edge is not None and hasattr(edge, "_select_clicked"):
@@ -373,7 +424,7 @@ def _deselect_node_items(scene) -> None:
         return
     for it in items:
         name = getattr(it, "__class__", type(it)).__name__
-        if name in ("NodeItem", "CommentGroup"):
+        if name in ("NodeItem", "CommentGroup", "EdgePin"):
             try:
                 it.setSelected(False)
             except Exception:

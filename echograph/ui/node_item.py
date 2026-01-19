@@ -3233,7 +3233,17 @@ class NodeItem(QtWidgets.QGraphicsObject):
             shift = bool(mods & QtCore.Qt.ShiftModifier)
             ctrl = bool(mods & QtCore.Qt.ControlModifier)
             if scene and not shift:
-                if hasattr(scene, "_clear_edge_click_highlight"):
+                keep_edge_highlight = False
+                if self.isSelected():
+                    try:
+                        for it in list(scene.selectedItems()):
+                            name = getattr(it, "__class__", type(it)).__name__
+                            if name == "EdgePin":
+                                keep_edge_highlight = True
+                                break
+                    except Exception:
+                        keep_edge_highlight = False
+                if not keep_edge_highlight and hasattr(scene, "_clear_edge_click_highlight"):
                     try:
                         scene._clear_edge_click_highlight()
                     except Exception:
