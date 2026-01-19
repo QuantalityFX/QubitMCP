@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import ctypes
 import io
+import re
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 from .gl_types import ModelData, MeshArrays, SubMeshData
@@ -146,6 +147,141 @@ def _pyassimp_texture_to_image(texture: object) -> Optional[object]:
     except Exception:
         return None
 
+def _is_ascii_fbx(path: Path) -> bool:
+    try:
+        with open(path, "rb") as f:
+            head = f.read(256)
+    except Exception:
+        return False
+    if head.startswith(b"Kaydara FBX Binary"):
+        return False
+    try:
+        text = head.decode("utf-8", errors="ignore")
+    except Exception:
+        return False
+    if "FBXHeaderExtension" in text:
+        return True
+    text = text.lstrip()
+    if text.startswith(";") and "FBX" in text:
+        return True
+    if "FBX 7." in text:
+        return True
+    return False
+
+
+def _find_matching_brace(text: str, start: int) -> int:
+    depth = 0
+    for i in range(start, len(text)):
+        ch = text[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i
+    return -1
+
+
+def _fbx_extract_array(block: str, key: str, as_int: bool) -> List[float] | List[int]:
+    pattern = re.compile(rf"{re.escape(key)}\s*:\s*(?:\*\d+\s*)?\{{(.*?)\}}", re.S)
+    match = pattern.search(block)
+    if not match:
+        return []
+    data = match.group(1)
+    if "a:" in data:
+        data = data.split("a:", 1)[1]
+    if as_int:
+        return [int(v) for v in re.findall(r"-?\d+", data)]
+    return [float(v) for v in re.findall(r"[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?", data)]
+
+
+def _load_fbx_ascii_mesh_arrays(path: Path) -> MeshArrays:
+    if np is None:
+        raise RuntimeError("numpy unavailable")
+    raw = path.read_text(encoding="utf-8", errors="ignore")
+    geo_pattern = re.compile(r'Geometry:\s*[^\n]*"Mesh"[^\n]*\{', re.IGNORECASE)
+
+    points_all: List["np.ndarray"] = []
+    normals_all: List["np.ndarray"] = []
+    uvs_all: List["np.ndarray"] = []
+    submeshes: List[SubMeshData] = []
+
+    for match in geo_pattern.finditer(raw):
+        brace_start = raw.find("{", match.end() - 1)
+        if brace_start < 0:
+            continue
+        brace_end = _find_matching_brace(raw, brace_start)
+        if brace_end < 0:
+            continue
+        block = raw[brace_start + 1 : brace_end]
+        verts = _fbx_extract_array(block, "Vertices", as_int=False)
+        poly_idx = _fbx_extract_array(block, "PolygonVertexIndex", as_int=True)
+        if not verts or not poly_idx:
+            continue
+        if len(verts) % 3 != 0:
+            verts = verts[: (len(verts) // 3) * 3]
+        vertices = np.asarray(verts, dtype="f4").reshape(-1, 3)
+        if vertices.size == 0:
+            continue
+        max_idx = vertices.shape[0] - 1
+
+        tri_indices: List[int] = []
+        polygon: List[int] = []
+        for idx in poly_idx:
+            end_poly = False
+            if idx < 0:
+                idx = -idx - 1
+                end_poly = True
+            if idx < 0 or idx > max_idx:
+                polygon = []
+                if end_poly:
+                    continue
+            else:
+                polygon.append(int(idx))
+            if end_poly:
+                if len(polygon) >= 3:
+                    root = polygon[0]
+                    for i in range(1, len(polygon) - 1):
+                        tri_indices.extend([root, polygon[i], polygon[i + 1]])
+                polygon = []
+
+        if not tri_indices:
+            continue
+
+        tri_indices_arr = np.asarray(tri_indices, dtype=np.int64)
+        tri_vertices = vertices[tri_indices_arr].reshape(-1, 3)
+        tri = tri_vertices.reshape(-1, 3, 3)
+        n = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+        lengths = np.linalg.norm(n, axis=1)
+        lengths[lengths < 1e-6] = 1.0
+        n = (n.T / lengths).T
+        tri_normals = np.repeat(n[:, None, :], 3, axis=1).reshape(-1, 3)
+        tri_uvs = np.zeros((tri_vertices.shape[0], 2), dtype="f4")
+
+        points_all.append(tri_vertices.astype("f4"))
+        normals_all.append(tri_normals.astype("f4"))
+        uvs_all.append(tri_uvs)
+        submeshes.append(
+            SubMeshData(
+                points=tri_vertices.astype("f4"),
+                normals=tri_normals.astype("f4"),
+                uvs=tri_uvs,
+            )
+        )
+
+    if not points_all:
+        raise RuntimeError("FBX ASCII mesh empty")
+
+    points = np.concatenate(points_all, axis=0)
+    normals = np.concatenate(normals_all, axis=0)
+    uvs = np.concatenate(uvs_all, axis=0)
+    return MeshArrays(
+        points=points,
+        normals=normals,
+        uvs=uvs,
+        submeshes=submeshes if submeshes else None,
+    )
+
 def load_fbx_mesh_arrays_pyassimp(path: Path) -> MeshArrays:
 
     if np is None:
@@ -155,6 +291,8 @@ def load_fbx_mesh_arrays_pyassimp(path: Path) -> MeshArrays:
         import pyassimp
         from pyassimp import material as ai_material
     except Exception as exc:
+        if _is_ascii_fbx(path):
+            return _load_fbx_ascii_mesh_arrays(path)
         raise RuntimeError(f"pyassimp unavailable: {exc}")
     try:
         from pyassimp import postprocess as ai_post
@@ -288,6 +426,8 @@ def load_fbx_mesh_arrays_pyassimp(path: Path) -> MeshArrays:
                 submeshes=submeshes if submeshes else None,
             )
     except Exception as exc:
+        if _is_ascii_fbx(path):
+            return _load_fbx_ascii_mesh_arrays(path)
         raise RuntimeError(str(exc))
 
 
