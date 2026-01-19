@@ -3162,8 +3162,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 and self.isSelected()
                 and isinstance(value, QtCore.QPointF)
             ):
-                selected_nodes = [it for it in sc.selectedItems() if isinstance(it, NodeItem)]
-                if len(selected_nodes) > 1:
+                selected_items = list(sc.selectedItems())
+                selected_nodes = [it for it in selected_items if isinstance(it, NodeItem)]
+                selected_pins = [
+                    it for it in selected_items
+                    if getattr(it, "__class__", type(it)).__name__ == "EdgePin"
+                ]
+                if (len(selected_nodes) + len(selected_pins)) > 1:
                     delta = value - self.pos()
                     if isinstance(delta, QtCore.QPointF) and delta.manhattanLength() > 0:
                         sc._group_move_lock = True
@@ -3172,6 +3177,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
                                 if it is self:
                                     continue
                                 it.setPos(it.pos() + delta)
+                            for it in selected_pins:
+                                try:
+                                    it.setPos(it.pos() + delta)
+                                except Exception:
+                                    pass
                         finally:
                             sc._group_move_lock = False
 
@@ -3254,7 +3264,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         if it is self:
                             continue
                         name = getattr(it, "__class__", type(it)).__name__
-                        if isinstance(it, NodeItem) or name == "CommentGroup":
+                        if isinstance(it, NodeItem) or name in ("CommentGroup", "EdgePin"):
                             try:
                                 it.setSelected(True)
                             except Exception:
@@ -3291,7 +3301,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                                 continue
                             if isinstance(it, NodeItem):
                                 it.setSelected(False)
-                            elif name == "CommentGroup":
+                            elif name in ("CommentGroup", "EdgePin"):
                                 it.setSelected(False)
                         self.setSelected(True)
 
@@ -3306,8 +3316,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     pass
             else:
                 if scene:
-                    selected_nodes = [it for it in scene.selectedItems() if isinstance(it, NodeItem)]
-                    scene._group_drag_active = len(selected_nodes) > 1
+                    selected_items = list(scene.selectedItems())
+                    selected_nodes = [it for it in selected_items if isinstance(it, NodeItem)]
+                    selected_pins = [
+                        it for it in selected_items
+                        if getattr(it, "__class__", type(it)).__name__ == "EdgePin"
+                    ]
+                    scene._group_drag_active = (len(selected_nodes) + len(selected_pins)) > 1
                 try:
                     self.clicked.emit(self.model)
                 except Exception:

@@ -272,12 +272,19 @@ class CommentGroup(QtWidgets.QGraphicsObject):
                 self._drag_peer_starts = []
                 sc = self.scene()
                 if sc:
+                    try:
+                        sc._group_drag_active = False
+                    except Exception:
+                        pass
+                if sc:
                     peers = [
                         it for it in sc.selectedItems()
                         if isinstance(it, CommentGroup)
                     ]
                     if not peers:
                         peers = [self]
+                    elif self in peers:
+                        peers = [self] + [it for it in peers if it is not self]
                 else:
                     peers = [self]
                 for peer in peers:
@@ -364,6 +371,16 @@ class CommentGroup(QtWidgets.QGraphicsObject):
             node = scene._node_items.get(name)
             if node:
                 node.setSelected(True)
+        group_rect = self.mapRectToScene(self._rect)
+        for edge in getattr(scene, "_edges", []):
+            for pin in list(getattr(edge, "_pins", [])):
+                if pin is None:
+                    continue
+                try:
+                    if group_rect.contains(pin.scenePos()):
+                        pin.setSelected(True)
+                except Exception:
+                    pass
 
     def _hit_test_resize(self, pos: QtCore.QPointF) -> str | None:
         margin = 8.0
@@ -1380,10 +1397,79 @@ class GraphScene(QtWidgets.QGraphicsScene):
             return
         self._moving_comment_group = True
         try:
-            for name in group.members():
-                it = self._node_items.get(name)
-                if it:
-                    it.setPos(it.pos() + delta)
+            base_groups = [group]
+            try:
+                if getattr(group, "_dragging_header", False):
+                    peers = [peer for peer, _start in getattr(group, "_drag_peer_starts", []) or []]
+                    if peers:
+                        base_groups = []
+                        for peer in peers:
+                            if peer not in base_groups:
+                                base_groups.append(peer)
+            except Exception:
+                pass
+
+            moved_nodes = set()
+            moved_pins = set()
+
+            def _move_nodes_for_group(grp):
+                for name in grp.members():
+                    if name in moved_nodes:
+                        continue
+                    it = self._node_items.get(name)
+                    if it:
+                        it.setPos(it.pos() + delta)
+                        moved_nodes.add(name)
+
+            def _move_pins_for_rect(rect):
+                for edge in getattr(self, "_edges", []):
+                    for pin in list(getattr(edge, "_pins", [])):
+                        if pin is None:
+                            continue
+                        pid = id(pin)
+                        if pid in moved_pins:
+                            continue
+                        try:
+                            if rect.contains(pin.scenePos()):
+                                pin.setPos(pin.pos() + delta)
+                                moved_pins.add(pid)
+                        except Exception:
+                            pass
+
+            base_rects = []
+            for grp in base_groups:
+                try:
+                    rect = grp.mapRectToScene(grp._rect)
+                except Exception:
+                    rect = None
+                base_rects.append((grp, rect))
+
+            for grp, rect in base_rects:
+                _move_nodes_for_group(grp)
+                if rect is not None:
+                    _move_pins_for_rect(rect)
+
+            nested_groups = []
+            for cg in list(getattr(self, "_comment_groups", [])):
+                if cg in base_groups:
+                    continue
+                try:
+                    child_rect = cg.mapRectToScene(cg._rect)
+                except Exception:
+                    continue
+                for _grp, rect in base_rects:
+                    if rect is not None and rect.contains(child_rect):
+                        nested_groups.append((cg, child_rect))
+                        break
+
+            for cg, child_rect in nested_groups:
+                try:
+                    cg.setPos(cg.pos() + delta)
+                except Exception:
+                    pass
+                _move_nodes_for_group(cg)
+                if child_rect is not None:
+                    _move_pins_for_rect(child_rect)
         finally:
             self._moving_comment_group = False
 

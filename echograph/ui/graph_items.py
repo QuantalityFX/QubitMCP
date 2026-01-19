@@ -197,6 +197,13 @@ class EdgePin(QtWidgets.QGraphicsEllipseItem):
         pen.setCosmetic(True)
         self.setPen(pen)
         self.setZValue(0.6)
+        try:
+            self.setFlag(QtWidgets.QGraphicsItem.ItemIsSelectable, True)
+        except Exception:
+            try:
+                self.setFlag(QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+            except Exception:
+                pass
         self.setFlag(QtWidgets.QGraphicsItem.ItemIsMovable, True)
         self.setFlag(QtWidgets.QGraphicsItem.ItemSendsGeometryChanges, True)
         try:
@@ -220,6 +227,30 @@ class EdgePin(QtWidgets.QGraphicsEllipseItem):
             self.setBrush(color)
 
     def itemChange(self, change, value):
+        if change == QtWidgets.QGraphicsItem.ItemPositionChange:
+            sc = self.scene()
+            if (
+                sc
+                and getattr(sc, "_group_drag_active", False)
+                and not getattr(sc, "_group_move_lock", False)
+                and self.isSelected()
+                and isinstance(value, QtCore.QPointF)
+            ):
+                delta = value - self.pos()
+                if isinstance(delta, QtCore.QPointF) and delta.manhattanLength() > 0:
+                    sc._group_move_lock = True
+                    try:
+                        for it in list(sc.selectedItems()):
+                            if it is self:
+                                continue
+                            name = getattr(it, "__class__", type(it)).__name__
+                            if name in ("EdgePin", "NodeItem"):
+                                try:
+                                    it.setPos(it.pos() + delta)
+                                except Exception:
+                                    pass
+                    finally:
+                        sc._group_move_lock = False
         if change == QtWidgets.QGraphicsItem.ItemPositionHasChanged:
             edge = getattr(self, "_edge", None)
             if edge is not None:
@@ -236,7 +267,7 @@ class EdgePin(QtWidgets.QGraphicsEllipseItem):
 
     def mousePressEvent(self, e):
         if e.button() == QtCore.Qt.LeftButton:
-            if not (e.modifiers() & QtCore.Qt.ShiftModifier):
+            if not (e.modifiers() & QtCore.Qt.ShiftModifier) and not self.isSelected():
                 _deselect_node_items(self.scene())
         if e.button() == QtCore.Qt.LeftButton and (e.modifiers() & QtCore.Qt.ControlModifier):
             edge = getattr(self, "_edge", None)
@@ -251,6 +282,10 @@ class EdgePin(QtWidgets.QGraphicsEllipseItem):
                     sc.removeItem(self)
                 except Exception:
                     pass
+                try:
+                    sc._group_drag_active = False
+                except Exception:
+                    pass
             e.accept()
             return
         if e.button() == QtCore.Qt.LeftButton:
@@ -261,8 +296,33 @@ class EdgePin(QtWidgets.QGraphicsEllipseItem):
                 except Exception:
                     pass
             super().mousePressEvent(e)
+            sc = self.scene()
+            if sc is not None:
+                try:
+                    selected = list(sc.selectedItems())
+                except Exception:
+                    selected = []
+                count = 0
+                for it in selected:
+                    name = getattr(it, "__class__", type(it)).__name__
+                    if name in ("NodeItem", "EdgePin"):
+                        count += 1
+                try:
+                    sc._group_drag_active = count > 1
+                except Exception:
+                    pass
             return
         super().mousePressEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == QtCore.Qt.LeftButton:
+            sc = self.scene()
+            if sc is not None:
+                try:
+                    sc._group_drag_active = False
+                except Exception:
+                    pass
+        super().mouseReleaseEvent(e)
 
 
 def _gi_flag(enum_name, fallback_enum):
