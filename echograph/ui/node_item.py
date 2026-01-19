@@ -3101,11 +3101,27 @@ class NodeItem(QtWidgets.QGraphicsObject):
         # --- Kind badge (type pill) ---
         try:
             kb_y = 38  # under the title line
-            kb = QtCore.QRectF(self.width - 90, kb_y, 80, 16)
-            p.setBrush(QtGui.QBrush(QtGui.QColor("#3b82f6")))
+            kb = QtCore.QRectF(10, kb_y, 80, 16)
+            p.setBrush(QtGui.QBrush(QtGui.QColor("#d1d5db")))
             p.setPen(QtCore.Qt.NoPen)
-            p.drawRoundedRect(kb, 8, 8)
-            p.setPen(QtGui.QPen(QtGui.QColor("#ffffff")))
+            r = 8.0
+            rl = 1.0
+            path = QtGui.QPainterPath()
+            path.moveTo(kb.left() + rl, kb.top())
+            path.lineTo(kb.right() - r, kb.top())
+            path.quadTo(kb.right(), kb.top(), kb.right(), kb.top() + r)
+            path.lineTo(kb.right(), kb.bottom() - r)
+            path.quadTo(kb.right(), kb.bottom(), kb.right() - r, kb.bottom())
+            path.lineTo(kb.left() + rl, kb.bottom())
+            path.quadTo(kb.left(), kb.bottom(), kb.left(), kb.bottom() - rl)
+            path.lineTo(kb.left(), kb.top() + rl)
+            path.quadTo(kb.left(), kb.top(), kb.left() + rl, kb.top())
+            path.closeSubpath()
+            p.drawPath(path)
+            badge_font = p.font()
+            badge_font.setBold(True)
+            p.setFont(badge_font)
+            p.setPen(QtGui.QPen(QtGui.QColor("#111111")))
             badge = (self.model.kind or "node").upper()
             p.drawText(kb.adjusted(6, 1, -6, -2), QtCore.Qt.AlignCenter, badge)
         except Exception as e:
