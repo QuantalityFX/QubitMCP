@@ -637,6 +637,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 p for p in params
                 if (p.get("name", "") or "").strip().lower() not in ("texture", "thumbnail")
             ]
+        elif kind in ("scene", "scene_assembly", "scene_outliner"):
+            params = [
+                p for p in params
+                if (p.get("name", "") or "").strip().lower() not in ("thumbnail", "thumbnail_rev")
+            ]
         n_params = len(params)
         params_h = n_params * self._PARAM_ROW_H
 
@@ -691,6 +696,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
         elif kind in ("scene", "scene_assembly", "scene_outliner"):
             body_h = self._PARAM_ROW_H * 2 + self._PADDING
             node_w = self._BASE_W
+            thumb = (self._param_value("thumbnail") or "").strip()
+            if thumb and os.path.exists(thumb):
+                inner_w = max(40, int(node_w) - 12)
+                body_h += inner_w + self._PADDING
         elif kind in ("image_collection", "imagecollection"):
             body_h = self._IMG_CTRL_H + self._IMG_CANVAS_H
             node_w = max(self._BASE_W, self._IMG_CANVAS_W)
@@ -1324,6 +1333,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     pname_key = (pname or "").strip().lower()
                     if kind == "import" and pname_key in ("texture", "thumbnail", "camera_state"):
                         continue
+                    if kind in ("scene", "scene_assembly", "scene_outliner") and pname_key in ("thumbnail", "thumbnail_rev"):
+                        continue
                     has_port = pname_key in named_inputs
                     wired = has_port and pname_key in wired_inputs
 
@@ -1729,7 +1740,30 @@ class NodeItem(QtWidgets.QGraphicsObject):
         if not callable(handler):
             QtWidgets.QMessageBox.warning(_top_level_parent_for_dialog(), "Scene", "3D view is not available.")
             return
-        handler(assets)
+        try:
+            handler(assets)
+        except Exception as exc:
+            import traceback
+            print("[SCENE] open_scene_assets failed:", exc, flush=True)
+            print(traceback.format_exc(), flush=True)
+            return
+
+        # restore camera from sidecar json next to thumbnail (if present)
+        try:
+            thumb = (self._param_value("thumbnail") or "").strip()
+            if thumb:
+                cam_path = Path(thumb).with_suffix(".json")
+                if cam_path.exists():
+                    with open(cam_path, "r", encoding="utf-8") as f:
+                        cam = json.load(f)
+                    glv = getattr(parent, "gl_view", None)
+                    if glv is not None:
+                        if hasattr(glv, "_mgl_queue_camera_state"):
+                            glv._mgl_queue_camera_state(cam)
+                        elif hasattr(glv, "_mgl_apply_camera_state"):
+                            glv._mgl_apply_camera_state(cam)
+        except Exception as exc:
+            print("[SCENE] camera restore failed:", exc, flush=True)
 
     def _build_scene_summary(self, y_cursor: int) -> int:
         assets = self._collect_scene_assets()
@@ -1745,11 +1779,34 @@ class NodeItem(QtWidgets.QGraphicsObject):
             detail += ")"
             btn_enabled = True
 
+        thumb_path = (self._param_value("thumbnail") or "").strip()
+        thumb_widget = None
+        if thumb_path and os.path.exists(thumb_path):
+            inner_w = max(40, int(self.width) - 12)
+            thumb_widget = QtWidgets.QLabel()
+            thumb_widget.setAlignment(QtCore.Qt.AlignCenter)
+            thumb_widget.setFixedSize(inner_w, inner_w)
+
+            pixmap = QtGui.QPixmap(thumb_path)
+            if not pixmap.isNull():
+                scaled = pixmap.scaled(
+                    inner_w, inner_w,
+                    QtCore.Qt.KeepAspectRatioByExpanding,
+                    QtCore.Qt.SmoothTransformation
+                )
+                x = max(0, (scaled.width() - inner_w) // 2)
+                y = max(0, (scaled.height() - inner_w) // 2)
+                cropped = scaled.copy(x, y, inner_w, inner_w)
+                thumb_widget.setPixmap(cropped)
+
         row = QtWidgets.QWidget()
         row.setAttribute(QtCore.Qt.WA_TranslucentBackground)
         outer = QtWidgets.QVBoxLayout(row)
         outer.setContentsMargins(6, 0, 6, 0)
         outer.setSpacing(4)
+
+        if thumb_widget:
+            outer.addWidget(thumb_widget, 0)
 
         label = QtWidgets.QLabel(detail)
         label.setStyleSheet("color:#cbd5e1;")
@@ -1763,6 +1820,17 @@ class NodeItem(QtWidgets.QGraphicsObject):
         btn.setEnabled(btn_enabled)
         btn.clicked.connect(lambda _=False: self._open_scene_assets())
         btn_row.addWidget(btn, 0, QtCore.Qt.AlignLeft)
+
+        snap_btn = QtWidgets.QToolButton()
+        icon = node_icons._screengrab_icon()
+        if icon:
+            snap_btn.setIcon(QtGui.QIcon(icon))
+        snap_btn.setToolTip("Capture thumbnail from 3D view")
+        snap_btn.setEnabled(btn_enabled)
+        snap_btn.setFixedSize(24, 24)
+        snap_btn.clicked.connect(lambda _=False: self._on_scene_screengrab_clicked())
+        btn_row.addWidget(snap_btn, 0, QtCore.Qt.AlignLeft)
+
         btn_row.addStretch(1)
         outer.addLayout(btn_row)
 
@@ -2121,6 +2189,192 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
             self._schedule_rebuild()
 
+
+        QtCore.QTimer.singleShot(30, capture)
+
+    def _on_scene_screengrab_clicked(self):
+        assets = self._collect_scene_assets()
+        if not assets:
+            return
+
+        parent = _top_level_parent_for_dialog()
+        if parent is None:
+            return
+
+        gl_view = getattr(parent, "gl_view", None)
+        if gl_view is None or not hasattr(gl_view, "grabFramebuffer"):
+            return
+
+        # Ensure the 3D view is actually visible before grabbing
+        # Do not change the UI mode. Only grab if the GL view is already visible.
+        try:
+            if hasattr(gl_view, "isVisible") and not gl_view.isVisible():
+                print("[SNAP] gl_view not visible, skipping capture", flush=True)
+                return
+        except Exception:
+            pass
+
+        print("[SNAP] scene screengrab clicked ->", getattr(self.model, "name", ""), flush=True)
+
+        def capture():
+            print("[SNAP] scene capture start", flush=True)
+            glv = gl_view
+            if glv is None:
+                return
+
+            try:
+                if hasattr(glv, "makeCurrent"):
+                    glv.makeCurrent()
+
+                image = glv.grabFramebuffer()
+
+                try:
+                    ctx = glv.context()
+                    if ctx is not None:
+                        f = ctx.functions()
+                        if f is not None and hasattr(f, "glFinish"):
+                            f.glFinish()
+                except Exception:
+                    pass
+
+            except Exception:
+                return
+
+            finally:
+                try:
+                    if hasattr(glv, "doneCurrent"):
+                        glv.doneCurrent()
+                except Exception:
+                    pass
+
+            if image is None or image.isNull():
+                return
+
+            # output thumbnail size (1:1)
+            OUT_W = 1024
+            OUT_H = 1024
+
+            w = int(image.width())
+            h = int(image.height())
+            if w <= 0 or h <= 0:
+                return
+
+            # centered square crop (top/bottom if tall, left/right if wide)
+            side = min(w, h)
+            x = max(0, (w - side) // 2)
+            y = max(0, (h - side) // 2)
+            cropped = image.copy(x, y, side, side)
+            if cropped.isNull():
+                return
+
+            # scale to fixed thumbnail size, no letterbox
+            out = cropped.scaled(
+                OUT_W, OUT_H,
+                QtCore.Qt.IgnoreAspectRatio,
+                QtCore.Qt.SmoothTransformation
+            )
+
+            scene = self.scene()
+            scene_path = getattr(scene, "_filename", None) if scene is not None else None
+
+            # parent can be missing depending on how/when capture() runs
+            parent = _top_level_parent_for_dialog()
+            workflow_path = getattr(parent, "_current_path", None) if parent is not None else None
+            workflow_path = workflow_path or scene_path
+
+            if not workflow_path:
+                return
+
+            base_dir = Path(workflow_path).parent
+            snapshots_dir = base_dir / "snapshots"
+            try:
+                snapshots_dir.mkdir(exist_ok=True, parents=True)
+            except Exception:
+                return
+
+            key_parts = []
+            for asset in assets:
+                path = (asset.get("path") or "").strip()
+                if not path:
+                    continue
+                p = str(Path(path).expanduser())
+                try:
+                    ap = str(Path(p).resolve())
+                except Exception:
+                    ap = os.path.abspath(p)
+                try:
+                    st = os.stat(ap)
+                    stamp = f"{int(st.st_mtime)}|{int(st.st_size)}"
+                except Exception:
+                    stamp = "nostat"
+                tex = (asset.get("texture") or "").strip()
+                tex_key = ""
+                if tex:
+                    try:
+                        tex_key = str(Path(tex).expanduser().resolve())
+                    except Exception:
+                        tex_key = os.path.abspath(tex)
+                key_parts.append(f"{ap}|{stamp}|{tex_key}")
+
+            key_parts.sort()
+            if key_parts:
+                key_src = "|".join(key_parts).encode("utf-8", errors="ignore")
+                key = hashlib.sha1(key_src).hexdigest()[:10]
+            else:
+                key = "scene"
+
+            scene_name = (getattr(self.model, "name", "") or "scene").strip()
+            safe_name = re.sub(r"[^A-Za-z0-9_-]+", "_", scene_name).strip("_") or "scene"
+            snap_stamp = time.strftime("%Y%m%d_%H%M%S")
+            image_path = snapshots_dir / f"scene_{safe_name}_{key}_{snap_stamp}.png"
+
+            ok = False
+            try:
+                ok = out.save(str(image_path))
+            except Exception as exc:
+                print("[SNAP] out.save exception:", exc, flush=True)
+                ok = False
+
+            if not ok:
+                print("[SNAP] out.save FAILED ->", str(image_path), flush=True)
+                print("[SNAP] snapshots_dir exists:", snapshots_dir.exists(), "dir:", str(snapshots_dir), flush=True)
+                return
+
+            thumb = str(Path(image_path).resolve())
+            print("[SNAP] scene saved ->", thumb, flush=True)
+
+            try:
+                QtGui.QPixmapCache.remove(thumb)
+            except Exception:
+                pass
+
+            self._set_param_value("thumbnail", thumb)
+            print("[SNAP] param thumbnail set ->", self._param_value("thumbnail"), flush=True)
+            self._set_param_value("thumbnail_rev", str(time.time()))
+            try:
+                self.update()                 # repaint this node item
+            except Exception:
+                pass
+            try:
+                s = self.scene()
+                if s is not None and hasattr(s, "update"):
+                    s.update()
+            except Exception:
+                pass
+            # save camera state beside the thumbnail: same name, .json
+            try:
+                parent = _top_level_parent_for_dialog()
+                glv = getattr(parent, "gl_view", None) if parent is not None else None
+                if glv is not None and hasattr(glv, "_mgl_get_camera_state"):
+                    cam = glv._mgl_get_camera_state()
+                    cam_path = Path(thumb).with_suffix(".json")
+                    with open(cam_path, "w", encoding="utf-8") as f:
+                        json.dump(cam, f, indent=2)
+                    print("[SNAP] scene cam saved ->", str(cam_path), flush=True)
+            except Exception as exc:
+                print("[SNAP] scene cam save failed:", exc, flush=True)
+
+            self._schedule_rebuild()
 
         QtCore.QTimer.singleShot(30, capture)
 
