@@ -54,8 +54,9 @@ def _elbow_path(start: QtCore.QPointF, end: QtCore.QPointF) -> QtGui.QPainterPat
 
     abs_dx = abs(total_dx)
     abs_dy = abs(total_dy)
-    lead_out = max(36.0, min(160.0, abs_dx * 0.32))
-    lead_in = max(36.0, min(160.0, abs_dx * 0.32))
+    lead_base = max(18.0, min(60.0, math.sqrt(abs_dx) * 2.2))
+    lead_out = lead_base
+    lead_in = lead_base
 
     # Always step out to the right from the source pin, and approach the
     # destination pin from the left so the wire never bends back into a node.
