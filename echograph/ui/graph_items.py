@@ -93,14 +93,22 @@ def _elbow_points(
     else:
         in_pt = QtCore.QPointF(dx, dy - dir_end * lead_in)
 
-    tight_thresh = max(10.0, lead_base * 0.6)
+    tight_thresh = max(16.0, lead_base * 0.9)
     points = [QtCore.QPointF(sx, sy), out_pt]
 
     if axis_start == axis_end:
         if axis_start == "x":
             mid_y = (sy + dy) * 0.5
             mid_run = abs(in_pt.x() - out_pt.x())
-            if mid_run < tight_thresh or abs_dy < tight_thresh:
+            if abs_dy < tight_thresh:
+                points.extend(
+                    [
+                        QtCore.QPointF(in_pt.x(), sy),
+                        QtCore.QPointF(in_pt.x(), dy),
+                        QtCore.QPointF(dx, dy),
+                    ]
+                )
+            elif mid_run < tight_thresh:
                 points.extend([QtCore.QPointF(out_pt.x(), dy), QtCore.QPointF(dx, dy)])
             else:
                 points.extend(
@@ -114,7 +122,15 @@ def _elbow_points(
         else:
             mid_x = (sx + dx) * 0.5
             mid_run = abs(in_pt.y() - out_pt.y())
-            if mid_run < tight_thresh or abs_dx < tight_thresh:
+            if abs_dx < tight_thresh:
+                points.extend(
+                    [
+                        QtCore.QPointF(sx, in_pt.y()),
+                        QtCore.QPointF(dx, in_pt.y()),
+                        QtCore.QPointF(dx, dy),
+                    ]
+                )
+            elif mid_run < tight_thresh:
                 points.extend([QtCore.QPointF(dx, out_pt.y()), QtCore.QPointF(dx, dy)])
             else:
                 points.extend(
@@ -126,11 +142,17 @@ def _elbow_points(
                     ]
                 )
     else:
-        if axis_start == "x":
-            mid = QtCore.QPointF(out_pt.x(), in_pt.y())
+        if abs_dx < tight_thresh or abs_dy < tight_thresh:
+            if axis_start == "x":
+                points.extend([QtCore.QPointF(out_pt.x(), dy), QtCore.QPointF(dx, dy)])
+            else:
+                points.extend([QtCore.QPointF(dx, out_pt.y()), QtCore.QPointF(dx, dy)])
         else:
-            mid = QtCore.QPointF(in_pt.x(), out_pt.y())
-        points.extend([mid, in_pt, QtCore.QPointF(dx, dy)])
+            if axis_start == "x":
+                mid = QtCore.QPointF(out_pt.x(), in_pt.y())
+            else:
+                mid = QtCore.QPointF(in_pt.x(), out_pt.y())
+            points.extend([mid, in_pt, QtCore.QPointF(dx, dy)])
     filtered = []
     for p in points:
         if filtered and abs(filtered[-1].x() - p.x()) <= 1e-6 and abs(filtered[-1].y() - p.y()) <= 1e-6:
@@ -546,11 +568,12 @@ class EdgeItem(QtWidgets.QGraphicsPathItem):
                 accum.extend(list(more))
             return accum
 
+        pin_lead = 24.0
         first = pins[0]
         axis_end = getattr(first, "axis_hint", None) or _axis_for_segment(s, first)
         dir_end = _dir_for_axis(s, first, axis_end)
         lead_out = _lead_for_delta(first.x() - s.x())
-        lead_in = _lead_for_delta(_delta_for_axis(s, first, axis_end))
+        lead_in = pin_lead
         poly_points = []
         seg_points, _ = _elbow_points(
             s,
@@ -578,10 +601,8 @@ class EdgeItem(QtWidgets.QGraphicsPathItem):
             p1 = pins[idx + 1]
             axis_start = getattr(p0, "axis_hint", None) or _axis_for_segment(p0, p1)
             axis_end = getattr(p1, "axis_hint", None) or _axis_for_segment(p0, p1)
-            delta_start = _delta_for_axis(p0, p1, axis_start)
-            delta_end = _delta_for_axis(p0, p1, axis_end)
-            lead_out = _lead_for_delta(delta_start)
-            lead_in = _lead_for_delta(delta_end)
+            lead_out = pin_lead
+            lead_in = pin_lead
             dir_start = _dir_for_axis(p0, p1, axis_start)
             dir_end = _dir_for_axis(p0, p1, axis_end)
             seg_points, _ = _elbow_points(
@@ -609,7 +630,7 @@ class EdgeItem(QtWidgets.QGraphicsPathItem):
         last = pins[-1]
         axis_start = getattr(last, "axis_hint", None) or _axis_for_segment(last, d)
         dir_start = _dir_for_axis(last, d, axis_start)
-        lead_out = _lead_for_delta(_delta_for_axis(last, d, axis_start))
+        lead_out = pin_lead
         lead_in = _lead_for_delta(d.x() - last.x())
         seg_points, _ = _elbow_points(
             last,
