@@ -52,24 +52,34 @@ def _elbow_path(start: QtCore.QPointF, end: QtCore.QPointF) -> QtGui.QPainterPat
     total_dx = dx - sx
     total_dy = dy - sy
 
-    lead = max(40.0, min(180.0, abs(total_dx) * 0.35))
-    sign = 1.0 if total_dx >= 0.0 else -1.0
-    out_x = sx + sign * lead
-    in_x = dx - sign * lead
-    if (sign > 0.0 and out_x > in_x) or (sign < 0.0 and out_x < in_x):
-        mid_x = (sx + dx) * 0.5
-    else:
-        mid_x = (out_x + in_x) * 0.5
+    abs_dx = abs(total_dx)
+    abs_dy = abs(total_dy)
+    lead_out = max(36.0, min(160.0, abs_dx * 0.32))
+    lead_in = max(36.0, min(160.0, abs_dx * 0.32))
+
+    # Always step out to the right from the source pin, and approach the
+    # destination pin from the left so the wire never bends back into a node.
+    out_x = sx + lead_out
+    in_x = dx - lead_in
+    mid_y = (sy + dy) * 0.5
 
     points = [
         QtCore.QPointF(sx, sy),
-        QtCore.QPointF(mid_x, sy),
-        QtCore.QPointF(mid_x, dy),
+        QtCore.QPointF(out_x, sy),
+        QtCore.QPointF(out_x, mid_y),
+        QtCore.QPointF(in_x, mid_y),
+        QtCore.QPointF(in_x, dy),
         QtCore.QPointF(dx, dy),
     ]
-    span = min(abs(total_dx), abs(total_dy))
-    corner = max(6.0, min(28.0, span * 0.25))
-    return _rounded_polyline_path(points, corner)
+    filtered = []
+    for p in points:
+        if filtered and abs(filtered[-1].x() - p.x()) <= 1e-6 and abs(filtered[-1].y() - p.y()) <= 1e-6:
+            continue
+        filtered.append(p)
+
+    span = min(abs_dx, abs_dy, lead_out, lead_in)
+    corner = max(6.0, min(24.0, span * 0.4))
+    return _rounded_polyline_path(filtered, corner)
 
 
 def _gi_flag(enum_name, fallback_enum):
