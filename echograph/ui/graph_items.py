@@ -65,15 +65,25 @@ def _elbow_path(start: QtCore.QPointF, end: QtCore.QPointF) -> QtGui.QPainterPat
     out_x = sx + lead_out
     in_x = dx - lead_in
     mid_y = (sy + dy) * 0.5
+    mid_run = abs(in_x - out_x)
+    tight_thresh = max(10.0, lead_base * 0.6)
 
-    points = [
-        QtCore.QPointF(sx, sy),
-        QtCore.QPointF(out_x, sy),
-        QtCore.QPointF(out_x, mid_y),
-        QtCore.QPointF(in_x, mid_y),
-        QtCore.QPointF(in_x, dy),
-        QtCore.QPointF(dx, dy),
-    ]
+    if mid_run < tight_thresh or abs_dy < tight_thresh:
+        points = [
+            QtCore.QPointF(sx, sy),
+            QtCore.QPointF(out_x, sy),
+            QtCore.QPointF(out_x, dy),
+            QtCore.QPointF(dx, dy),
+        ]
+    else:
+        points = [
+            QtCore.QPointF(sx, sy),
+            QtCore.QPointF(out_x, sy),
+            QtCore.QPointF(out_x, mid_y),
+            QtCore.QPointF(in_x, mid_y),
+            QtCore.QPointF(in_x, dy),
+            QtCore.QPointF(dx, dy),
+        ]
     filtered = []
     for p in points:
         if filtered and abs(filtered[-1].x() - p.x()) <= 1e-6 and abs(filtered[-1].y() - p.y()) <= 1e-6:
