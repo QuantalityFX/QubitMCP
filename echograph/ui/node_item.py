@@ -3227,9 +3227,37 @@ class NodeItem(QtWidgets.QGraphicsObject):
             self._lmb_started_wire = False
 
             scene = self.scene()
-            multi_sel = bool(e.modifiers() & (QtCore.Qt.ShiftModifier | QtCore.Qt.ControlModifier))
+            mods = e.modifiers()
+            shift = bool(mods & QtCore.Qt.ShiftModifier)
+            ctrl = bool(mods & QtCore.Qt.ControlModifier)
             if scene:
-                if multi_sel:
+                if shift:
+                    snapshot = getattr(scene, "_shift_select_snapshot", None)
+                    if snapshot is None:
+                        try:
+                            snapshot = list(scene.selectedItems())
+                        except Exception:
+                            snapshot = []
+                    was_selected = False
+                    for it in snapshot:
+                        if it is self:
+                            was_selected = True
+                            break
+                    self.setSelected(not was_selected)
+                    for it in snapshot:
+                        if it is self:
+                            continue
+                        name = getattr(it, "__class__", type(it)).__name__
+                        if isinstance(it, NodeItem) or name == "CommentGroup":
+                            try:
+                                it.setSelected(True)
+                            except Exception:
+                                pass
+                    try:
+                        scene._shift_select_snapshot = None
+                    except Exception:
+                        pass
+                elif ctrl:
                     self.setSelected(not self.isSelected())
                 else:
                     if not self.isSelected():

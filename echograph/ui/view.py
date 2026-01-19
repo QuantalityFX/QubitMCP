@@ -583,6 +583,19 @@ class GraphView(QtWidgets.QGraphicsView):
                 self.viewport().setCursor(QtCore.Qt.SizeVerCursor)
                 e.accept()
                 return
+        if (not self._mode_3d) and e.button() == QtCore.Qt.LeftButton:
+            sc = self.scene()
+            if sc is not None:
+                if e.modifiers() & QtCore.Qt.ShiftModifier:
+                    try:
+                        sc._shift_select_snapshot = list(sc.selectedItems())
+                    except Exception:
+                        sc._shift_select_snapshot = []
+                else:
+                    try:
+                        sc._shift_select_snapshot = None
+                    except Exception:
+                        pass
         if e.button() == QtCore.Qt.MiddleButton:
             self._mm_dragging = True
             self._mm_last_pos = e.pos()
