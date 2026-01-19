@@ -321,9 +321,16 @@ class EdgePin(QtWidgets.QGraphicsEllipseItem):
             shift_like = bool(e.modifiers() & QtCore.Qt.ShiftModifier)
             if not shift_like:
                 try:
+                    shift_like = bool(e.buttonDownModifiers() & QtCore.Qt.ShiftModifier)
+                except Exception:
+                    pass
+            if not shift_like:
+                try:
                     shift_like = bool(QtWidgets.QApplication.keyboardModifiers() & QtCore.Qt.ShiftModifier)
                 except Exception:
                     shift_like = False
+            if not shift_like and sc is not None:
+                shift_like = bool(getattr(sc, "_shift_down_on_press", False))
             if not shift_like and sc is not None:
                 shift_like = getattr(sc, "_shift_select_snapshot", None) is not None
         if e.button() == QtCore.Qt.LeftButton and shift_like:
@@ -331,16 +338,19 @@ class EdgePin(QtWidgets.QGraphicsEllipseItem):
             if sc is not None:
                 snapshot = getattr(sc, "_shift_select_snapshot", None)
             if snapshot is None:
-                try:
-                    snapshot = list(sc.selectedItems()) if sc is not None else []
-                except Exception:
-                    snapshot = []
+                if sc is not None:
+                    snapshot = getattr(sc, "_last_click_selection", None)
+                if snapshot is None:
+                    try:
+                        snapshot = list(sc.selectedItems()) if sc is not None else []
+                    except Exception:
+                        snapshot = []
             was_selected = False
             for it in snapshot:
                 if it is self:
                     was_selected = True
-                    break
-            self.setSelected(not was_selected)
+            want_selected = not was_selected
+            self.setSelected(want_selected)
             for it in snapshot:
                 if it is self:
                     continue
@@ -360,11 +370,12 @@ class EdgePin(QtWidgets.QGraphicsEllipseItem):
                 except Exception:
                     pass
             edge = getattr(self, "_edge", None)
-            if edge is not None and self.isSelected():
+            if edge is not None and want_selected:
                 try:
                     edge.setClickHighlighted(True)
                 except Exception:
                     pass
+            self._skip_release_super = True
             e.accept()
             return
         if e.button() == QtCore.Qt.LeftButton:
@@ -399,6 +410,15 @@ class EdgePin(QtWidgets.QGraphicsEllipseItem):
     def mouseReleaseEvent(self, e):
         if e.button() == QtCore.Qt.LeftButton:
             sc = self.scene()
+            if getattr(self, "_skip_release_super", False):
+                self._skip_release_super = False
+                if sc is not None:
+                    try:
+                        sc._group_drag_active = False
+                    except Exception:
+                        pass
+                e.accept()
+                return
             if sc is not None:
                 try:
                     sc._group_drag_active = False
