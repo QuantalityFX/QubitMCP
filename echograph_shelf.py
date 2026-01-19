@@ -2214,6 +2214,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 {
                     "path": path,
                     "texture": entry.get("texture") or None,
+                    "node": entry.get("node") or "",
                 }
             )
 
@@ -2253,6 +2254,14 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 gl_view._on_frame_clicked()
         except Exception:
             print("[open_scene_assets] fallback failed:\n" + traceback.format_exc(), flush=True)
+
+    def set_scene_asset_visible(self, owner: str, visible: bool) -> None:
+        gl_view = getattr(self, "gl_view", None)
+        if gl_view is None:
+            return
+        handler = getattr(gl_view, "set_scene_asset_visible", None)
+        if callable(handler):
+            handler(owner, visible)
 
 
     def open_splat_model(self, ply_path: str) -> None:

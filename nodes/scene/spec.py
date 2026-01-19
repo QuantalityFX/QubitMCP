@@ -4,14 +4,47 @@ from pathlib import Path
 from typing import Dict, List
 
 try:
-    from PySide6 import QtWidgets, QtCore
+    from PySide6 import QtWidgets, QtCore, QtGui
 except Exception:
-    from PySide2 import QtWidgets, QtCore  # type: ignore
+    from PySide2 import QtWidgets, QtCore, QtGui  # type: ignore
 
 from nodes.core import Spec
 
 
 SUPPORTED_EXTS = {".fbx", ".obj", ".gltf", ".glb", ".ply", ".stl", ".off", ".om"}
+
+_EYE_ICON_CACHE = {}
+
+
+def _eye_icon(visible: bool) -> QtGui.QIcon:
+    key = "on" if visible else "off"
+    icon = _EYE_ICON_CACHE.get(key)
+    if icon is not None:
+        return icon
+    size = 14
+    pm = QtGui.QPixmap(size, size)
+    pm.fill(QtCore.Qt.transparent)
+    painter = QtGui.QPainter(pm)
+    painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+    base_color = QtGui.QColor("#e2e8f0")
+    pen = QtGui.QPen(base_color)
+    pen.setWidthF(1.2)
+    painter.setPen(pen)
+    painter.setBrush(QtCore.Qt.NoBrush)
+    rect = QtCore.QRectF(1.6, 4.0, size - 3.2, size - 8.0)
+    painter.drawEllipse(rect)
+    if visible:
+        painter.setBrush(base_color)
+        painter.drawEllipse(QtCore.QPointF(size * 0.5, size * 0.5), 2.0, 2.0)
+    else:
+        hide_pen = QtGui.QPen(QtGui.QColor("#fca5a5"))
+        hide_pen.setWidthF(1.4)
+        painter.setPen(hide_pen)
+        painter.drawLine(3.0, size - 3.0, size - 3.0, 3.0)
+    painter.end()
+    icon = QtGui.QIcon(pm)
+    _EYE_ICON_CACHE[key] = icon
+    return icon
 
 
 def _param_value(model, name: str) -> str:
@@ -193,6 +226,31 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     outliner.setMaximumHeight(140)
     layout.addWidget(outliner, 0)
 
+    def _hidden_set() -> set:
+        raw = getattr(node, "_scene_hidden", None)
+        if isinstance(raw, set):
+            return raw
+        if isinstance(raw, (list, tuple)):
+            out = {str(x) for x in raw if x}
+            setattr(node, "_scene_hidden", out)
+            return out
+        out = set()
+        setattr(node, "_scene_hidden", out)
+        return out
+
+    def _apply_visibility(name: str, visible: bool, btn: QtWidgets.QToolButton | None = None):
+        hidden = _hidden_set()
+        if visible:
+            hidden.discard(name)
+        else:
+            hidden.add(name)
+        if btn is not None:
+            btn.setIcon(_eye_icon(visible))
+        win = card.window()
+        handler = getattr(win, "set_scene_asset_visible", None) if win is not None else None
+        if callable(handler):
+            handler(name, visible)
+
     def _refresh(scene_override=None):
         outliner.clear()
         scene = scene_override if scene_override is not None else getattr(card, "_graph_scene", None)
@@ -245,12 +303,37 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             outliner.addItem(empty)
             return
 
+        hidden = _hidden_set()
         for idx, entry in enumerate(rows, start=1):
-            label = f"{idx}. {entry['name']}"
-            row = QtWidgets.QListWidgetItem(label)
+            name = entry["name"]
+            visible = name not in hidden
+            row_widget = QtWidgets.QWidget()
+            row_layout = QtWidgets.QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(4, 0, 4, 0)
+            row_layout.setSpacing(6)
+
+            eye_btn = QtWidgets.QToolButton()
+            eye_btn.setAutoRaise(True)
+            eye_btn.setCheckable(True)
+            eye_btn.setChecked(visible)
+            eye_btn.setIcon(_eye_icon(visible))
+            eye_btn.setToolTip("Toggle visibility")
+            eye_btn.toggled.connect(
+                lambda checked, n=name, b=eye_btn: _apply_visibility(n, checked, b)
+            )
+            row_layout.addWidget(eye_btn, 0)
+
+            label = QtWidgets.QLabel(f"{idx}. {name}")
+            label.setStyleSheet("color:#e2e8f0;")
+            row_layout.addWidget(label, 1)
+
+            row_item = QtWidgets.QListWidgetItem()
             if entry.get("path"):
-                row.setToolTip(entry["path"])
-            outliner.addItem(row)
+                row_item.setToolTip(entry["path"])
+            row_item.setSizeHint(row_widget.sizeHint())
+            outliner.addItem(row_item)
+            outliner.setItemWidget(row_item, row_widget)
+            _apply_visibility(name, visible, eye_btn)
 
     def _connect(scene):
         if scene is None:

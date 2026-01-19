@@ -167,6 +167,8 @@ class MGLRendererMixin:
         path: Path,
         visible: bool,
         tag: str = "model-wire",
+        owner: Optional[str] = None,
+        path_key: Optional[str] = None,
     ) -> Optional[MGLSceneItem]:
         if self._mgl_ctx is None or self._mgl_wire_prog is None or np is None:
             return None
@@ -203,14 +205,19 @@ class MGLRendererMixin:
             vao = self._mgl_ctx.vertex_array(self._mgl_wire_prog, vao_content)
         except Exception:
             return None
+        payload = {
+            "vao": vao,
+            "color": self._mgl_wire_color,
+            "mode": moderngl.TRIANGLES,
+        }
+        if owner:
+            payload["owner"] = owner
+        if path_key:
+            payload["path"] = path_key
         item = MGLSceneItem(
             name=f"{path.name}-wire",
             draw_fn=MGLRendererMixin._mgl_draw_scene_wire,
-            payload={
-                "vao": vao,
-                "color": self._mgl_wire_color,
-                "mode": moderngl.TRIANGLES,
-            },
+            payload=payload,
             resources=[vao, vbo],
             visible=visible,
             order=15,
@@ -296,6 +303,20 @@ class MGLRendererMixin:
             return
         for tag in ("model", "model-wire", "scene-model", "scene-wire"):
             scene.remove_by_tag(tag)
+
+    def _mgl_set_scene_item_visibility(self, key: str, visible: bool) -> None:
+        scene = getattr(self, "_mgl_scene", None)
+        if scene is None or not key:
+            return
+        for item in scene.items():
+            payload = item.payload or {}
+            owner = payload.get("owner") or payload.get("node")
+            path_key = payload.get("path")
+            if owner == key or path_key == key:
+                if item.tag == "scene-wire":
+                    item.visible = bool(visible) and bool(getattr(self, "_mgl_wireframe", False))
+                else:
+                    item.visible = visible
 
     def _mgl_load_grid_model(self, path: Path, in_paint: bool = False) -> None:
         if not _HAS_MGL or self._mgl_ctx is None:
@@ -1484,7 +1505,17 @@ class MGLRendererMixin:
         scene = getattr(self, "_mgl_scene", None)
         if scene is not None:
             scene.set_visible_by_tag("model-wire", bool(checked))
-            scene.set_visible_by_tag("scene-wire", bool(checked))
+            if checked:
+                visibility_map = getattr(self, "_mgl_scene_visibility", {}) or {}
+                for item in scene.iter_by_tag("scene-wire"):
+                    payload = item.payload or {}
+                    owner = payload.get("owner") or payload.get("node")
+                    if owner and not visibility_map.get(owner, True):
+                        item.visible = False
+                    else:
+                        item.visible = True
+            else:
+                scene.set_visible_by_tag("scene-wire", False)
         self.update()
 
     def _on_mgl_uv_toggled(self, checked: bool) -> None:
@@ -2326,6 +2357,12 @@ class MGLRendererMixin:
                 if not path.exists():
                     continue
                 ext = path.suffix.lower()
+                owner = str(asset.get("node") or "").strip()
+                if not owner:
+                    owner = path.name
+                path_key = str(path)
+                visibility_map = getattr(self, "_mgl_scene_visibility", {}) or {}
+                visible = bool(visibility_map.get(owner, True))
 
                 if ext == ".ply":
                     try:
@@ -2436,8 +2473,11 @@ class MGLRendererMixin:
                             "vao": entry.get("vao"),
                             "texture": texture_override,
                             "color": self._mgl_mesh_color,
+                            "owner": owner,
+                            "path": path_key,
                         },
                         resources=[res for res in resources if res is not None],
+                        visible=visible,
                         order=10,
                         tag="scene-model",
                     )
@@ -2477,8 +2517,9 @@ class MGLRendererMixin:
                         model_item = MGLSceneItem(
                             name=path.name,
                             draw_fn=MGLRendererMixin._mgl_draw_scene_mesh,
-                            payload={"submeshes": entries},
+                            payload={"submeshes": entries, "owner": owner, "path": path_key},
                             resources=resources,
+                            visible=visible,
                             order=10,
                             tag="scene-model",
                         )
@@ -2522,8 +2563,11 @@ class MGLRendererMixin:
                                 "vao": entry.get("vao"),
                                 "texture": texture_override,
                                 "color": color,
+                                "owner": owner,
+                                "path": path_key,
                             },
                             resources=[res for res in resources if res is not None],
+                            visible=visible,
                             order=10,
                             tag="scene-model",
                         )
@@ -2541,8 +2585,10 @@ class MGLRendererMixin:
                     if ext == ".obj":
                         wire_item = self._mgl_add_obj_wire_item(
                             path,
-                            bool(self._mgl_wireframe),
+                            bool(self._mgl_wireframe) and visible,
                             tag="scene-wire",
+                            owner=owner,
+                            path_key=path_key,
                         )
                         if wire_item is not None:
                             scene.add(wire_item)

@@ -1676,6 +1676,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             model = getattr(src_item, "model", None)
             if model is None:
                 continue
+            model_name = (getattr(model, "name", "") or "").strip()
             path = ""
             for p in (model.params or []):
                 if (p.get("name") or "").strip().lower() == "path":
@@ -1695,7 +1696,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     if (p.get("name") or "").strip().lower() == "texture":
                         texture = (p.get("value") or "").strip()
                         break
-            assets.append({"path": path, "texture": texture, "ext": ext})
+            assets.append({"path": path, "texture": texture, "ext": ext, "node": model_name})
         return assets
 
     def _open_scene_assets(self) -> None:

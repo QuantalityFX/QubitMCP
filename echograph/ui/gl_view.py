@@ -642,6 +642,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._mgl_grid_model_count = 0
         self._mgl_grid_model_pending_path = None
         self._mgl_scene = MGLScene()
+        self._mgl_scene_visibility: Dict[str, bool] = {}
         self._mgl_splat_bbox_vao = None
         self._mgl_splat_bbox_vbo = None
         self._mgl_mesh_vbos = []
@@ -1300,6 +1301,18 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 return
             self.load_model_path(path, asset.get("texture"), frame=frame)
             return
+
+    def set_scene_asset_visible(self, owner: str, visible: bool) -> None:
+        key = str(owner or "").strip()
+        if not key:
+            return
+        self._mgl_scene_visibility[key] = bool(visible)
+        if self._use_moderngl:
+            try:
+                self._mgl_set_scene_item_visibility(key, bool(visible))
+            except Exception:
+                pass
+            self.update()
 
     def _default_models_dir(self) -> Optional[Path]:
         try:
