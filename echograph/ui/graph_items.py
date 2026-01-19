@@ -47,7 +47,7 @@ def _rounded_polyline_path(points, radius: float) -> QtGui.QPainterPath:
 def _lead_for_delta(total_delta: float) -> float:
     abs_d = abs(total_delta)
     lead_base = 24.0
-    min_lead = 8.0
+    min_lead = 16
     lead = lead_base
     if abs_d < lead_base * 2.0:
         lead = max(min_lead, abs_d * 0.35)
