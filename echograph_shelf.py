@@ -2576,8 +2576,27 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             try:
                 gv = getattr(self, "gl_view", None)
                 if gv is not None:
+                    gv._render_scene_models = False
+                    gv._meshes.clear()
+                    gv._mesh_colors.clear()
+                    gv._mesh_transforms.clear()
+                    gv._mesh_meta.clear()
+                    gv._manual_model_path = None
+                    gv._model_load_pending = False
+                    try:
+                        scene = getattr(gv, "_mgl_scene", None)
+                        if scene is not None:
+                            scene.remove_by_tag("model")
+                            scene.remove_by_tag("model-wire")
+                    except Exception:
+                        pass
                     gv._mgl_vao = None
                     gv._mgl_submeshes = []
+                    gv._mgl_mesh_vbos = []
+                    gv._mgl_index_buffer = None
+                    gv._mgl_mesh = None
+                    gv._mgl_mesh_vertex_count = 0
+                    gv._mgl_mesh_path = ""
             except Exception:
                 pass
 
