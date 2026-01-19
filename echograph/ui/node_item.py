@@ -1671,6 +1671,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 in_edges = []
         assets = []
         seen = set()
+        hidden = set()
+        try:
+            raw_hidden = getattr(getattr(self, "model", None), "_scene_hidden", None)
+            if isinstance(raw_hidden, set):
+                hidden = raw_hidden
+            elif isinstance(raw_hidden, (list, tuple)):
+                hidden = {str(x) for x in raw_hidden if x}
+        except Exception:
+            hidden = set()
         for edge in in_edges:
             src_item = getattr(edge, "src", None)
             model = getattr(src_item, "model", None)
@@ -1696,7 +1705,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     if (p.get("name") or "").strip().lower() == "texture":
                         texture = (p.get("value") or "").strip()
                         break
-            assets.append({"path": path, "texture": texture, "ext": ext, "node": model_name})
+            assets.append(
+                {
+                    "path": path,
+                    "texture": texture,
+                    "ext": ext,
+                    "node": model_name,
+                    "visible": model_name not in hidden,
+                }
+            )
         return assets
 
     def _open_scene_assets(self) -> None:

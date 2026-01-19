@@ -59,6 +59,15 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
     scene = node_item.scene()
     if scene is None:
         return []
+    hidden = set()
+    try:
+        raw_hidden = getattr(getattr(node_item, "model", None), "_scene_hidden", None)
+        if isinstance(raw_hidden, set):
+            hidden = raw_hidden
+        elif isinstance(raw_hidden, (list, tuple)):
+            hidden = {str(x) for x in raw_hidden if x}
+    except Exception:
+        hidden = set()
     try:
         in_edges = list(scene._ordered_in_edges(node_item))
     except Exception:
@@ -85,12 +94,14 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             continue
         seen.add(key)
         texture = _param_value(model, "texture") if ext == ".obj" else ""
+        node_name = getattr(model, "name", "") or ""
         assets.append(
             {
                 "path": path,
                 "texture": texture,
-                "node": getattr(model, "name", "") or "",
+                "node": node_name,
                 "ext": ext,
+                "visible": node_name not in hidden,
             }
         )
     return assets

@@ -2222,6 +2222,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             return
 
         clean = []
+        visibility_map = {}
         for entry in assets:
             if not isinstance(entry, dict):
                 continue
@@ -2233,11 +2234,17 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                     continue
             except Exception:
                 continue
+            node_name = (entry.get("node") or "").strip()
+            raw_visible = entry.get("visible")
+            visible = True if raw_visible is None else bool(raw_visible)
+            if node_name:
+                visibility_map[node_name] = visible
             clean.append(
                 {
                     "path": path,
                     "texture": entry.get("texture") or None,
-                    "node": entry.get("node") or "",
+                    "node": node_name,
+                    "visible": visible,
                 }
             )
 
@@ -2255,6 +2262,11 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         if gl_view is None:
             print("[open_scene_assets] gl_view is None", flush=True)
             return
+
+        try:
+            gl_view._mgl_scene_visibility = dict(visibility_map)
+        except Exception:
+            pass
 
         try:
             gl_view._render_scene_models = True

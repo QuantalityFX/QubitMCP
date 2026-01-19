@@ -75,6 +75,16 @@ def _node_to_dict(node) -> Dict[str, Any]:
             paths = [str(p) for p in st.get("paths", []) if isinstance(p, str) and p.strip()]
             if paths:
                 d["image_collection_paths"] = paths
+    if k in ("scene", "scene_assembly", "scene_outliner"):
+        hidden = getattr(node, "_scene_hidden", None)
+        if isinstance(hidden, set):
+            names = {str(x) for x in hidden if x}
+            if names:
+                d["scene_hidden"] = sorted(names)
+        elif isinstance(hidden, (list, tuple)):
+            names = {str(x) for x in hidden if x}
+            if names:
+                d["scene_hidden"] = sorted(names)
 
     return d
 
@@ -175,6 +185,13 @@ def deserialize_scene(
             except Exception:
                 paths = []
             setattr(n, "_image_collection_state", {"paths": paths})
+        if (n.kind or "").lower() in ("scene", "scene_assembly", "scene_outliner"):
+            raw_hidden = nd.get("scene_hidden") or []
+            try:
+                hidden = {str(x) for x in raw_hidden if x}
+            except Exception:
+                hidden = set()
+            setattr(n, "_scene_hidden", hidden)
 
         # position (Qt-free)
         pos = nd.get("pos", [0.0, 0.0])
