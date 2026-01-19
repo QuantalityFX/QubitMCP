@@ -14,6 +14,13 @@ _APPEND_ICON = None
 _NOTE_ICON = None
 _LIBRARIAN_ICON = None
 _IMPORT_ICON = None
+_FBX_ICON = None
+_GLB_ICON = None
+_OBJ_ICON = None
+_PLT_ICON = None
+_SCENE_ICON = None
+_SWITCH_ICON = None
+_CHATBOT_ICON = None
 _OUTPUT_ICON = None
 _PYTHON_ICON = None
 _SCREENGRAB_ICON = None
@@ -85,6 +92,62 @@ def _import_icon():
         return _IMPORT_ICON
     _IMPORT_ICON = _load_pm("Import_File_Icon.png")
     return _IMPORT_ICON
+
+
+def _fbx_icon():
+    global _FBX_ICON
+    if _FBX_ICON is not None:
+        return _FBX_ICON
+    _FBX_ICON = _load_pm("FBX_Icon.png")
+    return _FBX_ICON
+
+
+def _glb_icon():
+    global _GLB_ICON
+    if _GLB_ICON is not None:
+        return _GLB_ICON
+    _GLB_ICON = _load_pm("GLB_Icon.png")
+    return _GLB_ICON
+
+
+def _obj_icon():
+    global _OBJ_ICON
+    if _OBJ_ICON is not None:
+        return _OBJ_ICON
+    _OBJ_ICON = _load_pm("OBJ_Icon.png")
+    return _OBJ_ICON
+
+
+def _ply_icon():
+    global _PLT_ICON
+    if _PLT_ICON is not None:
+        return _PLT_ICON
+    _PLT_ICON = _load_pm("PLT_Icon.png")
+    return _PLT_ICON
+
+
+def _scene_icon():
+    global _SCENE_ICON
+    if _SCENE_ICON is not None:
+        return _SCENE_ICON
+    _SCENE_ICON = _load_pm("Scene_Icon.png")
+    return _SCENE_ICON
+
+
+def _switch_icon():
+    global _SWITCH_ICON
+    if _SWITCH_ICON is not None:
+        return _SWITCH_ICON
+    _SWITCH_ICON = _load_pm("Switch_Icon.png")
+    return _SWITCH_ICON
+
+
+def _chatbot_icon():
+    global _CHATBOT_ICON
+    if _CHATBOT_ICON is not None:
+        return _CHATBOT_ICON
+    _CHATBOT_ICON = _load_pm("Chatbot_Icon.png")
+    return _CHATBOT_ICON
 
 
 def _output_icon():

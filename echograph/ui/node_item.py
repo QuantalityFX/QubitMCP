@@ -1623,6 +1623,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             self._is_building = False
 
     def _build_import_summary(self, y_cursor: int) -> int:
+        self._sync_import_icon_cache()
         path = self._param_value("path")
         detail, btn_enabled = self._file_detail_for_path(path)
         ext = os.path.splitext((path or "").strip())[1].lower()
@@ -1667,6 +1668,29 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 thumb_widget.setPixmap(cropped)
 
         return self._render_file_summary(y_cursor, detail, btn_enabled, path, extra_widget=extra, thumb_widget=thumb_widget)
+
+    def _import_icon_for_ext(self, ext: str):
+        ext = (ext or "").strip().lower()
+        if ext == ".obj":
+            return node_icons._obj_icon() or node_icons._import_icon()
+        if ext == ".fbx":
+            return node_icons._fbx_icon() or node_icons._import_icon()
+        if ext in (".glb", ".glbf", ".gltf"):
+            return node_icons._glb_icon() or node_icons._import_icon()
+        if ext == ".ply":
+            return node_icons._ply_icon() or node_icons._import_icon()
+        return node_icons._import_icon()
+
+    def _sync_import_icon_cache(self) -> None:
+        if (self.model.kind or "").lower() != "import":
+            return
+        path = (self._param_value("path") or "").strip()
+        ext = os.path.splitext(path)[1].lower()
+        key = ext or ""
+        if key == getattr(self, "_import_icon_key", None) and getattr(self, "_import_icon_pm", None) is not None:
+            return
+        self._import_icon_key = key
+        self._import_icon_pm = self._import_icon_for_ext(ext)
 
     def _collect_scene_assets(self) -> list[dict]:
         supported = {".fbx", ".obj", ".gltf", ".glb", ".ply", ".stl", ".off", ".om"}
@@ -2912,7 +2936,24 @@ class NodeItem(QtWidgets.QGraphicsObject):
         extra_top = 0.0
         try:
             kind_lower = (self.model.kind or "").lower()
-            if kind_lower in ("database", "llm", "llm_prompt", "append", "note", "librarian", "import", "output", "python"):
+            if kind_lower in (
+                "database",
+                "llm",
+                "llm_prompt",
+                "append",
+                "note",
+                "librarian",
+                "import",
+                "output",
+                "python",
+                "switch",
+                "chatbot",
+                "chat bot",
+                "chat_bot",
+                "scene",
+                "scene_assembly",
+                "scene_outliner",
+            ):
                 # Allow space for floating icon above the bar
                 extra_top = 80.0
         except Exception:
@@ -3023,7 +3064,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
             elif kind_lower == "librarian":
                 icon_pm = node_icons._librarian_icon()
             elif kind_lower == "import":
-                icon_pm = node_icons._import_icon()
+                icon_pm = getattr(self, "_import_icon_pm", None) or node_icons._import_icon()
+            elif kind_lower == "switch":
+                icon_pm = node_icons._switch_icon()
+            elif kind_lower in ("chatbot", "chat bot", "chat_bot"):
+                icon_pm = node_icons._chatbot_icon()
+            elif kind_lower in ("scene", "scene_assembly", "scene_outliner"):
+                icon_pm = node_icons._scene_icon()
             elif kind_lower == "output":
                 icon_pm = node_icons._output_icon()
             elif kind_lower == "python":
@@ -3038,10 +3085,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     scale = 1.0
                 # Grow when zoomed out; clamp with larger max
                 size = int(max(40, min(128, 38 / max(scale, 0.001))))
+                if kind_lower in ("chatbot", "chat bot", "chat_bot"):
+                    size = int(size * 1.13)
                 pm_scaled = icon_pm.scaled(size, size, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
                 x = (self.width - pm_scaled.width()) / 2.0
                 # float above the top bar
                 y = -pm_scaled.height() * 0.6
+                if kind_lower in ("chatbot", "chat bot", "chat_bot"):
+                    y = -pm_scaled.height() * 0.7
                 p.drawPixmap(QtCore.QPointF(x, y), pm_scaled)
         except Exception:
             pass
