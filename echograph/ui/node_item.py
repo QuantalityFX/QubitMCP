@@ -183,6 +183,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     _chatbot.register()
             except Exception:
                 pass
+        # Ensure Scene spec is registered even if the loader was skipped.
+        if (self.model.kind or "").strip().lower() in ("scene", "scene_assembly", "scene_outliner"):
+            try:
+                from nodes import scene as _scene  # type: ignore
+                if hasattr(_scene, "register"):
+                    _scene.register()
+            except Exception:
+                pass
 
         self.setFlag(QtWidgets.QGraphicsItem.ItemIsMovable, True)
         self.setFlag(QtWidgets.QGraphicsItem.ItemSendsGeometryChanges, True)
@@ -1209,6 +1217,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 y_cursor = self._render_image_collection_inline(y_cursor)
                 # Skip plugin render; inline version is authoritative
                 kind_lower = None
+            # --- Inline Scene body to guarantee the view button is present ---
+            if kind_lower in ("scene", "scene_assembly", "scene_outliner"):
+                kind_lower = None
 
             # --- Plugin body hook (lets specs draw a custom node body) ---
             try:
@@ -1534,6 +1545,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 y_cursor = self._build_import_summary(y_cursor)
             elif kind_lower == "html_preview":
                 y_cursor = self._build_html_preview(y_cursor)
+            elif kind_lower in ("scene", "scene_assembly", "scene_outliner"):
+                y_cursor = self._build_scene_summary(y_cursor)
 
             # --- LLM embedded webview ---
             if kind_lower == "llm":
@@ -1643,6 +1656,107 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 thumb_widget.setPixmap(cropped)
 
         return self._render_file_summary(y_cursor, detail, btn_enabled, path, extra_widget=extra, thumb_widget=thumb_widget)
+
+    def _collect_scene_assets(self) -> list[dict]:
+        supported = {".fbx", ".obj", ".gltf", ".glb", ".ply", ".stl", ".off", ".om"}
+        sc = self.scene()
+        if sc is None:
+            return []
+        try:
+            in_edges = list(sc._ordered_in_edges(self))
+        except Exception:
+            try:
+                in_edges = list(sc._in_edges(self))
+            except Exception:
+                in_edges = []
+        assets = []
+        seen = set()
+        for edge in in_edges:
+            src_item = getattr(edge, "src", None)
+            model = getattr(src_item, "model", None)
+            if model is None:
+                continue
+            path = ""
+            for p in (model.params or []):
+                if (p.get("name") or "").strip().lower() == "path":
+                    path = (p.get("value") or "").strip()
+                    break
+            if not path:
+                continue
+            ext = os.path.splitext(path)[1].lower()
+            if ext not in supported:
+                continue
+            if path in seen:
+                continue
+            seen.add(path)
+            texture = ""
+            if ext == ".obj":
+                for p in (model.params or []):
+                    if (p.get("name") or "").strip().lower() == "texture":
+                        texture = (p.get("value") or "").strip()
+                        break
+            assets.append({"path": path, "texture": texture, "ext": ext})
+        return assets
+
+    def _open_scene_assets(self) -> None:
+        assets = self._collect_scene_assets()
+        if not assets:
+            QtWidgets.QMessageBox.information(_top_level_parent_for_dialog(), "Scene", "No 3D assets connected.")
+            return
+        parent = _top_level_parent_for_dialog()
+        if parent is None:
+            QtWidgets.QMessageBox.warning(_top_level_parent_for_dialog(), "Scene", "3D view is not available.")
+            return
+        handler = getattr(parent, "open_scene_assets", None)
+        if not callable(handler):
+            QtWidgets.QMessageBox.warning(_top_level_parent_for_dialog(), "Scene", "3D view is not available.")
+            return
+        handler(assets)
+
+    def _build_scene_summary(self, y_cursor: int) -> int:
+        assets = self._collect_scene_assets()
+        if not assets:
+            detail = "No 3D assets connected."
+            btn_enabled = False
+        else:
+            mesh_count = sum(1 for a in assets if a.get("ext") != ".ply")
+            splat_count = len(assets) - mesh_count
+            detail = f"{len(assets)} connected (mesh {mesh_count}"
+            if splat_count:
+                detail += f", splat {splat_count}"
+            detail += ")"
+            btn_enabled = True
+
+        row = QtWidgets.QWidget()
+        row.setAttribute(QtCore.Qt.WA_TranslucentBackground)
+        outer = QtWidgets.QVBoxLayout(row)
+        outer.setContentsMargins(6, 0, 6, 0)
+        outer.setSpacing(4)
+
+        label = QtWidgets.QLabel(detail)
+        label.setStyleSheet("color:#cbd5e1;")
+        label.setWordWrap(True)
+        outer.addWidget(label, 0)
+
+        btn_row = QtWidgets.QHBoxLayout()
+        btn_row.setContentsMargins(0, 0, 0, 0)
+        btn_row.setSpacing(6)
+        btn = QtWidgets.QPushButton("View Scene")
+        btn.setEnabled(btn_enabled)
+        btn.clicked.connect(lambda _=False: self._open_scene_assets())
+        btn_row.addWidget(btn, 0, QtCore.Qt.AlignLeft)
+        btn_row.addStretch(1)
+        outer.addLayout(btn_row)
+
+        proxy = QtWidgets.QGraphicsProxyWidget(self)
+        proxy.setWidget(row)
+        proxy.setZValue(self.zValue() + 0.1)
+        proxy.setPos(0, y_cursor)
+        summary_h = max(self._PARAM_ROW_H * 2, row.sizeHint().height())
+        proxy.resize(self.width, summary_h)
+        self._plugin_proxies.append(proxy)
+
+        return y_cursor + summary_h
 
     def _build_html_preview(self, y_cursor: int) -> int:
         path = self._param_value("path")
