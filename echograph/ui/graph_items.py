@@ -54,7 +54,9 @@ def _elbow_path(start: QtCore.QPointF, end: QtCore.QPointF) -> QtGui.QPainterPat
 
     abs_dx = abs(total_dx)
     abs_dy = abs(total_dy)
-    lead_base = max(18.0, min(60.0, math.sqrt(abs_dx) * 2.2))
+    lead_base = 24.0
+    if abs_dx < lead_base * 2.0:
+        lead_base = max(12.0, abs_dx * 0.45)
     lead_out = lead_base
     lead_in = lead_base
 
