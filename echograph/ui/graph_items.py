@@ -235,6 +235,9 @@ class EdgePin(QtWidgets.QGraphicsEllipseItem):
         return super().itemChange(change, value)
 
     def mousePressEvent(self, e):
+        if e.button() == QtCore.Qt.LeftButton:
+            if not (e.modifiers() & QtCore.Qt.ShiftModifier):
+                _deselect_node_items(self.scene())
         if e.button() == QtCore.Qt.LeftButton and (e.modifiers() & QtCore.Qt.ControlModifier):
             edge = getattr(self, "_edge", None)
             if edge is not None and hasattr(edge, "remove_pin"):
@@ -268,6 +271,26 @@ def _gi_flag(enum_name, fallback_enum):
     if hasattr(QtWidgets.QGraphicsItem, "GraphicsItemFlag"):
         return getattr(QtWidgets.QGraphicsItem.GraphicsItemFlag, enum_name, fallback_enum)
     return fallback_enum
+
+
+def _deselect_node_items(scene) -> None:
+    if scene is None:
+        return
+    try:
+        items = list(scene.selectedItems())
+    except Exception:
+        return
+    for it in items:
+        name = getattr(it, "__class__", type(it)).__name__
+        if name in ("NodeItem", "CommentGroup"):
+            try:
+                it.setSelected(False)
+            except Exception:
+                pass
+    try:
+        scene._group_drag_active = False
+    except Exception:
+        pass
 
 
 class EdgeItem(QtWidgets.QGraphicsPathItem):
@@ -682,6 +705,9 @@ class EdgeItem(QtWidgets.QGraphicsPathItem):
         super().hoverLeaveEvent(e)
 
     def mousePressEvent(self, e: QtWidgets.QGraphicsSceneMouseEvent):
+        if e.button() == QtCore.Qt.LeftButton:
+            if not (e.modifiers() & QtCore.Qt.ShiftModifier):
+                _deselect_node_items(self.scene())
         # Alt+LMB deletes the edge (with bookkeeping in Scene)
         if e.button() == QtCore.Qt.LeftButton and (e.modifiers() & QtCore.Qt.AltModifier):
             sc = self.scene()

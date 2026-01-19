@@ -596,6 +596,12 @@ class GraphView(QtWidgets.QGraphicsView):
                         sc._shift_select_snapshot = None
                     except Exception:
                         pass
+            if self.itemAt(e.pos()) is None:
+                if sc is not None and hasattr(sc, "_clear_edge_click_highlight"):
+                    try:
+                        sc._clear_edge_click_highlight()
+                    except Exception:
+                        pass
         if e.button() == QtCore.Qt.MiddleButton:
             self._mm_dragging = True
             self._mm_last_pos = e.pos()

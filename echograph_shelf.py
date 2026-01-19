@@ -1571,6 +1571,13 @@ class GraphScene(QtWidgets.QGraphicsScene):
         for e in self._edges:
             e.setHighlighted(False)
 
+    def _clear_edge_click_highlight(self):
+        for e in self._edges:
+            try:
+                e.setClickHighlighted(False)
+            except Exception:
+                pass
+
     def _highlighted_edges(self):
         return [e for e in self._edges if getattr(e, "_highlight", False)]
 

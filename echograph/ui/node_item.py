@@ -3218,6 +3218,16 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
     def mousePressEvent(self, e):
         if e.button() == QtCore.Qt.LeftButton:
+            scene = self.scene()
+            mods = e.modifiers()
+            shift = bool(mods & QtCore.Qt.ShiftModifier)
+            ctrl = bool(mods & QtCore.Qt.ControlModifier)
+            if scene and not shift:
+                if hasattr(scene, "_clear_edge_click_highlight"):
+                    try:
+                        scene._clear_edge_click_highlight()
+                    except Exception:
+                        pass
             if self._note_resize_available():
                 mode = self._note_hit_test(e.pos())
                 if mode:
@@ -3226,11 +3236,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     return
             self._lmb_press_scene = self.mapToScene(e.pos())
             self._lmb_started_wire = False
-
-            scene = self.scene()
-            mods = e.modifiers()
-            shift = bool(mods & QtCore.Qt.ShiftModifier)
-            ctrl = bool(mods & QtCore.Qt.ControlModifier)
             if scene:
                 if shift:
                     snapshot = getattr(scene, "_shift_select_snapshot", None)
