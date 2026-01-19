@@ -1,5 +1,75 @@
 # echograph/ui/graph_items.py
+import math
 from echograph.qt_compat import QtCore, QtGui, QtWidgets
+
+
+def _rounded_polyline_path(points, radius: float) -> QtGui.QPainterPath:
+    if not points:
+        return QtGui.QPainterPath()
+    if len(points) == 1:
+        return QtGui.QPainterPath(points[0])
+    r_base = max(0.0, float(radius))
+    path = QtGui.QPainterPath(points[0])
+    last = points[0]
+    for i in range(1, len(points) - 1):
+        corner = points[i]
+        next_pt = points[i + 1]
+        dx1 = corner.x() - last.x()
+        dy1 = corner.y() - last.y()
+        dx2 = next_pt.x() - corner.x()
+        dy2 = next_pt.y() - corner.y()
+        len1 = math.hypot(dx1, dy1)
+        len2 = math.hypot(dx2, dy2)
+        if len1 <= 1e-6 or len2 <= 1e-6:
+            path.lineTo(corner)
+            last = corner
+            continue
+        r = min(r_base, len1 * 0.5, len2 * 0.5)
+        if r <= 1e-6:
+            path.lineTo(corner)
+            last = corner
+            continue
+        p1 = QtCore.QPointF(
+            corner.x() - (dx1 / len1) * r,
+            corner.y() - (dy1 / len1) * r,
+        )
+        p2 = QtCore.QPointF(
+            corner.x() + (dx2 / len2) * r,
+            corner.y() + (dy2 / len2) * r,
+        )
+        path.lineTo(p1)
+        path.quadTo(corner, p2)
+        last = p2
+    path.lineTo(points[-1])
+    return path
+
+
+def _elbow_path(start: QtCore.QPointF, end: QtCore.QPointF) -> QtGui.QPainterPath:
+    sx = float(start.x())
+    sy = float(start.y())
+    dx = float(end.x())
+    dy = float(end.y())
+    total_dx = dx - sx
+    total_dy = dy - sy
+
+    lead = max(40.0, min(180.0, abs(total_dx) * 0.35))
+    sign = 1.0 if total_dx >= 0.0 else -1.0
+    out_x = sx + sign * lead
+    in_x = dx - sign * lead
+    if (sign > 0.0 and out_x > in_x) or (sign < 0.0 and out_x < in_x):
+        mid_x = (sx + dx) * 0.5
+    else:
+        mid_x = (out_x + in_x) * 0.5
+
+    points = [
+        QtCore.QPointF(sx, sy),
+        QtCore.QPointF(mid_x, sy),
+        QtCore.QPointF(mid_x, dy),
+        QtCore.QPointF(dx, dy),
+    ]
+    span = min(abs(total_dx), abs(total_dy))
+    corner = max(6.0, min(28.0, span * 0.25))
+    return _rounded_polyline_path(points, corner)
 
 
 def _gi_flag(enum_name, fallback_enum):
@@ -93,12 +163,7 @@ class EdgeItem(QtWidgets.QGraphicsPathItem):
 
     def updatePath(self):
         s, d = self._attach_points()
-        dx = max(80, abs(d.x() - s.x()) * 0.5)
-        c1 = QtCore.QPointF(s.x() + dx, s.y())
-        c2 = QtCore.QPointF(d.x() - dx, d.y())
-        path = QtGui.QPainterPath(s)
-        path.cubicTo(c1, c2, d)
-        self.setPath(path)
+        self.setPath(_elbow_path(s, d))
 
     def hoverEnterEvent(self, e):
         # Thicken a bit + show tooltip with port names if available
@@ -169,10 +234,6 @@ class TempWire(QtWidgets.QGraphicsPathItem):
         self.setZValue(5)
 
     def updateTo(self, end_pos: QtCore.QPointF):
-        s = self.start; d = end_pos
-        dx = max(80, abs(d.x() - s.x()) * 0.5)
-        c1 = QtCore.QPointF(s.x() + dx, s.y())
-        c2 = QtCore.QPointF(d.x() - dx, d.y())
-        path = QtGui.QPainterPath(s)
-        path.cubicTo(c1, c2, d)
-        self.setPath(path)
+        s = self.start
+        d = end_pos
+        self.setPath(_elbow_path(s, d))
