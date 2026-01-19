@@ -1080,15 +1080,11 @@ class MGLRendererMixin:
                 self._mgl_ctx.enable(moderngl.BLEND)
                 self._mgl_ctx.blend_func = moderngl.ONE, moderngl.ONE_MINUS_SRC_ALPHA
 
-                # disable depth test for transparent splats (guarded)
+                # keep depth test on so meshes occlude splats correctly
                 try:
-                    self._mgl_ctx.disable(moderngl.DEPTH_TEST)
+                    self._mgl_ctx.enable(moderngl.DEPTH_TEST)
                 except Exception:
-                    # fallback that works on more ModernGL versions
-                    try:
-                        self._mgl_ctx.enable_only(moderngl.BLEND)
-                    except Exception:
-                        pass
+                    pass
 
                 # disable depth writes (guarded)
                 old_depth_mask = getattr(self._mgl_ctx, "depth_mask", True)
