@@ -628,6 +628,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._mgl_ctx = None
         self._mgl_prog = None
         self._mgl_grid_prog = None
+        self._mgl_wire_prog = None
         self._mgl_mesh = None
         self._mgl_vao = None
         self._mgl_grid_vao = None
@@ -664,6 +665,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._mgl_light_intensity = 1.0
         self._mgl_wire_color = (0.25, 0.25, 0.25, 1.0)
         self._mgl_wire_line_width = 1.0
+        self._mgl_wire_edge_width = 2.0
         self._mgl_uv_overlay_enabled = False
         self._mgl_uv_segments: List[Tuple[float, float, float, float]] = []
         self._mgl_uv_bounds: Optional[Tuple[float, float, float, float]] = None

@@ -162,6 +162,57 @@ class MGLRendererMixin:
             return np.zeros((0, 3), dtype="f4")
         return np.array(line_pos, dtype="f4").reshape(-1, 3)
 
+    def _mgl_add_obj_wire_item(self, path: Path, visible: bool) -> Optional[MGLSceneItem]:
+        if self._mgl_ctx is None or self._mgl_wire_prog is None or np is None:
+            return None
+        try:
+            line_points = self._mgl_load_obj_edge_vertices(path)
+        except Exception:
+            return None
+        if line_points is None or line_points.size == 0:
+            return None
+        edge_count = int(line_points.shape[0] // 2)
+        if edge_count <= 0:
+            return None
+        verts: List[float] = []
+        for i in range(edge_count):
+            p0 = line_points[i * 2]
+            p1 = line_points[i * 2 + 1]
+            ax, ay, az = float(p0[0]), float(p0[1]), float(p0[2])
+            bx, by, bz = float(p1[0]), float(p1[1]), float(p1[2])
+            if ax == bx and ay == by and az == bz:
+                continue
+            # triangle 1
+            verts.extend([ax, ay, az, ax, ay, az, bx, by, bz, -1.0])
+            verts.extend([ax, ay, az, ax, ay, az, bx, by, bz, 1.0])
+            verts.extend([bx, by, bz, ax, ay, az, bx, by, bz, 1.0])
+            # triangle 2
+            verts.extend([ax, ay, az, ax, ay, az, bx, by, bz, -1.0])
+            verts.extend([bx, by, bz, ax, ay, az, bx, by, bz, 1.0])
+            verts.extend([bx, by, bz, ax, ay, az, bx, by, bz, -1.0])
+        if not verts:
+            return None
+        try:
+            vbo = self._mgl_ctx.buffer(np.array(verts, dtype="f4").tobytes())
+            vao_content = [(vbo, "3f 3f 3f 1f", "in_pos", "in_start", "in_end", "in_side")]
+            vao = self._mgl_ctx.vertex_array(self._mgl_wire_prog, vao_content)
+        except Exception:
+            return None
+        item = MGLSceneItem(
+            name=f"{path.name}-wire",
+            draw_fn=MGLRendererMixin._mgl_draw_scene_wire,
+            payload={
+                "vao": vao,
+                "color": self._mgl_wire_color,
+                "mode": moderngl.TRIANGLES,
+            },
+            resources=[vao, vbo],
+            visible=visible,
+            order=15,
+            tag="model-wire",
+        )
+        return item
+
     def _on_mgl_pick_model(self) -> None:
         if not self._use_moderngl:
             return
@@ -299,12 +350,13 @@ class MGLRendererMixin:
         vao = payload.get("vao")
         if not submeshes and vao is None:
             return
+        edge_wire = bool(payload.get("edge_wire"))
         try:
             self._mgl_prog["Mvp"].write(mvp.astype("f4").tobytes())
         except Exception:
             pass
         manual_texture = self._mgl_texture if self._mgl_texture_override else None
-        wire_overlay = bool(self._mgl_wireframe and (submeshes or vao is not None))
+        wire_overlay = bool(self._mgl_wireframe and not edge_wire and (submeshes or vao is not None))
         if wire_overlay:
             try:
                 self._mgl_ctx.polygon_offset = (1.0, 1.0)
@@ -453,6 +505,32 @@ class MGLRendererMixin:
                     self._mgl_ctx.line_width = prev_line_width
                 except Exception:
                     pass
+
+    def _mgl_draw_scene_wire(self, item: MGLSceneItem, mvp) -> None:
+        if self._mgl_wire_prog is None:
+            return
+        payload = item.payload or {}
+        vao = payload.get("vao")
+        if vao is None:
+            return
+        color = payload.get("color") or self._mgl_wire_color
+        try:
+            self._mgl_wire_prog["Mvp"].write(mvp.astype("f4").tobytes())
+            self._mgl_wire_prog["Color"].value = color
+            self._mgl_wire_prog["Viewport"].value = (float(max(1, self.width())), float(max(1, self.height())))
+            self._mgl_wire_prog["LineWidth"].value = float(
+                getattr(self, "_mgl_wire_edge_width", getattr(self, "_mgl_wire_line_width", 1.0))
+            )
+        except Exception:
+            pass
+        try:
+            mode = payload.get("mode")
+            if mode is None:
+                vao.render()
+            else:
+                vao.render(mode)
+        except Exception as exc:
+            self._mgl_error = f"Scene wire draw failed: {exc}"
 
     def _mgl_build_mesh_entry(
         self,
@@ -1391,6 +1469,9 @@ class MGLRendererMixin:
         if not self._use_moderngl:
             return
         self._mgl_wireframe = bool(checked)
+        scene = getattr(self, "_mgl_scene", None)
+        if scene is not None:
+            scene.set_visible_by_tag("model-wire", bool(checked))
         self.update()
 
     def _on_mgl_uv_toggled(self, checked: bool) -> None:
@@ -1418,9 +1499,12 @@ class MGLRendererMixin:
             mesh_fragment = SHADERS["mesh_fragment"]
             grid_vertex = SHADERS["grid_vertex"]
             grid_fragment = SHADERS["grid_fragment"]
+            wire_vertex = SHADERS["wire_vertex"]
+            wire_fragment = SHADERS["wire_fragment"]
 
             self._mgl_prog = self._mgl_ctx.program(vertex_shader=mesh_vertex, fragment_shader=mesh_fragment)
             self._mgl_grid_prog = self._mgl_ctx.program(vertex_shader=grid_vertex, fragment_shader=grid_fragment)
+            self._mgl_wire_prog = self._mgl_ctx.program(vertex_shader=wire_vertex, fragment_shader=wire_fragment)
             self._mgl_prog["Light"].value = (1.0, 1.0, 1.0)
             self._mgl_prog["Color"].value = self._mgl_mesh_color
             try:
@@ -1431,6 +1515,13 @@ class MGLRendererMixin:
             except Exception:
                 pass
             self._mgl_grid_prog["Color"].value = (1.0, 1.0, 1.0, self._mgl_grid_alpha)
+            try:
+                self._mgl_wire_prog["Color"].value = self._mgl_wire_color
+                self._mgl_wire_prog["LineWidth"].value = float(
+                    getattr(self, "_mgl_wire_edge_width", getattr(self, "_mgl_wire_line_width", 1.0))
+                )
+            except Exception:
+                pass
             self._mgl_arcball = _ArcBallUtil(self.width(), self.height())
             self._mgl_center = np.zeros(3, dtype="f4")
             self._mgl_camera_zoom = self._mgl_camera_distance(self._mgl_fov)
@@ -2034,10 +2125,12 @@ class MGLRendererMixin:
             scene = getattr(self, "_mgl_scene", None)
             if scene is not None:
                 scene.remove_by_tag("model")
+                scene.remove_by_tag("model-wire")
                 self._mgl_submeshes = []
                 self._mgl_vao = None
                 self._mgl_mesh_vbos = []
                 self._mgl_index_buffer = None
+            model_item = None
             if mesh is not None:
                 mesh.update_normals()
                 points = np.array(mesh.points(), dtype="f4")
@@ -2067,6 +2160,7 @@ class MGLRendererMixin:
                 )
                 if scene is not None:
                     scene.add(item)
+                model_item = item
                 self._mgl_mesh_vertex_count = int(entry.get("count", 0))
                 self._mgl_mesh = mesh
                 self._mgl_set_uv_overlay(None)
@@ -2101,6 +2195,7 @@ class MGLRendererMixin:
                     )
                     if scene is not None:
                         scene.add(item)
+                    model_item = item
                     self._mgl_mesh_vertex_count = int(total_indices)
                     if combined_uvs:
                         self._mgl_set_uv_overlay(np.concatenate(combined_uvs, axis=0))
@@ -2137,6 +2232,7 @@ class MGLRendererMixin:
                     )
                     if scene is not None:
                         scene.add(item)
+                    model_item = item
                     self._mgl_mesh_vertex_count = int(entry.get("count", 0))
                     self._mgl_set_uv_overlay(entry.get("uvs"))
                     self._mgl_init_arcball(points)
@@ -2153,6 +2249,12 @@ class MGLRendererMixin:
                                 self._mgl_upload_texture(qimg, str(path))
                             except Exception as exc:
                                 self._mgl_error = f"Texture upload failed: {exc}"
+            if scene is not None and path.suffix.lower() == ".obj":
+                wire_item = self._mgl_add_obj_wire_item(path, bool(self._mgl_wireframe))
+                if wire_item is not None:
+                    scene.add(wire_item)
+                    if model_item is not None:
+                        model_item.payload["edge_wire"] = True
             self._mgl_mesh_path = str(path)
         except Exception as exc:
             self._mgl_error = f"Mesh upload failed: {exc}"

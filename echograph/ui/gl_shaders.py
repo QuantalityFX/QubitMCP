@@ -67,6 +67,42 @@ void main() {
 }
 """,
 
+    "wire_vertex": """
+#version 330
+uniform mat4 Mvp;
+uniform vec2 Viewport;
+uniform float LineWidth;
+in vec3 in_pos;
+in vec3 in_start;
+in vec3 in_end;
+in float in_side;
+void main() {
+    vec4 clip_pos = Mvp * vec4(in_pos, 1.0);
+    vec4 clip_start = Mvp * vec4(in_start, 1.0);
+    vec4 clip_end = Mvp * vec4(in_end, 1.0);
+    float ws = max(1e-6, clip_start.w);
+    float we = max(1e-6, clip_end.w);
+    vec2 ndc0 = clip_start.xy / ws;
+    vec2 ndc1 = clip_end.xy / we;
+    vec2 dir = ndc1 - ndc0;
+    float len = length(dir);
+    vec2 perp = len > 1e-6 ? vec2(-dir.y, dir.x) / len : vec2(0.0, 1.0);
+    vec2 pixel = vec2(2.0 / max(Viewport.x, 1.0), 2.0 / max(Viewport.y, 1.0));
+    vec2 offset = perp * (LineWidth * 0.5) * pixel;
+    clip_pos.xy += offset * clip_pos.w * in_side;
+    gl_Position = clip_pos;
+}
+""",
+
+    "wire_fragment": """
+#version 330
+uniform vec4 Color;
+out vec4 f_color;
+void main() {
+    f_color = Color;
+}
+""",
+
     "splat_vertex": """
 #version 330
 uniform mat4 Mvp;
