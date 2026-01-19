@@ -241,6 +241,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         self._note_initial_pos = QtCore.QPointF()
         self._note_resizing = False
         self._import_path_committed = None
+        self._skip_release_super = False
        # Let the spec add named inputs (e.g., Librarian: query/docs_dir/mode/top_k/action)
         try:
             spec = core.get_spec((self.model.kind or "node").lower())
@@ -3257,8 +3258,26 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         scene._shift_select_snapshot = None
                     except Exception:
                         pass
+                    try:
+                        scene._group_drag_active = False
+                    except Exception:
+                        pass
+                    self._skip_release_super = True
+                    self._lmb_press_scene = None
+                    self._lmb_started_wire = False
+                    e.accept()
+                    return
                 elif ctrl:
                     self.setSelected(not self.isSelected())
+                    try:
+                        scene._group_drag_active = False
+                    except Exception:
+                        pass
+                    self._skip_release_super = True
+                    self._lmb_press_scene = None
+                    self._lmb_started_wire = False
+                    e.accept()
+                    return
                 else:
                     if not self.isSelected():
                         for it in list(scene.selectedItems()):
@@ -3308,6 +3327,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 e.accept()
                 return
             scene = self.scene()
+            if getattr(self, "_skip_release_super", False):
+                self._skip_release_super = False
+                if scene:
+                    scene._group_drag_active = False
+                self._lmb_press_scene = None
+                self._lmb_started_wire = False
+                e.accept()
+                return
             if scene:
                 scene._group_drag_active = False
             try:
