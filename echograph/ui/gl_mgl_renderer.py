@@ -74,6 +74,94 @@ def _mgl_grid(size: float, steps: int) -> "np.ndarray":
 
 
 class MGLRendererMixin:
+    @staticmethod
+    def _mgl_load_obj_edge_vertices(path: Path) -> "np.ndarray":
+        if np is None:
+            raise RuntimeError("numpy unavailable")
+        positions: List[Tuple[float, float, float]] = []
+        edges = set()
+        try:
+            raw = path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            raw = path.read_text(errors="ignore")
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split()
+            if not parts:
+                continue
+            head = parts[0].lower()
+            if head == "v" and len(parts) >= 4:
+                try:
+                    positions.append((float(parts[1]), float(parts[2]), float(parts[3])))
+                except Exception:
+                    continue
+                continue
+            if head == "f" and len(parts) >= 3:
+                face: List[int] = []
+                for token in parts[1:]:
+                    idx_str = token.split("/")[0] if token else ""
+                    if not idx_str:
+                        continue
+                    try:
+                        idx = int(idx_str)
+                    except Exception:
+                        continue
+                    if idx < 0:
+                        idx = len(positions) + idx + 1
+                    if idx <= 0 or idx > len(positions):
+                        continue
+                    face.append(idx - 1)
+                if len(face) < 2:
+                    continue
+                for i in range(len(face)):
+                    a = face[i]
+                    b = face[(i + 1) % len(face)]
+                    if a == b:
+                        continue
+                    edge = (a, b) if a < b else (b, a)
+                    edges.add(edge)
+                continue
+            if head == "l" and len(parts) >= 3:
+                line_indices: List[int] = []
+                for token in parts[1:]:
+                    idx_str = token.split("/")[0] if token else ""
+                    if not idx_str:
+                        continue
+                    try:
+                        idx = int(idx_str)
+                    except Exception:
+                        continue
+                    if idx < 0:
+                        idx = len(positions) + idx + 1
+                    if idx <= 0 or idx > len(positions):
+                        continue
+                    line_indices.append(idx - 1)
+                if len(line_indices) < 2:
+                    continue
+                for i in range(len(line_indices) - 1):
+                    a = line_indices[i]
+                    b = line_indices[i + 1]
+                    if a == b:
+                        continue
+                    edge = (a, b) if a < b else (b, a)
+                    edges.add(edge)
+
+        if not edges:
+            return np.zeros((0, 3), dtype="f4")
+        line_pos: List[float] = []
+        for a, b in edges:
+            try:
+                ax, ay, az = positions[a]
+                bx, by, bz = positions[b]
+            except Exception:
+                continue
+            line_pos.extend([ax, ay, az, bx, by, bz])
+        if not line_pos:
+            return np.zeros((0, 3), dtype="f4")
+        return np.array(line_pos, dtype="f4").reshape(-1, 3)
+
     def _on_mgl_pick_model(self) -> None:
         if not self._use_moderngl:
             return
@@ -158,12 +246,12 @@ class MGLRendererMixin:
             self._mgl_error = "ModernGL grid program not ready"
             return
         try:
-            points, _normals, _uvs = load_obj_mesh_arrays(path)
+            points = self._mgl_load_obj_edge_vertices(path)
         except Exception as exc:
             self._mgl_error = f"Grid model load failed: {exc}"
             return
         if points is None or points.size == 0:
-            self._mgl_error = "Grid model load failed: no vertices"
+            self._mgl_error = "Grid model load failed: no edges"
             return
         points = points.astype("f4").reshape(-1, 3)
         did_make_current = False
@@ -184,7 +272,7 @@ class MGLRendererMixin:
                 payload={
                     "vao": vao,
                     "color": (0.7, 0.7, 0.7),
-                    "mode": moderngl.TRIANGLES,
+                    "mode": moderngl.LINES,
                 },
                 resources=[vao, vbo],
                 visible=bool(self._mgl_grid_model_visible),
