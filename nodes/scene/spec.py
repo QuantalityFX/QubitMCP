@@ -251,6 +251,24 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         if callable(handler):
             handler(name, visible)
 
+    def _apply_rename(scene, old_name: str, new_name: str) -> bool:
+        if not new_name or new_name == old_name:
+            return False
+        ok, msg = scene.rename_node(old_name, new_name)
+        if not ok:
+            if msg:
+                QtWidgets.QMessageBox.warning(card, "Rename", msg)
+            return False
+        hidden = _hidden_set()
+        if old_name in hidden:
+            hidden.remove(old_name)
+            hidden.add(new_name)
+        win = card.window()
+        handler = getattr(win, "rename_scene_asset_owner", None) if win is not None else None
+        if callable(handler):
+            handler(old_name, new_name)
+        return True
+
     def _refresh(scene_override=None):
         outliner.clear()
         scene = scene_override if scene_override is not None else getattr(card, "_graph_scene", None)
@@ -323,9 +341,51 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             )
             row_layout.addWidget(eye_btn, 0)
 
-            label = QtWidgets.QLabel(f"{idx}. {name}")
-            label.setStyleSheet("color:#e2e8f0;")
-            row_layout.addWidget(label, 1)
+            idx_label = QtWidgets.QLabel(f"{idx}.")
+            idx_label.setStyleSheet("color:#64748b;")
+            row_layout.addWidget(idx_label, 0)
+
+            name_edit = QtWidgets.QLineEdit(name)
+            name_edit.setReadOnly(True)
+            name_edit.setFrame(False)
+            name_edit.setStyleSheet("QLineEdit{background:transparent;color:#e2e8f0;}")
+            name_edit.setProperty("scene_node_name", name)
+
+            def _start_edit(edit=name_edit):
+                edit.setReadOnly(False)
+                edit.setFrame(True)
+                edit.setStyleSheet(
+                    "QLineEdit{background:#12151a;color:#e2e8f0;border:1px solid #3c4450;"
+                    "border-radius:4px;padding:2px 6px;}"
+                )
+                edit.selectAll()
+                edit.setFocus(QtCore.Qt.MouseFocusReason)
+
+            def _finish_edit(edit=name_edit, scn=scene):
+                old_name = edit.property("scene_node_name") or ""
+                new_name = edit.text().strip()
+                edit.setReadOnly(True)
+                edit.setFrame(False)
+                edit.setStyleSheet("QLineEdit{background:transparent;color:#e2e8f0;}")
+                if not new_name or new_name == old_name:
+                    edit.setText(old_name)
+                    return
+                if _apply_rename(scn, old_name, new_name):
+                    edit.setProperty("scene_node_name", new_name)
+                    _refresh(scn)
+                else:
+                    edit.setText(old_name)
+
+            def _on_double_click(ev, edit=name_edit):
+                _start_edit(edit)
+                try:
+                    QtWidgets.QLineEdit.mouseDoubleClickEvent(edit, ev)
+                except Exception:
+                    pass
+
+            name_edit.mouseDoubleClickEvent = _on_double_click  # type: ignore[assignment]
+            name_edit.editingFinished.connect(_finish_edit)
+            row_layout.addWidget(name_edit, 1)
 
             row_item = QtWidgets.QListWidgetItem()
             if entry.get("path"):

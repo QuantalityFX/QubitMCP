@@ -304,6 +304,12 @@ class MGLRendererMixin:
         for tag in ("model", "model-wire", "scene-model", "scene-wire"):
             scene.remove_by_tag(tag)
 
+    def _mgl_disable_splats(self) -> None:
+        self._mgl_pending_splats = None
+        self._mgl_render_splats = False
+        self._mgl_splat_count = 0
+        self._mgl_splats15_cpu = None
+
     def _mgl_set_scene_item_visibility(self, key: str, visible: bool) -> None:
         scene = getattr(self, "_mgl_scene", None)
         if scene is None or not key:
@@ -317,6 +323,35 @@ class MGLRendererMixin:
                     item.visible = bool(visible) and bool(getattr(self, "_mgl_wireframe", False))
                 else:
                     item.visible = visible
+
+    def _mgl_rename_scene_item_owner(self, old_name: str, new_name: str) -> None:
+        scene = getattr(self, "_mgl_scene", None)
+        if scene is None or not old_name or not new_name or old_name == new_name:
+            return
+        for item in scene.items():
+            payload = item.payload or {}
+            owner = payload.get("owner") or payload.get("node")
+            if owner == old_name:
+                payload["owner"] = new_name
+
+    def _mgl_rebuild_scene_splats(self, preserve_camera: bool = False) -> None:
+        if np is None:
+            self._mgl_disable_splats()
+            return
+        splat_map = getattr(self, "_mgl_scene_splats", None) or {}
+        if not splat_map:
+            self._mgl_disable_splats()
+            return
+        visibility = getattr(self, "_mgl_scene_visibility", {}) or {}
+        arrays = [arr for owner, arr in splat_map.items() if visibility.get(owner, True)]
+        if not arrays:
+            self._mgl_disable_splats()
+            return
+        state = self._mgl_get_camera_state() if preserve_camera else None
+        combined = arrays[0] if len(arrays) == 1 else np.concatenate(arrays, axis=0)
+        self.set_splats(combined)
+        if state is not None:
+            self._mgl_queue_camera_state(state)
 
     def _mgl_load_grid_model(self, path: Path, in_paint: bool = False) -> None:
         if not _HAS_MGL or self._mgl_ctx is None:
@@ -2336,11 +2371,15 @@ class MGLRendererMixin:
         self._mgl_mesh_vertex_count = 0
         self._mgl_mesh_path = ""
         self._mgl_set_uv_overlay(None)
+        try:
+            self._mgl_scene_splats = {}
+        except Exception:
+            pass
 
         bounds_min = None
         bounds_max = None
         has_mesh_bounds = False
-        splat_arrays: List["np.ndarray"] = []
+        has_splats = False
         total_indices = 0
         first_mesh_path = ""
 
@@ -2371,7 +2410,11 @@ class MGLRendererMixin:
                         splats = load_splats_ply(str(path), n=200_000)
                         arr = np.asarray(splats, dtype=np.float32)
                         if arr.ndim == 2 and arr.shape[1] in (8, 10, 14, 15):
-                            splat_arrays.append(arr)
+                            has_splats = True
+                            try:
+                                self._mgl_scene_splats[owner] = arr
+                            except Exception:
+                                pass
                             mins = arr[:, :3].min(axis=0)
                             maxs = arr[:, :3].max(axis=0)
                             bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, mins, maxs)
@@ -2598,29 +2641,19 @@ class MGLRendererMixin:
             if first_mesh_path:
                 self._mgl_mesh_path = first_mesh_path
 
-            if splat_arrays:
-                try:
-                    splats = splat_arrays[0] if len(splat_arrays) == 1 else np.concatenate(splat_arrays, axis=0)
-                    self.set_splats(splats)
-                except Exception as exc:
-                    self._mgl_error = f"Splat combine failed: {exc}"
-            else:
-                self._mgl_pending_splats = None
-                self._mgl_render_splats = False
-                self._mgl_splat_count = 0
-                self._mgl_splats15_cpu = None
-                self._mgl_splatq_vao = None
-                self._mgl_splatq_vbo = None
-
+            preserve_camera = not frame
             if frame and has_mesh_bounds and bounds_min is not None and bounds_max is not None:
                 try:
                     pts = np.array([bounds_min, bounds_max], dtype="f4")
                     self._mgl_init_arcball(pts)
-                    if splat_arrays:
-                        state = self._mgl_get_camera_state()
-                        self._mgl_queue_camera_state(state)
+                    preserve_camera = True
                 except Exception:
                     pass
+
+            if has_splats:
+                self._mgl_rebuild_scene_splats(preserve_camera=preserve_camera)
+            else:
+                self._mgl_disable_splats()
 
         except Exception as exc:
             self._mgl_error = f"Scene load failed: {exc}"

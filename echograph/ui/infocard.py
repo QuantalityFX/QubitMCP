@@ -74,6 +74,13 @@ class InfoCard(QtWidgets.QFrame):
                 return
             self._node_name = new_name
             self._node_ref.name = new_name
+            try:
+                win = self.window()
+                handler = getattr(win, "rename_scene_asset_owner", None) if win is not None else None
+                if callable(handler):
+                    handler(old_name, new_name)
+            except Exception:
+                pass
         title.editingFinished.connect(_commit_rename)
 
         order_badge = None
@@ -814,6 +821,13 @@ class InfoCard(QtWidgets.QFrame):
             return
         self._node_ref.name = text.strip()
         self._node_name = self._node_ref.name
+        try:
+            win = self.window()
+            handler = getattr(win, "rename_scene_asset_owner", None) if win is not None else None
+            if callable(handler):
+                handler(old, self._node_ref.name)
+        except Exception:
+            pass
         try:
             name_edit = self.findChild(QtWidgets.QLineEdit, "NodeNameEdit")
             if name_edit:

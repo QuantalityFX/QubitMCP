@@ -643,6 +643,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._mgl_grid_model_pending_path = None
         self._mgl_scene = MGLScene()
         self._mgl_scene_visibility: Dict[str, bool] = {}
+        self._mgl_scene_splats: Dict[str, "np.ndarray"] = {}
         self._mgl_splat_bbox_vao = None
         self._mgl_splat_bbox_vbo = None
         self._mgl_mesh_vbos = []
@@ -1310,6 +1311,34 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         if self._use_moderngl:
             try:
                 self._mgl_set_scene_item_visibility(key, bool(visible))
+            except Exception:
+                pass
+            if key in self._mgl_scene_splats:
+                try:
+                    self._mgl_rebuild_scene_splats(preserve_camera=True)
+                except Exception:
+                    pass
+            self.update()
+
+    def rename_scene_asset_owner(self, old_name: str, new_name: str) -> None:
+        old_key = str(old_name or "").strip()
+        new_key = str(new_name or "").strip()
+        if not old_key or not new_key or old_key == new_key:
+            return
+        if old_key in self._mgl_scene_visibility:
+            self._mgl_scene_visibility[new_key] = self._mgl_scene_visibility.pop(old_key)
+        try:
+            if old_key in self._mgl_scene_splats:
+                self._mgl_scene_splats[new_key] = self._mgl_scene_splats.pop(old_key)
+        except Exception:
+            pass
+        if self._use_moderngl:
+            try:
+                self._mgl_rename_scene_item_owner(old_key, new_key)
+            except Exception:
+                pass
+            try:
+                self._mgl_rebuild_scene_splats(preserve_camera=True)
             except Exception:
                 pass
             self.update()

@@ -702,6 +702,29 @@ class GraphScene(QtWidgets.QGraphicsScene):
         else:
             self._clear_path_highlight()
 
+        # keep scene node outliner hidden sets in sync
+        try:
+            for it in self._node_items.values():
+                model = getattr(it, "model", None)
+                if model is None:
+                    continue
+                if (model.kind or "").strip().lower() not in ("scene", "scene_assembly", "scene_outliner"):
+                    continue
+                hidden = getattr(model, "_scene_hidden", None)
+                if isinstance(hidden, set) and old_name in hidden:
+                    hidden.remove(old_name)
+                    hidden.add(new_name)
+                elif isinstance(hidden, list) and old_name in hidden:
+                    hidden = [new_name if n == old_name else n for n in hidden]
+                    setattr(model, "_scene_hidden", hidden)
+        except Exception:
+            pass
+
+        try:
+            self.linksChanged.emit()
+        except Exception:
+            pass
+
         return True, ""
     
     def upstream_of(self, dst_name: str):
@@ -2262,6 +2285,14 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         handler = getattr(gl_view, "set_scene_asset_visible", None)
         if callable(handler):
             handler(owner, visible)
+
+    def rename_scene_asset_owner(self, old_name: str, new_name: str) -> None:
+        gl_view = getattr(self, "gl_view", None)
+        if gl_view is None:
+            return
+        handler = getattr(gl_view, "rename_scene_asset_owner", None)
+        if callable(handler):
+            handler(old_name, new_name)
 
 
     def open_splat_model(self, ply_path: str) -> None:
