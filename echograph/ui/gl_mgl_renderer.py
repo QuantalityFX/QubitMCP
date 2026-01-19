@@ -40,6 +40,7 @@ except Exception:
 from .gl_arcball import _ArcBallUtil
 from .gl_debug_geo import debug_cube_wire_vertices
 from .gl_loaders import load_fbx_mesh_arrays_pyassimp
+from .gl_loaders import load_fbx_edge_vertices
 from .gl_loaders import load_gltf_mesh_arrays
 from .gl_loaders import load_model
 from .gl_loaders import load_obj_mesh_arrays
@@ -74,6 +75,66 @@ def _mgl_grid(size: float, steps: int) -> "np.ndarray":
 
 
 class MGLRendererMixin:
+    def _mgl_add_wire_item_from_points(
+        self,
+        name: str,
+        line_points: "np.ndarray",
+        visible: bool,
+        tag: str,
+        owner: Optional[str] = None,
+        path_key: Optional[str] = None,
+    ) -> Optional[MGLSceneItem]:
+        if self._mgl_ctx is None or self._mgl_wire_prog is None or np is None:
+            return None
+        if line_points is None or line_points.size == 0:
+            return None
+        edge_count = int(line_points.shape[0] // 2)
+        if edge_count <= 0:
+            return None
+        verts: List[float] = []
+        for i in range(edge_count):
+            p0 = line_points[i * 2]
+            p1 = line_points[i * 2 + 1]
+            ax, ay, az = float(p0[0]), float(p0[1]), float(p0[2])
+            bx, by, bz = float(p1[0]), float(p1[1]), float(p1[2])
+            if ax == bx and ay == by and az == bz:
+                continue
+            # triangle 1
+            verts.extend([ax, ay, az, ax, ay, az, bx, by, bz, -1.0])
+            verts.extend([ax, ay, az, ax, ay, az, bx, by, bz, 1.0])
+            verts.extend([bx, by, bz, ax, ay, az, bx, by, bz, 1.0])
+            # triangle 2
+            verts.extend([ax, ay, az, ax, ay, az, bx, by, bz, -1.0])
+            verts.extend([bx, by, bz, ax, ay, az, bx, by, bz, 1.0])
+            verts.extend([bx, by, bz, ax, ay, az, bx, by, bz, -1.0])
+        if not verts:
+            return None
+        try:
+            vbo = self._mgl_ctx.buffer(np.array(verts, dtype="f4").tobytes())
+            vao_content = [(vbo, "3f 3f 3f 1f", "in_pos", "in_start", "in_end", "in_side")]
+            vao = self._mgl_ctx.vertex_array(self._mgl_wire_prog, vao_content)
+        except Exception:
+            return None
+        payload = {
+            "vao": vao,
+            "color": self._mgl_wire_color,
+            "mode": moderngl.TRIANGLES,
+        }
+        if owner:
+            payload["owner"] = owner
+        if path_key:
+            payload["path"] = path_key
+        item = MGLSceneItem(
+            name=name,
+            draw_fn=MGLRendererMixin._mgl_draw_scene_wire,
+            payload=payload,
+            resources=[vao, vbo],
+            visible=visible,
+            order=15,
+            tag=tag,
+        )
+        return item
+
     @staticmethod
     def _mgl_load_obj_edge_vertices(path: Path) -> "np.ndarray":
         if np is None:
@@ -170,60 +231,39 @@ class MGLRendererMixin:
         owner: Optional[str] = None,
         path_key: Optional[str] = None,
     ) -> Optional[MGLSceneItem]:
-        if self._mgl_ctx is None or self._mgl_wire_prog is None or np is None:
-            return None
         try:
             line_points = self._mgl_load_obj_edge_vertices(path)
         except Exception:
             return None
-        if line_points is None or line_points.size == 0:
-            return None
-        edge_count = int(line_points.shape[0] // 2)
-        if edge_count <= 0:
-            return None
-        verts: List[float] = []
-        for i in range(edge_count):
-            p0 = line_points[i * 2]
-            p1 = line_points[i * 2 + 1]
-            ax, ay, az = float(p0[0]), float(p0[1]), float(p0[2])
-            bx, by, bz = float(p1[0]), float(p1[1]), float(p1[2])
-            if ax == bx and ay == by and az == bz:
-                continue
-            # triangle 1
-            verts.extend([ax, ay, az, ax, ay, az, bx, by, bz, -1.0])
-            verts.extend([ax, ay, az, ax, ay, az, bx, by, bz, 1.0])
-            verts.extend([bx, by, bz, ax, ay, az, bx, by, bz, 1.0])
-            # triangle 2
-            verts.extend([ax, ay, az, ax, ay, az, bx, by, bz, -1.0])
-            verts.extend([bx, by, bz, ax, ay, az, bx, by, bz, 1.0])
-            verts.extend([bx, by, bz, ax, ay, az, bx, by, bz, -1.0])
-        if not verts:
-            return None
+        return self._mgl_add_wire_item_from_points(
+            name=f"{path.name}-wire",
+            line_points=line_points,
+            visible=visible,
+            tag=tag,
+            owner=owner,
+            path_key=path_key,
+        )
+
+    def _mgl_add_fbx_wire_item(
+        self,
+        path: Path,
+        visible: bool,
+        tag: str = "model-wire",
+        owner: Optional[str] = None,
+        path_key: Optional[str] = None,
+    ) -> Optional[MGLSceneItem]:
         try:
-            vbo = self._mgl_ctx.buffer(np.array(verts, dtype="f4").tobytes())
-            vao_content = [(vbo, "3f 3f 3f 1f", "in_pos", "in_start", "in_end", "in_side")]
-            vao = self._mgl_ctx.vertex_array(self._mgl_wire_prog, vao_content)
+            line_points = load_fbx_edge_vertices(path)
         except Exception:
             return None
-        payload = {
-            "vao": vao,
-            "color": self._mgl_wire_color,
-            "mode": moderngl.TRIANGLES,
-        }
-        if owner:
-            payload["owner"] = owner
-        if path_key:
-            payload["path"] = path_key
-        item = MGLSceneItem(
+        return self._mgl_add_wire_item_from_points(
             name=f"{path.name}-wire",
-            draw_fn=MGLRendererMixin._mgl_draw_scene_wire,
-            payload=payload,
-            resources=[vao, vbo],
+            line_points=line_points,
             visible=visible,
-            order=15,
             tag=tag,
+            owner=owner,
+            path_key=path_key,
         )
-        return item
 
     def _on_mgl_pick_model(self) -> None:
         if not self._use_moderngl:
@@ -2327,8 +2367,13 @@ class MGLRendererMixin:
                                 self._mgl_upload_texture(qimg, str(path))
                             except Exception as exc:
                                 self._mgl_error = f"Texture upload failed: {exc}"
-            if scene is not None and path.suffix.lower() == ".obj":
-                wire_item = self._mgl_add_obj_wire_item(path, bool(self._mgl_wireframe))
+            if scene is not None:
+                ext = path.suffix.lower()
+                wire_item = None
+                if ext == ".obj":
+                    wire_item = self._mgl_add_obj_wire_item(path, bool(self._mgl_wireframe))
+                elif ext == ".fbx":
+                    wire_item = self._mgl_add_fbx_wire_item(path, bool(self._mgl_wireframe))
                 if wire_item is not None:
                     scene.add(wire_item)
                     if model_item is not None:
@@ -2625,14 +2670,23 @@ class MGLRendererMixin:
                         maxs = points.max(axis=0)
                         bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, mins, maxs)
                         has_mesh_bounds = True
-                    if ext == ".obj":
-                        wire_item = self._mgl_add_obj_wire_item(
-                            path,
-                            bool(self._mgl_wireframe) and visible,
-                            tag="scene-wire",
-                            owner=owner,
-                            path_key=path_key,
-                        )
+                    if ext in (".obj", ".fbx"):
+                        if ext == ".obj":
+                            wire_item = self._mgl_add_obj_wire_item(
+                                path,
+                                bool(self._mgl_wireframe) and visible,
+                                tag="scene-wire",
+                                owner=owner,
+                                path_key=path_key,
+                            )
+                        else:
+                            wire_item = self._mgl_add_fbx_wire_item(
+                                path,
+                                bool(self._mgl_wireframe) and visible,
+                                tag="scene-wire",
+                                owner=owner,
+                                path_key=path_key,
+                            )
                         if wire_item is not None:
                             scene.add(wire_item)
                             model_item.payload["edge_wire"] = True

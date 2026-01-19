@@ -282,6 +282,119 @@ def _load_fbx_ascii_mesh_arrays(path: Path) -> MeshArrays:
         submeshes=submeshes if submeshes else None,
     )
 
+
+def _load_fbx_ascii_edge_vertices(path: Path) -> "np.ndarray":
+    if np is None:
+        raise RuntimeError("numpy unavailable")
+    raw = path.read_text(encoding="utf-8", errors="ignore")
+    geo_pattern = re.compile(r'Geometry:\s*[^\n]*"Mesh"[^\n]*\{', re.IGNORECASE)
+
+    line_pos: List[float] = []
+    for match in geo_pattern.finditer(raw):
+        brace_start = raw.find("{", match.end() - 1)
+        if brace_start < 0:
+            continue
+        brace_end = _find_matching_brace(raw, brace_start)
+        if brace_end < 0:
+            continue
+        block = raw[brace_start + 1 : brace_end]
+        verts = _fbx_extract_array(block, "Vertices", as_int=False)
+        poly_idx = _fbx_extract_array(block, "PolygonVertexIndex", as_int=True)
+        if not verts or not poly_idx:
+            continue
+        if len(verts) % 3 != 0:
+            verts = verts[: (len(verts) // 3) * 3]
+        vertices = np.asarray(verts, dtype="f4").reshape(-1, 3)
+        if vertices.size == 0:
+            continue
+        max_idx = vertices.shape[0] - 1
+
+        edges = set()
+        polygon: List[int] = []
+        for idx in poly_idx:
+            end_poly = False
+            if idx < 0:
+                idx = -idx - 1
+                end_poly = True
+            if idx < 0 or idx > max_idx:
+                polygon = []
+                if end_poly:
+                    continue
+            else:
+                polygon.append(int(idx))
+            if end_poly:
+                if len(polygon) >= 2:
+                    for i in range(len(polygon)):
+                        a = polygon[i]
+                        b = polygon[(i + 1) % len(polygon)]
+                        if a == b:
+                            continue
+                        edge = (a, b) if a < b else (b, a)
+                        edges.add(edge)
+                polygon = []
+
+        for a, b in edges:
+            try:
+                ax, ay, az = vertices[a]
+                bx, by, bz = vertices[b]
+            except Exception:
+                continue
+            line_pos.extend([ax, ay, az, bx, by, bz])
+
+    if not line_pos:
+        raise RuntimeError("FBX ASCII edge data empty")
+    return np.array(line_pos, dtype="f4").reshape(-1, 3)
+
+
+def load_fbx_edge_vertices(path: Path) -> "np.ndarray":
+    if np is None:
+        raise RuntimeError("numpy unavailable")
+    ensure_assimp_dll()
+    try:
+        import pyassimp
+        from pyassimp import postprocess as ai_post
+    except Exception as exc:
+        if _is_ascii_fbx(path):
+            return _load_fbx_ascii_edge_vertices(path)
+        raise RuntimeError(f"pyassimp unavailable: {exc}")
+    try:
+        processing = ai_post.aiProcess_PreTransformVertices | ai_post.aiProcess_JoinIdenticalVertices
+        with pyassimp.load(str(path), file_type="fbx", processing=processing) as scene:
+            line_pos: List[float] = []
+            for mesh in scene.meshes or []:
+                vertices = np.asarray(getattr(mesh, "vertices", []), dtype="f4")
+                faces = getattr(mesh, "faces", None)
+                if vertices.size == 0 or not faces:
+                    continue
+                edges = set()
+                for face in faces:
+                    try:
+                        idxs = [int(i) for i in face]
+                    except Exception:
+                        continue
+                    if len(idxs) < 2:
+                        continue
+                    for i in range(len(idxs)):
+                        a = idxs[i]
+                        b = idxs[(i + 1) % len(idxs)]
+                        if a == b:
+                            continue
+                        if a < 0 or b < 0 or a >= len(vertices) or b >= len(vertices):
+                            continue
+                        edge = (a, b) if a < b else (b, a)
+                        edges.add(edge)
+                for a, b in edges:
+                    ax, ay, az = vertices[a]
+                    bx, by, bz = vertices[b]
+                    line_pos.extend([ax, ay, az, bx, by, bz])
+            if not line_pos:
+                raise RuntimeError("FBX edge data empty")
+            return np.array(line_pos, dtype="f4").reshape(-1, 3)
+    except Exception as exc:
+        if _is_ascii_fbx(path):
+            return _load_fbx_ascii_edge_vertices(path)
+        raise RuntimeError(str(exc))
+
 def load_fbx_mesh_arrays_pyassimp(path: Path) -> MeshArrays:
 
     if np is None:
