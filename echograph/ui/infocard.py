@@ -137,6 +137,13 @@ class InfoCard(QtWidgets.QFrame):
 
         # Kind-specific UI
         kind = (node.kind or "").lower()
+        if (not _augmented_by_plugin) and kind in ("scene", "scene_assembly", "scene_outliner"):
+            try:
+                from nodes.scene import spec as _scene_spec  # type: ignore
+                if hasattr(_scene_spec, "augment_infocard_footer"):
+                    _augmented_by_plugin = bool(_scene_spec.augment_infocard_footer(self, footer))
+            except Exception as e:
+                print("[EchoGraph] scene footer error:", e)
         if kind == "append":
             box = self._build_append_box()
         else:
@@ -187,6 +194,18 @@ class InfoCard(QtWidgets.QFrame):
         try:
             if hasattr(scene, "linksChanged"):
                 scene.linksChanged.connect(self._on_links_changed)
+        except Exception:
+            pass
+        try:
+            connect = getattr(self, "_scene_outliner_connect", None)
+            if callable(connect):
+                connect(scene)
+        except Exception:
+            pass
+        try:
+            refresh = getattr(self, "_scene_outliner_refresh", None)
+            if callable(refresh):
+                refresh(scene)
         except Exception:
             pass
         self._refresh_append_list_labels()

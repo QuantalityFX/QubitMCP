@@ -170,6 +170,115 @@ class SceneAssemblyWidget(QtWidgets.QWidget):
         handler(assets)
 
 
+def augment_infocard_footer(card, footer_layout) -> bool:
+    node = getattr(card, "_node_ref", None)
+    if not node:
+        return False
+
+    container = QtWidgets.QWidget()
+    layout = QtWidgets.QVBoxLayout(container)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(4)
+
+    title = QtWidgets.QLabel("Scene Outliner")
+    title.setStyleSheet("color:#94a3b8;font-size:11px;")
+    layout.addWidget(title, 0)
+
+    outliner = QtWidgets.QListWidget()
+    outliner.setStyleSheet(
+        "QListWidget{background:#0f1216;color:#e2e8f0;border:1px solid #3c4450;border-radius:6px;}"
+        "QListWidget::item{padding:2px 6px;}"
+    )
+    outliner.setMinimumHeight(70)
+    outliner.setMaximumHeight(140)
+    layout.addWidget(outliner, 0)
+
+    def _refresh(scene_override=None):
+        outliner.clear()
+        scene = scene_override if scene_override is not None else getattr(card, "_graph_scene", None)
+        if scene is None:
+            empty = QtWidgets.QListWidgetItem("(scene not attached)")
+            empty.setFlags(QtCore.Qt.NoItemFlags)
+            outliner.addItem(empty)
+            return
+        try:
+            item = getattr(scene, "_node_items", {}).get(node.name)
+        except Exception:
+            item = None
+        if item is None:
+            empty = QtWidgets.QListWidgetItem("(scene node not found)")
+            empty.setFlags(QtCore.Qt.NoItemFlags)
+            outliner.addItem(empty)
+            return
+        try:
+            in_edges = list(scene._ordered_in_edges(item))
+        except Exception:
+            try:
+                in_edges = list(scene._in_edges(item))
+            except Exception:
+                in_edges = []
+
+        rows = []
+        seen = set()
+        for edge in in_edges:
+            src_item = getattr(edge, "src", None)
+            model = getattr(src_item, "model", None)
+            if model is None:
+                continue
+            if (model.kind or "").strip().lower() != "import":
+                continue
+            path = _param_value(model, "path")
+            if not path:
+                continue
+            ext = Path(path).suffix.lower()
+            if ext not in SUPPORTED_EXTS:
+                continue
+            name = (getattr(model, "name", "") or "").strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            rows.append({"name": name, "path": path})
+
+        if not rows:
+            empty = QtWidgets.QListWidgetItem("(no connected imports)")
+            empty.setFlags(QtCore.Qt.NoItemFlags)
+            outliner.addItem(empty)
+            return
+
+        for idx, entry in enumerate(rows, start=1):
+            label = f"{idx}. {entry['name']}"
+            row = QtWidgets.QListWidgetItem(label)
+            if entry.get("path"):
+                row.setToolTip(entry["path"])
+            outliner.addItem(row)
+
+    def _connect(scene):
+        if scene is None:
+            return
+        if getattr(card, "_scene_outliner_connected", False):
+            return
+        try:
+            if hasattr(scene, "linksChanged"):
+                scene.linksChanged.connect(lambda *_: _refresh(scene))
+            if hasattr(scene, "paramChanged"):
+                scene.paramChanged.connect(lambda *_: _refresh(scene))
+            card._scene_outliner_connected = True
+        except Exception:
+            pass
+
+    card._scene_outliner_refresh = _refresh
+    card._scene_outliner_connect = _connect
+
+    sc = getattr(card, "_graph_scene", None)
+    if sc is not None:
+        _connect(sc)
+        _refresh(sc)
+    else:
+        _refresh()
+    footer_layout.addWidget(container)
+    return True
+
+
 def render_node_body(node_item, y_cursor: int) -> int:
     body = SceneAssemblyWidget(node_item, node_item)
     proxy = QtWidgets.QGraphicsProxyWidget(node_item)
@@ -190,4 +299,5 @@ def render_node_body(node_item, y_cursor: int) -> int:
 SCENE_SPEC = Spec(
     stripe_color="#38bdf8",
     render_node_body=render_node_body,
+    augment_infocard_footer=augment_infocard_footer,
 )
