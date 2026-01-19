@@ -2208,12 +2208,12 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         ext = os.path.splitext(path)[1].lower()
         print(f"[open_3d_model] path={path} ext={ext} texture={texture_path}", flush=True)
 
-        # switch to 3D view
+        # switch to split view unless the user is already in full 3D
         mode = getattr(self, "_view_mode", "2d")
-        if mode == "split":
-            self._set_view_mode("split")
-        else:
+        if mode == "3d":
             self._set_view_mode("3d")
+        else:
+            self._set_view_mode("split")
 
         # splat PLY path
         if ext == ".ply":
@@ -2308,10 +2308,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             return
 
         mode = getattr(self, "_view_mode", "2d")
-        if mode == "split":
-            self._set_view_mode("split")
-        else:
+        if mode == "3d":
             self._set_view_mode("3d")
+        else:
+            self._set_view_mode("split")
 
         gl_view = getattr(self, "gl_view", None)
         if gl_view is None:
