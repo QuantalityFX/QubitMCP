@@ -216,17 +216,30 @@ class EdgePin(QtWidgets.QGraphicsEllipseItem):
     def _sync_color(self):
         edge = getattr(self, "_edge", None)
         color = QtGui.QColor("#60a5fa")
-        if edge is not None:
+        if edge is not None and not self.isSelected():
             try:
                 color = edge.pen().color()
             except Exception:
                 pass
+        if self.isSelected():
+            color = QtGui.QColor("#60a5fa")
         try:
             self.setBrush(QtGui.QBrush(color))
         except Exception:
             self.setBrush(color)
 
     def itemChange(self, change, value):
+        if change == QtWidgets.QGraphicsItem.ItemSelectedHasChanged:
+            try:
+                self._sync_color()
+            except Exception:
+                pass
+            edge = getattr(self, "_edge", None)
+            if edge is not None and self.isSelected():
+                try:
+                    edge.setClickHighlighted(True)
+                except Exception:
+                    pass
         if change == QtWidgets.QGraphicsItem.ItemPositionChange:
             sc = self.scene()
             if (
@@ -264,6 +277,24 @@ class EdgePin(QtWidgets.QGraphicsEllipseItem):
                 except Exception:
                     pass
         return super().itemChange(change, value)
+
+    def paint(self, painter, option, widget=None):
+        try:
+            painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        except Exception:
+            pass
+        rect = self.rect()
+        if self.isSelected():
+            glow = QtGui.QColor("#60a5fa")
+            glow.setAlpha(140)
+            pen = QtGui.QPen(glow, 3.0)
+            pen.setCosmetic(True)
+            painter.setPen(pen)
+            painter.setBrush(QtCore.Qt.NoBrush)
+            painter.drawEllipse(rect.adjusted(-2.5, -2.5, 2.5, 2.5))
+        painter.setPen(self.pen())
+        painter.setBrush(self.brush())
+        painter.drawEllipse(rect)
 
     def mousePressEvent(self, e):
         if e.button() == QtCore.Qt.LeftButton:
