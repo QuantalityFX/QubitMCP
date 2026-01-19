@@ -1909,6 +1909,17 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             self._shortcut_comment_group = None
 
         try:
+            self._shortcut_node_menu = hotkeys.add_shortcut(
+                self.view,
+                "node_menu",
+                "Tab",
+                self._open_create_menu_from_hotkey,
+                context=QtCore.Qt.WidgetWithChildrenShortcut,
+            )
+        except Exception:
+            self._shortcut_node_menu = None
+
+        try:
             self._shortcut_node_delete = hotkeys.add_shortcut(
                 self.view,
                 "node_delete",
@@ -2479,6 +2490,30 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         # Pop an Info card immediately (nice feedback)
         if callable(self.add_info_card):
             self.add_info_card(node)
+
+    def _open_create_menu_from_hotkey(self):
+        try:
+            if actions._focus_is_text_input():
+                return
+        except Exception:
+            pass
+        v = getattr(self, "view", None)
+        sc = getattr(self, "scene", None)
+        if v is None or sc is None or not hasattr(sc, "show_create_dialog_at"):
+            return
+        try:
+            vp = v.viewport()
+            cursor = QtGui.QCursor.pos()
+            local = vp.mapFromGlobal(cursor) if vp is not None else v.mapFromGlobal(cursor)
+            if vp is not None and not vp.rect().contains(local):
+                local = vp.rect().center()
+            scene_pos = v.mapToScene(local)
+        except Exception:
+            scene_pos = QtCore.QPointF(0, 0)
+        try:
+            sc.show_create_dialog_at(scene_pos)
+        except Exception:
+            pass
 
     def _load_graph_file(self, path: str) -> bool:
         path = (path or "").strip()

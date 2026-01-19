@@ -15,6 +15,7 @@ DEFAULT_KEYMAP = {
     "comment_group": "C",
     "node_copy": "Ctrl+C",
     "node_paste": "Ctrl+V",
+    "node_menu": "Tab",
     "gl_frame": "F",
     "gl_reset_view": "R",
 }
