@@ -96,15 +96,73 @@ class MGLRendererMixin:
     def _on_mgl_grid_toggled(self, checked: bool) -> None:
         if not self._use_moderngl:
             return
+        self._mgl_grid_model_visible = bool(checked)
         if not checked:
+            self.update()
             return
         grid_path = Path(r"V:\Source\Repos\EchoMatrixMCP\echograph\3dmodels\grid.obj")
         if not grid_path.exists():
             self._mgl_error = f"Grid model missing: {grid_path}"
             self.update()
             return
-        self._mgl_load_mesh(grid_path)
+        if self._mgl_grid_model_vao is None:
+            self._mgl_grid_model_pending_path = grid_path
         self.update()
+
+    def _mgl_clear_grid_model(self) -> None:
+        for name in (
+            "_mgl_grid_model_vao",
+            "_mgl_grid_model_vbo",
+            "_mgl_grid_model_nbo",
+            "_mgl_grid_model_tbo",
+            "_mgl_grid_model_ibo",
+        ):
+            buf = getattr(self, name, None)
+            if buf is not None and hasattr(buf, "release"):
+                try:
+                    buf.release()
+                except Exception:
+                    pass
+            setattr(self, name, None)
+        self._mgl_grid_model_count = 0
+
+    def _mgl_load_grid_model(self, path: Path, in_paint: bool = False) -> None:
+        if not _HAS_MGL or self._mgl_ctx is None:
+            self._mgl_error = "ModernGL context not ready"
+            return
+        if self._mgl_grid_prog is None:
+            self._mgl_error = "ModernGL grid program not ready"
+            return
+        try:
+            points, _normals, _uvs = load_obj_mesh_arrays(path)
+        except Exception as exc:
+            self._mgl_error = f"Grid model load failed: {exc}"
+            return
+        if points is None or points.size == 0:
+            self._mgl_error = "Grid model load failed: no vertices"
+            return
+        points = points.astype("f4").reshape(-1, 3)
+        did_make_current = False
+        try:
+            if not in_paint:
+                self.makeCurrent()
+                did_make_current = True
+            self._mgl_clear_grid_model()
+            vbo = self._mgl_ctx.buffer(points.tobytes())
+            vao = self._mgl_ctx.simple_vertex_array(self._mgl_grid_prog, vbo, "in_position")
+            self._mgl_grid_model_vao = vao
+            self._mgl_grid_model_vbo = vbo
+            self._mgl_grid_model_count = int(points.shape[0])
+            self._mgl_error = ""
+        except Exception as exc:
+            self._mgl_error = f"Grid model upload failed: {exc}"
+            self._mgl_clear_grid_model()
+        finally:
+            if did_make_current:
+                try:
+                    self.doneCurrent()
+                except Exception:
+                    pass
 
     def _mgl_qimage_from_texture(self, texture: object) -> Optional[QtGui.QImage]:
         if isinstance(texture, QtGui.QImage):
@@ -348,6 +406,11 @@ class MGLRendererMixin:
         if self._mgl_prog is None or self._mgl_grid_prog is None:
             return
         self._dbgprint(dbg, "[MGL] prog ok", flush=True)
+
+        pending_grid = getattr(self, "_mgl_grid_model_pending_path", None)
+        if pending_grid is not None:
+            self._mgl_grid_model_pending_path = None
+            self._mgl_load_grid_model(Path(pending_grid), in_paint=True)
 
         aspect = self.width() / max(1.0, self.height())
         near = 0.1
@@ -655,6 +718,16 @@ class MGLRendererMixin:
             self._mgl_grid_prog["Mvp"].write(mvp.astype("f4"))
             self._mgl_grid_prog["Color"].value = (1.0, 1.0, 1.0, self._mgl_grid_alpha)
             self._mgl_grid_vao.render(moderngl.LINES)
+        if self._mgl_grid_model_visible and self._mgl_grid_model_vao is not None:
+            try:
+                self._mgl_grid_prog["Mvp"].write(mvp.astype("f4").tobytes())
+                self._mgl_grid_prog["Color"].value = (0.7, 0.7, 0.7, float(self._mgl_grid_alpha))
+            except Exception:
+                pass
+            try:
+                self._mgl_grid_model_vao.render(moderngl.TRIANGLES)
+            except Exception as exc:
+                self._mgl_error = f"Grid model draw failed: {exc}"
 
     def _mgl_get_camera_state(self) -> dict:
         """Return a JSON-serializable camera/orbit state (ModernGL path)."""
