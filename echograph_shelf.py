@@ -283,6 +283,27 @@ class CommentGroup(QtWidgets.QGraphicsObject):
                         sc._comment_drag_moved_nodes = set()
                         sc._comment_drag_moved_pins = set()
                         sc._comment_drag_moved_groups = set()
+                        all_pins = []
+                        for edge in list(getattr(sc, "_edges", [])):
+                            for pin in list(getattr(edge, "_pins", [])):
+                                if pin is None:
+                                    continue
+                                all_pins.append(pin)
+                        pin_map = {}
+                        for cg in list(getattr(sc, "_comment_groups", [])):
+                            try:
+                                rect = cg.mapRectToScene(cg._rect)
+                            except Exception:
+                                continue
+                            pin_ids = set()
+                            for pin in all_pins:
+                                try:
+                                    if rect.contains(pin.scenePos()):
+                                        pin_ids.add(id(pin))
+                                except Exception:
+                                    pass
+                            pin_map[cg] = pin_ids
+                        sc._comment_drag_pin_ids_by_group = pin_map
                     except Exception:
                         pass
                 if sc:
@@ -340,6 +361,7 @@ class CommentGroup(QtWidgets.QGraphicsObject):
                     sc._comment_drag_moved_nodes = set()
                     sc._comment_drag_moved_pins = set()
                     sc._comment_drag_moved_groups = set()
+                    sc._comment_drag_pin_ids_by_group = {}
                 except Exception:
                     pass
             e.accept()
@@ -1463,7 +1485,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
                         it.setPos(it.pos() + delta)
                         moved_nodes.add(name)
 
-            def _move_pins_for_rect(rect):
+            def _move_pins_for_rect(rect, allow_ids):
                 for edge in getattr(self, "_edges", []):
                     for pin in list(getattr(edge, "_pins", [])):
                         if pin is None:
@@ -1472,9 +1494,14 @@ class GraphScene(QtWidgets.QGraphicsScene):
                         if pid in moved_pins:
                             continue
                         try:
-                            if rect.contains(pin.scenePos()):
-                                pin.setPos(pin.pos() + delta)
-                                moved_pins.add(pid)
+                            if allow_ids is not None:
+                                if pid not in allow_ids:
+                                    continue
+                            else:
+                                if rect is None or not rect.contains(pin.scenePos()):
+                                    continue
+                            pin.setPos(pin.pos() + delta)
+                            moved_pins.add(pid)
                         except Exception:
                             pass
 
@@ -1490,9 +1517,14 @@ class GraphScene(QtWidgets.QGraphicsScene):
                 if grp in moved_groups:
                     continue
                 moved_groups.add(grp)
+                allow_ids = None
+                if getattr(self, "_comment_drag_active", False):
+                    try:
+                        allow_ids = getattr(self, "_comment_drag_pin_ids_by_group", {}).get(grp)
+                    except Exception:
+                        allow_ids = None
                 _move_nodes_for_group(grp)
-                if rect is not None:
-                    _move_pins_for_rect(rect)
+                _move_pins_for_rect(rect, allow_ids)
 
             nested_groups = []
             for cg in list(getattr(self, "_comment_groups", [])):
@@ -1511,13 +1543,18 @@ class GraphScene(QtWidgets.QGraphicsScene):
                 if cg in moved_groups:
                     continue
                 moved_groups.add(cg)
+                allow_ids = None
+                if getattr(self, "_comment_drag_active", False):
+                    try:
+                        allow_ids = getattr(self, "_comment_drag_pin_ids_by_group", {}).get(cg)
+                    except Exception:
+                        allow_ids = None
                 try:
                     cg.setPos(cg.pos() + delta)
                 except Exception:
                     pass
                 _move_nodes_for_group(cg)
-                if child_rect is not None:
-                    _move_pins_for_rect(child_rect)
+                _move_pins_for_rect(child_rect, allow_ids)
         finally:
             self._moving_comment_group = False
 
@@ -2026,7 +2063,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self.gl_view.hide()
         self._view_mode = "2d"
         self._frame_margin_x = 400.0
-        self._frame_margin_y = 480.0
+        self._frame_margin_y = 125.0
         self._split_framed_once = False
         v.addWidget(self._view_splitter, 1)
 
@@ -2234,7 +2271,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         if margin is None:
             margin = float(getattr(self, "_frame_margin_x", 400.0))
         if v_margin is None:
-            v_margin = float(getattr(self, "_frame_margin_y", max(420.0, margin * 1.2)))
+            v_margin = float(getattr(self, "_frame_margin_y", max(96.0, margin * 0.48)))
         try:
             bbox = sc._nodes_bbox()
         except Exception:
