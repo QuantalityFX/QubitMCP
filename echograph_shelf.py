@@ -1953,6 +1953,17 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             self._shortcut_view_mode_3d = None
 
         try:
+            self._shortcut_gl_frame = hotkeys.add_shortcut(
+                self,
+                "gl_frame",
+                "F",
+                self._frame_from_hotkey,
+                context=QtCore.Qt.WidgetWithChildrenShortcut,
+            )
+        except Exception:
+            self._shortcut_gl_frame = None
+
+        try:
             self._shortcut_node_delete = hotkeys.add_shortcut(
                 self.view,
                 "node_delete",
@@ -2558,6 +2569,38 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             self._set_view_mode(mode)
         except Exception:
             pass
+
+    def _frame_from_hotkey(self) -> None:
+        try:
+            if actions._focus_is_text_input():
+                return
+        except Exception:
+            pass
+        cursor = QtGui.QCursor.pos()
+        gl_view = getattr(self, "gl_view", None)
+        if gl_view is not None:
+            try:
+                if gl_view.isVisible():
+                    local = gl_view.mapFromGlobal(cursor)
+                    if gl_view.rect().contains(local):
+                        handler = getattr(gl_view, "_on_frame_clicked", None)
+                        if callable(handler):
+                            handler()
+                            return
+            except Exception:
+                pass
+
+        view = getattr(self, "view", None)
+        if view is not None:
+            try:
+                if view.isVisible():
+                    vp = view.viewport()
+                    local = vp.mapFromGlobal(cursor) if vp is not None else view.mapFromGlobal(cursor)
+                    if (vp is not None and vp.rect().contains(local)) or (vp is None and view.rect().contains(local)):
+                        self._frame_all_nodes()
+                        return
+            except Exception:
+                pass
 
     def _load_graph_file(self, path: str) -> bool:
         path = (path or "").strip()
