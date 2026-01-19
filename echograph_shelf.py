@@ -2025,6 +2025,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._view_splitter.setStretchFactor(1, 1)
         self.gl_view.hide()
         self._view_mode = "2d"
+        self._split_framed_once = False
         v.addWidget(self._view_splitter, 1)
 
         self.setCentralWidget(central)
@@ -2324,6 +2325,12 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                     splitter.setSizes([left, total - left])
                 except Exception:
                     pass
+            if not getattr(self, "_split_framed_once", False):
+                self._split_framed_once = True
+                try:
+                    QtCore.QTimer.singleShot(0, self._frame_all_nodes)
+                except Exception:
+                    self._frame_all_nodes()
         self._update_view_mode_button()
 
     def _update_view_mode_button(self) -> None:
