@@ -92,6 +92,7 @@ def _save_recent_graphs(paths: List[str]) -> None:
         pass
 
 DEFAULT_COMMENT_COLOR = "#1f2933"
+COMMENT_MEMBER_PAD = 16.0
 
 def _normalize_comment_color(value: str = None) -> str:
     qc = QtGui.QColor(value if value is not None else DEFAULT_COMMENT_COLOR)
@@ -1555,10 +1556,13 @@ class GraphScene(QtWidgets.QGraphicsScene):
         if group not in self._comment_groups:
             return
         group_rect = group.mapRectToScene(group._rect)
+        member_rect = group_rect.adjusted(
+            -COMMENT_MEMBER_PAD, -COMMENT_MEMBER_PAD, COMMENT_MEMBER_PAD, COMMENT_MEMBER_PAD
+        )
         members = []
         for name, node in self._node_items.items():
             rect = node.sceneBoundingRect()
-            if group_rect.contains(rect):
+            if member_rect.contains(rect.center()):
                 members.append(name)
         group._members = members
 
@@ -1570,7 +1574,10 @@ class GraphScene(QtWidgets.QGraphicsScene):
         changed = False
         for cg in list(self._comment_groups):
             group_rect = cg.mapRectToScene(cg._rect)
-            if group_rect.contains(node_rect):
+            member_rect = group_rect.adjusted(
+                -COMMENT_MEMBER_PAD, -COMMENT_MEMBER_PAD, COMMENT_MEMBER_PAD, COMMENT_MEMBER_PAD
+            )
+            if member_rect.contains(node_rect.center()):
                 if name not in cg.members():
                     cg._members.append(name)
                     changed = True
