@@ -131,6 +131,20 @@ class EdgePin(QtWidgets.QGraphicsEllipseItem):
         except Exception:
             pass
         self.setPos(scene_pos)
+        self._sync_color()
+
+    def _sync_color(self):
+        edge = getattr(self, "_edge", None)
+        color = QtGui.QColor("#60a5fa")
+        if edge is not None:
+            try:
+                color = edge.pen().color()
+            except Exception:
+                pass
+        try:
+            self.setBrush(QtGui.QBrush(color))
+        except Exception:
+            self.setBrush(color)
 
     def itemChange(self, change, value):
         if change == QtWidgets.QGraphicsItem.ItemPositionHasChanged:
@@ -141,6 +155,33 @@ class EdgePin(QtWidgets.QGraphicsEllipseItem):
                 except Exception:
                     pass
         return super().itemChange(change, value)
+
+    def mousePressEvent(self, e):
+        if e.button() == QtCore.Qt.LeftButton and (e.modifiers() & QtCore.Qt.ControlModifier):
+            edge = getattr(self, "_edge", None)
+            if edge is not None and hasattr(edge, "remove_pin"):
+                try:
+                    edge.remove_pin(self)
+                except Exception:
+                    pass
+            sc = self.scene()
+            if sc is not None:
+                try:
+                    sc.removeItem(self)
+                except Exception:
+                    pass
+            e.accept()
+            return
+        if e.button() == QtCore.Qt.LeftButton:
+            edge = getattr(self, "_edge", None)
+            if edge is not None and hasattr(edge, "_select_clicked"):
+                try:
+                    edge._select_clicked()
+                except Exception:
+                    pass
+            e.accept()
+            return
+        super().mousePressEvent(e)
 
 
 def _gi_flag(enum_name, fallback_enum):
@@ -207,6 +248,28 @@ class EdgeItem(QtWidgets.QGraphicsPathItem):
             self.setPen(self.pen_click)
         else:
             self.setPen(self.pen_path if self._highlight else self.pen_normal)
+        self._sync_pin_colors()
+
+    def _sync_pin_colors(self):
+        for pin in list(self._pins):
+            if pin is None:
+                continue
+            try:
+                pin._sync_color()
+            except Exception:
+                pass
+
+    def _select_clicked(self):
+        sc = self.scene()
+        if sc and hasattr(sc, "_edges"):
+            for edge in list(getattr(sc, "_edges", [])):
+                if edge is self:
+                    continue
+                try:
+                    edge.setClickHighlighted(False)
+                except Exception:
+                    pass
+        self.setClickHighlighted(True)
 
     def _pin_sort_key(self, s: QtCore.QPointF, d: QtCore.QPointF, p: QtCore.QPointF) -> float:
         vx = float(d.x() - s.x())
@@ -237,6 +300,21 @@ class EdgeItem(QtWidgets.QGraphicsPathItem):
         pin = EdgePin(self, scene_pos)
         sc.addItem(pin)
         self._pins.append(pin)
+        self._sync_pin_colors()
+        self.updatePath()
+
+    def remove_pin(self, pin) -> None:
+        if pin in self._pins:
+            try:
+                self._pins.remove(pin)
+            except Exception:
+                pass
+        sc = self.scene()
+        if sc is not None:
+            try:
+                sc.removeItem(pin)
+            except Exception:
+                pass
         self.updatePath()
 
     def pin_positions(self) -> list[list[float]]:
@@ -390,20 +468,11 @@ class EdgeItem(QtWidgets.QGraphicsPathItem):
                 self.add_pin(QtCore.QPointF(e.scenePos()))
             except Exception:
                 self.add_pin(e.scenePos())
-            self.setClickHighlighted(True)
+            self._select_clicked()
             e.accept()
             return
         if e.button() == QtCore.Qt.LeftButton:
-            sc = self.scene()
-            if sc and hasattr(sc, "_edges"):
-                for edge in list(getattr(sc, "_edges", [])):
-                    if edge is self:
-                        continue
-                    try:
-                        edge.setClickHighlighted(False)
-                    except Exception:
-                        pass
-            self.setClickHighlighted(True)
+            self._select_clicked()
             e.accept()
             return
         super().mousePressEvent(e)
