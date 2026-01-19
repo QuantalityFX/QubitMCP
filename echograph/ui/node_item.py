@@ -680,6 +680,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 node_w = preview_w
             else:
                 node_w = self._BASE_W
+        elif kind in ("scene", "scene_assembly", "scene_outliner"):
+            body_h = self._PARAM_ROW_H * 2 + self._PADDING
+            node_w = self._BASE_W
         elif kind in ("image_collection", "imagecollection"):
             body_h = self._IMG_CTRL_H + self._IMG_CANVAS_H
             node_w = max(self._BASE_W, self._IMG_CANVAS_W)

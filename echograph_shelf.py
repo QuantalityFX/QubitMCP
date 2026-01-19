@@ -2190,6 +2190,70 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         except Exception:
             print("[open_3d_model] loader error:\n" + traceback.format_exc(), flush=True)
 
+    def open_scene_assets(self, assets) -> None:
+        import traceback
+
+        assets = list(assets or [])
+        if not assets:
+            print("[open_scene_assets] no assets", flush=True)
+            return
+
+        clean = []
+        for entry in assets:
+            if not isinstance(entry, dict):
+                continue
+            path = (entry.get("path") or "").strip()
+            if not path:
+                continue
+            try:
+                if not os.path.exists(path):
+                    continue
+            except Exception:
+                continue
+            clean.append(
+                {
+                    "path": path,
+                    "texture": entry.get("texture") or None,
+                }
+            )
+
+        if not clean:
+            print("[open_scene_assets] no valid asset paths", flush=True)
+            return
+
+        mode = getattr(self, "_view_mode", "2d")
+        if mode == "split":
+            self._set_view_mode("split")
+        else:
+            self._set_view_mode("3d")
+
+        gl_view = getattr(self, "gl_view", None)
+        if gl_view is None:
+            print("[open_scene_assets] gl_view is None", flush=True)
+            return
+
+        try:
+            gl_view._render_scene_models = True
+        except Exception:
+            pass
+
+        loader = getattr(gl_view, "load_scene_assets", None)
+        if callable(loader):
+            try:
+                loader(clean, frame=True)
+                return
+            except Exception:
+                print("[open_scene_assets] loader error:\n" + traceback.format_exc(), flush=True)
+
+        # fallback: load first asset only
+        first = clean[0]
+        try:
+            gl_view.load_model_path(first["path"], first.get("texture"))
+            if hasattr(gl_view, "_on_frame_clicked"):
+                gl_view._on_frame_clicked()
+        except Exception:
+            print("[open_scene_assets] fallback failed:\n" + traceback.format_exc(), flush=True)
+
 
     def open_splat_model(self, ply_path: str) -> None:
         import traceback

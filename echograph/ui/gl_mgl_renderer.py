@@ -162,7 +162,12 @@ class MGLRendererMixin:
             return np.zeros((0, 3), dtype="f4")
         return np.array(line_pos, dtype="f4").reshape(-1, 3)
 
-    def _mgl_add_obj_wire_item(self, path: Path, visible: bool) -> Optional[MGLSceneItem]:
+    def _mgl_add_obj_wire_item(
+        self,
+        path: Path,
+        visible: bool,
+        tag: str = "model-wire",
+    ) -> Optional[MGLSceneItem]:
         if self._mgl_ctx is None or self._mgl_wire_prog is None or np is None:
             return None
         try:
@@ -209,7 +214,7 @@ class MGLRendererMixin:
             resources=[vao, vbo],
             visible=visible,
             order=15,
-            tag="model-wire",
+            tag=tag,
         )
         return item
 
@@ -284,6 +289,13 @@ class MGLRendererMixin:
                     pass
             setattr(self, name, None)
         self._mgl_grid_model_count = 0
+
+    def _mgl_clear_scene_models(self) -> None:
+        scene = getattr(self, "_mgl_scene", None)
+        if scene is None:
+            return
+        for tag in ("model", "model-wire", "scene-model", "scene-wire"):
+            scene.remove_by_tag(tag)
 
     def _mgl_load_grid_model(self, path: Path, in_paint: bool = False) -> None:
         if not _HAS_MGL or self._mgl_ctx is None:
@@ -1472,6 +1484,7 @@ class MGLRendererMixin:
         scene = getattr(self, "_mgl_scene", None)
         if scene is not None:
             scene.set_visible_by_tag("model-wire", bool(checked))
+            scene.set_visible_by_tag("scene-wire", bool(checked))
         self.update()
 
     def _on_mgl_uv_toggled(self, checked: bool) -> None:
@@ -2124,8 +2137,7 @@ class MGLRendererMixin:
             self._mgl_error = ""
             scene = getattr(self, "_mgl_scene", None)
             if scene is not None:
-                scene.remove_by_tag("model")
-                scene.remove_by_tag("model-wire")
+                self._mgl_clear_scene_models()
                 self._mgl_submeshes = []
                 self._mgl_vao = None
                 self._mgl_mesh_vbos = []
@@ -2263,3 +2275,312 @@ class MGLRendererMixin:
                 self.doneCurrent()
             except Exception:
                 pass
+
+    def _mgl_load_scene_assets(self, assets: List[Dict[str, str]], frame: bool = True) -> None:
+        if self._mgl_ctx is None:
+            self._mgl_error = "ModernGL context not ready"
+            return
+        scene = getattr(self, "_mgl_scene", None)
+        if scene is None:
+            self._mgl_error = "Scene assembly not ready"
+            return
+        if np is None:
+            self._mgl_error = "numpy unavailable"
+            return
+
+        def _merge_bounds(bmin, bmax, new_min, new_max):
+            if new_min is None or new_max is None:
+                return bmin, bmax
+            if bmin is None or bmax is None:
+                return new_min.copy(), new_max.copy()
+            return np.minimum(bmin, new_min), np.maximum(bmax, new_max)
+
+        self._mgl_error = ""
+        self._mgl_clear_scene_models()
+        self._mgl_submeshes = []
+        self._mgl_vao = None
+        self._mgl_mesh_vbos = []
+        self._mgl_index_buffer = None
+        self._mgl_mesh = None
+        self._mgl_mesh_vertex_count = 0
+        self._mgl_mesh_path = ""
+        self._mgl_set_uv_overlay(None)
+
+        bounds_min = None
+        bounds_max = None
+        has_mesh_bounds = False
+        splat_arrays: List["np.ndarray"] = []
+        total_indices = 0
+        first_mesh_path = ""
+
+        did_make_current = False
+        try:
+            self.makeCurrent()
+            did_make_current = True
+
+            for asset in assets or []:
+                path_str = str(asset.get("path", "") or "").strip()
+                if not path_str:
+                    continue
+                path = Path(path_str)
+                if not path.exists():
+                    continue
+                ext = path.suffix.lower()
+
+                if ext == ".ply":
+                    try:
+                        from echograph.util.splats_io import load_splats_ply
+
+                        splats = load_splats_ply(str(path), n=200_000)
+                        arr = np.asarray(splats, dtype=np.float32)
+                        if arr.ndim == 2 and arr.shape[1] in (8, 10, 14, 15):
+                            splat_arrays.append(arr)
+                            mins = arr[:, :3].min(axis=0)
+                            maxs = arr[:, :3].max(axis=0)
+                            bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, mins, maxs)
+                    except Exception as exc:
+                        self._mgl_error = f"Splat load failed: {exc}"
+                    continue
+
+                texture_override = None
+                texture_path = str(asset.get("texture", "") or "").strip()
+                if texture_path and not self._mgl_texture_override:
+                    try:
+                        tex_path = Path(texture_path)
+                    except Exception:
+                        tex_path = None
+                    if tex_path is not None and tex_path.exists():
+                        qimg = QtGui.QImage(str(tex_path))
+                        if not qimg.isNull():
+                            if hasattr(QtGui.QImage, "Format_RGBA8888"):
+                                qimg = qimg.convertToFormat(QtGui.QImage.Format_RGBA8888)
+                            else:
+                                qimg = qimg.convertToFormat(QtGui.QImage.Format_ARGB32)
+                            qimg = qimg.mirrored(False, True)
+                            try:
+                                texture_override = self._mgl_make_texture(qimg)
+                            except Exception:
+                                texture_override = None
+
+                mesh = None
+                mesh_arrays = None
+                points = None
+                normals = None
+                uvs = None
+                if openmesh is not None and ext != ".fbx":
+                    try:
+                        mesh = openmesh.read_trimesh(str(path))
+                    except Exception:
+                        mesh = None
+
+                if mesh is None:
+                    if ext == ".fbx":
+                        try:
+                            mesh_arrays = load_fbx_mesh_arrays_pyassimp(path)
+                            points = mesh_arrays.points
+                            normals = mesh_arrays.normals
+                            uvs = mesh_arrays.uvs
+                        except Exception as exc:
+                            self._mgl_error = f"FBX load failed: {exc}"
+                            continue
+                    elif ext == ".obj":
+                        try:
+                            points, normals, uvs = load_obj_mesh_arrays(path)
+                        except Exception:
+                            points = None
+                    elif ext in (".gltf", ".glb"):
+                        try:
+                            mesh_arrays = load_gltf_mesh_arrays(path)
+                            points = mesh_arrays.points
+                            normals = mesh_arrays.normals
+                            uvs = mesh_arrays.uvs
+                        except Exception:
+                            points = None
+
+                    if points is None:
+                        model_data = load_model(path)
+                        if model_data is None or not model_data.vertices:
+                            continue
+                        points = np.array(model_data.vertices, dtype="f4").reshape(-1, 3)
+                        normals = np.zeros_like(points)
+                        for i in range(0, points.shape[0], 3):
+                            a, b, c = points[i:i + 3]
+                            n = np.cross(b - a, c - a)
+                            norm = np.linalg.norm(n)
+                            if norm > 1e-6:
+                                n = n / norm
+                            normals[i:i + 3] = n
+
+                model_item = None
+                if mesh is not None:
+                    mesh.update_normals()
+                    points = np.array(mesh.points(), dtype="f4")
+                    normals = np.array(mesh.vertex_normals(), dtype="f4")
+                    indices = np.array(mesh.face_vertex_indices(), dtype="u4").ravel()
+                    entry = self._mgl_build_mesh_entry(points, normals, None, indices)
+                    if entry is None:
+                        continue
+                    resources = [
+                        entry.get("vao"),
+                        entry.get("vbo"),
+                        entry.get("nbo"),
+                        entry.get("tbo"),
+                        entry.get("ibo"),
+                    ]
+                    if texture_override is not None:
+                        resources.append(texture_override)
+                    model_item = MGLSceneItem(
+                        name=path.name,
+                        draw_fn=MGLRendererMixin._mgl_draw_scene_mesh,
+                        payload={
+                            "vao": entry.get("vao"),
+                            "texture": texture_override,
+                            "color": self._mgl_mesh_color,
+                        },
+                        resources=[res for res in resources if res is not None],
+                        order=10,
+                        tag="scene-model",
+                    )
+                    total_indices += int(entry.get("count", 0))
+                else:
+                    if mesh_arrays is not None and mesh_arrays.submeshes:
+                        original_override = self._mgl_texture_override
+                        if texture_override is not None and not original_override:
+                            self._mgl_texture_override = True
+                        try:
+                            entries, _combined_uvs, _tex_paths, sub_count = self._mgl_build_submesh_entries(
+                                mesh_arrays.submeshes
+                            )
+                        finally:
+                            self._mgl_texture_override = original_override
+                        if texture_override is not None:
+                            for sub in entries:
+                                sub["texture"] = texture_override
+                        resources = []
+                        seen = set()
+                        for sub in entries:
+                            for res in (
+                                sub.get("vao"),
+                                sub.get("vbo"),
+                                sub.get("nbo"),
+                                sub.get("tbo"),
+                                sub.get("ibo"),
+                                sub.get("texture"),
+                            ):
+                                if res is None:
+                                    continue
+                                rid = id(res)
+                                if rid in seen:
+                                    continue
+                                seen.add(rid)
+                                resources.append(res)
+                        model_item = MGLSceneItem(
+                            name=path.name,
+                            draw_fn=MGLRendererMixin._mgl_draw_scene_mesh,
+                            payload={"submeshes": entries},
+                            resources=resources,
+                            order=10,
+                            tag="scene-model",
+                        )
+                        total_indices += int(sub_count)
+                        if mesh_arrays.points is not None and mesh_arrays.points.size:
+                            mins = mesh_arrays.points.min(axis=0)
+                            maxs = mesh_arrays.points.max(axis=0)
+                            bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, mins, maxs)
+                            has_mesh_bounds = True
+                        elif mesh_arrays.submeshes:
+                            for sub in mesh_arrays.submeshes:
+                                pts = getattr(sub, "points", None)
+                                if pts is None or not getattr(pts, "size", 0):
+                                    continue
+                                mins = pts.min(axis=0)
+                                maxs = pts.max(axis=0)
+                                bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, mins, maxs)
+                                has_mesh_bounds = True
+                    else:
+                        entry = self._mgl_build_mesh_entry(points, normals, uvs)
+                        if entry is None:
+                            continue
+                        color = (
+                            mesh_arrays.base_color
+                            if mesh_arrays is not None and mesh_arrays.base_color is not None
+                            else self._mgl_mesh_color
+                        )
+                        resources = [
+                            entry.get("vao"),
+                            entry.get("vbo"),
+                            entry.get("nbo"),
+                            entry.get("tbo"),
+                            entry.get("ibo"),
+                        ]
+                        if texture_override is not None:
+                            resources.append(texture_override)
+                        model_item = MGLSceneItem(
+                            name=path.name,
+                            draw_fn=MGLRendererMixin._mgl_draw_scene_mesh,
+                            payload={
+                                "vao": entry.get("vao"),
+                                "texture": texture_override,
+                                "color": color,
+                            },
+                            resources=[res for res in resources if res is not None],
+                            order=10,
+                            tag="scene-model",
+                        )
+                        total_indices += int(entry.get("count", 0))
+
+                if model_item is not None:
+                    scene.add(model_item)
+                    if not first_mesh_path:
+                        first_mesh_path = str(path)
+                    if points is not None and getattr(points, "size", 0):
+                        mins = points.min(axis=0)
+                        maxs = points.max(axis=0)
+                        bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, mins, maxs)
+                        has_mesh_bounds = True
+                    if ext == ".obj":
+                        wire_item = self._mgl_add_obj_wire_item(
+                            path,
+                            bool(self._mgl_wireframe),
+                            tag="scene-wire",
+                        )
+                        if wire_item is not None:
+                            scene.add(wire_item)
+                            model_item.payload["edge_wire"] = True
+
+            self._mgl_mesh_vertex_count = int(total_indices)
+            if first_mesh_path:
+                self._mgl_mesh_path = first_mesh_path
+
+            if splat_arrays:
+                try:
+                    splats = splat_arrays[0] if len(splat_arrays) == 1 else np.concatenate(splat_arrays, axis=0)
+                    self.set_splats(splats)
+                except Exception as exc:
+                    self._mgl_error = f"Splat combine failed: {exc}"
+            else:
+                self._mgl_pending_splats = None
+                self._mgl_render_splats = False
+                self._mgl_splat_count = 0
+                self._mgl_splats15_cpu = None
+                self._mgl_splatq_vao = None
+                self._mgl_splatq_vbo = None
+
+            if frame and has_mesh_bounds and bounds_min is not None and bounds_max is not None:
+                try:
+                    pts = np.array([bounds_min, bounds_max], dtype="f4")
+                    self._mgl_init_arcball(pts)
+                    if splat_arrays:
+                        state = self._mgl_get_camera_state()
+                        self._mgl_queue_camera_state(state)
+                except Exception:
+                    pass
+
+        except Exception as exc:
+            self._mgl_error = f"Scene load failed: {exc}"
+        finally:
+            if did_make_current:
+                try:
+                    self.doneCurrent()
+                except Exception:
+                    pass

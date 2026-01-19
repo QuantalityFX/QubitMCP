@@ -152,3 +152,14 @@ def bootstrap_plugins():
             print("[EchoGraph] Image Collection module has no 'register' function.")
     except Exception as e:
         print("[EchoGraph] Image Collection plugin import failed:", e)
+
+    # 13) Scene Assembly
+    try:
+        from nodes import scene as scene_node
+        if hasattr(scene_node, "register"):
+            scene_node.register()
+            _safe_probe("scene")
+        else:
+            print("[EchoGraph] Scene module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Scene plugin import failed:", e)

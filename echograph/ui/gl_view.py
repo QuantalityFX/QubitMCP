@@ -1268,6 +1268,39 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         #QtCore.QTimer.singleShot(0, self._apply_manual_model)
         #QtCore.QTimer.singleShot(0, lambda: self.gl_view.debug_points())
 
+    def load_scene_assets(self, assets: List[Dict[str, str]], frame: bool = True) -> None:
+        if not assets:
+            return
+        if self._use_moderngl:
+            try:
+                self._mgl_load_scene_assets(assets, frame=frame)
+            except Exception:
+                pass
+            self.update()
+            return
+
+        for asset in assets:
+            path = str(asset.get("path", "") or "").strip()
+            if not path:
+                continue
+            ext = Path(path).suffix.lower()
+            if ext == ".ply":
+                try:
+                    from echograph.util.splats_io import load_splats_ply
+
+                    splats = load_splats_ply(path)
+                    self.set_splats(splats)
+                except Exception:
+                    pass
+                if frame:
+                    try:
+                        self._reset_camera()
+                    except Exception:
+                        pass
+                return
+            self.load_model_path(path, asset.get("texture"), frame=frame)
+            return
+
     def _default_models_dir(self) -> Optional[Path]:
         try:
             root = Path(__file__).resolve().parents[2]
