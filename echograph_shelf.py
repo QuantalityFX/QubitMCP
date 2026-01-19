@@ -2025,6 +2025,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._view_splitter.setStretchFactor(1, 1)
         self.gl_view.hide()
         self._view_mode = "2d"
+        self._frame_margin_x = 400.0
+        self._frame_margin_y = 480.0
         self._split_framed_once = False
         v.addWidget(self._view_splitter, 1)
 
@@ -2224,18 +2226,22 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             self._recent_files = new_list
             _save_recent_graphs(new_list)
 
-    def _frame_all_nodes(self, margin: float = 400.0):
+    def _frame_all_nodes(self, margin: float | None = None, v_margin: float | None = None):
         sc = getattr(self, "scene", None)
         v = getattr(self, "view", None)
         if not sc or not v:
             return
+        if margin is None:
+            margin = float(getattr(self, "_frame_margin_x", 400.0))
+        if v_margin is None:
+            v_margin = float(getattr(self, "_frame_margin_y", max(420.0, margin * 1.2)))
         try:
             bbox = sc._nodes_bbox()
         except Exception:
             bbox = None
         if bbox is None:
             return
-        rect = bbox.adjusted(-margin, -margin, margin, margin)
+        rect = bbox.adjusted(-margin, -v_margin, margin, v_margin)
         try:
             v.fitInView(rect, QtCore.Qt.KeepAspectRatio)
         except Exception:
