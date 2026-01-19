@@ -44,27 +44,31 @@ def _rounded_polyline_path(points, radius: float) -> QtGui.QPainterPath:
     return path
 
 
-def _lead_for_dx(total_dx: float) -> float:
-    abs_dx = abs(total_dx)
+def _lead_for_delta(total_delta: float) -> float:
+    abs_d = abs(total_delta)
     lead_base = 24.0
     min_lead = 8.0
     lead = lead_base
-    if abs_dx < lead_base * 2.0:
-        lead = max(min_lead, abs_dx * 0.35)
-    if total_dx > 0.0:
+    if abs_d < lead_base * 2.0:
+        lead = max(min_lead, abs_d * 0.35)
+    if total_delta > 0.0:
         min_mid = max(10.0, lead_base * 0.5)
-        max_lead = (total_dx - min_mid) * 0.5
+        max_lead = (total_delta - min_mid) * 0.5
         if max_lead < lead:
             lead = max(min_lead, max_lead)
     return max(min_lead, lead)
 
 
-def _elbow_path(
+def _elbow_points(
     start: QtCore.QPointF,
     end: QtCore.QPointF,
     lead_out: float | None = None,
     lead_in: float | None = None,
-) -> QtGui.QPainterPath:
+    axis_start: str = "x",
+    axis_end: str = "x",
+    dir_start: float = 1.0,
+    dir_end: float = 1.0,
+) -> tuple[list[QtCore.QPointF], float]:
     sx = float(start.x())
     sy = float(start.y())
     dx = float(end.x())
@@ -75,35 +79,58 @@ def _elbow_path(
     abs_dx = abs(total_dx)
     abs_dy = abs(total_dy)
     if lead_out is None:
-        lead_out = _lead_for_dx(total_dx)
+        lead_out = _lead_for_delta(total_dx if axis_start == "x" else total_dy)
     if lead_in is None:
-        lead_in = _lead_for_dx(total_dx)
+        lead_in = _lead_for_delta(total_dx if axis_end == "x" else total_dy)
     lead_base = max(12.0, float(lead_out), float(lead_in))
 
-    # Always step out to the right from the source pin, and approach the
-    # destination pin from the left so the wire never bends back into a node.
-    out_x = sx + lead_out
-    in_x = dx - lead_in
-    mid_y = (sy + dy) * 0.5
-    mid_run = abs(in_x - out_x)
-    tight_thresh = max(10.0, lead_base * 0.6)
-
-    if mid_run < tight_thresh or abs_dy < tight_thresh:
-        points = [
-            QtCore.QPointF(sx, sy),
-            QtCore.QPointF(out_x, sy),
-            QtCore.QPointF(out_x, dy),
-            QtCore.QPointF(dx, dy),
-        ]
+    if axis_start == "x":
+        out_pt = QtCore.QPointF(sx + dir_start * lead_out, sy)
     else:
-        points = [
-            QtCore.QPointF(sx, sy),
-            QtCore.QPointF(out_x, sy),
-            QtCore.QPointF(out_x, mid_y),
-            QtCore.QPointF(in_x, mid_y),
-            QtCore.QPointF(in_x, dy),
-            QtCore.QPointF(dx, dy),
-        ]
+        out_pt = QtCore.QPointF(sx, sy + dir_start * lead_out)
+    if axis_end == "x":
+        in_pt = QtCore.QPointF(dx - dir_end * lead_in, dy)
+    else:
+        in_pt = QtCore.QPointF(dx, dy - dir_end * lead_in)
+
+    tight_thresh = max(10.0, lead_base * 0.6)
+    points = [QtCore.QPointF(sx, sy), out_pt]
+
+    if axis_start == axis_end:
+        if axis_start == "x":
+            mid_y = (sy + dy) * 0.5
+            mid_run = abs(in_pt.x() - out_pt.x())
+            if mid_run < tight_thresh or abs_dy < tight_thresh:
+                points.extend([QtCore.QPointF(out_pt.x(), dy), QtCore.QPointF(dx, dy)])
+            else:
+                points.extend(
+                    [
+                        QtCore.QPointF(out_pt.x(), mid_y),
+                        QtCore.QPointF(in_pt.x(), mid_y),
+                        QtCore.QPointF(in_pt.x(), dy),
+                        QtCore.QPointF(dx, dy),
+                    ]
+                )
+        else:
+            mid_x = (sx + dx) * 0.5
+            mid_run = abs(in_pt.y() - out_pt.y())
+            if mid_run < tight_thresh or abs_dx < tight_thresh:
+                points.extend([QtCore.QPointF(dx, out_pt.y()), QtCore.QPointF(dx, dy)])
+            else:
+                points.extend(
+                    [
+                        QtCore.QPointF(mid_x, out_pt.y()),
+                        QtCore.QPointF(mid_x, in_pt.y()),
+                        QtCore.QPointF(dx, in_pt.y()),
+                        QtCore.QPointF(dx, dy),
+                    ]
+                )
+    else:
+        if axis_start == "x":
+            mid = QtCore.QPointF(out_pt.x(), in_pt.y())
+        else:
+            mid = QtCore.QPointF(in_pt.x(), out_pt.y())
+        points.extend([mid, in_pt, QtCore.QPointF(dx, dy)])
     filtered = []
     for p in points:
         if filtered and abs(filtered[-1].x() - p.x()) <= 1e-6 and abs(filtered[-1].y() - p.y()) <= 1e-6:
@@ -112,13 +139,37 @@ def _elbow_path(
 
     span = min(abs_dx, abs_dy, lead_out, lead_in)
     corner = max(6.0, min(24.0, span * 0.4))
-    return _rounded_polyline_path(filtered, corner)
+    return filtered, corner
+
+
+def _elbow_path(
+    start: QtCore.QPointF,
+    end: QtCore.QPointF,
+    lead_out: float | None = None,
+    lead_in: float | None = None,
+    axis_start: str = "x",
+    axis_end: str = "x",
+    dir_start: float = 1.0,
+    dir_end: float = 1.0,
+) -> QtGui.QPainterPath:
+    points, corner = _elbow_points(
+        start,
+        end,
+        lead_out=lead_out,
+        lead_in=lead_in,
+        axis_start=axis_start,
+        axis_end=axis_end,
+        dir_start=dir_start,
+        dir_end=dir_end,
+    )
+    return _rounded_polyline_path(points, corner)
 
 
 class EdgePin(QtWidgets.QGraphicsEllipseItem):
-    def __init__(self, edge, scene_pos: QtCore.QPointF, radius: float = 5.0):
+    def __init__(self, edge, scene_pos: QtCore.QPointF, radius: float = 5.0, axis_hint: str | None = None):
         super().__init__(-radius, -radius, radius * 2.0, radius * 2.0)
         self._edge = edge
+        self.axis_hint = axis_hint if axis_hint in ("x", "y") else None
         self.setBrush(QtGui.QColor("#60a5fa"))
         pen = QtGui.QPen(QtGui.QColor("#1f2937"), 1.0)
         pen.setCosmetic(True)
@@ -151,6 +202,11 @@ class EdgePin(QtWidgets.QGraphicsEllipseItem):
             edge = getattr(self, "_edge", None)
             if edge is not None:
                 try:
+                    if hasattr(edge, "_axis_hint_for_point"):
+                        self.axis_hint = edge._axis_hint_for_point(self.scenePos())
+                except Exception:
+                    pass
+                try:
                     edge.updatePath()
                 except Exception:
                     pass
@@ -179,7 +235,7 @@ class EdgePin(QtWidgets.QGraphicsEllipseItem):
                     edge._select_clicked()
                 except Exception:
                     pass
-            e.accept()
+            super().mousePressEvent(e)
             return
         super().mousePressEvent(e)
 
@@ -217,6 +273,7 @@ class EdgeItem(QtWidgets.QGraphicsPathItem):
         self._highlight = False
         self._click_highlight = False
         self._pins = []
+        self._polyline_points = []
         self._apply_pen_state()
         self.setBrush(QtCore.Qt.NoBrush)
         self.updatePath()
@@ -293,11 +350,51 @@ class EdgeItem(QtWidgets.QGraphicsPathItem):
             return []
         return sorted(points, key=lambda pt: self._pin_sort_key(s, d, pt))
 
+    def _axis_hint_for_point(self, scene_pos: QtCore.QPointF) -> str | None:
+        pts = list(getattr(self, "_polyline_points", []) or [])
+        if len(pts) < 2:
+            return None
+        px = float(scene_pos.x())
+        py = float(scene_pos.y())
+        best_axis = None
+        best_dist = None
+
+        def _dist2_point_to_segment(p0, p1):
+            x1 = float(p0.x())
+            y1 = float(p0.y())
+            x2 = float(p1.x())
+            y2 = float(p1.y())
+            vx = x2 - x1
+            vy = y2 - y1
+            denom = vx * vx + vy * vy
+            if denom <= 1e-6:
+                dx = px - x1
+                dy = py - y1
+                return dx * dx + dy * dy
+            t = ((px - x1) * vx + (py - y1) * vy) / denom
+            t = max(0.0, min(1.0, t))
+            proj_x = x1 + t * vx
+            proj_y = y1 + t * vy
+            dx = px - proj_x
+            dy = py - proj_y
+            return dx * dx + dy * dy
+
+        for i in range(len(pts) - 1):
+            a = pts[i]
+            b = pts[i + 1]
+            dist2 = _dist2_point_to_segment(a, b)
+            axis = "y" if abs(b.y() - a.y()) > abs(b.x() - a.x()) else "x"
+            if best_dist is None or dist2 < best_dist:
+                best_dist = dist2
+                best_axis = axis
+        return best_axis
+
     def add_pin(self, scene_pos: QtCore.QPointF) -> None:
         sc = self.scene()
         if sc is None:
             return
-        pin = EdgePin(self, scene_pos)
+        axis_hint = self._axis_hint_for_point(scene_pos)
+        pin = EdgePin(self, scene_pos, axis_hint=axis_hint)
         sc.addItem(pin)
         self._pins.append(pin)
         self._sync_pin_colors()
@@ -326,7 +423,12 @@ class EdgeItem(QtWidgets.QGraphicsPathItem):
                 pos = pin.scenePos()
             except Exception:
                 continue
-            points.append([float(pos.x()), float(pos.y())])
+            entry = [float(pos.x()), float(pos.y())]
+            axis = getattr(pin, "axis_hint", None)
+            if axis in ("x", "y"):
+                points.append({"pos": entry, "axis": axis})
+            else:
+                points.append(entry)
         return points
 
     def add_pins_from_positions(self, positions) -> None:
@@ -335,11 +437,25 @@ class EdgeItem(QtWidgets.QGraphicsPathItem):
             return
         for pos in positions or []:
             try:
-                x = float(pos[0])
-                y = float(pos[1])
+                axis_hint = None
+                if isinstance(pos, dict):
+                    raw = pos.get("pos") or pos.get("point") or pos.get("p")
+                    if isinstance(raw, (list, tuple)) and len(raw) >= 2:
+                        x = float(raw[0])
+                        y = float(raw[1])
+                    else:
+                        continue
+                    axis_hint = pos.get("axis")
+                else:
+                    x = float(pos[0])
+                    y = float(pos[1])
             except Exception:
                 continue
-            self.add_pin(QtCore.QPointF(x, y))
+            pin = EdgePin(self, QtCore.QPointF(x, y), axis_hint=axis_hint)
+            sc.addItem(pin)
+            self._pins.append(pin)
+        self._sync_pin_colors()
+        self.updatePath()
 
     def clear_pins(self) -> None:
         sc = self.scene()
@@ -395,8 +511,22 @@ class EdgeItem(QtWidgets.QGraphicsPathItem):
         s, d = self._attach_points()
         pins = self._sorted_pin_points(s, d)
         if not pins:
-            self.setPath(_elbow_path(s, d))
+            points, corner = _elbow_points(s, d)
+            self._polyline_points = list(points)
+            self.setPath(_rounded_polyline_path(points, corner))
             return
+
+        def _axis_for_segment(a: QtCore.QPointF, b: QtCore.QPointF) -> str:
+            dx = float(b.x() - a.x())
+            dy = float(b.y() - a.y())
+            return "y" if abs(dy) > abs(dx) else "x"
+
+        def _dir_for_axis(a: QtCore.QPointF, b: QtCore.QPointF, axis: str) -> float:
+            delta = float((b.y() - a.y()) if axis == "y" else (b.x() - a.x()))
+            return 1.0 if delta >= 0.0 else -1.0
+
+        def _delta_for_axis(a: QtCore.QPointF, b: QtCore.QPointF, axis: str) -> float:
+            return float((b.y() - a.y()) if axis == "y" else (b.x() - a.x()))
 
         def _append_path(base: QtGui.QPainterPath, extra: QtGui.QPainterPath) -> QtGui.QPainterPath:
             if hasattr(base, "connectPath"):
@@ -405,14 +535,105 @@ class EdgeItem(QtWidgets.QGraphicsPathItem):
                 base.addPath(extra)
             return base
 
+        def _append_points(accum, more):
+            if not more:
+                return accum
+            if not accum:
+                return list(more)
+            if abs(accum[-1].x() - more[0].x()) <= 1e-6 and abs(accum[-1].y() - more[0].y()) <= 1e-6:
+                accum.extend(list(more)[1:])
+            else:
+                accum.extend(list(more))
+            return accum
+
         first = pins[0]
-        path = _elbow_path(s, first, lead_out=_lead_for_dx(first.x() - s.x()), lead_in=0.0)
+        axis_end = getattr(first, "axis_hint", None) or _axis_for_segment(s, first)
+        dir_end = _dir_for_axis(s, first, axis_end)
+        lead_out = _lead_for_delta(first.x() - s.x())
+        lead_in = _lead_for_delta(_delta_for_axis(s, first, axis_end))
+        poly_points = []
+        seg_points, _ = _elbow_points(
+            s,
+            first,
+            lead_out=lead_out,
+            lead_in=lead_in,
+            axis_start="x",
+            axis_end=axis_end,
+            dir_start=1.0,
+            dir_end=dir_end,
+        )
+        poly_points = _append_points(poly_points, seg_points)
+        path = _elbow_path(
+            s,
+            first,
+            lead_out=lead_out,
+            lead_in=lead_in,
+            axis_start="x",
+            axis_end=axis_end,
+            dir_start=1.0,
+            dir_end=dir_end,
+        )
         for idx in range(len(pins) - 1):
-            seg = _elbow_path(pins[idx], pins[idx + 1], lead_out=0.0, lead_in=0.0)
+            p0 = pins[idx]
+            p1 = pins[idx + 1]
+            axis_start = getattr(p0, "axis_hint", None) or _axis_for_segment(p0, p1)
+            axis_end = getattr(p1, "axis_hint", None) or _axis_for_segment(p0, p1)
+            delta_start = _delta_for_axis(p0, p1, axis_start)
+            delta_end = _delta_for_axis(p0, p1, axis_end)
+            lead_out = _lead_for_delta(delta_start)
+            lead_in = _lead_for_delta(delta_end)
+            dir_start = _dir_for_axis(p0, p1, axis_start)
+            dir_end = _dir_for_axis(p0, p1, axis_end)
+            seg_points, _ = _elbow_points(
+                p0,
+                p1,
+                lead_out=lead_out,
+                lead_in=lead_in,
+                axis_start=axis_start,
+                axis_end=axis_end,
+                dir_start=dir_start,
+                dir_end=dir_end,
+            )
+            poly_points = _append_points(poly_points, seg_points)
+            seg = _elbow_path(
+                p0,
+                p1,
+                lead_out=lead_out,
+                lead_in=lead_in,
+                axis_start=axis_start,
+                axis_end=axis_end,
+                dir_start=dir_start,
+                dir_end=dir_end,
+            )
             path = _append_path(path, seg)
         last = pins[-1]
-        tail = _elbow_path(last, d, lead_out=0.0, lead_in=_lead_for_dx(d.x() - last.x()))
+        axis_start = getattr(last, "axis_hint", None) or _axis_for_segment(last, d)
+        dir_start = _dir_for_axis(last, d, axis_start)
+        lead_out = _lead_for_delta(_delta_for_axis(last, d, axis_start))
+        lead_in = _lead_for_delta(d.x() - last.x())
+        seg_points, _ = _elbow_points(
+            last,
+            d,
+            lead_out=lead_out,
+            lead_in=lead_in,
+            axis_start=axis_start,
+            axis_end="x",
+            dir_start=dir_start,
+            dir_end=1.0,
+        )
+        poly_points = _append_points(poly_points, seg_points)
+        tail = _elbow_path(
+            last,
+            d,
+            lead_out=lead_out,
+            lead_in=lead_in,
+            axis_start=axis_start,
+            axis_end="x",
+            dir_start=dir_start,
+            dir_end=1.0,
+        )
         path = _append_path(path, tail)
+        self._polyline_points = poly_points
         self.setPath(path)
 
     def hoverEnterEvent(self, e):
