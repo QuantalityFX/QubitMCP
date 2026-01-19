@@ -276,6 +276,14 @@ class CommentGroup(QtWidgets.QGraphicsObject):
                         sc._group_drag_active = False
                     except Exception:
                         pass
+                    try:
+                        sc._comment_drag_active = True
+                        sc._comment_drag_seen_tick = None
+                        sc._comment_drag_moved_nodes = set()
+                        sc._comment_drag_moved_pins = set()
+                        sc._comment_drag_moved_groups = set()
+                    except Exception:
+                        pass
                 if sc:
                     peers = [
                         it for it in sc.selectedItems()
@@ -302,6 +310,12 @@ class CommentGroup(QtWidgets.QGraphicsObject):
             e.accept()
             return
         if self._dragging_header:
+            sc = self.scene()
+            if sc:
+                try:
+                    sc._comment_drag_tick = int(getattr(sc, "_comment_drag_tick", 0)) + 1
+                except Exception:
+                    sc._comment_drag_tick = 1
             delta = QtCore.QPointF(e.scenePos()) - self._drag_start_scene
             for peer, start_pos in self._drag_peer_starts or [(self, self._drag_start_pos)]:
                 peer.setPos(start_pos + delta)
@@ -317,6 +331,16 @@ class CommentGroup(QtWidgets.QGraphicsObject):
         if self._dragging_header and e.button() == QtCore.Qt.LeftButton:
             self._dragging_header = False
             self._drag_peer_starts = []
+            sc = self.scene()
+            if sc:
+                try:
+                    sc._comment_drag_active = False
+                    sc._comment_drag_seen_tick = None
+                    sc._comment_drag_moved_nodes = set()
+                    sc._comment_drag_moved_pins = set()
+                    sc._comment_drag_moved_groups = set()
+                except Exception:
+                    pass
             e.accept()
             return
         super().mouseReleaseEvent(e)
@@ -1409,8 +1433,23 @@ class GraphScene(QtWidgets.QGraphicsScene):
             except Exception:
                 pass
 
-            moved_nodes = set()
-            moved_pins = set()
+            if getattr(self, "_comment_drag_active", False):
+                tick = getattr(self, "_comment_drag_tick", 0)
+                if getattr(self, "_comment_drag_seen_tick", None) != tick:
+                    try:
+                        self._comment_drag_seen_tick = tick
+                        self._comment_drag_moved_nodes = set()
+                        self._comment_drag_moved_pins = set()
+                        self._comment_drag_moved_groups = set()
+                    except Exception:
+                        pass
+                moved_nodes = getattr(self, "_comment_drag_moved_nodes", set())
+                moved_pins = getattr(self, "_comment_drag_moved_pins", set())
+                moved_groups = getattr(self, "_comment_drag_moved_groups", set())
+            else:
+                moved_nodes = set()
+                moved_pins = set()
+                moved_groups = set()
 
             def _move_nodes_for_group(grp):
                 for name in grp.members():
@@ -1445,6 +1484,9 @@ class GraphScene(QtWidgets.QGraphicsScene):
                 base_rects.append((grp, rect))
 
             for grp, rect in base_rects:
+                if grp in moved_groups:
+                    continue
+                moved_groups.add(grp)
                 _move_nodes_for_group(grp)
                 if rect is not None:
                     _move_pins_for_rect(rect)
@@ -1463,6 +1505,9 @@ class GraphScene(QtWidgets.QGraphicsScene):
                         break
 
             for cg, child_rect in nested_groups:
+                if cg in moved_groups:
+                    continue
+                moved_groups.add(cg)
                 try:
                     cg.setPos(cg.pos() + delta)
                 except Exception:
