@@ -124,8 +124,10 @@ class EdgeItem(QtWidgets.QGraphicsPathItem):
 
         self.pen_normal = QtGui.QPen(QtGui.QColor("#586473"), 2)
         self.pen_path   = QtGui.QPen(QtGui.QColor("#22c55e"), 3)
+        self.pen_click  = QtGui.QPen(QtGui.QColor("#60a5fa"), 3.5)
         self._highlight = False
-        self.setPen(self.pen_normal)
+        self._click_highlight = False
+        self._apply_pen_state()
         self.setBrush(QtCore.Qt.NoBrush)
         self.updatePath()
         self.setAcceptHoverEvents(True)
@@ -143,8 +145,19 @@ class EdgeItem(QtWidgets.QGraphicsPathItem):
 
     def setHighlighted(self, h: bool):
         self._highlight = h
-        self.setPen(self.pen_path if h else self.pen_normal)
+        self._apply_pen_state()
         self.update()
+
+    def setClickHighlighted(self, h: bool):
+        self._click_highlight = bool(h)
+        self._apply_pen_state()
+        self.update()
+
+    def _apply_pen_state(self):
+        if self._click_highlight:
+            self.setPen(self.pen_click)
+        else:
+            self.setPen(self.pen_path if self._highlight else self.pen_normal)
 
     def _attach_points(self):
         """
@@ -209,7 +222,7 @@ class EdgeItem(QtWidgets.QGraphicsPathItem):
         super().hoverEnterEvent(e)
 
     def hoverLeaveEvent(self, e):
-        self.setHighlighted(self._highlight)
+        self._apply_pen_state()
         super().hoverLeaveEvent(e)
 
     def mousePressEvent(self, e: QtWidgets.QGraphicsSceneMouseEvent):
@@ -232,6 +245,19 @@ class EdgeItem(QtWidgets.QGraphicsPathItem):
                     pass
                 e.accept()
                 return
+        if e.button() == QtCore.Qt.LeftButton:
+            sc = self.scene()
+            if sc and hasattr(sc, "_edges"):
+                for edge in list(getattr(sc, "_edges", [])):
+                    if edge is self:
+                        continue
+                    try:
+                        edge.setClickHighlighted(False)
+                    except Exception:
+                        pass
+            self.setClickHighlighted(True)
+            e.accept()
+            return
         super().mousePressEvent(e)
 
     def itemChange(self, change, value):
