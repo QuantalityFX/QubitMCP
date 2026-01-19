@@ -995,7 +995,11 @@ class MGLRendererMixin:
             self._mgl_load_grid_model(Path(pending_grid), in_paint=True)
 
         aspect = self.width() / max(1.0, self.height())
-        near = 0.1
+        try:
+            zoom = float(getattr(self, "_mgl_camera_zoom", 1.0))
+        except Exception:
+            zoom = 1.0
+        near = max(0.0005, min(0.05, zoom * 0.01))
         try:
             far = float(getattr(self, "_mgl_clip_far", 1000.0))
         except Exception:
