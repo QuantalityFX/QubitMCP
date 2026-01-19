@@ -322,7 +322,7 @@ class MGLRendererMixin:
                 draw_fn=MGLRendererMixin._mgl_draw_scene_grid,
                 payload={
                     "vao": vao,
-                    "color": (0.7, 0.7, 0.7),
+                    "color": (0.8, 0.8, 0.8),
                     "mode": moderngl.LINES,
                 },
                 resources=[vao, vbo],
@@ -468,12 +468,12 @@ class MGLRendererMixin:
             prev_line_width = None
         base_color = payload.get("color")
         if base_color is None:
-            color = (1.0, 1.0, 1.0, float(self._mgl_grid_alpha))
+            color = (0.8, 0.8, 0.8, float(self._mgl_grid_alpha))
         else:
             try:
                 color = (float(base_color[0]), float(base_color[1]), float(base_color[2]), float(self._mgl_grid_alpha))
             except Exception:
-                color = (1.0, 1.0, 1.0, float(self._mgl_grid_alpha))
+                color = (0.8, 0.8, 0.8, float(self._mgl_grid_alpha))
         try:
             self._mgl_grid_prog["Mvp"].write(mvp.astype("f4").tobytes())
             self._mgl_grid_prog["Color"].value = color
@@ -1102,7 +1102,7 @@ class MGLRendererMixin:
         # --- GRID ---
         if self._mgl_grid_vao is not None:
             self._mgl_grid_prog["Mvp"].write(mvp.astype("f4"))
-            self._mgl_grid_prog["Color"].value = (1.0, 1.0, 1.0, self._mgl_grid_alpha)
+            self._mgl_grid_prog["Color"].value = (0.8, 0.8, 0.8, self._mgl_grid_alpha)
             self._mgl_grid_vao.render(moderngl.LINES)
 
     def _mgl_get_camera_state(self) -> dict:
@@ -1514,7 +1514,7 @@ class MGLRendererMixin:
                 self._mgl_prog["UseLighting"].value = 1
             except Exception:
                 pass
-            self._mgl_grid_prog["Color"].value = (1.0, 1.0, 1.0, self._mgl_grid_alpha)
+            self._mgl_grid_prog["Color"].value = (0.8, 0.8, 0.8, self._mgl_grid_alpha)
             try:
                 self._mgl_wire_prog["Color"].value = self._mgl_wire_color
                 self._mgl_wire_prog["LineWidth"].value = float(

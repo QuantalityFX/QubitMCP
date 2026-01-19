@@ -89,8 +89,11 @@ void main() {
     vec2 perp = len > 1e-6 ? vec2(-dir.y, dir.x) / len : vec2(0.0, 1.0);
     vec2 pixel = vec2(2.0 / max(Viewport.x, 1.0), 2.0 / max(Viewport.y, 1.0));
     vec2 offset = perp * (LineWidth * 0.5) * pixel;
-    clip_pos.xy += offset * clip_pos.w * in_side;
-    gl_Position = clip_pos;
+    float wp = max(1e-6, clip_pos.w);
+    vec2 ndc_pos = clip_pos.xy / wp;
+    vec2 ndc_out = ndc_pos + offset * in_side;
+    float ndc_z = clip_pos.z / wp;
+    gl_Position = vec4(ndc_out, ndc_z, 1.0);
 }
 """,
 
