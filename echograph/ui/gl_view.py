@@ -816,7 +816,14 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             layout.setContentsMargins(10, 6, 10, 6)
             layout.setSpacing(10)
 
-            self._frame_btn = QtWidgets.QPushButton("Frame")
+            self._frame_btn = QtWidgets.QPushButton()
+            self._frame_btn.setToolTip("Frame")
+            frame_icon = Path(__file__).resolve().parents[2] / "icons" / "Frame_Icon.png"
+            if frame_icon.exists():
+                self._frame_btn.setIcon(QtGui.QIcon(str(frame_icon)))
+                self._frame_btn.setIconSize(QtCore.QSize(16, 16))
+            else:
+                self._frame_btn.setText("Frame")
             self._frame_btn.clicked.connect(self._on_frame_clicked)
             layout.addWidget(self._frame_btn, 0)
 
