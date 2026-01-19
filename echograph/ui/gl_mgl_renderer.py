@@ -93,6 +93,19 @@ class MGLRendererMixin:
         self._mgl_load_mesh(Path(path))
         self.update()
 
+    def _on_mgl_grid_toggled(self, checked: bool) -> None:
+        if not self._use_moderngl:
+            return
+        if not checked:
+            return
+        grid_path = Path(r"V:\Source\Repos\EchoMatrixMCP\echograph\3dmodels\grid.obj")
+        if not grid_path.exists():
+            self._mgl_error = f"Grid model missing: {grid_path}"
+            self.update()
+            return
+        self._mgl_load_mesh(grid_path)
+        self.update()
+
     def _mgl_qimage_from_texture(self, texture: object) -> Optional[QtGui.QImage]:
         if isinstance(texture, QtGui.QImage):
             return texture
