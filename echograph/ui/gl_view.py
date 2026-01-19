@@ -8,6 +8,7 @@ import time
 from array import array
 from typing import  Dict, List, Optional, Tuple
 from .gl_shaders import SHADERS
+from .gl_scene import MGLScene
 from .gl_types import ModelData, MeshArrays, SubMeshData
 from .gl_glutils import build_qt_program
 from .gl_glutils import upload_scene_texture
@@ -639,6 +640,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._mgl_grid_model_ibo = None
         self._mgl_grid_model_count = 0
         self._mgl_grid_model_pending_path = None
+        self._mgl_scene = MGLScene()
         self._mgl_splat_bbox_vao = None
         self._mgl_splat_bbox_vbo = None
         self._mgl_mesh_vbos = []

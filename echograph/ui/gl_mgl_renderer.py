@@ -43,6 +43,7 @@ from .gl_loaders import load_fbx_mesh_arrays_pyassimp
 from .gl_loaders import load_gltf_mesh_arrays
 from .gl_loaders import load_model
 from .gl_loaders import load_obj_mesh_arrays
+from .gl_scene import MGLSceneItem
 from .gl_shaders import SHADERS
 from .gl_types import SubMeshData
 
@@ -97,7 +98,14 @@ class MGLRendererMixin:
         if not self._use_moderngl:
             return
         self._mgl_grid_model_visible = bool(checked)
+        scene = getattr(self, "_mgl_scene", None)
         if not checked:
+            if scene is not None:
+                scene.set_visible_by_tag("grid-model", False)
+            self.update()
+            return
+        if scene is not None and scene.has_tag("grid-model"):
+            scene.set_visible_by_tag("grid-model", True)
             self.update()
             return
         grid_path = Path(r"V:\Source\Repos\EchoMatrixMCP\echograph\3dmodels\grid.obj")
@@ -105,11 +113,23 @@ class MGLRendererMixin:
             self._mgl_error = f"Grid model missing: {grid_path}"
             self.update()
             return
-        if self._mgl_grid_model_vao is None:
-            self._mgl_grid_model_pending_path = grid_path
+        self._mgl_grid_model_pending_path = grid_path
         self.update()
 
     def _mgl_clear_grid_model(self) -> None:
+        scene = getattr(self, "_mgl_scene", None)
+        if scene is not None and scene.has_tag("grid-model"):
+            scene.remove_by_tag("grid-model")
+            for name in (
+                "_mgl_grid_model_vao",
+                "_mgl_grid_model_vbo",
+                "_mgl_grid_model_nbo",
+                "_mgl_grid_model_tbo",
+                "_mgl_grid_model_ibo",
+            ):
+                setattr(self, name, None)
+            self._mgl_grid_model_count = 0
+            return
         for name in (
             "_mgl_grid_model_vao",
             "_mgl_grid_model_vbo",
@@ -129,6 +149,10 @@ class MGLRendererMixin:
     def _mgl_load_grid_model(self, path: Path, in_paint: bool = False) -> None:
         if not _HAS_MGL or self._mgl_ctx is None:
             self._mgl_error = "ModernGL context not ready"
+            return
+        scene = getattr(self, "_mgl_scene", None)
+        if scene is None:
+            self._mgl_error = "Scene assembly not ready"
             return
         if self._mgl_grid_prog is None:
             self._mgl_error = "ModernGL grid program not ready"
@@ -153,6 +177,21 @@ class MGLRendererMixin:
             self._mgl_grid_model_vao = vao
             self._mgl_grid_model_vbo = vbo
             self._mgl_grid_model_count = int(points.shape[0])
+            scene.remove_by_tag("grid-model")
+            item = MGLSceneItem(
+                name="grid",
+                draw_fn=MGLRendererMixin._mgl_draw_scene_grid,
+                payload={
+                    "vao": vao,
+                    "color": (0.7, 0.7, 0.7),
+                    "mode": moderngl.TRIANGLES,
+                },
+                resources=[vao, vbo],
+                visible=bool(self._mgl_grid_model_visible),
+                order=20,
+                tag="grid-model",
+            )
+            scene.add(item)
             self._mgl_error = ""
         except Exception as exc:
             self._mgl_error = f"Grid model upload failed: {exc}"
@@ -163,6 +202,247 @@ class MGLRendererMixin:
                     self.doneCurrent()
                 except Exception:
                     pass
+
+    def _mgl_draw_scene_mesh(self, item: MGLSceneItem, mvp) -> None:
+        if self._mgl_ctx is None or self._mgl_prog is None:
+            return
+        payload = item.payload or {}
+        submeshes = payload.get("submeshes")
+        vao = payload.get("vao")
+        if not submeshes and vao is None:
+            return
+        try:
+            self._mgl_prog["Mvp"].write(mvp.astype("f4").tobytes())
+        except Exception:
+            pass
+        manual_texture = self._mgl_texture if self._mgl_texture_override else None
+        wire_overlay = bool(self._mgl_wireframe and (submeshes or vao is not None))
+        if wire_overlay:
+            try:
+                self._mgl_ctx.polygon_offset = (1.0, 1.0)
+            except Exception:
+                pass
+
+        if submeshes:
+            for sub in submeshes:
+                color = sub.get("color") or self._mgl_mesh_color
+                tex = manual_texture or sub.get("texture")
+                use_texture = tex is not None
+                try:
+                    self._mgl_prog["UseTexture"].value = 1 if use_texture else 0
+                    self._mgl_prog["UseLighting"].value = 1
+                    self._mgl_prog["LightIntensity"].value = float(self._mgl_light_intensity)
+                    self._mgl_prog["Color"].value = color
+                except Exception:
+                    pass
+                if use_texture:
+                    try:
+                        tex.use(location=0)
+                    except Exception:
+                        pass
+                sub_vao = sub.get("vao")
+                if sub_vao is not None:
+                    sub_vao.render()
+            if wire_overlay:
+                try:
+                    self._mgl_ctx.polygon_offset = (0.0, 0.0)
+                except Exception:
+                    pass
+                try:
+                    self._mgl_ctx.line_width = float(self._mgl_wire_line_width)
+                except Exception:
+                    pass
+                self._mgl_ctx.wireframe = True
+                try:
+                    self._mgl_prog["UseTexture"].value = 0
+                    self._mgl_prog["UseLighting"].value = 0
+                    self._mgl_prog["Color"].value = self._mgl_wire_color
+                except Exception:
+                    pass
+                for sub in submeshes:
+                    sub_vao = sub.get("vao")
+                    if sub_vao is not None:
+                        sub_vao.render()
+                self._mgl_ctx.wireframe = False
+                try:
+                    self._mgl_ctx.line_width = 1.0
+                except Exception:
+                    pass
+        else:
+            color = payload.get("color") or self._mgl_mesh_color
+            tex = manual_texture or payload.get("texture") or self._mgl_texture
+            use_texture = tex is not None
+            try:
+                self._mgl_prog["UseTexture"].value = 1 if use_texture else 0
+                self._mgl_prog["UseLighting"].value = 1
+                self._mgl_prog["LightIntensity"].value = float(self._mgl_light_intensity)
+                self._mgl_prog["Color"].value = color
+            except Exception:
+                pass
+            if use_texture:
+                try:
+                    tex.use(location=0)
+                except Exception:
+                    pass
+            if vao is not None:
+                vao.render()
+            if wire_overlay and vao is not None:
+                try:
+                    self._mgl_ctx.polygon_offset = (0.0, 0.0)
+                except Exception:
+                    pass
+                try:
+                    self._mgl_ctx.line_width = float(self._mgl_wire_line_width)
+                except Exception:
+                    pass
+                self._mgl_ctx.wireframe = True
+                try:
+                    self._mgl_prog["UseTexture"].value = 0
+                    self._mgl_prog["UseLighting"].value = 0
+                    self._mgl_prog["Color"].value = self._mgl_wire_color
+                except Exception:
+                    pass
+                vao.render()
+                self._mgl_ctx.wireframe = False
+                try:
+                    self._mgl_ctx.line_width = 1.0
+                except Exception:
+                    pass
+
+    def _mgl_draw_scene_grid(self, item: MGLSceneItem, mvp) -> None:
+        if self._mgl_grid_prog is None:
+            return
+        payload = item.payload or {}
+        vao = payload.get("vao")
+        if vao is None:
+            return
+        base_color = payload.get("color")
+        if base_color is None:
+            color = (1.0, 1.0, 1.0, float(self._mgl_grid_alpha))
+        else:
+            try:
+                color = (float(base_color[0]), float(base_color[1]), float(base_color[2]), float(self._mgl_grid_alpha))
+            except Exception:
+                color = (1.0, 1.0, 1.0, float(self._mgl_grid_alpha))
+        try:
+            self._mgl_grid_prog["Mvp"].write(mvp.astype("f4").tobytes())
+            self._mgl_grid_prog["Color"].value = color
+        except Exception:
+            pass
+        try:
+            mode = payload.get("mode")
+            if mode is None:
+                vao.render()
+            else:
+                vao.render(mode)
+        except Exception as exc:
+            self._mgl_error = f"Scene grid draw failed: {exc}"
+
+    def _mgl_build_mesh_entry(
+        self,
+        points: "np.ndarray",
+        normals: "np.ndarray",
+        uvs: Optional["np.ndarray"] = None,
+        indices: Optional["np.ndarray"] = None,
+    ) -> Optional[Dict[str, object]]:
+        if not _HAS_MGL or self._mgl_ctx is None or self._mgl_prog is None:
+            return None
+        if points is None or points.size == 0:
+            return None
+        points = points.astype("f4").reshape(-1, 3)
+        normals = normals.astype("f4").reshape(-1, 3)
+        if uvs is None or uvs.size == 0:
+            uvs = np.zeros((points.shape[0], 2), dtype="f4")
+        uvs = uvs.astype("f4").reshape(-1, 2)
+        if indices is None:
+            indices = np.arange(points.shape[0], dtype="u4")
+        else:
+            indices = np.asarray(indices, dtype="u4").ravel()
+        index_buffer = self._mgl_ctx.buffer(indices.tobytes())
+        pos_buf = self._mgl_ctx.buffer(points.tobytes())
+        norm_buf = self._mgl_ctx.buffer(normals.tobytes())
+        uv_buf = self._mgl_ctx.buffer(uvs.tobytes())
+        vao_content = [
+            (pos_buf, "3f", "in_position"),
+            (norm_buf, "3f", "in_normal"),
+            (uv_buf, "2f", "in_uv"),
+        ]
+        vao = self._mgl_ctx.vertex_array(self._mgl_prog, vao_content, index_buffer, 4)
+        return {
+            "vao": vao,
+            "vbo": pos_buf,
+            "nbo": norm_buf,
+            "tbo": uv_buf,
+            "ibo": index_buffer,
+            "count": int(indices.size),
+            "uvs": uvs,
+        }
+
+    def _mgl_build_submesh_entries(
+        self,
+        submeshes: List[SubMeshData],
+    ) -> Tuple[List[Dict[str, object]], List["np.ndarray"], List[str], int]:
+        entries: List[Dict[str, object]] = []
+        combined_uvs: List["np.ndarray"] = []
+        texture_paths: List[str] = []
+        total_indices = 0
+        if self._mgl_ctx is None or self._mgl_prog is None:
+            return entries, combined_uvs, texture_paths, total_indices
+        for sub in submeshes:
+            points = sub.points.astype("f4").reshape(-1, 3)
+            normals = sub.normals.astype("f4").reshape(-1, 3)
+            uvs = sub.uvs.astype("f4").reshape(-1, 2)
+            indices = np.arange(points.shape[0], dtype="u4")
+            ibo = self._mgl_ctx.buffer(indices.tobytes())
+            vbo = self._mgl_ctx.buffer(points.tobytes())
+            nbo = self._mgl_ctx.buffer(normals.tobytes())
+            tbo = self._mgl_ctx.buffer(uvs.tobytes())
+            vao_content = [
+                (vbo, "3f", "in_position"),
+                (nbo, "3f", "in_normal"),
+                (tbo, "2f", "in_uv"),
+            ]
+            vao = self._mgl_ctx.vertex_array(self._mgl_prog, vao_content, ibo, 4)
+
+            texture = None
+            if not self._mgl_texture_override:
+                if sub.texture_path is not None and sub.texture_path.exists():
+                    qimg = QtGui.QImage(str(sub.texture_path))
+                    if not qimg.isNull():
+                        if hasattr(QtGui.QImage, "Format_RGBA8888"):
+                            qimg = qimg.convertToFormat(QtGui.QImage.Format_RGBA8888)
+                        else:
+                            qimg = qimg.convertToFormat(QtGui.QImage.Format_ARGB32)
+                        qimg = qimg.mirrored(False, True)
+                        texture = self._mgl_make_texture(qimg)
+                        texture_paths.append(str(sub.texture_path))
+                elif sub.texture_image is not None:
+                    qimg = self._mgl_qimage_from_texture(sub.texture_image)
+                    if qimg is not None:
+                        if hasattr(QtGui.QImage, "Format_RGBA8888"):
+                            qimg = qimg.convertToFormat(QtGui.QImage.Format_RGBA8888)
+                        else:
+                            qimg = qimg.convertToFormat(QtGui.QImage.Format_ARGB32)
+                        qimg = qimg.mirrored(False, True)
+                        texture = self._mgl_make_texture(qimg)
+                        texture_paths.append("embedded")
+
+            color = sub.base_color if sub.base_color is not None else self._mgl_mesh_color
+            entries.append(
+                {
+                    "vao": vao,
+                    "vbo": vbo,
+                    "nbo": nbo,
+                    "tbo": tbo,
+                    "ibo": ibo,
+                    "texture": texture,
+                    "color": color,
+                    "count": int(indices.size),
+                }
+            )
+            total_indices += int(indices.size)
+            combined_uvs.append(uvs)
+        return entries, combined_uvs, texture_paths, total_indices
 
     def _mgl_qimage_from_texture(self, texture: object) -> Optional[QtGui.QImage]:
         if isinstance(texture, QtGui.QImage):
@@ -472,103 +752,15 @@ class MGLRendererMixin:
             mvp = proj * lookat * transform
         self._dbgprint(dbg, "[MGL] after mvp compute", flush=True)
 
-        wire_overlay = bool(self._mgl_wireframe and (self._mgl_submeshes or self._mgl_vao is not None))
-        if wire_overlay:
-            try:
-                self._mgl_ctx.polygon_offset = (1.0, 1.0)
-            except Exception:
-                pass
-
         self._dbgprint(dbg, "[MGL] before Mvp write", flush=True)
         self._mgl_prog["Mvp"].write(mvp.astype("f4").tobytes())
         self._dbgprint(dbg, "[MGL] after Mvp write", flush=True)
 
         self._mgl_upload_pending_splats()
 
-        if self._mgl_submeshes:
-            manual_texture = self._mgl_texture if self._mgl_texture_override else None
-            for sub in self._mgl_submeshes:
-                color = sub.get("color") or self._mgl_mesh_color
-                tex = manual_texture or sub.get("texture")
-                use_texture = tex is not None
-                try:
-                    self._mgl_prog["UseTexture"].value = 1 if use_texture else 0
-                    self._mgl_prog["UseLighting"].value = 1
-                    self._mgl_prog["LightIntensity"].value = float(self._mgl_light_intensity)
-                    self._mgl_prog["Color"].value = color
-                except Exception:
-                    pass
-                if use_texture:
-                    try:
-                        tex.use(location=0)
-                    except Exception:
-                        pass
-                vao = sub.get("vao")
-                if vao is not None:
-                    vao.render()
-            if wire_overlay:
-                try:
-                    self._mgl_ctx.polygon_offset = (0.0, 0.0)
-                except Exception:
-                    pass
-                try:
-                    self._mgl_ctx.line_width = float(self._mgl_wire_line_width)
-                except Exception:
-                    pass
-                self._mgl_ctx.wireframe = True
-                try:
-                    self._mgl_prog["UseTexture"].value = 0
-                    self._mgl_prog["UseLighting"].value = 0
-                    self._mgl_prog["Color"].value = self._mgl_wire_color
-                except Exception:
-                    pass
-                for sub in self._mgl_submeshes:
-                    vao = sub.get("vao")
-                    if vao is not None:
-                        vao.render()
-                self._mgl_ctx.wireframe = False
-                try:
-                    self._mgl_ctx.line_width = 1.0
-                except Exception:
-                    pass
-        else:
-            self._mgl_prog["Color"].value = self._mgl_mesh_color
-            use_texture = self._mgl_texture is not None
-            try:
-                self._mgl_prog["UseTexture"].value = 1 if use_texture else 0
-                self._mgl_prog["UseLighting"].value = 1
-                self._mgl_prog["LightIntensity"].value = float(self._mgl_light_intensity)
-            except Exception:
-                pass
-            if use_texture:
-                try:
-                    self._mgl_texture.use(location=0)
-                except Exception:
-                    pass
-            if self._mgl_vao is not None:
-                self._mgl_vao.render()
-            if wire_overlay and self._mgl_vao is not None:
-                try:
-                    self._mgl_ctx.polygon_offset = (0.0, 0.0)
-                except Exception:
-                    pass
-                try:
-                    self._mgl_ctx.line_width = float(self._mgl_wire_line_width)
-                except Exception:
-                    pass
-                self._mgl_ctx.wireframe = True
-                try:
-                    self._mgl_prog["UseTexture"].value = 0
-                    self._mgl_prog["UseLighting"].value = 0
-                    self._mgl_prog["Color"].value = self._mgl_wire_color
-                except Exception:
-                    pass
-                self._mgl_vao.render()
-                self._mgl_ctx.wireframe = False
-                try:
-                    self._mgl_ctx.line_width = 1.0
-                except Exception:
-                    pass
+        scene = getattr(self, "_mgl_scene", None)
+        if scene is not None:
+            scene.draw(self, mvp)
         # --- SPLATS (instanced-quad only) ---
         try:
             if (
@@ -718,16 +910,6 @@ class MGLRendererMixin:
             self._mgl_grid_prog["Mvp"].write(mvp.astype("f4"))
             self._mgl_grid_prog["Color"].value = (1.0, 1.0, 1.0, self._mgl_grid_alpha)
             self._mgl_grid_vao.render(moderngl.LINES)
-        if self._mgl_grid_model_visible and self._mgl_grid_model_vao is not None:
-            try:
-                self._mgl_grid_prog["Mvp"].write(mvp.astype("f4").tobytes())
-                self._mgl_grid_prog["Color"].value = (0.7, 0.7, 0.7, float(self._mgl_grid_alpha))
-            except Exception:
-                pass
-            try:
-                self._mgl_grid_model_vao.render(moderngl.TRIANGLES)
-            except Exception as exc:
-                self._mgl_error = f"Grid model draw failed: {exc}"
 
     def _mgl_get_camera_state(self) -> dict:
         """Return a JSON-serializable camera/orbit state (ModernGL path)."""
@@ -1412,28 +1594,43 @@ class MGLRendererMixin:
     def _mgl_set_mesh(self, mesh) -> None:
         if not _HAS_MGL or self._mgl_ctx is None or mesh is None:
             return
-        self._mgl_clear_submeshes()
         mesh.update_normals()
+        scene = getattr(self, "_mgl_scene", None)
+        if scene is not None:
+            scene.remove_by_tag("model")
+            self._mgl_submeshes = []
+        else:
+            self._mgl_clear_submeshes()
         points = np.array(mesh.points(), dtype="f4")
         normals = np.array(mesh.vertex_normals(), dtype="f4")
         indices = np.array(mesh.face_vertex_indices(), dtype="u4").ravel()
-        uvs = np.zeros((points.shape[0], 2), dtype="f4")
-        index_buffer = self._mgl_ctx.buffer(indices.tobytes())
-        pos_buf = self._mgl_ctx.buffer(points.tobytes())
-        norm_buf = self._mgl_ctx.buffer(normals.tobytes())
-        uv_buf = self._mgl_ctx.buffer(uvs.tobytes())
-        vao_content = [
-            (pos_buf, "3f", "in_position"),
-            (norm_buf, "3f", "in_normal"),
-            (uv_buf, "2f", "in_uv"),
-        ]
-        self._mgl_vao = self._mgl_ctx.vertex_array(self._mgl_prog, vao_content, index_buffer, 4)
-        self._mgl_mesh_vbos = [pos_buf, norm_buf, uv_buf]
-        self._mgl_index_buffer = index_buffer
-        self._mgl_mesh_vertex_count = int(indices.size)
+        entry = self._mgl_build_mesh_entry(points, normals, None, indices)
+        if entry is None:
+            return
+        self._mgl_vao = entry.get("vao")
+        self._mgl_mesh_vbos = [entry.get("vbo"), entry.get("nbo"), entry.get("tbo")]
+        self._mgl_index_buffer = entry.get("ibo")
+        self._mgl_mesh_vertex_count = int(entry.get("count", 0))
         self._mgl_mesh = mesh
         self._mgl_set_uv_overlay(None)
         self._mgl_init_arcball(points)
+        if scene is not None:
+            resources = [
+                entry.get("vao"),
+                entry.get("vbo"),
+                entry.get("nbo"),
+                entry.get("tbo"),
+                entry.get("ibo"),
+            ]
+            item = MGLSceneItem(
+                name="mesh",
+                draw_fn=MGLRendererMixin._mgl_draw_scene_mesh,
+                payload={"vao": entry.get("vao"), "texture": None, "color": self._mgl_mesh_color},
+                resources=[res for res in resources if res is not None],
+                order=10,
+                tag="model",
+            )
+            scene.add(item)
 
     def _mgl_clear_submeshes(self) -> None:
         if not self._mgl_submeshes:
@@ -1470,103 +1667,85 @@ class MGLRendererMixin:
             return
         if points.size == 0:
             return
-        self._mgl_clear_submeshes()
-        points = points.astype("f4").reshape(-1, 3)
-        normals = normals.astype("f4").reshape(-1, 3)
-        if uvs is None or uvs.size == 0:
-            uvs = np.zeros((points.shape[0], 2), dtype="f4")
-        uvs = uvs.astype("f4").reshape(-1, 2)
-        indices = np.arange(points.shape[0], dtype="u4")
-        index_buffer = self._mgl_ctx.buffer(indices.tobytes())
-        pos_buf = self._mgl_ctx.buffer(points.tobytes())
-        norm_buf = self._mgl_ctx.buffer(normals.tobytes())
-        uv_buf = self._mgl_ctx.buffer(uvs.tobytes())
-        vao_content = [
-            (pos_buf, "3f", "in_position"),
-            (norm_buf, "3f", "in_normal"),
-            (uv_buf, "2f", "in_uv"),
-        ]
-        self._mgl_vao = self._mgl_ctx.vertex_array(self._mgl_prog, vao_content, index_buffer, 4)
-        self._mgl_mesh_vbos = [pos_buf, norm_buf, uv_buf]
-        self._mgl_index_buffer = index_buffer
-        self._mgl_mesh_vertex_count = int(indices.size)
+        scene = getattr(self, "_mgl_scene", None)
+        if scene is not None:
+            scene.remove_by_tag("model")
+            self._mgl_submeshes = []
+        else:
+            self._mgl_clear_submeshes()
+        entry = self._mgl_build_mesh_entry(points, normals, uvs)
+        if entry is None:
+            return
+        self._mgl_vao = entry.get("vao")
+        self._mgl_mesh_vbos = [entry.get("vbo"), entry.get("nbo"), entry.get("tbo")]
+        self._mgl_index_buffer = entry.get("ibo")
+        self._mgl_mesh_vertex_count = int(entry.get("count", 0))
         self._mgl_mesh = None
-        self._mgl_set_uv_overlay(uvs)
+        self._mgl_set_uv_overlay(entry.get("uvs"))
         self._mgl_init_arcball(points)
+        if scene is not None:
+            resources = [
+                entry.get("vao"),
+                entry.get("vbo"),
+                entry.get("nbo"),
+                entry.get("tbo"),
+                entry.get("ibo"),
+            ]
+            item = MGLSceneItem(
+                name="mesh",
+                draw_fn=MGLRendererMixin._mgl_draw_scene_mesh,
+                payload={"vao": entry.get("vao"), "texture": None, "color": self._mgl_mesh_color},
+                resources=[res for res in resources if res is not None],
+                order=10,
+                tag="model",
+            )
+            scene.add(item)
 
     def _mgl_set_submeshes(self, submeshes: List[SubMeshData]) -> None:
         if not _HAS_MGL or self._mgl_ctx is None:
             return
-        self._mgl_clear_submeshes()
+        scene = getattr(self, "_mgl_scene", None)
+        if scene is not None:
+            scene.remove_by_tag("model")
+            self._mgl_submeshes = []
+        else:
+            self._mgl_clear_submeshes()
         if not submeshes:
             return
-        combined_points: List["np.ndarray"] = []
-        combined_uvs: List["np.ndarray"] = []
-        total_indices = 0
-        texture_paths: List[str] = []
-        for sub in submeshes:
-            points = sub.points.astype("f4").reshape(-1, 3)
-            normals = sub.normals.astype("f4").reshape(-1, 3)
-            uvs = sub.uvs.astype("f4").reshape(-1, 2)
-            indices = np.arange(points.shape[0], dtype="u4")
-            ibo = self._mgl_ctx.buffer(indices.tobytes())
-            vbo = self._mgl_ctx.buffer(points.tobytes())
-            nbo = self._mgl_ctx.buffer(normals.tobytes())
-            tbo = self._mgl_ctx.buffer(uvs.tobytes())
-            vao_content = [
-                (vbo, "3f", "in_position"),
-                (nbo, "3f", "in_normal"),
-                (tbo, "2f", "in_uv"),
-            ]
-            vao = self._mgl_ctx.vertex_array(self._mgl_prog, vao_content, ibo, 4)
-
-            texture = None
-            if not self._mgl_texture_override:
-                if sub.texture_path is not None and sub.texture_path.exists():
-                    qimg = QtGui.QImage(str(sub.texture_path))
-                    if not qimg.isNull():
-                        if hasattr(QtGui.QImage, "Format_RGBA8888"):
-                            qimg = qimg.convertToFormat(QtGui.QImage.Format_RGBA8888)
-                        else:
-                            qimg = qimg.convertToFormat(QtGui.QImage.Format_ARGB32)
-                        qimg = qimg.mirrored(False, True)
-                        texture = self._mgl_make_texture(qimg)
-                        texture_paths.append(str(sub.texture_path))
-                elif sub.texture_image is not None:
-                    qimg = self._mgl_qimage_from_texture(sub.texture_image)
-                    if qimg is not None:
-                        if hasattr(QtGui.QImage, "Format_RGBA8888"):
-                            qimg = qimg.convertToFormat(QtGui.QImage.Format_RGBA8888)
-                        else:
-                            qimg = qimg.convertToFormat(QtGui.QImage.Format_ARGB32)
-                        qimg = qimg.mirrored(False, True)
-                        texture = self._mgl_make_texture(qimg)
-                        texture_paths.append("embedded")
-
-            color = sub.base_color if sub.base_color is not None else self._mgl_mesh_color
-            self._mgl_submeshes.append(
-                {
-                    "vao": vao,
-                    "vbo": vbo,
-                    "nbo": nbo,
-                    "tbo": tbo,
-                    "ibo": ibo,
-                    "texture": texture,
-                    "color": color,
-                    "count": int(indices.size),
-                }
-            )
-            total_indices += int(indices.size)
-            combined_points.append(points)
-            combined_uvs.append(uvs)
-
+        entries, combined_uvs, texture_paths, total_indices = self._mgl_build_submesh_entries(submeshes)
+        self._mgl_submeshes = entries
         self._mgl_mesh_vertex_count = total_indices
         self._mgl_mesh = None
         if combined_uvs:
             self._mgl_set_uv_overlay(np.concatenate(combined_uvs, axis=0))
+        combined_points: List["np.ndarray"] = []
+        for sub in submeshes:
+            combined_points.append(sub.points.astype("f4").reshape(-1, 3))
         if combined_points:
             self._mgl_init_arcball(np.concatenate(combined_points, axis=0))
         self._mgl_texture_paths = texture_paths
+        if scene is not None:
+            resources: List[object] = []
+            for sub in entries:
+                resources.extend(
+                    [
+                        sub.get("vao"),
+                        sub.get("vbo"),
+                        sub.get("nbo"),
+                        sub.get("tbo"),
+                        sub.get("ibo"),
+                        sub.get("texture"),
+                    ]
+                )
+            item = MGLSceneItem(
+                name="mesh",
+                draw_fn=MGLRendererMixin._mgl_draw_scene_mesh,
+                payload={"submeshes": entries},
+                resources=[res for res in resources if res is not None],
+                order=10,
+                tag="model",
+            )
+            scene.add(item)
 
     def _mgl_set_uv_overlay(self, uvs: Optional["np.ndarray"]) -> None:
         if uvs is None or uvs.size == 0 or np is None:
@@ -1736,17 +1915,115 @@ class MGLRendererMixin:
         try:
             self.makeCurrent()
             self._mgl_error = ""
+            scene = getattr(self, "_mgl_scene", None)
+            if scene is not None:
+                scene.remove_by_tag("model")
+                self._mgl_submeshes = []
+                self._mgl_vao = None
+                self._mgl_mesh_vbos = []
+                self._mgl_index_buffer = None
             if mesh is not None:
-                self._mgl_set_mesh(mesh)
+                mesh.update_normals()
+                points = np.array(mesh.points(), dtype="f4")
+                normals = np.array(mesh.vertex_normals(), dtype="f4")
+                indices = np.array(mesh.face_vertex_indices(), dtype="u4").ravel()
+                entry = self._mgl_build_mesh_entry(points, normals, None, indices)
+                if entry is None:
+                    self._mgl_error = "Mesh upload failed"
+                    return
+                self._mgl_vao = entry.get("vao")
+                self._mgl_mesh_vbos = [entry.get("vbo"), entry.get("nbo"), entry.get("tbo")]
+                self._mgl_index_buffer = entry.get("ibo")
+                resources = [
+                    entry.get("vao"),
+                    entry.get("vbo"),
+                    entry.get("nbo"),
+                    entry.get("tbo"),
+                    entry.get("ibo"),
+                ]
+                item = MGLSceneItem(
+                    name=path.name,
+                    draw_fn=MGLRendererMixin._mgl_draw_scene_mesh,
+                    payload={"vao": entry.get("vao"), "texture": None, "color": self._mgl_mesh_color},
+                    resources=[res for res in resources if res is not None],
+                    order=10,
+                    tag="model",
+                )
+                if scene is not None:
+                    scene.add(item)
+                self._mgl_mesh_vertex_count = int(entry.get("count", 0))
+                self._mgl_mesh = mesh
+                self._mgl_set_uv_overlay(None)
+                self._mgl_init_arcball(points)
             else:
                 if mesh_arrays is not None and mesh_arrays.submeshes:
-                    self._mgl_set_submeshes(mesh_arrays.submeshes)
                     if mesh_arrays.base_color is not None:
                         self._mgl_mesh_color = mesh_arrays.base_color
+                    entries, combined_uvs, texture_paths, total_indices = self._mgl_build_submesh_entries(
+                        mesh_arrays.submeshes
+                    )
+                    self._mgl_submeshes = entries
+                    resources: List[object] = []
+                    for sub in entries:
+                        resources.extend(
+                            [
+                                sub.get("vao"),
+                                sub.get("vbo"),
+                                sub.get("nbo"),
+                                sub.get("tbo"),
+                                sub.get("ibo"),
+                                sub.get("texture"),
+                            ]
+                        )
+                    item = MGLSceneItem(
+                        name=path.name,
+                        draw_fn=MGLRendererMixin._mgl_draw_scene_mesh,
+                        payload={"submeshes": entries},
+                        resources=[res for res in resources if res is not None],
+                        order=10,
+                        tag="model",
+                    )
+                    if scene is not None:
+                        scene.add(item)
+                    self._mgl_mesh_vertex_count = int(total_indices)
+                    if combined_uvs:
+                        self._mgl_set_uv_overlay(np.concatenate(combined_uvs, axis=0))
+                    else:
+                        self._mgl_set_uv_overlay(None)
+                    if texture_paths:
+                        self._mgl_texture_paths = texture_paths
+                    if mesh_arrays.points is not None and mesh_arrays.points.size:
+                        self._mgl_init_arcball(mesh_arrays.points)
                 else:
-                    self._mgl_set_raw_mesh(points, normals, uvs)
                     if mesh_arrays is not None and mesh_arrays.base_color is not None:
                         self._mgl_mesh_color = mesh_arrays.base_color
+                    entry = self._mgl_build_mesh_entry(points, normals, uvs)
+                    if entry is None:
+                        self._mgl_error = "Mesh upload failed"
+                        return
+                    self._mgl_vao = entry.get("vao")
+                    self._mgl_mesh_vbos = [entry.get("vbo"), entry.get("nbo"), entry.get("tbo")]
+                    self._mgl_index_buffer = entry.get("ibo")
+                    resources = [
+                        entry.get("vao"),
+                        entry.get("vbo"),
+                        entry.get("nbo"),
+                        entry.get("tbo"),
+                        entry.get("ibo"),
+                    ]
+                    item = MGLSceneItem(
+                        name=path.name,
+                        draw_fn=MGLRendererMixin._mgl_draw_scene_mesh,
+                        payload={"vao": entry.get("vao"), "texture": None, "color": self._mgl_mesh_color},
+                        resources=[res for res in resources if res is not None],
+                        order=10,
+                        tag="model",
+                    )
+                    if scene is not None:
+                        scene.add(item)
+                    self._mgl_mesh_vertex_count = int(entry.get("count", 0))
+                    self._mgl_set_uv_overlay(entry.get("uvs"))
+                    self._mgl_init_arcball(points)
                     if mesh_arrays is not None and mesh_arrays.texture_path is not None:
                         try:
                             if not self._mgl_upload_texture_path(mesh_arrays.texture_path):
