@@ -675,12 +675,27 @@ class NodeItem(QtWidgets.QGraphicsObject):
         elif kind == "import":
             node_w = self._BASE_W  # define first
 
-            body_h = self._PARAM_ROW_H * 2 + self._PADDING
             path = (self._param_value("path") or "").strip()
             ext = os.path.splitext(path)[1].lower()
 
-            if ext == ".obj":
-                body_h += self._PARAM_ROW_H
+            inner_w = max(40, int(node_w) - 12)
+            detail, _ = self._file_detail_for_path(path)
+
+            fm = QtGui.QFontMetrics(QtWidgets.QApplication.font())
+            rect = fm.boundingRect(QtCore.QRect(0, 0, inner_w, 10_000), QtCore.Qt.TextWordWrap, detail)
+            text_h = rect.height()
+
+            obj_extra = self._PARAM_ROW_H if ext == ".obj" else 0  # texture row
+            btn_h = 24
+            spacing = 4
+            bottom_margin = 6
+
+            summary_h = max(
+                self._PARAM_ROW_H * 2 + obj_extra,
+                text_h + spacing + btn_h + bottom_margin + obj_extra,
+            )
+
+            body_h = summary_h + self._PADDING
 
             thumb = (self._param_value("thumbnail") or "").strip()
             if ext in (".fbx", ".obj", ".gltf", ".glb", ".ply") and thumb and os.path.exists(thumb):
@@ -2445,7 +2460,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
         name = os.path.basename(path) or path
 
-        def _soft_wrap_filename(s: str, chunk: int = 18) -> str:
+        def _soft_wrap_filename(s: str, chunk: int = 48) -> str:
             if not s:
                 return s
             # allow wraps after separators
