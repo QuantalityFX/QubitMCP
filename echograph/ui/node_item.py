@@ -712,7 +712,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
             node_w = self._BASE_W
 
         new_w = max(node_w, self._BASE_W)
-        new_h = max(self._BASE_H, header_h + switch_h + params_h + body_h + self._PADDING)
+        extra_pad = self._PADDING
+        if kind in ("import", "scene", "scene_assembly", "scene_outliner"):
+            extra_pad = 6.0
+        new_h = max(self._BASE_H, header_h + switch_h + params_h + body_h + extra_pad)
 
         if kind == "note":
             custom_size = getattr(self.model, "_note_size", None)
@@ -1827,7 +1830,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         row = QtWidgets.QWidget()
         row.setAttribute(QtCore.Qt.WA_TranslucentBackground)
         outer = QtWidgets.QVBoxLayout(row)
-        outer.setContentsMargins(6, 0, 6, 0)
+        outer.setContentsMargins(6, 0, 6, 6)
         outer.setSpacing(4)
 
         if thumb_widget:
@@ -1843,8 +1846,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
         btn_row.setSpacing(6)
         btn = QtWidgets.QPushButton("View Scene")
         btn.setEnabled(btn_enabled)
+        btn.setStyleSheet(
+            "QPushButton{background:#2563eb;color:#f8fafc;border-radius:4px;padding:2px 8px;}"
+            "QPushButton:hover{background:#1d4ed8;}"
+            "QPushButton:disabled{background:#334155;color:#94a3b8;}"
+        )
         btn.clicked.connect(lambda _=False: self._open_scene_assets())
         btn_row.addWidget(btn, 0, QtCore.Qt.AlignLeft)
+        btn_row.addStretch(1)
 
         snap_btn = QtWidgets.QToolButton()
         icon = node_icons._screengrab_icon()
@@ -1855,8 +1864,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
         snap_btn.setFixedSize(24, 24)
         snap_btn.clicked.connect(lambda _=False: self._on_scene_screengrab_clicked())
         btn_row.addWidget(snap_btn, 0, QtCore.Qt.AlignLeft)
-
-        btn_row.addStretch(1)
         outer.addLayout(btn_row)
 
         proxy = QtWidgets.QGraphicsProxyWidget(self)
@@ -1955,7 +1962,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         row = QtWidgets.QWidget()
         row.setAttribute(QtCore.Qt.WA_TranslucentBackground)
         outer = QtWidgets.QVBoxLayout(row)
-        outer.setContentsMargins(6, 0, 6, 0)
+        outer.setContentsMargins(6, 0, 6, 6)
         outer.setSpacing(4)
 
         if thumb_widget:
@@ -1976,8 +1983,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
         btn = QtWidgets.QPushButton("View")
         btn.setEnabled(btn_enabled)
         btn.setFixedWidth(64)
+        if (self.model.kind or "").lower() == "import":
+            btn.setStyleSheet(
+                "QPushButton{background:#2563eb;color:#f8fafc;border-radius:4px;padding:2px 8px;}"
+                "QPushButton:hover{background:#1d4ed8;}"
+                "QPushButton:disabled{background:#334155;color:#94a3b8;}"
+            )
         btn.clicked.connect(lambda _=False, p=path: self._open_import_preview(p))
         btn_row.addWidget(btn, 0, QtCore.Qt.AlignLeft)
+        btn_row.addStretch(1)
 
         if (self.model.kind or "").lower() in ("import", "html_preview"):
             reload_btn = QtWidgets.QToolButton()
@@ -2001,8 +2015,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 screengrab_btn.setFixedSize(24, 24)
                 screengrab_btn.clicked.connect(lambda _=False, p=path: self._on_screengrab_clicked(p))
                 btn_row.addWidget(screengrab_btn, 0, QtCore.Qt.AlignLeft)
-
-        btn_row.addStretch(1)
         outer.addLayout(btn_row)
 
         proxy = QtWidgets.QGraphicsProxyWidget(self)
