@@ -688,14 +688,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
             obj_extra = self._PARAM_ROW_H if ext == ".obj" else 0  # texture row
             btn_h = 24
             spacing = 4
-            bottom_margin = 6
+            bottom_margin = 0
 
             summary_h = max(
                 self._PARAM_ROW_H * 2 + obj_extra,
                 text_h + spacing + btn_h + bottom_margin + obj_extra,
             )
 
-            body_h = summary_h + self._PADDING
+            #body_h = summary_h + self._PADDING
+            body_h = summary_h  # summary widget already has its own bottom margin
 
             thumb = (self._param_value("thumbnail") or "").strip()
             if ext in (".fbx", ".obj", ".gltf", ".glb", ".ply") and thumb and os.path.exists(thumb):
@@ -729,7 +730,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         new_w = max(node_w, self._BASE_W)
         extra_pad = self._PADDING
         if kind in ("import", "scene", "scene_assembly", "scene_outliner"):
-            extra_pad = 6.0
+            extra_pad = 0.0
         new_h = max(self._BASE_H, header_h + switch_h + params_h + body_h + extra_pad)
 
         if kind == "note":
