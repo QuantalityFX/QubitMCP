@@ -1829,9 +1829,16 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
         row = QtWidgets.QWidget()
         row.setAttribute(QtCore.Qt.WA_TranslucentBackground)
+
+        # clamp to node width
+        row.setFixedWidth(int(self.width))
+        row.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Preferred)
+
         outer = QtWidgets.QVBoxLayout(row)
         outer.setContentsMargins(6, 0, 6, 6)
         outer.setSpacing(4)
+
+        inner_w = max(40, int(self.width) - 12)
 
         if thumb_widget:
             outer.addWidget(thumb_widget, 0)
@@ -1839,6 +1846,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
         label = QtWidgets.QLabel(detail)
         label.setStyleSheet("color:#cbd5e1;")
         label.setWordWrap(True)
+        label.setFixedWidth(inner_w)
+        label.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Preferred)
         outer.addWidget(label, 0)
 
         btn_row = QtWidgets.QHBoxLayout()
@@ -1961,9 +1970,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
     ) -> int:
         row = QtWidgets.QWidget()
         row.setAttribute(QtCore.Qt.WA_TranslucentBackground)
+        # NEW: hard clamp to node width
+        row.setFixedWidth(int(self.width))
+        row.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Preferred)
         outer = QtWidgets.QVBoxLayout(row)
         outer.setContentsMargins(6, 0, 6, 6)
         outer.setSpacing(4)
+
+        inner_w = max(40, int(self.width) - 12)
 
         if thumb_widget:
             outer.addWidget(thumb_widget, 0)
@@ -1971,12 +1985,19 @@ class NodeItem(QtWidgets.QGraphicsObject):
         label = QtWidgets.QLabel(detail)
         label.setStyleSheet("color:#cbd5e1;")
         label.setWordWrap(True)
+        label.setFixedWidth(inner_w)
+        label.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Preferred)
         outer.addWidget(label, 0)
 
         if extra_widget is not None:
             outer.addWidget(extra_widget, 0)
 
-        btn_row = QtWidgets.QHBoxLayout()
+        # clamp the button row so it can't push outside the node
+        btn_row_widget = QtWidgets.QWidget()
+        btn_row_widget.setFixedWidth(inner_w)
+        btn_row_widget.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+
+        btn_row = QtWidgets.QHBoxLayout(btn_row_widget)
         btn_row.setContentsMargins(0, 0, 0, 0)
         btn_row.setSpacing(6)
 
@@ -2015,7 +2036,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 screengrab_btn.setFixedSize(24, 24)
                 screengrab_btn.clicked.connect(lambda _=False, p=path: self._on_screengrab_clicked(p))
                 btn_row.addWidget(screengrab_btn, 0, QtCore.Qt.AlignLeft)
-        outer.addLayout(btn_row)
+
+        outer.addWidget(btn_row_widget, 0)
+        
 
         proxy = QtWidgets.QGraphicsProxyWidget(self)
         proxy.setWidget(row)
@@ -2419,16 +2442,31 @@ class NodeItem(QtWidgets.QGraphicsObject):
         path = (path or "").strip()
         if not path:
             return "No file selected", False
+
         name = os.path.basename(path) or path
+
+        def _soft_wrap_filename(s: str, chunk: int = 18) -> str:
+            if not s:
+                return s
+            # allow wraps after separators
+            s = re.sub(r"([/\\\\_.-])", lambda m: m.group(1) + "\u200b", s)
+            # allow wraps inside long alphanumeric runs
+            s = re.sub(rf"([A-Za-z0-9]{{{chunk}}})(?=[A-Za-z0-9])", lambda m: m.group(1) + "\u200b", s)
+            return s
+
+        name_wrapped = _soft_wrap_filename(name)
+
         if os.path.exists(path):
             try:
                 stat = os.stat(path)
                 mtime = datetime.datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d")
-                detail = f"{name}\nUpdated: {mtime}"
+                detail = f"{name_wrapped}\nUpdated: {mtime}"
             except Exception:
-                detail = name
+                detail = name_wrapped
             return detail, True
-        return f"{name}\n(Missing file)", False
+
+        return f"{name_wrapped}\n(Missing file)", False
+
 
     def _read_html_text(self, path: str) -> str:
         path = (path or "").strip()
