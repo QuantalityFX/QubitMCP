@@ -2213,8 +2213,17 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
             model_filename = Path(ap).stem
             snap_stamp = time.strftime("%Y%m%d_%H%M%S")
+
+            # NEW: save into a per-asset folder, but keep the same filename
+            snapshots_dir = snapshots_dir / f"{model_filename}_{key}"
+            try:
+                snapshots_dir.mkdir(exist_ok=True, parents=True)
+            except Exception:
+                return
+
             image_path = snapshots_dir / f"{model_filename}_{key}_{snap_stamp}.png"
 
+            
             ok = False
             try:
                 ok = out.save(str(image_path))
@@ -2402,8 +2411,16 @@ class NodeItem(QtWidgets.QGraphicsObject):
             scene_name = (getattr(self.model, "name", "") or "scene").strip()
             safe_name = re.sub(r"[^A-Za-z0-9_-]+", "_", scene_name).strip("_") or "scene"
             snap_stamp = time.strftime("%Y%m%d_%H%M%S")
-            image_path = snapshots_dir / f"scene_{safe_name}_{key}_{snap_stamp}.png"
+            
+            # save into a per-scene folder, but keep the same filename
+            snapshots_dir = snapshots_dir / f"scene_{safe_name}_{key}"
+            try:
+                snapshots_dir.mkdir(exist_ok=True, parents=True)
+            except Exception:
+                return
 
+            image_path = snapshots_dir / f"scene_{safe_name}_{key}_{snap_stamp}.png"
+                    
             ok = False
             try:
                 ok = out.save(str(image_path))

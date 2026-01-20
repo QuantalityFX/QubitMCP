@@ -30,6 +30,13 @@ def migrate_workflow_thumbnails(workflow_path: str | Path) -> None:
 
     base_dir = workflow_path.parent
     snapshots_dir = base_dir / "snapshots"
+    snapshots_dir.mkdir(parents=True, exist_ok=True)
+
+    # index all existing snapshot files by basename, including subfolders
+    existing_by_name: dict[str, Path] = {}
+    for p in snapshots_dir.rglob("*"):
+        if p.is_file() and p.suffix.lower() in (".png", ".json"):
+            existing_by_name[p.name] = p
 
     moved = 0
     updated = 0
@@ -50,10 +57,15 @@ def migrate_workflow_thumbnails(workflow_path: str | Path) -> None:
         if not src.is_absolute():
             # if stored as relative, resolve relative to workflow dir
             src = (base_dir / src).resolve()
-
+            
         if not src.exists():
-            missing += 1
-            continue
+            # try to relink by exact filename somewhere under snapshots_dir
+            found = existing_by_name.get(src.name)
+            if found is not None and found.exists():
+                src = found
+            else:
+                missing += 1
+                continue
 
         m = RX.match(src.name)
         if not m:
