@@ -346,7 +346,6 @@ class InfoCard(QtWidgets.QFrame):
     def _run_code(self):
         if hasattr(self, "_py_console"):
             self._py_console.setVisible(True)
-            self._py_console.setPlainText("[running python node code...]")
 
         node = self._node_ref
 
