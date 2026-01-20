@@ -139,25 +139,41 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 except Exception:
                     pass
 
-            QtCore.QTimer.singleShot(0, _apply)
+            QtCore.QTimer.singleShot(0, card, _apply)
 
         def _notify(message: str, *, error: bool = False) -> None:
             def _show():
-                fn = QtWidgets.QMessageBox.critical if error else QtWidgets.QMessageBox.information
-                fn(card, "EchoGraph", message)
-            QtCore.QTimer.singleShot(0, _show)
+                msg = (message or "").strip() or "(no output)"
 
-        def _cleanup_timer(timer_obj):
-            if not timer_obj:
+                # Prefer the InfoCard console if present
+                console = getattr(card, "_py_console", None)
+                if console is not None:
+                    try:
+                        console.setVisible(True)
+                        console.setPlainText(msg)
+                        return
+                    except Exception:
+                        pass
+
+                # Fallback to messagebox
+                fn = QtWidgets.QMessageBox.critical if error else QtWidgets.QMessageBox.information
+                fn(card, "EchoGraph", msg)
+
+            # IMPORTANT: schedule on the card's (GUI) thread
+            QtCore.QTimer.singleShot(0, card, _show)
+
+        def _cleanup_timer(t):
+            if t is None:
                 return
             try:
-                timer_obj.stop()
+                t.stop()
             except Exception:
                 pass
             try:
-                timer_obj.deleteLater()
+                t.deleteLater()
             except Exception:
                 pass
+
 
         def _clear_busy_state():
             if python_item:
@@ -185,7 +201,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 tb = traceback.format_exc()
                 _notify(f"{combined}\n{tb}", error=True)
             finally:
-                QtCore.QTimer.singleShot(0, _clear_busy_state)
+                QtCore.QTimer.singleShot(0, card, _clear_busy_state)
 
         _set_busy(True, "running")
         worker_thread = threading.Thread(target=_worker, daemon=True)
@@ -196,7 +212,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             def _check_worker():
                 th = getattr(python_item, "_python_worker_thread", None)
                 if not th or not th.is_alive():
-                    QtCore.QTimer.singleShot(0, _clear_busy_state)
+                    QtCore.QTimer.singleShot(0, card, _clear_busy_state)
 
             timer = QtCore.QTimer(card)
             timer.setInterval(250)
@@ -206,19 +222,30 @@ def augment_infocard_footer(card, footer_layout) -> bool:
 
     btn_edit = QtWidgets.QPushButton("Edit Code…")
     btn_edit.setToolTip("Edit and save this node's Python script")
+    btn_edit.setStyleSheet(
+        "QPushButton{background:#1e3a8a;color:#e5e7eb;border-radius:2px;padding:4px 10px;}"
+        "QPushButton:hover{background:#1e40af;}"
+        "QPushButton:pressed{background:#1d4ed8;}"
+        "QPushButton:disabled{background:#334155;color:#94a3b8;}"
+    )
     btn_edit.clicked.connect(_edit_code)
 
     btn_run = QtWidgets.QPushButton("Run Python")
-    btn_run.setToolTip("Executes in a small sandbox; 'cmds' (Maya) and 'hou' (Houdini) are available if installed.")
+    btn_run.setStyleSheet(
+        "QPushButton{background:#166534;color:#e5e7eb;border-radius:2px;padding:4px 10px;}"
+        "QPushButton:hover{background:#15803d;}"
+        "QPushButton:pressed{background:#16a34a;}"
+        "QPushButton:disabled{background:#334155;color:#94a3b8;}"
+    )
     btn_run.clicked.connect(_run_code)
-
     footer_layout.addWidget(btn_edit)
     footer_layout.addWidget(btn_run)
 
     return True  # we fully own the footer for python
-      
+
 
 PYTHON_SPEC = Spec(
     stripe_color="#10b981",            # keep existing green
     augment_infocard_footer=augment_infocard_footer,
+    
 )

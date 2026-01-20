@@ -167,6 +167,7 @@ class InfoCard(QtWidgets.QFrame):
             run_btn.clicked.connect(self._run_code)
             footer.addWidget(run_btn)
 
+
         # Params table (shared)
         self._param_table = self._build_param_table()
         pcol = self._build_param_controls()
@@ -182,6 +183,22 @@ class InfoCard(QtWidgets.QFrame):
         lay.addWidget(self._param_table)
         lay.addLayout(pcol)
 
+        # Python output console (always present)
+        is_python = (getattr(self._node_ref, "kind", "") or "").lower() == "python"
+        has_code = any((p.get("name") == "code") and (str(p.get("value") or "").strip()) for p in (self._node_ref.params or []))
+
+        if is_python or has_code:
+            self._py_console = QtWidgets.QPlainTextEdit()
+            self._py_console.setReadOnly(True)
+            self._py_console.setMaximumHeight(140)
+            self._py_console.setStyleSheet(
+                "QPlainTextEdit{background:#0b0e12;color:#e6edf3;border:1px solid #3c4450;border-radius:6px;}"
+            )
+            self._py_console.setVisible(False)
+            lay.addWidget(self._py_console)
+        else:
+            self._py_console = None
+
         # Librarian results panel
         if hasattr(self, "_result_view"):
             lay.addWidget(self._result_view)
@@ -189,7 +206,6 @@ class InfoCard(QtWidgets.QFrame):
         # Append reorder UI
         if (self._node_ref.kind or "").lower() == "append" and box is not None:
             lay.addWidget(box)
-
         lay.addLayout(footer)
 
     def attach_scene(self, scene):
@@ -328,12 +344,46 @@ class InfoCard(QtWidgets.QFrame):
             self._node_ref.code = dlg.code()
 
     def _run_code(self):
+        if hasattr(self, "_py_console"):
+            self._py_console.setVisible(True)
+            self._py_console.setPlainText("[running python node code...]")
+
         node = self._node_ref
-        src = (node.code or "").strip()
+
+        # pull code from node.code, else from common param names
+        src = (getattr(node, "code", "") or "").strip()
+        if not src:
+            for p in (getattr(node, "params", None) or []):
+                nm = (p.get("name") or "").strip().lower()
+                if nm in ("code", "script", "py", "python", "source"):
+                    src = (p.get("value") or "").strip()
+                    if src:
+                        break
+
+        # show debug no matter what
+        self._py_console.setVisible(True)
+        self._py_console.setPlainText(
+            f"kind={getattr(node,'kind',None)}\n"
+            f"name={getattr(node,'name',None)}\n"
+            f"node.code_len={len((getattr(node,'code', '') or '').strip())}\n"
+            f"src_len={len(src)}\n"
+            f"param_names={[ (pp.get('name') or '') for pp in (getattr(node,'params',None) or []) ]}\n"
+        )
+
         if not src:
             return
-        from maya import cmds as maya_cmds  # may fail at runtime outside Maya (caller guards)
-        import hou as hou_mod              # may fail at runtime outside Houdini
+
+        # optional DCC hooks
+        try:
+            from maya import cmds as maya_cmds
+        except Exception:
+            maya_cmds = None
+
+        try:
+            import hou as hou_mod
+        except Exception:
+            hou_mod = None
+
         ns = {
             "cmds": maya_cmds,
             "hou": hou_mod,
@@ -379,22 +429,46 @@ class InfoCard(QtWidgets.QFrame):
                 "graph_scene": sc,
             }
         )
+
         import io, contextlib, traceback
         out_buf = io.StringIO()
         err_buf = io.StringIO()
         try:
             with contextlib.redirect_stdout(out_buf), contextlib.redirect_stderr(err_buf):
                 exec(src, ns, ns)
-            out = out_buf.getvalue().strip()
-            err = err_buf.getvalue().strip()
+            out = out_buf.getvalue().rstrip()
+            err = err_buf.getvalue().rstrip()
+
+            msg = ""
+            if out:
+                msg += out
             if err:
-                QtWidgets.QMessageBox.critical(self, APP_TITLE, err)
-            elif out:
-                QtWidgets.QMessageBox.information(self, APP_TITLE, out)
+                if msg:
+                    msg += "\n\n"
+                msg += "[stderr]\n" + err
+            if not msg:
+                msg = "(no output)"
+
+            if hasattr(self, "_py_console") and self._py_console is not None:
+                self._py_console.setVisible(True)
+                self._py_console.setPlainText(msg)
+            else:
+                QtWidgets.QMessageBox.information(self, APP_TITLE, msg)
+
         except Exception:
-            combined = out_buf.getvalue() + "\n" + err_buf.getvalue()
-            tb = traceback.format_exc()
-            QtWidgets.QMessageBox.critical(self, APP_TITLE, f"{combined}\n{tb}")
+            combined = (out_buf.getvalue() + "\n" + err_buf.getvalue()).rstrip()
+            tb = traceback.format_exc().rstrip()
+
+            msg = ""
+            if combined.strip():
+                msg += combined + "\n\n"
+            msg += tb
+
+            if hasattr(self, "_py_console") and self._py_console is not None:
+                self._py_console.setVisible(True)
+                self._py_console.setPlainText(msg)
+            else:
+                QtWidgets.QMessageBox.critical(self, APP_TITLE, msg)
 
     # ---------- append UI ----------
     def _build_append_box(self) -> QtWidgets.QGroupBox:
