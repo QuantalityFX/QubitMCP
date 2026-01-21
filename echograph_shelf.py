@@ -676,10 +676,11 @@ class GraphScene(QtWidgets.QGraphicsScene):
             if e.src is it or e.dst is it:
                 e.updatePath()
 
-    def set_node_params(self, name: str, params: list):
+    def set_node_params(self, name: str, params: list, rebuild: bool = True):
         node = self._nodes_by_name.get(name)
         if not node:
             return False
+
         clean = []
         for p in (params or []):
             nm = str(p.get("name", "")).strip()
@@ -687,9 +688,15 @@ class GraphScene(QtWidgets.QGraphicsScene):
             if nm:
                 clean.append({"name": nm, "value": val})
         node.params = clean
-        self.refresh_node_widget(name)
 
-        # broadcast so open InfoCards update immediately
+        # IMPORTANT: avoid nuking QGraphicsProxyWidget during combo interaction
+        if rebuild:
+            self.refresh_node_widget(name)
+        else:
+            it = self._node_items.get(name)
+            if it:
+                it.update()  # repaint only, keep proxy alive
+
         try:
             self.paramChanged.emit(name, list(node.params))
         except Exception:

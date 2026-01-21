@@ -298,11 +298,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
         self._ensure_named_inputs_set()
         return [str(n) for n in getattr(self.model, "_named_inputs", []) if n]
 
-    def _set_param_value(self, name: str, value: str):
+    def _set_param_value(self, name: str, value: str, rebuild: bool = True):
         key = (name or "").strip().lower()
         is_import_path = key == "path" and (self.model.kind or "").lower() in ("import", "html_preview")
         if is_import_path:
             value = (value or "").strip()
+
         params = list(self.model.params or [])
         found = False
         for p in params:
@@ -316,13 +317,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
         self.model.params = params
         if is_import_path:
             self._import_path_committed = value
+
         sc = self.scene()
         if sc:
             try:
-                sc.set_node_params(self.model.name, params)
-                sc.refresh_node_widget(self.model.name)
+                sc.set_node_params(self.model.name, params, rebuild=rebuild)
             except Exception:
                 pass
+
 
     def _param_value(self, name: str) -> str:
         key = (name or "").strip().lower()
@@ -2150,10 +2152,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         if not fname:
                             return
                         new_thumb = str((folder / fname).resolve())
-                        self._set_param_value("thumbnail", new_thumb)
-                        self._set_param_value("thumbnail_choice", fname)
-                        self._set_param_value("thumbnail_rev", str(time.time()))
-                        self._schedule_rebuild()
+                        self._set_param_value("thumbnail", new_thumb, rebuild=False)
+                        self._set_param_value("thumbnail_choice", str(fname), rebuild=False)
+                        self._set_param_value("thumbnail_rev", str(time.time()), rebuild=False)
 
                     snap_combo.currentIndexChanged.connect(_on_pick)
 
