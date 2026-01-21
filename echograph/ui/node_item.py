@@ -66,13 +66,12 @@ class _SnapComboBox(QtWidgets.QComboBox):
             if idx.isValid():
                 v.scrollTo(idx, QtWidgets.QAbstractItemView.PositionAtCenter)
 
-            # Force popup above QGraphicsProxyWidget content
+            # Try a simple raise only (no window flag hacks)
             w = v.window()
-            w.setWindowFlag(QtCore.Qt.WindowStaysOnTopHint, True)
             w.raise_()
-            w.activateWindow()
         except Exception:
             pass
+
 
 class _FeatureResizeHandle(QtWidgets.QWidget):
     """Thin draggable grip used to resize per-featured text blocks."""
