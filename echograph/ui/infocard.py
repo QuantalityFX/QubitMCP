@@ -1022,8 +1022,12 @@ class InfoCard(QtWidgets.QFrame):
             eye = QtWidgets.QToolButton()
             eye.setCheckable(True)
             eye.setAutoRaise(True)
+
+            eye.blockSignals(True)
             eye.setChecked(not is_hidden)
-            eye.setText("👁")  # icon styling next step
+            eye.blockSignals(False)
+
+            eye.setText("👁")
             tbl.setCellWidget(r, 0, eye)
 
             tbl.setItem(r, 1, QtWidgets.QTableWidgetItem(pname))
