@@ -359,9 +359,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     hidden.add(key)
             return hidden
 
-        # fallback defaults (only when "__ui_hidden_params" not present at all)
+       # fallback defaults (only when "__ui_hidden_params" not present at all)
         kind = (self.model.kind or "").lower()
         if kind == "import":
+            hidden.update({"thumbnail", "thumbnail_rev", "thumbnail_choice"})
+        elif kind in ("scene", "scene_assembly", "scene_outliner"):
             hidden.update({"thumbnail", "thumbnail_rev", "thumbnail_choice"})
 
         return hidden
@@ -666,19 +668,20 @@ class NodeItem(QtWidgets.QGraphicsObject):
         # Switch row
         switch_h = self._PARAM_ROW_H if kind == "switch" else 0
 
-        # Params block (regular rows)
-        params = list(self.model.params or [])
-        if kind == "import":
-            params = [
-                p for p in params
-                if (p.get("name", "") or "").strip().lower() not in ("texture", "thumbnail")
-            ]
-        elif kind in ("scene", "scene_assembly", "scene_outliner"):
-            params = [
-                p for p in params
-                if (p.get("name", "") or "").strip().lower() not in ("thumbnail", "thumbnail_rev")
-            ]
-        n_params = len(params)
+        # Params block (regular rows) - must match actual node visibility rules
+        hidden = self._ui_hidden_params_set()
+
+        n_params = 0
+        for p in (self.model.params or []):
+            nm = (p.get("name", "") or "").strip().lower()
+            if not nm:
+                continue
+            if nm == "__ui_hidden_params":
+                continue
+            if nm in hidden:
+                continue
+            n_params += 1
+
         params_h = n_params * self._PARAM_ROW_H
 
         # Note: add a big block per featured param (prune orphans first)
