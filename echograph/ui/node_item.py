@@ -2136,7 +2136,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         snap_combo.currentIndexChanged.connect(_on_pick)
 
                         # put it beside View, not under it
-                        btn_row.addWidget(snap_combo, 0, QtCore.Qt.AlignLeft)
+                        btn_row.addWidget(snap_combo, 0)
+                        btn_row.addSpacing(6)
 
             except Exception:
                 pass
