@@ -334,27 +334,37 @@ class NodeItem(QtWidgets.QGraphicsObject):
         return ""
 
     def _ui_hidden_params_set(self) -> set:
-        # Persisted list of hidden params (comma-separated)
-        store_key = "__ui_hidden_params"
+        """
+        Returns the set of param names hidden on the node surface.
 
-        raw = ""
+        Rule:
+        - If the node has an explicit "__ui_hidden_params" param (even empty), use that list as the source of truth.
+        - If it does NOT exist, fall back to defaults (import hides thumbnail params by default).
+        """
+        hidden = set()
+
+        # read explicit list (if present)
+        raw = None
         for p in (self.model.params or []):
-            if (p.get("name") or "").strip().lower() == store_key:
-                raw = (p.get("value") or "").strip()
+            nm = (p.get("name") or "").strip().lower()
+            if nm == "__ui_hidden_params":
+                raw = p.get("value", "")
                 break
 
-        out = set()
-        if raw:
-            for part in raw.split(","):
-                nm = part.strip().lower()
-                if nm:
-                    out.add(nm)
+        if raw is not None:
+            # explicit override mode
+            for tok in str(raw).split(","):
+                key = tok.strip().lower()
+                if key:
+                    hidden.add(key)
+            return hidden
 
-        # Default hidden params for Import nodes
-        if (self.model.kind or "").lower() == "import":
-            out.update({"thumbnail", "thumbnail_rev", "thumbnail_choice"})
+        # fallback defaults (only when "__ui_hidden_params" not present at all)
+        kind = (self.model.kind or "").lower()
+        if kind == "import":
+            hidden.update({"thumbnail", "thumbnail_rev", "thumbnail_choice"})
 
-        return out
+        return hidden
 
     @QtCore.Slot(bool, str)
     def setBusyState(self, busy: bool, message: str = "") -> None:
@@ -1385,7 +1395,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
                     has_port = pname_key in named_inputs
                     wired = has_port and pname_key in wired_inputs
-                    
+
                     # Row 1: label + line edit
                     row = QtWidgets.QWidget()
                     row.setAttribute(QtCore.Qt.WA_TranslucentBackground)
@@ -1402,7 +1412,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
                         def _mk_toggle(nm=pname):
                             def _toggle():
-                                fs = set(self._get_featured_set())  # copy-on-write
+                                fs = set(self._get_featured_set())
                                 if nm in fs:
                                     fs.remove(nm)
                                 else:

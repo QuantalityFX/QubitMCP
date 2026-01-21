@@ -373,16 +373,28 @@ class InfoCard(QtWidgets.QFrame):
     def refresh_params_from_model(self):
         if not hasattr(self, "_param_table"):
             return
-        self._param_table.blockSignals(True)
+
         try:
-            self._param_table.setRowCount(0)
-            for p in (self._node_ref.params or []):
-                r = self._param_table.rowCount()
-                self._param_table.insertRow(r)
-                self._param_table.setItem(r, 0, QtWidgets.QTableWidgetItem(p.get("name","")))
-                self._param_table.setItem(r, 1, QtWidgets.QTableWidgetItem(p.get("value","")))
-        finally:
-            self._param_table.blockSignals(False)
+            lay = self.layout()
+            if lay is None:
+                return
+
+            idx = lay.indexOf(self._param_table)
+            if idx < 0:
+                idx = 0
+
+            old = self._param_table
+            lay.removeWidget(old)
+            try:
+                old.deleteLater()
+            except Exception:
+                pass
+
+            self._param_table = self._build_param_table()
+            lay.insertWidget(idx, self._param_table)
+
+        except Exception:
+            pass
 
     def refresh_append_ui_from_model(self):
         try:
@@ -946,7 +958,12 @@ class InfoCard(QtWidgets.QFrame):
 
     # ---------- params table & controls ----------
     def _build_param_table(self) -> QtWidgets.QTableWidget:
-        tbl = QtWidgets.QTableWidget(0, 2)
+        try:
+            import sys
+            sys.stderr.write(f"[INFOCARD] _build_param_table from: {__file__}\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
         tbl = QtWidgets.QTableWidget(0, 3)
         tbl.setHorizontalHeaderLabels(["", "Name", "Value"])
         tbl.setStyleSheet(
@@ -961,21 +978,105 @@ class InfoCard(QtWidgets.QFrame):
             QtWidgets.QAbstractItemView.SelectedClicked
         )
 
-        HIDE_PARAMS = {"thumbnail", "thumbnail_rev", "thumbnail_choice"}
+        # InfoCard shows everything; node surface decides what is hidden.
+        HIDE_PARAMS = set()
+
+        store_key = "__ui_hidden_params"
+
+        # read current hidden list (comma-separated)
+        raw = ""
+        has_override = False
+        for pp in (self._node_ref.params or []):
+            if (pp.get("name") or "").strip().lower() == store_key:
+                raw = (pp.get("value") or "").strip()
+                has_override = True
+                break
+
+        hidden = set()
+        if raw:
+            for part in raw.split(","):
+                nm = part.strip().lower()
+                if nm:
+                    hidden.add(nm)
+
+        # match node defaults when there is no override stored yet
+        kind = (self._node_ref.kind or "").lower()
+        if (not has_override) and kind == "import":
+            hidden.update({"thumbnail", "thumbnail_rev", "thumbnail_choice"})
 
         for p in (self._node_ref.params or []):
             pname = (p.get("name", "") or "").strip()
+            if not pname:
+                continue
+            if pname.strip().lower() == "__ui_hidden_params":
+                continue
+            if pname in HIDE_PARAMS:
+                continue
+
+            key = pname.strip().lower()
+            is_hidden = key in hidden
 
             r = tbl.rowCount()
             tbl.insertRow(r)
+
             eye = QtWidgets.QToolButton()
             eye.setCheckable(True)
             eye.setAutoRaise(True)
-            eye.setText("👁")
+            eye.setChecked(not is_hidden)
+            eye.setText("👁")  # icon styling next step
             tbl.setCellWidget(r, 0, eye)
 
             tbl.setItem(r, 1, QtWidgets.QTableWidgetItem(pname))
             tbl.setItem(r, 2, QtWidgets.QTableWidgetItem(p.get("value", "")))
+
+            def _apply_toggle(checked: bool, nm=key):
+                # recompute from current node params
+                raw2 = ""
+                has_override2 = False
+                for pp2 in (self._node_ref.params or []):
+                    if (pp2.get("name") or "").strip().lower() == store_key:
+                        raw2 = (pp2.get("value") or "").strip()
+                        has_override2 = True
+                        break
+
+                cur = set()
+                if raw2:
+                    for part2 in raw2.split(","):
+                        t = part2.strip().lower()
+                        if t:
+                            cur.add(t)
+
+                # if there was no override yet, start from defaults so toggling one
+                # doesn't unintentionally unhide the others
+                kind2 = (self._node_ref.kind or "").lower()
+                if (not has_override2) and kind2 == "import":
+                    cur.update({"thumbnail", "thumbnail_rev", "thumbnail_choice"})
+
+                if checked:
+                    cur.discard(nm)   # visible
+                else:
+                    cur.add(nm)       # hidden
+
+                new_val = ",".join(sorted(cur))
+
+                params = list(self._node_ref.params or [])
+                found = False
+                for pp3 in params:
+                    if (pp3.get("name") or "").strip().lower() == store_key:
+                        pp3["value"] = new_val
+                        found = True
+                        break
+                if not found:
+                    params.append({"name": store_key, "value": new_val})
+
+                # push through the scene; defer to avoid re-entrancy issues
+                sc = getattr(self, "_graph_scene", None)
+                if sc and hasattr(sc, "set_node_params"):
+                    QtCore.QTimer.singleShot(
+                        0, lambda: sc.set_node_params(self._node_ref.name, params)
+                    )
+            eye.toggled.connect(_apply_toggle)
+
         return tbl
 
     def _build_param_controls(self) -> QtWidgets.QVBoxLayout:
