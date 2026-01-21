@@ -2153,36 +2153,21 @@ class NodeItem(QtWidgets.QGraphicsObject):
                             "border-radius:6px;padding:2px 6px;}"
                             "QComboBox::drop-down{border:none;}"
                         )
+                        # Bring node to front when clicking the combo (proxy-safe, does not interfere with popup creation)
+                        _node = self
 
-                        def _snap_about_to_show():
-                            self._bring_to_front()
-                            try:
-                                z_ui = float(self.zValue()) + 0.2
-                                for pr in list(getattr(self, "_plugin_proxies", []) or []):
-                                    if pr is not None:
-                                        pr.setZValue(z_ui)
-                            except Exception:
-                                pass
-
-                            # next tick: raise the popup container window
-                            def _raise_popup():
+                        class _BringFrontFilter(QtCore.QObject):
+                            def eventFilter(self, obj, ev):
                                 try:
-                                    w = snap_combo.view().window()  # QComboBox popup container
-                                    w.setWindowFlag(QtCore.Qt.WindowStaysOnTopHint, True)
-                                    w.show()   # important: re-apply flags
-                                    w.raise_()
-
-                                    # bias the list to open downward (start near top)
-                                    v = snap_combo.view()
-                                    idx = v.model().index(snap_combo.currentIndex(), 0)
-                                    if idx.isValid():
-                                        v.scrollTo(idx, QtWidgets.QAbstractItemView.PositionAtTop)
+                                    if ev.type() == QtCore.QEvent.MouseButtonPress and ev.button() == QtCore.Qt.LeftButton:
+                                        _node._bring_to_front()
                                 except Exception:
                                     pass
+                                return False
 
-                            QtCore.QTimer.singleShot(0, _raise_popup)
+                        snap_combo._bring_front_filter = _BringFrontFilter(snap_combo)  # keep alive
+                        snap_combo.installEventFilter(snap_combo._bring_front_filter)
 
-                        #snap_combo.aboutToShowPopup.connect(_snap_about_to_show)
 
                         for i, pth in enumerate(pngs, start=1):
                             snap_combo.addItem(f"v{i:03d}", pth.name)
