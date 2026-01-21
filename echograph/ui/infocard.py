@@ -263,6 +263,7 @@ class InfoCard(QtWidgets.QFrame):
                     pass
 
             self._snap_combo.currentIndexChanged.connect(_on_snapshot_changed)
+            self._refresh_snapshot_combo()
 
         else:
             self._snap_combo = None
@@ -302,6 +303,11 @@ class InfoCard(QtWidgets.QFrame):
         except Exception:
             pass
         try:
+            if hasattr(scene, "paramChanged"):
+                scene.paramChanged.connect(self._on_scene_param_changed)
+        except Exception:
+            pass
+        try:
             if hasattr(scene, "linksChanged"):
                 scene.linksChanged.connect(self._on_links_changed)
         except Exception:
@@ -329,7 +335,28 @@ class InfoCard(QtWidgets.QFrame):
                 self.apply_append_preview_if_output()
         except Exception:
             pass
+            
+    def _on_scene_param_changed(self, node_name: str, params: list):
+        if (node_name or "") != (getattr(self, "_node_name", "") or ""):
+            return
+        try:
+            self._node_ref.params = list(params or [])
+        except Exception:
+            pass
 
+        try:
+            self.refresh_params_from_model()
+        except Exception:
+            pass
+
+        # If you added a snapshot dropdown + _refresh_snapshot_combo(), update it too
+        try:
+            fn = getattr(self, "_refresh_snapshot_combo", None)
+            if callable(fn):
+                fn()
+        except Exception:
+            pass
+            
     # ---------- shared helpers ----------
     def refresh_params_from_model(self):
         if not hasattr(self, "_param_table"):
@@ -865,6 +892,45 @@ class InfoCard(QtWidgets.QFrame):
         footer_layout.addWidget(view_btn)
 
         return True
+
+    def _refresh_snapshot_combo(self) -> None:
+        if getattr(self, "_snap_combo", None) is None:
+            return
+
+        kind = (getattr(self._node_ref, "kind", "") or "").lower()
+        if kind not in ("import", "scene"):
+            return
+
+        thumb_path = (self._param_value("thumbnail") or "").strip()
+        if not thumb_path:
+            self._snap_combo.blockSignals(True)
+            self._snap_combo.clear()
+            self._snap_combo.blockSignals(False)
+            return
+
+        folder = Path(thumb_path).parent
+        try:
+            pngs = sorted(folder.glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
+        except Exception:
+            pngs = []
+
+        chosen = (self._param_value("thumbnail_choice") or "").strip()
+
+        self._snap_combo.blockSignals(True)
+        self._snap_combo.clear()
+
+        for i, pth in enumerate(pngs, start=1):
+            label = f"v{i:03d}"
+            self._snap_combo.addItem(label, pth.name)
+
+        if chosen:
+            for idx in range(self._snap_combo.count()):
+                if self._snap_combo.itemData(idx) == chosen:
+                    self._snap_combo.setCurrentIndex(idx)
+                    break
+
+        self._snap_combo.blockSignals(False)
+
 
     # ---------- params table & controls ----------
     def _build_param_table(self) -> QtWidgets.QTableWidget:

@@ -1351,9 +1351,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     pname = p.get("name", "")
                     pval  = p.get("value", "")
                     pname_key = (pname or "").strip().lower()
-                    if kind == "import" and pname_key in ("texture", "thumbnail", "camera_state"):
+                    if kind == "import" and pname_key in ("texture", "thumbnail", "thumbnail_rev", "thumbnail_choice", "camera_state"):
                         continue
-                    if kind in ("scene", "scene_assembly", "scene_outliner") and pname_key in ("thumbnail", "thumbnail_rev"):
+                    if kind in ("scene", "scene_assembly", "scene_outliner") and pname_key in ("thumbnail", "thumbnail_rev", "thumbnail_choice"):
                         continue
                     has_port = pname_key in named_inputs
                     wired = has_port and pname_key in wired_inputs
