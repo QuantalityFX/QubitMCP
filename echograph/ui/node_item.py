@@ -2004,6 +2004,68 @@ class NodeItem(QtWidgets.QGraphicsObject):
         label.setFixedWidth(inner_w)
         label.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Preferred)
         outer.addWidget(label, 0)
+        # Snapshot version dropdown (ON NODE) - put it right under the file detail text
+        try:
+            kind = (self.model.kind or "").lower()
+            if kind in ("import", "scene"):
+                thumb_path = (self._param_value("thumbnail") or "").strip()
+                if thumb_path:
+                    folder = Path(thumb_path).parent
+                    pngs = sorted(folder.glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
+
+                    if pngs:
+                        snap_combo = QtWidgets.QComboBox()
+                        snap_combo.setFixedWidth(max(40, int(self.width) - 12))
+                        snap_combo.setStyleSheet(
+                            "QComboBox{background:#0f1216;color:#e6edf3;border:1px solid #3c4450;"
+                            "border-radius:6px;padding:2px 6px;}"
+                            "QComboBox::drop-down{border:none;}"
+                        )
+
+                        # fill v001/v002...
+                        for i, pth in enumerate(pngs, start=1):
+                            snap_combo.addItem(f"v{i:03d}", pth.name)
+
+                        chosen = (self._param_value("thumbnail_choice") or "").strip()
+                        if chosen:
+                            for idx in range(snap_combo.count()):
+                                if snap_combo.itemData(idx) == chosen:
+                                    snap_combo.setCurrentIndex(idx)
+                                    break
+
+                        def _on_pick(_idx: int):
+                            if getattr(self, "_snap_updating", False):
+                                return
+                            fname = snap_combo.currentData()
+                            if not fname:
+                                return
+
+                            self._snap_updating = True
+
+                            def _apply():
+                                try:
+                                    # recompute folder from current param (in case it changed)
+                                    tp = (self._param_value("thumbnail") or "").strip()
+                                    if not tp:
+                                        return
+                                    fol = Path(tp).parent
+                                    new_thumb = str((fol / str(fname)).resolve())
+
+                                    # IMPORTANT: defer param writes so we don't rebuild during signal emission
+                                    self._set_param_value("thumbnail", new_thumb)
+                                    self._set_param_value("thumbnail_choice", str(fname))
+                                    self._set_param_value("thumbnail_rev", str(time.time()))
+                                    # do NOT call _schedule_rebuild() here; _set_param_value already triggers it
+                                finally:
+                                    self._snap_updating = False
+
+                            QtCore.QTimer.singleShot(0, _apply)
+
+                        snap_combo.currentIndexChanged.connect(_on_pick)
+                        outer.addWidget(snap_combo, 0)
+        except Exception:
+            pass
+
 
         if extra_widget is not None:
             outer.addWidget(extra_widget, 0)
@@ -2054,7 +2116,51 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 btn_row.addWidget(screengrab_btn, 0, QtCore.Qt.AlignLeft)
 
         outer.addWidget(btn_row_widget, 0)
-        
+        # Snapshot version dropdown (import only, on-node)
+        if (self.model.kind or "").lower() == "import":
+            try:
+                from pathlib import Path
+
+                # current thumbnail path
+                thumb = (self._param_value("thumbnail") or "").strip()
+                if thumb:
+                    folder = Path(thumb).parent
+                    pngs = sorted(folder.glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
+
+                    snap_combo = QtWidgets.QComboBox()
+                    snap_combo.setFixedWidth(inner_w)
+                    snap_combo.setStyleSheet(
+                        "QComboBox{background:#0f1216;color:#e6edf3;border:1px solid #3c4450;border-radius:6px;padding:2px 6px;}"
+                        "QComboBox::drop-down{border:none;}"
+                    )
+
+                    # fill v001/v002...
+                    for i, pth in enumerate(pngs, start=1):
+                        snap_combo.addItem(f"v{i:03d}", pth.name)
+
+                    chosen = (self._param_value("thumbnail_choice") or "").strip()
+                    if chosen:
+                        for idx in range(snap_combo.count()):
+                            if snap_combo.itemData(idx) == chosen:
+                                snap_combo.setCurrentIndex(idx)
+                                break
+
+                    def _on_pick(_idx: int):
+                        fname = snap_combo.currentData()
+                        if not fname:
+                            return
+                        new_thumb = str((folder / fname).resolve())
+                        self._set_param_value("thumbnail", new_thumb)
+                        self._set_param_value("thumbnail_choice", fname)
+                        self._set_param_value("thumbnail_rev", str(time.time()))
+                        self._schedule_rebuild()
+
+                    snap_combo.currentIndexChanged.connect(_on_pick)
+
+                    outer.addWidget(snap_combo, 0)
+            except Exception:
+                pass
+
 
         proxy = QtWidgets.QGraphicsProxyWidget(self)
         proxy.setWidget(row)

@@ -235,32 +235,44 @@ class InfoCard(QtWidgets.QFrame):
                 pass
 
             def _on_snapshot_changed(_idx: int):
-                try:
-                    if not self._snap_combo:
-                        return
+                # prevent re-entrancy while we rebuild UI / refresh combo
+                if getattr(self, "_snap_updating", False):
+                    return
 
-                    fname = self._snap_combo.currentData()  # stored as pth.name
-                    if not fname:
-                        return
+                combo = getattr(self, "_snap_combo", None)
+                if combo is None:
+                    return
 
-                    thumb_path = (self._param_value("thumbnail") or "").strip()
-                    if not thumb_path:
-                        return
+                fname = combo.currentData()
+                if not fname:
+                    return
 
-                    folder = Path(thumb_path).parent
-                    new_thumb = str((folder / fname).resolve())
+                thumb_path = (self._param_value("thumbnail") or "").strip()
+                if not thumb_path:
+                    return
 
-                    # update params (writes to graph scene + refreshes node widget)
-                    self._set_param_value("thumbnail", new_thumb)
-                    self._set_param_value("thumbnail_choice", fname)
-                    self._set_param_value("thumbnail_rev", str(time.time()))  # cache-bust/UI refresh
+                folder = Path(thumb_path).parent
+                new_thumb = str((folder / str(fname)).resolve())
 
-                    # optional: if it's an import node, refresh preview
-                    if kind == "import":
-                        self._preview_import_file(self._param_value("path"))
+                self._snap_updating = True
 
-                except Exception:
-                    pass
+                def _apply():
+                    try:
+                        # update params
+                        self._set_param_value("thumbnail", new_thumb)
+                        self._set_param_value("thumbnail_choice", str(fname))
+                        self._set_param_value("thumbnail_rev", str(time.time()))  # cache bust
+
+                        # refresh the combo labels immediately (so new snapshot appears)
+                        try:
+                            self._refresh_snapshot_combo()
+                        except Exception:
+                            pass
+                    finally:
+                        self._snap_updating = False
+
+                # defer so we do not mutate UI while Qt is inside the signal emission
+                QtCore.QTimer.singleShot(0, _apply)
 
             self._snap_combo.currentIndexChanged.connect(_on_snapshot_changed)
             self._refresh_snapshot_combo()
