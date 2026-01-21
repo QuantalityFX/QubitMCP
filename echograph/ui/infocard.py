@@ -965,8 +965,6 @@ class InfoCard(QtWidgets.QFrame):
 
         for p in (self._node_ref.params or []):
             pname = (p.get("name", "") or "").strip()
-            if pname in HIDE_PARAMS:
-                continue
 
             r = tbl.rowCount()
             tbl.insertRow(r)
