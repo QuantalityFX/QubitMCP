@@ -16,12 +16,6 @@ from echograph.qt_compat import QtCore, QtGui, QtWidgets, QAction, QShortcut, QK
 from echograph.ui.dialogs import BigTextEditDialog
 from echograph.ui import node_icons
 from echograph.ui import actions
-try:
-    import sys
-    sys.stderr.write(f"[NODE_ITEM] LOADED FROM: {__file__}\n")
-    sys.stderr.flush()
-except Exception:
-    pass
 
 from echograph.constants import (
     LLM_URL, LLM_NODE_W_BASE, LLM_NODE_H_BASE, LLM_SCALE_DEFAULT,
@@ -60,6 +54,25 @@ except Exception:
         from PySide2 import QtWebEngineWidgets as WebEngine
     except Exception:
         WebEngine = None
+
+class _SnapComboBox(QtWidgets.QComboBox):
+    def showPopup(self) -> None:
+        super().showPopup()
+        try:
+            v = self.view()
+
+            # Always open centered on the current selection
+            idx = v.model().index(self.currentIndex(), 0)
+            if idx.isValid():
+                v.scrollTo(idx, QtWidgets.QAbstractItemView.PositionAtCenter)
+
+            # Force popup above QGraphicsProxyWidget content
+            w = v.window()
+            w.setWindowFlag(QtCore.Qt.WindowStaysOnTopHint, True)
+            w.raise_()
+            w.activateWindow()
+        except Exception:
+            pass
 
 class _FeatureResizeHandle(QtWidgets.QWidget):
     """Thin draggable grip used to resize per-featured text blocks."""
@@ -2096,7 +2109,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     pngs = sorted(folder.glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
 
                     if pngs:
-                        snap_combo = QtWidgets.QComboBox()
+                        snap_combo = _SnapComboBox()
 
                         # clamp width based on space left before right-side buttons
                         # reserved: spacing after View + right buttons area (reload + optional screengrab)
