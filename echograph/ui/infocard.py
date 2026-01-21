@@ -947,8 +947,8 @@ class InfoCard(QtWidgets.QFrame):
     # ---------- params table & controls ----------
     def _build_param_table(self) -> QtWidgets.QTableWidget:
         tbl = QtWidgets.QTableWidget(0, 2)
-        tbl.setHorizontalHeaderLabels(["Name", "Value"])
-        tbl.horizontalHeader().setStretchLastSection(True)
+        tbl = QtWidgets.QTableWidget(0, 3)
+        tbl.setHorizontalHeaderLabels(["", "Name", "Value"])
         tbl.setStyleSheet(
             "QTableWidget{background:#0f1216;color:#e6edf3;border:1px solid #3c4450;border-radius:6px;}"
             "QHeaderView::section{background:#20242b;color:#e6edf3;border:none;}"
@@ -968,11 +968,15 @@ class InfoCard(QtWidgets.QFrame):
 
             r = tbl.rowCount()
             tbl.insertRow(r)
-            tbl.setItem(r, 0, QtWidgets.QTableWidgetItem(pname))
-            tbl.setItem(r, 1, QtWidgets.QTableWidgetItem(p.get("value", "")))
+            eye = QtWidgets.QToolButton()
+            eye.setCheckable(True)
+            eye.setAutoRaise(True)
+            eye.setText("👁")
+            tbl.setCellWidget(r, 0, eye)
 
+            tbl.setItem(r, 1, QtWidgets.QTableWidgetItem(pname))
+            tbl.setItem(r, 2, QtWidgets.QTableWidgetItem(p.get("value", "")))
         return tbl
-
 
     def _build_param_controls(self) -> QtWidgets.QVBoxLayout:
         pbtns = QtWidgets.QHBoxLayout()

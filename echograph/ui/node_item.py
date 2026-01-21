@@ -333,6 +333,29 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 return p.get("value", "") or ""
         return ""
 
+    def _ui_hidden_params_set(self) -> set:
+        # Persisted list of hidden params (comma-separated)
+        store_key = "__ui_hidden_params"
+
+        raw = ""
+        for p in (self.model.params or []):
+            if (p.get("name") or "").strip().lower() == store_key:
+                raw = (p.get("value") or "").strip()
+                break
+
+        out = set()
+        if raw:
+            for part in raw.split(","):
+                nm = part.strip().lower()
+                if nm:
+                    out.add(nm)
+
+        # Default hidden params for Import nodes
+        if (self.model.kind or "").lower() == "import":
+            out.update({"thumbnail", "thumbnail_rev", "thumbnail_choice"})
+
+        return out
+
     @QtCore.Slot(bool, str)
     def setBusyState(self, busy: bool, message: str = "") -> None:
         busy = bool(busy)
@@ -1353,14 +1376,17 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     pname = p.get("name", "")
                     pval  = p.get("value", "")
                     pname_key = (pname or "").strip().lower()
-                    if kind == "import" and pname_key in ("texture", "thumbnail", "thumbnail_rev", "thumbnail_choice", "camera_state"):
+                    hidden = self._ui_hidden_params_set()
+
+                    if pname_key == "__ui_hidden_params":
                         continue
-                    if kind in ("scene", "scene_assembly", "scene_outliner") and pname_key in ("thumbnail", "thumbnail_rev", "thumbnail_choice"):
+                    if pname_key in hidden:
                         continue
+
                     has_port = pname_key in named_inputs
                     wired = has_port and pname_key in wired_inputs
-
-                    # Row 1: eye (optional) + label + line edit
+                    
+                    # Row 1: label + line edit
                     row = QtWidgets.QWidget()
                     row.setAttribute(QtCore.Qt.WA_TranslucentBackground)
                     lay = QtWidgets.QHBoxLayout(row)
@@ -1368,13 +1394,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     lay.setSpacing(6)
 
                     if kind == "note":
-                        eye_btn = QtWidgets.QToolButton()
+                        feat_btn = QtWidgets.QToolButton()
                         is_featured = pname in feat_set
-                        eye_btn.setAutoRaise(True)
-                        eye_btn.setToolTip("Toggle big view for this parameter")
-                        eye_btn.setText("\N{SEE-NO-EVIL MONKEY}" if not is_featured else "\N{EYE}")
+                        feat_btn.setAutoRaise(True)
+                        feat_btn.setToolTip("Toggle big view for this parameter")
+                        feat_btn.setText("\N{SEE-NO-EVIL MONKEY}" if not is_featured else "\N{EYE}")
 
-                        def _mk_toggle(nm=pname, btn=eye_btn):
+                        def _mk_toggle(nm=pname):
                             def _toggle():
                                 fs = set(self._get_featured_set())  # copy-on-write
                                 if nm in fs:
@@ -1387,8 +1413,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                                     pass
                                 self._schedule_rebuild()
                             return _toggle
-                        eye_btn.clicked.connect(_mk_toggle())
-                        lay.addWidget(eye_btn)
+
+                        feat_btn.clicked.connect(_mk_toggle())
+                        lay.insertWidget(0, feat_btn, 0)
 
                     if has_port:
                         lay.addSpacing(10)
