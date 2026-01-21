@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import re, time, json
 from typing import Optional, List, Tuple
-
+from pathlib import Path
 from echograph.qt_compat import QtCore, QtGui, QtWidgets, _qexec
 from echograph.constants import APP_TITLE
 import nodes.core as core
@@ -181,6 +181,93 @@ class InfoCard(QtWidgets.QFrame):
         lay.addLayout(header)
         lay.addWidget(text)
         lay.addWidget(self._param_table)
+        # Snapshot version picker (import/scene only) - display only for now
+        kind = (getattr(self._node_ref, "kind", "") or "").lower()
+        
+        if kind in ("import", "scene"):
+            snap_row = QtWidgets.QHBoxLayout()
+            snap_row.setContentsMargins(0, 0, 0, 0)
+            snap_row.setSpacing(6)
+
+            snap_lbl = QtWidgets.QLabel("Snapshot")
+            self._snap_combo = QtWidgets.QComboBox()
+            self._snap_combo.setMinimumWidth(140)
+
+            snap_row.addWidget(snap_lbl, 0)
+            snap_row.addWidget(self._snap_combo, 1)
+
+            lay.addLayout(snap_row)
+
+            # populate from current thumbnail folder
+            try:
+                thumb_path = ""
+                for p in (self._node_ref.params or []):
+                    if p.get("name") == "thumbnail":
+                        thumb_path = (p.get("value") or "").strip()
+                        break
+
+                if thumb_path:
+                    folder = Path(thumb_path).parent
+                    pngs = sorted(folder.glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
+
+                    self._snap_combo.blockSignals(True)
+                    self._snap_combo.clear()
+
+                    for i, pth in enumerate(pngs, start=1):
+                        label = f"v{i:03d}"
+                        self._snap_combo.addItem(label, pth.name)
+
+                    # pick current if thumbnail_choice exists
+                    chosen = ""
+                    for p in (self._node_ref.params or []):
+                        if p.get("name") == "thumbnail_choice":
+                            chosen = (p.get("value") or "").strip()
+                            break
+
+                    if chosen:
+                        for idx in range(self._snap_combo.count()):
+                            if self._snap_combo.itemData(idx) == chosen:
+                                self._snap_combo.setCurrentIndex(idx)
+                                break
+
+                    self._snap_combo.blockSignals(False)
+            except Exception:
+                pass
+
+            def _on_snapshot_changed(_idx: int):
+                try:
+                    if not self._snap_combo:
+                        return
+
+                    fname = self._snap_combo.currentData()  # stored as pth.name
+                    if not fname:
+                        return
+
+                    thumb_path = (self._param_value("thumbnail") or "").strip()
+                    if not thumb_path:
+                        return
+
+                    folder = Path(thumb_path).parent
+                    new_thumb = str((folder / fname).resolve())
+
+                    # update params (writes to graph scene + refreshes node widget)
+                    self._set_param_value("thumbnail", new_thumb)
+                    self._set_param_value("thumbnail_choice", fname)
+                    self._set_param_value("thumbnail_rev", str(time.time()))  # cache-bust/UI refresh
+
+                    # optional: if it's an import node, refresh preview
+                    if kind == "import":
+                        self._preview_import_file(self._param_value("path"))
+
+                except Exception:
+                    pass
+
+            self._snap_combo.currentIndexChanged.connect(_on_snapshot_changed)
+
+        else:
+            self._snap_combo = None
+
+
         lay.addLayout(pcol)
 
         # Python output console (always present)
@@ -795,12 +882,21 @@ class InfoCard(QtWidgets.QFrame):
             QtWidgets.QAbstractItemView.EditKeyPressed |
             QtWidgets.QAbstractItemView.SelectedClicked
         )
+
+        HIDE_PARAMS = {"thumbnail", "thumbnail_rev", "thumbnail_choice"}
+
         for p in (self._node_ref.params or []):
+            pname = (p.get("name", "") or "").strip()
+            if pname in HIDE_PARAMS:
+                continue
+
             r = tbl.rowCount()
             tbl.insertRow(r)
-            tbl.setItem(r, 0, QtWidgets.QTableWidgetItem(p.get("name","")))
-            tbl.setItem(r, 1, QtWidgets.QTableWidgetItem(p.get("value","")))
+            tbl.setItem(r, 0, QtWidgets.QTableWidgetItem(pname))
+            tbl.setItem(r, 1, QtWidgets.QTableWidgetItem(p.get("value", "")))
+
         return tbl
+
 
     def _build_param_controls(self) -> QtWidgets.QVBoxLayout:
         pbtns = QtWidgets.QHBoxLayout()

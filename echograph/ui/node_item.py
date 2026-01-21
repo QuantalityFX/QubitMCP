@@ -2246,7 +2246,17 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
             self._set_param_value("thumbnail", thumb)
             print("[SNAP] param thumbnail set ->", self._param_value("thumbnail"), flush=True)
+
+            # NEW: user-facing selected snapshot "version" (stores the filename)
+            try:
+                from pathlib import Path as _Path
+                self._set_param_value("thumbnail_choice", _Path(thumb).name)
+            except Exception:
+                self._set_param_value("thumbnail_choice", "")
+
+            # keep this for now (internal cache-bust)
             self._set_param_value("thumbnail_rev", str(time.time()))
+
             try:
                 self.update()                 # repaint this node item
             except Exception:
@@ -2443,6 +2453,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
             self._set_param_value("thumbnail", thumb)
             print("[SNAP] param thumbnail set ->", self._param_value("thumbnail"), flush=True)
+            # NEW: store the chosen snapshot filename (for future dropdown/version picker)
+            self._set_param_value("thumbnail_choice", Path(thumb).name)
+
+            # keep this for now (cache-bust / UI refresh)
             self._set_param_value("thumbnail_rev", str(time.time()))
             try:
                 self.update()                 # repaint this node item
