@@ -16,6 +16,12 @@ from echograph.qt_compat import QtCore, QtGui, QtWidgets, QAction, QShortcut, QK
 from echograph.ui.dialogs import BigTextEditDialog
 from echograph.ui import node_icons
 from echograph.ui import actions
+try:
+    import sys
+    sys.stderr.write(f"[NODE_ITEM] LOADED FROM: {__file__}\n")
+    sys.stderr.flush()
+except Exception:
+    pass
 
 from echograph.constants import (
     LLM_URL, LLM_NODE_W_BASE, LLM_NODE_H_BASE, LLM_SCALE_DEFAULT,
@@ -2061,20 +2067,26 @@ class NodeItem(QtWidgets.QGraphicsObject):
         btn_row.setSpacing(6)
         btn_row.setAlignment(QtCore.Qt.AlignLeft)
 
+        kind = (self.model.kind or "").lower()
+
+        # compute is_3d once (used for dropdown sizing and screengrab button)
+        is_3d = bool(path) and self._is_3d_model_ext(os.path.splitext(path)[1].lower())
+
         btn = QtWidgets.QPushButton("View")
         btn.setEnabled(btn_enabled)
         btn.setFixedWidth(64)
-        if (self.model.kind or "").lower() == "import":
+        if kind == "import":
             btn.setStyleSheet(
                 "QPushButton{background:#2563eb;color:#f8fafc;border-radius:4px;padding:2px 8px;}"
                 "QPushButton:hover{background:#1d4ed8;}"
                 "QPushButton:disabled{background:#334155;color:#94a3b8;}"
             )
+
         btn.clicked.connect(lambda _=False, p=path: self._open_import_preview(p))
         btn_row.addWidget(btn, 0, QtCore.Qt.AlignLeft)
-        
+
         # Snapshot version dropdown (import only) beside View
-        if (self.model.kind or "").lower() == "import":
+        if kind == "import":
             try:
                 from pathlib import Path
 
@@ -2085,10 +2097,31 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
                     if pngs:
                         snap_combo = QtWidgets.QComboBox()
-                        snap_combo.setMinimumWidth(140)
-                        snap_combo.setFixedHeight(24)
+
+                        # clamp width based on space left before right-side buttons
+                        # reserved: spacing after View + right buttons area (reload + optional screengrab)
+                        reserve = 6                  # spacing after combo area
+                        reserve += 24 + 6            # reload button + spacing
+                        if is_3d:
+                            reserve += 24 + 6        # screengrab button + spacing
+                        reserve += 8                 # extra padding safety
+
+                        # inner_w is the row width, 64 is View width, plus spacing between View and combo
+                        available = inner_w - (64 + 6) - reserve
+                        combo_w = max(80, min(140, available))
+
                         snap_combo.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
-                        snap_combo.setFixedWidth(140)
+                        snap_combo.setFixedWidth(combo_w)
+                        snap_combo.setMinimumWidth(combo_w)
+                        snap_combo.setMaximumWidth(combo_w)
+                        snap_combo.setFixedHeight(24)
+
+                        try:
+                            import sys
+                            sys.stderr.write("[NODE_ITEM] SNAP_COMBO BLOCK HIT\n")
+                            sys.stderr.flush()
+                        except Exception:
+                            pass
 
                         snap_combo.setStyleSheet(
                             "QComboBox{background:#0f1216;color:#e6edf3;border:1px solid #3c4450;"
@@ -2136,16 +2169,16 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         snap_combo.currentIndexChanged.connect(_on_pick)
 
                         # put it beside View, not under it
-                        btn_row.addWidget(snap_combo, 0)
+                        btn_row.addWidget(snap_combo, 0, QtCore.Qt.AlignLeft)
                         btn_row.addSpacing(6)
 
             except Exception:
                 pass
-    
+
+        # IMPORTANT: stretch must be here so right buttons stay on the right
         btn_row.addStretch(1)
 
-
-        if (self.model.kind or "").lower() in ("import", "html_preview"):
+        if kind in ("import", "html_preview"):
             reload_btn = QtWidgets.QToolButton()
             btn_style = QtWidgets.QApplication.style()
             if btn_style:
@@ -2156,7 +2189,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
             reload_btn.clicked.connect(lambda _=False: self._reload_import_path())
             btn_row.addWidget(reload_btn, 0, QtCore.Qt.AlignLeft)
 
-            is_3d = self._is_3d_model_ext(os.path.splitext(path)[1].lower())
             if is_3d:
                 screengrab_btn = QtWidgets.QToolButton()
                 icon = node_icons._screengrab_icon()
