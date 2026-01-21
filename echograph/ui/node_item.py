@@ -55,23 +55,6 @@ except Exception:
     except Exception:
         WebEngine = None
 
-class _SnapComboBox(QtWidgets.QComboBox):
-    def showPopup(self) -> None:
-        super().showPopup()
-        try:
-            v = self.view()
-
-            # Always open centered on the current selection
-            idx = v.model().index(self.currentIndex(), 0)
-            if idx.isValid():
-                v.scrollTo(idx, QtWidgets.QAbstractItemView.PositionAtCenter)
-
-            # Try a simple raise only (no window flag hacks)
-            w = v.window()
-            w.raise_()
-        except Exception:
-            pass
-
 
 class _FeatureResizeHandle(QtWidgets.QWidget):
     """Thin draggable grip used to resize per-featured text blocks."""
@@ -2108,7 +2091,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     pngs = sorted(folder.glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
 
                     if pngs:
-                        snap_combo = _SnapComboBox()
+                        snap_combo = QtWidgets.QComboBox()
 
                         # clamp width based on space left before right-side buttons
                         # reserved: spacing after View + right buttons area (reload + optional screengrab)
@@ -2127,16 +2110,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         snap_combo.setMinimumWidth(combo_w)
                         snap_combo.setMaximumWidth(combo_w)
                         snap_combo.setFixedHeight(24)
-
-                        try:
-                            import sys
-                            sys.stderr.write("[NODE_ITEM] SNAP_COMBO BLOCK HIT\n")
-                            sys.stderr.flush()
-                        except Exception:
-                            pass
-
+                        snap_combo.setMaxVisibleItems(12)
                         snap_combo.setStyleSheet(
-                            "QComboBox{background:#0f1216;color:#e6edf3;border:1px solid #3c4450;"
+                            "QComboBox{combobox-popup: 0; background:#0f1216;color:#e6edf3;border:1px solid #3c4450;"
                             "border-radius:6px;padding:2px 6px;}"
                             "QComboBox::drop-down{border:none;}"
                         )
