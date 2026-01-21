@@ -2059,8 +2059,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
         btn_row = QtWidgets.QHBoxLayout(btn_row_widget)
         btn_row.setContentsMargins(0, 0, 0, 0)
         btn_row.setSpacing(6)
+        btn_row.setAlignment(QtCore.Qt.AlignLeft)
 
-    
         btn = QtWidgets.QPushButton("View")
         btn.setEnabled(btn_enabled)
         btn.setFixedWidth(64)
@@ -2071,7 +2071,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "QPushButton:disabled{background:#334155;color:#94a3b8;}"
             )
         btn.clicked.connect(lambda _=False, p=path: self._open_import_preview(p))
-
+        btn_row.addWidget(btn, 0, QtCore.Qt.AlignLeft)
+        
         # Snapshot version dropdown (import only) beside View
         if (self.model.kind or "").lower() == "import":
             try:
@@ -2087,6 +2088,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         snap_combo.setMinimumWidth(140)
                         snap_combo.setFixedHeight(24)
                         snap_combo.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+                        snap_combo.setFixedWidth(140)
+
                         snap_combo.setStyleSheet(
                             "QComboBox{background:#0f1216;color:#e6edf3;border:1px solid #3c4450;"
                             "border-radius:6px;padding:2px 6px;}"
@@ -2137,8 +2140,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
             except Exception:
                 pass
-
-        btn_row.addWidget(btn, 0, QtCore.Qt.AlignLeft)        
+    
         btn_row.addStretch(1)
 
 
