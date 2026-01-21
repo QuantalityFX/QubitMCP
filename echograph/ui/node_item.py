@@ -157,6 +157,43 @@ class NodeItem(QtWidgets.QGraphicsObject):
     _CHATBOT_BODY_H = 360
     _IMPORT_THUMB_H = 120
     
+    def _bring_to_front(self) -> None:
+        sc = self.scene()
+        try:
+            if sc is not None:
+                z = getattr(sc, "_echograph_z_counter", None)
+                if z is None:
+                    try:
+                        z = max((it.zValue() for it in sc.items()), default=1.0)
+                    except Exception:
+                        z = 1.0
+                z = float(z) + 1.0
+                setattr(sc, "_echograph_z_counter", z)
+                self.setZValue(z)
+            else:
+                self.setZValue(float(self.zValue()) + 1.0)
+        except Exception:
+            return
+
+        # Lift embedded proxies with the node
+        try:
+            z_ui = float(self.zValue()) + 0.1
+            for pr in list(getattr(self, "_param_proxies", []) or []):
+                if pr is not None:
+                    pr.setZValue(z_ui)
+            for pr in list(getattr(self, "_plugin_proxies", []) or []):
+                if pr is not None:
+                    pr.setZValue(z_ui)
+            pr = getattr(self, "_switch_proxy", None)
+            if pr is not None:
+                pr.setZValue(z_ui)
+            pr = getattr(self, "_llm_proxy", None)
+            if pr is not None:
+                pr.setZValue(z_ui)
+        except Exception:
+            pass
+
+
     def __init__(self, model: GraphNode):
         try:
             super().__init__()
@@ -2112,10 +2149,40 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         snap_combo.setFixedHeight(24)
                         snap_combo.setMaxVisibleItems(12)
                         snap_combo.setStyleSheet(
-                            "QComboBox{combobox-popup: 0; background:#0f1216;color:#e6edf3;border:1px solid #3c4450;"
+                            "QComboBox{background:#0f1216;color:#e6edf3;border:1px solid #3c4450;"
                             "border-radius:6px;padding:2px 6px;}"
                             "QComboBox::drop-down{border:none;}"
                         )
+
+                        def _snap_about_to_show():
+                            self._bring_to_front()
+                            try:
+                                z_ui = float(self.zValue()) + 0.2
+                                for pr in list(getattr(self, "_plugin_proxies", []) or []):
+                                    if pr is not None:
+                                        pr.setZValue(z_ui)
+                            except Exception:
+                                pass
+
+                            # next tick: raise the popup container window
+                            def _raise_popup():
+                                try:
+                                    w = snap_combo.view().window()  # QComboBox popup container
+                                    w.setWindowFlag(QtCore.Qt.WindowStaysOnTopHint, True)
+                                    w.show()   # important: re-apply flags
+                                    w.raise_()
+
+                                    # bias the list to open downward (start near top)
+                                    v = snap_combo.view()
+                                    idx = v.model().index(snap_combo.currentIndex(), 0)
+                                    if idx.isValid():
+                                        v.scrollTo(idx, QtWidgets.QAbstractItemView.PositionAtTop)
+                                except Exception:
+                                    pass
+
+                            QtCore.QTimer.singleShot(0, _raise_popup)
+
+                        #snap_combo.aboutToShowPopup.connect(_snap_about_to_show)
 
                         for i, pth in enumerate(pngs, start=1):
                             snap_combo.addItem(f"v{i:03d}", pth.name)
@@ -3475,6 +3542,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
     def mousePressEvent(self, e):
         if e.button() == QtCore.Qt.LeftButton:
+            self._bring_to_front()
             scene = self.scene()
             mods = e.modifiers()
             shift = bool(mods & QtCore.Qt.ShiftModifier)
