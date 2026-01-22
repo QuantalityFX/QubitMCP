@@ -627,7 +627,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
             i += 1
 
     def _append_param(self, name: str | None = None, value: str = ""):
-        nm = name or self._unique_param_name("param")
+        base = (name or "param").strip() or "param"
+        nm = self._unique_param_name(base)
         params = list(self.model.params or [])
         params.append({"name": nm, "value": value})
         self.model.params = params
@@ -1412,6 +1413,27 @@ class NodeItem(QtWidgets.QGraphicsObject):
             self._input_port_pos = {}
             if self.model.params:
                 kind = (self.model.kind or "").lower()
+                if kind == "note" and self.model.params:
+                    params = list(self.model.params)
+                    seen = set()
+                    changed = False
+
+                    for p in params:
+                        nm = (p.get("name") or "").strip() or "param"
+                        base = nm
+                        cand = nm
+                        i = 2
+                        while cand.lower() in seen:
+                            cand = f"{base} {i}"
+                            i += 1
+                        if cand != nm:
+                            p["name"] = cand
+                            changed = True
+                        seen.add(cand.lower())
+
+                    if changed:
+                        self.model.params = params
+
                 if kind == "note":
                     current_names = { (p.get("name") or "") for p in (self.model.params or []) if (p.get("name") or "") }
                     feat_set = self._pruned_featured_set(current_names)
