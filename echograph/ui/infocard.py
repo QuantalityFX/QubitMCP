@@ -1095,8 +1095,9 @@ class InfoCard(QtWidgets.QFrame):
         def _add_param_row():
             r = self._param_table.rowCount()
             self._param_table.insertRow(r)
-            self._param_table.setItem(r, 0, QtWidgets.QTableWidgetItem("param"))
-            self._param_table.setItem(r, 1, QtWidgets.QTableWidgetItem(""))
+            # col 0 is the visibility/eye column
+            self._param_table.setItem(r, 1, QtWidgets.QTableWidgetItem("param"))  # Name
+            self._param_table.setItem(r, 2, QtWidgets.QTableWidgetItem(""))       # Value
 
         def _remove_selected_row():
             r = self._param_table.currentRow()
@@ -1106,8 +1107,8 @@ class InfoCard(QtWidgets.QFrame):
         def _apply_param_changes():
             new_params = []
             for r in range(self._param_table.rowCount()):
-                name_item  = self._param_table.item(r, 0)
-                value_item = self._param_table.item(r, 1)
+                name_item  = self._param_table.item(r, 1)   # Name
+                value_item = self._param_table.item(r, 2)   # Value
                 nm  = (name_item.text()  if name_item  else "").strip()
                 val = (value_item.text() if value_item else "")
                 if nm:
