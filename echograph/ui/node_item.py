@@ -1980,7 +1980,69 @@ class NodeItem(QtWidgets.QGraphicsObject):
         )
         btn.clicked.connect(lambda _=False: self._open_scene_assets())
         btn_row.addWidget(btn, 0, QtCore.Qt.AlignLeft)
+
+        # Snapshot version dropdown for Scene nodes (uses thumbnail folder pngs)
+        try:
+            from pathlib import Path
+            import time
+
+            thumb_path = (self._param_value("thumbnail") or "").strip()
+            if thumb_path:
+                folder = Path(thumb_path).parent
+                pngs = sorted(folder.glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
+                if pngs:
+                    snap_combo = QtWidgets.QComboBox()
+                    snap_combo.setFixedHeight(24)
+                    snap_combo.setMaxVisibleItems(8)
+
+                    for i, pth in enumerate(pngs, start=1):
+                        snap_combo.addItem(f"v{i:03d}", pth.name)
+
+                    # Set the chosen version (if it exists)
+                    chosen = (self._param_value("thumbnail_choice") or "").strip()
+                    if chosen:
+                        for idx in range(snap_combo.count()):
+                            if snap_combo.itemData(idx) == chosen:
+                                snap_combo.blockSignals(True)
+                                snap_combo.setCurrentIndex(idx)
+                                snap_combo.blockSignals(False)
+                                break
+
+                    def _on_pick(_idx: int):
+                        if getattr(self, "_snap_updating", False):
+                            return
+                        fname = snap_combo.currentData()
+                        if not fname:
+                            return
+
+                        self._snap_updating = True
+
+                        def _apply():
+                            try:
+                                tp = (self._param_value("thumbnail") or "").strip()
+                                if not tp:
+                                    return
+                                fol = Path(tp).parent
+                                new_thumb = str((fol / str(fname)).resolve())
+
+                                self._set_param_value("thumbnail", new_thumb)
+                                self._set_param_value("thumbnail_choice", str(fname))
+                                self._set_param_value("thumbnail_rev", str(time.time()))
+                            finally:
+                                self._snap_updating = False
+
+                        QtCore.QTimer.singleShot(0, _apply)
+
+                    snap_combo.currentIndexChanged.connect(_on_pick)
+
+                    btn_row.addWidget(snap_combo, 0, QtCore.Qt.AlignLeft)
+                    btn_row.addSpacing(6)
+
+        except Exception:
+            pass
+
         btn_row.addStretch(1)
+
 
         snap_btn = QtWidgets.QToolButton()
         icon = node_icons._screengrab_icon()
@@ -2140,12 +2202,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
         btn_row.addWidget(btn, 0, QtCore.Qt.AlignLeft)
 
         # Snapshot version dropdown (import only) beside View
-        if kind == "import":
+        if kind in ("import", "scene", "scene_assembly", "scene_outliner"):
             try:
                 from pathlib import Path
 
                 thumb_path = (self._param_value("thumbnail") or "").strip()
                 if thumb_path:
+                    print("[snap_combo]", self.model.name, "kind=", kind, "thumb=", repr(thumb_path))
                     folder = Path(thumb_path).parent
                     pngs = sorted(folder.glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
 
