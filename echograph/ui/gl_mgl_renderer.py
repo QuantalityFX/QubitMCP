@@ -1086,12 +1086,26 @@ class MGLRendererMixin:
                 except Exception:
                     pass
 
-                # disable depth writes (guarded)
-                old_depth_mask = getattr(self._mgl_ctx, "depth_mask", True)
+                # disable depth writes (robust: ModernGL + raw GL fallback)
+                prev_depth_mask = True
+                try:
+                    prev_depth_mask = bool(getattr(self._mgl_ctx, "depth_mask", True))
+                except Exception:
+                    prev_depth_mask = True
+
+                did_set_depth_mask = False
                 try:
                     self._mgl_ctx.depth_mask = False
+                    did_set_depth_mask = True
                 except Exception:
-                    old_depth_mask = True
+                    # fallback to raw GL (Qt context)
+                    try:
+                        if self._gl is not None:
+                            self._gl.glDepthMask(False)
+                            did_set_depth_mask = True
+                    except Exception:
+                        pass
+
 
                 # model matrix (same as mesh path)
                 if self._mgl_scale_multiplier != 1.0:
@@ -1171,7 +1185,12 @@ class MGLRendererMixin:
 
                     # restore depth mask
                     try:
-                        self._mgl_ctx.depth_mask = old_depth_mask
+                        if did_set_depth_mask:
+                            try:
+                                self._mgl_ctx.depth_mask = prev_depth_mask
+                            except Exception:
+                                if self._gl is not None:
+                                    self._gl.glDepthMask(bool(prev_depth_mask))
                     except Exception:
                         pass
 
