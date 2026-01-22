@@ -374,6 +374,17 @@ class InfoCard(QtWidgets.QFrame):
         if not hasattr(self, "_param_table"):
             return
 
+        # preserve scroll + current selection before rebuild
+        vpos = 0
+        hpos = 0
+        cur_row = -1
+        try:
+            vpos = int(self._param_table.verticalScrollBar().value())
+            hpos = int(self._param_table.horizontalScrollBar().value())
+            cur_row = int(self._param_table.currentRow())
+        except Exception:
+            pass
+
         try:
             lay = self.layout()
             if lay is None:
@@ -393,8 +404,23 @@ class InfoCard(QtWidgets.QFrame):
             self._param_table = self._build_param_table()
             lay.insertWidget(idx, self._param_table)
 
+            # restore after layout stabilizes (two ticks)
+            def _restore():
+                try:
+                    vb = self._param_table.verticalScrollBar()
+                    hb = self._param_table.horizontalScrollBar()
+                    vb.setValue(vpos)
+                    hb.setValue(hpos)
+                    if cur_row >= 0 and cur_row < self._param_table.rowCount():
+                        self._param_table.setCurrentCell(cur_row, 1)
+                except Exception:
+                    pass
+
+            QtCore.QTimer.singleShot(0, lambda: QtCore.QTimer.singleShot(0, _restore))
+
         except Exception:
             pass
+
 
     def refresh_append_ui_from_model(self):
         try:

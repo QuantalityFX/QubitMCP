@@ -2956,6 +2956,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._cardsLayout.addStretch(1)
 
         scroll = QtWidgets.QScrollArea()
+        self._info_scroll = scroll
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
         scroll.setWidget(self._cardsContainer)
@@ -3007,63 +3008,79 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._trim_cards()
 
     def populate_branch_info(self, ordered_nodes):
+        vpos = None
+        hpos = None
+        try:
+            if getattr(self, "_info_scroll", None):
+                vpos = int(self._info_scroll.verticalScrollBar().value())
+                hpos = int(self._info_scroll.horizontalScrollBar().value())
+        except Exception:
+            pass
+
         # ignore incoming ordered_nodes; rebuild with Append-aware order
-        if not getattr(self, 'scene', None) or not getattr(self.scene, '_current_output_name', None):
-            return
+        if not getattr(self, "scene", None) or not getattr(self.scene, "_current_output_name", None):
+            seq = []
+        else:
+            seq = self.scene.ordered_upstream_items(self.scene._current_output_name) or []
 
         try:
-            self.infoDock.setVisible(True); self.infoDock.raise_()
+            self.infoDock.setVisible(True)
+            self.infoDock.raise_()
         except Exception:
             pass
 
         # clear all existing cards (keep trailing stretch)
-        for i in reversed(range(self._cardsLayout.count()-1)):
+        for i in reversed(range(self._cardsLayout.count() - 1)):
             w = self._cardsLayout.itemAt(i).widget()
-            if w: w.deleteLater()
+            if w:
+                w.deleteLater()
         self._card_by_node.clear()
 
-        seq = self.scene.ordered_upstream_items(self.scene._current_output_name)  # ← Append-aware
-        if not seq:
-            return
         total = len(seq)
         for idx, item in enumerate(seq, start=1):
             node = item.model
             card = InfoCard(node, order_index=idx, order_total=total)
             card.requestJump.connect(self.scene.center_on_name)
             card.closedForNode.connect(self._on_card_closed)
-            card.attach_scene(self.scene)  # sets _graph_scene and connects linksChanged
+            card.attach_scene(self.scene)
 
             try:
                 card.apply_append_preview_if_output()
             except Exception:
                 pass
 
-            self._cardsLayout.insertWidget(self._cardsLayout.count()-1, card)
+            self._cardsLayout.insertWidget(self._cardsLayout.count() - 1, card)
+
+        # restore scroll after layout has stabilized (two ticks)
+        try:
+            if getattr(self, "_info_scroll", None) and vpos is not None:
+                vs = self._info_scroll.verticalScrollBar()
+                hs = self._info_scroll.horizontalScrollBar()
+
+                QtCore.QTimer.singleShot(0, lambda: QtCore.QTimer.singleShot(0, lambda v=vpos, b=vs: b.setValue(v)))
+                QtCore.QTimer.singleShot(0, lambda: QtCore.QTimer.singleShot(0, lambda v=hpos, b=hs: b.setValue(v)))
+        except Exception:
+            pass
 
     def _on_params_changed(self, node_name: str, params: list):
-        # 1) keep the edited node's InfoCard table in sync
-        card = self._card_by_node.get(node_name)
-        if card and hasattr(card, "refresh_params_from_model"):
-            try:
+        # Refresh just the affected card (no full branch rebuild)
+        try:
+            card = self._card_by_node.get(node_name)
+            if card and hasattr(card, "refresh_params_from_model"):
                 card.refresh_params_from_model()
-            except Exception:
-                pass
+        except Exception:
+            pass
 
-        # 2) If an Output is active, rebuild the branch card stack (Append order aware)
+        # If an Output is active, refresh only the Output preview text (no branch rebuild)
         try:
             sc = getattr(self, "scene", None)
             if sc and getattr(sc, "_current_output_name", None):
-                # Recompute path + repopulate cards so top→bottom order + values are current
-                sc.recompute_active_path(sc._current_output_name)
-                seq = sc.ordered_upstream_items(sc._current_output_name)
-                self.populate_branch_info([it.model for it in seq])  # ignores arg and rebuilds correctly
-
-                # 3) Also refresh the merged preview text on the Output card itself
                 out_card = self._card_by_node.get(sc._current_output_name)
                 if out_card and hasattr(out_card, "apply_append_preview_if_output"):
                     out_card.apply_append_preview_if_output()
         except Exception:
             pass
+
 
     def _on_node_deleted(self, name: str):
         w = self._card_by_node.pop(name, None)
