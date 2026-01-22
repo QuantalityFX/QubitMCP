@@ -1339,23 +1339,41 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         new_key = str(new_name or "").strip()
         if not old_key or not new_key or old_key == new_key:
             return
+
+        # track whether this owner actually had splats
+        had_splat = False
+        try:
+            had_splat = old_key in self._mgl_scene_splats
+        except Exception:
+            had_splat = False
+
+        # rename visibility entry
         if old_key in self._mgl_scene_visibility:
             self._mgl_scene_visibility[new_key] = self._mgl_scene_visibility.pop(old_key)
-        try:
-            if old_key in self._mgl_scene_splats:
+
+        # rename splat storage only if needed
+        if had_splat:
+            try:
                 self._mgl_scene_splats[new_key] = self._mgl_scene_splats.pop(old_key)
-        except Exception:
-            pass
+            except Exception:
+                pass
+
         if self._use_moderngl:
+            # rename any scene items that store the owner name in payload
             try:
                 self._mgl_rename_scene_item_owner(old_key, new_key)
             except Exception:
                 pass
-            try:
-                self._mgl_rebuild_scene_splats(preserve_camera=True)
-            except Exception:
-                pass
+
+            # IMPORTANT: only rebuild splats if this rename involved splats
+            if had_splat:
+                try:
+                    self._mgl_rebuild_scene_splats(preserve_camera=True)
+                except Exception:
+                    pass
+
             self.update()
+
 
     def _default_models_dir(self) -> Optional[Path]:
         try:
