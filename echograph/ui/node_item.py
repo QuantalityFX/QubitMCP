@@ -2130,15 +2130,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     if pngs:
                         snap_combo = QtWidgets.QComboBox()
 
-                        # clamp width based on space left before right-side buttons
-                        # reserved: spacing after View + right buttons area (reload + optional screengrab)
+                        # Clamp width based on space left before right-side buttons
                         reserve = 6                  # spacing after combo area
                         reserve += 24 + 6            # reload button + spacing
                         if is_3d:
                             reserve += 24 + 6        # screengrab button + spacing
                         reserve += 8                 # extra padding safety
 
-                        # inner_w is the row width, 64 is View width, plus spacing between View and combo
                         available = inner_w - (64 + 6) - reserve
                         combo_w = max(80, min(140, available))
 
@@ -2147,20 +2145,38 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         snap_combo.setMinimumWidth(combo_w)
                         snap_combo.setMaximumWidth(combo_w)
                         snap_combo.setFixedHeight(24)
-                        snap_combo.setMaxVisibleItems(12)
+
+                        # Smaller popup so it prefers opening downward
+                        snap_combo.setMaxVisibleItems(8)
+
+                        # Use a real QListView so hover works reliably
+                        lv = QtWidgets.QListView()
+                        lv.setMouseTracking(True)
+                        lv.setUniformItemSizes(True)
+                        snap_combo.setView(lv)
+
+                        # Combo + popup styling (hover + selected)
                         snap_combo.setStyleSheet(
                             "QComboBox{background:#0f1216;color:#e6edf3;border:1px solid #3c4450;"
                             "border-radius:6px;padding:2px 6px;}"
                             "QComboBox::drop-down{border:none;}"
+                            "QComboBox QAbstractItemView{"
+                            "  background:#0f1216;color:#e6edf3;border:1px solid #3c4450;"
+                            "  outline:0px;}"
+                            "QComboBox QAbstractItemView::item{padding:6px 10px;}"
+                            "QComboBox QAbstractItemView::item:hover{background:#1f2937;}"
+                            "QComboBox QAbstractItemView::item:selected{background:#22c55e;color:#0f1216;}"
                         )
-                        # Bring node to front when clicking the combo (proxy-safe, does not interfere with popup creation)
+
+                        # Bring node to front when clicking the combo (prevents popup hiding under newer nodes)
                         _node = self
 
                         class _BringFrontFilter(QtCore.QObject):
                             def eventFilter(self, obj, ev):
                                 try:
-                                    if ev.type() == QtCore.QEvent.MouseButtonPress and ev.button() == QtCore.Qt.LeftButton:
-                                        _node._bring_to_front()
+                                    if ev.type() in (QtCore.QEvent.MouseButtonPress, QtCore.QEvent.MouseButtonDblClick):
+                                        if hasattr(ev, "button") and ev.button() == QtCore.Qt.LeftButton:
+                                            _node._bring_to_front()
                                 except Exception:
                                     pass
                                 return False
@@ -2168,10 +2184,80 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         snap_combo._bring_front_filter = _BringFrontFilter(snap_combo)  # keep alive
                         snap_combo.installEventFilter(snap_combo._bring_front_filter)
 
+                        # Force popup to start at v001, keep selected highlighted, and keep popup anchored under combo
+                        class _SnapPopupTopAndHighlight(QtCore.QObject):
+                            def __init__(self, combo: QtWidgets.QComboBox):
+                                super().__init__(combo)
+                                self._combo = combo
 
+                            def eventFilter(self, obj, ev):
+                                if ev.type() == QtCore.QEvent.Show:
+                                    QtCore.QTimer.singleShot(0, self._apply)
+                                    QtCore.QTimer.singleShot(15, self._force_top_only)
+                                return False
+
+                            def _apply(self):
+                                try:
+                                    combo = self._combo
+                                    view = combo.view()
+                                    popup = view.window()  # popup container window
+
+                                    # Anchor popup directly under the combobox
+                                    pos = combo.mapToGlobal(QtCore.QPoint(0, combo.height()))
+                                    popup.move(pos)
+
+                                    # Match widths
+                                    popup.setFixedWidth(combo.width())
+                                    view.setMinimumWidth(combo.width())
+
+                                    popup.raise_()
+
+                                    # Keep current item highlighted
+                                    m = view.model()
+                                    sm = view.selectionModel()
+                                    cur = m.index(combo.currentIndex(), 0)
+                                    if sm is not None and cur.isValid():
+                                        sm.setCurrentIndex(
+                                            cur,
+                                            QtCore.QItemSelectionModel.ClearAndSelect | QtCore.QItemSelectionModel.Rows
+                                        )
+
+                                    # Force list to show from top (v001)
+                                    self._scroll_to_top(view)
+                                except Exception:
+                                    pass
+
+                            def _force_top_only(self):
+                                try:
+                                    self._scroll_to_top(self._combo.view())
+                                except Exception:
+                                    pass
+
+                            def _scroll_to_top(self, view):
+                                try:
+                                    view.setUpdatesEnabled(False)
+                                except Exception:
+                                    pass
+                                try:
+                                    if hasattr(view, "scrollToTop"):
+                                        view.scrollToTop()
+                                    sb = view.verticalScrollBar()
+                                    if sb is not None:
+                                        sb.setValue(sb.minimum())
+                                finally:
+                                    try:
+                                        view.setUpdatesEnabled(True)
+                                    except Exception:
+                                        pass
+
+                        snap_combo._popup_top_filter = _SnapPopupTopAndHighlight(snap_combo)  # keep alive
+                        snap_combo.view().installEventFilter(snap_combo._popup_top_filter)
+
+                        # Add items for the versions
                         for i, pth in enumerate(pngs, start=1):
                             snap_combo.addItem(f"v{i:03d}", pth.name)
 
+                        # Set the chosen version (if it exists)
                         chosen = (self._param_value("thumbnail_choice") or "").strip()
                         if chosen:
                             for idx in range(snap_combo.count()):
@@ -2215,8 +2301,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
             except Exception:
                 pass
 
+
         # IMPORTANT: stretch must be here so right buttons stay on the right
         btn_row.addStretch(1)
+
 
         if kind in ("import", "html_preview"):
             reload_btn = QtWidgets.QToolButton()
