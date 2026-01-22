@@ -1307,7 +1307,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     splats = load_splats_ply(path)
                     self.set_splats(splats)
                 except Exception:
-                    pass
+                    import traceback
+                    print("[PLY] load_splats_ply FAILED:\n" + traceback.format_exc(), flush=True)
                 if frame:
                     try:
                         self._reset_camera()

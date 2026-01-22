@@ -11,22 +11,33 @@ def sigmoid(x: np.ndarray) -> np.ndarray:
 
 
 def read_header(p: Path):
-    props = []
+    # Only collect properties that belong to the "vertex" element.
+    props: list[str] = []
     count = None
+    in_vertex = False
+
     with p.open("rb") as f:
         while True:
             line = f.readline()
             if not line:
                 raise RuntimeError("Unexpected EOF in header")
             s = line.decode("utf-8", errors="replace").strip()
-            if s.startswith("element vertex"):
-                count = int(s.split()[-1])
-            elif s.startswith("property"):
+
+            if s.startswith("element "):
                 parts = s.split()
-                props.append(parts[-1])  # property float name
+                in_vertex = (len(parts) >= 3 and parts[1] == "vertex")
+                if in_vertex:
+                    count = int(parts[2])
+
+            elif in_vertex and s.startswith("property"):
+                parts = s.split()
+                # property <type> <name>
+                props.append(parts[-1])
+
             elif s == "end_header":
                 header_end = f.tell()
                 break
+
     return count, props, header_end
 
 
@@ -39,8 +50,18 @@ def load_gs_ply(ply_path: str, n: int = 200_000) -> np.ndarray:
 
     # This file is binary_little_endian float32 for all listed properties
     floats_per_vertex = len(props)
-    if floats_per_vertex != 62:
-        raise RuntimeError(f"Expected 62 float props, got {floats_per_vertex}")
+
+    required = {
+        "x","y","z",
+        "f_dc_0","f_dc_1","f_dc_2",
+        "opacity",
+        "scale_0","scale_1","scale_2",
+        "rot_0","rot_1","rot_2","rot_3",
+    }
+    missing = [k for k in sorted(required) if k not in set(props)]
+    if missing:
+        raise RuntimeError(f"PLY schema not supported by this loader. Missing: {missing}")
+    # If there are extra float props, we just ignore them.
 
     n = min(n, vcount)
 

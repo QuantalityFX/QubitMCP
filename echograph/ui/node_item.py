@@ -2208,7 +2208,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
                 thumb_path = (self._param_value("thumbnail") or "").strip()
                 if thumb_path:
-                    print("[snap_combo]", self.model.name, "kind=", kind, "thumb=", repr(thumb_path))
+                    #print("[snap_combo]", self.model.name, "kind=", kind, "thumb=", repr(thumb_path))
                     folder = Path(thumb_path).parent
                     pngs = sorted(folder.glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
 
