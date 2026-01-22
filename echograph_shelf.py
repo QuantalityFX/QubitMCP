@@ -752,6 +752,18 @@ class GraphScene(QtWidgets.QGraphicsScene):
         node.name = new_name
         item.model.name = new_name
         item.update()
+        # Keep 3D viewport scene ownership in sync with node renames
+        try:
+            gv = (
+                getattr(self, "gl_view", None)
+                or getattr(self, "_gl_view", None)
+                or getattr(self, "glView", None)
+                or getattr(self, "_glView", None)
+            )
+            if gv is not None and hasattr(gv, "rename_scene_asset_owner"):
+                gv.rename_scene_asset_owner(old_name, new_name)
+        except Exception:
+            pass
 
         # Update any nodes that reference the old name (e.g., Switch/Append nodes)
         for it in self._node_items.values():

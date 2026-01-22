@@ -475,7 +475,14 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
     def __init__(self, scene, parent=None):
         print("[GL_VIEW] INIT FROM:", __file__)
         super().__init__(parent)
-        
+        self._dbg_id = f"{id(self):x}"
+        print(f"[GL_VIEW] INSTANCE NEW {self._dbg_id}")
+
+        try:
+            self.destroyed.connect(lambda *_: print(f"[GL_VIEW] INSTANCE DESTROYED {self._dbg_id}"))
+        except Exception:
+            pass
+
         if QOpenGLWidget is not None:
             try:
                 fmt = QtGui.QSurfaceFormat()

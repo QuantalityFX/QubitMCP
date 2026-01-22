@@ -2200,7 +2200,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
                                 try:
                                     combo = self._combo
                                     view = combo.view()
-                                    popup = view.window()  # popup container window
+                                    popup = view.window()
+
+                                    # Freeze painting so user doesn't see the intermediate state
+                                    popup.setUpdatesEnabled(False)
+                                    view.setUpdatesEnabled(False)
 
                                     # Anchor popup directly under the combobox
                                     pos = combo.mapToGlobal(QtCore.QPoint(0, combo.height()))
@@ -2210,45 +2214,64 @@ class NodeItem(QtWidgets.QGraphicsObject):
                                     popup.setFixedWidth(combo.width())
                                     view.setMinimumWidth(combo.width())
 
-                                    popup.raise_()
+                                    # Force list to show from top (v001)
+                                    self._scroll_to_top(view)
 
-                                    # Keep current item highlighted
+                                    # Keep current item highlighted WITHOUT letting Qt scroll to it
                                     m = view.model()
                                     sm = view.selectionModel()
                                     cur = m.index(combo.currentIndex(), 0)
                                     if sm is not None and cur.isValid():
                                         sm.setCurrentIndex(
                                             cur,
-                                            QtCore.QItemSelectionModel.ClearAndSelect | QtCore.QItemSelectionModel.Rows
+                                            QtCore.QItemSelectionModel.ClearAndSelect
+                                            | QtCore.QItemSelectionModel.Rows
+                                            | QtCore.QItemSelectionModel.NoUpdate
                                         )
 
-                                    # Force list to show from top (v001)
-                                    self._scroll_to_top(view)
+                                    popup.raise_()
                                 except Exception:
                                     pass
-
-                            def _force_top_only(self):
-                                try:
-                                    self._scroll_to_top(self._combo.view())
-                                except Exception:
-                                    pass
-
-                            def _scroll_to_top(self, view):
-                                try:
-                                    view.setUpdatesEnabled(False)
-                                except Exception:
-                                    pass
-                                try:
-                                    if hasattr(view, "scrollToTop"):
-                                        view.scrollToTop()
-                                    sb = view.verticalScrollBar()
-                                    if sb is not None:
-                                        sb.setValue(sb.minimum())
                                 finally:
                                     try:
                                         view.setUpdatesEnabled(True)
                                     except Exception:
                                         pass
+                                    try:
+                                        popup.setUpdatesEnabled(True)
+                                        popup.update()
+                                    except Exception:
+                                        pass
+
+                            def _force_top_only(self):
+                                try:
+                                    view = self._combo.view()
+                                    popup = view.window()
+                                    popup.setUpdatesEnabled(False)
+                                    view.setUpdatesEnabled(False)
+                                    self._scroll_to_top(view)
+                                except Exception:
+                                    pass
+                                finally:
+                                    try:
+                                        view.setUpdatesEnabled(True)
+                                    except Exception:
+                                        pass
+                                    try:
+                                        popup.setUpdatesEnabled(True)
+                                        popup.update()
+                                    except Exception:
+                                        pass
+
+                            def _scroll_to_top(self, view):
+                                try:
+                                    sb = view.verticalScrollBar()
+                                    if sb is not None:
+                                        sb.setValue(sb.minimum())
+                                    elif hasattr(view, "scrollToTop"):
+                                        view.scrollToTop()
+                                except Exception:
+                                    pass
 
                         snap_combo._popup_top_filter = _SnapPopupTopAndHighlight(snap_combo)  # keep alive
                         snap_combo.view().installEventFilter(snap_combo._popup_top_filter)
