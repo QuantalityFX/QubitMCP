@@ -1080,7 +1080,13 @@ class MGLRendererMixin:
                 self._mgl_ctx.enable(moderngl.BLEND)
                 self._mgl_ctx.blend_func = moderngl.ONE, moderngl.ONE_MINUS_SRC_ALPHA
 
-                # keep depth test on so meshes occlude splats correctly
+                # depth test for splats (store previous state so we can restore)
+                prev_depth_test = True
+                try:
+                    prev_depth_test = bool(getattr(self._mgl_ctx, "depth_test", True))
+                except Exception:
+                    prev_depth_test = True
+
                 try:
                     self._mgl_ctx.enable(moderngl.DEPTH_TEST)
                 except Exception:
@@ -1194,9 +1200,12 @@ class MGLRendererMixin:
                     except Exception:
                         pass
 
-                    # restore depth test for everything after
+                    # restore depth test
                     try:
-                        self._mgl_ctx.enable(moderngl.DEPTH_TEST)
+                        if prev_depth_test:
+                            self._mgl_ctx.enable(moderngl.DEPTH_TEST)
+                        else:
+                            self._mgl_ctx.disable(moderngl.DEPTH_TEST)
                     except Exception:
                         pass
 
