@@ -1003,7 +1003,14 @@ class InfoCard(QtWidgets.QFrame):
         kind = (self._node_ref.kind or "").lower()
         if (not has_override) and kind == "import":
             hidden.update({"thumbnail", "thumbnail_rev", "thumbnail_choice"})
+        
+        tbl.verticalHeader().setDefaultSectionSize(24)
+        tbl.setColumnWidth(0, 24)
 
+        icons_dir = Path(__file__).resolve().parents[2] / "icons"
+        eye_open  = QtGui.QIcon(str(icons_dir / "EyeOpen_s_Icon.png"))
+        eye_close = QtGui.QIcon(str(icons_dir / "EyeClose_s_Icon.png"))
+        
         for p in (self._node_ref.params or []):
             pname = (p.get("name", "") or "").strip()
             if not pname:
@@ -1027,13 +1034,32 @@ class InfoCard(QtWidgets.QFrame):
             eye.setChecked(not is_hidden)
             eye.blockSignals(False)
 
-            eye.setText("👁")
-            tbl.setCellWidget(r, 0, eye)
+            eye.setText("")
+            eye.setFixedSize(22, 22)
+            tbl.setColumnWidth(0, 24)
+            eye.setIconSize(QtCore.QSize(20, 20))    # icon inside square
+            eye.setStyleSheet(
+                "QToolButton{padding:0;margin:0;border:1px solid #2a2f37;border-radius:4px;background:transparent;}"
+                "QToolButton:checked{border-color:#3b4452;}"
+                "QToolButton:hover{background:rgba(255,255,255,18);}"
+            )
+
+
+            # visible = checked True, hidden = checked False
+            eye.setIcon(eye_open if (not is_hidden) else eye_close)
+            w = QtWidgets.QWidget()
+            lay = QtWidgets.QHBoxLayout(w)
+            lay.setContentsMargins(0, 0, 0, 0)
+            lay.setSpacing(0)
+            lay.setAlignment(QtCore.Qt.AlignCenter)
+            lay.addWidget(eye)
+            tbl.setCellWidget(r, 0, w)
 
             tbl.setItem(r, 1, QtWidgets.QTableWidgetItem(pname))
             tbl.setItem(r, 2, QtWidgets.QTableWidgetItem(p.get("value", "")))
+        
 
-            def _apply_toggle(checked: bool, nm=key):
+            def _apply_toggle(checked: bool, nm=key, btn=eye, _open=eye_open, _close=eye_close):
                 # recompute from current node params
                 raw2 = ""
                 has_override2 = False
@@ -1079,8 +1105,9 @@ class InfoCard(QtWidgets.QFrame):
                     QtCore.QTimer.singleShot(
                         0, lambda: sc.set_node_params(self._node_ref.name, params)
                     )
+                btn.setIcon(_open if checked else _close)      
             eye.toggled.connect(_apply_toggle)
-
+            
         return tbl
 
     def _build_param_controls(self) -> QtWidgets.QVBoxLayout:
