@@ -1775,6 +1775,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             thumb_widget = QtWidgets.QLabel()
             thumb_widget.setAlignment(QtCore.Qt.AlignCenter)
             thumb_widget.setFixedSize(inner_w, inner_w)
+            self._import_thumb_label = thumb_widget
 
             pixmap = QtGui.QPixmap(thumb_path)
             if not pixmap.isNull():
@@ -1911,22 +1912,116 @@ class NodeItem(QtWidgets.QGraphicsObject):
             print(traceback.format_exc(), flush=True)
             return
 
-        # restore camera from sidecar json next to thumbnail (if present)
+        # restore camera from selected snapshot sidecar json (apply after load settles)
         try:
-            thumb = (self._param_value("thumbnail") or "").strip()
-            if thumb:
-                cam_path = Path(thumb).with_suffix(".json")
+            thumb_base = (self._param_value("thumbnail") or "").strip()
+            if thumb_base:
+                base_path = Path(thumb_base)
+                folder = base_path.parent
+
+                # prefer UI selection from dropdown, else fall back to stored param
+                sel = (getattr(self, "_scene_selected_snapshot", "") or "").strip()
+                if not sel:
+                    sel = (self._param_value("thumbnail_choice") or "").strip()
+
+                snap_png = (folder / sel) if sel else base_path
+                if not snap_png.exists():
+                    snap_png = base_path
+
+                cam_path = snap_png.with_suffix(".json")
                 if cam_path.exists():
                     with open(cam_path, "r", encoding="utf-8") as f:
                         cam = json.load(f)
+
                     glv = getattr(parent, "gl_view", None)
-                    if glv is not None:
-                        if hasattr(glv, "_mgl_queue_camera_state"):
-                            glv._mgl_queue_camera_state(cam)
-                        elif hasattr(glv, "_mgl_apply_camera_state"):
-                            glv._mgl_apply_camera_state(cam)
+
+                    def _apply_cam():
+                        try:
+                            if glv is None:
+                                return
+                            if hasattr(glv, "_mgl_queue_camera_state"):
+                                glv._mgl_queue_camera_state(cam)
+                            elif hasattr(glv, "_mgl_apply_camera_state"):
+                                glv._mgl_apply_camera_state(cam)
+                        except Exception:
+                            pass
+
+                    # apply now, then re-apply after typical load completion moments
+                    QtCore.QTimer.singleShot(0, _apply_cam)
+                    QtCore.QTimer.singleShot(250, _apply_cam)
+                    QtCore.QTimer.singleShot(900, _apply_cam)
+
         except Exception as exc:
             print("[SCENE] camera restore failed:", exc, flush=True)
+
+
+
+    def _update_scene_thumb_label(self, thumb_path: str) -> None:
+        lab = getattr(self, "_scene_thumb_label", None)
+        if lab is None:
+            return
+        try:
+            if not isinstance(lab, QtWidgets.QLabel):
+                return
+            if not thumb_path or not os.path.exists(thumb_path):
+                lab.clear()
+                return
+
+            inner_w = int(lab.width()) if lab.width() > 0 else max(40, int(self.width) - 12)
+            pixmap = QtGui.QPixmap(thumb_path)
+            if pixmap.isNull():
+                lab.clear()
+                return
+
+            scaled = pixmap.scaled(
+                inner_w, inner_w,
+                QtCore.Qt.KeepAspectRatioByExpanding,
+                QtCore.Qt.SmoothTransformation
+            )
+            x = max(0, (scaled.width() - inner_w) // 2)
+            y = max(0, (scaled.height() - inner_w) // 2)
+            cropped = scaled.copy(x, y, inner_w, inner_w)
+            lab.setPixmap(cropped)
+        except Exception:
+            pass
+
+
+    def _refresh_scene_snap_combo(self) -> None:
+        combo = getattr(self, "_scene_snap_combo", None)
+        if combo is None:
+            return
+        try:
+            from pathlib import Path
+
+            thumb_path = (self._param_value("thumbnail") or "").strip()
+            if not thumb_path:
+                combo.blockSignals(True)
+                combo.clear()
+                combo.blockSignals(False)
+                return
+
+            folder = Path(thumb_path).parent
+            pngs = sorted(folder.glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
+
+            chosen = (self._param_value("thumbnail_choice") or "").strip()
+
+            combo.blockSignals(True)
+            combo.clear()
+            for i, pth in enumerate(pngs, start=1):
+                combo.addItem(f"v{i:03d}", pth.name)
+
+            if chosen:
+                for idx in range(combo.count()):
+                    if combo.itemData(idx) == chosen:
+                        combo.setCurrentIndex(idx)
+                        break
+            combo.blockSignals(False)
+        except Exception:
+            try:
+                combo.blockSignals(False)
+            except Exception:
+                pass
+    
 
     def _build_scene_summary(self, y_cursor: int) -> int:
         assets = self._collect_scene_assets()
@@ -1949,6 +2044,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             thumb_widget = QtWidgets.QLabel()
             thumb_widget.setAlignment(QtCore.Qt.AlignCenter)
             thumb_widget.setFixedSize(inner_w, inner_w)
+            self._scene_thumb_label = thumb_widget
 
             pixmap = QtGui.QPixmap(thumb_path)
             if not pixmap.isNull():
@@ -2011,6 +2107,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     snap_combo = QtWidgets.QComboBox()
                     snap_combo.setFixedHeight(24)
                     snap_combo.setMaxVisibleItems(8)
+                    self._scene_snap_combo = snap_combo
 
                     for i, pth in enumerate(pngs, start=1):
                         snap_combo.addItem(f"v{i:03d}", pth.name)
@@ -2042,9 +2139,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
                                 fol = Path(tp).parent
                                 new_thumb = str((fol / str(fname)).resolve())
 
-                                self._set_param_value("thumbnail", new_thumb)
-                                self._set_param_value("thumbnail_choice", str(fname))
-                                self._set_param_value("thumbnail_rev", str(time.time()))
+                                # UI-only selection (DO NOT touch node params here)
+                                self._scene_selected_snapshot = str(fname)   # remember chosen version
+                                self._update_scene_thumb_label(new_thumb)    # show it immediately
+
                             finally:
                                 self._snap_updating = False
 
@@ -2177,6 +2275,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
         if thumb_widget:
             outer.addWidget(thumb_widget, 0)
+            # keep a handle so version dropdown can update the preview without changing params
+            if isinstance(thumb_widget, QtWidgets.QLabel):
+                self._file_thumb_label = thumb_widget
 
         label = QtWidgets.QLabel(detail)
         label.setStyleSheet("color:#cbd5e1;")
@@ -2406,11 +2507,33 @@ class NodeItem(QtWidgets.QGraphicsObject):
                                     if not tp:
                                         return
                                     fol = Path(tp).parent
-                                    new_thumb = str((fol / str(fname)).resolve())
+                                    chosen_thumb = str((fol / str(fname)).resolve())
 
-                                    self._set_param_value("thumbnail", new_thumb)
-                                    self._set_param_value("thumbnail_choice", str(fname))
-                                    self._set_param_value("thumbnail_rev", str(time.time()))
+                                    # UI-only for import: do NOT touch node params here (prevents viewport reload)
+                                    if kind == "import":
+                                        self._import_selected_snapshot = str(fname)
+
+                                        lab = getattr(self, "_import_thumb_label", None)
+                                        if isinstance(lab, QtWidgets.QLabel):
+                                            inner_w = int(lab.width()) if lab.width() > 0 else max(40, int(self.width) - 12)
+                                            pixmap = QtGui.QPixmap(chosen_thumb)
+                                            if not pixmap.isNull():
+                                                scaled = pixmap.scaled(
+                                                    inner_w, inner_w,
+                                                    QtCore.Qt.KeepAspectRatioByExpanding,
+                                                    QtCore.Qt.SmoothTransformation
+                                                )
+                                                x = max(0, (scaled.width() - inner_w) // 2)
+                                                y = max(0, (scaled.height() - inner_w) // 2)
+                                                lab.setPixmap(scaled.copy(x, y, inner_w, inner_w))
+                                        return
+
+                                    # non-import nodes can keep the old behavior if needed
+                                    new_thumb = chosen_thumb
+                                    self._set_param_value("thumbnail", new_thumb, rebuild=False)
+                                    self._set_param_value("thumbnail_choice", str(fname), rebuild=False)
+                                    self._set_param_value("thumbnail_rev", str(time.time()), rebuild=False)
+
                                 finally:
                                     self._snap_updating = False
 
@@ -2680,7 +2803,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             except Exception as exc:
                 print("[SNAP] cam save failed:", exc, flush=True)
 
-            self._schedule_rebuild()
+            # self._schedule_rebuild()
 
 
         QtCore.QTimer.singleShot(30, capture)
@@ -2849,37 +2972,17 @@ class NodeItem(QtWidgets.QGraphicsObject):
             except Exception:
                 pass
 
-            self._set_param_value("thumbnail", thumb)
+            self._set_param_value("thumbnail", thumb, rebuild=False)
             print("[SNAP] param thumbnail set ->", self._param_value("thumbnail"), flush=True)
-            # NEW: store the chosen snapshot filename (for future dropdown/version picker)
-            self._set_param_value("thumbnail_choice", Path(thumb).name)
+
+            self._set_param_value("thumbnail_choice", Path(thumb).name, rebuild=False)
 
             # keep this for now (cache-bust / UI refresh)
-            self._set_param_value("thumbnail_rev", str(time.time()))
-            try:
-                self.update()                 # repaint this node item
-            except Exception:
-                pass
-            try:
-                s = self.scene()
-                if s is not None and hasattr(s, "update"):
-                    s.update()
-            except Exception:
-                pass
-            # save camera state beside the thumbnail: same name, .json
-            try:
-                parent = _top_level_parent_for_dialog()
-                glv = getattr(parent, "gl_view", None) if parent is not None else None
-                if glv is not None and hasattr(glv, "_mgl_get_camera_state"):
-                    cam = glv._mgl_get_camera_state()
-                    cam_path = Path(thumb).with_suffix(".json")
-                    with open(cam_path, "w", encoding="utf-8") as f:
-                        json.dump(cam, f, indent=2)
-                    print("[SNAP] scene cam saved ->", str(cam_path), flush=True)
-            except Exception as exc:
-                print("[SNAP] scene cam save failed:", exc, flush=True)
+            self._set_param_value("thumbnail_rev", str(time.time()), rebuild=False)
 
-            self._schedule_rebuild()
+            # update UI immediately, no node rebuild
+            self._update_scene_thumb_label(thumb)
+            self._refresh_scene_snap_combo()
 
         QtCore.QTimer.singleShot(30, capture)
 
@@ -3093,26 +3196,43 @@ class NodeItem(QtWidgets.QGraphicsObject):
             try:
                 handler(path, texture if texture else None)
 
-                # restore camera from sidecar json next to thumbnail (if present)
+                # restore camera from selected snapshot sidecar json (apply after load settles)
                 try:
-                    thumb = (self._param_value("thumbnail") or "").strip()
-                    if thumb:
-                        cam_path = Path(thumb).with_suffix(".json")
+                    thumb_base = (self._param_value("thumbnail") or "").strip()
+                    if thumb_base:
+                        base_path = Path(thumb_base)
+                        folder = base_path.parent
+
+                        # prefer UI selection from dropdown, else fall back to stored param
+                        sel = (getattr(self, "_import_selected_snapshot", "") or "").strip()
+                        if not sel:
+                            sel = (self._param_value("thumbnail_choice") or "").strip()
+
+                        snap_png = (folder / sel) if sel else base_path
+                        if not snap_png.exists():
+                            snap_png = base_path
+
+                        cam_path = snap_png.with_suffix(".json")
                         if cam_path.exists():
                             with open(cam_path, "r", encoding="utf-8") as f:
                                 cam = json.load(f)
 
-                            glv = None
-                            try:
-                                glv = getattr(parent, "gl_view", None)
-                            except Exception:
-                                glv = None
+                            glv = getattr(parent, "gl_view", None)
 
-                            if glv is not None:
-                                if hasattr(glv, "_mgl_queue_camera_state"):
-                                    glv._mgl_queue_camera_state(cam)
-                                elif hasattr(glv, "_mgl_apply_camera_state"):
-                                    glv._mgl_apply_camera_state(cam)
+                            def _apply_cam():
+                                try:
+                                    if glv is None:
+                                        return
+                                    if hasattr(glv, "_mgl_queue_camera_state"):
+                                        glv._mgl_queue_camera_state(cam)
+                                    elif hasattr(glv, "_mgl_apply_camera_state"):
+                                        glv._mgl_apply_camera_state(cam)
+                                except Exception:
+                                    pass
+
+                            QtCore.QTimer.singleShot(0, _apply_cam)
+                            QtCore.QTimer.singleShot(250, _apply_cam)
+                            QtCore.QTimer.singleShot(900, _apply_cam)
 
                 except Exception as exc2:
                     print("[IMPORT] camera restore failed:", exc2, flush=True)
