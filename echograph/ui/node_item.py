@@ -335,8 +335,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
     def input_port_names(self) -> list[str]:
         self._ensure_named_inputs_set()
         return [str(n) for n in getattr(self.model, "_named_inputs", []) if n]
-
-    def _set_param_value(self, name: str, value: str, rebuild: bool = True):
+    
+    def _set_param_value(self, name: str, value: str, rebuild: bool = True, notify_scene: bool = True):
         key = (name or "").strip().lower()
         is_import_path = key == "path" and (self.model.kind or "").lower() in ("import", "html_preview")
         if is_import_path:
@@ -352,17 +352,19 @@ class NodeItem(QtWidgets.QGraphicsObject):
         if not found:
             params.append({"name": name, "value": value})
 
+        # keep local model in sync (for saving)
         self.model.params = params
         if is_import_path:
             self._import_path_committed = value
 
-        sc = self.scene()
-        if sc:
-            try:
-                sc.set_node_params(self.model.name, params, rebuild=rebuild)
-            except Exception:
-                pass
-
+        # optionally notify the scene (this is what can cause reload side effects)
+        if notify_scene:
+            sc = self.scene()
+            if sc:
+                try:
+                    sc.set_node_params(self.model.name, params, rebuild=rebuild)
+                except Exception:
+                    pass
 
     def _param_value(self, name: str) -> str:
         key = (name or "").strip().lower()
@@ -2005,8 +2007,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 return
 
             folder = Path(thumb_path).parent
-            pngs = sorted(folder.glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
-
+            pngs = sorted(folder.glob("*.png"), key=lambda p: p.stat().st_mtime)
+            
             chosen = (self._param_value("thumbnail_choice") or "").strip()
 
             combo.blockSignals(True)
@@ -2155,7 +2157,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
                                 # UI-only: do NOT touch node params here (prevents viewport reload)
                                 self._scene_selected_snapshot = str(fname)
-                                self._set_param_value("thumbnail_choice", str(fname), rebuild=False)  # persist selection
+                                self._set_param_value("thumbnail_choice", str(fname), rebuild=False, notify_scene=False)  # persist without reload
 
                                 self._update_scene_thumb_label(new_thumb)
 
@@ -2343,7 +2345,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 if thumb_path:
                     #print("[snap_combo]", self.model.name, "kind=", kind, "thumb=", repr(thumb_path))
                     folder = Path(thumb_path).parent
-                    pngs = sorted(folder.glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
+                    pngs = sorted(folder.glob("*.png"), key=lambda p: p.stat().st_mtime)
 
                     if pngs:
                         snap_combo = QtWidgets.QComboBox()
