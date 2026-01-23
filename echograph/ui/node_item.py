@@ -2007,8 +2007,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 return
 
             folder = Path(thumb_path).parent
+            # oldest -> newest so newest becomes the biggest v###
             pngs = sorted(folder.glob("*.png"), key=lambda p: p.stat().st_mtime)
-            
+
             chosen = (self._param_value("thumbnail_choice") or "").strip()
 
             combo.blockSignals(True)
@@ -2021,13 +2022,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     if combo.itemData(idx) == chosen:
                         combo.setCurrentIndex(idx)
                         break
+
             combo.blockSignals(False)
         except Exception:
             try:
                 combo.blockSignals(False)
             except Exception:
                 pass
-    
+
+
 
     def _build_scene_summary(self, y_cursor: int) -> int:
         assets = self._collect_scene_assets()
@@ -2108,7 +2111,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             thumb_path = (self._param_value("thumbnail") or "").strip()
             if thumb_path:
                 folder = Path(thumb_path).parent
-                pngs = sorted(folder.glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
+                pngs = sorted(folder.glob("*.png"), key=lambda p: p.name)
                 if pngs:
                     snap_combo = QtWidgets.QComboBox()
                     snap_combo.setFixedHeight(24)
@@ -2530,6 +2533,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                                     # UI-only for import: do NOT touch node params here (prevents viewport reload)
                                     if kind == "import":
                                         self._import_selected_snapshot = str(fname)
+
+                                        # persist selection without triggering viewport reload
+                                        self._set_param_value("thumbnail_choice", str(fname), rebuild=False, notify_scene=False)
 
                                         lab = getattr(self, "_import_thumb_label", None)
                                         if isinstance(lab, QtWidgets.QLabel):
@@ -3017,10 +3023,29 @@ class NodeItem(QtWidgets.QGraphicsObject):
             # keep this for now (cache-bust / UI refresh)
             self._set_param_value("thumbnail_rev", str(time.time()), rebuild=False)
 
-            # update UI immediately, no node rebuild
-            # update UI immediately, no node rebuild
-            self._update_scene_thumb_label(thumb)
-            self._refresh_scene_snap_combo()
+            # keep runtime selection consistent
+            try:
+                self._scene_selected_snapshot = Path(thumb).name
+            except Exception:
+                pass
+
+            # update UI; if widgets don't exist yet (folder was empty / thumb missing), rebuild once
+            try:
+                need_rebuild = (getattr(self, "_scene_thumb_label", None) is None) or (getattr(self, "_scene_snap_combo", None) is None)
+                if need_rebuild and hasattr(self, "_schedule_rebuild"):
+                    self._schedule_rebuild()
+
+                def _ui_refresh():
+                    try:
+                        self._update_scene_thumb_label(thumb)
+                        self._refresh_scene_snap_combo()
+                    except Exception:
+                        pass
+
+                QtCore.QTimer.singleShot(0, _ui_refresh)
+            except Exception:
+                pass
+
 
             # save camera state beside the thumbnail: same name, .json
             try:
