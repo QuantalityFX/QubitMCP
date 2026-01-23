@@ -2134,7 +2134,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
                             return
 
                         self._snap_updating = True
-
                         def _apply():
                             try:
                                 tp = (self._param_value("thumbnail") or "").strip()
@@ -2143,14 +2142,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                                 fol = Path(tp).parent
                                 new_thumb = str((fol / str(fname)).resolve())
 
-                                # IMPORTANT: keep View-camera restore in sync
+                                # UI-only: do NOT touch node params here (prevents viewport reload)
                                 self._scene_selected_snapshot = str(fname)
-
-                                self._set_param_value("thumbnail", new_thumb, rebuild=False)
-                                self._set_param_value("thumbnail_choice", str(fname), rebuild=False)
-                                self._set_param_value("thumbnail_rev", str(time.time()), rebuild=False)
                                 self._update_scene_thumb_label(new_thumb)
-                                self._refresh_scene_snap_combo()
 
                             finally:
                                 self._snap_updating = False

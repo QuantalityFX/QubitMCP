@@ -518,7 +518,7 @@ class MGLRendererMixin:
                     pass
         else:
             color = payload.get("color") or self._mgl_mesh_color
-            tex = manual_texture or payload.get("texture") or self._mgl_texture
+            tex = manual_texture or payload.get("texture")
             use_texture = tex is not None
             try:
                 self._mgl_prog["UseTexture"].value = 1 if use_texture else 0
