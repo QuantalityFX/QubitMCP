@@ -237,6 +237,81 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     outliner.setMaximumHeight(140)
     layout.addWidget(outliner, 0)
 
+    # --- Render Settings (match Scene Outliner styling) ---
+    render_title = QtWidgets.QLabel("Render Settings")
+    render_title.setStyleSheet("color:#94a3b8;font-size:11px;")
+    layout.addWidget(render_title, 0)
+
+    render_panel = QtWidgets.QWidget()
+    render_panel.setStyleSheet("QWidget{background:transparent;border:none;}")
+
+    rp = QtWidgets.QHBoxLayout(render_panel)
+    rp.setContentsMargins(6, 4, 6, 4)
+    rp.setSpacing(8)
+
+    lab = QtWidgets.QLabel("Depth Test (Splats)")
+    lab.setStyleSheet("color:#cbd5e1;")
+    rp.addWidget(lab, 0, QtCore.Qt.AlignLeft)
+
+    raw = ""
+    try:
+        raw = _param_value(node, "splat_depth_test").strip().lower()
+    except Exception:
+        raw = ""
+
+    depth_on = True if raw in ("", "1", "true", "yes", "on") else False
+
+    chk = QtWidgets.QCheckBox()
+    chk.setText("")
+    chk.setChecked(depth_on)
+    chk.setStyleSheet("QCheckBox{padding:0;margin:0;}")
+
+    # small bordered square around the checkbox indicator (consistent border ON/OFF)
+    box = QtWidgets.QWidget()
+    box.setFixedSize(18, 18)
+    box.setStyleSheet("QWidget{border:1px solid #3c4450;border-radius:3px;background:transparent;}")
+
+    box_lay = QtWidgets.QHBoxLayout(box)
+    box_lay.setContentsMargins(0, 0, 0, 0)
+    box_lay.setSpacing(0)
+    box_lay.setAlignment(QtCore.Qt.AlignCenter)
+    box_lay.addWidget(chk)
+
+    rp.addWidget(box, 0, QtCore.Qt.AlignLeft)
+    box.mousePressEvent = lambda e: chk.toggle()
+    rp.addStretch(1)
+
+    def _apply_depth(v: bool):
+        # store on node params
+        try:
+            params = list(getattr(node, "params", None) or [])
+            found = False
+            for p in params:
+                if (p.get("name") or "").strip().lower() == "splat_depth_test":
+                    p["value"] = "1" if v else "0"
+                    found = True
+                    break
+            if not found:
+                params.append({"name": "splat_depth_test", "value": "1" if v else "0"})
+            node.params = params
+        except Exception:
+            pass
+
+        # push into viewport flag
+        try:
+            win = card.window()
+            glv = getattr(win, "gl_view", None) if win is not None else None
+            if glv is not None:
+                glv._mgl_splat_depth_test = ("1" if v else "0")
+                glv.update()
+        except Exception:
+            pass
+
+    chk.toggled.connect(lambda v: QtCore.QTimer.singleShot(0, lambda: _apply_depth(v)))
+
+    layout.addWidget(render_panel, 0)
+
+
     def _hidden_set() -> set:
         raw = getattr(node, "_scene_hidden", None)
         if isinstance(raw, set):
