@@ -2125,6 +2125,17 @@ class NodeItem(QtWidgets.QGraphicsObject):
                                 snap_combo.setCurrentIndex(idx)
                                 snap_combo.blockSignals(False)
                                 break
+                    # ensure thumb label matches the selected version on load
+                    try:
+                        tp = (self._param_value("thumbnail") or "").strip()
+                        cur = snap_combo.currentData()
+                        if tp and cur:
+                            fol = Path(tp).parent
+                            cur_thumb = str((fol / str(cur)).resolve())
+                            self._scene_selected_snapshot = str(cur)
+                            self._update_scene_thumb_label(cur_thumb)
+                    except Exception:
+                        pass
 
                     def _on_pick(_idx: int):
                         if getattr(self, "_snap_updating", False):
@@ -2145,7 +2156,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                                 # UI-only: do NOT touch node params here (prevents viewport reload)
                                 self._scene_selected_snapshot = str(fname)
                                 self._set_param_value("thumbnail_choice", str(fname), rebuild=False)  # persist selection
-                                
+
                                 self._update_scene_thumb_label(new_thumb)
 
                             finally:
