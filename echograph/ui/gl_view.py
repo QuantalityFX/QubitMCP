@@ -2832,6 +2832,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         if self._use_moderngl:
             if e.button() == QtCore.Qt.LeftButton and self._mgl_arcball is not None:
                 self._mgl_arcball.onClickLeftDown(e.x(), e.y())
+                self._mgl_pick_press_pos = e.pos()
                 self.setCursor(QtCore.Qt.ClosedHandCursor)
                 e.accept()
                 return
@@ -3029,6 +3030,25 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
     def mouseReleaseEvent(self, e):
         if self._use_moderngl:
+            # click-pick (only if it was a click, not a drag)
+            if e.button() == QtCore.Qt.LeftButton:
+                try:
+                    press = getattr(self, "_mgl_pick_press_pos", None)
+                    if press is not None:
+                        dx = abs(int(e.x()) - int(press.x()))
+                        dy = abs(int(e.y()) - int(press.y()))
+                        if dx <= 3 and dy <= 3:
+                            renderer = getattr(self, "_mgl_renderer", None) or self
+                            pick = getattr(renderer, "pick_owner_at", None)
+                            if callable(pick):
+                                owner = pick(int(e.x()), int(e.y()), int(self.width()), int(self.height()))
+                                if owner:
+                                    w = self.window()
+                                    if hasattr(w, "select_scene_asset"):
+                                        w.select_scene_asset(owner)
+                except Exception:
+                    pass
+
             if e.button() == QtCore.Qt.LeftButton and self._mgl_arcball is not None:
                 self._mgl_arcball.onClickLeftUp()
             if e.button() == QtCore.Qt.RightButton:
@@ -3037,6 +3057,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             self.setCursor(QtCore.Qt.ArrowCursor)
             super().mouseReleaseEvent(e)
             return
+
         if self._use_example_pipeline:
             if e.button() == QtCore.Qt.LeftButton:
                 self._orbit_dragging = False
@@ -3050,6 +3071,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             self.setCursor(QtCore.Qt.ArrowCursor)
             super().mouseReleaseEvent(e)
             return
+
         if e.button() == QtCore.Qt.LeftButton:
             self._orbit_dragging = False
             self._orbit_last_pos = None

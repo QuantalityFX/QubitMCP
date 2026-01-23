@@ -1033,6 +1033,14 @@ class MGLRendererMixin:
                 transform = Matrix44.identity(dtype="f4")
         else:
             transform = Matrix44.identity(dtype="f4")
+        # cache matrices for picking (screen click -> ray)
+        try:
+            if np is not None:
+                self._mgl_pick_proj = np.array(proj, dtype="f4")
+                self._mgl_pick_view = np.array(lookat, dtype="f4")
+                self._mgl_pick_model = np.array(transform, dtype="f4")
+        except Exception:
+            pass
 
         # cache stable 3x3 rotation for gizmo (no yaw/pitch)
         try:
@@ -1043,6 +1051,7 @@ class MGLRendererMixin:
             )
         except Exception:
             self._gizmo_rot3 = None
+
 
         self._dbgprint(dbg, "[MGL] after transform build", flush=True)
 
@@ -2473,6 +2482,7 @@ class MGLRendererMixin:
 
         try:
             self._mgl_scene_splats = {}
+            self._mgl_scene_bounds_by_owner = {}
         except Exception:
             pass
 
@@ -2518,6 +2528,10 @@ class MGLRendererMixin:
                             mins = arr[:, :3].min(axis=0)
                             maxs = arr[:, :3].max(axis=0)
                             bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, mins, maxs)
+                            try:
+                                self._mgl_scene_bounds_by_owner[owner] = (mins.astype("f4"), maxs.astype("f4"))
+                            except Exception:
+                                pass
                     except Exception as exc:
                         self._mgl_error = f"Splat load failed: {exc}"
                     continue
@@ -2670,6 +2684,10 @@ class MGLRendererMixin:
                         if mesh_arrays.points is not None and mesh_arrays.points.size:
                             mins = mesh_arrays.points.min(axis=0)
                             maxs = mesh_arrays.points.max(axis=0)
+                            try:
+                                self._mgl_scene_bounds_by_owner[owner] = (mins.astype("f4"), maxs.astype("f4"))
+                            except Exception:
+                                pass
                             bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, mins, maxs)
                             has_mesh_bounds = True
                         elif mesh_arrays.submeshes:
@@ -2679,6 +2697,10 @@ class MGLRendererMixin:
                                     continue
                                 mins = pts.min(axis=0)
                                 maxs = pts.max(axis=0)
+                                try:
+                                    self._mgl_scene_bounds_by_owner[owner] = (mins.astype("f4"), maxs.astype("f4"))
+                                except Exception:
+                                    pass
                                 bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, mins, maxs)
                                 has_mesh_bounds = True
                     else:
@@ -2772,3 +2794,85 @@ class MGLRendererMixin:
                     self.doneCurrent()
                 except Exception:
                     pass
+
+
+    def pick_owner_at(self, px: int, py: int, viewport_w: int, viewport_h: int):
+        """
+        Ray-pick against per-owner AABBs stored in self._mgl_scene_bounds_by_owner.
+        Returns owner string or None.
+        """
+        if np is None:
+            return None
+
+        bounds = getattr(self, "_mgl_scene_bounds_by_owner", None) or {}
+        if not bounds:
+            return None
+
+        P = getattr(self, "_mgl_pick_proj", None)
+        V = getattr(self, "_mgl_pick_view", None)
+        M = getattr(self, "_mgl_pick_model", None)
+        if P is None or V is None or M is None:
+            return None
+
+        try:
+            invPV = np.linalg.inv((P @ V @ M).astype(np.float32))
+        except Exception:
+            return None
+
+        # window coords -> NDC
+        x = (2.0 * (float(px) / max(1.0, float(viewport_w)))) - 1.0
+        y = 1.0 - (2.0 * (float(py) / max(1.0, float(viewport_h))))  # flip Y
+        near = np.array([x, y, -1.0, 1.0], dtype=np.float32)
+        far  = np.array([x, y,  1.0, 1.0], dtype=np.float32)
+
+        p0 = invPV @ near
+        p1 = invPV @ far
+        if abs(p0[3]) < 1e-8 or abs(p1[3]) < 1e-8:
+            return None
+        p0 = p0[:3] / p0[3]
+        p1 = p1[:3] / p1[3]
+
+        ray_o = p0.astype(np.float32)
+        ray_d = (p1 - p0).astype(np.float32)
+        n = float(np.linalg.norm(ray_d))
+        if n < 1e-8:
+            return None
+        ray_d /= n
+
+        def ray_aabb(o, d, bmin, bmax):
+            # slabs method
+            tmin = -1e30
+            tmax =  1e30
+            for k in range(3):
+                if abs(d[k]) < 1e-8:
+                    if o[k] < bmin[k] or o[k] > bmax[k]:
+                        return None
+                else:
+                    inv = 1.0 / d[k]
+                    t1 = (bmin[k] - o[k]) * inv
+                    t2 = (bmax[k] - o[k]) * inv
+                    if t1 > t2:
+                        t1, t2 = t2, t1
+                    tmin = max(tmin, float(t1))
+                    tmax = min(tmax, float(t2))
+                    if tmax < tmin:
+                        return None
+            if tmax < 0.0:
+                return None
+            return tmin if tmin >= 0.0 else tmax
+
+        best_owner = None
+        best_t = 1e30
+
+        for owner, (bmin, bmax) in bounds.items():
+            try:
+                bmin = np.array(bmin, dtype=np.float32)
+                bmax = np.array(bmax, dtype=np.float32)
+                t = ray_aabb(ray_o, ray_d, bmin, bmax)
+                if t is not None and t < best_t:
+                    best_t = t
+                    best_owner = owner
+            except Exception:
+                pass
+
+        return best_owner

@@ -2583,6 +2583,26 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         if callable(handler):
             handler(old_name, new_name)
 
+    def select_scene_asset(self, owner: str) -> None:
+        owner = (owner or "").strip()
+        if not owner:
+            return
+
+        for card in (getattr(self, "_card_by_node", {}) or {}).values():
+            outliner = getattr(card, "_scene_outliner_widget", None)
+            if outliner is None:
+                continue
+            try:
+                for i in range(outliner.count()):
+                    it = outliner.item(i)
+                    if it is None:
+                        continue
+                    if (it.data(QtCore.Qt.UserRole) or "") == owner:
+                        outliner.setCurrentRow(i)
+                        outliner.scrollToItem(it)
+                        return
+            except Exception:
+                pass
 
     def open_splat_model(self, ply_path: str) -> None:
         import traceback
@@ -3012,6 +3032,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
         self._cardsLayout.insertWidget(0, card)
         self._card_by_node[node.name] = card
+        # TEMP test: auto-select an outliner row when the Scene card exists
+        if hasattr(card, "_scene_outliner_widget"):
+            QtCore.QTimer.singleShot(50, lambda: self.select_scene_asset("bonsai"))
+
         self._trim_cards()
 
     def populate_branch_info(self, ordered_nodes):

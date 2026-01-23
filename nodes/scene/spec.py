@@ -216,6 +216,7 @@ class SceneAssemblyWidget(QtWidgets.QWidget):
 
 def augment_infocard_footer(card, footer_layout) -> bool:
     node = getattr(card, "_node_ref", None)
+    print("[SceneSpec] augment_infocard_footer called from:", __file__, flush=True)
     if not node:
         return False
 
@@ -236,15 +237,19 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     layout.addWidget(title)
 
     outliner = QtWidgets.QListWidget()
+    outliner.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
     outliner.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
     outliner.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
     outliner.setStyleSheet(
         "QListWidget{background:#0f1216;color:#e2e8f0;border:1px solid #3c4450;border-radius:6px;}"
         "QListWidget::item{padding:2px 6px;}"
+        "QListWidget::item:selected{background:#334155;}"
     )
+
     outliner.setMinimumHeight(70)
     outliner.setMaximumHeight(140)
     layout.addWidget(outliner)
+    card._scene_outliner_widget = outliner
 
     # --- Render Settings (match Scene Outliner styling) ---
     render_title = QtWidgets.QLabel("Render Settings")
@@ -484,6 +489,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             row_layout.addWidget(name_edit, 1)
 
             row_item = QtWidgets.QListWidgetItem()
+            row_item.setData(QtCore.Qt.UserRole, name)
             if entry.get("path"):
                 row_item.setToolTip(entry["path"])
             row_item.setSizeHint(row_widget.sizeHint())
