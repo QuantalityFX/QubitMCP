@@ -1929,10 +1929,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     snap_png = base_path
 
                 cam_path = snap_png.with_suffix(".json")
+                print("[SCENE] selected snapshot =", sel, flush=True)
+                print("[SCENE] cam_path =", str(cam_path), "exists =", cam_path.exists(), flush=True)
                 if cam_path.exists():
+
                     with open(cam_path, "r", encoding="utf-8") as f:
                         cam = json.load(f)
-
+                    print("[SCENE] cam keys =", list(cam.keys())[:10], flush=True)
                     glv = getattr(parent, "gl_view", None)
 
                     def _apply_cam():
@@ -1950,6 +1953,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     QtCore.QTimer.singleShot(0, _apply_cam)
                     QtCore.QTimer.singleShot(250, _apply_cam)
                     QtCore.QTimer.singleShot(900, _apply_cam)
+
 
         except Exception as exc:
             print("[SCENE] camera restore failed:", exc, flush=True)
@@ -2139,9 +2143,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                                 fol = Path(tp).parent
                                 new_thumb = str((fol / str(fname)).resolve())
 
-                                # UI-only selection (DO NOT touch node params here)
-                                self._scene_selected_snapshot = str(fname)   # remember chosen version
-                                self._update_scene_thumb_label(new_thumb)    # show it immediately
+                                # IMPORTANT: keep View-camera restore in sync
+                                self._scene_selected_snapshot = str(fname)
+
+                                self._set_param_value("thumbnail", new_thumb, rebuild=False)
+                                self._set_param_value("thumbnail_choice", str(fname), rebuild=False)
+                                self._set_param_value("thumbnail_rev", str(time.time()), rebuild=False)
+                                self._update_scene_thumb_label(new_thumb)
+                                self._refresh_scene_snap_combo()
 
                             finally:
                                 self._snap_updating = False
@@ -2792,17 +2801,36 @@ class NodeItem(QtWidgets.QGraphicsObject):
             try:
                 parent = _top_level_parent_for_dialog()
                 glv = getattr(parent, "gl_view", None) if parent is not None else None
-                if glv is not None and hasattr(glv, "_mgl_get_camera_state"):
-                    cam = glv._mgl_get_camera_state()
-                    print("[SNAP] cam keys:", sorted(list(cam.keys())), flush=True)
-                    print("[SNAP] cam splat_scale:", cam.get("splat_scale", None), flush=True)
-                    cam_path = Path(thumb).with_suffix(".json")
+
+                def _cam_provider(v):
+                    if v is None:
+                        return None
+                    # common places the mixin/renderer might live
+                    for cand in (
+                        v,
+                        getattr(v, "_mgl_renderer", None),
+                        getattr(v, "mgl_renderer", None),
+                        getattr(v, "renderer", None),
+                        getattr(v, "_renderer", None),
+                        getattr(v, "gl_view", None),  # if parent.gl_view is a container
+                    ):
+                        if cand is not None and hasattr(cand, "_mgl_get_camera_state"):
+                            return cand
+                    return None
+
+                prov = _cam_provider(glv)
+                cam_path = Path(thumb).with_suffix(".json")
+
+                if prov is None:
+                    print("[SNAP] scene cam provider not found, NOT saving:", str(cam_path), flush=True)
+                else:
+                    cam = prov._mgl_get_camera_state()
                     with open(cam_path, "w", encoding="utf-8") as f:
                         json.dump(cam, f, indent=2)
-                    print("[SNAP] cam saved ->", str(cam_path), flush=True)
-            except Exception as exc:
-                print("[SNAP] cam save failed:", exc, flush=True)
+                    print("[SNAP] scene cam saved ->", str(cam_path), flush=True)
 
+            except Exception as exc:
+                print("[SNAP] scene cam save failed:", exc, flush=True)
             # self._schedule_rebuild()
 
 
@@ -2981,8 +3009,23 @@ class NodeItem(QtWidgets.QGraphicsObject):
             self._set_param_value("thumbnail_rev", str(time.time()), rebuild=False)
 
             # update UI immediately, no node rebuild
+            # update UI immediately, no node rebuild
             self._update_scene_thumb_label(thumb)
             self._refresh_scene_snap_combo()
+
+            # save camera state beside the thumbnail: same name, .json
+            try:
+                if hasattr(gl_view, "_mgl_get_camera_state"):
+                    cam = gl_view._mgl_get_camera_state()
+                    cam_path = Path(thumb).with_suffix(".json")
+                    with open(cam_path, "w", encoding="utf-8") as f:
+                        json.dump(cam, f, indent=2)
+                    print("[SNAP] scene cam saved ->", str(cam_path), flush=True)
+                else:
+                    print("[SNAP] scene cam provider missing _mgl_get_camera_state", flush=True)
+            except Exception as exc:
+                print("[SNAP] scene cam save failed:", exc, flush=True)
+
 
         QtCore.QTimer.singleShot(30, capture)
 
