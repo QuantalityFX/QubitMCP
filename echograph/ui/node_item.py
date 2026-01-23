@@ -2348,7 +2348,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 if thumb_path:
                     #print("[snap_combo]", self.model.name, "kind=", kind, "thumb=", repr(thumb_path))
                     folder = Path(thumb_path).parent
-                    pngs = sorted(folder.glob("*.png"), key=lambda p: p.stat().st_mtime)
+                    pngs = sorted(folder.glob("*.png"), key=lambda p: p.name)
 
                     if pngs:
                         snap_combo = QtWidgets.QComboBox()
@@ -2513,6 +2513,29 @@ class NodeItem(QtWidgets.QGraphicsObject):
                                     snap_combo.blockSignals(False)
                                     break
 
+                        # ensure thumb label matches the selected version on load
+                        try:
+                            cur = snap_combo.currentData()
+                            if cur:
+                                self._import_selected_snapshot = str(cur)
+                                chosen_thumb = str((folder / str(cur)).resolve())
+
+                                lab = getattr(self, "_import_thumb_label", None)
+                                if isinstance(lab, QtWidgets.QLabel):
+                                    inner_w = int(lab.width()) if lab.width() > 0 else max(40, int(self.width) - 12)
+                                    pixmap = QtGui.QPixmap(chosen_thumb)
+                                    if not pixmap.isNull():
+                                        scaled = pixmap.scaled(
+                                            inner_w, inner_w,
+                                            QtCore.Qt.KeepAspectRatioByExpanding,
+                                            QtCore.Qt.SmoothTransformation
+                                        )
+                                        x = max(0, (scaled.width() - inner_w) // 2)
+                                        y = max(0, (scaled.height() - inner_w) // 2)
+                                        lab.setPixmap(scaled.copy(x, y, inner_w, inner_w))
+                        except Exception:
+                            pass
+
                         def _on_pick(_idx: int):
                             if getattr(self, "_snap_updating", False):
                                 return
@@ -2536,7 +2559,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
                                         # persist selection without triggering viewport reload
                                         self._set_param_value("thumbnail_choice", str(fname), rebuild=False, notify_scene=False)
-
+                                    
                                         lab = getattr(self, "_import_thumb_label", None)
                                         if isinstance(lab, QtWidgets.QLabel):
                                             inner_w = int(lab.width()) if lab.width() > 0 else max(40, int(self.width) - 12)
