@@ -2595,7 +2595,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             try:
                 gv = getattr(self, "gl_view", None)
                 if gv is not None:
-                    gv._render_scene_models = False
+                    gv._render_scene_models = True
                     gv._meshes.clear()
                     gv._mesh_colors.clear()
                     gv._mesh_transforms.clear()
@@ -2605,8 +2605,14 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                     try:
                         scene = getattr(gv, "_mgl_scene", None)
                         if scene is not None:
+                            # manual single-model tags
                             scene.remove_by_tag("model")
                             scene.remove_by_tag("model-wire")
+
+                            # scene-assembly tags (this is what was sticking around)
+                            scene.remove_by_tag("scene-model")
+                            scene.remove_by_tag("scene-wire")
+
                     except Exception:
                         pass
                     gv._mgl_vao = None
