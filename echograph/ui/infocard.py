@@ -1067,9 +1067,12 @@ class InfoCard(QtWidgets.QFrame):
 
         # match node defaults when there is no override stored yet
         kind = (self._node_ref.kind or "").lower()
-        if (not has_override) and kind == "import":
-            hidden.update({"thumbnail", "thumbnail_rev", "thumbnail_choice"})
-        
+        if not has_override:
+            if kind == "import":
+                hidden.update({"thumbnail", "thumbnail_rev", "thumbnail_choice"})
+            elif kind in ("scene", "scene_assembly", "scene_outliner"):
+                hidden.update({"thumbnail", "thumbnail_rev", "thumbnail_choice", "splat_depth_test"})
+                
         tbl.verticalHeader().setDefaultSectionSize(24)
         tbl.setColumnWidth(0, 24)
 

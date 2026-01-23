@@ -377,7 +377,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
         Rule:
         - If the node has an explicit "__ui_hidden_params" param (even empty), use that list as the source of truth.
-        - If it does NOT exist, fall back to defaults (import hides thumbnail params by default).
+        - If it does NOT exist, fall back to defaults.
         """
         hidden = set()
 
@@ -397,14 +397,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     hidden.add(key)
             return hidden
 
-       # fallback defaults (only when "__ui_hidden_params" not present at all)
+        # fallback defaults (only when "__ui_hidden_params" not present at all)
         kind = (self.model.kind or "").lower()
         if kind == "import":
             hidden.update({"thumbnail", "thumbnail_rev", "thumbnail_choice"})
         elif kind in ("scene", "scene_assembly", "scene_outliner"):
-            hidden.update({"thumbnail", "thumbnail_rev", "thumbnail_choice"})
+            hidden.update({"thumbnail", "thumbnail_rev", "thumbnail_choice", "splat_depth_test"})
 
         return hidden
+
 
     @QtCore.Slot(bool, str)
     def setBusyState(self, busy: bool, message: str = "") -> None:
