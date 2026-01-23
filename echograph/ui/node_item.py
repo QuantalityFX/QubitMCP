@@ -2144,6 +2144,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
                                 # UI-only: do NOT touch node params here (prevents viewport reload)
                                 self._scene_selected_snapshot = str(fname)
+                                self._set_param_value("thumbnail_choice", str(fname), rebuild=False)  # persist selection
+                                
                                 self._update_scene_thumb_label(new_thumb)
 
                             finally:

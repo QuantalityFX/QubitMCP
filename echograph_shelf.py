@@ -676,7 +676,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
             if e.src is it or e.dst is it:
                 e.updatePath()
 
-    def set_node_params(self, name: str, params: list, rebuild: bool = True):
+    def set_node_params(self, name: str, params: list, rebuild: bool = True, emit: bool = True):
         node = self._nodes_by_name.get(name)
         if not node:
             return False
@@ -698,7 +698,8 @@ class GraphScene(QtWidgets.QGraphicsScene):
                 it.update()  # repaint only, keep proxy alive
 
         try:
-            self.paramChanged.emit(name, list(node.params))
+            if emit:
+                self.paramChanged.emit(name, list(node.params))
         except Exception:
             pass
 
