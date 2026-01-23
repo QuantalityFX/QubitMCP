@@ -219,30 +219,40 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     if not node:
         return False
 
+    try:
+        footer_layout.setContentsMargins(0, 0, 0, 0)
+    except Exception:
+        pass
+
     container = QtWidgets.QWidget()
+    container.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+
     layout = QtWidgets.QVBoxLayout(container)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(4)
 
     title = QtWidgets.QLabel("Scene Outliner")
     title.setStyleSheet("color:#94a3b8;font-size:11px;")
-    layout.addWidget(title, 0)
+    layout.addWidget(title)
 
     outliner = QtWidgets.QListWidget()
+    outliner.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+    outliner.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
     outliner.setStyleSheet(
         "QListWidget{background:#0f1216;color:#e2e8f0;border:1px solid #3c4450;border-radius:6px;}"
         "QListWidget::item{padding:2px 6px;}"
     )
     outliner.setMinimumHeight(70)
     outliner.setMaximumHeight(140)
-    layout.addWidget(outliner, 0)
+    layout.addWidget(outliner)
 
     # --- Render Settings (match Scene Outliner styling) ---
     render_title = QtWidgets.QLabel("Render Settings")
     render_title.setStyleSheet("color:#94a3b8;font-size:11px;")
-    layout.addWidget(render_title, 0)
+    layout.addWidget(render_title)
 
     render_panel = QtWidgets.QWidget()
+    render_panel.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
     render_panel.setStyleSheet("QWidget{background:transparent;border:none;}")
 
     rp = QtWidgets.QHBoxLayout(render_panel)
@@ -309,7 +319,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
 
     chk.toggled.connect(lambda v: QtCore.QTimer.singleShot(0, lambda: _apply_depth(v)))
 
-    layout.addWidget(render_panel, 0)
+    layout.addWidget(render_panel)
 
 
     def _hidden_set() -> set:
@@ -504,7 +514,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         _refresh(sc)
     else:
         _refresh()
-    footer_layout.addWidget(container)
+    footer_layout.addWidget(container, 1)
     return True
 
 

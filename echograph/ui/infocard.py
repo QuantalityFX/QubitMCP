@@ -172,7 +172,9 @@ class InfoCard(QtWidgets.QFrame):
         self._param_table = self._build_param_table()
         pcol = self._build_param_controls()
 
-        footer.addStretch(1)
+        # Scene footer wants full-width (outliner), so don't add the trailing stretch spacer
+        if (node.kind or "").lower() not in ("scene", "scene_assembly", "scene_outliner"):
+            footer.addStretch(1)
 
         # Root layout
         lay = QtWidgets.QVBoxLayout(self)
@@ -195,7 +197,7 @@ class InfoCard(QtWidgets.QFrame):
 
             snap_row.addWidget(snap_lbl, 0)
             snap_row.addWidget(self._snap_combo, 1)
-            
+
             lay.addLayout(snap_row)
             # populate from current thumbnail folder
             try:
@@ -1002,6 +1004,17 @@ class InfoCard(QtWidgets.QFrame):
             QtWidgets.QAbstractItemView.EditKeyPressed |
             QtWidgets.QAbstractItemView.SelectedClicked
         )
+
+        # make columns auto-fit the card width (Value stretches)
+        hdr = tbl.horizontalHeader()
+        hdr.setSectionResizeMode(0, QtWidgets.QHeaderView.Fixed)
+        tbl.setColumnWidth(0, 26)
+
+        hdr.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(2, QtWidgets.QHeaderView.Stretch)
+        hdr.setStretchLastSection(True)
+
+        tbl.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
 
         # InfoCard shows everything; node surface decides what is hidden.
         HIDE_PARAMS = set()
