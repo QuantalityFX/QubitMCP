@@ -1732,19 +1732,26 @@ class MGLRendererMixin:
             self.update()
             return
 
+        # IMPORTANT: do NOT clear scene models here.
+        # Scenes can contain both meshes + splats, and set_splats() is used by scene loading too.
+
         arr = np.asarray(splats_np, dtype=np.float32)
         if arr.ndim != 2 or arr.shape[1] not in (8, 10, 14, 15):
             raise ValueError(
                 f"Expected splats_np shape (N,8) or (N,10) or (N,14) or (N,15), got {arr.shape}"
             )
+
         dbg = bool(getattr(self, "_mgl_debug", False))
         if dbg:
             print("[SPLAT] set_splats queue:", arr.shape, arr.dtype, flush=True)
+
         self._mgl_pending_splats = arr
         self._mgl_render_splats = True
         self.update()
+
         if dbg:
             print("[SPLAT] set_splats update() called", flush=True)
+
 
     def _mgl_upload_pending_splats(self) -> None:
         dbg = bool(getattr(self, "_mgl_debug", False))
@@ -2458,6 +2465,12 @@ class MGLRendererMixin:
         self._mgl_mesh_vertex_count = 0
         self._mgl_mesh_path = ""
         self._mgl_set_uv_overlay(None)
+        # prevent texture leaking from previous "Texture..." or textured Import views
+        self._mgl_texture_override = False
+        self._mgl_texture = None
+        self._mgl_texture_path = ""
+        self._mgl_texture_paths = []
+
         try:
             self._mgl_scene_splats = {}
         except Exception:
