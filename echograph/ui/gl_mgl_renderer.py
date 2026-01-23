@@ -1087,10 +1087,24 @@ class MGLRendererMixin:
                 except Exception:
                     prev_depth_test = True
 
+                # depth test for splats (toggle from scene node param if available)
+                depth_on = True
                 try:
-                    self._mgl_ctx.enable(moderngl.DEPTH_TEST)
+                    # this gets set by the Scene node checkbox
+                    raw = str(getattr(self, "_mgl_splat_depth_test", "") or "").strip().lower()
+                    if raw:
+                        depth_on = raw in ("1", "true", "yes", "on")
+                except Exception:
+                    depth_on = True
+
+                try:
+                    if depth_on:
+                        self._mgl_ctx.enable(moderngl.DEPTH_TEST)
+                    else:
+                        self._mgl_ctx.disable(moderngl.DEPTH_TEST)
                 except Exception:
                     pass
+
 
                 # disable depth writes (robust: ModernGL + raw GL fallback)
                 prev_depth_mask = True

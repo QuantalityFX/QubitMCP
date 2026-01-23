@@ -197,6 +197,46 @@ class InfoCard(QtWidgets.QFrame):
             snap_row.addWidget(self._snap_combo, 1)
 
             lay.addLayout(snap_row)
+            # --- Render settings (scene only) ---
+            if kind == "scene":
+                try:
+                    raw = (self._param_value("splat_depth_test") or "").strip().lower()
+                    depth_on = True if raw in ("", "1", "true", "yes", "on") else False
+
+                    rend_row = QtWidgets.QHBoxLayout()
+                    rend_row.setContentsMargins(0, 0, 0, 0)
+                    rend_row.setSpacing(6)
+
+                    lab = QtWidgets.QLabel("Depth Test (Splats)")
+                    lab.setStyleSheet("color:#cbd5e1;")
+                    rend_row.addWidget(lab, 0)
+
+                    chk = QtWidgets.QCheckBox()
+                    chk.setChecked(depth_on)
+                    chk.setToolTip("ON: splats respect depth (meshes can occlude). OFF: faster, always-on-top behavior.")
+                    rend_row.addWidget(chk, 0)
+
+                    rend_row.addStretch(1)
+                    lay.addLayout(rend_row)
+
+                    def _apply_depth(v: bool):
+                        # store on the scene node
+                        self._set_param_value("splat_depth_test", "1" if v else "0")
+                        # push into viewport immediately (no graph-node UI involved)
+                        try:
+                            win = self.window()
+                            glv = getattr(win, "gl_view", None)
+                            if glv is not None:
+                                glv._mgl_splat_depth_test = "1" if v else "0"
+                        except Exception:
+                            pass
+
+                    chk.toggled.connect(_apply_depth)
+
+                    # make sure the viewport picks up the initial value too
+                    QtCore.QTimer.singleShot(0, lambda: _apply_depth(chk.isChecked()))
+                except Exception:
+                    pass
 
             # populate from current thumbnail folder
             try:

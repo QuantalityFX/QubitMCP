@@ -1876,18 +1876,34 @@ class NodeItem(QtWidgets.QGraphicsObject):
     def _open_scene_assets(self) -> None:
         assets = self._collect_scene_assets()
         if not assets:
-            QtWidgets.QMessageBox.information(_top_level_parent_for_dialog(), "Scene", "No 3D assets connected.")
+            QtWidgets.QMessageBox.information(
+                _top_level_parent_for_dialog(), "Scene", "No 3D assets connected."
+            )
             return
+
         parent = _top_level_parent_for_dialog()
         if parent is None:
-            QtWidgets.QMessageBox.warning(_top_level_parent_for_dialog(), "Scene", "3D view is not available.")
+            QtWidgets.QMessageBox.warning(
+                _top_level_parent_for_dialog(), "Scene", "3D view is not available."
+            )
             return
+
         handler = getattr(parent, "open_scene_assets", None)
         if not callable(handler):
-            QtWidgets.QMessageBox.warning(_top_level_parent_for_dialog(), "Scene", "3D view is not available.")
+            QtWidgets.QMessageBox.warning(
+                _top_level_parent_for_dialog(), "Scene", "3D view is not available."
+            )
             return
+
         try:
             handler(assets)
+
+            # Push Scene-node render toggle into the viewport (used by splat draw)
+            glv = getattr(parent, "gl_view", None)
+            if glv is not None:
+                raw = (self._param_value("splat_depth_test") or "").strip()
+                glv._mgl_splat_depth_test = raw  # "1"/"0" or ""
+
         except Exception as exc:
             import traceback
             print("[SCENE] open_scene_assets failed:", exc, flush=True)
@@ -2054,7 +2070,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
         snap_btn.clicked.connect(lambda _=False: self._on_scene_screengrab_clicked())
         btn_row.addWidget(snap_btn, 0, QtCore.Qt.AlignLeft)
         outer.addLayout(btn_row)
-
         proxy = QtWidgets.QGraphicsProxyWidget(self)
         proxy.setWidget(row)
         proxy.setZValue(self.zValue() + 0.1)
