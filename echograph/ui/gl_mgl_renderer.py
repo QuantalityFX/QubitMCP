@@ -576,7 +576,22 @@ class MGLRendererMixin:
             return
         edge_wire = bool(payload.get("edge_wire"))
         try:
-            self._mgl_prog["Mvp"].write(mvp.astype("f4").tobytes())
+            payload = item.payload or {}
+
+            mvp_to_use = mvp
+            model = payload.get("model")
+            if model is not None and Matrix44 is not None:
+                try:
+                    if isinstance(model, Matrix44):
+                        mvp_to_use = mvp * model
+                    else:
+                        # model may be a numpy 4x4; Matrix44 can build from it
+                        mvp_to_use = mvp * Matrix44(model, dtype="f4")
+                except Exception:
+                    mvp_to_use = mvp
+
+            self._mgl_prog["Mvp"].write(mvp_to_use.astype("f4").tobytes())
+
         except Exception:
             pass
         manual_texture = self._mgl_texture if self._mgl_texture_override else None
