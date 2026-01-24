@@ -462,7 +462,6 @@ def _load_fbx_model(path: Path) -> ModelData:
     vertices = points.reshape(-1).astype("f4").tolist()
     return ModelData(vertices=vertices, bounds=tuple(bounds))
 
-
 register_model_loader([".gltf", ".glb"], load_gltf_model)
 register_model_loader([".obj"], _load_obj_model)
 register_model_loader([".fbx"], _load_fbx_model)
@@ -475,6 +474,20 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
     def __init__(self, scene, parent=None):
         print("[GL_VIEW] INIT FROM:", __file__)
         super().__init__(parent)
+        # --- Axis overlay (debug) - SAFE import (must not block app boot) ---
+        self._axis_overlay = None
+        self._debug_show_axis_overlay = False
+        try:
+            from .axis_gizmo_overlay import AxisGizmoOverlay
+            self._axis_overlay = AxisGizmoOverlay()
+            self._debug_show_axis_overlay = True
+            print("[AXIS_OVERLAY] ready")
+        except Exception as exc:
+            self._axis_overlay = None
+            self._debug_show_axis_overlay = False
+            print("[AXIS_OVERLAY] disabled (boot-safe):", exc)
+
+
         self._dbg_id = f"{id(self):x}"
         print(f"[GL_VIEW] INSTANCE NEW {self._dbg_id}")
 
@@ -700,6 +713,16 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._mgl_zoom_press_pos = None
         self._mgl_zoom_start = None
 
+        # --- IM3D bridge (safe no-op by default) ---
+        self._im3d = None
+        try:
+            from .im3d_bridge import Im3dBridge
+            self._im3d = Im3dBridge()  # constructor must not touch GL
+            print("[IM3D] Bridge created")
+        except Exception as exc:
+            self._im3d = None
+            print("[IM3D] Bridge disabled:", exc)
+
         if self._use_moderngl and not _HAS_MGL:
             self._use_moderngl = False
             self._use_example_pipeline = True
@@ -730,6 +753,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._build_scale_controls()
         self._build_debug_toggle_button()
         self._build_debug_copy_button()
+        
+
 
     def debug_points(self) -> None:
         if np is None:
@@ -2317,33 +2342,91 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         return m
 
     def paintGL(self) -> None:
+        print("[PAINT] mgl=", self._use_moderngl, "example=", self._use_example_pipeline, "dbg=", getattr(self, "_debug_show_axis_overlay", None))
         if not hasattr(self, "_gl"):
             return
+
         if self._render_paused:
             bg = getattr(self, "_viewport_bg", QtGui.QColor("#1a1f24"))
             self._gl.glClearColor(bg.redF(), bg.greenF(), bg.blueF(), 1.0)
             self._gl.glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
             return
+        print("[PAINT] use_mgl=", self._use_moderngl, "has_mgl=", _HAS_MGL)
+        # ModernGL path (keep clean)
         if self._use_moderngl:
             self._paint_mgl()
+
+            # Make sure we're drawing into the visible Qt FBO (ModernGL path can change it)
+            try:
+                self._mgl_bind_default_fbo()
+            except Exception:
+                pass
+
+            # Axis overlay (debug) - draw in MGL path too
+            if getattr(self, "_debug_show_axis_overlay", False):
+                try:
+                    if getattr(self, "_axis_overlay", None) is not None and self._axis_overlay.ensure_gl(self):
+                        proj = self._projection_matrix()
+                        view = self._view_matrix()
+                        mvp = proj * view
+                        self._axis_overlay.draw(mvp)
+                except Exception as exc:
+                    print("[AXIS_OVERLAY] disabled:", exc)
+                    self._debug_show_axis_overlay = False
+
             return
+
         if self._use_example_pipeline:
             self._paint_example()
             return
+
+        # Classic Qt GL path
         self._upload_scene_texture()
         self._upload_grid()
+
         bg = getattr(self, "_viewport_bg", QtGui.QColor("#1a1f24"))
         self._gl.glClearColor(bg.redF(), bg.greenF(), bg.blueF(), 1.0)
         self._gl.glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+
         if QOpenGLShaderProgram is None:
             return
+
         if self._vao is not None:
             try:
                 self._vao.bind()
             except Exception:
                 pass
+
         proj = self._projection_matrix()
         view = self._view_matrix()
+
+        # --- YOUR EXISTING CLASSIC DRAWING CONTINUES HERE ---
+        # (leave whatever you already have below this point: grid draw, scene draw, meshes, splats, etc.)
+        #
+        # example:
+        # self._draw_grid(proj, view)
+        # self._draw_scene_objects(proj, view)
+        # self._draw_splats(proj, view)
+        #
+        # ---------------------------------------------------
+
+        # Axis overlay (debug) - draw LAST so it sits on top
+        if getattr(self, "_debug_show_axis_overlay", False):
+            try:
+                if getattr(self, "_axis_overlay", None) is not None and self._axis_overlay.ensure_gl(self):
+                    mvp = proj * view
+                    print("[AXIS_OVERLAY] drawing")
+                    self._axis_overlay.draw(mvp)
+            except Exception as exc:
+                print("[AXIS_OVERLAY] disabled:", exc)
+                self._debug_show_axis_overlay = False
+
+        # Release VAO if you do that in your version
+        if self._vao is not None:
+            try:
+                self._vao.release()
+            except Exception:
+                pass
 
         if self._show_scene_plane and self._scene_texture and self._quad_program and self._quad_ready:
             self._quad_program.bind()
