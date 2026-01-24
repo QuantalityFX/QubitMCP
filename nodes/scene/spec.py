@@ -437,6 +437,82 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         xform_panel.setEnabled(False)
         layout.addWidget(xform_panel)
 
+        # --- Selection -> Transforms, and Transforms -> Viewport ---
+        card._scene_selected_owner = None
+        card._xform_updating = False
+
+        def _get_glv():
+            win = card.window()
+            return getattr(win, "gl_view", None) if win is not None else None
+
+        def _set_xyz(spins, xyz):
+            try:
+                card._xform_updating = True
+                for sb, v in zip(spins, xyz):
+                    sb.blockSignals(True)
+                    sb.setValue(float(v))
+                    sb.blockSignals(False)
+            finally:
+                card._xform_updating = False
+
+        def _load_xform_from_view(owner: str):
+            glv = _get_glv()
+            if glv is None:
+                return
+            getf = getattr(glv, "_mgl_get_scene_asset_xform", None)
+            if not callable(getf):
+                return
+            x = getf(owner)
+            _set_xyz(card._xform_pos, x.get("pos", (0.0, 0.0, 0.0)))
+            _set_xyz(card._xform_rot, x.get("rot", (0.0, 0.0, 0.0)))
+            _set_xyz(card._xform_scl, x.get("scl", (1.0, 1.0, 1.0)))
+
+        def _apply_xform(kind: str):
+            if card._xform_updating:
+                return
+            owner = getattr(card, "_scene_selected_owner", None)
+            if not owner:
+                return
+            glv = _get_glv()
+            if glv is None:
+                return
+            setf = getattr(glv, "_mgl_set_scene_asset_xform", None)
+            if not callable(setf):
+                return
+
+            pos = (card._xform_pos[0].value(), card._xform_pos[1].value(), card._xform_pos[2].value())
+            rot = (card._xform_rot[0].value(), card._xform_rot[1].value(), card._xform_rot[2].value())
+            scl = (card._xform_scl[0].value(), card._xform_scl[1].value(), card._xform_scl[2].value())
+
+            if kind == "pos":
+                setf(owner, pos=pos)
+            elif kind == "rot":
+                setf(owner, rot=rot)
+            elif kind == "scl":
+                setf(owner, scl=scl)
+            else:
+                setf(owner, pos=pos, rot=rot, scl=scl)
+
+        def _on_outliner_select():
+            it = outliner.currentItem()
+            owner = it.data(QtCore.Qt.UserRole) if it is not None else None
+            owner = str(owner) if owner else None
+            card._scene_selected_owner = owner
+            xform_panel.setEnabled(bool(owner))
+            if owner:
+                _load_xform_from_view(owner)
+
+        outliner.currentItemChanged.connect(lambda *_: _on_outliner_select())
+
+        # Push edits on commit
+        for sb in card._xform_pos:
+            sb.editingFinished.connect(lambda k="pos": _apply_xform(k))
+        for sb in card._xform_rot:
+            sb.editingFinished.connect(lambda k="rot": _apply_xform(k))
+        for sb in card._xform_scl:
+            sb.editingFinished.connect(lambda k="scl": _apply_xform(k))
+
+
         # ---------- Outliner logic ----------
         def _hidden_set() -> set:
             raw2 = getattr(node, "_scene_hidden", None)

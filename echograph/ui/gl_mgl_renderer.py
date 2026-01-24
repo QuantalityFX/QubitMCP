@@ -374,6 +374,122 @@ class MGLRendererMixin:
             if owner == old_name:
                 payload["owner"] = new_name
 
+    def _mgl_get_scene_asset_xform(self, owner: str):
+        d = getattr(self, "_mgl_scene_xforms_by_owner", None)
+        if not isinstance(d, dict):
+            d = {}
+            setattr(self, "_mgl_scene_xforms_by_owner", d)
+        x = d.get(owner)
+        if isinstance(x, dict):
+            return x
+        x = {"pos": (0.0, 0.0, 0.0), "rot": (0.0, 0.0, 0.0), "scl": (1.0, 1.0, 1.0)}
+        d[owner] = x
+        return x
+
+    def _mgl_set_scene_asset_xform(self, owner: str, pos=None, rot=None, scl=None) -> None:
+        if not owner:
+            return
+        if np is None:
+            return
+
+        x = self._mgl_get_scene_asset_xform(owner)
+        if pos is not None:
+            x["pos"] = tuple(float(v) for v in pos)
+        if rot is not None:
+            x["rot"] = tuple(float(v) for v in rot)
+        if scl is not None:
+            x["scl"] = tuple(float(v) for v in scl)
+
+        # pivot around asset bounds center if we have it
+        cx = cy = cz = 0.0
+        try:
+            b = (getattr(self, "_mgl_scene_bounds_by_owner", {}) or {}).get(owner)
+            if b is not None:
+                bmin, bmax = b
+                c = (bmin + bmax) * 0.5
+                cx, cy, cz = float(c[0]), float(c[1]), float(c[2])
+        except Exception:
+            pass
+
+        px, py, pz = x["pos"]
+        rx, ry, rz = x["rot"]  # degrees
+        sx, sy, sz = x["scl"]
+
+        def T(tx, ty, tz):
+            m = np.eye(4, dtype=np.float32)
+            m[3, 0] = tx
+            m[3, 1] = ty
+            m[3, 2] = tz
+            return m
+
+        def S(sx, sy, sz):
+            m = np.eye(4, dtype=np.float32)
+            m[0, 0] = sx
+            m[1, 1] = sy
+            m[2, 2] = sz
+            return m
+
+        def Rx(a):
+            a = math.radians(a)
+            c, s = math.cos(a), math.sin(a)
+            m = np.eye(4, dtype=np.float32)
+            m[1, 1] = c; m[1, 2] = s
+            m[2, 1] = -s; m[2, 2] = c
+            return m
+
+        def Ry(a):
+            a = math.radians(a)
+            c, s = math.cos(a), math.sin(a)
+            m = np.eye(4, dtype=np.float32)
+            m[0, 0] = c;  m[0, 2] = -s
+            m[2, 0] = s;  m[2, 2] = c
+            return m
+
+        def Rz(a):
+            a = math.radians(a)
+            c, s = math.cos(a), math.sin(a)
+            m = np.eye(4, dtype=np.float32)
+            m[0, 0] = c; m[0, 1] = s
+            m[1, 0] = -s; m[1, 1] = c
+            return m
+
+        model = T(px, py, pz) @ (Rz(rz) @ Ry(ry) @ Rx(rx)) @ S(sx, sy, sz) @ T(-cx, -cy, -cz)
+
+        scene = getattr(self, "_mgl_scene", None)
+        if scene is None:
+            return
+
+        # apply to matching scene-model items
+        try:
+            for item in scene.iter_by_tag("scene-model"):
+                payload = getattr(item, "payload", None) or {}
+                if payload.get("owner") != owner:
+                    continue
+
+                applied = False
+                for attr in ("model", "model_matrix", "transform", "matrix", "xform"):
+                    if hasattr(item, attr):
+                        try:
+                            setattr(item, attr, model)
+                            applied = True
+                            break
+                        except Exception:
+                            pass
+
+                if not applied:
+                    payload["model"] = model
+                    try:
+                        item.payload = payload
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        try:
+            self.update()
+        except Exception:
+            pass    
+
     def _mgl_rebuild_scene_splats(self, preserve_camera: bool = False) -> None:
         if np is None:
             self._mgl_disable_splats()
