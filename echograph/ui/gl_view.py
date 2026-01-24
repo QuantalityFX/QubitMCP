@@ -3056,7 +3056,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                 vh = int(self.height() * dpr)
 
                                 owner = pick(px, py, vw, vh)
-                                print("[PICK] owner =", owner, flush=True)
+                                #print("[PICK] owner =", owner, flush=True)
                                 if owner:
                                     w = self.window()
                                     if hasattr(w, "select_scene_asset"):
