@@ -1036,9 +1036,9 @@ class MGLRendererMixin:
         # cache matrices for picking (screen click -> ray)
         try:
             if np is not None:
-                self._mgl_pick_proj = np.array(proj, dtype="f4")
-                self._mgl_pick_view = np.array(lookat, dtype="f4")
-                self._mgl_pick_model = np.array(transform, dtype="f4")
+                self._mgl_pick_proj = np.array(proj, dtype="f4").T
+                self._mgl_pick_view = np.array(lookat, dtype="f4").T
+                self._mgl_pick_model = np.array(transform, dtype="f4").T
         except Exception:
             pass
 
@@ -1142,9 +1142,21 @@ class MGLRendererMixin:
                 else:
                     model = transform
 
-                self._mgl_splatq_prog["Proj"].write(proj.astype("f4"))
-                self._mgl_splatq_prog["View"].write(lookat.astype("f4"))
-                self._mgl_splatq_prog["Model"].write(model.astype("f4"))
+                # write splat matrices (splatq shader uses Proj/View/Model)
+                try:
+                    self._mgl_splatq_prog["Proj"].write(np.asarray(proj, dtype="f4").tobytes())
+                    self._mgl_splatq_prog["View"].write(np.asarray(lookat, dtype="f4").tobytes())
+                    self._mgl_splatq_prog["Model"].write(np.asarray(model, dtype="f4").tobytes())
+                except Exception:
+                    pass
+
+                try:
+                    if np is not None:
+                        self._mgl_pick_proj = np.array(proj, dtype="f4").T
+                        self._mgl_pick_view = np.array(lookat, dtype="f4").T
+                        self._mgl_pick_model = np.array(model, dtype="f4").T
+                except Exception:
+                    pass
 
                 # do not multiply by _mgl_scale_multiplier here
                 self._mgl_splatq_prog["SplatWorldScale"].value = float(self._mgl_splat_world_scale)
@@ -2499,6 +2511,7 @@ class MGLRendererMixin:
             did_make_current = True
 
             for asset in assets or []:
+                
                 path_str = str(asset.get("path", "") or "").strip()
                 if not path_str:
                     continue
@@ -2745,6 +2758,10 @@ class MGLRendererMixin:
                     if points is not None and getattr(points, "size", 0):
                         mins = points.min(axis=0)
                         maxs = points.max(axis=0)
+                        try:
+                            self._mgl_scene_bounds_by_owner[owner] = (mins.astype("f4"), maxs.astype("f4"))
+                        except Exception:
+                            pass
                         bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, mins, maxs)
                         has_mesh_bounds = True
                     if ext in (".obj", ".fbx"):
@@ -2798,7 +2815,10 @@ class MGLRendererMixin:
 
     def pick_owner_at(self, px: int, py: int, viewport_w: int, viewport_h: int):
         """
-        Ray-pick against per-owner AABBs stored in self._mgl_scene_bounds_by_owner.
+        Hybrid pick:
+        - Meshes: ray vs per-owner AABB (coarse, but stable)
+        - Splats: nearest splat center to ray (no big-volume AABB dominance)
+
         Returns owner string or None.
         """
         if np is None:
@@ -2839,6 +2859,42 @@ class MGLRendererMixin:
             return None
         ray_d /= n
 
+        # --- splat picking: nearest splat center to ray (no AABB volume) ---
+        best_splat_owner = None
+        best_splat_t = 1e30
+
+        splats_map = getattr(self, "_mgl_scene_splats", None) or {}
+        if splats_map:
+            # tweak this if needed (world units)
+            thresh = float(getattr(self, "_mgl_pick_splat_radius", 0.12))
+            thresh2 = thresh * thresh
+
+            for s_owner, arr in splats_map.items():
+                try:
+                    pts = np.asarray(arr[:, :3], dtype=np.float32)
+                    if pts.size == 0:
+                        continue
+
+                    v = pts - ray_o[None, :]
+                    t = v @ ray_d  # (N,)
+                    mask = t > 0.0
+                    if not bool(np.any(mask)):
+                        continue
+
+                    tpos = t[mask]
+                    pclose = ray_o[None, :] + tpos[:, None] * ray_d[None, :]
+                    d = pts[mask] - pclose
+                    d2 = np.einsum("ij,ij->i", d, d)
+
+                    i = int(np.argmin(d2))
+                    if float(d2[i]) <= thresh2:
+                        tmin = float(tpos[i])
+                        if tmin < best_splat_t:
+                            best_splat_t = tmin
+                            best_splat_owner = s_owner
+                except Exception:
+                    pass
+
         def ray_aabb(o, d, bmin, bmax):
             # slabs method
             tmin = -1e30
@@ -2861,18 +2917,25 @@ class MGLRendererMixin:
                 return None
             return tmin if tmin >= 0.0 else tmax
 
-        best_owner = None
-        best_t = 1e30
+        # --- mesh picking: AABB only, skip splat owners ---
+        best_mesh_owner = None
+        best_mesh_t = 1e30
 
         for owner, (bmin, bmax) in bounds.items():
+            if owner in splats_map:
+                continue
             try:
                 bmin = np.array(bmin, dtype=np.float32)
                 bmax = np.array(bmax, dtype=np.float32)
                 t = ray_aabb(ray_o, ray_d, bmin, bmax)
-                if t is not None and t < best_t:
-                    best_t = t
-                    best_owner = owner
+                if t is not None and float(t) < best_mesh_t:
+                    best_mesh_t = float(t)
+                    best_mesh_owner = owner
             except Exception:
                 pass
 
-        return best_owner
+        if best_mesh_owner is None:
+            return best_splat_owner
+        if best_splat_owner is None:
+            return best_mesh_owner
+        return best_mesh_owner if best_mesh_t <= best_splat_t else best_splat_owner

@@ -2890,9 +2890,9 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
     def mouseMoveEvent(self, e):
         if self._use_moderngl:
-            if e.buttons() & QtCore.Qt.LeftButton and self._mgl_arcball is not None:
+            if self._mgl_arcball is not None and (e.buttons() & QtCore.Qt.LeftButton):
                 self._mgl_arcball.onDrag(e.x(), e.y())
-                self.update()
+                self.update()  # ensure pick matrices stay fresh
                 e.accept()
                 return
             if e.buttons() & QtCore.Qt.MiddleButton and self._mgl_center is not None:
@@ -3037,18 +3037,36 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     if press is not None:
                         dx = abs(int(e.x()) - int(press.x()))
                         dy = abs(int(e.y()) - int(press.y()))
-                        if dx <= 3 and dy <= 3:
+                        if dx <= 8 and dy <= 8:
                             renderer = getattr(self, "_mgl_renderer", None) or self
                             pick = getattr(renderer, "pick_owner_at", None)
                             if callable(pick):
-                                owner = pick(int(e.x()), int(e.y()), int(self.width()), int(self.height()))
+                                dpr = 1.0
+                                try:
+                                    dpr = float(self.devicePixelRatioF())
+                                except Exception:
+                                    try:
+                                        dpr = float(self.devicePixelRatio())
+                                    except Exception:
+                                        dpr = 1.0
+
+                                px = int(e.x() * dpr)
+                                py = int(e.y() * dpr)
+                                vw = int(self.width() * dpr)
+                                vh = int(self.height() * dpr)
+
+                                owner = pick(px, py, vw, vh)
+                                print("[PICK] owner =", owner, flush=True)
                                 if owner:
                                     w = self.window()
                                     if hasattr(w, "select_scene_asset"):
                                         w.select_scene_asset(owner)
+
                 except Exception:
                     pass
 
+            if e.button() == QtCore.Qt.LeftButton:
+                self._mgl_pick_press_pos = None
             if e.button() == QtCore.Qt.LeftButton and self._mgl_arcball is not None:
                 self._mgl_arcball.onClickLeftUp()
             if e.button() == QtCore.Qt.RightButton:
