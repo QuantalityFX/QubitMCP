@@ -433,24 +433,30 @@ class MGLRendererMixin:
             a = math.radians(a)
             c, s = math.cos(a), math.sin(a)
             m = np.eye(4, dtype=np.float32)
-            m[1, 1] = c; m[1, 2] = s
-            m[2, 1] = -s; m[2, 2] = c
+            m[1, 1] = c
+            m[1, 2] = s
+            m[2, 1] = -s
+            m[2, 2] = c
             return m
 
         def Ry(a):
             a = math.radians(a)
             c, s = math.cos(a), math.sin(a)
             m = np.eye(4, dtype=np.float32)
-            m[0, 0] = c;  m[0, 2] = -s
-            m[2, 0] = s;  m[2, 2] = c
+            m[0, 0] = c
+            m[0, 2] = -s
+            m[2, 0] = s
+            m[2, 2] = c
             return m
 
         def Rz(a):
             a = math.radians(a)
             c, s = math.cos(a), math.sin(a)
             m = np.eye(4, dtype=np.float32)
-            m[0, 0] = c; m[0, 1] = s
-            m[1, 0] = -s; m[1, 1] = c
+            m[0, 0] = c
+            m[0, 1] = s
+            m[1, 0] = -s
+            m[1, 1] = c
             return m
 
         model = T(px, py, pz) @ (Rz(rz) @ Ry(ry) @ Rx(rx)) @ S(sx, sy, sz) @ T(-cx, -cy, -cz)
@@ -465,49 +471,124 @@ class MGLRendererMixin:
                 payload = getattr(item, "payload", None) or {}
                 if payload.get("owner") != owner:
                     continue
+                payload["model"] = model
+                try:
+                    item.payload = payload
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
-                applied = False
-                for attr in ("model", "model_matrix", "transform", "matrix", "xform"):
-                    if hasattr(item, attr):
-                        try:
-                            setattr(item, attr, model)
-                            applied = True
+        # IMPORTANT: if this owner is a splat owner, rebuild splat buffer so translation applies
+        try:
+            splat_map = getattr(self, "_mgl_scene_splats", None) or {}
+            owner_s = str(owner).strip()
+            is_splat = False
+            if isinstance(splat_map, dict) and splat_map:
+                if owner in splat_map or owner_s in splat_map:
+                    is_splat = True
+                else:
+                    lo = owner_s.lower()
+                    for k in splat_map.keys():
+                        if str(k).strip().lower() == lo:
+                            is_splat = True
                             break
-                        except Exception:
-                            pass
-
-                if not applied:
-                    payload["model"] = model
-                    try:
-                        item.payload = payload
-                    except Exception:
-                        pass
+            if is_splat:
+                self._mgl_rebuild_scene_splats(preserve_camera=True)
         except Exception:
             pass
 
         try:
             self.update()
         except Exception:
-            pass    
+            pass
+
 
     def _mgl_rebuild_scene_splats(self, preserve_camera: bool = False) -> None:
         if np is None:
             self._mgl_disable_splats()
             return
+
         splat_map = getattr(self, "_mgl_scene_splats", None) or {}
         if not splat_map:
             self._mgl_disable_splats()
             return
+
         visibility = getattr(self, "_mgl_scene_visibility", {}) or {}
-        arrays = [arr for owner, arr in splat_map.items() if visibility.get(owner, True)]
+        xforms = getattr(self, "_mgl_scene_xforms_by_owner", {}) or {}
+
+        # build normalized lookup so minor string mismatches still work
+        xforms_norm = {}
+        if isinstance(xforms, dict):
+            for k, v in xforms.items():
+                if k is None:
+                    continue
+                ks = str(k).strip()
+                xforms_norm[ks] = v
+                xforms_norm[ks.lower()] = v
+
+        state = self._mgl_get_camera_state() if preserve_camera else None
+
+        arrays = []
+        for owner, arr in splat_map.items():
+            if not visibility.get(owner, True):
+                continue
+            if arr is None or getattr(arr, "size", 0) == 0:
+                continue
+
+            # find xform for this owner (robust)
+            xf = {}
+            try:
+                if isinstance(xforms, dict) and owner in xforms:
+                    xf = xforms.get(owner) or {}
+                else:
+                    key = str(owner).strip()
+                    xf = xforms_norm.get(key) or xforms_norm.get(key.lower()) or {}
+
+                    # last-resort: suffix match (handles "nodeName:subid" vs "nodeName")
+                    if not xf and key:
+                        for k2, v2 in xforms_norm.items():
+                            if k2.endswith(key) or key.endswith(k2):
+                                xf = v2 or {}
+                                break
+            except Exception:
+                xf = {}
+
+            # apply per-owner translation (pos only for now)
+            try:
+                pos = (xf.get("pos") if isinstance(xf, dict) else None) or (0.0, 0.0, 0.0)
+                px, py, pz = float(pos[0]), float(pos[1]), float(pos[2])
+            except Exception:
+                px = py = pz = 0.0
+
+            if (px != 0.0) or (py != 0.0) or (pz != 0.0):
+                a = np.array(arr, dtype=np.float32, copy=True)
+                a[:, 0] += px
+                a[:, 1] += py
+                a[:, 2] += pz
+            else:
+                a = np.array(arr, dtype=np.float32, copy=False)
+
+            try:
+                mins = a[:, :3].min(axis=0).astype("f4")
+                maxs = a[:, :3].max(axis=0).astype("f4")
+                self._mgl_scene_bounds_by_owner[owner] = (mins, maxs)
+            except Exception:
+                pass
+
+            arrays.append(a)
+
         if not arrays:
             self._mgl_disable_splats()
             return
-        state = self._mgl_get_camera_state() if preserve_camera else None
+
         combined = arrays[0] if len(arrays) == 1 else np.concatenate(arrays, axis=0)
         self.set_splats(combined)
+
         if state is not None:
             self._mgl_queue_camera_state(state)
+
+
 
     def _mgl_load_grid_model(self, path: Path, in_paint: bool = False) -> None:
         if not _HAS_MGL or self._mgl_ctx is None:
