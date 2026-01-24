@@ -503,7 +503,6 @@ class MGLRendererMixin:
         except Exception:
             pass
 
-
     def _mgl_rebuild_scene_splats(self, preserve_camera: bool = False) -> None:
         if np is None:
             self._mgl_disable_splats()
@@ -517,7 +516,7 @@ class MGLRendererMixin:
         visibility = getattr(self, "_mgl_scene_visibility", {}) or {}
         xforms = getattr(self, "_mgl_scene_xforms_by_owner", {}) or {}
 
-        # build normalized lookup so minor string mismatches still work
+        # normalized lookup for xforms
         xforms_norm = {}
         if isinstance(xforms, dict):
             for k, v in xforms.items():
@@ -529,14 +528,85 @@ class MGLRendererMixin:
 
         state = self._mgl_get_camera_state() if preserve_camera else None
 
-        arrays = []
+        def _quat_mul(a, b):
+            # a,b = (x,y,z,w)
+            ax, ay, az, aw = a
+            bx, by, bz, bw = b
+            return np.array(
+                [
+                    aw * bx + ax * bw + ay * bz - az * by,
+                    aw * by - ax * bz + ay * bw + az * bx,
+                    aw * bz + ax * by - ay * bx + az * bw,
+                    aw * bw - ax * bx - ay * by - az * bz,
+                ],
+                dtype=np.float32,
+            )
+
+        def _quat_from_euler_deg(rx, ry, rz):
+            # match mesh order: Rz @ Ry @ Rx
+            hx = math.radians(rx) * 0.5
+            hy = math.radians(ry) * 0.5
+            hz = math.radians(rz) * 0.5
+
+            sx, cx = math.sin(hx), math.cos(hx)
+            sy, cy = math.sin(hy), math.cos(hy)
+            sz, cz = math.sin(hz), math.cos(hz)
+
+            qx = np.array([sx, 0.0, 0.0, cx], dtype=np.float32)
+            qy = np.array([0.0, sy, 0.0, cy], dtype=np.float32)
+            qz = np.array([0.0, 0.0, sz, cz], dtype=np.float32)
+
+            return _quat_mul(_quat_mul(qz, qy), qx)
+
+        def _quat_rotate_vec(q, v):
+            # v' = q * (v,0) * conj(q)
+            x, y, z, w = q
+            qv = np.array([v[0], v[1], v[2], 0.0], dtype=np.float32)
+            qc = np.array([-x, -y, -z, w], dtype=np.float32)
+            return _quat_mul(_quat_mul(q, qv), qc)[:3]
+
+        def _to_15(arr):
+            a = np.asarray(arr, dtype=np.float32)
+            if a.ndim != 2 or a.shape[1] not in (8, 10, 14, 15):
+                return None
+
+            if a.shape[1] == 15:
+                return a
+
+            n = a.shape[0]
+            if a.shape[1] == 8:
+                # [pos3 col4 rad1] -> add scale3=1 and quat=(0,0,0,1)
+                scale3 = np.ones((n, 3), dtype=np.float32)
+                quat = np.zeros((n, 4), dtype=np.float32)
+                quat[:, 3] = 1.0
+                return np.concatenate([a[:, 0:8], scale3, quat], axis=1)
+
+            if a.shape[1] == 10:
+                # [pos3 col4 rad1 sx sy] -> add sz=1 and quat=(0,0,0,1)
+                sz = np.ones((n, 1), dtype=np.float32)
+                scale3 = np.concatenate([a[:, 8:10], sz], axis=1)
+                quat = np.zeros((n, 4), dtype=np.float32)
+                quat[:, 3] = 1.0
+                return np.concatenate([a[:, 0:8], scale3, quat], axis=1)
+
+            # 14: [pos3 col4 rad1 sx sy qx qy qz qw] -> add sz=1
+            sz = np.ones((n, 1), dtype=np.float32)
+            scale3 = np.concatenate([a[:, 8:10], sz], axis=1)
+            quat = a[:, 10:14]
+            return np.concatenate([a[:, 0:8], scale3, quat], axis=1)
+
+        arrays15 = []
         for owner, arr in splat_map.items():
             if not visibility.get(owner, True):
                 continue
             if arr is None or getattr(arr, "size", 0) == 0:
                 continue
 
-            # find xform for this owner (robust)
+            a15 = _to_15(arr)
+            if a15 is None or a15.size == 0:
+                continue
+
+            # find xf
             xf = {}
             try:
                 if isinstance(xforms, dict) and owner in xforms:
@@ -544,8 +614,6 @@ class MGLRendererMixin:
                 else:
                     key = str(owner).strip()
                     xf = xforms_norm.get(key) or xforms_norm.get(key.lower()) or {}
-
-                    # last-resort: suffix match (handles "nodeName:subid" vs "nodeName")
                     if not xf and key:
                         for k2, v2 in xforms_norm.items():
                             if k2.endswith(key) or key.endswith(k2):
@@ -554,40 +622,80 @@ class MGLRendererMixin:
             except Exception:
                 xf = {}
 
-            # apply per-owner translation (pos only for now)
             try:
                 pos = (xf.get("pos") if isinstance(xf, dict) else None) or (0.0, 0.0, 0.0)
+                rot = (xf.get("rot") if isinstance(xf, dict) else None) or (0.0, 0.0, 0.0)
+                scl = (xf.get("scl") if isinstance(xf, dict) else None) or (1.0, 1.0, 1.0)
                 px, py, pz = float(pos[0]), float(pos[1]), float(pos[2])
+                rx, ry, rz = float(rot[0]), float(rot[1]), float(rot[2])
+                sx, sy, sz = float(scl[0]), float(scl[1]), float(scl[2])
             except Exception:
                 px = py = pz = 0.0
+                rx = ry = rz = 0.0
+                sx = sy = sz = 1.0
 
-            if (px != 0.0) or (py != 0.0) or (pz != 0.0):
-                a = np.array(arr, dtype=np.float32, copy=True)
-                a[:, 0] += px
-                a[:, 1] += py
-                a[:, 2] += pz
-            else:
-                a = np.array(arr, dtype=np.float32, copy=False)
-
+            # pivot = bounds center if available, else current center
             try:
-                mins = a[:, :3].min(axis=0).astype("f4")
-                maxs = a[:, :3].max(axis=0).astype("f4")
+                b = (getattr(self, "_mgl_scene_bounds_by_owner", {}) or {}).get(owner)
+                if b is not None:
+                    bmin, bmax = b
+                    pivot = ((bmin + bmax) * 0.5).astype(np.float32)
+                else:
+                    pivot = a15[:, :3].mean(axis=0).astype(np.float32)
+            except Exception:
+                pivot = a15[:, :3].mean(axis=0).astype(np.float32)
+
+            # apply scale+rot around pivot to positions
+            if (sx, sy, sz) != (1.0, 1.0, 1.0) or (rx, ry, rz) != (0.0, 0.0, 0.0) or (px, py, pz) != (0.0, 0.0, 0.0):
+                out = np.array(a15, dtype=np.float32, copy=True)
+
+                # scale position around pivot
+                p = out[:, :3] - pivot[None, :]
+                p[:, 0] *= sx
+                p[:, 1] *= sy
+                p[:, 2] *= sz
+
+                # rotate position around pivot
+                if (rx != 0.0) or (ry != 0.0) or (rz != 0.0):
+                    qg = _quat_from_euler_deg(rx, ry, rz)
+                    # rotate each row (not super fast, but OK for now)
+                    for i in range(p.shape[0]):
+                        p[i, :] = _quat_rotate_vec(qg, p[i, :])
+
+                    # rotate per-splat orientation too: q' = qg * qlocal
+                    qlocal = out[:, 11:15]
+                    for i in range(qlocal.shape[0]):
+                        qlocal[i, :] = _quat_mul(qg, qlocal[i, :])
+                    out[:, 11:15] = qlocal
+
+                out[:, :3] = p + pivot[None, :] + np.array([px, py, pz], dtype=np.float32)[None, :]
+
+                # scale the splat ellipsoid itself (scale3)
+                out[:, 8] *= sx
+                out[:, 9] *= sy
+                out[:, 10] *= sz
+
+                a15 = out
+
+            # update bounds for picking (post-xform)
+            try:
+                mins = a15[:, :3].min(axis=0).astype("f4")
+                maxs = a15[:, :3].max(axis=0).astype("f4")
                 self._mgl_scene_bounds_by_owner[owner] = (mins, maxs)
             except Exception:
                 pass
 
-            arrays.append(a)
+            arrays15.append(a15)
 
-        if not arrays:
+        if not arrays15:
             self._mgl_disable_splats()
             return
 
-        combined = arrays[0] if len(arrays) == 1 else np.concatenate(arrays, axis=0)
+        combined = arrays15[0] if len(arrays15) == 1 else np.concatenate(arrays15, axis=0)
         self.set_splats(combined)
 
         if state is not None:
             self._mgl_queue_camera_state(state)
-
 
 
     def _mgl_load_grid_model(self, path: Path, in_paint: bool = False) -> None:
