@@ -9,7 +9,7 @@ except Exception:
     from PySide2 import QtWidgets, QtCore, QtGui  # type: ignore
 
 from nodes.core import Spec
-
+import traceback
 
 SUPPORTED_EXTS = {".fbx", ".obj", ".gltf", ".glb", ".ply", ".stl", ".off", ".om"}
 
@@ -225,358 +225,423 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     except Exception:
         pass
 
+    # Reuse existing UI to avoid vertical jitter and reflow chaos
+    container = getattr(card, "_scene_footer_container", None)
+    if container is not None:
+        if footer_layout.count() == 0:
+            footer_layout.addWidget(container, 1)
+
+        # keep data current
+        sc = getattr(card, "_graph_scene", None)
+        try:
+            fn = getattr(card, "_scene_outliner_connect", None)
+            if callable(fn) and sc is not None:
+                fn(sc)
+        except Exception:
+            pass
+        try:
+            fn = getattr(card, "_scene_outliner_refresh", None)
+            if callable(fn):
+                fn(sc)
+        except Exception:
+            pass
+
+        return True
+
+    # -------- build UI once --------
     container = QtWidgets.QWidget()
     container.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+    card._scene_footer_container = container
 
     layout = QtWidgets.QVBoxLayout(container)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(4)
 
-    title = QtWidgets.QLabel("Scene Outliner")
-    title.setStyleSheet("color:#94a3b8;font-size:11px;")
-    layout.addWidget(title)
+    footer_layout.addWidget(container, 1)
 
-    outliner = QtWidgets.QListWidget()
-    outliner.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
-    outliner.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-    outliner.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-    outliner.setStyleSheet(
-        "QListWidget{background:#0f1216;color:#e2e8f0;border:1px solid #3c4450;border-radius:6px;}"
-        "QListWidget::item{padding:2px 6px;}"
-        "QListWidget::item:selected{background:#334155;}"
-    )
-
-    outliner.setMinimumHeight(70)
-    outliner.setMaximumHeight(140)
-    layout.addWidget(outliner)
-    card._scene_outliner_widget = outliner
-
-    # --- Render Settings (match Scene Outliner styling) ---
-    render_title = QtWidgets.QLabel("Render Settings")
-    render_title.setStyleSheet("color:#94a3b8;font-size:11px;")
-    layout.addWidget(render_title)
-
-    render_panel = QtWidgets.QWidget()
-    render_panel.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-    render_panel.setStyleSheet("QWidget{background:transparent;border:none;}")
-
-    rp = QtWidgets.QHBoxLayout(render_panel)
-    rp.setContentsMargins(6, 4, 6, 4)
-    rp.setSpacing(8)
-
-    lab = QtWidgets.QLabel("Depth Test (Splats)")
-    lab.setStyleSheet("color:#cbd5e1;")
-    rp.addWidget(lab, 0, QtCore.Qt.AlignLeft)
-
-    raw = ""
     try:
-        raw = _param_value(node, "splat_depth_test").strip().lower()
-    except Exception:
-        raw = ""
+        # --- Scene Outliner ---
+        title = QtWidgets.QLabel("Scene Outliner")
+        title.setStyleSheet("color:#94a3b8;font-size:11px;")
+        title.setMinimumWidth(0)
+        title.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        layout.addWidget(title)
 
-    depth_on = True if raw in ("", "1", "true", "yes", "on") else False
-
-    chk = QtWidgets.QCheckBox()
-    chk.setText("")
-    chk.setChecked(depth_on)
-    chk.setStyleSheet("QCheckBox{padding:0;margin:0;}")
-
-    # small bordered square around the checkbox indicator (consistent border ON/OFF)
-    box = QtWidgets.QWidget()
-    box.setFixedSize(18, 18)
-    box.setStyleSheet("QWidget{border:1px solid #3c4450;border-radius:3px;background:transparent;}")
-
-    box_lay = QtWidgets.QHBoxLayout(box)
-    box_lay.setContentsMargins(0, 0, 0, 0)
-    box_lay.setSpacing(0)
-    box_lay.setAlignment(QtCore.Qt.AlignCenter)
-    box_lay.addWidget(chk)
-
-    rp.addWidget(box, 0, QtCore.Qt.AlignLeft)
-    box.mousePressEvent = lambda e: chk.toggle()
-    rp.addStretch(1)
-
-    def _apply_depth(v: bool):
-        # store on node params
-        try:
-            params = list(getattr(node, "params", None) or [])
-            found = False
-            for p in params:
-                if (p.get("name") or "").strip().lower() == "splat_depth_test":
-                    p["value"] = "1" if v else "0"
-                    found = True
-                    break
-            if not found:
-                params.append({"name": "splat_depth_test", "value": "1" if v else "0"})
-            node.params = params
-        except Exception:
-            pass
-
-        # push into viewport flag
-        try:
-            win = card.window()
-            glv = getattr(win, "gl_view", None) if win is not None else None
-            if glv is not None:
-                glv._mgl_splat_depth_test = ("1" if v else "0")
-                glv.update()
-        except Exception:
-            pass
-
-    chk.toggled.connect(lambda v: QtCore.QTimer.singleShot(0, lambda: _apply_depth(v)))
-
-    layout.addWidget(render_panel)
-
-    # --- Transforms ---
-    xform_title = QtWidgets.QLabel("Transforms")
-    xform_title.setStyleSheet("color:#94a3b8;font-size:11px;")
-    layout.addWidget(xform_title)
-
-    xform_panel = QtWidgets.QWidget()
-    xform_panel.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-    xform_panel.setStyleSheet(
-        "QWidget{background:#0f1216;color:#e2e8f0;border:1px solid #3c4450;border-radius:6px;}"
-    )
-
-    fp = QtWidgets.QFormLayout(xform_panel)
-    fp.setContentsMargins(6, 6, 6, 6)
-    fp.setHorizontalSpacing(6)
-    fp.setVerticalSpacing(4)
-
-    def _mk_spin():
-        sb = QtWidgets.QDoubleSpinBox()
-        sb.setDecimals(4)
-        sb.setRange(-1e9, 1e9)
-        sb.setSingleStep(0.01)
-        sb.setKeyboardTracking(False)
-        sb.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
-        sb.setStyleSheet(
-            "QDoubleSpinBox{background:#12151a;color:#e2e8f0;border:1px solid #3c4450;border-radius:4px;padding:2px 6px;}"
+        outliner = QtWidgets.QListWidget()
+        outliner.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        outliner.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        outliner.setMinimumWidth(0)
+        outliner.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        outliner.setStyleSheet(
+            "QListWidget{background:#0f1216;color:#e2e8f0;border:1px solid #3c4450;border-radius:6px;}"
+            "QListWidget::item{padding:2px 6px;}"
+            "QListWidget::item:selected{background:#334155;}"
         )
-        return sb
+        outliner.setMinimumHeight(70)
+        outliner.setMaximumHeight(140)
+        layout.addWidget(outliner)
+        card._scene_outliner_widget = outliner
 
-    def _xyz_row(default=(0.0, 0.0, 0.0)):
-        w = QtWidgets.QWidget()
-        l = QtWidgets.QHBoxLayout(w)
-        l.setContentsMargins(0, 0, 0, 0)
-        l.setSpacing(6)
-        a = _mk_spin(); b = _mk_spin(); c = _mk_spin()
-        a.setValue(float(default[0])); b.setValue(float(default[1])); c.setValue(float(default[2]))
-        l.addWidget(a, 1); l.addWidget(b, 1); l.addWidget(c, 1)
-        return w, (a, b, c)
+        # --- Render Settings ---
+        render_title = QtWidgets.QLabel("Render Settings")
+        render_title.setStyleSheet("color:#94a3b8;font-size:11px;")
+        render_title.setMinimumWidth(0)
+        render_title.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        layout.addWidget(render_title)
 
-    pos_w, pos_xyz = _xyz_row((0.0, 0.0, 0.0))
-    rot_w, rot_xyz = _xyz_row((0.0, 0.0, 0.0))
-    scl_w, scl_xyz = _xyz_row((1.0, 1.0, 1.0))
+        render_panel = QtWidgets.QWidget()
+        render_panel.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        render_panel.setStyleSheet("QWidget{background:transparent;border:none;}")
 
-    fp.addRow("Position", pos_w)
-    fp.addRow("Rotation", rot_w)
-    fp.addRow("Scale", scl_w)
+        rp = QtWidgets.QHBoxLayout(render_panel)
+        rp.setContentsMargins(6, 4, 6, 4)
+        rp.setSpacing(8)
 
-    # store refs on card for next step (selection wiring)
-    card._xform_panel = xform_panel
-    card._xform_pos = pos_xyz
-    card._xform_rot = rot_xyz
-    card._xform_scl = scl_xyz
+        lab = QtWidgets.QLabel("Depth Test (Splats)")
+        lab.setStyleSheet("color:#cbd5e1;")
+        lab.setWordWrap(True)
+        lab.setMinimumWidth(0)
+        lab.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        rp.addWidget(lab, 1, QtCore.Qt.AlignLeft)
 
-    xform_panel.setEnabled(False)
-    layout.addWidget(xform_panel)
+        raw = ""
+        try:
+            raw = _param_value(node, "splat_depth_test").strip().lower()
+        except Exception:
+            raw = ""
+        depth_on = True if raw in ("", "1", "true", "yes", "on") else False
+
+        chk = QtWidgets.QCheckBox()
+        chk.setText("")
+        chk.setChecked(depth_on)
+        chk.setStyleSheet("QCheckBox{padding:0;margin:0;}")
+
+        box = QtWidgets.QWidget()
+        box.setFixedSize(18, 18)
+        box.setStyleSheet("QWidget{border:1px solid #3c4450;border-radius:3px;background:transparent;}")
+
+        box_lay = QtWidgets.QHBoxLayout(box)
+        box_lay.setContentsMargins(0, 0, 0, 0)
+        box_lay.setSpacing(0)
+        box_lay.setAlignment(QtCore.Qt.AlignCenter)
+        box_lay.addWidget(chk)
+
+        rp.addWidget(box, 0, QtCore.Qt.AlignLeft)
+        box.mousePressEvent = lambda e: chk.toggle()
+        rp.addStretch(1)
+
+        def _apply_depth(v: bool):
+            try:
+                params = list(getattr(node, "params", None) or [])
+                found = False
+                for p in params:
+                    if (p.get("name") or "").strip().lower() == "splat_depth_test":
+                        p["value"] = "1" if v else "0"
+                        found = True
+                        break
+                if not found:
+                    params.append({"name": "splat_depth_test", "value": "1" if v else "0"})
+                node.params = params
+            except Exception:
+                pass
+
+            try:
+                win = card.window()
+                glv = getattr(win, "gl_view", None) if win is not None else None
+                if glv is not None:
+                    glv._mgl_splat_depth_test = ("1" if v else "0")
+                    glv.update()
+            except Exception:
+                pass
+
+        chk.toggled.connect(lambda v: QtCore.QTimer.singleShot(0, lambda: _apply_depth(v)))
+        layout.addWidget(render_panel)
+
+        # --- Transforms ---
+        xform_title = QtWidgets.QLabel("Transforms")
+        xform_title.setStyleSheet("color:#94a3b8;font-size:11px;")
+        xform_title.setMinimumWidth(0)
+        xform_title.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        layout.addWidget(xform_title)
+
+        xform_panel = QtWidgets.QWidget()
+        xform_panel.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        xform_panel.setMinimumWidth(0)
+        xform_panel.setStyleSheet(
+            "QWidget{background:#0f1216;color:#e2e8f0;border:1px solid #3c4450;border-radius:6px;}"
+        )
+
+        fp = QtWidgets.QFormLayout(xform_panel)
+        fp.setContentsMargins(6, 6, 6, 6)
+        fp.setHorizontalSpacing(6)
+        fp.setVerticalSpacing(4)
+        fp.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldsStayAtSizeHint)
+        fp.setRowWrapPolicy(QtWidgets.QFormLayout.DontWrapRows)
+
+        def _mk_spin():
+            sb = QtWidgets.QDoubleSpinBox()
+            sb.setDecimals(3)                 # fewer digits = smaller control
+            sb.setRange(-1e9, 1e9)
+            sb.setSingleStep(0.01)
+            sb.setKeyboardTracking(False)
+
+            sb.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
+            sb.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+
+            # keep it compact and stable, no vertical weirdness
+            sb.setMinimumHeight(22)
+            sb.setFixedWidth(72)              # tweak: try 64, 68, 72
+            sb.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+
+            sb.setStyleSheet(
+                "QDoubleSpinBox{background:#12151a;color:#e2e8f0;border:1px solid #3c4450;border-radius:4px;padding:2px 6px;}"
+            )
+            return sb
+
+        def _xyz_row(default=(0.0, 0.0, 0.0)):
+            w = QtWidgets.QWidget()
+            w.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+            l = QtWidgets.QHBoxLayout(w)
+            l.setContentsMargins(0, 0, 0, 0)
+            l.setSpacing(6)
+
+            a = _mk_spin()
+            b = _mk_spin()
+            c = _mk_spin()
+            a.setValue(float(default[0]))
+            b.setValue(float(default[1]))
+            c.setValue(float(default[2]))
+
+            # do NOT stretch the spinboxes
+            l.addWidget(a)
+            l.addWidget(b)
+            l.addWidget(c)
+            l.addStretch(1)
+
+            return w, (a, b, c)
 
 
-    def _hidden_set() -> set:
-        raw = getattr(node, "_scene_hidden", None)
-        if isinstance(raw, set):
-            return raw
-        if isinstance(raw, (list, tuple)):
-            out = {str(x) for x in raw if x}
+        pos_w, pos_xyz = _xyz_row((0.0, 0.0, 0.0))
+        rot_w, rot_xyz = _xyz_row((0.0, 0.0, 0.0))
+        scl_w, scl_xyz = _xyz_row((1.0, 1.0, 1.0))
+
+        fp.addRow("Position", pos_w)
+        fp.addRow("Rotation", rot_w)
+        fp.addRow("Scale", scl_w)
+
+        card._xform_panel = xform_panel
+        card._xform_pos = pos_xyz
+        card._xform_rot = rot_xyz
+        card._xform_scl = scl_xyz
+
+        xform_panel.setEnabled(False)
+        layout.addWidget(xform_panel)
+
+        # ---------- Outliner logic ----------
+        def _hidden_set() -> set:
+            raw2 = getattr(node, "_scene_hidden", None)
+            if isinstance(raw2, set):
+                return raw2
+            if isinstance(raw2, (list, tuple)):
+                out = {str(x) for x in raw2 if x}
+                setattr(node, "_scene_hidden", out)
+                return out
+            out = set()
             setattr(node, "_scene_hidden", out)
             return out
-        out = set()
-        setattr(node, "_scene_hidden", out)
-        return out
 
-    def _apply_visibility(name: str, visible: bool, btn: QtWidgets.QToolButton | None = None):
-        hidden = _hidden_set()
-        if visible:
-            hidden.discard(name)
+        def _apply_visibility(name: str, visible: bool, btn=None):
+            hidden = _hidden_set()
+            if visible:
+                hidden.discard(name)
+            else:
+                hidden.add(name)
+            if btn is not None:
+                btn.setIcon(_eye_icon(visible))
+            win = card.window()
+            handler = getattr(win, "set_scene_asset_visible", None) if win is not None else None
+            if callable(handler):
+                handler(name, visible)
+
+        def _apply_rename(scene, old_name: str, new_name: str) -> bool:
+            if not new_name or new_name == old_name:
+                return False
+            ok, msg = scene.rename_node(old_name, new_name)
+            if not ok:
+                if msg:
+                    QtWidgets.QMessageBox.warning(card, "Rename", msg)
+                return False
+            hidden = _hidden_set()
+            if old_name in hidden:
+                hidden.remove(old_name)
+                hidden.add(new_name)
+            win = card.window()
+            handler = getattr(win, "rename_scene_asset_owner", None) if win is not None else None
+            if callable(handler):
+                handler(old_name, new_name)
+            return True
+
+        def _refresh(scene_override=None):
+            outliner.clear()
+            scene = scene_override if scene_override is not None else getattr(card, "_graph_scene", None)
+            if scene is None:
+                empty = QtWidgets.QListWidgetItem("(scene not attached)")
+                empty.setFlags(QtCore.Qt.NoItemFlags)
+                outliner.addItem(empty)
+                return
+
+            try:
+                item = getattr(scene, "_node_items", {}).get(node.name)
+            except Exception:
+                item = None
+            if item is None:
+                empty = QtWidgets.QListWidgetItem("(scene node not found)")
+                empty.setFlags(QtCore.Qt.NoItemFlags)
+                outliner.addItem(empty)
+                return
+
+            try:
+                in_edges = list(scene._ordered_in_edges(item))
+            except Exception:
+                try:
+                    in_edges = list(scene._in_edges(item))
+                except Exception:
+                    in_edges = []
+
+            rows = []
+            seen = set()
+            for edge in in_edges:
+                src_item = getattr(edge, "src", None)
+                model = getattr(src_item, "model", None)
+                if model is None:
+                    continue
+                if (getattr(model, "kind", "") or "").strip().lower() != "import":
+                    continue
+                path = _param_value(model, "path")
+                if not path:
+                    continue
+                ext = Path(path).suffix.lower()
+                if ext not in SUPPORTED_EXTS:
+                    continue
+                name = (getattr(model, "name", "") or "").strip()
+                if not name or name in seen:
+                    continue
+                seen.add(name)
+                rows.append({"name": name, "path": path})
+
+            if not rows:
+                empty = QtWidgets.QListWidgetItem("(no connected imports)")
+                empty.setFlags(QtCore.Qt.NoItemFlags)
+                outliner.addItem(empty)
+                return
+
+            hidden = _hidden_set()
+            for idx, entry in enumerate(rows, start=1):
+                name = entry["name"]
+                visible = name not in hidden
+
+                row_widget = QtWidgets.QWidget()
+                row_layout = QtWidgets.QHBoxLayout(row_widget)
+                row_layout.setContentsMargins(4, 0, 4, 0)
+                row_layout.setSpacing(6)
+
+                eye_btn = QtWidgets.QToolButton()
+                eye_btn.setAutoRaise(True)
+                eye_btn.setCheckable(True)
+                eye_btn.setChecked(visible)
+                eye_btn.setIcon(_eye_icon(visible))
+                eye_btn.setToolTip("Toggle visibility")
+                eye_btn.toggled.connect(lambda checked, n=name, b=eye_btn: _apply_visibility(n, checked, b))
+                row_layout.addWidget(eye_btn, 0)
+
+                idx_label = QtWidgets.QLabel(f"{idx}.")
+                idx_label.setStyleSheet("color:#64748b;")
+                row_layout.addWidget(idx_label, 0)
+
+                name_edit = QtWidgets.QLineEdit(name)
+                name_edit.setReadOnly(True)
+                name_edit.setFrame(False)
+                name_edit.setMinimumWidth(0)
+                name_edit.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+                name_edit.setStyleSheet("QLineEdit{background:transparent;color:#e2e8f0;}")
+                name_edit.setProperty("scene_node_name", name)
+
+                def _start_edit(edit=name_edit):
+                    edit.setReadOnly(False)
+                    edit.setFrame(True)
+                    edit.setStyleSheet(
+                        "QLineEdit{background:#12151a;color:#e2e8f0;border:1px solid #3c4450;"
+                        "border-radius:4px;padding:2px 6px;}"
+                    )
+                    edit.selectAll()
+                    edit.setFocus(QtCore.Qt.MouseFocusReason)
+
+                def _finish_edit(edit=name_edit, scn=scene):
+                    old_name = edit.property("scene_node_name") or ""
+                    new_name = edit.text().strip()
+                    edit.setReadOnly(True)
+                    edit.setFrame(False)
+                    edit.setStyleSheet("QLineEdit{background:transparent;color:#e2e8f0;}")
+                    if not new_name or new_name == old_name:
+                        edit.setText(old_name)
+                        return
+                    if _apply_rename(scn, old_name, new_name):
+                        edit.setProperty("scene_node_name", new_name)
+                        _refresh(scn)
+                    else:
+                        edit.setText(old_name)
+
+                def _on_double_click(ev, edit=name_edit):
+                    _start_edit(edit)
+                    try:
+                        QtWidgets.QLineEdit.mouseDoubleClickEvent(edit, ev)
+                    except Exception:
+                        pass
+
+                name_edit.mouseDoubleClickEvent = _on_double_click  # type: ignore[assignment]
+                name_edit.editingFinished.connect(_finish_edit)
+                row_layout.addWidget(name_edit, 1)
+
+                row_item = QtWidgets.QListWidgetItem()
+                row_item.setData(QtCore.Qt.UserRole, name)
+                if entry.get("path"):
+                    row_item.setToolTip(entry["path"])
+                row_item.setSizeHint(row_widget.sizeHint())
+                outliner.addItem(row_item)
+                outliner.setItemWidget(row_item, row_widget)
+                _apply_visibility(name, visible, eye_btn)
+
+        def _connect(scene):
+            if scene is None:
+                return
+            if getattr(card, "_scene_outliner_connected", False):
+                return
+            try:
+                if hasattr(scene, "linksChanged"):
+                    scene.linksChanged.connect(lambda *_: _refresh(scene))
+                if hasattr(scene, "paramChanged"):
+                    scene.paramChanged.connect(lambda *_: _refresh(scene))
+                card._scene_outliner_connected = True
+            except Exception:
+                pass
+
+        card._scene_outliner_refresh = _refresh
+        card._scene_outliner_connect = _connect
+
+        # initial populate
+        sc = getattr(card, "_graph_scene", None)
+        if sc is not None:
+            _connect(sc)
+            _refresh(sc)
         else:
-            hidden.add(name)
-        if btn is not None:
-            btn.setIcon(_eye_icon(visible))
-        win = card.window()
-        handler = getattr(win, "set_scene_asset_visible", None) if win is not None else None
-        if callable(handler):
-            handler(name, visible)
+            _refresh()
 
-    def _apply_rename(scene, old_name: str, new_name: str) -> bool:
-        if not new_name or new_name == old_name:
-            return False
-        ok, msg = scene.rename_node(old_name, new_name)
-        if not ok:
-            if msg:
-                QtWidgets.QMessageBox.warning(card, "Rename", msg)
-            return False
-        hidden = _hidden_set()
-        if old_name in hidden:
-            hidden.remove(old_name)
-            hidden.add(new_name)
-        win = card.window()
-        handler = getattr(win, "rename_scene_asset_owner", None) if win is not None else None
-        if callable(handler):
-            handler(old_name, new_name)
         return True
 
-    def _refresh(scene_override=None):
-        outliner.clear()
-        scene = scene_override if scene_override is not None else getattr(card, "_graph_scene", None)
-        if scene is None:
-            empty = QtWidgets.QListWidgetItem("(scene not attached)")
-            empty.setFlags(QtCore.Qt.NoItemFlags)
-            outliner.addItem(empty)
-            return
-        try:
-            item = getattr(scene, "_node_items", {}).get(node.name)
-        except Exception:
-            item = None
-        if item is None:
-            empty = QtWidgets.QListWidgetItem("(scene node not found)")
-            empty.setFlags(QtCore.Qt.NoItemFlags)
-            outliner.addItem(empty)
-            return
-        try:
-            in_edges = list(scene._ordered_in_edges(item))
-        except Exception:
-            try:
-                in_edges = list(scene._in_edges(item))
-            except Exception:
-                in_edges = []
-
-        rows = []
-        seen = set()
-        for edge in in_edges:
-            src_item = getattr(edge, "src", None)
-            model = getattr(src_item, "model", None)
-            if model is None:
-                continue
-            if (model.kind or "").strip().lower() != "import":
-                continue
-            path = _param_value(model, "path")
-            if not path:
-                continue
-            ext = Path(path).suffix.lower()
-            if ext not in SUPPORTED_EXTS:
-                continue
-            name = (getattr(model, "name", "") or "").strip()
-            if not name or name in seen:
-                continue
-            seen.add(name)
-            rows.append({"name": name, "path": path})
-
-        if not rows:
-            empty = QtWidgets.QListWidgetItem("(no connected imports)")
-            empty.setFlags(QtCore.Qt.NoItemFlags)
-            outliner.addItem(empty)
-            return
-
-        hidden = _hidden_set()
-        for idx, entry in enumerate(rows, start=1):
-            name = entry["name"]
-            visible = name not in hidden
-            row_widget = QtWidgets.QWidget()
-            row_layout = QtWidgets.QHBoxLayout(row_widget)
-            row_layout.setContentsMargins(4, 0, 4, 0)
-            row_layout.setSpacing(6)
-
-            eye_btn = QtWidgets.QToolButton()
-            eye_btn.setAutoRaise(True)
-            eye_btn.setCheckable(True)
-            eye_btn.setChecked(visible)
-            eye_btn.setIcon(_eye_icon(visible))
-            eye_btn.setToolTip("Toggle visibility")
-            eye_btn.toggled.connect(
-                lambda checked, n=name, b=eye_btn: _apply_visibility(n, checked, b)
-            )
-            row_layout.addWidget(eye_btn, 0)
-
-            idx_label = QtWidgets.QLabel(f"{idx}.")
-            idx_label.setStyleSheet("color:#64748b;")
-            row_layout.addWidget(idx_label, 0)
-
-            name_edit = QtWidgets.QLineEdit(name)
-            name_edit.setReadOnly(True)
-            name_edit.setFrame(False)
-            name_edit.setStyleSheet("QLineEdit{background:transparent;color:#e2e8f0;}")
-            name_edit.setProperty("scene_node_name", name)
-
-            def _start_edit(edit=name_edit):
-                edit.setReadOnly(False)
-                edit.setFrame(True)
-                edit.setStyleSheet(
-                    "QLineEdit{background:#12151a;color:#e2e8f0;border:1px solid #3c4450;"
-                    "border-radius:4px;padding:2px 6px;}"
-                )
-                edit.selectAll()
-                edit.setFocus(QtCore.Qt.MouseFocusReason)
-
-            def _finish_edit(edit=name_edit, scn=scene):
-                old_name = edit.property("scene_node_name") or ""
-                new_name = edit.text().strip()
-                edit.setReadOnly(True)
-                edit.setFrame(False)
-                edit.setStyleSheet("QLineEdit{background:transparent;color:#e2e8f0;}")
-                if not new_name or new_name == old_name:
-                    edit.setText(old_name)
-                    return
-                if _apply_rename(scn, old_name, new_name):
-                    edit.setProperty("scene_node_name", new_name)
-                    _refresh(scn)
-                else:
-                    edit.setText(old_name)
-
-            def _on_double_click(ev, edit=name_edit):
-                _start_edit(edit)
-                try:
-                    QtWidgets.QLineEdit.mouseDoubleClickEvent(edit, ev)
-                except Exception:
-                    pass
-
-            name_edit.mouseDoubleClickEvent = _on_double_click  # type: ignore[assignment]
-            name_edit.editingFinished.connect(_finish_edit)
-            row_layout.addWidget(name_edit, 1)
-
-            row_item = QtWidgets.QListWidgetItem()
-            row_item.setData(QtCore.Qt.UserRole, name)
-            if entry.get("path"):
-                row_item.setToolTip(entry["path"])
-            row_item.setSizeHint(row_widget.sizeHint())
-            outliner.addItem(row_item)
-            outliner.setItemWidget(row_item, row_widget)
-            _apply_visibility(name, visible, eye_btn)
-
-    def _connect(scene):
-        if scene is None:
-            return
-        if getattr(card, "_scene_outliner_connected", False):
-            return
-        try:
-            if hasattr(scene, "linksChanged"):
-                scene.linksChanged.connect(lambda *_: _refresh(scene))
-            if hasattr(scene, "paramChanged"):
-                scene.paramChanged.connect(lambda *_: _refresh(scene))
-            card._scene_outliner_connected = True
-        except Exception:
-            pass
-
-    card._scene_outliner_refresh = _refresh
-    card._scene_outliner_connect = _connect
-
-    sc = getattr(card, "_graph_scene", None)
-    if sc is not None:
-        _connect(sc)
-        _refresh(sc)
-    else:
-        _refresh()
-    footer_layout.addWidget(container, 1)
-    return True
+    except Exception:
+        print("[SceneSpec] augment_infocard_footer ERROR", flush=True)
+        traceback.print_exc()
+        return True
 
 
 def render_node_body(node_item, y_cursor: int) -> int:

@@ -1121,8 +1121,11 @@ class InfoCard(QtWidgets.QFrame):
                 # if there was no override yet, start from defaults so toggling one
                 # doesn't unintentionally unhide the others
                 kind2 = (self._node_ref.kind or "").lower()
-                if (not has_override2) and kind2 == "import":
-                    cur.update({"thumbnail", "thumbnail_rev", "thumbnail_choice"})
+                if not has_override2:
+                    if kind2 == "import":
+                        cur.update({"thumbnail", "thumbnail_rev", "thumbnail_choice"})
+                    elif kind2 in ("scene", "scene_assembly", "scene_outliner"):
+                        cur.update({"thumbnail", "thumbnail_rev", "thumbnail_choice", "splat_depth_test"})
 
                 if checked:
                     cur.discard(nm)   # visible
