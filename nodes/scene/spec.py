@@ -326,6 +326,61 @@ def augment_infocard_footer(card, footer_layout) -> bool:
 
     layout.addWidget(render_panel)
 
+    # --- Transforms ---
+    xform_title = QtWidgets.QLabel("Transforms")
+    xform_title.setStyleSheet("color:#94a3b8;font-size:11px;")
+    layout.addWidget(xform_title)
+
+    xform_panel = QtWidgets.QWidget()
+    xform_panel.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+    xform_panel.setStyleSheet(
+        "QWidget{background:#0f1216;color:#e2e8f0;border:1px solid #3c4450;border-radius:6px;}"
+    )
+
+    fp = QtWidgets.QFormLayout(xform_panel)
+    fp.setContentsMargins(6, 6, 6, 6)
+    fp.setHorizontalSpacing(6)
+    fp.setVerticalSpacing(4)
+
+    def _mk_spin():
+        sb = QtWidgets.QDoubleSpinBox()
+        sb.setDecimals(4)
+        sb.setRange(-1e9, 1e9)
+        sb.setSingleStep(0.01)
+        sb.setKeyboardTracking(False)
+        sb.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
+        sb.setStyleSheet(
+            "QDoubleSpinBox{background:#12151a;color:#e2e8f0;border:1px solid #3c4450;border-radius:4px;padding:2px 6px;}"
+        )
+        return sb
+
+    def _xyz_row(default=(0.0, 0.0, 0.0)):
+        w = QtWidgets.QWidget()
+        l = QtWidgets.QHBoxLayout(w)
+        l.setContentsMargins(0, 0, 0, 0)
+        l.setSpacing(6)
+        a = _mk_spin(); b = _mk_spin(); c = _mk_spin()
+        a.setValue(float(default[0])); b.setValue(float(default[1])); c.setValue(float(default[2]))
+        l.addWidget(a, 1); l.addWidget(b, 1); l.addWidget(c, 1)
+        return w, (a, b, c)
+
+    pos_w, pos_xyz = _xyz_row((0.0, 0.0, 0.0))
+    rot_w, rot_xyz = _xyz_row((0.0, 0.0, 0.0))
+    scl_w, scl_xyz = _xyz_row((1.0, 1.0, 1.0))
+
+    fp.addRow("Position", pos_w)
+    fp.addRow("Rotation", rot_w)
+    fp.addRow("Scale", scl_w)
+
+    # store refs on card for next step (selection wiring)
+    card._xform_panel = xform_panel
+    card._xform_pos = pos_xyz
+    card._xform_rot = rot_xyz
+    card._xform_scl = scl_xyz
+
+    xform_panel.setEnabled(False)
+    layout.addWidget(xform_panel)
+
 
     def _hidden_set() -> set:
         raw = getattr(node, "_scene_hidden", None)
