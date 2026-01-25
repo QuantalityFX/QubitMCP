@@ -2924,6 +2924,13 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
     def mousePressEvent(self, e):
         if self._use_moderngl:
+            # Safety: never stay grabbed between interactions
+            try:
+                if QtWidgets.QApplication.mouseGrabber() is self:
+                    self.releaseMouse()
+            except Exception:
+                pass
+            
             # --- Gizmo drag start (pick axis) ---
             if e.button() == QtCore.Qt.LeftButton:
                 try:
@@ -2998,6 +3005,10 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                     self._xform_drag_owner = owner
                                     self._xform_drag_start_pos = g.copy()
                                     self._xform_gizmo_pos_locked = True
+                                    self._xform_drag_s0 = None
+
+                                    # Important: prevent old click-pick/orbit press state from interfering
+                                    self._mgl_pick_press_pos = None
 
                                     print("[GIZMO_PICK] axis=", best_axis, "d=", best_d, "owner=", owner, flush=True)
                                     self.setCursor(QtCore.Qt.SizeAllCursor)
@@ -3292,17 +3303,28 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
     def mouseReleaseEvent(self, e):
         if self._use_moderngl:
-            # --- Gizmo drag end (ModernGL) ---
-            if e.button() == QtCore.Qt.LeftButton and getattr(self, "_xform_dragging", False):
+            # --- 1) If we were dragging the gizmo, ALWAYS end that first ---
+            if getattr(self, "_xform_dragging", False):
                 self._xform_dragging = False
                 self._xform_drag_axis = None
                 self._xform_drag_owner = None
                 self._xform_drag_s0 = None
+
+                # Important: don't let a gizmo drag "fall through" into click-pick or orbit
+                self._mgl_pick_press_pos = None
+
+                # Safety: if we somehow grabbed the mouse, release it now
+                try:
+                    if QtWidgets.QApplication.mouseGrabber() is self:
+                        self.releaseMouse()
+                except Exception:
+                    pass
+
                 self.setCursor(QtCore.Qt.ArrowCursor)
                 e.accept()
                 return
-            
-            # click-pick (only if it was a click, not a drag)
+
+            # --- 2) Normal click-pick (only if it was a click, not a drag) ---
             if e.button() == QtCore.Qt.LeftButton:
                 try:
                     press = getattr(self, "_mgl_pick_press_pos", None)
@@ -3336,24 +3358,18 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                 else:
                                     owner = pick(px, py, vw, vh)
 
-                                #print("[PICK] owner =", owner, flush=True)
                                 if owner:
                                     w = self.window()
                                     if hasattr(w, "select_scene_asset"):
-                                        w.select_scene_asset(owner)  # this may overwrite gizmo pos internally
+                                        w.select_scene_asset(owner)
 
-                                    # Now force gizmo to the click hit (wins last)
+                                    # Force gizmo to the hit position (or bounds center fallback)
                                     self._xform_gizmo_owner = owner
 
                                     if hit is not None:
-                                        try:
-                                            self._xform_gizmo_pos = (float(hit[0]), float(hit[1]), float(hit[2]))
-                                            self._xform_gizmo_pos_locked = True
-                                        except Exception:
-                                            self._xform_gizmo_pos = tuple(hit)
-                                            self._xform_gizmo_pos_locked = True
+                                        self._xform_gizmo_pos = (float(hit[0]), float(hit[1]), float(hit[2]))
+                                        self._xform_gizmo_pos_locked = True
                                     else:
-                                        # Fallback: bounds center
                                         try:
                                             bounds_map = (
                                                 getattr(renderer, "_mgl_scene_bounds_by_owner", None)
@@ -3370,29 +3386,35 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                         except Exception:
                                             pass
 
-                                    print(
-                                        "[PICK] owner=", owner,
-                                        "hit=", hit,
-                                        "gizmo_pos=", getattr(self, "_xform_gizmo_pos", None),
-                                        "locked=", getattr(self, "_xform_gizmo_pos_locked", None),
-                                        flush=True,
-                                    )
                                     self.update()
-
                 except Exception:
                     pass
 
+            # --- 3) Always end camera interactions cleanly ---
             if e.button() == QtCore.Qt.LeftButton:
                 self._mgl_pick_press_pos = None
-            if e.button() == QtCore.Qt.LeftButton and self._mgl_arcball is not None:
-                self._mgl_arcball.onClickLeftUp()
+                if self._mgl_arcball is not None:
+                    try:
+                        self._mgl_arcball.onClickLeftUp()
+                    except Exception:
+                        pass
+
             if e.button() == QtCore.Qt.RightButton:
                 self._mgl_zoom_press_pos = None
                 self._mgl_zoom_start = None
+
+            # Safety: if we somehow grabbed the mouse, release it now
+            try:
+                if QtWidgets.QApplication.mouseGrabber() is self:
+                    self.releaseMouse()
+            except Exception:
+                pass
+
             self.setCursor(QtCore.Qt.ArrowCursor)
             super().mouseReleaseEvent(e)
             return
 
+        # --- non-ModernGL paths unchanged ---
         if self._use_example_pipeline:
             if e.button() == QtCore.Qt.LeftButton:
                 self._orbit_dragging = False
