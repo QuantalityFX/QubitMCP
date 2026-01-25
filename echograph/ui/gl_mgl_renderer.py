@@ -1450,6 +1450,54 @@ class MGLRendererMixin:
                 self._mgl_grid_prog["Mvp"].write(mvp.astype("f4"))
                 self._mgl_grid_prog["Color"].value = (0.35, 0.35, 0.35, 0.10)
                 self._mgl_grid_vao.render(moderngl.LINES)
+                # Draw the 2 center axes again (thicker) so origin reads as "+"
+                try:
+                    steps = int(getattr(self, "_mgl_grid_cells", 0))
+                    if steps <= 0:
+                        steps = 1
+                    if (steps % 2) == 0:
+                        steps += 1
+                    mid = steps // 2
+
+                    # Save and bump line width
+                    try:
+                        _prev_lw = float(getattr(self._mgl_ctx, "line_width", 1.0))
+                    except Exception:
+                        _prev_lw = 1.0
+
+                    try:
+                        self._mgl_ctx.line_width = 2.0
+                    except Exception:
+                        pass
+
+                    # Slightly stronger alpha for center lines (optional)
+                    try:
+                        self._mgl_grid_prog["Color"].value = (0.35, 0.35, 0.35, 0.18)
+                    except Exception:
+                        pass
+
+                    # Grid layout in VBO:
+                    # first  steps*2 vertices  = lines along X at constant Z
+                    # second steps*2 vertices  = lines along Z at constant X
+                    first_center_z = 2 * mid
+                    first_center_x = (steps * 2) + (2 * mid)
+
+                    self._mgl_grid_vao.render(mode=moderngl.LINES, vertices=2, first=first_center_z)
+                    self._mgl_grid_vao.render(mode=moderngl.LINES, vertices=2, first=first_center_x)
+
+                    # Restore line width
+                    try:
+                        self._mgl_ctx.line_width = _prev_lw
+                    except Exception:
+                        pass
+
+                    # Restore normal grid alpha (optional, if you changed it above)
+                    try:
+                        self._mgl_grid_prog["Color"].value = (0.35, 0.35, 0.35, float(self._mgl_grid_alpha))
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
 
                 # Restore
                 try:
