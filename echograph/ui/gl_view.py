@@ -2378,7 +2378,11 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             # Axis overlay (debug) in ModernGL path
             if getattr(self, "_debug_show_axis_overlay", False):
                 try:
-                    if getattr(self, "_axis_overlay", None) is not None and self._axis_overlay.ensure_gl(self):
+                    if getattr(self, "_axis_overlay", None) is None:
+                        from echograph.ui.axis_gizmo_overlay import AxisGizmoOverlay
+                        self._axis_overlay = AxisGizmoOverlay()
+
+                    if self._axis_overlay.ensure_gl(self):
                         renderer = getattr(self, "_mgl_renderer", None) or self
 
                         P = getattr(renderer, "_mgl_pick_proj", None)
