@@ -477,6 +477,9 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         # --- Axis overlay (debug) - SAFE import (must not block app boot) ---
         self._axis_overlay = None
         self._debug_show_axis_overlay = False
+        self._xform_gizmo_pos = (0.0, 0.0, 0.0)
+        self._xform_gizmo_owner = None
+        self._xform_gizmo_pos_locked = False
         try:
             from .axis_gizmo_overlay import AxisGizmoOverlay
             self._axis_overlay = AxisGizmoOverlay()
@@ -2352,7 +2355,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         return m
 
     def paintGL(self) -> None:
-        print("[PAINT] mgl=", self._use_moderngl, "example=", self._use_example_pipeline, "dbg=", getattr(self, "_debug_show_axis_overlay", None))
+        #print("[PAINT] mgl=", self._use_moderngl, "example=", self._use_example_pipeline, "dbg=", getattr(self, "_debug_show_axis_overlay", None))
         if not hasattr(self, "_gl"):
             return
 
@@ -2361,27 +2364,35 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             self._gl.glClearColor(bg.redF(), bg.greenF(), bg.blueF(), 1.0)
             self._gl.glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
             return
-        print("[PAINT] use_mgl=", self._use_moderngl, "has_mgl=", _HAS_MGL)
+        #print("[PAINT] use_mgl=", self._use_moderngl, "has_mgl=", _HAS_MGL)
         # ModernGL path (keep clean)
         if self._use_moderngl:
             self._paint_mgl()
 
-            # Make sure we're drawing into the visible Qt FBO (ModernGL path can change it)
+            # Make sure we're drawing into the visible Qt FBO
             try:
                 self._mgl_bind_default_fbo()
             except Exception:
                 pass
 
-            # Axis overlay (debug) - draw in MGL path too
+            # Axis overlay (debug) in ModernGL path
             if getattr(self, "_debug_show_axis_overlay", False):
                 try:
                     if getattr(self, "_axis_overlay", None) is not None and self._axis_overlay.ensure_gl(self):
                         proj = self._projection_matrix()
                         view = self._view_matrix()
-                        mvp = proj * view
+
+                        pos = getattr(self, "_xform_gizmo_pos", (0.0, 0.0, 0.0)) or (0.0, 0.0, 0.0)
+
+                        model = QtGui.QMatrix4x4()
+                        model.translate(float(pos[0]), float(pos[1]), float(pos[2]))
+
+                        mvp = proj * view * model
                         self._axis_overlay.draw(mvp)
+
+                        print("[GIZMO] pos=", pos, flush=True)
                 except Exception as exc:
-                    print("[AXIS_OVERLAY] disabled:", exc)
+                    print("[AXIS_OVERLAY] disabled:", exc, flush=True)
                     self._debug_show_axis_overlay = False
 
             return
@@ -2404,37 +2415,6 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         if self._vao is not None:
             try:
                 self._vao.bind()
-            except Exception:
-                pass
-
-        proj = self._projection_matrix()
-        view = self._view_matrix()
-
-        # --- YOUR EXISTING CLASSIC DRAWING CONTINUES HERE ---
-        # (leave whatever you already have below this point: grid draw, scene draw, meshes, splats, etc.)
-        #
-        # example:
-        # self._draw_grid(proj, view)
-        # self._draw_scene_objects(proj, view)
-        # self._draw_splats(proj, view)
-        #
-        # ---------------------------------------------------
-
-        # Axis overlay (debug) - draw LAST so it sits on top
-        if getattr(self, "_debug_show_axis_overlay", False):
-            try:
-                if getattr(self, "_axis_overlay", None) is not None and self._axis_overlay.ensure_gl(self):
-                    mvp = proj * view
-                    print("[AXIS_OVERLAY] drawing")
-                    self._axis_overlay.draw(mvp)
-            except Exception as exc:
-                print("[AXIS_OVERLAY] disabled:", exc)
-                self._debug_show_axis_overlay = False
-
-        # Release VAO if you do that in your version
-        if self._vao is not None:
-            try:
-                self._vao.release()
             except Exception:
                 pass
 
@@ -3148,12 +3128,57 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                 vw = int(self.width() * dpr)
                                 vh = int(self.height() * dpr)
 
-                                owner = pick(px, py, vw, vh)
+                                owner = None
+                                hit = None
+
+                                pick_hit = getattr(renderer, "pick_hit_at", None)
+                                if callable(pick_hit):
+                                    owner, hit = pick_hit(px, py, vw, vh)
+                                else:
+                                    owner = pick(px, py, vw, vh)
+
                                 #print("[PICK] owner =", owner, flush=True)
                                 if owner:
                                     w = self.window()
                                     if hasattr(w, "select_scene_asset"):
-                                        w.select_scene_asset(owner)
+                                        w.select_scene_asset(owner)  # this may overwrite gizmo pos internally
+
+                                    # Now force gizmo to the click hit (wins last)
+                                    self._xform_gizmo_owner = owner
+
+                                    if hit is not None:
+                                        try:
+                                            self._xform_gizmo_pos = (float(hit[0]), float(hit[1]), float(hit[2]))
+                                            self._xform_gizmo_pos_locked = True
+                                        except Exception:
+                                            self._xform_gizmo_pos = tuple(hit)
+                                            self._xform_gizmo_pos_locked = True
+                                    else:
+                                        # Fallback: bounds center
+                                        try:
+                                            bounds_map = (
+                                                getattr(renderer, "_mgl_scene_bounds_by_owner", None)
+                                                or getattr(self, "_mgl_scene_bounds_by_owner", None)
+                                            )
+                                            if isinstance(bounds_map, dict) and owner in bounds_map:
+                                                mins, maxs = bounds_map.get(owner) or (None, None)
+                                                if mins is not None and maxs is not None:
+                                                    cx = (float(mins[0]) + float(maxs[0])) * 0.5
+                                                    cy = (float(mins[1]) + float(maxs[1])) * 0.5
+                                                    cz = (float(mins[2]) + float(maxs[2])) * 0.5
+                                                    self._xform_gizmo_pos = (cx, cy, cz)
+                                                    self._xform_gizmo_pos_locked = True
+                                        except Exception:
+                                            pass
+
+                                    print(
+                                        "[PICK] owner=", owner,
+                                        "hit=", hit,
+                                        "gizmo_pos=", getattr(self, "_xform_gizmo_pos", None),
+                                        "locked=", getattr(self, "_xform_gizmo_pos_locked", None),
+                                        flush=True,
+                                    )
+                                    self.update()
 
                 except Exception:
                     pass

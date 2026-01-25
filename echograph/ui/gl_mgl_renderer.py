@@ -3371,3 +3371,142 @@ class MGLRendererMixin:
         if best_splat_owner is None:
             return best_mesh_owner
         return best_mesh_owner if best_mesh_t <= best_splat_t else best_splat_owner
+
+
+def pick_hit_at(self, px: int, py: int, viewport_w: int, viewport_h: int):
+    """
+    Like pick_owner_at, but returns (owner, hit_pos_world) where hit_pos_world is (x,y,z).
+    Meshes: ray vs per-owner AABB intersection point.
+    Splats: closest point on the ray to the chosen splat center.
+    """
+    if np is None:
+        return None, None
+
+    bounds = getattr(self, "_mgl_scene_bounds_by_owner", None) or {}
+    if not bounds:
+        return None, None
+
+    P = getattr(self, "_mgl_pick_proj", None)
+    V = getattr(self, "_mgl_pick_view", None)
+    M = getattr(self, "_mgl_pick_model", None)
+    if P is None or V is None or M is None:
+        return None, None
+
+    try:
+        invPV = np.linalg.inv((P @ V @ M).astype(np.float32))
+    except Exception:
+        return None, None
+
+    # window coords -> NDC
+    x = (2.0 * (float(px) / max(1.0, float(viewport_w)))) - 1.0
+    y = 1.0 - (2.0 * (float(py) / max(1.0, float(viewport_h))))  # flip Y
+    near = np.array([x, y, -1.0, 1.0], dtype=np.float32)
+    far  = np.array([x, y,  1.0, 1.0], dtype=np.float32)
+
+    p0 = invPV @ near
+    p1 = invPV @ far
+    if abs(p0[3]) < 1e-8 or abs(p1[3]) < 1e-8:
+        return None, None
+    p0 = p0[:3] / p0[3]
+    p1 = p1[:3] / p1[3]
+
+    ray_o = p0.astype(np.float32)
+    ray_d = (p1 - p0).astype(np.float32)
+    n = float(np.linalg.norm(ray_d))
+    if n < 1e-8:
+        return None, None
+    ray_d /= n
+
+    # -----------------------------
+    # splat picking
+    # -----------------------------
+    best_splat_owner = None
+    best_splat_t = 1e30
+    best_splat_hit = None
+
+    splats_map = getattr(self, "_mgl_scene_splats", None) or {}
+    if splats_map:
+        thresh = float(getattr(self, "_mgl_pick_splat_radius", 0.12))
+        thresh2 = thresh * thresh
+
+        for s_owner, arr in splats_map.items():
+            try:
+                pts = np.asarray(arr[:, :3], dtype=np.float32)
+                if pts.size == 0:
+                    continue
+
+                v = pts - ray_o[None, :]
+                t = v @ ray_d  # (N,)
+                mask = t > 0.0
+                if not bool(np.any(mask)):
+                    continue
+
+                tpos = t[mask]
+                pclose = ray_o[None, :] + tpos[:, None] * ray_d[None, :]
+                d = pts[mask] - pclose
+                d2 = np.einsum("ij,ij->i", d, d)
+
+                i = int(np.argmin(d2))
+                if float(d2[i]) <= thresh2:
+                    tmin = float(tpos[i])
+                    if tmin < best_splat_t:
+                        best_splat_t = tmin
+                        best_splat_owner = s_owner
+                        best_splat_hit = tuple(map(float, pclose[i].tolist()))
+            except Exception:
+                pass
+
+    # -----------------------------
+    # mesh picking (AABB)
+    # -----------------------------
+    def ray_aabb(o, d, bmin, bmax):
+        tmin = -1e30
+        tmax =  1e30
+        for k in range(3):
+            if abs(d[k]) < 1e-8:
+                if o[k] < bmin[k] or o[k] > bmax[k]:
+                    return None
+            else:
+                inv = 1.0 / d[k]
+                t1 = (bmin[k] - o[k]) * inv
+                t2 = (bmax[k] - o[k]) * inv
+                if t1 > t2:
+                    t1, t2 = t2, t1
+                tmin = max(tmin, float(t1))
+                tmax = min(tmax, float(t2))
+                if tmax < tmin:
+                    return None
+        if tmax < 0.0:
+            return None
+        return tmin if tmin >= 0.0 else tmax
+
+    best_mesh_owner = None
+    best_mesh_t = 1e30
+    best_mesh_hit = None
+
+    for owner, (bmin, bmax) in bounds.items():
+        if owner in splats_map:
+            continue
+        try:
+            bmin = np.array(bmin, dtype=np.float32)
+            bmax = np.array(bmax, dtype=np.float32)
+            t = ray_aabb(ray_o, ray_d, bmin, bmax)
+            if t is not None and float(t) < best_mesh_t:
+                best_mesh_t = float(t)
+                best_mesh_owner = owner
+                hp = ray_o + best_mesh_t * ray_d
+                best_mesh_hit = tuple(map(float, hp.tolist()))
+        except Exception:
+            pass
+
+    # -----------------------------
+    # choose winner (closest along ray)
+    # -----------------------------
+    if best_mesh_owner is None and best_splat_owner is None:
+        return None, None
+    if best_mesh_owner is None:
+        return best_splat_owner, best_splat_hit
+    if best_splat_owner is None:
+        return best_mesh_owner, best_mesh_hit
+
+    return (best_mesh_owner, best_mesh_hit) if best_mesh_t <= best_splat_t else (best_splat_owner, best_splat_hit)

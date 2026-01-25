@@ -495,12 +495,64 @@ def augment_infocard_footer(card, footer_layout) -> bool:
 
         def _on_outliner_select():
             it = outliner.currentItem()
-            owner = it.data(QtCore.Qt.UserRole) if it is not None else None
+            if it is None:
+                # Qt can briefly report None during list refresh; don’t clear selection
+                return
+
+            owner = it.data(QtCore.Qt.UserRole)
             owner = str(owner) if owner else None
+            if not owner:
+                return
+
             card._scene_selected_owner = owner
-            xform_panel.setEnabled(bool(owner))
-            if owner:
-                _load_xform_from_view(owner)
+            xform_panel.setEnabled(True)
+
+            # tell viewport which owner is selected (for gizmo draw)
+            try:
+                win = card.window()
+                glv = getattr(win, "gl_view", None) if win is not None else None
+                if glv is not None:
+                    glv._xform_gizmo_owner = owner
+
+                    # compute a stable gizmo position:
+                    # 1) use stored xform pos if it's non-zero
+                    # 2) otherwise use bounds center
+                    pos = getattr(glv, "_xform_gizmo_pos", (0.0, 0.0, 0.0))
+                    try:
+                        renderer = getattr(glv, "_mgl_renderer", None) or glv
+
+                        xf = {}
+                        get_xf = getattr(renderer, "_mgl_get_scene_asset_xform", None)
+                        if callable(get_xf):
+                            xf = get_xf(owner) or {}
+
+                        xf_pos = tuple((xf or {}).get("pos", (0.0, 0.0, 0.0)))
+                        if xf_pos != (0.0, 0.0, 0.0):
+                            pos = xf_pos
+                        else:
+                            get_bounds = getattr(renderer, "get_scene_owner_bounds", None)
+                            if callable(get_bounds):
+                                mins, maxs = get_bounds(owner)
+                                pos = (
+                                    (float(mins[0]) + float(maxs[0])) * 0.5,
+                                    (float(mins[1]) + float(maxs[1])) * 0.5,
+                                    (float(mins[2]) + float(maxs[2])) * 0.5,
+                                )
+                    except Exception:
+                        pass
+
+                    if not getattr(glv, "_xform_gizmo_pos_locked", False):
+                        glv._xform_gizmo_pos = pos
+
+                    try:
+                        glv.update()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            _load_xform_from_view(owner)
+
 
         outliner.currentItemChanged.connect(lambda *_: _on_outliner_select())
 
