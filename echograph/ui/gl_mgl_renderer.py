@@ -364,6 +364,22 @@ class MGLRendererMixin:
         self._mgl_render_splats = False
         self._mgl_splat_count = 0
         self._mgl_splats15_cpu = None
+        try:
+            self._mgl_scene_splats_world = None
+        except Exception:
+            pass
+        try:
+            self._mgl_scene_splats_bounds_local = None
+        except Exception:
+            pass
+        try:
+            self._mgl_scene_splat_xforms_by_owner = None
+        except Exception:
+            pass
+        try:
+            self._mgl_scene_splat_bounds_by_owner = None
+        except Exception:
+            pass
 
     def _mgl_set_scene_item_visibility(self, key: str, visible: bool) -> None:
         scene = getattr(self, "_mgl_scene", None)
@@ -401,13 +417,33 @@ class MGLRendererMixin:
         d[owner] = x
         return x
 
-    def _mgl_set_scene_asset_xform(self, owner: str, pos=None, rot=None, scl=None) -> None:
+    def _mgl_get_scene_splat_xform(self, owner: str):
+        d = getattr(self, "_mgl_scene_splat_xforms_by_owner", None)
+        if not isinstance(d, dict):
+            d = {}
+            setattr(self, "_mgl_scene_splat_xforms_by_owner", d)
+        x = d.get(owner)
+        if isinstance(x, dict):
+            return x
+        x = {"pos": (0.0, 0.0, 0.0), "rot": (0.0, 0.0, 0.0), "scl": (1.0, 1.0, 1.0)}
+        d[owner] = x
+        return x
+
+    def _mgl_set_scene_asset_xform(
+        self,
+        owner: str,
+        pos=None,
+        rot=None,
+        scl=None,
+        apply_to_scene_models: bool = True,
+        use_splat_xform: bool = False,
+    ) -> None:
         if not owner:
             return
         if np is None:
             return
 
-        x = self._mgl_get_scene_asset_xform(owner)
+        x = self._mgl_get_scene_splat_xform(owner) if use_splat_xform else self._mgl_get_scene_asset_xform(owner)
         if pos is not None:
             x["pos"] = tuple(float(v) for v in pos)
         if rot is not None:
@@ -418,7 +454,21 @@ class MGLRendererMixin:
         # pivot around asset bounds center if we have it
         cx = cy = cz = 0.0
         try:
-            b = (getattr(self, "_mgl_scene_bounds_by_owner", {}) or {}).get(owner)
+            bounds_map = None
+            if use_splat_xform:
+                bounds_map = (
+                    getattr(self, "_mgl_scene_splats_bounds_local", None)
+                    or getattr(self, "_mgl_scene_splat_bounds_by_owner", None)
+                )
+            elif apply_to_scene_models:
+                bounds_map = (
+                    getattr(self, "_mgl_scene_mesh_bounds_by_owner", None)
+                    or getattr(self, "_mgl_scene_bounds_by_owner", None)
+                )
+            else:
+                bounds_map = getattr(self, "_mgl_scene_bounds_by_owner", None)
+
+            b = (bounds_map or {}).get(owner) if isinstance(bounds_map, dict) else None
             if b is not None:
                 bmin, bmax = b
                 c = (bmin + bmax) * 0.5
@@ -481,19 +531,20 @@ class MGLRendererMixin:
             return
 
         # apply to matching scene items (solid + wire)
-        try:
-            for tag in ("scene-model", "scene-wire"):
-                for item in scene.iter_by_tag(tag):
-                    payload = getattr(item, "payload", None) or {}
-                    if payload.get("owner") != owner:
-                        continue
-                    payload["model"] = model
-                    try:
-                        item.payload = payload
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+        if apply_to_scene_models:
+            try:
+                for tag in ("scene-model", "scene-wire"):
+                    for item in scene.iter_by_tag(tag):
+                        payload = getattr(item, "payload", None) or {}
+                        if payload.get("owner") != owner:
+                            continue
+                        payload["model"] = model
+                        try:
+                            item.payload = payload
+                        except Exception:
+                            pass
+            except Exception:
+                pass
 
         # IMPORTANT: if this owner is a splat owner, rebuild splat buffer so translation applies
         try:
@@ -530,7 +581,9 @@ class MGLRendererMixin:
             return
 
         visibility = getattr(self, "_mgl_scene_visibility", {}) or {}
-        xforms = getattr(self, "_mgl_scene_xforms_by_owner", {}) or {}
+        xforms = getattr(self, "_mgl_scene_splat_xforms_by_owner", None)
+        if not isinstance(xforms, dict):
+            xforms = getattr(self, "_mgl_scene_xforms_by_owner", {}) or {}
 
         # normalized lookup for xforms
         xforms_norm = {}
@@ -612,6 +665,7 @@ class MGLRendererMixin:
             return np.concatenate([a[:, 0:8], scale3, quat], axis=1)
 
         arrays15 = []
+        splats_world = {}
         for owner, arr in splat_map.items():
             if not visibility.get(owner, True):
                 continue
@@ -650,9 +704,9 @@ class MGLRendererMixin:
                 rx = ry = rz = 0.0
                 sx = sy = sz = 1.0
 
-            # pivot = bounds center if available, else current center
+            # pivot = LOCAL bounds center if available, else current center
             try:
-                b = (getattr(self, "_mgl_scene_bounds_by_owner", {}) or {}).get(owner)
+                b = (getattr(self, "_mgl_scene_splats_bounds_local", {}) or {}).get(owner)
                 if b is not None:
                     bmin, bmax = b
                     pivot = ((bmin + bmax) * 0.5).astype(np.float32)
@@ -697,15 +751,27 @@ class MGLRendererMixin:
             try:
                 mins = a15[:, :3].min(axis=0).astype("f4")
                 maxs = a15[:, :3].max(axis=0).astype("f4")
-                self._mgl_scene_bounds_by_owner[owner] = (mins, maxs)
+                try:
+                    self._mgl_scene_splat_bounds_by_owner[owner] = (mins, maxs)
+                except Exception:
+                    pass
             except Exception:
                 pass
 
             arrays15.append(a15)
+            try:
+                splats_world[owner] = a15[:, :3].astype(np.float32, copy=True)
+            except Exception:
+                pass
 
         if not arrays15:
             self._mgl_disable_splats()
             return
+
+        try:
+            self._mgl_scene_splats_world = splats_world
+        except Exception:
+            pass
 
         combined = arrays15[0] if len(arrays15) == 1 else np.concatenate(arrays15, axis=0)
         self.set_splats(combined)
@@ -2938,6 +3004,11 @@ class MGLRendererMixin:
         try:
             self._mgl_scene_splats = {}
             self._mgl_scene_bounds_by_owner = {}
+            self._mgl_scene_splats_world = {}
+            self._mgl_scene_splats_bounds_local = {}
+            self._mgl_scene_splat_xforms_by_owner = {}
+            self._mgl_scene_splat_bounds_by_owner = {}
+            self._mgl_scene_mesh_bounds_by_owner = {}
         except Exception:
             pass
 
@@ -2947,6 +3018,22 @@ class MGLRendererMixin:
         has_splats = False
         total_indices = 0
         first_mesh_path = ""
+        mesh_owner_names = set()
+        try:
+            for asset in assets or []:
+                path_str = str(asset.get("path", "") or "").strip()
+                if not path_str:
+                    continue
+                ext = Path(path_str).suffix.lower()
+                if ext == ".ply":
+                    continue
+                owner_name = str(asset.get("node") or "").strip()
+                if not owner_name:
+                    owner_name = Path(path_str).name
+                if owner_name:
+                    mesh_owner_names.add(owner_name)
+        except Exception:
+            mesh_owner_names = set()
 
         did_make_current = False
         try:
@@ -2985,7 +3072,11 @@ class MGLRendererMixin:
                             maxs = arr[:, :3].max(axis=0)
                             bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, mins, maxs)
                             try:
-                                self._mgl_scene_bounds_by_owner[owner] = (mins.astype("f4"), maxs.astype("f4"))
+                                self._mgl_scene_splat_bounds_by_owner[owner] = (mins.astype("f4"), maxs.astype("f4"))
+                            except Exception:
+                                pass
+                            try:
+                                self._mgl_scene_splats_bounds_local[owner] = (mins.astype("f4"), maxs.astype("f4"))
                             except Exception:
                                 pass
                     except Exception as exc:
@@ -3142,6 +3233,7 @@ class MGLRendererMixin:
                             maxs = mesh_arrays.points.max(axis=0)
                             try:
                                 self._mgl_scene_bounds_by_owner[owner] = (mins.astype("f4"), maxs.astype("f4"))
+                                self._mgl_scene_mesh_bounds_by_owner[owner] = (mins.astype("f4"), maxs.astype("f4"))
                             except Exception:
                                 pass
                             bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, mins, maxs)
@@ -3155,6 +3247,7 @@ class MGLRendererMixin:
                                 maxs = pts.max(axis=0)
                                 try:
                                     self._mgl_scene_bounds_by_owner[owner] = (mins.astype("f4"), maxs.astype("f4"))
+                                    self._mgl_scene_mesh_bounds_by_owner[owner] = (mins.astype("f4"), maxs.astype("f4"))
                                 except Exception:
                                     pass
                                 bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, mins, maxs)
@@ -3203,6 +3296,7 @@ class MGLRendererMixin:
                         maxs = points.max(axis=0)
                         try:
                             self._mgl_scene_bounds_by_owner[owner] = (mins.astype("f4"), maxs.astype("f4"))
+                            self._mgl_scene_mesh_bounds_by_owner[owner] = (mins.astype("f4"), maxs.astype("f4"))
                         except Exception:
                             pass
                         bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, mins, maxs)
@@ -3267,7 +3361,11 @@ class MGLRendererMixin:
         if np is None:
             return None
 
-        bounds = getattr(self, "_mgl_scene_bounds_by_owner", None) or {}
+        bounds = (
+            getattr(self, "_mgl_scene_mesh_bounds_by_owner", None)
+            or getattr(self, "_mgl_scene_bounds_by_owner", None)
+            or {}
+        )
         if not bounds:
             return None
 
@@ -3302,41 +3400,18 @@ class MGLRendererMixin:
             return None
         ray_d /= n
 
-        # --- splat picking: nearest splat center to ray (no AABB volume) ---
-        best_splat_owner = None
-        best_splat_t = 1e30
-
-        splats_map = getattr(self, "_mgl_scene_splats", None) or {}
-        if splats_map:
-            # tweak this if needed (world units)
-            thresh = float(getattr(self, "_mgl_pick_splat_radius", 0.12))
-            thresh2 = thresh * thresh
-
-            for s_owner, arr in splats_map.items():
-                try:
-                    pts = np.asarray(arr[:, :3], dtype=np.float32)
-                    if pts.size == 0:
-                        continue
-
-                    v = pts - ray_o[None, :]
-                    t = v @ ray_d  # (N,)
-                    mask = t > 0.0
-                    if not bool(np.any(mask)):
-                        continue
-
-                    tpos = t[mask]
-                    pclose = ray_o[None, :] + tpos[:, None] * ray_d[None, :]
-                    d = pts[mask] - pclose
-                    d2 = np.einsum("ij,ij->i", d, d)
-
-                    i = int(np.argmin(d2))
-                    if float(d2[i]) <= thresh2:
-                        tmin = float(tpos[i])
-                        if tmin < best_splat_t:
-                            best_splat_t = tmin
-                            best_splat_owner = s_owner
-                except Exception:
-                    pass
+        mesh_owners = None
+        try:
+            scene = getattr(self, "_mgl_scene", None)
+            if scene is not None:
+                mesh_owners = set()
+                for item in scene.iter_by_tag("scene-model"):
+                    payload = getattr(item, "payload", None) or {}
+                    o = payload.get("owner")
+                    if o:
+                        mesh_owners.add(o)
+        except Exception:
+            mesh_owners = None
 
         def ray_aabb(o, d, bmin, bmax):
             # slabs method
@@ -3359,6 +3434,59 @@ class MGLRendererMixin:
             if tmax < 0.0:
                 return None
             return tmin if tmin >= 0.0 else tmax
+
+        # --- splat picking: nearest splat center to ray (no big-volume dominance) ---
+        best_splat_owner = None
+        best_splat_t = 1e30
+
+        splats_map = getattr(self, "_mgl_scene_splats_world", None) or getattr(self, "_mgl_scene_splats", None) or {}
+        splat_bounds_map = getattr(self, "_mgl_scene_splat_bounds_by_owner", None)
+        if splats_map:
+            # tweak this if needed (world units)
+            thresh = float(getattr(self, "_mgl_pick_splat_radius", 0.12))
+            thresh2 = thresh * thresh
+
+            for s_owner, arr in splats_map.items():
+                try:
+                    # coarse cull using bounds if available (prevents far-away hijacks)
+                    try:
+                        b = None
+                        if isinstance(splat_bounds_map, dict):
+                            b = splat_bounds_map.get(s_owner)
+                        if b is None:
+                            b = (getattr(self, "_mgl_scene_bounds_by_owner", {}) or {}).get(s_owner)
+                        if b is not None:
+                            bmin, bmax = b
+                            bmin = np.array(bmin, dtype=np.float32) - thresh
+                            bmax = np.array(bmax, dtype=np.float32) + thresh
+                            if ray_aabb(ray_o, ray_d, bmin, bmax) is None:
+                                continue
+                    except Exception:
+                        pass
+
+                    pts = np.asarray(arr[:, :3] if getattr(arr, "ndim", 0) > 1 else arr, dtype=np.float32)
+                    if pts.size == 0:
+                        continue
+
+                    v = pts - ray_o[None, :]
+                    t = v @ ray_d  # (N,)
+                    mask = t > 0.0
+                    if not bool(np.any(mask)):
+                        continue
+
+                    tpos = t[mask]
+                    pclose = ray_o[None, :] + tpos[:, None] * ray_d[None, :]
+                    d = pts[mask] - pclose
+                    d2 = np.einsum("ij,ij->i", d, d)
+
+                    i = int(np.argmin(d2))
+                    if float(d2[i]) <= thresh2:
+                        tmin = float(tpos[i])
+                        if tmin < best_splat_t:
+                            best_splat_t = tmin
+                            best_splat_owner = s_owner
+                except Exception:
+                    pass
 
         # --- mesh picking: transform ray into local space, then test AABB ---
         def T(tx, ty, tz):
@@ -3409,7 +3537,7 @@ class MGLRendererMixin:
         best_mesh_t = 1e30
 
         for owner, (bmin, bmax) in bounds.items():
-            if owner in splats_map:
+            if owner in splats_map and (mesh_owners is None or owner not in mesh_owners):
                 continue
             try:
                 bmin = np.array(bmin, dtype=np.float32)
@@ -3433,8 +3561,9 @@ class MGLRendererMixin:
                         inv_model = np.linalg.inv(model)
                         o4 = np.array([ray_o[0], ray_o[1], ray_o[2], 1.0], dtype=np.float32)
                         d4 = np.array([ray_d[0], ray_d[1], ray_d[2], 0.0], dtype=np.float32)
-                        oL = inv_model @ o4
-                        dL = inv_model @ d4
+                        # model is row-major; transform using row-vector convention
+                        oL = o4 @ inv_model
+                        dL = d4 @ inv_model
                         if abs(float(oL[3])) > 1e-8:
                             oL = oL[:3] / float(oL[3])
                         else:
@@ -3448,7 +3577,7 @@ class MGLRendererMixin:
                         if tL is None:
                             continue
                         hitL = oL + float(tL) * dL
-                        hitW = model @ np.array([hitL[0], hitL[1], hitL[2], 1.0], dtype=np.float32)
+                        hitW = np.array([hitL[0], hitL[1], hitL[2], 1.0], dtype=np.float32) @ model
                         if abs(float(hitW[3])) > 1e-8:
                             hitW = hitW[:3] / float(hitW[3])
                         else:
@@ -3472,10 +3601,26 @@ class MGLRendererMixin:
                 pass
 
         if best_mesh_owner is None:
+            try:
+                self._mgl_last_pick_kind = "splat" if best_splat_owner is not None else None
+                self._mgl_last_pick_owner = best_splat_owner
+            except Exception:
+                pass
             return best_splat_owner
         if best_splat_owner is None:
+            try:
+                self._mgl_last_pick_kind = "mesh"
+                self._mgl_last_pick_owner = best_mesh_owner
+            except Exception:
+                pass
             return best_mesh_owner
-        return best_mesh_owner if best_mesh_t <= best_splat_t else best_splat_owner
+        # When both hit, prefer mesh to avoid splat volumes hijacking selection.
+        try:
+            self._mgl_last_pick_kind = "mesh"
+            self._mgl_last_pick_owner = best_mesh_owner
+        except Exception:
+            pass
+        return best_mesh_owner
 
 
 def pick_hit_at(self, px: int, py: int, viewport_w: int, viewport_h: int):
@@ -3487,7 +3632,11 @@ def pick_hit_at(self, px: int, py: int, viewport_w: int, viewport_h: int):
     if np is None:
         return None, None
 
-    bounds = getattr(self, "_mgl_scene_bounds_by_owner", None) or {}
+    bounds = (
+        getattr(self, "_mgl_scene_mesh_bounds_by_owner", None)
+        or getattr(self, "_mgl_scene_bounds_by_owner", None)
+        or {}
+    )
     if not bounds:
         return None, None
 
@@ -3522,48 +3671,19 @@ def pick_hit_at(self, px: int, py: int, viewport_w: int, viewport_h: int):
         return None, None
     ray_d /= n
 
-    # -----------------------------
-    # splat picking
-    # -----------------------------
-    best_splat_owner = None
-    best_splat_t = 1e30
-    best_splat_hit = None
+    mesh_owners = None
+    try:
+        scene = getattr(self, "_mgl_scene", None)
+        if scene is not None:
+            mesh_owners = set()
+            for item in scene.iter_by_tag("scene-model"):
+                payload = getattr(item, "payload", None) or {}
+                o = payload.get("owner")
+                if o:
+                    mesh_owners.add(o)
+    except Exception:
+        mesh_owners = None
 
-    splats_map = getattr(self, "_mgl_scene_splats", None) or {}
-    if splats_map:
-        thresh = float(getattr(self, "_mgl_pick_splat_radius", 0.12))
-        thresh2 = thresh * thresh
-
-        for s_owner, arr in splats_map.items():
-            try:
-                pts = np.asarray(arr[:, :3], dtype=np.float32)
-                if pts.size == 0:
-                    continue
-
-                v = pts - ray_o[None, :]
-                t = v @ ray_d  # (N,)
-                mask = t > 0.0
-                if not bool(np.any(mask)):
-                    continue
-
-                tpos = t[mask]
-                pclose = ray_o[None, :] + tpos[:, None] * ray_d[None, :]
-                d = pts[mask] - pclose
-                d2 = np.einsum("ij,ij->i", d, d)
-
-                i = int(np.argmin(d2))
-                if float(d2[i]) <= thresh2:
-                    tmin = float(tpos[i])
-                    if tmin < best_splat_t:
-                        best_splat_t = tmin
-                        best_splat_owner = s_owner
-                        best_splat_hit = tuple(map(float, pclose[i].tolist()))
-            except Exception:
-                pass
-
-    # -----------------------------
-    # mesh picking (AABB)
-    # -----------------------------
     def ray_aabb(o, d, bmin, bmax):
         tmin = -1e30
         tmax =  1e30
@@ -3584,6 +3704,74 @@ def pick_hit_at(self, px: int, py: int, viewport_w: int, viewport_h: int):
         if tmax < 0.0:
             return None
         return tmin if tmin >= 0.0 else tmax
+
+    # -----------------------------
+    # splat picking
+    # -----------------------------
+    best_splat_owner = None
+    best_splat_t = 1e30
+    best_splat_hit = None
+
+    splats_map = getattr(self, "_mgl_scene_splats_world", None) or getattr(self, "_mgl_scene_splats", None) or {}
+    splat_bounds_map = getattr(self, "_mgl_scene_splat_bounds_by_owner", None)
+    if splats_map:
+        thresh = float(getattr(self, "_mgl_pick_splat_radius", 0.12))
+        thresh2 = thresh * thresh
+
+        for s_owner, arr in splats_map.items():
+            try:
+                # coarse cull using bounds if available (prevents far-away hijacks)
+                splat_center = None
+                try:
+                    b = None
+                    if isinstance(splat_bounds_map, dict):
+                        b = splat_bounds_map.get(s_owner)
+                    if b is None:
+                        b = (getattr(self, "_mgl_scene_bounds_by_owner", {}) or {}).get(s_owner)
+                    if b is not None:
+                        bmin, bmax = b
+                        bmin = np.array(bmin, dtype=np.float32) - thresh
+                        bmax = np.array(bmax, dtype=np.float32) + thresh
+                        try:
+                            splat_center = (bmin + bmax) * 0.5
+                        except Exception:
+                            splat_center = None
+                        if ray_aabb(ray_o, ray_d, bmin, bmax) is None:
+                            continue
+                except Exception:
+                    pass
+
+                pts = np.asarray(arr[:, :3] if getattr(arr, "ndim", 0) > 1 else arr, dtype=np.float32)
+                if pts.size == 0:
+                    continue
+
+                v = pts - ray_o[None, :]
+                t = v @ ray_d  # (N,)
+                mask = t > 0.0
+                if not bool(np.any(mask)):
+                    continue
+
+                tpos = t[mask]
+                pclose = ray_o[None, :] + tpos[:, None] * ray_d[None, :]
+                d = pts[mask] - pclose
+                d2 = np.einsum("ij,ij->i", d, d)
+
+                i = int(np.argmin(d2))
+                if float(d2[i]) <= thresh2:
+                    tmin = float(tpos[i])
+                    if tmin < best_splat_t:
+                        best_splat_t = tmin
+                        best_splat_owner = s_owner
+                        if splat_center is not None:
+                            best_splat_hit = tuple(map(float, splat_center.tolist()))
+                        else:
+                            best_splat_hit = tuple(map(float, pclose[i].tolist()))
+            except Exception:
+                pass
+
+    # -----------------------------
+    # mesh picking (AABB)
+    # -----------------------------
 
     def T(tx, ty, tz):
         m = np.eye(4, dtype=np.float32)
@@ -3634,7 +3822,7 @@ def pick_hit_at(self, px: int, py: int, viewport_w: int, viewport_h: int):
     best_mesh_hit = None
 
     for owner, (bmin, bmax) in bounds.items():
-        if owner in splats_map:
+        if owner in splats_map and (mesh_owners is None or owner not in mesh_owners):
             continue
         try:
             bmin = np.array(bmin, dtype=np.float32)
@@ -3657,8 +3845,9 @@ def pick_hit_at(self, px: int, py: int, viewport_w: int, viewport_h: int):
                     inv_model = np.linalg.inv(model)
                     o4 = np.array([ray_o[0], ray_o[1], ray_o[2], 1.0], dtype=np.float32)
                     d4 = np.array([ray_d[0], ray_d[1], ray_d[2], 0.0], dtype=np.float32)
-                    oL = inv_model @ o4
-                    dL = inv_model @ d4
+                    # model is row-major; transform using row-vector convention
+                    oL = o4 @ inv_model
+                    dL = d4 @ inv_model
                     if abs(float(oL[3])) > 1e-8:
                         oL = oL[:3] / float(oL[3])
                     else:
@@ -3672,7 +3861,7 @@ def pick_hit_at(self, px: int, py: int, viewport_w: int, viewport_h: int):
                     if tL is None:
                         continue
                     hitL = oL + float(tL) * dL
-                    hitW = model @ np.array([hitL[0], hitL[1], hitL[2], 1.0], dtype=np.float32)
+                    hitW = np.array([hitL[0], hitL[1], hitL[2], 1.0], dtype=np.float32) @ model
                     if abs(float(hitW[3])) > 1e-8:
                         hitW = hitW[:3] / float(hitW[3])
                     else:
@@ -3701,10 +3890,31 @@ def pick_hit_at(self, px: int, py: int, viewport_w: int, viewport_h: int):
     # choose winner (closest along ray)
     # -----------------------------
     if best_mesh_owner is None and best_splat_owner is None:
+        try:
+            self._mgl_last_pick_kind = None
+            self._mgl_last_pick_owner = None
+        except Exception:
+            pass
         return None, None
     if best_mesh_owner is None:
+        try:
+            self._mgl_last_pick_kind = "splat"
+            self._mgl_last_pick_owner = best_splat_owner
+        except Exception:
+            pass
         return best_splat_owner, best_splat_hit
     if best_splat_owner is None:
+        try:
+            self._mgl_last_pick_kind = "mesh"
+            self._mgl_last_pick_owner = best_mesh_owner
+        except Exception:
+            pass
         return best_mesh_owner, best_mesh_hit
 
-    return (best_mesh_owner, best_mesh_hit) if best_mesh_t <= best_splat_t else (best_splat_owner, best_splat_hit)
+    # When both hit, prefer mesh to avoid splat volumes hijacking selection.
+    try:
+        self._mgl_last_pick_kind = "mesh"
+        self._mgl_last_pick_owner = best_mesh_owner
+    except Exception:
+        pass
+    return best_mesh_owner, best_mesh_hit

@@ -479,7 +479,9 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._debug_show_axis_overlay = False
         self._xform_gizmo_pos = (0.0, 0.0, 0.0)
         self._xform_gizmo_owner = None
+        self._xform_gizmo_owner_kind = None
         self._xform_gizmo_pos_locked = False
+        self._xform_drag_kind = None
         try:
             from .axis_gizmo_overlay import AxisGizmoOverlay
             self._axis_overlay = AxisGizmoOverlay()
@@ -3000,9 +3002,21 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                         best_axis = name
 
                                 if best_axis is not None and best_d <= 14.0:
+                                    # Determine kind directly from renderer state to avoid stale selection state.
+                                    is_splat = False
+                                    try:
+                                        splat_map = getattr(renderer, "_mgl_scene_splats_world", None)
+                                        if not isinstance(splat_map, dict) or not splat_map:
+                                            splat_map = getattr(renderer, "_mgl_scene_splats", None)
+                                        if isinstance(splat_map, dict) and owner in splat_map:
+                                            is_splat = True
+                                    except Exception:
+                                        is_splat = False
+
                                     self._xform_dragging = True
                                     self._xform_drag_axis = best_axis
                                     self._xform_drag_owner = owner
+                                    self._xform_drag_kind = "splat" if is_splat else "mesh"
                                     self._xform_drag_start_pos = g.copy()
                                     self._xform_gizmo_pos_locked = True
                                     self._xform_drag_s0 = None
@@ -3152,8 +3166,23 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
                     self._xform_gizmo_pos = (float(new_pos[0]), float(new_pos[1]), float(new_pos[2]))
 
-                    # Move the selected asset
-                    self._mgl_set_scene_asset_xform(owner, pos=self._xform_gizmo_pos)
+                    # Move the selected asset (splat vs mesh) based on current renderer state.
+                    is_splat = False
+                    try:
+                        splat_map = getattr(renderer, "_mgl_scene_splats_world", None)
+                        if not isinstance(splat_map, dict) or not splat_map:
+                            splat_map = getattr(renderer, "_mgl_scene_splats", None)
+                        if isinstance(splat_map, dict) and owner in splat_map:
+                            is_splat = True
+                    except Exception:
+                        is_splat = False
+
+                    self._mgl_set_scene_asset_xform(
+                        owner,
+                        pos=self._xform_gizmo_pos,
+                        apply_to_scene_models=not is_splat,
+                        use_splat_xform=bool(is_splat),
+                    )
 
                     # redraw
                     self.update()
@@ -3309,6 +3338,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 self._xform_drag_axis = None
                 self._xform_drag_owner = None
                 self._xform_drag_s0 = None
+                self._xform_drag_kind = None
 
                 # Important: don't let a gizmo drag "fall through" into click-pick or orbit
                 self._mgl_pick_press_pos = None
@@ -3365,6 +3395,10 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
                                     # Force gizmo to the hit position (or bounds center fallback)
                                     self._xform_gizmo_owner = owner
+                                    try:
+                                        self._xform_gizmo_owner_kind = getattr(renderer, "_mgl_last_pick_kind", None)
+                                    except Exception:
+                                        self._xform_gizmo_owner_kind = None
 
                                     if hit is not None:
                                         self._xform_gizmo_pos = (float(hit[0]), float(hit[1]), float(hit[2]))
