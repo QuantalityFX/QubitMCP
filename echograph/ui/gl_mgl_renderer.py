@@ -480,17 +480,18 @@ class MGLRendererMixin:
         if scene is None:
             return
 
-        # apply to matching scene-model items
+        # apply to matching scene items (solid + wire)
         try:
-            for item in scene.iter_by_tag("scene-model"):
-                payload = getattr(item, "payload", None) or {}
-                if payload.get("owner") != owner:
-                    continue
-                payload["model"] = model
-                try:
-                    item.payload = payload
-                except Exception:
-                    pass
+            for tag in ("scene-model", "scene-wire"):
+                for item in scene.iter_by_tag(tag):
+                    payload = getattr(item, "payload", None) or {}
+                    if payload.get("owner") != owner:
+                        continue
+                    payload["model"] = model
+                    try:
+                        item.payload = payload
+                    except Exception:
+                        pass
         except Exception:
             pass
 
@@ -962,7 +963,17 @@ class MGLRendererMixin:
             return
         color = payload.get("color") or self._mgl_wire_color
         try:
-            self._mgl_wire_prog["Mvp"].write(mvp.astype("f4").tobytes())
+            mvp_to_use = mvp
+            model = payload.get("model")
+            if model is not None and Matrix44 is not None:
+                try:
+                    if isinstance(model, Matrix44):
+                        mvp_to_use = mvp * model
+                    else:
+                        mvp_to_use = mvp * Matrix44(model, dtype="f4")
+                except Exception:
+                    mvp_to_use = mvp
+            self._mgl_wire_prog["Mvp"].write(mvp_to_use.astype("f4").tobytes())
             self._mgl_wire_prog["Color"].value = color
             self._mgl_wire_prog["Viewport"].value = (float(max(1, self.width())), float(max(1, self.height())))
             self._mgl_wire_prog["LineWidth"].value = float(
@@ -3349,7 +3360,51 @@ class MGLRendererMixin:
                 return None
             return tmin if tmin >= 0.0 else tmax
 
-        # --- mesh picking: AABB only, skip splat owners ---
+        # --- mesh picking: transform ray into local space, then test AABB ---
+        def T(tx, ty, tz):
+            m = np.eye(4, dtype=np.float32)
+            m[3, 0] = tx
+            m[3, 1] = ty
+            m[3, 2] = tz
+            return m
+
+        def S(sx, sy, sz):
+            m = np.eye(4, dtype=np.float32)
+            m[0, 0] = sx
+            m[1, 1] = sy
+            m[2, 2] = sz
+            return m
+
+        def Rx(a):
+            a = math.radians(a)
+            c, s = math.cos(a), math.sin(a)
+            m = np.eye(4, dtype=np.float32)
+            m[1, 1] = c
+            m[1, 2] = s
+            m[2, 1] = -s
+            m[2, 2] = c
+            return m
+
+        def Ry(a):
+            a = math.radians(a)
+            c, s = math.cos(a), math.sin(a)
+            m = np.eye(4, dtype=np.float32)
+            m[0, 0] = c
+            m[0, 2] = -s
+            m[2, 0] = s
+            m[2, 2] = c
+            return m
+
+        def Rz(a):
+            a = math.radians(a)
+            c, s = math.cos(a), math.sin(a)
+            m = np.eye(4, dtype=np.float32)
+            m[0, 0] = c
+            m[0, 1] = s
+            m[1, 0] = -s
+            m[1, 1] = c
+            return m
+
         best_mesh_owner = None
         best_mesh_t = 1e30
 
@@ -3359,6 +3414,56 @@ class MGLRendererMixin:
             try:
                 bmin = np.array(bmin, dtype=np.float32)
                 bmax = np.array(bmax, dtype=np.float32)
+
+                # Build model for this owner (matches render path)
+                model = None
+                try:
+                    x = self._mgl_get_scene_asset_xform(owner)
+                    px, py, pz = x.get("pos", (0.0, 0.0, 0.0))
+                    rx, ry, rz = x.get("rot", (0.0, 0.0, 0.0))
+                    sx, sy, sz = x.get("scl", (1.0, 1.0, 1.0))
+                    c = (bmin + bmax) * 0.5
+                    cx, cy, cz = float(c[0]), float(c[1]), float(c[2])
+                    model = T(px, py, pz) @ (Rz(rz) @ Ry(ry) @ Rx(rx)) @ S(sx, sy, sz) @ T(-cx, -cy, -cz)
+                except Exception:
+                    model = None
+
+                if model is not None:
+                    try:
+                        inv_model = np.linalg.inv(model)
+                        o4 = np.array([ray_o[0], ray_o[1], ray_o[2], 1.0], dtype=np.float32)
+                        d4 = np.array([ray_d[0], ray_d[1], ray_d[2], 0.0], dtype=np.float32)
+                        oL = inv_model @ o4
+                        dL = inv_model @ d4
+                        if abs(float(oL[3])) > 1e-8:
+                            oL = oL[:3] / float(oL[3])
+                        else:
+                            oL = oL[:3]
+                        dL = dL[:3]
+                        nL = float(np.linalg.norm(dL))
+                        if nL < 1e-8:
+                            continue
+                        dL /= nL
+                        tL = ray_aabb(oL, dL, bmin, bmax)
+                        if tL is None:
+                            continue
+                        hitL = oL + float(tL) * dL
+                        hitW = model @ np.array([hitL[0], hitL[1], hitL[2], 1.0], dtype=np.float32)
+                        if abs(float(hitW[3])) > 1e-8:
+                            hitW = hitW[:3] / float(hitW[3])
+                        else:
+                            hitW = hitW[:3]
+                        tW = float(np.dot(hitW - ray_o, ray_d))
+                        if tW < 0.0:
+                            continue
+                        if tW < best_mesh_t:
+                            best_mesh_t = tW
+                            best_mesh_owner = owner
+                        continue
+                    except Exception:
+                        pass
+
+                # fallback: untransformed bounds
                 t = ray_aabb(ray_o, ray_d, bmin, bmax)
                 if t is not None and float(t) < best_mesh_t:
                     best_mesh_t = float(t)
@@ -3480,6 +3585,50 @@ def pick_hit_at(self, px: int, py: int, viewport_w: int, viewport_h: int):
             return None
         return tmin if tmin >= 0.0 else tmax
 
+    def T(tx, ty, tz):
+        m = np.eye(4, dtype=np.float32)
+        m[3, 0] = tx
+        m[3, 1] = ty
+        m[3, 2] = tz
+        return m
+
+    def S(sx, sy, sz):
+        m = np.eye(4, dtype=np.float32)
+        m[0, 0] = sx
+        m[1, 1] = sy
+        m[2, 2] = sz
+        return m
+
+    def Rx(a):
+        a = math.radians(a)
+        c, s = math.cos(a), math.sin(a)
+        m = np.eye(4, dtype=np.float32)
+        m[1, 1] = c
+        m[1, 2] = s
+        m[2, 1] = -s
+        m[2, 2] = c
+        return m
+
+    def Ry(a):
+        a = math.radians(a)
+        c, s = math.cos(a), math.sin(a)
+        m = np.eye(4, dtype=np.float32)
+        m[0, 0] = c
+        m[0, 2] = -s
+        m[2, 0] = s
+        m[2, 2] = c
+        return m
+
+    def Rz(a):
+        a = math.radians(a)
+        c, s = math.cos(a), math.sin(a)
+        m = np.eye(4, dtype=np.float32)
+        m[0, 0] = c
+        m[0, 1] = s
+        m[1, 0] = -s
+        m[1, 1] = c
+        return m
+
     best_mesh_owner = None
     best_mesh_t = 1e30
     best_mesh_hit = None
@@ -3490,6 +3639,55 @@ def pick_hit_at(self, px: int, py: int, viewport_w: int, viewport_h: int):
         try:
             bmin = np.array(bmin, dtype=np.float32)
             bmax = np.array(bmax, dtype=np.float32)
+
+            model = None
+            try:
+                x = self._mgl_get_scene_asset_xform(owner)
+                px, py, pz = x.get("pos", (0.0, 0.0, 0.0))
+                rx, ry, rz = x.get("rot", (0.0, 0.0, 0.0))
+                sx, sy, sz = x.get("scl", (1.0, 1.0, 1.0))
+                c = (bmin + bmax) * 0.5
+                cx, cy, cz = float(c[0]), float(c[1]), float(c[2])
+                model = T(px, py, pz) @ (Rz(rz) @ Ry(ry) @ Rx(rx)) @ S(sx, sy, sz) @ T(-cx, -cy, -cz)
+            except Exception:
+                model = None
+
+            if model is not None:
+                try:
+                    inv_model = np.linalg.inv(model)
+                    o4 = np.array([ray_o[0], ray_o[1], ray_o[2], 1.0], dtype=np.float32)
+                    d4 = np.array([ray_d[0], ray_d[1], ray_d[2], 0.0], dtype=np.float32)
+                    oL = inv_model @ o4
+                    dL = inv_model @ d4
+                    if abs(float(oL[3])) > 1e-8:
+                        oL = oL[:3] / float(oL[3])
+                    else:
+                        oL = oL[:3]
+                    dL = dL[:3]
+                    nL = float(np.linalg.norm(dL))
+                    if nL < 1e-8:
+                        continue
+                    dL /= nL
+                    tL = ray_aabb(oL, dL, bmin, bmax)
+                    if tL is None:
+                        continue
+                    hitL = oL + float(tL) * dL
+                    hitW = model @ np.array([hitL[0], hitL[1], hitL[2], 1.0], dtype=np.float32)
+                    if abs(float(hitW[3])) > 1e-8:
+                        hitW = hitW[:3] / float(hitW[3])
+                    else:
+                        hitW = hitW[:3]
+                    tW = float(np.dot(hitW - ray_o, ray_d))
+                    if tW < 0.0:
+                        continue
+                    if tW < best_mesh_t:
+                        best_mesh_t = tW
+                        best_mesh_owner = owner
+                        best_mesh_hit = tuple(map(float, hitW.tolist()))
+                    continue
+                except Exception:
+                    pass
+
             t = ray_aabb(ray_o, ray_d, bmin, bmax)
             if t is not None and float(t) < best_mesh_t:
                 best_mesh_t = float(t)
