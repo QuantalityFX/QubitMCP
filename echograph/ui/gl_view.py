@@ -3067,6 +3067,91 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
     def mouseMoveEvent(self, e):
         if self._use_moderngl:
+            # --- Gizmo dragging (ModernGL) ---
+            if getattr(self, "_xform_dragging", False) and (e.buttons() & QtCore.Qt.LeftButton):
+                try:
+                    if np is None:
+                        return
+
+                    axis = getattr(self, "_xform_drag_axis", None)
+                    owner = getattr(self, "_xform_drag_owner", None)
+                    g0 = getattr(self, "_xform_drag_start_pos", None)
+                    if axis is None or owner is None or g0 is None:
+                        return
+
+                    # device pixels
+                    dpr = float(getattr(self, "devicePixelRatioF", lambda: 1.0)())
+                    px = float(e.x()) * dpr
+                    py = float(e.y()) * dpr
+                    vw = float(self.width()) * dpr
+                    vh = float(self.height()) * dpr
+
+                    renderer = getattr(self, "_mgl_renderer", None) or self
+                    P = getattr(renderer, "_mgl_pick_proj", None)
+                    V = getattr(renderer, "_mgl_pick_view", None)
+                    M = getattr(renderer, "_mgl_pick_model", None)
+                    if P is None or V is None or M is None:
+                        return
+
+                    PV = (P @ V @ M).astype("f4")
+                    invPV = np.linalg.inv(PV)
+
+                    # mouse ray in world
+                    x = (2.0 * (px / max(1.0, vw))) - 1.0
+                    y = 1.0 - (2.0 * (py / max(1.0, vh)))
+                    near = np.array([x, y, -1.0, 1.0], dtype="f4")
+                    far  = np.array([x, y,  1.0, 1.0], dtype="f4")
+                    pN = invPV @ near
+                    pF = invPV @ far
+                    pN = pN[:3] / pN[3]
+                    pF = pF[:3] / pF[3]
+                    ray_o = pN.astype("f4")
+                    ray_d = (pF - pN).astype("f4")
+                    n = float(np.linalg.norm(ray_d))
+                    if n < 1e-8:
+                        return
+                    ray_d /= n
+
+                    axes = {
+                        "x": np.array([1.0, 0.0, 0.0], dtype="f4"),
+                        "y": np.array([0.0, 1.0, 0.0], dtype="f4"),
+                        "z": np.array([0.0, 0.0, 1.0], dtype="f4"),
+                    }
+                    a = axes.get(axis)
+                    if a is None:
+                        return
+
+                    # Compute parameter "s" along axis line closest to the mouse ray
+                    w0 = ray_o - g0
+                    ad = float(np.dot(a, ray_d))
+                    denom = 1.0 - ad * ad
+                    if abs(denom) < 1e-6:
+                        s = float(np.dot(a, w0))
+                    else:
+                        s = float((ad * float(np.dot(ray_d, w0)) - float(np.dot(a, w0))) / denom)
+
+                    # On first move after pick, capture s0
+                    s0 = getattr(self, "_xform_drag_s0", None)
+                    if s0 is None:
+                        self._xform_drag_s0 = s
+                        s0 = s
+
+                    delta = (float(s0) - s) * a
+                    new_pos = g0 + delta
+
+                    self._xform_gizmo_pos = (float(new_pos[0]), float(new_pos[1]), float(new_pos[2]))
+
+                    # Move the selected asset
+                    self._mgl_set_scene_asset_xform(owner, pos=self._xform_gizmo_pos)
+
+                    # redraw
+                    self.update()
+                    e.accept()
+                    return
+
+                except Exception as exc:
+                    print("[GIZMO_DRAG] failed:", exc, flush=True)
+
             if self._mgl_arcball is not None and (e.buttons() & QtCore.Qt.LeftButton):
                 self._mgl_arcball.onDrag(e.x(), e.y())
                 self.update()  # ensure pick matrices stay fresh
@@ -3207,6 +3292,16 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
     def mouseReleaseEvent(self, e):
         if self._use_moderngl:
+            # --- Gizmo drag end (ModernGL) ---
+            if e.button() == QtCore.Qt.LeftButton and getattr(self, "_xform_dragging", False):
+                self._xform_dragging = False
+                self._xform_drag_axis = None
+                self._xform_drag_owner = None
+                self._xform_drag_s0 = None
+                self.setCursor(QtCore.Qt.ArrowCursor)
+                e.accept()
+                return
+            
             # click-pick (only if it was a click, not a drag)
             if e.button() == QtCore.Qt.LeftButton:
                 try:
