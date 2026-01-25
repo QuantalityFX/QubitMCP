@@ -2379,21 +2379,38 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             if getattr(self, "_debug_show_axis_overlay", False):
                 try:
                     if getattr(self, "_axis_overlay", None) is not None and self._axis_overlay.ensure_gl(self):
-                        proj = self._projection_matrix()
-                        view = self._view_matrix()
+                        renderer = getattr(self, "_mgl_renderer", None) or self
+
+                        P = getattr(renderer, "_mgl_pick_proj", None)
+                        V = getattr(renderer, "_mgl_pick_view", None)
+                        M = getattr(renderer, "_mgl_pick_model", None)
+
+                        if P is None or V is None or M is None:
+                            return  # renderer hasn't produced matrices yet
 
                         pos = getattr(self, "_xform_gizmo_pos", (0.0, 0.0, 0.0)) or (0.0, 0.0, 0.0)
 
-                        model = QtGui.QMatrix4x4()
-                        model.translate(float(pos[0]), float(pos[1]), float(pos[2]))
+                        import numpy as np
+                        T = np.eye(4, dtype=np.float32)
+                        T[0, 3] = float(pos[0])
+                        T[1, 3] = float(pos[1])
+                        T[2, 3] = float(pos[2])
 
-                        mvp = proj * view * model
+                        mvp_np = (P @ V @ M @ T).astype(np.float32)
+
+                        mvp = QtGui.QMatrix4x4(
+                            float(mvp_np[0, 0]), float(mvp_np[0, 1]), float(mvp_np[0, 2]), float(mvp_np[0, 3]),
+                            float(mvp_np[1, 0]), float(mvp_np[1, 1]), float(mvp_np[1, 2]), float(mvp_np[1, 3]),
+                            float(mvp_np[2, 0]), float(mvp_np[2, 1]), float(mvp_np[2, 2]), float(mvp_np[2, 3]),
+                            float(mvp_np[3, 0]), float(mvp_np[3, 1]), float(mvp_np[3, 2]), float(mvp_np[3, 3]),
+                        )
+
                         self._axis_overlay.draw(mvp)
-
-                        print("[GIZMO] pos=", pos, flush=True)
+                        print("[GIZMO] pos=", pos, "locked=", getattr(self, "_xform_gizmo_pos_locked", None), flush=True)
                 except Exception as exc:
                     print("[AXIS_OVERLAY] disabled:", exc, flush=True)
                     self._debug_show_axis_overlay = False
+
 
             return
 
