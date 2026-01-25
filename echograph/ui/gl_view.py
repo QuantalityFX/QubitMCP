@@ -2924,6 +2924,89 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
     def mousePressEvent(self, e):
         if self._use_moderngl:
+            # --- Gizmo drag start (pick axis) ---
+            if e.button() == QtCore.Qt.LeftButton:
+                try:
+                    owner = getattr(self, "_xform_gizmo_owner", None)
+                    pos = getattr(self, "_xform_gizmo_pos", None)
+                    if owner and pos and np is not None:
+                        dpr = float(getattr(self, "devicePixelRatioF", lambda: 1.0)())
+                        px = float(e.x()) * dpr
+                        py = float(e.y()) * dpr
+                        vw = float(self.width()) * dpr
+                        vh = float(self.height()) * dpr
+
+                        renderer = getattr(self, "_mgl_renderer", None) or self
+                        P = getattr(renderer, "_mgl_pick_proj", None)
+                        V = getattr(renderer, "_mgl_pick_view", None)
+                        M = getattr(renderer, "_mgl_pick_model", None)
+
+                        if P is not None and V is not None and M is not None:
+                            PV = (P @ V @ M).astype("f4")
+
+                            def project(world_xyz):
+                                p = np.array([world_xyz[0], world_xyz[1], world_xyz[2], 1.0], dtype="f4")
+                                c = PV @ p
+                                if abs(float(c[3])) < 1e-8:
+                                    return None
+                                ndc = c[:3] / c[3]
+                                sx = (ndc[0] * 0.5 + 0.5) * vw
+                                sy = (1.0 - (ndc[1] * 0.5 + 0.5)) * vh
+                                return float(sx), float(sy)
+
+                            def dist_pt_seg(px2, py2, ax, ay, bx, by):
+                                abx = bx - ax
+                                aby = by - ay
+                                apx = px2 - ax
+                                apy = py2 - ay
+                                ab2 = abx * abx + aby * aby
+                                if ab2 < 1e-8:
+                                    dx = px2 - ax
+                                    dy = py2 - ay
+                                    return (dx * dx + dy * dy) ** 0.5
+                                t = max(0.0, min(1.0, (apx * abx + apy * aby) / ab2))
+                                cx = ax + t * abx
+                                cy = ay + t * aby
+                                dx = px2 - cx
+                                dy = py2 - cy
+                                return (dx * dx + dy * dy) ** 0.5
+
+                            g = np.array([float(pos[0]), float(pos[1]), float(pos[2])], dtype="f4")
+                            axis_len = 1.0
+                            axes = {
+                                "x": np.array([1.0, 0.0, 0.0], dtype="f4"),
+                                "y": np.array([0.0, 1.0, 0.0], dtype="f4"),
+                                "z": np.array([0.0, 0.0, 1.0], dtype="f4"),
+                            }
+
+                            p0 = project(g)
+                            if p0 is not None:
+                                best_axis = None
+                                best_d = 1e30
+                                for name, a in axes.items():
+                                    p1 = project(g + a * axis_len)
+                                    if p1 is None:
+                                        continue
+                                    d = dist_pt_seg(px, py, p0[0], p0[1], p1[0], p1[1])
+                                    if d < best_d:
+                                        best_d = d
+                                        best_axis = name
+
+                                if best_axis is not None and best_d <= 14.0:
+                                    self._xform_dragging = True
+                                    self._xform_drag_axis = best_axis
+                                    self._xform_drag_owner = owner
+                                    self._xform_drag_start_pos = g.copy()
+                                    self._xform_gizmo_pos_locked = True
+
+                                    print("[GIZMO_PICK] axis=", best_axis, "d=", best_d, "owner=", owner, flush=True)
+                                    self.setCursor(QtCore.Qt.SizeAllCursor)
+                                    e.accept()
+                                    return
+                                
+                except Exception as exc:
+                    print("[GIZMO_PICK] failed:", exc, flush=True)
+                
             if e.button() == QtCore.Qt.LeftButton and self._mgl_arcball is not None:
                 self._mgl_arcball.onClickLeftDown(e.x(), e.y())
                 self._mgl_pick_press_pos = e.pos()
