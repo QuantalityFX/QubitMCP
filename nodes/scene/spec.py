@@ -459,13 +459,22 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             glv = _get_glv()
             if glv is None:
                 return
+            # Prefer splat xform when owner is a splat
             getf = getattr(glv, "_mgl_get_scene_asset_xform", None)
+            try:
+                splat_map = getattr(glv, "_mgl_scene_splats", None)
+                if isinstance(splat_map, dict) and owner in splat_map:
+                    getf = getattr(glv, "_mgl_get_scene_splat_xform", getf)
+            except Exception:
+                pass
             if not callable(getf):
                 return
             x = getf(owner)
             _set_xyz(card._xform_pos, x.get("pos", (0.0, 0.0, 0.0)))
             _set_xyz(card._xform_rot, x.get("rot", (0.0, 0.0, 0.0)))
             _set_xyz(card._xform_scl, x.get("scl", (1.0, 1.0, 1.0)))
+        # expose for external refresh (e.g., gizmo drag)
+        card._scene_xform_refresh = _load_xform_from_view
 
         def _apply_xform(kind: str):
             if card._xform_updating:
@@ -484,14 +493,22 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             rot = (card._xform_rot[0].value(), card._xform_rot[1].value(), card._xform_rot[2].value())
             scl = (card._xform_scl[0].value(), card._xform_scl[1].value(), card._xform_scl[2].value())
 
+            is_splat = False
+            try:
+                splat_map = getattr(glv, "_mgl_scene_splats", None)
+                if isinstance(splat_map, dict) and owner in splat_map:
+                    is_splat = True
+            except Exception:
+                is_splat = False
+
             if kind == "pos":
-                setf(owner, pos=pos)
+                setf(owner, pos=pos, apply_to_scene_models=not is_splat, use_splat_xform=bool(is_splat))
             elif kind == "rot":
-                setf(owner, rot=rot)
+                setf(owner, rot=rot, apply_to_scene_models=not is_splat, use_splat_xform=bool(is_splat))
             elif kind == "scl":
-                setf(owner, scl=scl)
+                setf(owner, scl=scl, apply_to_scene_models=not is_splat, use_splat_xform=bool(is_splat))
             else:
-                setf(owner, pos=pos, rot=rot, scl=scl)
+                setf(owner, pos=pos, rot=rot, scl=scl, apply_to_scene_models=not is_splat, use_splat_xform=bool(is_splat))
 
         def _on_outliner_select():
             it = outliner.currentItem()
@@ -523,6 +540,12 @@ def augment_infocard_footer(card, footer_layout) -> bool:
 
                         xf = {}
                         get_xf = getattr(renderer, "_mgl_get_scene_asset_xform", None)
+                        try:
+                            splat_map = getattr(renderer, "_mgl_scene_splats", None)
+                            if isinstance(splat_map, dict) and owner in splat_map:
+                                get_xf = getattr(renderer, "_mgl_get_scene_splat_xform", get_xf)
+                        except Exception:
+                            pass
                         if callable(get_xf):
                             xf = get_xf(owner) or {}
 

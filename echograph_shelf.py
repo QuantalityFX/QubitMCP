@@ -2604,6 +2604,20 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             except Exception:
                 pass
 
+    def update_scene_asset_xform(self, owner: str) -> None:
+        owner = (owner or "").strip()
+        if not owner:
+            return
+        for card in (getattr(self, "_card_by_node", {}) or {}).values():
+            if getattr(card, "_scene_selected_owner", None) != owner:
+                continue
+            try:
+                fn = getattr(card, "_scene_xform_refresh", None)
+                if callable(fn):
+                    fn(owner)
+            except Exception:
+                pass
+
     def open_splat_model(self, ply_path: str) -> None:
         import traceback
         try:

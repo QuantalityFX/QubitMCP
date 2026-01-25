@@ -1332,6 +1332,10 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 self._mgl_load_scene_assets(assets, frame=frame)
             except Exception:
                 pass
+            # Clear selection/gizmo on fresh scene load
+            self._xform_gizmo_owner = None
+            self._xform_gizmo_owner_kind = None
+            self._xform_gizmo_pos_locked = False
             self.update()
             return
 
@@ -2384,6 +2388,10 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                         from echograph.ui.axis_gizmo_overlay import AxisGizmoOverlay
                         self._axis_overlay = AxisGizmoOverlay()
 
+                    # Only draw gizmo when something is selected
+                    if getattr(self, "_xform_gizmo_owner", None) is None:
+                        return
+
                     if self._axis_overlay.ensure_gl(self):
                         renderer = getattr(self, "_mgl_renderer", None) or self
 
@@ -3183,6 +3191,13 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                         apply_to_scene_models=not is_splat,
                         use_splat_xform=bool(is_splat),
                     )
+                    # Sync transform panel in the outliner (if visible)
+                    try:
+                        w = self.window()
+                        if hasattr(w, "update_scene_asset_xform"):
+                            w.update_scene_asset_xform(owner)
+                    except Exception:
+                        pass
 
                     # redraw
                     self.update()
@@ -3393,20 +3408,38 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                     if hasattr(w, "select_scene_asset"):
                                         w.select_scene_asset(owner)
 
-                                    # Force gizmo to the hit position (or bounds center fallback)
+                                    # Force gizmo to the owner pivot (stored xform) or bounds center fallback
                                     self._xform_gizmo_owner = owner
                                     try:
                                         self._xform_gizmo_owner_kind = getattr(renderer, "_mgl_last_pick_kind", None)
                                     except Exception:
                                         self._xform_gizmo_owner_kind = None
 
-                                    if hit is not None:
-                                        self._xform_gizmo_pos = (float(hit[0]), float(hit[1]), float(hit[2]))
-                                        self._xform_gizmo_pos_locked = True
-                                    else:
+                                    try:
+                                        # Use stored xform position when available
+                                        xf = {}
+                                        is_splat = False
                                         try:
+                                            splat_map = getattr(renderer, "_mgl_scene_splats_world", None)
+                                            if not isinstance(splat_map, dict) or not splat_map:
+                                                splat_map = getattr(renderer, "_mgl_scene_splats", None)
+                                            if isinstance(splat_map, dict) and owner in splat_map:
+                                                is_splat = True
+                                        except Exception:
+                                            is_splat = False
+
+                                        get_xf = getattr(renderer, "_mgl_get_scene_splat_xform", None) if is_splat else getattr(renderer, "_mgl_get_scene_asset_xform", None)
+                                        if callable(get_xf):
+                                            xf = get_xf(owner) or {}
+                                        xf_pos = tuple((xf or {}).get("pos", (0.0, 0.0, 0.0)))
+                                        if xf_pos != (0.0, 0.0, 0.0):
+                                            self._xform_gizmo_pos = (float(xf_pos[0]), float(xf_pos[1]), float(xf_pos[2]))
+                                            self._xform_gizmo_pos_locked = True
+                                        else:
+                                            # fallback to bounds center
                                             bounds_map = (
-                                                getattr(renderer, "_mgl_scene_bounds_by_owner", None)
+                                                getattr(renderer, "_mgl_scene_mesh_bounds_by_owner", None)
+                                                or getattr(renderer, "_mgl_scene_bounds_by_owner", None)
                                                 or getattr(self, "_mgl_scene_bounds_by_owner", None)
                                             )
                                             if isinstance(bounds_map, dict) and owner in bounds_map:
@@ -3417,9 +3450,15 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                                     cz = (float(mins[2]) + float(maxs[2])) * 0.5
                                                     self._xform_gizmo_pos = (cx, cy, cz)
                                                     self._xform_gizmo_pos_locked = True
-                                        except Exception:
-                                            pass
+                                    except Exception:
+                                        pass
 
+                                    self.update()
+                                else:
+                                    # Clicked empty space: hide gizmo
+                                    self._xform_gizmo_owner = None
+                                    self._xform_gizmo_owner_kind = None
+                                    self._xform_gizmo_pos_locked = False
                                     self.update()
                 except Exception:
                     pass
@@ -3494,3 +3533,14 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             e.accept()
             return
         super().wheelEvent(e)
+
+    def focusOutEvent(self, e):
+        # Hide gizmo when focus leaves the viewport (e.g., user clicks UI outside)
+        try:
+            self._xform_gizmo_owner = None
+            self._xform_gizmo_owner_kind = None
+            self._xform_gizmo_pos_locked = False
+            self.update()
+        except Exception:
+            pass
+        super().focusOutEvent(e)
