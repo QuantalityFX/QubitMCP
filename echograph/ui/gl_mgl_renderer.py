@@ -58,6 +58,11 @@ _HAS_MGL = moderngl is not None and np is not None and Matrix44 is not None
 def _mgl_grid(size: float, steps: int) -> "np.ndarray":
     if np is None:
         raise RuntimeError("numpy unavailable")
+
+    steps = int(max(3, steps))
+    if (steps % 2) == 0:
+        steps += 1
+
     u = np.repeat(np.linspace(-size, size, steps), 2)
     v = np.tile([-size, size], steps)
     w = np.zeros(steps * 2)
@@ -288,23 +293,33 @@ class MGLRendererMixin:
     def _on_mgl_grid_toggled(self, checked: bool) -> None:
         if not self._use_moderngl:
             return
-        self._mgl_grid_model_visible = bool(checked)
+
+        # This checkbox controls the procedural grid only
+        self._mgl_grid_visible = bool(checked)
+
+        # Force-disable the legacy grid.obj grid-model system
+        try:
+            self._mgl_grid_model_visible = False
+            self._mgl_grid_model_pending_path = None
+        except Exception:
+            pass
+
         scene = getattr(self, "_mgl_scene", None)
-        if not checked:
-            if scene is not None:
+        if scene is not None:
+            try:
                 scene.set_visible_by_tag("grid-model", False)
-            self.update()
-            return
-        if scene is not None and scene.has_tag("grid-model"):
-            scene.set_visible_by_tag("grid-model", True)
-            self.update()
-            return
-        grid_path = Path(r"V:\Source\Repos\EchoMatrixMCP\echograph\3dmodels\grid.obj")
-        if not grid_path.exists():
-            self._mgl_error = f"Grid model missing: {grid_path}"
-            self.update()
-            return
-        self._mgl_grid_model_pending_path = grid_path
+            except Exception:
+                pass
+            try:
+                scene.remove_by_tag("grid-model")
+            except Exception:
+                pass
+
+        try:
+            self._mgl_clear_grid_model()
+        except Exception:
+            pass
+
         self.update()
 
     def _mgl_clear_grid_model(self) -> None:
@@ -899,7 +914,8 @@ class MGLRendererMixin:
             color = (0.8, 0.8, 0.8, float(self._mgl_grid_alpha))
         else:
             try:
-                color = (float(base_color[0]), float(base_color[1]), float(base_color[2]), float(self._mgl_grid_alpha))
+                self._mgl_grid_prog["Color"].value = (0.55, 0.55, 0.55, float(getattr(self, "_mgl_grid_alpha", 0.10)))
+
             except Exception:
                 color = (0.8, 0.8, 0.8, float(self._mgl_grid_alpha))
         try:
@@ -908,19 +924,22 @@ class MGLRendererMixin:
         except Exception:
             pass
         try:
+            # Grid should be thin, independent of wireframe settings
             try:
-                self._mgl_ctx.wireframe = True
+                self._mgl_ctx.wireframe = False
             except Exception:
                 pass
             try:
-                self._mgl_ctx.line_width = float(getattr(self, "_mgl_wire_line_width", 1.0))
+                self._mgl_ctx.line_width = 1.0
             except Exception:
                 pass
+
             mode = payload.get("mode")
             if mode is None:
                 vao.render()
             else:
                 vao.render(mode)
+
         except Exception as exc:
             self._mgl_error = f"Scene grid draw failed: {exc}"
         finally:
@@ -1312,7 +1331,11 @@ class MGLRendererMixin:
         pending_grid = getattr(self, "_mgl_grid_model_pending_path", None)
         if pending_grid is not None:
             self._mgl_grid_model_pending_path = None
-            self._mgl_load_grid_model(Path(pending_grid), in_paint=True)
+
+            # Only load the legacy grid-model if it is explicitly enabled.
+            if bool(getattr(self, "_mgl_grid_model_visible", False)):
+                self._mgl_load_grid_model(Path(pending_grid), in_paint=True)
+
 
         aspect = self.width() / max(1.0, self.height())
         try:
@@ -1396,6 +1419,51 @@ class MGLRendererMixin:
         scene = getattr(self, "_mgl_scene", None)
         if scene is not None:
             scene.draw(self, mvp)
+
+        # --- GRID (draw BEFORE splats so splats layer on top) ---
+        if bool(getattr(self, "_mgl_grid_visible", False)) and self._mgl_grid_vao is not None:
+            try:
+                # Save state we touch
+                try:
+                    _prev_depth_mask = bool(getattr(self._mgl_ctx, "depth_mask", True))
+                except Exception:
+                    _prev_depth_mask = True
+                try:
+                    _prev_lw = float(getattr(self._mgl_ctx, "line_width", 1.0))
+                except Exception:
+                    _prev_lw = 1.0
+
+                # Grid should be depth-tested against meshes, and thin
+                try:
+                    self._mgl_ctx.enable(moderngl.DEPTH_TEST)
+                except Exception:
+                    pass
+                try:
+                    self._mgl_ctx.depth_mask = True
+                except Exception:
+                    pass
+                try:
+                    self._mgl_ctx.line_width = 1.0
+                except Exception:
+                    pass
+
+                self._mgl_grid_prog["Mvp"].write(mvp.astype("f4"))
+                self._mgl_grid_prog["Color"].value = (0.35, 0.35, 0.35, 0.10)
+                self._mgl_grid_vao.render(moderngl.LINES)
+
+                # Restore
+                try:
+                    self._mgl_ctx.line_width = _prev_lw
+                except Exception:
+                    pass
+                try:
+                    self._mgl_ctx.depth_mask = _prev_depth_mask
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+
         # --- SPLATS (instanced-quad only) ---
         try:
             if (
@@ -1590,11 +1658,7 @@ class MGLRendererMixin:
             except Exception:
                 pass
 
-        # --- GRID ---
-        if self._mgl_grid_vao is not None:
-            self._mgl_grid_prog["Mvp"].write(mvp.astype("f4"))
-            self._mgl_grid_prog["Color"].value = (0.8, 0.8, 0.8, self._mgl_grid_alpha)
-            self._mgl_grid_vao.render(moderngl.LINES)
+
 
     def _mgl_get_camera_state(self) -> dict:
         """Return a JSON-serializable camera/orbit state (ModernGL path)."""

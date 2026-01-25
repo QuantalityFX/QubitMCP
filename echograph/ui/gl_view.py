@@ -694,7 +694,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._mgl_uv_vertex_count = 0
         self._mgl_uv_cache = None
         self._mgl_uv_cache_rect = QtCore.QRectF()
-        self._mgl_grid_alpha = 0.35
+        self._mgl_grid_alpha = 0.90
         self._mgl_grid_size = 20.0
         self._mgl_grid_cells = 50
         self._mgl_fov = 60.0
@@ -924,14 +924,24 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 self._mgl_wireframe_toggle.setChecked(bool(self._mgl_wireframe))
                 self._mgl_wireframe_toggle.toggled.connect(self._on_mgl_wireframe_toggled)
                 layout.addWidget(self._mgl_wireframe_toggle, 0)
+
                 self._mgl_grid_toggle = QtWidgets.QCheckBox("Grid")
-                self._mgl_grid_toggle.setChecked(False)
+
+                # Set initial state WITHOUT triggering the handler
+                self._mgl_grid_toggle.blockSignals(True)
+                self._mgl_grid_toggle.setChecked(bool(getattr(self, "_mgl_grid_visible", False)))
+                self._mgl_grid_toggle.blockSignals(False)
+
+                # Now connect and run once to sync/cleanup
                 self._mgl_grid_toggle.toggled.connect(self._on_mgl_grid_toggled)
+                self._on_mgl_grid_toggled(self._mgl_grid_toggle.isChecked())
+
                 layout.addWidget(self._mgl_grid_toggle, 0)
                 self._mgl_uv_toggle = QtWidgets.QCheckBox("UVs")
                 self._mgl_uv_toggle.setChecked(bool(self._mgl_uv_overlay_enabled))
                 self._mgl_uv_toggle.toggled.connect(self._on_mgl_uv_toggled)
                 layout.addWidget(self._mgl_uv_toggle, 0)
+
             layout.addStretch(1)
             self._controls = controls
             self._controls_h = 44
