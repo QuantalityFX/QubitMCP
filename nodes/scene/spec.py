@@ -615,43 +615,34 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                             xf = get_xf(owner) or {}
 
                         xf_pos = tuple((xf or {}).get("pos", (0.0, 0.0, 0.0)))
-                        if xf_pos != (0.0, 0.0, 0.0):
-                            if is_splat:
+                        if is_splat:
+                            pivot = None
+                            try:
+                                bounds_map = (
+                                    getattr(renderer, "_mgl_scene_splats_bounds_local", None)
+                                    or getattr(renderer, "_mgl_scene_splat_bounds_by_owner", None)
+                                )
+                                if isinstance(bounds_map, dict) and owner in bounds_map:
+                                    mins, maxs = bounds_map.get(owner) or (None, None)
+                                    if mins is not None and maxs is not None:
+                                        pivot = (
+                                            (float(mins[0]) + float(maxs[0])) * 0.5,
+                                            (float(mins[1]) + float(maxs[1])) * 0.5,
+                                            (float(mins[2]) + float(maxs[2])) * 0.5,
+                                        )
+                            except Exception:
                                 pivot = None
-                                try:
-                                    bounds_map = (
-                                        getattr(renderer, "_mgl_scene_splats_bounds_local", None)
-                                        or getattr(renderer, "_mgl_scene_splat_bounds_by_owner", None)
-                                    )
-                                    if isinstance(bounds_map, dict) and owner in bounds_map:
-                                        mins, maxs = bounds_map.get(owner) or (None, None)
-                                        if mins is not None and maxs is not None:
-                                            pivot = (
-                                                (float(mins[0]) + float(maxs[0])) * 0.5,
-                                                (float(mins[1]) + float(maxs[1])) * 0.5,
-                                                (float(mins[2]) + float(maxs[2])) * 0.5,
-                                            )
-                                except Exception:
-                                    pivot = None
-                                if pivot is not None:
-                                    pos = (
-                                        float(xf_pos[0] + pivot[0]),
-                                        float(xf_pos[1] + pivot[1]),
-                                        float(xf_pos[2] + pivot[2]),
-                                    )
-                                else:
-                                    pos = xf_pos
+                            if pivot is not None:
+                                pos = (
+                                    float(xf_pos[0] + pivot[0]),
+                                    float(xf_pos[1] + pivot[1]),
+                                    float(xf_pos[2] + pivot[2]),
+                                )
                             else:
                                 pos = xf_pos
                         else:
-                            get_bounds = getattr(renderer, "get_scene_owner_bounds", None)
-                            if callable(get_bounds):
-                                mins, maxs = get_bounds(owner)
-                                pos = (
-                                    (float(mins[0]) + float(maxs[0])) * 0.5,
-                                    (float(mins[1]) + float(maxs[1])) * 0.5,
-                                    (float(mins[2]) + float(maxs[2])) * 0.5,
-                                )
+                            # mesh: pos is already world pivot (even if zero)
+                            pos = xf_pos
                     except Exception:
                         pass
 

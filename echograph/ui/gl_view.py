@@ -3095,23 +3095,39 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
                             p0 = project(g)
                             if mode == "rotate" and p0 is not None:
-                                axis_proj = {}
                                 axis_radius = {}
                                 max_axis_len = 0.0
-                                for name, a in axes.items():
-                                    p1 = project(g + a * axis_len)
-                                    if p1 is None:
+                                ring_r = 0.9
+
+                                def ring_radius(axis_name: str) -> float | None:
+                                    if axis_name == "x":
+                                        pts = [(0.0, ring_r, 0.0), (0.0, 0.0, ring_r)]
+                                    elif axis_name == "y":
+                                        pts = [(ring_r, 0.0, 0.0), (0.0, 0.0, ring_r)]
+                                    else:
+                                        pts = [(ring_r, 0.0, 0.0), (0.0, ring_r, 0.0)]
+                                    dists = []
+                                    for pt in pts:
+                                        p1 = project((g[0] + pt[0], g[1] + pt[1], g[2] + pt[2]))
+                                        if p1 is None:
+                                            continue
+                                        try:
+                                            dx1 = float(p1[0]) - float(p0[0])
+                                            dy1 = float(p1[1]) - float(p0[1])
+                                            dists.append((dx1 * dx1 + dy1 * dy1) ** 0.5)
+                                        except Exception:
+                                            pass
+                                    if not dists:
+                                        return None
+                                    return sum(dists) / float(len(dists))
+
+                                for name in ("x", "y", "z"):
+                                    r = ring_radius(name)
+                                    if r is None:
                                         continue
-                                    axis_proj[name] = p1
-                                    try:
-                                        dx1 = float(p1[0]) - float(p0[0])
-                                        dy1 = float(p1[1]) - float(p0[1])
-                                        dist = (dx1 * dx1 + dy1 * dy1) ** 0.5
-                                        axis_radius[name] = dist
-                                        if dist > max_axis_len:
-                                            max_axis_len = dist
-                                    except Exception:
-                                        pass
+                                    axis_radius[name] = r
+                                    if r > max_axis_len:
+                                        max_axis_len = r
 
                                 # Avoid stealing orbit clicks far from the gizmo center.
                                 try:
@@ -3132,7 +3148,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                         if err < best_err:
                                             best_err = err
                                             best_axis = name
-                                    if best_axis is not None and best_err <= 10.0:
+                                    if best_axis is not None and best_err <= 12.0:
                                         # Determine kind directly from renderer state to avoid stale selection state.
                                         is_splat = False
                                         try:
@@ -3364,7 +3380,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     elif axis == "y":
                         rot[1] += delta_deg
                     else:
-                        rot[2] += delta_deg
+                        rot[2] -= delta_deg
 
                     renderer = getattr(self, "_mgl_renderer", None) or self
                     is_splat = bool(getattr(self, "_xform_rotate_kind", None) == "splat")
@@ -3830,37 +3846,37 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                             except Exception:
                                                 pivot = None
 
-                                        if xf_pos != (0.0, 0.0, 0.0):
-                                            if is_splat and pivot is not None:
+                                        if is_splat:
+                                            # splat xform.pos is an offset from local pivot
+                                            if pivot is not None:
                                                 self._xform_gizmo_pos = (
                                                     float(xf_pos[0] + pivot[0]),
                                                     float(xf_pos[1] + pivot[1]),
                                                     float(xf_pos[2] + pivot[2]),
                                                 )
+                                                self._xform_gizmo_pos_locked = True
                                             else:
-                                                self._xform_gizmo_pos = (float(xf_pos[0]), float(xf_pos[1]), float(xf_pos[2]))
-                                            self._xform_gizmo_pos_locked = True
-                                        else:
-                                            # fallback to bounds center (splat vs mesh)
-                                            if is_splat:
+                                                # fallback to bounds center
                                                 bounds_map = (
                                                     getattr(renderer, "_mgl_scene_splats_bounds_local", None)
                                                     or getattr(renderer, "_mgl_scene_splat_bounds_by_owner", None)
                                                 )
-                                            else:
-                                                bounds_map = (
-                                                    getattr(renderer, "_mgl_scene_mesh_bounds_by_owner", None)
-                                                    or getattr(renderer, "_mgl_scene_bounds_by_owner", None)
-                                                    or getattr(self, "_mgl_scene_bounds_by_owner", None)
-                                                )
-                                            if isinstance(bounds_map, dict) and owner in bounds_map:
-                                                mins, maxs = bounds_map.get(owner) or (None, None)
-                                                if mins is not None and maxs is not None:
-                                                    cx = (float(mins[0]) + float(maxs[0])) * 0.5
-                                                    cy = (float(mins[1]) + float(maxs[1])) * 0.5
-                                                    cz = (float(mins[2]) + float(maxs[2])) * 0.5
-                                                    self._xform_gizmo_pos = (cx, cy, cz)
-                                                    self._xform_gizmo_pos_locked = True
+                                                if isinstance(bounds_map, dict) and owner in bounds_map:
+                                                    mins, maxs = bounds_map.get(owner) or (None, None)
+                                                    if mins is not None and maxs is not None:
+                                                        cx = (float(mins[0]) + float(maxs[0])) * 0.5
+                                                        cy = (float(mins[1]) + float(maxs[1])) * 0.5
+                                                        cz = (float(mins[2]) + float(maxs[2])) * 0.5
+                                                        self._xform_gizmo_pos = (cx, cy, cz)
+                                                        self._xform_gizmo_pos_locked = True
+                                        else:
+                                            # mesh: pos is already world pivot (even if zero)
+                                            self._xform_gizmo_pos = (
+                                                float(xf_pos[0]),
+                                                float(xf_pos[1]),
+                                                float(xf_pos[2]),
+                                            )
+                                            self._xform_gizmo_pos_locked = True
 
                                         # Log splat selection + gizmo placement for debugging.
                                         try:
