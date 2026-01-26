@@ -2506,7 +2506,57 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                         T[1, 3] = float(pos[1])
                         T[2, 3] = float(pos[2])
 
-                        mvp_np = (P @ V @ M @ T).astype(np.float32)
+                        mode = getattr(self, "_xform_gizmo_mode", "translate") or "translate"
+                        use_rot = (mode == "rotate")
+                        R = None
+                        if use_rot:
+                            try:
+                                owner = getattr(self, "_xform_gizmo_owner", None)
+                                if owner:
+                                    is_splat = False
+                                    try:
+                                        splat_map = getattr(renderer, "_mgl_scene_splats_world", None)
+                                        if not isinstance(splat_map, dict) or not splat_map:
+                                            splat_map = getattr(renderer, "_mgl_scene_splats", None)
+                                        if isinstance(splat_map, dict) and owner in splat_map:
+                                            is_splat = True
+                                    except Exception:
+                                        is_splat = False
+                                    get_xf = getattr(renderer, "_mgl_get_scene_splat_xform", None) if is_splat else getattr(renderer, "_mgl_get_scene_asset_xform", None)
+                                    xf = get_xf(owner) if callable(get_xf) else {}
+                                    rot = tuple((xf or {}).get("rot", (0.0, 0.0, 0.0)))
+                                    rx, ry, rz = float(rot[0]), float(rot[1]), float(rot[2])
+                                    cx, sx = math.cos(math.radians(rx)), math.sin(math.radians(rx))
+                                    cy, sy = math.cos(math.radians(ry)), math.sin(math.radians(ry))
+                                    cz, sz = math.cos(math.radians(rz)), math.sin(math.radians(rz))
+                                    Rx = np.array(
+                                        [[1.0, 0.0, 0.0, 0.0],
+                                         [0.0,  cx,  sx, 0.0],
+                                         [0.0, -sx,  cx, 0.0],
+                                         [0.0, 0.0, 0.0, 1.0]],
+                                        dtype=np.float32,
+                                    )
+                                    Ry = np.array(
+                                        [[ cy, 0.0, -sy, 0.0],
+                                         [0.0, 1.0, 0.0, 0.0],
+                                         [ sy, 0.0,  cy, 0.0],
+                                         [0.0, 0.0, 0.0, 1.0]],
+                                        dtype=np.float32,
+                                    )
+                                    Rz = np.array(
+                                        [[ cz,  sz, 0.0, 0.0],
+                                         [-sz,  cz, 0.0, 0.0],
+                                         [0.0, 0.0, 1.0, 0.0],
+                                         [0.0, 0.0, 0.0, 1.0]],
+                                        dtype=np.float32,
+                                    )
+                                    # match renderer order: Rz @ Ry @ Rx
+                                    R = (Rz @ Ry @ Rx).astype(np.float32)
+                            except Exception:
+                                R = None
+
+                        TR = (T @ R) if (use_rot and R is not None) else T
+                        mvp_np = (P @ V @ M @ TR).astype(np.float32)
 
                         mvp = QtGui.QMatrix4x4(
                             float(mvp_np[0, 0]), float(mvp_np[0, 1]), float(mvp_np[0, 2]), float(mvp_np[0, 3]),
@@ -2515,7 +2565,6 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                             float(mvp_np[3, 0]), float(mvp_np[3, 1]), float(mvp_np[3, 2]), float(mvp_np[3, 3]),
                         )
 
-                        mode = getattr(self, "_xform_gizmo_mode", "translate") or "translate"
                         self._axis_overlay.draw(mvp, mode=mode)
                 except Exception as exc:
                     print("[AXIS_OVERLAY] disabled:", exc, flush=True)
@@ -3133,7 +3182,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                 try:
                                     dx0 = float(px) - float(p0[0])
                                     dy0 = float(py) - float(p0[1])
-                                    max_center = max(24.0, max_axis_len + 12.0)
+                                    max_center = max(32.0, max_axis_len + 16.0)
                                     if (dx0 * dx0 + dy0 * dy0) > (max_center * max_center):
                                         p0 = None
                                 except Exception:
@@ -3148,7 +3197,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                         if err < best_err:
                                             best_err = err
                                             best_axis = name
-                                    if best_axis is not None and best_err <= 12.0:
+                                    if best_axis is not None and best_err <= 18.0:
                                         # Determine kind directly from renderer state to avoid stale selection state.
                                         is_splat = False
                                         try:
@@ -3375,11 +3424,10 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     delta_deg = math.degrees(delta)
 
                     rot = [float(start_rot[0]), float(start_rot[1]), float(start_rot[2])]
-                    axis_map = {"x": "y", "y": "x", "z": "z"}
-                    axis_key = axis_map.get(axis, axis)
+                    axis_key = axis
                     # Per-ring direction tuning (red ring inverted, blue inverted)
-                    ring_sign = {"x": -1.0, "y": 1.0, "z": -1.0}
-                    delta_deg = float(delta_deg) * float(ring_sign.get(axis, 1.0))
+                    ring_sign = {"x": -1.0, "y": -1.0, "z": -1.0}
+                    delta_deg = float(delta_deg) * float(ring_sign.get(axis_key, 1.0))
                     if axis_key == "x":
                         rot[0] += delta_deg
                     elif axis_key == "y":
