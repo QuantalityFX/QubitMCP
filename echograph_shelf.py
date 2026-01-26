@@ -2528,7 +2528,9 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                     "path": path,
                     "texture": entry.get("texture") or None,
                     "node": node_name,
+                    "ext": entry.get("ext"),
                     "visible": visible,
+                    "xform": entry.get("xform"),
                 }
             )
 
@@ -2652,13 +2654,67 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         owner = (owner or "").strip()
         if not owner:
             return
+        gl_view = getattr(self, "gl_view", None)
+        xf = None
+        try:
+            if gl_view is not None:
+                is_splat = False
+                try:
+                    splat_map = getattr(gl_view, "_mgl_scene_splats", None)
+                    if isinstance(splat_map, dict) and owner in splat_map:
+                        is_splat = True
+                except Exception:
+                    is_splat = False
+                getf = (
+                    getattr(gl_view, "_mgl_get_scene_splat_xform", None)
+                    if is_splat
+                    else getattr(gl_view, "_mgl_get_scene_asset_xform", None)
+                )
+                if callable(getf):
+                    xf = getf(owner)
+        except Exception:
+            xf = None
         for card in (getattr(self, "_card_by_node", {}) or {}).values():
             if getattr(card, "_scene_selected_owner", None) != owner:
-                continue
+                # still allow persistence update if the card contains this owner
+                try:
+                    outliner = getattr(card, "_scene_outliner_widget", None)
+                    if outliner is None:
+                        continue
+                    found = False
+                    for i in range(outliner.count()):
+                        it = outliner.item(i)
+                        if it is None:
+                            continue
+                        if (it.data(QtCore.Qt.UserRole) or "") == owner:
+                            found = True
+                            break
+                    if not found:
+                        continue
+                except Exception:
+                    continue
             try:
                 fn = getattr(card, "_scene_xform_refresh", None)
                 if callable(fn):
                     fn(owner)
+            except Exception:
+                pass
+            # Persist xform to scene node model for workflow save/load
+            try:
+                node = getattr(card, "_node_ref", None)
+                if node is None:
+                    continue
+                if xf is None or not isinstance(xf, dict):
+                    continue
+                xforms = getattr(node, "_scene_xforms", None)
+                if not isinstance(xforms, dict):
+                    xforms = {}
+                xforms[str(owner)] = {
+                    "pos": list(xf.get("pos", (0.0, 0.0, 0.0))),
+                    "rot": list(xf.get("rot", (0.0, 0.0, 0.0))),
+                    "scl": list(xf.get("scl", (1.0, 1.0, 1.0))),
+                }
+                setattr(node, "_scene_xforms", xforms)
             except Exception:
                 pass
 

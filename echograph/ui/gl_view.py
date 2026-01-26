@@ -481,6 +481,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._xform_gizmo_owner = None
         self._xform_gizmo_owner_kind = None
         self._xform_gizmo_pos_locked = False
+        self._xform_gizmo_idle_visible = True
         self._xform_drag_kind = None
         try:
             from .axis_gizmo_overlay import AxisGizmoOverlay
@@ -1336,6 +1337,65 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         if not assets:
             return
         if self._use_moderngl:
+            # Reset per-owner xforms so reopen uses saved workflow values
+            try:
+                self._mgl_scene_xforms_by_owner = {}
+            except Exception:
+                pass
+            try:
+                self._mgl_scene_splat_xforms_by_owner = {}
+            except Exception:
+                pass
+            # Reset visibility map from current assets (avoid persisting prior hides)
+            try:
+                vis_map = {}
+                for entry in assets or []:
+                    if not isinstance(entry, dict):
+                        continue
+                    name = (entry.get("node") or "").strip()
+                    if not name:
+                        path_str = str(entry.get("path", "") or "").strip()
+                        if path_str:
+                            name = Path(path_str).name
+                    if not name:
+                        continue
+                    vis_map[name] = bool(entry.get("visible", True))
+                self._mgl_scene_visibility = vis_map
+                try:
+                    self._mgl_log(
+                        "scene: visibility map owners="
+                        + str(len(vis_map))
+                        + " any_visible="
+                        + str(any(vis_map.values()) if vis_map else False)
+                    )
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            # Seed xforms from saved workflow data (if present on assets)
+            try:
+                for entry in assets or []:
+                    if not isinstance(entry, dict):
+                        continue
+                    name = (entry.get("node") or "").strip()
+                    if not name:
+                        path_str = str(entry.get("path", "") or "").strip()
+                        if path_str:
+                            name = Path(path_str).name
+                    if not name:
+                        continue
+                    xf = entry.get("xform")
+                    if not isinstance(xf, dict):
+                        continue
+                    ext = str(entry.get("ext") or "").lower()
+                    if not ext:
+                        ext = Path(str(entry.get("path", "") or "")).suffix.lower()
+                    if ext == ".ply":
+                        self._mgl_scene_splat_xforms_by_owner[name] = dict(xf)
+                    else:
+                        self._mgl_scene_xforms_by_owner[name] = dict(xf)
+            except Exception:
+                pass
             try:
                 self._mgl_load_scene_assets(assets, frame=frame)
             except Exception:
@@ -1344,30 +1404,12 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             self._xform_gizmo_owner = None
             self._xform_gizmo_owner_kind = None
             self._xform_gizmo_pos_locked = False
+            self._xform_gizmo_pos = (0.0, 0.0, 0.0)
             # Also clear outliner selection if available
             try:
                 w = self.window()
                 if w is not None and hasattr(w, "clear_scene_asset_selection"):
                     w.clear_scene_asset_selection()
-            except Exception:
-                pass
-            # Auto-select first visible asset so gizmo shows on scene open
-            try:
-                if getattr(self, "_xform_gizmo_owner", None) is None:
-                    pick_owner = None
-                    for entry in assets:
-                        if not isinstance(entry, dict):
-                            continue
-                        if entry.get("visible", True) is False:
-                            continue
-                        name = (entry.get("node") or "").strip()
-                        if name:
-                            pick_owner = name
-                            break
-                    if pick_owner:
-                        w = self.window()
-                        if w is not None and hasattr(w, "select_scene_asset"):
-                            w.select_scene_asset(pick_owner)
             except Exception:
                 pass
             self.update()
@@ -2432,8 +2474,10 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                         from echograph.ui.axis_gizmo_overlay import AxisGizmoOverlay
                         self._axis_overlay = AxisGizmoOverlay()
 
-                    # Only draw gizmo when something is selected
-                    if getattr(self, "_xform_gizmo_owner", None) is None:
+                    # Only draw gizmo when something is selected (unless idle gizmo is allowed)
+                    if getattr(self, "_xform_gizmo_owner", None) is None and not bool(
+                        getattr(self, "_xform_gizmo_idle_visible", False)
+                    ):
                         return
 
                     if self._axis_overlay.ensure_gl(self):

@@ -66,17 +66,11 @@ def _mgl_grid(size: float, steps: int) -> "np.ndarray":
     u = np.repeat(np.linspace(-size, size, steps), 2)
     v = np.tile([-size, size], steps)
     w = np.zeros(steps * 2)
-    grid = np.concatenate([np.dstack([u, v, w]), np.dstack([v, u, w])])
     lower_grid = 0.135
-    rotation = np.array(
-        [
-            [0.0, 0.0, 1.0],
-            [1.0, 0.0, 0.0],
-            [0.0, lower_grid, 0.0],
-        ],
-        dtype="f4",
-    )
-    return np.dot(grid, rotation)
+    y = np.full_like(u, lower_grid)
+    # Build grid in XZ plane (Y = constant) so it's visible from the default camera.
+    grid = np.concatenate([np.dstack([u, y, v]), np.dstack([v, y, u])])
+    return grid
 
 
 class MGLRendererMixin:
@@ -1701,6 +1695,28 @@ class MGLRendererMixin:
             scene.draw(self, mvp)
 
         # --- GRID (draw BEFORE splats so splats layer on top) ---
+        try:
+            if bool(getattr(self, "_mgl_grid_visible", False)):
+                if self._mgl_grid_vao is None:
+                    self._mgl_log_throttled(
+                        "_mgl_grid_missing_ts",
+                        "grid: visible but vao=None count=" + str(getattr(self, "_mgl_grid_vertex_count", 0)),
+                        1.0,
+                    )
+                elif not bool(getattr(self, "_mgl_grid_vertex_count", 0)):
+                    self._mgl_log_throttled(
+                        "_mgl_grid_empty_ts",
+                        "grid: visible but count=0 vao=" + str(self._mgl_grid_vao is not None),
+                        1.0,
+                    )
+                else:
+                    self._mgl_log_throttled(
+                        "_mgl_grid_draw_ts",
+                        "grid: draw attempt count=" + str(getattr(self, "_mgl_grid_vertex_count", 0)),
+                        1.0,
+                    )
+        except Exception:
+            pass
         if bool(getattr(self, "_mgl_grid_visible", False)) and self._mgl_grid_vao is not None:
             try:
                 # Save state we touch
@@ -1713,22 +1729,36 @@ class MGLRendererMixin:
                 except Exception:
                     _prev_lw = 1.0
 
-                # Grid should be depth-tested against meshes, and thin
+                # Draw grid without depth test so it stays visible regardless of scene depth.
                 try:
-                    self._mgl_ctx.enable(moderngl.DEPTH_TEST)
+                    self._mgl_ctx.disable(moderngl.DEPTH_TEST)
                 except Exception:
                     pass
                 try:
-                    self._mgl_ctx.depth_mask = True
+                    self._mgl_ctx.depth_mask = False
                 except Exception:
                     pass
                 try:
-                    self._mgl_ctx.line_width = 1.0
+                    self._mgl_ctx.line_width = 1.6
+                except Exception:
+                    pass
+                try:
+                    self._mgl_ctx.enable(moderngl.BLEND)
                 except Exception:
                     pass
 
-                self._mgl_grid_prog["Mvp"].write(mvp.astype("f4"))
-                self._mgl_grid_prog["Color"].value = (0.35, 0.35, 0.35, 0.10)
+                # Use the configured grid alpha (default is high for visibility).
+                try:
+                    grid_alpha = float(getattr(self, "_mgl_grid_alpha", 0.35))
+                except Exception:
+                    grid_alpha = 0.35
+                if not math.isfinite(grid_alpha):
+                    grid_alpha = 0.35
+                grid_alpha = max(0.2, min(1.0, grid_alpha))
+                grid_rgb = (0.75, 0.75, 0.75)
+
+                self._mgl_grid_prog["Mvp"].write(mvp.astype("f4").tobytes())
+                self._mgl_grid_prog["Color"].value = (grid_rgb[0], grid_rgb[1], grid_rgb[2], grid_alpha)
                 self._mgl_grid_vao.render(moderngl.LINES)
                 # Draw the 2 center axes again (thicker) so origin reads as "+"
                 try:
@@ -1752,7 +1782,13 @@ class MGLRendererMixin:
 
                     # Slightly stronger alpha for center lines (optional)
                     try:
-                        self._mgl_grid_prog["Color"].value = (0.35, 0.35, 0.35, 0.18)
+                        center_alpha = min(1.0, grid_alpha * 1.4)
+                        self._mgl_grid_prog["Color"].value = (
+                            grid_rgb[0],
+                            grid_rgb[1],
+                            grid_rgb[2],
+                            center_alpha,
+                        )
                     except Exception:
                         pass
 
@@ -1773,7 +1809,12 @@ class MGLRendererMixin:
 
                     # Restore normal grid alpha (optional, if you changed it above)
                     try:
-                        self._mgl_grid_prog["Color"].value = (0.35, 0.35, 0.35, float(self._mgl_grid_alpha))
+                        self._mgl_grid_prog["Color"].value = (
+                            grid_rgb[0],
+                            grid_rgb[1],
+                            grid_rgb[2],
+                            grid_alpha,
+                        )
                     except Exception:
                         pass
                 except Exception:
@@ -1786,6 +1827,10 @@ class MGLRendererMixin:
                     pass
                 try:
                     self._mgl_ctx.depth_mask = _prev_depth_mask
+                except Exception:
+                    pass
+                try:
+                    self._mgl_ctx.enable(moderngl.DEPTH_TEST)
                 except Exception:
                     pass
             except Exception:
@@ -2738,12 +2783,32 @@ class MGLRendererMixin:
     def _mgl_update_grid(self) -> None:
         if not _HAS_MGL or self._mgl_ctx is None:
             return
+        try:
+            self._mgl_log(
+                "grid: update start size="
+                + str(getattr(self, "_mgl_grid_size", None))
+                + " cells="
+                + str(getattr(self, "_mgl_grid_cells", None))
+            )
+        except Exception:
+            pass
         grid = _mgl_grid(self._mgl_grid_size, int(self._mgl_grid_cells))
         grid = grid.astype("f4").reshape(-1, 3)
         self._mgl_grid_vertex_count = int(grid.shape[0])
         self._mgl_grid_vbo = self._mgl_ctx.buffer(grid.tobytes())
         if self._mgl_grid_prog is not None:
             self._mgl_grid_vao = self._mgl_ctx.simple_vertex_array(self._mgl_grid_prog, self._mgl_grid_vbo, "in_position")
+        try:
+            self._mgl_log(
+                "grid: update done count="
+                + str(self._mgl_grid_vertex_count)
+                + " vao="
+                + str(self._mgl_grid_vao is not None)
+                + " vbo="
+                + str(self._mgl_grid_vbo is not None)
+            )
+        except Exception:
+            pass
 
     def _mgl_set_mesh(self, mesh) -> None:
         if not _HAS_MGL or self._mgl_ctx is None or mesh is None:

@@ -60,6 +60,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
     if scene is None:
         return []
     hidden = set()
+    xforms = {}
     try:
         raw_hidden = getattr(getattr(node_item, "model", None), "_scene_hidden", None)
         if isinstance(raw_hidden, set):
@@ -68,6 +69,12 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             hidden = {str(x) for x in raw_hidden if x}
     except Exception:
         hidden = set()
+    try:
+        raw_xforms = getattr(getattr(node_item, "model", None), "_scene_xforms", None)
+        if isinstance(raw_xforms, dict):
+            xforms = raw_xforms
+    except Exception:
+        xforms = {}
     try:
         in_edges = list(scene._ordered_in_edges(node_item))
     except Exception:
@@ -95,6 +102,19 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
         seen.add(key)
         texture = _param_value(model, "texture") if ext == ".obj" else ""
         node_name = getattr(model, "name", "") or ""
+        xf = None
+        try:
+            if node_name and node_name in xforms:
+                xf = xforms.get(node_name)
+            elif node_name:
+                # fallback case-insensitive match
+                nl = node_name.lower()
+                for k, v in xforms.items():
+                    if str(k).strip().lower() == nl:
+                        xf = v
+                        break
+        except Exception:
+            xf = None
         assets.append(
             {
                 "path": path,
@@ -102,6 +122,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                 "node": node_name,
                 "ext": ext,
                 "visible": node_name not in hidden,
+                "xform": xf if isinstance(xf, dict) else None,
             }
         )
     return assets
@@ -535,6 +556,13 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 setf(owner, scl=scl, apply_to_scene_models=not is_splat, use_splat_xform=bool(is_splat))
             else:
                 setf(owner, pos=pos, rot=rot, scl=scl, apply_to_scene_models=not is_splat, use_splat_xform=bool(is_splat))
+            # Persist updated xform back to the scene node model (for workflow save)
+            try:
+                win = card.window()
+                if win is not None and hasattr(win, "update_scene_asset_xform"):
+                    win.update_scene_asset_xform(owner)
+            except Exception:
+                pass
 
         def _on_outliner_select():
             it = outliner.currentItem()

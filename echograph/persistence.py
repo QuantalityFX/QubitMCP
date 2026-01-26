@@ -85,6 +85,21 @@ def _node_to_dict(node) -> Dict[str, Any]:
             names = {str(x) for x in hidden if x}
             if names:
                 d["scene_hidden"] = sorted(names)
+        xforms = getattr(node, "_scene_xforms", None)
+        if isinstance(xforms, dict) and xforms:
+            clean_xf = {}
+            for name, xf in xforms.items():
+                if not name or not isinstance(xf, dict):
+                    continue
+                try:
+                    pos = [float(v) for v in xf.get("pos", (0.0, 0.0, 0.0))]
+                    rot = [float(v) for v in xf.get("rot", (0.0, 0.0, 0.0))]
+                    scl = [float(v) for v in xf.get("scl", (1.0, 1.0, 1.0))]
+                except Exception:
+                    continue
+                clean_xf[str(name)] = {"pos": pos, "rot": rot, "scl": scl}
+            if clean_xf:
+                d["scene_xforms"] = clean_xf
 
     return d
 
@@ -200,6 +215,12 @@ def deserialize_scene(
             except Exception:
                 hidden = set()
             setattr(n, "_scene_hidden", hidden)
+            raw_xforms = nd.get("scene_xforms") or {}
+            if isinstance(raw_xforms, dict):
+                try:
+                    setattr(n, "_scene_xforms", raw_xforms)
+                except Exception:
+                    pass
 
         # position (Qt-free)
         pos = nd.get("pos", [0.0, 0.0])
