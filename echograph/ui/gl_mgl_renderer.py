@@ -2110,6 +2110,41 @@ class MGLRendererMixin:
             state["splat_scale"] = float(getattr(self, "_splat_scale", 1.0))
         except Exception:
             state["splat_scale"] = 1.0
+
+        # scene xforms (mesh + splat) for snapshot persistence
+        try:
+            mesh_xf = {}
+            raw_mesh = getattr(self, "_mgl_scene_xforms_by_owner", None)
+            if isinstance(raw_mesh, dict):
+                for owner, xf in raw_mesh.items():
+                    if not isinstance(xf, dict):
+                        continue
+                    try:
+                        pos = [float(v) for v in xf.get("pos", (0.0, 0.0, 0.0))]
+                        rot = [float(v) for v in xf.get("rot", (0.0, 0.0, 0.0))]
+                        scl = [float(v) for v in xf.get("scl", (1.0, 1.0, 1.0))]
+                    except Exception:
+                        continue
+                    mesh_xf[str(owner)] = {"pos": pos, "rot": rot, "scl": scl}
+
+            splat_xf = {}
+            raw_splat = getattr(self, "_mgl_scene_splat_xforms_by_owner", None)
+            if isinstance(raw_splat, dict):
+                for owner, xf in raw_splat.items():
+                    if not isinstance(xf, dict):
+                        continue
+                    try:
+                        pos = [float(v) for v in xf.get("pos", (0.0, 0.0, 0.0))]
+                        rot = [float(v) for v in xf.get("rot", (0.0, 0.0, 0.0))]
+                        scl = [float(v) for v in xf.get("scl", (1.0, 1.0, 1.0))]
+                    except Exception:
+                        continue
+                    splat_xf[str(owner)] = {"pos": pos, "rot": rot, "scl": scl}
+
+            if mesh_xf or splat_xf:
+                state["scene_xforms"] = {"mesh": mesh_xf, "splat": splat_xf}
+        except Exception:
+            pass
         return state
 
     def _mgl_queue_camera_state(self, state: dict) -> None:
@@ -2137,6 +2172,75 @@ class MGLRendererMixin:
                 state.get("splat_scale", None),
                 flush=True,
             )
+
+        # scene xforms (optional snapshot payload)
+        try:
+            xf_state = state.get("scene_xforms", None)
+            if isinstance(xf_state, dict):
+                mesh_xf = xf_state.get("mesh") or xf_state.get("meshes") or {}
+                splat_xf = xf_state.get("splat") or xf_state.get("splats") or {}
+
+                # Apply mesh transforms
+                if isinstance(mesh_xf, dict):
+                    for owner, xf in mesh_xf.items():
+                        if not isinstance(xf, dict):
+                            continue
+                        try:
+                            pos = xf.get("pos")
+                            rot = xf.get("rot")
+                            scl = xf.get("scl")
+                            # update cache
+                            d = getattr(self, "_mgl_scene_xforms_by_owner", None)
+                            if not isinstance(d, dict):
+                                d = {}
+                                setattr(self, "_mgl_scene_xforms_by_owner", d)
+                            d[str(owner)] = {
+                                "pos": tuple(float(v) for v in (pos or (0.0, 0.0, 0.0))),
+                                "rot": tuple(float(v) for v in (rot or (0.0, 0.0, 0.0))),
+                                "scl": tuple(float(v) for v in (scl or (1.0, 1.0, 1.0))),
+                            }
+                            # apply to scene items if present
+                            self._mgl_set_scene_asset_xform(
+                                str(owner),
+                                pos=pos,
+                                rot=rot,
+                                scl=scl,
+                                apply_to_scene_models=True,
+                                use_splat_xform=False,
+                            )
+                        except Exception:
+                            continue
+
+                # Apply splat transforms
+                if isinstance(splat_xf, dict):
+                    for owner, xf in splat_xf.items():
+                        if not isinstance(xf, dict):
+                            continue
+                        try:
+                            pos = xf.get("pos")
+                            rot = xf.get("rot")
+                            scl = xf.get("scl")
+                            d = getattr(self, "_mgl_scene_splat_xforms_by_owner", None)
+                            if not isinstance(d, dict):
+                                d = {}
+                                setattr(self, "_mgl_scene_splat_xforms_by_owner", d)
+                            d[str(owner)] = {
+                                "pos": tuple(float(v) for v in (pos or (0.0, 0.0, 0.0))),
+                                "rot": tuple(float(v) for v in (rot or (0.0, 0.0, 0.0))),
+                                "scl": tuple(float(v) for v in (scl or (1.0, 1.0, 1.0))),
+                            }
+                            self._mgl_set_scene_asset_xform(
+                                str(owner),
+                                pos=pos,
+                                rot=rot,
+                                scl=scl,
+                                apply_to_scene_models=False,
+                                use_splat_xform=True,
+                            )
+                        except Exception:
+                            continue
+        except Exception:
+            pass
 
         try:
             self.update()

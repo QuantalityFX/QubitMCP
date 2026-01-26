@@ -1,261 +1,445 @@
-2026-01-25 20:30:48 scene: focus lost -> keep gizmo
-2026-01-25 20:33:28 scene: grid_toggle=False vao=False count=0
-2026-01-25 20:33:41 grid: update start size=20.0 cells=50
-2026-01-25 20:33:41 grid: update done count=204 vao=True vbo=True
-2026-01-25 20:33:41 splats: draw skip reason=render_splats=False
-2026-01-25 20:33:45 scene: focus lost -> keep gizmo
-2026-01-25 20:33:46 scene: grid_toggle=True vao=True count=204
-2026-01-25 20:33:46 grid: draw attempt count=204
-2026-01-25 20:33:47 grid: draw attempt count=204
-2026-01-25 20:33:48 grid: draw attempt count=204
-2026-01-25 20:33:48 scene: focus lost -> keep gizmo
-2026-01-25 20:33:49 grid: draw attempt count=204
-2026-01-25 20:33:51 scene: grid_toggle=False vao=False count=0
-2026-01-25 20:34:04 grid: update start size=20.0 cells=50
-2026-01-25 20:34:04 grid: update done count=204 vao=True vbo=True
-2026-01-25 20:34:04 splats: draw skip reason=render_splats=False
-2026-01-25 20:34:06 scene: grid_toggle=True vao=True count=204
-2026-01-25 20:34:06 grid: draw attempt count=204
-2026-01-25 20:34:07 grid: draw attempt count=204
-2026-01-25 20:34:08 grid: draw attempt count=204
-2026-01-25 20:34:09 grid: draw attempt count=204
-2026-01-25 20:34:10 grid: draw attempt count=204
-2026-01-25 20:34:11 grid: draw attempt count=204
-2026-01-25 20:34:12 grid: draw attempt count=204
-2026-01-25 20:34:13 scene: focus lost -> keep gizmo
-2026-01-25 20:34:13 grid: draw attempt count=204
-2026-01-25 20:34:14 grid: draw attempt count=204
-2026-01-25 20:34:15 grid: draw attempt count=204
-2026-01-25 20:34:15 scene: clear outliner selection
-2026-01-25 20:34:15 scene: visibility map owners=2 any_visible=True
-2026-01-25 20:34:16 splats: load scene asset owner=bonsai visible=True path=E:\GaussingSplats\models\bonsai\point_cloud\iteration_30000\point_cloud.ply
-2026-01-25 20:34:16 splats: loaded owner=bonsai shape=(200000, 15)
-2026-01-25 20:34:16 scene: apply saved xforms mesh=0 splat=0
-2026-01-25 20:34:16 splats: scene load complete, rebuilding splats
-2026-01-25 20:34:16 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 20:34:16 scene: clear outliner selection
-2026-01-25 20:34:16 splats: draw active count=200000
-2026-01-25 20:34:16 grid: draw attempt count=204
-2026-01-25 20:34:17 grid: draw attempt count=204
-2026-01-25 20:34:18 grid: draw attempt count=204
-2026-01-25 20:34:19 grid: draw attempt count=204
-2026-01-25 20:34:20 grid: draw attempt count=204
-2026-01-25 20:34:21 scene: focus lost -> keep gizmo
-2026-01-25 20:34:21 grid: draw attempt count=204
-2026-01-25 20:34:22 grid: draw attempt count=204
-2026-01-25 20:34:23 scene: pick owner=katana kind=mesh
-2026-01-25 20:34:23 grid: draw attempt count=204
-2026-01-25 20:34:24 grid: draw attempt count=204
-2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.0422845184803009, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.06325823068618774, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.07275763154029846, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.09382857382297516, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.13414311408996582, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.1747189164161682, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.2587021291255951, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.2705438733100891, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.29224836826324463, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.30211254954338074, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.3358575105667114, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.3557458519935608, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.35776376724243164, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.3897465467453003, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.43196308612823486, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.4764760136604309, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.5192553997039795, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.6722543239593506, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.674281120300293, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:25 grid: draw attempt count=204
-2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.7203863859176636, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.7647734880447388, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.8584721088409424, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.9404526948928833, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.0364196300506592, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.1316852569580078, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.2054287195205688, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.2664744853973389, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.3164396286010742, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.36859929561615, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:26 scene: pick owner=bonsai kind=splat
-2026-01-25 20:34:26 grid: draw attempt count=204
-2026-01-25 20:34:27 grid: draw attempt count=204
-2026-01-25 20:34:28 grid: draw attempt count=204
-2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 0.0, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:29 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 0.2144002914428711, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 0.40804529190063477, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 0.4237252473831177, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 0.444685697555542, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 0.5599254369735718, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 0.6175707578659058, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 0.67523193359375, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 0.7119261026382446, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 0.7906012535095215, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 0.8850407600402832, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 1.0582977533340454, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 1.1738815307617188, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 1.2316985130310059, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 1.3105525970458984, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 1.405240535736084, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 1.5368380546569824, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 1.7792425155639648, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 1.969139575958252, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:29 grid: draw attempt count=204
-2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 2.0060980319976807, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 1.969139575958252, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 1.93218994140625, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 1.1998846530914307, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:30 scene: persist xform owner=bonsai pos=(0.0, 0.4444195032119751, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:30 scene: persist xform owner=bonsai pos=(0.0, -0.15672725439071655, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:30 scene: persist xform owner=bonsai pos=(0.0, -0.4071139693260193, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:30 scene: persist xform owner=bonsai pos=(0.0, -0.42790746688842773, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:30 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 20:34:30 scene: persist xform owner=bonsai pos=(0.0, -0.46437349915504456, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:34:30 grid: draw attempt count=204
-2026-01-25 20:34:31 scene: focus lost -> keep gizmo
-2026-01-25 20:34:31 grid: draw attempt count=204
-2026-01-25 20:34:34 scene: grid_toggle=False vao=False count=0
-2026-01-25 20:34:51 scene: clear outliner selection
-2026-01-25 20:34:51 grid: update start size=20.0 cells=50
-2026-01-25 20:34:51 grid: update done count=204 vao=True vbo=True
-2026-01-25 20:34:51 splats: draw skip reason=render_splats=False
-2026-01-25 20:34:51 scene: visibility map owners=2 any_visible=True
-2026-01-25 20:34:52 splats: load scene asset owner=bonsai visible=True path=E:\GaussingSplats\models\bonsai\point_cloud\iteration_30000\point_cloud.ply
-2026-01-25 20:34:52 splats: loaded owner=bonsai shape=(200000, 15)
-2026-01-25 20:34:52 scene: apply saved xforms mesh=0 splat=0
-2026-01-25 20:34:52 splats: scene load complete, rebuilding splats
-2026-01-25 20:34:52 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 20:34:52 scene: clear outliner selection
-2026-01-25 20:34:52 splats: draw active count=200000
-2026-01-25 20:34:55 scene: focus lost -> keep gizmo
-2026-01-25 20:34:58 scene: focus lost -> keep gizmo
-2026-01-25 20:34:58 scene: grid_toggle=True vao=True count=204
-2026-01-25 20:34:58 grid: draw attempt count=204
-2026-01-25 20:34:59 grid: draw attempt count=204
-2026-01-25 20:35:00 scene: pick owner=katana kind=mesh
-2026-01-25 20:35:00 grid: draw attempt count=204
-2026-01-25 20:35:01 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.0422845184803009, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:01 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.05023421719670296, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:01 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.0694710835814476, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:01 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.07745137810707092, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:01 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.08543950319290161, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:01 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.10144101083278656, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:01 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.10945554822683334, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:01 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.12082415819168091, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:01 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.15639065206050873, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:01 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.16446685791015625, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:01 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.18402881920337677, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:01 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.20025388896465302, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:01 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.22806717455387115, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:01 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.247807577252388, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:01 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.2676044702529907, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:01 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.2758110463619232, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:01 grid: draw attempt count=204
-2026-01-25 20:35:01 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.2792346477508545, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.3073630630970001, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.33560416102409363, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.4601876139640808, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.4890451431274414, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.49253568053245544, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.5250208973884583, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.562708854675293, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.6076472997665405, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.6579993963241577, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.7245793342590332, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.8006047010421753, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.8989733457565308, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.0205581188201904, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.4555078744888306, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.5627168416976929, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.6713908910751343, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.7777010202407837, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.9139626026153564, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.9178489446640015, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 2.0564627647399902, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 2.161266565322876, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 2.2743146419525146, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 2.3668816089630127, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 2.4413270950317383, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 2.607736587524414, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 2.634587526321411, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 2.645994186401367, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:02 grid: draw attempt count=204
-2026-01-25 20:35:03 scene: pick owner=bonsai kind=splat
-2026-01-25 20:35:03 grid: draw attempt count=204
-2026-01-25 20:35:04 scene: persist xform owner=bonsai pos=(0.0, 0.0, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:04 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 20:35:04 scene: persist xform owner=bonsai pos=(0.0, 0.0, -0.024867534637451172) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:04 scene: persist xform owner=bonsai pos=(0.0, 0.0, -0.04173356294631958) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:04 scene: persist xform owner=bonsai pos=(0.0, 0.0, -0.058613479137420654) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:04 scene: persist xform owner=bonsai pos=(0.0, 0.0, -0.08438003063201904) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:05 grid: draw attempt count=204
-2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -0.09241604804992676) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -0.10933774709701538) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -0.1262737512588501) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -0.16910535097122192) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -0.2030928134918213) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -0.24695324897766113) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -0.3945556879043579) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -0.45605242252349854) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -0.5350302457809448) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -0.6052135825157166) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -0.6582227349281311) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -0.6930803060531616) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -0.7980029582977295) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -0.8941976428031921) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -0.9908080697059631) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -1.052330493927002) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -1.131813406944275) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -1.2031445503234863) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -1.309547781944275) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -1.4621074199676514) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -1.615722417831421) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -1.7606337070465088) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -1.9162975549697876) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:05 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -2.0458455085754395) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -2.054466962814331) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -2.193483829498291) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:06 scene: persist xform owner=bonsai pos=(0.0, 0.0, -2.2957797050476074) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:06 grid: draw attempt count=204
-2026-01-25 20:35:06 scene: persist xform owner=bonsai pos=(0.0, 0.0, -2.407214879989624) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
-2026-01-25 20:35:07 grid: draw attempt count=204
-2026-01-25 20:35:07 scene: focus lost -> keep gizmo
-2026-01-25 20:35:08 grid: draw attempt count=204
-2026-01-25 20:35:09 grid: draw attempt count=204
-2026-01-25 20:35:10 grid: draw attempt count=204
-2026-01-25 20:35:11 grid: draw attempt count=204
-2026-01-25 20:35:12 grid: draw attempt count=204
-2026-01-25 20:35:13 grid: draw attempt count=204
-2026-01-25 20:35:14 grid: draw attempt count=204
-2026-01-25 20:35:15 grid: draw attempt count=204
-2026-01-25 20:35:16 grid: draw attempt count=204
-2026-01-25 20:35:17 grid: draw attempt count=204
-2026-01-25 20:35:18 grid: draw attempt count=204
-2026-01-25 20:35:19 grid: draw attempt count=204
-2026-01-25 20:35:20 grid: draw attempt count=204
-2026-01-25 20:35:21 grid: draw attempt count=204
-2026-01-25 20:35:22 grid: draw attempt count=204
-2026-01-25 20:35:23 grid: draw attempt count=204
-2026-01-25 20:35:24 grid: draw attempt count=204
-2026-01-25 20:35:25 grid: draw attempt count=204
-2026-01-25 20:35:26 grid: draw attempt count=204
-2026-01-25 20:35:27 grid: draw attempt count=204
-2026-01-25 20:35:28 grid: draw attempt count=204
-2026-01-25 20:35:29 grid: draw attempt count=204
-2026-01-25 20:35:30 grid: draw attempt count=204
-2026-01-25 20:35:31 grid: draw attempt count=204
-2026-01-25 20:35:32 grid: draw attempt count=204
-2026-01-25 20:35:33 grid: draw attempt count=204
-2026-01-25 20:35:34 grid: draw attempt count=204
-2026-01-25 20:35:35 grid: draw attempt count=204
-2026-01-25 20:35:36 grid: draw attempt count=204
-2026-01-25 20:35:37 grid: draw attempt count=204
-2026-01-25 20:35:38 grid: draw attempt count=204
-2026-01-25 20:35:39 grid: draw attempt count=204
-2026-01-25 20:35:40 grid: draw attempt count=204
-2026-01-25 20:35:41 grid: draw attempt count=204
-2026-01-25 20:35:42 grid: draw attempt count=204
-2026-01-25 20:35:43 grid: draw attempt count=204
-2026-01-25 20:35:44 grid: draw attempt count=204
-2026-01-25 20:35:45 grid: draw attempt count=204
+2026-01-25 21:04:15 scene: grid_toggle=False vao=False count=0
+2026-01-25 21:04:29 scene: clear outliner selection
+2026-01-25 21:04:29 grid: update start size=20.0 cells=50
+2026-01-25 21:04:29 grid: update done count=204 vao=True vbo=True
+2026-01-25 21:04:29 splats: draw skip reason=render_splats=False
+2026-01-25 21:04:29 scene: visibility map owners=2 any_visible=True
+2026-01-25 21:04:30 splats: load scene asset owner=bonsai visible=True path=E:\GaussingSplats\models\bonsai\point_cloud\iteration_30000\point_cloud.ply
+2026-01-25 21:04:30 splats: loaded owner=bonsai shape=(200000, 15)
+2026-01-25 21:04:30 scene: apply saved xforms mesh=0 splat=0
+2026-01-25 21:04:30 splats: scene load complete, rebuilding splats
+2026-01-25 21:04:30 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:04:30 scene: clear outliner selection
+2026-01-25 21:04:30 splats: draw active count=200000
+2026-01-25 21:04:34 scene: pick owner=katana kind=mesh
+2026-01-25 21:04:35 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.0422845184803009, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:35 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.0422845184803009, 0.00286765955388546) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:35 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.0422845184803009, 0.045175280421972275) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:35 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.0422845184803009, 0.04834408313035965) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:35 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.0422845184803009, 0.13296447694301605) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:35 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.0422845184803009, 0.23682397603988647) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:35 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.0422845184803009, 0.24293406307697296) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:35 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.0422845184803009, 0.3505423069000244) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:35 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.0422845184803009, 0.439937025308609) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:35 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.0422845184803009, 0.5510882139205933) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:35 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.0422845184803009, 0.5572949647903442) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:35 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.0422845184803009, 0.5694878101348877) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:35 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.0422845184803009, 0.5816898345947266) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:35 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.0422845184803009, 0.5879074335098267) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:36 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.0422845184803009, 0.5879074335098267) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:36 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.045595526695251465, 0.5879074335098267) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:36 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.061101265251636505, 0.5879074335098267) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:36 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.08030712604522705, 0.5879074335098267) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:36 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.08363199979066849, 0.5879074335098267) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:36 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.13441729545593262, 0.5879074335098267) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:36 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.19550970196723938, 0.5879074335098267) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:36 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.346978098154068, 0.5879074335098267) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:36 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.35640865564346313, 0.5879074335098267) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:37 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.4079324007034302, 0.5879074335098267) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:37 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.4695952534675598, 0.5879074335098267) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:37 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.5250418186187744, 0.5879074335098267) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:37 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.5968365669250488, 0.5879074335098267) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:37 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.6593962907791138, 0.5879074335098267) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:37 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.7319064140319824, 0.5879074335098267) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:37 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.8047976493835449, 0.5879074335098267) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:37 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.8611017465591431, 0.5879074335098267) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:37 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.9737303256988525, 0.5879074335098267) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:37 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.9773995876312256, 0.5879074335098267) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:37 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.9804517030715942, 0.5879074335098267) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:37 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.0104237794876099, 0.5879074335098267) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:37 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.0367515087127686, 0.5879074335098267) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:37 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.0563496351242065, 0.5879074335098267) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:37 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.0759576559066772, 0.5879074335098267) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:37 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.1091197729110718, 0.5879074335098267) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:37 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.1484087705612183, 0.5879074335098267) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:38 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.1484087705612183, 0.5879074335098267) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:38 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.1484087705612183, 0.6208069920539856) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:38 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.1484087705612183, 0.6272554397583008) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:38 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.1484087705612183, 0.64127117395401) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:38 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.1484087705612183, 0.6477223038673401) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:38 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.1484087705612183, 0.650390088558197) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:38 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.1484087705612183, 0.6875661015510559) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:38 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.1484087705612183, 0.7263227701187134) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:38 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.1484087705612183, 0.7753719091415405) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:38 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.1484087705612183, 0.8476989269256592) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:38 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.1484087705612183, 0.9319765567779541) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:38 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.1484087705612183, 1.0007128715515137) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:38 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.1484087705612183, 1.0110267400741577) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:38 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.1484087705612183, 1.0982487201690674) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:38 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.1484087705612183, 1.2638678550720215) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:38 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.1484087705612183, 1.2677111625671387) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:38 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.1484087705612183, 1.2703946828842163) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:38 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.1484087705612183, 1.2899796962738037) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:38 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.1484087705612183, 1.2938258647918701) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:38 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.1484087705612183, 1.3030400276184082) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:38 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.1484087705612183, 1.305722951889038) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:38 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:39 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:39 scene: persist xform owner=katana pos=(-0.028639961034059525, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:39 scene: persist xform owner=katana pos=(-0.030927374958992004, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:39 scene: persist xform owner=katana pos=(-0.06507926434278488, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:39 scene: persist xform owner=katana pos=(-0.12197244167327881, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:39 scene: persist xform owner=katana pos=(-0.20635336637496948, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:39 scene: persist xform owner=katana pos=(-0.21461911499500275, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:39 scene: persist xform owner=katana pos=(-0.308106005191803, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:39 scene: persist xform owner=katana pos=(-0.42015132308006287, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:39 scene: persist xform owner=katana pos=(-0.5006308555603027, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:39 scene: persist xform owner=katana pos=(-0.505874752998352, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:39 scene: persist xform owner=katana pos=(-0.5769120454788208, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:39 scene: persist xform owner=katana pos=(-0.8137695789337158, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:39 scene: persist xform owner=katana pos=(-0.8254324793815613, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:39 scene: persist xform owner=katana pos=(-0.830211877822876, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:39 scene: persist xform owner=katana pos=(-0.8965744376182556, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:39 scene: persist xform owner=katana pos=(-0.9615750312805176, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:39 scene: persist xform owner=katana pos=(-1.018792748451233, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:39 scene: persist xform owner=katana pos=(-1.0642060041427612, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:39 scene: persist xform owner=katana pos=(-1.0876539945602417, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:39 scene: persist xform owner=katana pos=(-1.104637622833252, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:39 scene: persist xform owner=katana pos=(-1.119558334350586, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:39 scene: persist xform owner=katana pos=(-1.255533218383789, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:39 scene: persist xform owner=katana pos=(-1.2615360021591187, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:39 scene: persist xform owner=katana pos=(-1.277571678161621, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:39 scene: persist xform owner=katana pos=(-1.2835403680801392, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:39 scene: persist xform owner=katana pos=(-1.329142451286316, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:39 scene: persist xform owner=katana pos=(-1.3952233791351318, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:39 scene: persist xform owner=katana pos=(-1.4654443264007568, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:39 scene: persist xform owner=katana pos=(-1.5193132162094116, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:39 scene: persist xform owner=katana pos=(-1.5667616128921509, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:39 scene: persist xform owner=katana pos=(-1.6134169101715088, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:39 scene: persist xform owner=katana pos=(-1.650537371635437, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:39 scene: persist xform owner=katana pos=(-1.6906285285949707, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:41 scene: persist xform owner=katana pos=(-1.6906285285949707, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:41 scene: persist xform owner=katana pos=(-1.6681987047195435, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:41 scene: persist xform owner=katana pos=(-1.6647744178771973, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:41 scene: persist xform owner=katana pos=(-1.4365253448486328, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:41 scene: persist xform owner=katana pos=(-1.42946457862854, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:41 scene: persist xform owner=katana pos=(-1.4207392930984497, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:41 scene: persist xform owner=katana pos=(-1.4030382633209229, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:41 scene: persist xform owner=katana pos=(-1.2838205099105835, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:41 scene: persist xform owner=katana pos=(-1.2712715864181519, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:41 scene: persist xform owner=katana pos=(-1.129632592201233, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:41 scene: persist xform owner=katana pos=(-1.012986421585083, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:41 scene: persist xform owner=katana pos=(-1.0073479413986206, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:41 scene: persist xform owner=katana pos=(-0.9341281652450562, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:41 scene: persist xform owner=katana pos=(-0.8791385293006897, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:41 scene: persist xform owner=katana pos=(-0.8753534555435181, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:41 scene: persist xform owner=katana pos=(-0.840969979763031, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:41 scene: persist xform owner=katana pos=(-0.8199036717414856, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:41 scene: persist xform owner=katana pos=(-0.7598583102226257, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:41 scene: persist xform owner=katana pos=(-0.7560147047042847, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:41 scene: persist xform owner=katana pos=(-0.721015214920044, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:41 scene: persist xform owner=katana pos=(-0.685839056968689, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:41 scene: persist xform owner=katana pos=(-0.6448639631271362, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:41 scene: persist xform owner=katana pos=(-0.5741367340087891, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:41 scene: persist xform owner=katana pos=(-0.48086094856262207, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:41 scene: persist xform owner=katana pos=(-0.4769134521484375, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:41 scene: persist xform owner=katana pos=(-0.39060962200164795, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:41 scene: persist xform owner=katana pos=(-0.3603285551071167, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:42 scene: persist xform owner=katana pos=(-0.35634100437164307, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:42 scene: persist xform owner=katana pos=(-0.3539224863052368, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:42 scene: persist xform owner=katana pos=(-0.34992969036102295, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:42 scene: persist xform owner=katana pos=(-0.33551180362701416, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:42 scene: persist xform owner=katana pos=(-0.3186213970184326, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:42 scene: persist xform owner=katana pos=(-0.3146090507507324, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:42 scene: persist xform owner=katana pos=(-0.2871513366699219, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:42 scene: persist xform owner=katana pos=(-0.10359847545623779, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:42 scene: persist xform owner=katana pos=(-0.09016299247741699, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:42 scene: persist xform owner=katana pos=(-0.08603322505950928, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:42 scene: persist xform owner=katana pos=(-0.0668874979019165, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:43 scene: persist xform owner=katana pos=(-0.0668874979019165, 1.1484087705612183, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:43 scene: persist xform owner=katana pos=(-0.0668874979019165, 1.1520435810089111, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:43 scene: persist xform owner=katana pos=(-0.0668874979019165, 1.155619740486145, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:43 scene: persist xform owner=katana pos=(-0.0668874979019165, 1.1592576503753662, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:43 scene: persist xform owner=katana pos=(-0.0668874979019165, 1.173701286315918, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:43 scene: persist xform owner=katana pos=(-0.0668874979019165, 1.1918169260025024, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:43 scene: persist xform owner=katana pos=(-0.0668874979019165, 1.231701374053955, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:43 scene: persist xform owner=katana pos=(-0.0668874979019165, 1.2862963676452637, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:43 scene: persist xform owner=katana pos=(-0.0668874979019165, 1.3485419750213623, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:43 scene: persist xform owner=katana pos=(-0.0668874979019165, 1.411170482635498, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:43 scene: persist xform owner=katana pos=(-0.0668874979019165, 1.4743125438690186, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:43 scene: persist xform owner=katana pos=(-0.0668874979019165, 1.6018539667129517, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:43 scene: persist xform owner=katana pos=(-0.0668874979019165, 1.6055604219436646, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:43 scene: persist xform owner=katana pos=(-0.0668874979019165, 1.60941743850708, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:43 scene: persist xform owner=katana pos=(-0.0668874979019165, 1.639732837677002, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:43 scene: persist xform owner=katana pos=(-0.0668874979019165, 1.6588027477264404, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:44 scene: persist xform owner=katana pos=(-0.0668874979019165, 1.666412115097046, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:44 scene: persist xform owner=katana pos=(-0.0668874979019165, 1.6816487312316895, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:44 scene: persist xform owner=katana pos=(-0.0668874979019165, 1.696909785270691, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:44 scene: persist xform owner=katana pos=(-0.0668874979019165, 1.7006527185440063, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:44 scene: persist xform owner=katana pos=(-0.0668874979019165, 1.7159428596496582, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:44 scene: persist xform owner=katana pos=(-0.0668874979019165, 1.731258511543274, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:44 scene: persist xform owner=katana pos=(-0.0668874979019165, 1.7619633674621582, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:44 scene: persist xform owner=katana pos=(-0.0668874979019165, 1.9322260618209839, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:44 scene: persist xform owner=katana pos=(-0.0668874979019165, 1.94788658618927, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:44 scene: persist xform owner=katana pos=(-0.0668874979019165, 1.9948065280914307, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:44 scene: persist xform owner=katana pos=(-0.0668874979019165, 2.0419318675994873, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:44 scene: persist xform owner=katana pos=(-0.0668874979019165, 2.081319808959961, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:44 scene: persist xform owner=katana pos=(-0.0668874979019165, 2.1211116313934326, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:44 scene: persist xform owner=katana pos=(-0.0668874979019165, 2.1527926921844482, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:44 scene: persist xform owner=katana pos=(-0.0668874979019165, 2.160794496536255, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:44 scene: persist xform owner=katana pos=(-0.0668874979019165, 2.1646580696105957, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:45 scene: persist xform owner=katana pos=(-0.0668874979019165, 2.1646580696105957, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:45 scene: persist xform owner=katana pos=(-0.06891126185655594, 2.1646580696105957, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:45 scene: persist xform owner=katana pos=(-0.0799456462264061, 2.1646580696105957, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:46 scene: persist xform owner=katana pos=(-0.08343525230884552, 2.1646580696105957, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:46 scene: persist xform owner=katana pos=(-0.09992076456546783, 2.1646580696105957, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:46 scene: persist xform owner=katana pos=(-0.11980445683002472, 2.1646580696105957, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:46 scene: persist xform owner=katana pos=(-0.14503103494644165, 2.1646580696105957, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:46 scene: persist xform owner=katana pos=(-0.3011435866355896, 2.1646580696105957, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:46 scene: persist xform owner=katana pos=(-0.3078504800796509, 2.1646580696105957, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:46 scene: persist xform owner=katana pos=(-0.35683169960975647, 2.1646580696105957, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:46 scene: persist xform owner=katana pos=(-0.40540310740470886, 2.1646580696105957, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:46 scene: persist xform owner=katana pos=(-0.43865540623664856, 2.1646580696105957, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:46 scene: persist xform owner=katana pos=(-0.45859867334365845, 2.1646580696105957, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:46 scene: persist xform owner=katana pos=(-0.466901957988739, 2.1646580696105957, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:46 scene: persist xform owner=katana pos=(-0.47518885135650635, 2.1646580696105957, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:46 scene: persist xform owner=katana pos=(-0.4899917244911194, 2.1646580696105957, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:46 scene: persist xform owner=katana pos=(-0.509722888469696, 2.1646580696105957, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:46 scene: persist xform owner=katana pos=(-0.5586299896240234, 2.1646580696105957, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:46 scene: persist xform owner=katana pos=(-0.5635327100753784, 2.1646580696105957, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:46 scene: persist xform owner=katana pos=(-0.566756010055542, 2.1646580696105957, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:46 scene: persist xform owner=katana pos=(-0.5699785351753235, 2.1646580696105957, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:46 scene: persist xform owner=katana pos=(-0.5942527055740356, 2.1646580696105957, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:46 scene: persist xform owner=katana pos=(-0.6247771382331848, 2.1646580696105957, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:46 scene: persist xform owner=katana pos=(-0.6279668211936951, 2.1646580696105957, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:46 scene: persist xform owner=katana pos=(-0.6582801938056946, 2.1646580696105957, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:46 scene: persist xform owner=katana pos=(-0.6614527106285095, 2.1646580696105957, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:46 scene: persist xform owner=katana pos=(-0.6820888519287109, 2.1646580696105957, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:46 scene: persist xform owner=katana pos=(-0.6884402632713318, 2.1646580696105957, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:46 scene: persist xform owner=katana pos=(-0.6931877136230469, 2.1646580696105957, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:46 scene: persist xform owner=katana pos=(-0.6947857737541199, 2.1646580696105957, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:46 scene: persist xform owner=katana pos=(-0.6963846683502197, 2.1646580696105957, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:46 scene: persist xform owner=katana pos=(-0.6979842185974121, 2.1646580696105957, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:46 scene: persist xform owner=katana pos=(-0.7011880278587341, 2.1646580696105957, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:46 scene: persist xform owner=katana pos=(-0.7043963670730591, 2.1646580696105957, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:46 scene: persist xform owner=katana pos=(-0.706001877784729, 2.1646580696105957, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:48 scene: persist xform owner=katana pos=(-0.706001877784729, 2.1646580696105957, 1.3095709085464478) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:48 scene: persist xform owner=katana pos=(-0.706001877784729, 2.1646580696105957, 1.3159902095794678) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:48 scene: persist xform owner=katana pos=(-0.706001877784729, 2.1646580696105957, 1.3190499544143677) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:48 scene: persist xform owner=katana pos=(-0.706001877784729, 2.1646580696105957, 1.3224191665649414) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:48 scene: persist xform owner=katana pos=(-0.706001877784729, 2.1646580696105957, 1.3322279453277588) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:48 scene: persist xform owner=katana pos=(-0.706001877784729, 2.1646580696105957, 1.3417569398880005) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:48 scene: persist xform owner=katana pos=(-0.706001877784729, 2.1646580696105957, 1.3448381423950195) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:48 scene: persist xform owner=katana pos=(-0.706001877784729, 2.1646580696105957, 1.3482205867767334) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:48 scene: persist xform owner=katana pos=(-0.706001877784729, 2.1646580696105957, 1.358080267906189) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:48 scene: persist xform owner=katana pos=(-0.706001877784729, 2.1646580696105957, 1.3676667213439941) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:48 scene: persist xform owner=katana pos=(-0.706001877784729, 2.1646580696105957, 1.377563714981079) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:48 scene: persist xform owner=katana pos=(-0.706001877784729, 2.1646580696105957, 1.4073500633239746) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:48 scene: persist xform owner=katana pos=(-0.706001877784729, 2.1646580696105957, 1.4107552766799927) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:48 scene: persist xform owner=katana pos=(-0.706001877784729, 2.1646580696105957, 1.4173099994659424) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:48 scene: persist xform owner=katana pos=(-0.706001877784729, 2.1646580696105957, 1.4238739013671875) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:48 scene: persist xform owner=katana pos=(-0.706001877784729, 2.1646580696105957, 1.427286148071289) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:50 scene: persist xform owner=katana pos=(-0.706001877784729, 2.1646580696105957, 1.427286148071289) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:50 scene: persist xform owner=katana pos=(-0.706001877784729, 2.1646580696105957, 1.4341926574707031) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:50 scene: persist xform owner=katana pos=(-0.706001877784729, 2.1646580696105957, 1.4450773000717163) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:50 scene: persist xform owner=katana pos=(-0.706001877784729, 2.1646580696105957, 1.494492769241333) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:50 scene: persist xform owner=katana pos=(-0.706001877784729, 2.1646580696105957, 1.4984668493270874) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:51 scene: persist xform owner=katana pos=(-0.706001877784729, 2.1646580696105957, 1.5053807497024536) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:51 scene: persist xform owner=katana pos=(-0.706001877784729, 2.1646580696105957, 1.50832200050354) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:51 scene: persist xform owner=katana pos=(-0.706001877784729, 2.1646580696105957, 1.5072890520095825) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:51 scene: persist xform owner=katana pos=(-0.706001877784729, 2.1646580696105957, 1.503313660621643) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:51 scene: persist xform owner=katana pos=(-0.706001877784729, 2.1646580696105957, 1.4993374347686768) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:51 scene: persist xform owner=katana pos=(-0.706001877784729, 2.1646580696105957, 1.4953604936599731) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:51 scene: persist xform owner=katana pos=(-0.706001877784729, 2.1646580696105957, 1.4844657182693481) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:51 scene: persist xform owner=katana pos=(-0.706001877784729, 2.1646580696105957, 1.48048734664917) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:51 scene: persist xform owner=katana pos=(-0.706001877784729, 2.1646580696105957, 1.4775495529174805) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:51 scene: persist xform owner=katana pos=(-0.706001877784729, 2.1646580696105957, 1.4706344604492188) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:51 scene: persist xform owner=katana pos=(-0.706001877784729, 2.1646580696105957, 1.4637203216552734) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:51 scene: persist xform owner=katana pos=(-0.706001877784729, 2.1646580696105957, 1.459741473197937) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:51 scene: persist xform owner=katana pos=(-0.706001877784729, 2.1646580696105957, 1.4557619094848633) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:04:59 scene: focus lost -> keep gizmo
+2026-01-25 21:05:15 scene: clear outliner selection
+2026-01-25 21:05:15 scene: visibility map owners=2 any_visible=True
+2026-01-25 21:05:15 splats: load scene asset owner=bonsai visible=True path=E:\GaussingSplats\models\bonsai\point_cloud\iteration_30000\point_cloud.ply
+2026-01-25 21:05:15 splats: loaded owner=bonsai shape=(200000, 15)
+2026-01-25 21:05:15 scene: apply saved xforms mesh=0 splat=0
+2026-01-25 21:05:15 splats: scene load complete, rebuilding splats
+2026-01-25 21:05:15 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:05:15 scene: clear outliner selection
+2026-01-25 21:05:17 scene: clear outliner selection
+2026-01-25 21:05:17 scene: visibility map owners=2 any_visible=True
+2026-01-25 21:05:18 splats: load scene asset owner=bonsai visible=True path=E:\GaussingSplats\models\bonsai\point_cloud\iteration_30000\point_cloud.ply
+2026-01-25 21:05:18 splats: loaded owner=bonsai shape=(200000, 15)
+2026-01-25 21:05:18 scene: apply saved xforms mesh=0 splat=0
+2026-01-25 21:05:18 splats: scene load complete, rebuilding splats
+2026-01-25 21:05:18 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:05:18 scene: clear outliner selection
+2026-01-25 21:05:20 scene: focus lost -> keep gizmo
+2026-01-25 21:05:20 scene: clear outliner selection
+2026-01-25 21:05:20 scene: visibility map owners=2 any_visible=True
+2026-01-25 21:05:21 splats: load scene asset owner=bonsai visible=True path=E:\GaussingSplats\models\bonsai\point_cloud\iteration_30000\point_cloud.ply
+2026-01-25 21:05:21 splats: loaded owner=bonsai shape=(200000, 15)
+2026-01-25 21:05:21 scene: apply saved xforms mesh=0 splat=0
+2026-01-25 21:05:21 splats: scene load complete, rebuilding splats
+2026-01-25 21:05:21 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:05:21 scene: clear outliner selection
+2026-01-25 21:05:44 scene: clear outliner selection
+2026-01-25 21:05:44 scene: visibility map owners=2 any_visible=True
+2026-01-25 21:05:47 splats: load scene asset owner=kitchen visible=True path=E:\GaussingSplats\models\kitchen\point_cloud\iteration_30000\point_cloud.ply
+2026-01-25 21:05:47 splats: loaded owner=kitchen shape=(200000, 15)
+2026-01-25 21:05:47 scene: apply saved xforms mesh=0 splat=0
+2026-01-25 21:05:47 splats: scene load complete, rebuilding splats
+2026-01-25 21:05:47 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:05:47 scene: clear outliner selection
+2026-01-25 21:05:48 scene: clear outliner selection
+2026-01-25 21:05:48 scene: visibility map owners=2 any_visible=True
+2026-01-25 21:05:48 splats: load scene asset owner=bonsai visible=True path=E:\GaussingSplats\models\bonsai\point_cloud\iteration_30000\point_cloud.ply
+2026-01-25 21:05:48 splats: loaded owner=bonsai shape=(200000, 15)
+2026-01-25 21:05:48 scene: apply saved xforms mesh=0 splat=0
+2026-01-25 21:05:48 splats: scene load complete, rebuilding splats
+2026-01-25 21:05:48 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:05:48 scene: clear outliner selection
+2026-01-25 21:08:34 scene: click empty -> keep gizmo
+2026-01-25 21:08:34 scene: pick owner=bonsai kind=splat
+2026-01-25 21:08:36 scene: persist xform owner=bonsai pos=(0.0, 0.0, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:08:36 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:08:36 scene: persist xform owner=bonsai pos=(0.04120349884033203, 0.0, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:08:36 scene: persist xform owner=bonsai pos=(0.10258984565734863, 0.0, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:08:36 scene: persist xform owner=bonsai pos=(0.1240382194519043, 0.0, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:08:36 scene: persist xform owner=bonsai pos=(0.22771382331848145, 0.0, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:08:36 scene: persist xform owner=bonsai pos=(0.31185078620910645, 0.0, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:08:36 scene: persist xform owner=bonsai pos=(0.39660120010375977, 0.0, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:08:36 scene: persist xform owner=bonsai pos=(0.48194336891174316, 0.0, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:08:36 scene: persist xform owner=bonsai pos=(0.6769342422485352, 0.0, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:08:36 scene: persist xform owner=bonsai pos=(0.8979012966156006, 0.0, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:08:36 scene: persist xform owner=bonsai pos=(1.121525764465332, 0.0, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:08:36 scene: persist xform owner=bonsai pos=(1.555508017539978, 0.0, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:08:36 scene: persist xform owner=bonsai pos=(2.2251718044281006, 0.0, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:08:36 scene: persist xform owner=bonsai pos=(3.0354082584381104, 0.0, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:08:36 scene: persist xform owner=bonsai pos=(3.8419151306152344, 0.0, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:08:36 scene: persist xform owner=bonsai pos=(4.066044807434082, 0.0, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:08:37 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:08:38 scene: persist xform owner=bonsai pos=(4.066044807434082, 0.0, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:08:38 scene: persist xform owner=bonsai pos=(4.066044807434082, 0.16425561904907227, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:08:38 scene: persist xform owner=bonsai pos=(4.066044807434082, 0.8375757932662964, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:08:38 scene: persist xform owner=bonsai pos=(4.066044807434082, 0.9860821962356567, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:08:38 scene: persist xform owner=bonsai pos=(4.066044807434082, 1.0264225006103516, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:08:38 scene: persist xform owner=bonsai pos=(4.066044807434082, 1.0943280458450317, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:08:38 scene: persist xform owner=bonsai pos=(4.066044807434082, 1.2726013660430908, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:08:38 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:08:38 scene: persist xform owner=bonsai pos=(4.066044807434082, 1.463886022567749, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:08:38 scene: persist xform owner=bonsai pos=(4.066044807434082, 1.5596094131469727, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:08:38 scene: persist xform owner=bonsai pos=(4.066044807434082, 1.6000609397888184, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 21:08:39 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:08:40 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:08:41 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:08:42 scene: pick owner=bonsai kind=splat
+2026-01-25 21:08:42 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:08:43 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:08:44 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:08:45 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:08:46 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:08:46 scene: focus lost -> keep gizmo
+2026-01-25 21:08:47 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:08:48 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:08:49 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:08:50 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:08:51 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:08:52 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:08:53 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:08:54 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:08:55 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:08:56 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:08:57 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:08:58 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:08:59 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:00 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:01 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:02 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:03 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:04 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:05 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:06 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:07 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:08 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:09 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:10 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:11 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:12 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:13 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:14 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:15 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:17 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:18 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:19 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:20 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:21 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:22 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:23 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:24 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:25 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:26 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:27 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:28 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:29 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:30 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:31 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:32 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:33 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:34 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:35 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:36 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:37 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:38 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:39 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:40 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:41 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:42 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:43 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:44 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:45 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:46 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:47 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:48 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:49 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:50 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:51 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:52 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:53 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:54 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:55 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:56 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:57 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:58 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:09:59 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:00 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:01 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:02 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:03 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:04 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:05 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:06 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:07 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:08 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:09 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:10 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:11 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:12 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:13 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:14 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:15 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:16 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:17 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:18 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:19 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:21 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:22 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:23 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:24 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:25 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:26 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:27 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:28 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:29 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:30 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:31 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:32 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:33 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:34 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:35 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:36 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:37 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:38 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:39 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:40 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 21:10:41 splats: rebuild start owners=1 visible=1 preserve_camera=True

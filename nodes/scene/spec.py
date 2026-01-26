@@ -907,6 +907,8 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                             glv._xform_gizmo_owner = None
                             glv._xform_gizmo_owner_kind = None
                             glv._xform_gizmo_pos_locked = False
+                            # When nothing is selected, park the gizmo at world origin.
+                            glv._xform_gizmo_pos = (0.0, 0.0, 0.0)
                             glv.update()
                     except Exception:
                         pass

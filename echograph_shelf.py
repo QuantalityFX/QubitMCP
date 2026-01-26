@@ -2618,6 +2618,15 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             gl_view = getattr(self, "gl_view", None)
             if gl_view is not None:
                 gl_view._mgl_log("scene: clear outliner selection")
+                # Reset gizmo to world origin when nothing is selected.
+                gl_view._xform_gizmo_owner = None
+                gl_view._xform_gizmo_owner_kind = None
+                gl_view._xform_gizmo_pos_locked = False
+                gl_view._xform_gizmo_pos = (0.0, 0.0, 0.0)
+                try:
+                    gl_view.update()
+                except Exception:
+                    pass
         except Exception:
             pass
         for card in (getattr(self, "_card_by_node", {}) or {}).values():
