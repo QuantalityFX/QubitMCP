@@ -482,6 +482,14 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._xform_gizmo_owner_kind = None
         self._xform_gizmo_pos_locked = False
         self._xform_gizmo_idle_visible = True
+        self._xform_gizmo_mode = "translate"
+        self._xform_rotate_dragging = False
+        self._xform_rotate_axis = None
+        self._xform_rotate_owner = None
+        self._xform_rotate_kind = None
+        self._xform_rotate_start_angle = None
+        self._xform_rotate_start_rot = None
+        self._xform_rotate_center = None
         self._xform_drag_kind = None
         try:
             from .axis_gizmo_overlay import AxisGizmoOverlay
@@ -2507,7 +2515,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                             float(mvp_np[3, 0]), float(mvp_np[3, 1]), float(mvp_np[3, 2]), float(mvp_np[3, 3]),
                         )
 
-                        self._axis_overlay.draw(mvp)
+                        mode = getattr(self, "_xform_gizmo_mode", "translate") or "translate"
+                        self._axis_overlay.draw(mvp, mode=mode)
                 except Exception as exc:
                     print("[AXIS_OVERLAY] disabled:", exc, flush=True)
                     self._debug_show_axis_overlay = False
@@ -3028,12 +3037,13 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             except Exception:
                 pass
             
-            # --- Gizmo drag start (pick axis) ---
+            # --- Gizmo drag start (pick axis / rotate) ---
             if e.button() == QtCore.Qt.LeftButton:
                 try:
                     owner = getattr(self, "_xform_gizmo_owner", None)
                     pos = getattr(self, "_xform_gizmo_pos", None)
                     if owner and pos and np is not None:
+                        mode = getattr(self, "_xform_gizmo_mode", "translate") or "translate"
                         dpr = float(getattr(self, "devicePixelRatioF", lambda: 1.0)())
                         px = float(e.x()) * dpr
                         py = float(e.y()) * dpr
@@ -3084,7 +3094,81 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                             }
 
                             p0 = project(g)
-                            if p0 is not None:
+                            if mode == "rotate" and p0 is not None:
+                                axis_proj = {}
+                                axis_radius = {}
+                                max_axis_len = 0.0
+                                for name, a in axes.items():
+                                    p1 = project(g + a * axis_len)
+                                    if p1 is None:
+                                        continue
+                                    axis_proj[name] = p1
+                                    try:
+                                        dx1 = float(p1[0]) - float(p0[0])
+                                        dy1 = float(p1[1]) - float(p0[1])
+                                        dist = (dx1 * dx1 + dy1 * dy1) ** 0.5
+                                        axis_radius[name] = dist
+                                        if dist > max_axis_len:
+                                            max_axis_len = dist
+                                    except Exception:
+                                        pass
+
+                                # Avoid stealing orbit clicks far from the gizmo center.
+                                try:
+                                    dx0 = float(px) - float(p0[0])
+                                    dy0 = float(py) - float(p0[1])
+                                    max_center = max(24.0, max_axis_len + 12.0)
+                                    if (dx0 * dx0 + dy0 * dy0) > (max_center * max_center):
+                                        p0 = None
+                                except Exception:
+                                    pass
+
+                                if p0 is not None and axis_radius:
+                                    d_center = ((float(px) - float(p0[0])) ** 2 + (float(py) - float(p0[1])) ** 2) ** 0.5
+                                    best_axis = None
+                                    best_err = 1e30
+                                    for name, r in axis_radius.items():
+                                        err = abs(d_center - float(r))
+                                        if err < best_err:
+                                            best_err = err
+                                            best_axis = name
+                                    if best_axis is not None and best_err <= 10.0:
+                                        # Determine kind directly from renderer state to avoid stale selection state.
+                                        is_splat = False
+                                        try:
+                                            splat_map = getattr(renderer, "_mgl_scene_splats_world", None)
+                                            if not isinstance(splat_map, dict) or not splat_map:
+                                                splat_map = getattr(renderer, "_mgl_scene_splats", None)
+                                            if isinstance(splat_map, dict) and owner in splat_map:
+                                                is_splat = True
+                                        except Exception:
+                                            is_splat = False
+
+                                        # capture start rotation
+                                        xf = {}
+                                        get_xf = getattr(renderer, "_mgl_get_scene_splat_xform", None) if is_splat else getattr(renderer, "_mgl_get_scene_asset_xform", None)
+                                        if callable(get_xf):
+                                            xf = get_xf(owner) or {}
+                                        rot = tuple((xf or {}).get("rot", (0.0, 0.0, 0.0)))
+
+                                        self._xform_rotate_dragging = True
+                                        self._xform_rotate_axis = best_axis
+                                        self._xform_rotate_owner = owner
+                                        self._xform_rotate_kind = "splat" if is_splat else "mesh"
+                                        self._xform_rotate_center = (float(p0[0]), float(p0[1]))
+                                        try:
+                                            self._xform_rotate_start_angle = math.atan2(float(py) - float(p0[1]), float(px) - float(p0[0]))
+                                        except Exception:
+                                            self._xform_rotate_start_angle = None
+                                        self._xform_rotate_start_rot = rot
+
+                                        # Important: prevent old click-pick/orbit press state from interfering
+                                        self._mgl_pick_press_pos = None
+                                        self.setCursor(QtCore.Qt.CrossCursor)
+                                        e.accept()
+                                        return
+
+                            if p0 is not None and mode != "rotate":
                                 axis_proj = {}
                                 max_axis_len = 0.0
                                 for name, a in axes.items():
@@ -3111,7 +3195,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                 except Exception:
                                     pass
 
-                            if p0 is not None:
+                            if p0 is not None and mode != "rotate":
                                 best_axis = None
                                 best_d = 1e30
                                 for name, p1 in axis_proj.items():
@@ -3248,6 +3332,60 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
     def mouseMoveEvent(self, e):
         if self._use_moderngl:
             # --- Gizmo dragging (ModernGL) ---
+            if getattr(self, "_xform_rotate_dragging", False) and (e.buttons() & QtCore.Qt.LeftButton):
+                try:
+                    if np is None:
+                        return
+                    axis = getattr(self, "_xform_rotate_axis", None)
+                    owner = getattr(self, "_xform_rotate_owner", None)
+                    start_rot = getattr(self, "_xform_rotate_start_rot", None)
+                    center = getattr(self, "_xform_rotate_center", None)
+                    start_angle = getattr(self, "_xform_rotate_start_angle", None)
+                    if axis is None or owner is None or start_rot is None or center is None or start_angle is None:
+                        return
+
+                    dpr = float(getattr(self, "devicePixelRatioF", lambda: 1.0)())
+                    px = float(e.x()) * dpr
+                    py = float(e.y()) * dpr
+                    cx, cy = center
+
+                    angle = math.atan2(py - cy, px - cx)
+                    delta = angle - float(start_angle)
+                    # unwrap for stability
+                    while delta > math.pi:
+                        delta -= 2.0 * math.pi
+                    while delta < -math.pi:
+                        delta += 2.0 * math.pi
+                    delta_deg = math.degrees(delta)
+
+                    rot = [float(start_rot[0]), float(start_rot[1]), float(start_rot[2])]
+                    if axis == "x":
+                        rot[0] += delta_deg
+                    elif axis == "y":
+                        rot[1] += delta_deg
+                    else:
+                        rot[2] += delta_deg
+
+                    renderer = getattr(self, "_mgl_renderer", None) or self
+                    is_splat = bool(getattr(self, "_xform_rotate_kind", None) == "splat")
+                    self._mgl_set_scene_asset_xform(
+                        owner,
+                        rot=tuple(rot),
+                        apply_to_scene_models=not is_splat,
+                        use_splat_xform=bool(is_splat),
+                    )
+                    try:
+                        w = self.window()
+                        if hasattr(w, "update_scene_asset_xform"):
+                            w.update_scene_asset_xform(owner)
+                    except Exception:
+                        pass
+                    self.update()
+                    e.accept()
+                    return
+                except Exception:
+                    pass
+
             if getattr(self, "_xform_dragging", False) and (e.buttons() & QtCore.Qt.LeftButton):
                 try:
                     if np is None:
@@ -3515,6 +3653,29 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
     def mouseReleaseEvent(self, e):
         if self._use_moderngl:
+            # --- 0) End rotation drag first ---
+            if getattr(self, "_xform_rotate_dragging", False):
+                self._xform_rotate_dragging = False
+                self._xform_rotate_axis = None
+                self._xform_rotate_owner = None
+                self._xform_rotate_kind = None
+                self._xform_rotate_start_angle = None
+                self._xform_rotate_start_rot = None
+                self._xform_rotate_center = None
+
+                # Important: don't let a gizmo drag "fall through" into click-pick or orbit
+                self._mgl_pick_press_pos = None
+
+                try:
+                    if QtWidgets.QApplication.mouseGrabber() is self:
+                        self.releaseMouse()
+                except Exception:
+                    pass
+
+                self.setCursor(QtCore.Qt.ArrowCursor)
+                e.accept()
+                return
+
             # --- 1) If we were dragging the gizmo, ALWAYS end that first ---
             if getattr(self, "_xform_dragging", False):
                 # Log splat drag end with gizmo + xform state.
@@ -3806,6 +3967,29 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             e.accept()
             return
         super().wheelEvent(e)
+
+    def keyPressEvent(self, e):
+        try:
+            key = e.key()
+        except Exception:
+            key = None
+        if key == QtCore.Qt.Key_T:
+            self._xform_gizmo_mode = "translate"
+            try:
+                self.update()
+            except Exception:
+                pass
+            e.accept()
+            return
+        if key == QtCore.Qt.Key_R:
+            self._xform_gizmo_mode = "rotate"
+            try:
+                self.update()
+            except Exception:
+                pass
+            e.accept()
+            return
+        super().keyPressEvent(e)
 
     def focusOutEvent(self, e):
         # Keep gizmo when focus leaves the viewport (avoid hiding splats on UI click)

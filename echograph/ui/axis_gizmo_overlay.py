@@ -52,6 +52,8 @@ class AxisGizmoOverlay:
         self._ready = False
         self._line_vert_count = 0
         self._tri_vert_count = 0
+        self._circle_vert_offset = 0
+        self._circle_vert_count = 0
 
     def ensure_gl(self, gl_view) -> bool:
         if self._ready:
@@ -134,8 +136,37 @@ class AxisGizmoOverlay:
         add_cone((0.0, axis_len, 0.0), (0.0, 1.0, 0.0), cone_radius, cone_height, segs, (0.0, 1.0, 0.0))
         add_cone((0.0, 0.0, axis_len), (0.0, 0.0, 1.0), cone_radius, cone_height, segs, (0.0, 0.0, 1.0))
 
-        total_verts = len(verts) // 6
-        self._tri_vert_count = total_verts - self._line_vert_count
+        base_verts = len(verts) // 6
+        self._tri_vert_count = base_verts - self._line_vert_count
+
+        # rotation circles (3 rings)
+        self._circle_vert_offset = base_verts
+
+        def add_circle(axis: str, radius: float, segments: int, col):
+            r, g, b = col
+            for i in range(segments):
+                a0 = (i / segments) * (math.pi * 2.0)
+                a1 = ((i + 1) / segments) * (math.pi * 2.0)
+
+                if axis == "x":
+                    p0 = (0.0, radius * math.cos(a0), radius * math.sin(a0))
+                    p1 = (0.0, radius * math.cos(a1), radius * math.sin(a1))
+                elif axis == "y":
+                    p0 = (radius * math.cos(a0), 0.0, radius * math.sin(a0))
+                    p1 = (radius * math.cos(a1), 0.0, radius * math.sin(a1))
+                else:  # "z"
+                    p0 = (radius * math.cos(a0), radius * math.sin(a0), 0.0)
+                    p1 = (radius * math.cos(a1), radius * math.sin(a1), 0.0)
+
+                verts.extend([p0[0], p0[1], p0[2], r, g, b])
+                verts.extend([p1[0], p1[1], p1[2], r, g, b])
+
+        circle_radius = 0.9
+        circle_segs = 64
+        add_circle("x", circle_radius, circle_segs, (1.0, 0.0, 0.0))
+        add_circle("y", circle_radius, circle_segs, (0.0, 1.0, 0.0))
+        add_circle("z", circle_radius, circle_segs, (0.0, 0.0, 1.0))
+        self._circle_vert_count = (len(verts) // 6) - self._circle_vert_offset
 
         data = struct.pack(f"{len(verts)}f", *verts)
 
@@ -164,21 +195,25 @@ class AxisGizmoOverlay:
         self._ready = True
         return True
 
-    def draw(self, mvp: QtGui.QMatrix4x4) -> None:
+    def draw(self, mvp: QtGui.QMatrix4x4, mode: str = "translate") -> None:
         if not self._ready or self._gl is None or self._prog is None or self._vao is None:
             return
 
         self._gl.glDisable(GL_DEPTH_TEST)
         self._gl.glEnable(GL_BLEND)
         self._gl.glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-        self._gl.glLineWidth(3.0)
+        self._gl.glLineWidth(2.0 if mode == "rotate" else 3.0)
 
         self._prog.bind()
         self._prog.setUniformValue("u_mvp", mvp)
 
         self._vao.bind()
-        self._gl.glDrawArrays(GL_LINES, 0, self._line_vert_count)
-        self._gl.glDrawArrays(GL_TRIANGLES, self._line_vert_count, self._tri_vert_count)
+        if mode == "rotate":
+            if self._circle_vert_count:
+                self._gl.glDrawArrays(GL_LINES, self._circle_vert_offset, self._circle_vert_count)
+        else:
+            self._gl.glDrawArrays(GL_LINES, 0, self._line_vert_count)
+            self._gl.glDrawArrays(GL_TRIANGLES, self._line_vert_count, self._tri_vert_count)
         self._vao.release()
 
         self._prog.release()
