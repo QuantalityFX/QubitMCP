@@ -2492,6 +2492,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
     def open_scene_assets(self, assets) -> None:
         import traceback
+        import time
 
         assets = list(assets or [])
         if not assets:
@@ -2537,6 +2538,37 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         if not clean:
             print("[open_scene_assets] no valid asset paths", flush=True)
             return
+
+        # Debounce duplicate loads (prevents repeated reload loops)
+        try:
+            sig = []
+            for entry in clean:
+                xf = entry.get("xform") or {}
+                def _round3(vals, default):
+                    try:
+                        return tuple(round(float(v), 6) for v in (vals or default))
+                    except Exception:
+                        return tuple(default)
+                sig.append(
+                    (
+                        str(entry.get("path") or ""),
+                        str(entry.get("node") or ""),
+                        bool(entry.get("visible", True)),
+                        _round3((xf or {}).get("pos"), (0.0, 0.0, 0.0)),
+                        _round3((xf or {}).get("rot"), (0.0, 0.0, 0.0)),
+                        _round3((xf or {}).get("scl"), (1.0, 1.0, 1.0)),
+                    )
+                )
+            sig = tuple(sorted(sig))
+            now = time.time()
+            last_sig = getattr(self, "_scene_assets_sig", None)
+            last_ts = float(getattr(self, "_scene_assets_ts", 0.0) or 0.0)
+            if sig == last_sig and (now - last_ts) < 0.5:
+                return
+            self._scene_assets_sig = sig
+            self._scene_assets_ts = now
+        except Exception:
+            pass
 
         mode = getattr(self, "_view_mode", "2d")
         if mode == "3d":
@@ -2681,19 +2713,6 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 )
                 if callable(getf):
                     xf = getf(owner)
-                    try:
-                        gl_view._mgl_log(
-                            "scene: persist xform owner="
-                            + str(owner)
-                            + " pos="
-                            + str((xf or {}).get("pos"))
-                            + " rot="
-                            + str((xf or {}).get("rot"))
-                            + " scl="
-                            + str((xf or {}).get("scl"))
-                        )
-                    except Exception:
-                        pass
         except Exception:
             xf = None
         for card in (getattr(self, "_card_by_node", {}) or {}).values():

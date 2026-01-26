@@ -3085,6 +3085,16 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
                             p0 = project(g)
                             if p0 is not None:
+                                # Avoid stealing orbit clicks far from the gizmo center.
+                                try:
+                                    dx0 = float(px) - float(p0[0])
+                                    dy0 = float(py) - float(p0[1])
+                                    if (dx0 * dx0 + dy0 * dy0) > (24.0 * 24.0):
+                                        p0 = None
+                                except Exception:
+                                    pass
+
+                            if p0 is not None:
                                 best_axis = None
                                 best_d = 1e30
                                 for name, a in axes.items():
@@ -3096,7 +3106,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                         best_d = d
                                         best_axis = name
 
-                                if best_axis is not None and best_d <= 14.0:
+                                if best_axis is not None and best_d <= 10.0:
                                     # Determine kind directly from renderer state to avoid stale selection state.
                                     is_splat = False
                                     try:

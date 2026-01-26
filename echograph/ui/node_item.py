@@ -1833,6 +1833,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         assets = []
         seen = set()
         hidden = set()
+        xforms = {}
         try:
             raw_hidden = getattr(getattr(self, "model", None), "_scene_hidden", None)
             if isinstance(raw_hidden, set):
@@ -1841,6 +1842,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 hidden = {str(x) for x in raw_hidden if x}
         except Exception:
             hidden = set()
+        try:
+            raw_xforms = getattr(getattr(self, "model", None), "_scene_xforms", None)
+            if isinstance(raw_xforms, dict):
+                xforms = raw_xforms
+        except Exception:
+            xforms = {}
         for edge in in_edges:
             src_item = getattr(edge, "src", None)
             model = getattr(src_item, "model", None)
@@ -1866,6 +1873,18 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     if (p.get("name") or "").strip().lower() == "texture":
                         texture = (p.get("value") or "").strip()
                         break
+            xf = None
+            try:
+                if model_name and model_name in xforms:
+                    xf = xforms.get(model_name)
+                elif model_name:
+                    nl = model_name.lower()
+                    for k, v in xforms.items():
+                        if str(k).strip().lower() == nl:
+                            xf = v
+                            break
+            except Exception:
+                xf = None
             assets.append(
                 {
                     "path": path,
@@ -1873,6 +1892,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     "ext": ext,
                     "node": model_name,
                     "visible": model_name not in hidden,
+                    "xform": xf if isinstance(xf, dict) else None,
                 }
             )
         return assets

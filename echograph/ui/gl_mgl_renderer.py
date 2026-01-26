@@ -721,6 +721,12 @@ class MGLRendererMixin:
                 xforms_norm[ks.lower()] = v
 
         state = self._mgl_get_camera_state() if preserve_camera else None
+        # Avoid feeding scene_xforms back into splat rebuild (prevents feedback loops).
+        if isinstance(state, dict):
+            try:
+                state.pop("scene_xforms", None)
+            except Exception:
+                pass
 
         def _quat_mul(a, b):
             # a,b = (x,y,z,w)
@@ -923,7 +929,12 @@ class MGLRendererMixin:
             pass
 
         if state is not None:
-            self._mgl_queue_camera_state(state)
+            # Don't override an already-queued snapshot camera state.
+            try:
+                if getattr(self, "_mgl_pending_cam_state", None) is None:
+                    self._mgl_queue_camera_state(state)
+            except Exception:
+                self._mgl_queue_camera_state(state)
 
 
     def _mgl_load_grid_model(self, path: Path, in_paint: bool = False) -> None:
@@ -1676,15 +1687,25 @@ class MGLRendererMixin:
         # If splat visibility changed, rebuild in GL context.
         try:
             if bool(getattr(self, "_mgl_splats_visibility_dirty", False)):
-                self._mgl_splats_visibility_dirty = False
                 if bool(getattr(self, "_mgl_render_splats", False)):
-                    try:
-                        self._mgl_rebuild_scene_splats(preserve_camera=True)
-                    except Exception as exc:
+                    now = time.time()
+                    last = float(getattr(self, "_mgl_splats_rebuild_ts", 0.0) or 0.0)
+                    min_dt = float(getattr(self, "_mgl_splats_rebuild_min_dt", 0.05) or 0.05)
+                    if now - last < min_dt:
+                        # Keep dirty flag set; try again next frame.
+                        self._mgl_splats_visibility_dirty = True
+                    else:
+                        self._mgl_splats_visibility_dirty = False
+                        self._mgl_splats_rebuild_ts = now
                         try:
-                            self._mgl_log("splats: rebuild (visibility dirty) failed err=" + repr(exc))
-                        except Exception:
-                            pass
+                            self._mgl_rebuild_scene_splats(preserve_camera=True)
+                        except Exception as exc:
+                            try:
+                                self._mgl_log("splats: rebuild (visibility dirty) failed err=" + repr(exc))
+                            except Exception:
+                                pass
+                else:
+                    self._mgl_splats_visibility_dirty = False
         except Exception:
             pass
 
@@ -2182,6 +2203,7 @@ class MGLRendererMixin:
 
                 # Apply mesh transforms
                 if isinstance(mesh_xf, dict):
+                    updated_owners = []
                     for owner, xf in mesh_xf.items():
                         if not isinstance(xf, dict):
                             continue
@@ -2208,6 +2230,7 @@ class MGLRendererMixin:
                                 apply_to_scene_models=True,
                                 use_splat_xform=False,
                             )
+                            updated_owners.append(str(owner))
                         except Exception:
                             continue
 
@@ -2237,8 +2260,17 @@ class MGLRendererMixin:
                                 apply_to_scene_models=False,
                                 use_splat_xform=True,
                             )
+                            updated_owners.append(str(owner))
                         except Exception:
                             continue
+                # Sync outliner values to the applied snapshot transforms.
+                try:
+                    w = self.window()
+                    if w is not None and hasattr(w, "update_scene_asset_xform"):
+                        for owner in updated_owners:
+                            w.update_scene_asset_xform(owner)
+                except Exception:
+                    pass
         except Exception:
             pass
 
