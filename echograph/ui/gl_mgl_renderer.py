@@ -613,7 +613,8 @@ class MGLRendererMixin:
             m[1, 1] = c
             return m
 
-        model = T(px, py, pz) @ (Rz(rz) @ Ry(ry) @ Rx(rx)) @ S(sx, sy, sz) @ T(-cx, -cy, -cz)
+        # Apply pivot first, then rotate/scale, then translate to world pivot.
+        model = T(-cx, -cy, -cz) @ (Rz(rz) @ Ry(ry) @ Rx(rx)) @ S(sx, sy, sz) @ T(px, py, pz)
 
         scene = getattr(self, "_mgl_scene", None)
         if scene is None:

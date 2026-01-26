@@ -3375,12 +3375,16 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     delta_deg = math.degrees(delta)
 
                     rot = [float(start_rot[0]), float(start_rot[1]), float(start_rot[2])]
-                    if axis == "x":
+                    axis_map = {"x": "y", "y": "x", "z": "z"}
+                    axis_key = axis_map.get(axis, axis)
+                    axis_sign = {"x": 1.0, "y": 1.0, "z": -1.0}
+                    delta_deg = float(delta_deg) * float(axis_sign.get(axis_key, 1.0))
+                    if axis_key == "x":
                         rot[0] += delta_deg
-                    elif axis == "y":
+                    elif axis_key == "y":
                         rot[1] += delta_deg
                     else:
-                        rot[2] -= delta_deg
+                        rot[2] += delta_deg
 
                     renderer = getattr(self, "_mgl_renderer", None) or self
                     is_splat = bool(getattr(self, "_xform_rotate_kind", None) == "splat")
