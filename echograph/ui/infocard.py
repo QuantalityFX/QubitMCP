@@ -209,7 +209,7 @@ class InfoCard(QtWidgets.QFrame):
 
                 if thumb_path:
                     folder = Path(thumb_path).parent
-                    pngs = sorted(folder.glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
+                    pngs = sorted(folder.glob("*.png"), key=lambda p: p.name)
 
                     self._snap_combo.blockSignals(True)
                     self._snap_combo.clear()
@@ -961,7 +961,7 @@ class InfoCard(QtWidgets.QFrame):
 
         folder = Path(thumb_path).parent
         try:
-            pngs = sorted(folder.glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
+            pngs = sorted(folder.glob("*.png"), key=lambda p: p.name)
         except Exception:
             pngs = []
 

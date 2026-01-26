@@ -3085,11 +3085,28 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
                             p0 = project(g)
                             if p0 is not None:
+                                axis_proj = {}
+                                max_axis_len = 0.0
+                                for name, a in axes.items():
+                                    p1 = project(g + a * axis_len)
+                                    if p1 is None:
+                                        continue
+                                    axis_proj[name] = p1
+                                    try:
+                                        dx1 = float(p1[0]) - float(p0[0])
+                                        dy1 = float(p1[1]) - float(p0[1])
+                                        dist = (dx1 * dx1 + dy1 * dy1) ** 0.5
+                                        if dist > max_axis_len:
+                                            max_axis_len = dist
+                                    except Exception:
+                                        pass
+
                                 # Avoid stealing orbit clicks far from the gizmo center.
                                 try:
                                     dx0 = float(px) - float(p0[0])
                                     dy0 = float(py) - float(p0[1])
-                                    if (dx0 * dx0 + dy0 * dy0) > (24.0 * 24.0):
+                                    max_center = max(24.0, max_axis_len + 12.0)
+                                    if (dx0 * dx0 + dy0 * dy0) > (max_center * max_center):
                                         p0 = None
                                 except Exception:
                                     pass
@@ -3097,16 +3114,13 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                             if p0 is not None:
                                 best_axis = None
                                 best_d = 1e30
-                                for name, a in axes.items():
-                                    p1 = project(g + a * axis_len)
-                                    if p1 is None:
-                                        continue
+                                for name, p1 in axis_proj.items():
                                     d = dist_pt_seg(px, py, p0[0], p0[1], p1[0], p1[1])
                                     if d < best_d:
                                         best_d = d
                                         best_axis = name
 
-                                if best_axis is not None and best_d <= 10.0:
+                                if best_axis is not None and best_d <= 14.0:
                                     # Determine kind directly from renderer state to avoid stale selection state.
                                     is_splat = False
                                     try:
@@ -3472,6 +3486,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 self._xform_drag_owner = None
                 self._xform_drag_s0 = None
                 self._xform_drag_kind = None
+                self._xform_gizmo_pos_locked = False
 
                 # Important: don't let a gizmo drag "fall through" into click-pick or orbit
                 self._mgl_pick_press_pos = None
@@ -3584,6 +3599,12 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                                     cz = (float(mins[2]) + float(maxs[2])) * 0.5
                                                     self._xform_gizmo_pos = (cx, cy, cz)
                                                     self._xform_gizmo_pos_locked = True
+                                    except Exception:
+                                        pass
+
+                                    # Allow outliner edits to reposition the gizmo after selection.
+                                    try:
+                                        self._xform_gizmo_pos_locked = False
                                     except Exception:
                                         pass
 

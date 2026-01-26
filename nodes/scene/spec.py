@@ -556,6 +556,16 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 setf(owner, scl=scl, apply_to_scene_models=not is_splat, use_splat_xform=bool(is_splat))
             else:
                 setf(owner, pos=pos, rot=rot, scl=scl, apply_to_scene_models=not is_splat, use_splat_xform=bool(is_splat))
+            # Keep gizmo aligned with edits made via the outliner.
+            try:
+                win = card.window()
+                glv = getattr(win, "gl_view", None) if win is not None else None
+                if glv is not None and getattr(glv, "_xform_gizmo_owner", None) == owner:
+                    glv._xform_gizmo_pos_locked = False
+                    glv._xform_gizmo_pos = pos
+                    glv.update()
+            except Exception:
+                pass
             # Persist updated xform back to the scene node model (for workflow save)
             try:
                 win = card.window()
@@ -619,8 +629,8 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                     except Exception:
                         pass
 
-                    if not getattr(glv, "_xform_gizmo_pos_locked", False):
-                        glv._xform_gizmo_pos = pos
+                    glv._xform_gizmo_pos_locked = False
+                    glv._xform_gizmo_pos = pos
 
                     try:
                         glv.update()

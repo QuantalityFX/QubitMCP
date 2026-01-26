@@ -2053,7 +2053,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
             folder = Path(thumb_path).parent
             # oldest -> newest so newest becomes the biggest v###
-            pngs = sorted(folder.glob("*.png"), key=lambda p: p.stat().st_mtime)
+            pngs = sorted(folder.glob("*.png"), key=lambda p: p.name)
 
             chosen = (self._param_value("thumbnail_choice") or "").strip()
 
@@ -3107,6 +3107,19 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     try:
                         self._update_scene_thumb_label(thumb)
                         self._refresh_scene_snap_combo()
+                        combo = getattr(self, "_scene_snap_combo", None)
+                        if combo is not None:
+                            try:
+                                idx = combo.findData(Path(thumb).name)
+                                if idx >= 0:
+                                    combo.blockSignals(True)
+                                    combo.setCurrentIndex(idx)
+                                    combo.blockSignals(False)
+                                else:
+                                    if hasattr(self, "_schedule_rebuild"):
+                                        self._schedule_rebuild()
+                            except Exception:
+                                pass
                     except Exception:
                         pass
 
