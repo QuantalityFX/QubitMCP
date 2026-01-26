@@ -98,3 +98,22 @@
 2026-01-26 00:57:34 splat: select owner=bonsai xf_pos=(0.0, 0.0, 0.0) pivot=(-3.4873833656311035, 0.8306870460510254, 1.0394110679626465) gizmo_pos=(-3.4873833656311035, 0.8306870460510254, 1.0394110679626465)
 2026-01-26 00:57:35 scene: pick owner=katana kind=mesh
 2026-01-26 00:58:31 scene: focus lost -> keep gizmo
+2026-01-26 01:51:20 scene: focus lost -> keep gizmo
+2026-01-26 01:51:22 scene: grid_toggle=False vao=False count=0
+2026-01-26 01:51:38 scene: clear outliner selection
+2026-01-26 01:51:38 grid: update start size=20.0 cells=50
+2026-01-26 01:51:38 grid: update done count=204 vao=True vbo=True
+2026-01-26 01:51:38 splats: draw skip reason=render_splats=False
+2026-01-26 01:51:38 scene: visibility map owners=2 any_visible=True
+2026-01-26 01:51:38 splats: load scene asset owner=bonsai visible=True path=E:\GaussingSplats\models\bonsai\point_cloud\iteration_30000\point_cloud.ply
+2026-01-26 01:51:38 splats: loaded owner=bonsai shape=(200000, 15)
+2026-01-26 01:51:38 scene: apply saved xforms mesh=1 splat=1
+2026-01-26 01:51:38 splats: scene load complete, rebuilding splats
+2026-01-26 01:51:38 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-26 01:51:38 scene: clear outliner selection
+2026-01-26 01:51:38 splats: draw active count=200000
+2026-01-26 01:51:40 scene: pick owner=katana kind=mesh
+2026-01-26 01:52:03 scene: focus lost -> keep gizmo
+2026-01-26 01:52:15 scene: focus lost -> keep gizmo
+2026-01-26 01:53:02 scene: focus lost -> keep gizmo
+2026-01-26 01:53:27 scene: focus lost -> keep gizmo

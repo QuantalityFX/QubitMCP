@@ -3085,6 +3085,12 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     self.releaseMouse()
             except Exception:
                 pass
+
+            alt_pressed = False
+            try:
+                alt_pressed = bool(e.modifiers() & QtCore.Qt.AltModifier)
+            except Exception:
+                alt_pressed = False
             
             # --- Gizmo drag start (pick axis / rotate) ---
             if e.button() == QtCore.Qt.LeftButton:
@@ -3336,56 +3342,106 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 except Exception as exc:
                     print("[GIZMO_PICK] failed:", exc, flush=True)
                 
-            if e.button() == QtCore.Qt.LeftButton and self._mgl_arcball is not None:
+            if e.button() == QtCore.Qt.LeftButton and self._mgl_arcball is not None and alt_pressed:
                 self._mgl_arcball.onClickLeftDown(e.x(), e.y())
                 self._mgl_pick_press_pos = e.pos()
                 self.setCursor(QtCore.Qt.ClosedHandCursor)
                 e.accept()
                 return
+            if e.button() == QtCore.Qt.LeftButton and not alt_pressed:
+                # allow click-pick without orbiting
+                self._mgl_pick_press_pos = e.pos()
+                self.setCursor(QtCore.Qt.ArrowCursor)
+                e.accept()
+                return
             if e.button() == QtCore.Qt.MiddleButton:
+                if not alt_pressed:
+                    e.ignore()
+                    return
                 self._mgl_prev_x = e.x()
                 self._mgl_prev_y = e.y()
                 self.setCursor(QtCore.Qt.OpenHandCursor)
                 e.accept()
                 return
             if e.button() == QtCore.Qt.RightButton:
+                if not alt_pressed:
+                    e.ignore()
+                    return
                 self._mgl_zoom_press_pos = e.pos()
                 self._mgl_zoom_start = float(self._mgl_camera_zoom)
                 self.setCursor(QtCore.Qt.SizeVerCursor)
                 e.accept()
                 return
         if self._use_example_pipeline:
+            alt_pressed = False
+            try:
+                alt_pressed = bool(e.modifiers() & QtCore.Qt.AltModifier)
+            except Exception:
+                alt_pressed = False
             if e.button() == QtCore.Qt.LeftButton:
+                if not alt_pressed:
+                    e.ignore()
+                    return
                 self._orbit_dragging = True
                 self._orbit_last_pos = e.pos()
                 self.setCursor(QtCore.Qt.ClosedHandCursor)
                 e.accept()
                 return
             if e.button() == QtCore.Qt.MiddleButton:
+                if not alt_pressed:
+                    e.ignore()
+                    return
                 self._pan_dragging = True
                 self._pan_last_pos = e.pos()
                 self.setCursor(QtCore.Qt.OpenHandCursor)
                 e.accept()
                 return
             if e.button() == QtCore.Qt.RightButton:
+                if not alt_pressed:
+                    e.ignore()
+                    return
                 self._dolly_dragging = True
                 self._dolly_press_pos = e.pos()
                 self.setCursor(QtCore.Qt.SizeVerCursor)
                 e.accept()
                 return
         if e.button() == QtCore.Qt.LeftButton:
+            alt_pressed = False
+            try:
+                alt_pressed = bool(e.modifiers() & QtCore.Qt.AltModifier)
+            except Exception:
+                alt_pressed = False
+            if not alt_pressed:
+                e.ignore()
+                return
             self._orbit_dragging = True
             self._orbit_last_pos = e.pos()
             self.setCursor(QtCore.Qt.ClosedHandCursor)
             e.accept()
             return
         if e.button() == QtCore.Qt.MiddleButton:
+            alt_pressed = False
+            try:
+                alt_pressed = bool(e.modifiers() & QtCore.Qt.AltModifier)
+            except Exception:
+                alt_pressed = False
+            if not alt_pressed:
+                e.ignore()
+                return
             self._pan_dragging = True
             self._pan_last_pos = e.pos()
             self.setCursor(QtCore.Qt.OpenHandCursor)
             e.accept()
             return
         if e.button() == QtCore.Qt.RightButton:
+            alt_pressed = False
+            try:
+                alt_pressed = bool(e.modifiers() & QtCore.Qt.AltModifier)
+            except Exception:
+                alt_pressed = False
+            if not alt_pressed:
+                e.ignore()
+                return
             self._dolly_dragging = True
             self._dolly_press_pos = e.pos()
             self._dolly_start_dist = float(self._cam_dist)
@@ -3583,11 +3639,21 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     print("[GIZMO_DRAG] failed:", exc, flush=True)
 
             if self._mgl_arcball is not None and (e.buttons() & QtCore.Qt.LeftButton):
+                try:
+                    if not (e.modifiers() & QtCore.Qt.AltModifier):
+                        return
+                except Exception:
+                    pass
                 self._mgl_arcball.onDrag(e.x(), e.y())
                 self.update()  # ensure pick matrices stay fresh
                 e.accept()
                 return
             if e.buttons() & QtCore.Qt.MiddleButton and self._mgl_center is not None:
+                try:
+                    if not (e.modifiers() & QtCore.Qt.AltModifier):
+                        return
+                except Exception:
+                    pass
                 dx = e.x() - self._mgl_prev_x
                 dy = e.y() - self._mgl_prev_y
                 pan_scale = 0.01
@@ -3609,6 +3675,11 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 e.accept()
                 return
             if e.buttons() & QtCore.Qt.RightButton and self._mgl_zoom_press_pos is not None:
+                try:
+                    if not (e.modifiers() & QtCore.Qt.AltModifier):
+                        return
+                except Exception:
+                    pass
                 dx = e.pos().x() - self._mgl_zoom_press_pos.x()
                 dy = e.pos().y() - self._mgl_zoom_press_pos.y()
                 distance = dx - dy
@@ -3628,6 +3699,15 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 return
         if self._use_example_pipeline:
             if self._orbit_dragging and self._orbit_last_pos is not None:
+                try:
+                    if not (e.modifiers() & QtCore.Qt.AltModifier):
+                        self._orbit_dragging = False
+                        self._orbit_last_pos = None
+                        self.setCursor(QtCore.Qt.ArrowCursor)
+                        e.accept()
+                        return
+                except Exception:
+                    pass
                 if not (e.buttons() & QtCore.Qt.LeftButton):
                     self._orbit_dragging = False
                     self._orbit_last_pos = None
@@ -3641,6 +3721,15 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 e.accept()
                 return
             if self._pan_dragging and self._pan_last_pos is not None:
+                try:
+                    if not (e.modifiers() & QtCore.Qt.AltModifier):
+                        self._pan_dragging = False
+                        self._pan_last_pos = None
+                        self.setCursor(QtCore.Qt.ArrowCursor)
+                        e.accept()
+                        return
+                except Exception:
+                    pass
                 if not (e.buttons() & QtCore.Qt.MiddleButton):
                     self._pan_dragging = False
                     self._pan_last_pos = None
@@ -3654,6 +3743,15 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 e.accept()
                 return
             if self._dolly_dragging and self._dolly_press_pos is not None:
+                try:
+                    if not (e.modifiers() & QtCore.Qt.AltModifier):
+                        self._dolly_dragging = False
+                        self._dolly_press_pos = None
+                        self.setCursor(QtCore.Qt.ArrowCursor)
+                        e.accept()
+                        return
+                except Exception:
+                    pass
                 if not (e.buttons() & QtCore.Qt.RightButton):
                     self._dolly_dragging = False
                     self._dolly_press_pos = None
@@ -3667,6 +3765,15 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 e.accept()
                 return
         if self._orbit_dragging and self._orbit_last_pos is not None:
+            try:
+                if not (e.modifiers() & QtCore.Qt.AltModifier):
+                    self._orbit_dragging = False
+                    self._orbit_last_pos = None
+                    self.setCursor(QtCore.Qt.ArrowCursor)
+                    e.accept()
+                    return
+            except Exception:
+                pass
             if not (e.buttons() & QtCore.Qt.LeftButton):
                 self._orbit_dragging = False
                 self._orbit_last_pos = None
@@ -3682,6 +3789,15 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             e.accept()
             return
         if self._pan_dragging and self._pan_last_pos is not None:
+            try:
+                if not (e.modifiers() & QtCore.Qt.AltModifier):
+                    self._pan_dragging = False
+                    self._pan_last_pos = None
+                    self.setCursor(QtCore.Qt.ArrowCursor)
+                    e.accept()
+                    return
+            except Exception:
+                pass
             if not (e.buttons() & QtCore.Qt.MiddleButton):
                 self._pan_dragging = False
                 self._pan_last_pos = None
@@ -3700,6 +3816,16 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             e.accept()
             return
         if self._dolly_dragging and self._dolly_press_pos is not None:
+            try:
+                if not (e.modifiers() & QtCore.Qt.AltModifier):
+                    self._dolly_dragging = False
+                    self._dolly_press_pos = None
+                    self._dolly_start_dist = None
+                    self.setCursor(QtCore.Qt.ArrowCursor)
+                    e.accept()
+                    return
+            except Exception:
+                pass
             if not (e.buttons() & QtCore.Qt.RightButton):
                 self._dolly_dragging = False
                 self._dolly_press_pos = None
@@ -4020,6 +4146,12 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
     def wheelEvent(self, e):
         if self._use_moderngl:
+            try:
+                if not (e.modifiers() & QtCore.Qt.AltModifier):
+                    super().wheelEvent(e)
+                    return
+            except Exception:
+                pass
             delta = e.angleDelta().y()
             if delta:
                 self._mgl_camera_zoom += delta * 0.001
@@ -4029,6 +4161,12 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             e.accept()
             return
         if self._use_example_pipeline:
+            try:
+                if not (e.modifiers() & QtCore.Qt.AltModifier):
+                    super().wheelEvent(e)
+                    return
+            except Exception:
+                pass
             delta = e.angleDelta().y() / 120.0
             if delta:
                 self._example_zoom(delta)
