@@ -3377,8 +3377,9 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     rot = [float(start_rot[0]), float(start_rot[1]), float(start_rot[2])]
                     axis_map = {"x": "y", "y": "x", "z": "z"}
                     axis_key = axis_map.get(axis, axis)
-                    axis_sign = {"x": 1.0, "y": 1.0, "z": -1.0}
-                    delta_deg = float(delta_deg) * float(axis_sign.get(axis_key, 1.0))
+                    # Per-ring direction tuning (red ring inverted, blue inverted)
+                    ring_sign = {"x": -1.0, "y": 1.0, "z": -1.0}
+                    delta_deg = float(delta_deg) * float(ring_sign.get(axis, 1.0))
                     if axis_key == "x":
                         rot[0] += delta_deg
                     elif axis_key == "y":
