@@ -80,6 +80,32 @@ def _mgl_grid(size: float, steps: int) -> "np.ndarray":
 
 
 class MGLRendererMixin:
+    def _mgl_log(self, msg: str) -> None:
+        try:
+            if not bool(getattr(self, "_mgl_splat_log", True)):
+                return
+            root = Path(__file__).resolve().parents[2]
+            log_dir = root / "logs"
+            try:
+                log_dir.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                return
+            ts = time.strftime("%Y-%m-%d %H:%M:%S")
+            with (log_dir / "splat_debug.log").open("a", encoding="utf-8") as f:
+                f.write(f"{ts} {msg}\n")
+        except Exception:
+            pass
+
+    def _mgl_log_throttled(self, key: str, msg: str, interval: float = 0.75) -> None:
+        try:
+            last = float(getattr(self, key, 0.0) or 0.0)
+            now = float(time.time())
+            if (now - last) < float(interval):
+                return
+            setattr(self, key, now)
+        except Exception:
+            pass
+        self._mgl_log(msg)
     def _mgl_add_wire_item_from_points(
         self,
         name: str,
@@ -360,26 +386,84 @@ class MGLRendererMixin:
             scene.remove_by_tag(tag)
 
     def _mgl_disable_splats(self) -> None:
+        try:
+            self._mgl_log("splats: disable")
+        except Exception:
+            pass
         self._mgl_pending_splats = None
         self._mgl_render_splats = False
         self._mgl_splat_count = 0
         self._mgl_splats15_cpu = None
         try:
-            self._mgl_scene_splats_world = None
+            # keep dicts stable so picking/xforms don't fall back to mesh state
+            if not isinstance(getattr(self, "_mgl_scene_splats_world", None), dict):
+                self._mgl_scene_splats_world = {}
+            else:
+                self._mgl_scene_splats_world.clear()
         except Exception:
             pass
         try:
-            self._mgl_scene_splats_bounds_local = None
+            if not isinstance(getattr(self, "_mgl_scene_splats_bounds_local", None), dict):
+                self._mgl_scene_splats_bounds_local = {}
         except Exception:
             pass
         try:
-            self._mgl_scene_splat_xforms_by_owner = None
+            if not isinstance(getattr(self, "_mgl_scene_splat_xforms_by_owner", None), dict):
+                self._mgl_scene_splat_xforms_by_owner = {}
         except Exception:
             pass
         try:
-            self._mgl_scene_splat_bounds_by_owner = None
+            if not isinstance(getattr(self, "_mgl_scene_splat_bounds_by_owner", None), dict):
+                self._mgl_scene_splat_bounds_by_owner = {}
         except Exception:
             pass
+
+    def get_scene_owner_bounds(self, owner: str):
+        key = str(owner or "").strip()
+        if not key:
+            if np is None:
+                return (None, None)
+            z = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+            return (z, z)
+
+        # splat bounds (world)
+        try:
+            splat_bounds = getattr(self, "_mgl_scene_splat_bounds_by_owner", None)
+            if isinstance(splat_bounds, dict):
+                if key in splat_bounds:
+                    return splat_bounds[key]
+                lk = key.lower()
+                for k, v in splat_bounds.items():
+                    try:
+                        if str(k).strip().lower() == lk:
+                            return v
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
+        # mesh bounds
+        try:
+            mesh_bounds = getattr(self, "_mgl_scene_mesh_bounds_by_owner", None)
+            if not isinstance(mesh_bounds, dict):
+                mesh_bounds = getattr(self, "_mgl_scene_bounds_by_owner", None)
+            if isinstance(mesh_bounds, dict):
+                if key in mesh_bounds:
+                    return mesh_bounds[key]
+                lk = key.lower()
+                for k, v in mesh_bounds.items():
+                    try:
+                        if str(k).strip().lower() == lk:
+                            return v
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
+        if np is None:
+            return (None, None)
+        z = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+        return (z, z)
 
     def _mgl_set_scene_item_visibility(self, key: str, visible: bool) -> None:
         scene = getattr(self, "_mgl_scene", None)
@@ -581,9 +665,40 @@ class MGLRendererMixin:
             return
 
         visibility = getattr(self, "_mgl_scene_visibility", {}) or {}
+        try:
+            self._mgl_log_throttled(
+                "_mgl_splat_log_rebuild_start_ts",
+                "splats: rebuild start owners="
+                + str(len(splat_map))
+                + " visible="
+                + str(sum(1 for k in splat_map.keys() if visibility.get(k, True)))
+                + " preserve_camera="
+                + str(bool(preserve_camera)),
+                1.0,
+            )
+        except Exception:
+            pass
         xforms = getattr(self, "_mgl_scene_splat_xforms_by_owner", None)
         if not isinstance(xforms, dict):
-            xforms = getattr(self, "_mgl_scene_xforms_by_owner", {}) or {}
+            xforms = {}
+            try:
+                self._mgl_scene_splat_xforms_by_owner = xforms
+            except Exception:
+                pass
+        bounds_local = getattr(self, "_mgl_scene_splats_bounds_local", None)
+        if not isinstance(bounds_local, dict):
+            bounds_local = {}
+            try:
+                self._mgl_scene_splats_bounds_local = bounds_local
+            except Exception:
+                pass
+        bounds_by_owner = getattr(self, "_mgl_scene_splat_bounds_by_owner", None)
+        if not isinstance(bounds_by_owner, dict):
+            bounds_by_owner = {}
+            try:
+                self._mgl_scene_splat_bounds_by_owner = bounds_by_owner
+            except Exception:
+                pass
 
         # normalized lookup for xforms
         xforms_norm = {}
@@ -706,7 +821,7 @@ class MGLRendererMixin:
 
             # pivot = LOCAL bounds center if available, else current center
             try:
-                b = (getattr(self, "_mgl_scene_splats_bounds_local", {}) or {}).get(owner)
+                b = (bounds_local or {}).get(owner)
                 if b is not None:
                     bmin, bmax = b
                     pivot = ((bmin + bmax) * 0.5).astype(np.float32)
@@ -752,7 +867,7 @@ class MGLRendererMixin:
                 mins = a15[:, :3].min(axis=0).astype("f4")
                 maxs = a15[:, :3].max(axis=0).astype("f4")
                 try:
-                    self._mgl_scene_splat_bounds_by_owner[owner] = (mins, maxs)
+                    bounds_by_owner[owner] = (mins, maxs)
                 except Exception:
                     pass
             except Exception:
@@ -765,6 +880,14 @@ class MGLRendererMixin:
                 pass
 
         if not arrays15:
+            try:
+                self._mgl_log_throttled(
+                    "_mgl_splat_log_rebuild_empty_ts",
+                    "splats: rebuild empty (no visible splats)",
+                    1.0,
+                )
+            except Exception:
+                pass
             self._mgl_disable_splats()
             return
 
@@ -774,6 +897,14 @@ class MGLRendererMixin:
             pass
 
         combined = arrays15[0] if len(arrays15) == 1 else np.concatenate(arrays15, axis=0)
+        try:
+            self._mgl_log_throttled(
+                "_mgl_splat_log_combined_ts",
+                "splats: rebuild combined shape=" + str(getattr(combined, "shape", None)),
+                1.0,
+            )
+        except Exception:
+            pass
         self.set_splats(combined)
 
         if state is not None:
@@ -1491,6 +1622,21 @@ class MGLRendererMixin:
         self._mgl_prog["Mvp"].write(mvp.astype("f4").tobytes())
         self._dbgprint(dbg, "[MGL] after Mvp write", flush=True)
 
+        # If splat visibility changed, rebuild in GL context.
+        try:
+            if bool(getattr(self, "_mgl_splats_visibility_dirty", False)):
+                self._mgl_splats_visibility_dirty = False
+                if bool(getattr(self, "_mgl_render_splats", False)):
+                    try:
+                        self._mgl_rebuild_scene_splats(preserve_camera=True)
+                    except Exception as exc:
+                        try:
+                            self._mgl_log("splats: rebuild (visibility dirty) failed err=" + repr(exc))
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
         self._mgl_upload_pending_splats()
 
         scene = getattr(self, "_mgl_scene", None)
@@ -1590,6 +1736,25 @@ class MGLRendererMixin:
 
 
         # --- SPLATS (instanced-quad only) ---
+        try:
+            reason = None
+            if not bool(getattr(self, "_mgl_render_splats", False)):
+                reason = "render_splats=False"
+            elif getattr(self, "_mgl_splatq_vao", None) is None:
+                reason = "vao=None"
+            elif getattr(self, "_mgl_splatq_prog", None) is None:
+                reason = "prog=None"
+            elif not bool(getattr(self, "_mgl_splat_count", 0)):
+                reason = "count=0"
+            last = getattr(self, "_mgl_splat_skip_reason", None)
+            if reason != last:
+                self._mgl_splat_skip_reason = reason
+                if reason:
+                    self._mgl_log("splats: draw skip reason=" + str(reason))
+                else:
+                    self._mgl_log("splats: draw active count=" + str(getattr(self, "_mgl_splat_count", 0)))
+        except Exception:
+            pass
         try:
             if (
                 self._mgl_render_splats
@@ -2274,6 +2439,14 @@ class MGLRendererMixin:
         dbg = bool(getattr(self, "_mgl_debug", False))
         if dbg:
             print("[SPLAT] set_splats queue:", arr.shape, arr.dtype, flush=True)
+        try:
+            self._mgl_log_throttled(
+                "_mgl_splat_log_queue_ts",
+                "splats: set_splats queue shape=" + str(arr.shape),
+                1.0,
+            )
+        except Exception:
+            pass
 
         self._mgl_pending_splats = arr
         self._mgl_render_splats = True
@@ -2293,6 +2466,14 @@ class MGLRendererMixin:
 
         splats_np = self._mgl_pending_splats
         self._mgl_pending_splats = None
+        try:
+            self._mgl_log_throttled(
+                "_mgl_splat_log_upload_pending_ts",
+                "splats: upload pending shape=" + str(getattr(splats_np, "shape", None)),
+                1.0,
+            )
+        except Exception:
+            pass
 
         # --- frame camera from bounds ---
         pos = splats_np[:, :3]
@@ -2483,8 +2664,16 @@ class MGLRendererMixin:
                             "in_scale3",
                             "in_rot",
                         ),
-                    ],
-                )
+                        ],
+                    )
+                try:
+                    self._mgl_log_throttled(
+                        "_mgl_splat_log_upload_done_ts",
+                        "splats: upload done count=" + str(self._mgl_splat_count),
+                        1.0,
+                    )
+                except Exception:
+                    pass
 
     def _mgl_update_grid(self) -> None:
         if not _HAS_MGL or self._mgl_ctx is None:
@@ -3060,12 +3249,27 @@ class MGLRendererMixin:
                     try:
                         from echograph.util.splats_io import load_splats_ply
 
+                        try:
+                            self._mgl_log(
+                                "splats: load scene asset owner="
+                                + str(owner)
+                                + " visible="
+                                + str(bool(visible))
+                                + " path="
+                                + str(path)
+                            )
+                        except Exception:
+                            pass
                         splats = load_splats_ply(str(path), n=200_000)
                         arr = np.asarray(splats, dtype=np.float32)
                         if arr.ndim == 2 and arr.shape[1] in (8, 10, 14, 15):
                             has_splats = True
                             try:
                                 self._mgl_scene_splats[owner] = arr
+                            except Exception:
+                                pass
+                            try:
+                                self._mgl_log("splats: loaded owner=" + str(owner) + " shape=" + str(arr.shape))
                             except Exception:
                                 pass
                             mins = arr[:, :3].min(axis=0)
@@ -3081,6 +3285,10 @@ class MGLRendererMixin:
                                 pass
                     except Exception as exc:
                         self._mgl_error = f"Splat load failed: {exc}"
+                        try:
+                            self._mgl_log("splats: load failed owner=" + str(owner) + " err=" + repr(exc))
+                        except Exception:
+                            pass
                     continue
 
                 texture_override = None
@@ -3336,8 +3544,16 @@ class MGLRendererMixin:
                     pass
 
             if has_splats:
+                try:
+                    self._mgl_log("splats: scene load complete, rebuilding splats")
+                except Exception:
+                    pass
                 self._mgl_rebuild_scene_splats(preserve_camera=preserve_camera)
             else:
+                try:
+                    self._mgl_log("splats: scene load no splats, disable")
+                except Exception:
+                    pass
                 self._mgl_disable_splats()
 
         except Exception as exc:

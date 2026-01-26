@@ -202,6 +202,31 @@ class SceneAssemblyWidget(QtWidgets.QWidget):
                 "Connect one or more 3D import nodes first.",
             )
             return
+        # Ensure splats start visible on open (avoid auto-hidden splats)
+        try:
+            raw_hidden = getattr(self._node_item, "model", None)
+            raw_hidden = getattr(raw_hidden, "_scene_hidden", None)
+            if isinstance(raw_hidden, set):
+                hidden_set = raw_hidden
+            elif isinstance(raw_hidden, (list, tuple)):
+                hidden_set = {str(x) for x in raw_hidden if x}
+            else:
+                hidden_set = set()
+            changed = False
+            for a in assets:
+                if str(a.get("ext", "")).lower() == ".ply":
+                    name = (a.get("node") or "").strip()
+                    if name and name in hidden_set:
+                        hidden_set.discard(name)
+                        changed = True
+                    a["visible"] = True
+            if changed:
+                try:
+                    setattr(self._node_item.model, "_scene_hidden", hidden_set)
+                except Exception:
+                    pass
+        except Exception:
+            pass
         win = _resolve_window(self._node_item)
         handler = getattr(win, "open_scene_assets", None) if win is not None else None
         if not callable(handler):
@@ -309,7 +334,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             raw = _param_value(node, "splat_depth_test").strip().lower()
         except Exception:
             raw = ""
-        depth_on = True if raw in ("", "1", "true", "yes", "on") else False
+        depth_on = True if raw in ("1", "true", "yes", "on") else False
 
         chk = QtWidgets.QCheckBox()
         chk.setText("")
@@ -440,6 +465,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         # --- Selection -> Transforms, and Transforms -> Viewport ---
         card._scene_selected_owner = None
         card._xform_updating = False
+        card._scene_outliner_user_selected = False
 
         def _get_glv():
             win = card.window()
@@ -522,6 +548,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 return
 
             card._scene_selected_owner = owner
+            card._scene_outliner_user_selected = True
             xform_panel.setEnabled(True)
 
             # tell viewport which owner is selected (for gizmo draw)
@@ -601,14 +628,27 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             setattr(node, "_scene_hidden", out)
             return out
 
-        def _apply_visibility(name: str, visible: bool, btn=None):
+        def _apply_visibility(name: str, visible: bool):
             hidden = _hidden_set()
             if visible:
                 hidden.discard(name)
             else:
                 hidden.add(name)
-            if btn is not None:
-                btn.setIcon(_eye_icon(visible))
+            # Log visibility changes for debugging (splat/mesh eye toggle)
+            try:
+                win = card.window()
+                glv = getattr(win, "gl_view", None) if win is not None else None
+                if glv is not None:
+                    glv._mgl_log(
+                        "outliner: eye name="
+                        + str(name)
+                        + " visible="
+                        + str(bool(visible))
+                        + " hidden_count="
+                        + str(len(hidden))
+                    )
+            except Exception:
+                pass
             win = card.window()
             handler = getattr(win, "set_scene_asset_visible", None) if win is not None else None
             if callable(handler):
@@ -633,12 +673,21 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             return True
 
         def _refresh(scene_override=None):
+            prev_owner = getattr(card, "_scene_selected_owner", None)
+            try:
+                outliner.blockSignals(True)
+            except Exception:
+                pass
             outliner.clear()
             scene = scene_override if scene_override is not None else getattr(card, "_graph_scene", None)
             if scene is None:
                 empty = QtWidgets.QListWidgetItem("(scene not attached)")
                 empty.setFlags(QtCore.Qt.NoItemFlags)
                 outliner.addItem(empty)
+                try:
+                    outliner.blockSignals(False)
+                except Exception:
+                    pass
                 return
 
             try:
@@ -649,6 +698,10 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 empty = QtWidgets.QListWidgetItem("(scene node not found)")
                 empty.setFlags(QtCore.Qt.NoItemFlags)
                 outliner.addItem(empty)
+                try:
+                    outliner.blockSignals(False)
+                except Exception:
+                    pass
                 return
 
             try:
@@ -684,6 +737,10 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 empty = QtWidgets.QListWidgetItem("(no connected imports)")
                 empty.setFlags(QtCore.Qt.NoItemFlags)
                 outliner.addItem(empty)
+                try:
+                    outliner.blockSignals(False)
+                except Exception:
+                    pass
                 return
 
             hidden = _hidden_set()
@@ -699,10 +756,23 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 eye_btn = QtWidgets.QToolButton()
                 eye_btn.setAutoRaise(True)
                 eye_btn.setCheckable(True)
-                eye_btn.setChecked(visible)
+                # Avoid firing toggled during list rebuild
+                try:
+                    eye_btn.blockSignals(True)
+                    eye_btn.setChecked(visible)
+                finally:
+                    eye_btn.blockSignals(False)
                 eye_btn.setIcon(_eye_icon(visible))
                 eye_btn.setToolTip("Toggle visibility")
-                eye_btn.toggled.connect(lambda checked, n=name, b=eye_btn: _apply_visibility(n, checked, b))
+                def _on_eye_clicked(checked, n=name, b=eye_btn):
+                    # Update the icon immediately; defer visibility side-effects to avoid re-entrancy.
+                    try:
+                        b.setIcon(_eye_icon(checked))
+                    except Exception:
+                        pass
+                    QtCore.QTimer.singleShot(0, lambda: _apply_visibility(n, checked))
+                # Use clicked so programmatic setChecked() during refresh doesn't fire visibility changes.
+                eye_btn.clicked.connect(_on_eye_clicked)
                 row_layout.addWidget(eye_btn, 0)
 
                 idx_label = QtWidgets.QLabel(f"{idx}.")
@@ -760,7 +830,54 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 row_item.setSizeHint(row_widget.sizeHint())
                 outliner.addItem(row_item)
                 outliner.setItemWidget(row_item, row_widget)
-                _apply_visibility(name, visible, eye_btn)
+
+            # Restore prior selection if possible; otherwise clear selection/gizmo.
+            selected_row = None
+            if prev_owner and bool(getattr(card, "_scene_outliner_user_selected", False)):
+                try:
+                    for i in range(outliner.count()):
+                        it = outliner.item(i)
+                        if it is None:
+                            continue
+                        if (it.data(QtCore.Qt.UserRole) or "") == prev_owner:
+                            selected_row = i
+                            break
+                except Exception:
+                    selected_row = None
+
+            try:
+                if selected_row is not None:
+                    outliner.setCurrentRow(selected_row)
+                else:
+                    outliner.setCurrentRow(-1)
+                    outliner.clearSelection()
+                    card._scene_selected_owner = None
+                    card._scene_outliner_user_selected = False
+                    try:
+                        xform_panel.setEnabled(False)
+                    except Exception:
+                        pass
+                    # Hide gizmo when nothing is selected
+                    try:
+                        glv = _get_glv()
+                        if glv is not None:
+                            glv._xform_gizmo_owner = None
+                            glv._xform_gizmo_owner_kind = None
+                            glv._xform_gizmo_pos_locked = False
+                            glv.update()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            try:
+                outliner.blockSignals(False)
+            except Exception:
+                pass
+
+            # If we restored a selection, sync panels/gizmo now.
+            if selected_row is not None:
+                _on_outliner_select()
 
         def _connect(scene):
             if scene is None:

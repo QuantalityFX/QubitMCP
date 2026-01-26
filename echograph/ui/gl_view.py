@@ -669,6 +669,10 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._mgl_scene = MGLScene()
         self._mgl_scene_visibility: Dict[str, bool] = {}
         self._mgl_scene_splats: Dict[str, "np.ndarray"] = {}
+        self._mgl_scene_splats_bounds_local: Dict[str, "np.ndarray"] = {}
+        self._mgl_scene_splat_bounds_by_owner: Dict[str, "np.ndarray"] = {}
+        self._mgl_scene_mesh_bounds_by_owner: Dict[str, "np.ndarray"] = {}
+        self._mgl_scene_splat_xforms_by_owner: Dict[str, Dict[str, Tuple[float, float, float]]] = {}
         self._mgl_splat_bbox_vao = None
         self._mgl_splat_bbox_vbo = None
         self._mgl_mesh_vbos = []
@@ -1336,6 +1340,13 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             self._xform_gizmo_owner = None
             self._xform_gizmo_owner_kind = None
             self._xform_gizmo_pos_locked = False
+            # Also clear outliner selection if available
+            try:
+                w = self.window()
+                if w is not None and hasattr(w, "clear_scene_asset_selection"):
+                    w.clear_scene_asset_selection()
+            except Exception:
+                pass
             self.update()
             return
 
@@ -1366,18 +1377,103 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         key = str(owner or "").strip()
         if not key:
             return
-        self._mgl_scene_visibility[key] = bool(visible)
-        if self._use_moderngl:
-            try:
-                self._mgl_set_scene_item_visibility(key, bool(visible))
-            except Exception:
-                pass
-            if key in self._mgl_scene_splats:
+        try:
+            self._mgl_scene_visibility[key] = bool(visible)
+            if self._use_moderngl:
                 try:
-                    self._mgl_rebuild_scene_splats(preserve_camera=True)
+                    self._mgl_log("scene: set_visible owner=" + str(key) + " visible=" + str(bool(visible)))
                 except Exception:
                     pass
-            self.update()
+
+                # Log caller stack for splat visibility changes (helps trace unexpected toggles/crashes).
+                try:
+                    if key in getattr(self, "_mgl_scene_splats", {}):
+                        import traceback
+                        stack = " | ".join(
+                            line.strip() for line in traceback.format_stack(limit=6) if line.strip()
+                        )
+                        self._mgl_log("scene: set_visible caller=" + stack)
+                except Exception:
+                    pass
+
+                try:
+                    self._mgl_set_scene_item_visibility(key, bool(visible))
+                except Exception:
+                    pass
+                if key in self._mgl_scene_splats:
+                    try:
+                        splat_map = getattr(self, "_mgl_scene_splats", None) or {}
+                        visibility = getattr(self, "_mgl_scene_visibility", {}) or {}
+                        any_visible = False
+                        all_visible = True
+                        if isinstance(splat_map, dict):
+                            for k in splat_map.keys():
+                                v = bool(visibility.get(k, True))
+                                any_visible = any_visible or v
+                                all_visible = all_visible and v
+                        try:
+                            self._mgl_log(
+                                "scene: splat_visibility any="
+                                + str(any_visible)
+                                + " all="
+                                + str(all_visible)
+                            )
+                        except Exception:
+                            pass
+
+                        # Flip render flag immediately. Avoid rebuild on toggle to prevent GL crashes.
+                        try:
+                            self._mgl_render_splats = bool(any_visible)
+                        except Exception:
+                            pass
+                        # Only rebuild if turning splats ON and buffers are missing.
+                        try:
+                            need_rebuild = bool(any_visible) and (
+                                getattr(self, "_mgl_splatq_vao", None) is None
+                                or not bool(getattr(self, "_mgl_splat_count", 0))
+                            )
+                            self._mgl_splats_visibility_dirty = bool(need_rebuild)
+                        except Exception:
+                            pass
+                        try:
+                            self._mgl_log(
+                                "scene: splat_render="
+                                + str(getattr(self, "_mgl_render_splats", False))
+                                + " dirty="
+                                + str(getattr(self, "_mgl_splats_visibility_dirty", False))
+                            )
+                        except Exception:
+                            pass
+                        try:
+                            self._mgl_log(
+                                "scene: splat_buffers vao="
+                                + str(getattr(self, "_mgl_splatq_vao", None) is not None)
+                                + " count="
+                                + str(getattr(self, "_mgl_splat_count", 0))
+                            )
+                        except Exception:
+                            pass
+                        self.update()
+                        return
+                    except Exception:
+                        try:
+                            import traceback
+                            self._mgl_log(
+                                "scene: rebuild splats failed owner="
+                                + str(key)
+                                + " tb="
+                                + traceback.format_exc().strip()
+                            )
+                        except Exception:
+                            pass
+                self.update()
+        except Exception:
+            try:
+                import traceback
+                self._mgl_log("scene: set_visible exception tb=" + traceback.format_exc().strip())
+            except Exception:
+                pass
+            return
 
     def rename_scene_asset_owner(self, old_name: str, new_name: str) -> None:
         old_key = str(old_name or "").strip()
@@ -2420,7 +2516,6 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                         )
 
                         self._axis_overlay.draw(mvp)
-                        print("[GIZMO] pos=", pos, "locked=", getattr(self, "_xform_gizmo_pos_locked", None), flush=True)
                 except Exception as exc:
                     print("[AXIS_OVERLAY] disabled:", exc, flush=True)
                     self._debug_show_axis_overlay = False
@@ -3407,6 +3502,16 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                     w = self.window()
                                     if hasattr(w, "select_scene_asset"):
                                         w.select_scene_asset(owner)
+                                    try:
+                                        kind = getattr(renderer, "_mgl_last_pick_kind", None)
+                                    except Exception:
+                                        kind = None
+                                    try:
+                                        self._mgl_log(
+                                            "scene: pick owner=" + str(owner) + " kind=" + str(kind)
+                                        )
+                                    except Exception:
+                                        pass
 
                                     # Force gizmo to the owner pivot (stored xform) or bounds center fallback
                                     self._xform_gizmo_owner = owner
@@ -3436,12 +3541,18 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                             self._xform_gizmo_pos = (float(xf_pos[0]), float(xf_pos[1]), float(xf_pos[2]))
                                             self._xform_gizmo_pos_locked = True
                                         else:
-                                            # fallback to bounds center
-                                            bounds_map = (
-                                                getattr(renderer, "_mgl_scene_mesh_bounds_by_owner", None)
-                                                or getattr(renderer, "_mgl_scene_bounds_by_owner", None)
-                                                or getattr(self, "_mgl_scene_bounds_by_owner", None)
-                                            )
+                                            # fallback to bounds center (splat vs mesh)
+                                            if is_splat:
+                                                bounds_map = (
+                                                    getattr(renderer, "_mgl_scene_splat_bounds_by_owner", None)
+                                                    or getattr(renderer, "_mgl_scene_bounds_by_owner", None)
+                                                )
+                                            else:
+                                                bounds_map = (
+                                                    getattr(renderer, "_mgl_scene_mesh_bounds_by_owner", None)
+                                                    or getattr(renderer, "_mgl_scene_bounds_by_owner", None)
+                                                    or getattr(self, "_mgl_scene_bounds_by_owner", None)
+                                                )
                                             if isinstance(bounds_map, dict) and owner in bounds_map:
                                                 mins, maxs = bounds_map.get(owner) or (None, None)
                                                 if mins is not None and maxs is not None:
@@ -3459,6 +3570,16 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                     self._xform_gizmo_owner = None
                                     self._xform_gizmo_owner_kind = None
                                     self._xform_gizmo_pos_locked = False
+                                    try:
+                                        self._mgl_log("scene: click empty -> hide gizmo")
+                                    except Exception:
+                                        pass
+                                    try:
+                                        w = self.window()
+                                        if hasattr(w, "clear_scene_asset_selection"):
+                                            w.clear_scene_asset_selection()
+                                    except Exception:
+                                        pass
                                     self.update()
                 except Exception:
                     pass
@@ -3540,6 +3661,16 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             self._xform_gizmo_owner = None
             self._xform_gizmo_owner_kind = None
             self._xform_gizmo_pos_locked = False
+            try:
+                self._mgl_log("scene: focus lost -> hide gizmo")
+            except Exception:
+                pass
+            try:
+                w = self.window()
+                if hasattr(w, "clear_scene_asset_selection"):
+                    w.clear_scene_asset_selection()
+            except Exception:
+                pass
             self.update()
         except Exception:
             pass

@@ -2498,6 +2498,13 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             print("[open_scene_assets] no assets", flush=True)
             return
 
+        # Ensure outliner selection/gizmo start cleared on scene open
+        try:
+            if hasattr(self, "clear_scene_asset_selection"):
+                self.clear_scene_asset_selection()
+        except Exception:
+            pass
+
         clean = []
         visibility_map = {}
         for entry in assets:
@@ -2601,6 +2608,43 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                         outliner.setCurrentRow(i)
                         outliner.scrollToItem(it)
                         return
+            except Exception:
+                pass
+
+    def clear_scene_asset_selection(self) -> None:
+        try:
+            gl_view = getattr(self, "gl_view", None)
+            if gl_view is not None:
+                gl_view._mgl_log("scene: clear outliner selection")
+        except Exception:
+            pass
+        for card in (getattr(self, "_card_by_node", {}) or {}).values():
+            outliner = getattr(card, "_scene_outliner_widget", None)
+            if outliner is None:
+                continue
+            try:
+                outliner.blockSignals(True)
+                outliner.setCurrentRow(-1)
+                outliner.clearSelection()
+            except Exception:
+                pass
+            finally:
+                try:
+                    outliner.blockSignals(False)
+                except Exception:
+                    pass
+            try:
+                card._scene_selected_owner = None
+            except Exception:
+                pass
+            try:
+                card._scene_outliner_user_selected = False
+            except Exception:
+                pass
+            try:
+                panel = getattr(card, "_xform_panel", None)
+                if panel is not None:
+                    panel.setEnabled(False)
             except Exception:
                 pass
 
@@ -3046,9 +3090,6 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
         self._cardsLayout.insertWidget(0, card)
         self._card_by_node[node.name] = card
-        # TEMP test: auto-select an outliner row when the Scene card exists
-        if hasattr(card, "_scene_outliner_widget"):
-            QtCore.QTimer.singleShot(50, lambda: self.select_scene_asset("bonsai"))
 
         self._trim_cards()
 

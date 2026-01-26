@@ -1,0 +1,38 @@
+2026-01-25 18:03:35 scene: clear outliner selection
+2026-01-25 18:03:35 splats: draw skip reason=render_splats=False
+2026-01-25 18:03:35 splats: load scene asset owner=bonsai visible=True path=E:\GaussingSplats\models\bonsai\point_cloud\iteration_30000\point_cloud.ply
+2026-01-25 18:03:35 splats: loaded owner=bonsai shape=(200000, 15)
+2026-01-25 18:03:35 splats: scene load complete, rebuilding splats
+2026-01-25 18:03:35 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 18:03:35 splats: rebuild combined shape=(200000, 15)
+2026-01-25 18:03:35 splats: set_splats queue shape=(200000, 15)
+2026-01-25 18:03:35 scene: clear outliner selection
+2026-01-25 18:03:35 splats: upload pending shape=(200000, 15)
+2026-01-25 18:03:35 splats: upload done count=200000
+2026-01-25 18:03:35 splats: draw active count=200000
+2026-01-25 18:03:40 scene: pick owner=katana kind=mesh
+2026-01-25 18:03:43 scene: pick owner=bonsai kind=splat
+2026-01-25 18:03:44 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 18:03:44 splats: rebuild combined shape=(200000, 15)
+2026-01-25 18:03:44 splats: set_splats queue shape=(200000, 15)
+2026-01-25 18:03:44 splats: upload pending shape=(200000, 15)
+2026-01-25 18:03:44 splats: upload done count=200000
+2026-01-25 18:03:46 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 18:03:46 splats: rebuild combined shape=(200000, 15)
+2026-01-25 18:03:46 splats: set_splats queue shape=(200000, 15)
+2026-01-25 18:03:46 splats: upload pending shape=(200000, 15)
+2026-01-25 18:03:46 splats: upload done count=200000
+2026-01-25 18:03:47 scene: focus lost -> hide gizmo
+2026-01-25 18:03:47 scene: clear outliner selection
+2026-01-25 18:03:48 outliner: eye name=bonsai visible=False hidden_count=1
+2026-01-25 18:03:48 scene: set_visible owner=bonsai visible=False
+2026-01-25 18:03:48 scene: set_visible caller=File "V:\Source\Repos\EchoMatrixMCP\echograph_app.py", line 110, in <module>
+    rc = app.exec() | File "V:\Source\Repos\EchoMatrixMCP\nodes\scene\spec.py", line 773, in <lambda>
+    QtCore.QTimer.singleShot(0, lambda: _apply_visibility(n, checked)) | File "V:\Source\Repos\EchoMatrixMCP\nodes\scene\spec.py", line 655, in _apply_visibility
+    handler(name, visible) | File "V:\Source\Repos\EchoMatrixMCP\echograph_shelf.py", line 2583, in set_scene_asset_visible
+    handler(owner, visible) | File "V:\Source\Repos\EchoMatrixMCP\echograph\ui\gl_view.py", line 1393, in set_scene_asset_visible
+    line.strip() for line in traceback.format_stack(limit=6) if line.strip()
+2026-01-25 18:03:48 scene: splat_visibility any=False all=False
+2026-01-25 18:03:48 scene: splat_render=False dirty=False
+2026-01-25 18:03:48 scene: splat_buffers vao=True count=200000
+2026-01-25 18:03:48 splats: draw skip reason=render_splats=False

@@ -1885,6 +1885,31 @@ class NodeItem(QtWidgets.QGraphicsObject):
             )
             return
 
+        # Ensure splats start visible on open (avoid auto-hidden splats)
+        try:
+            raw_hidden = getattr(getattr(self, "model", None), "_scene_hidden", None)
+            if isinstance(raw_hidden, set):
+                hidden_set = raw_hidden
+            elif isinstance(raw_hidden, (list, tuple)):
+                hidden_set = {str(x) for x in raw_hidden if x}
+            else:
+                hidden_set = set()
+            changed = False
+            for a in assets:
+                if str(a.get("ext", "")).lower() == ".ply":
+                    name = (a.get("node") or "").strip()
+                    if name and name in hidden_set:
+                        hidden_set.discard(name)
+                        changed = True
+                    a["visible"] = True
+            if changed:
+                try:
+                    setattr(self.model, "_scene_hidden", hidden_set)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
         parent = _top_level_parent_for_dialog()
         if parent is None:
             QtWidgets.QMessageBox.warning(
