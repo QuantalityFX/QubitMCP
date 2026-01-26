@@ -2672,6 +2672,19 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 )
                 if callable(getf):
                     xf = getf(owner)
+                    try:
+                        gl_view._mgl_log(
+                            "scene: persist xform owner="
+                            + str(owner)
+                            + " pos="
+                            + str((xf or {}).get("pos"))
+                            + " rot="
+                            + str((xf or {}).get("rot"))
+                            + " scl="
+                            + str((xf or {}).get("scl"))
+                        )
+                    except Exception:
+                        pass
         except Exception:
             xf = None
         for card in (getattr(self, "_card_by_node", {}) or {}).values():

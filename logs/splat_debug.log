@@ -1,353 +1,261 @@
-2026-01-25 19:41:26 scene: focus lost -> keep gizmo
-2026-01-25 19:41:32 scene: grid_toggle=False vao=False count=0
-2026-01-25 19:41:45 scene: clear outliner selection
-2026-01-25 19:41:45 grid: update start size=20.0 cells=50
-2026-01-25 19:41:45 grid: update done count=204 vao=True vbo=True
-2026-01-25 19:41:45 splats: draw skip reason=render_splats=False
-2026-01-25 19:41:45 splats: load scene asset owner=bonsai visible=True path=E:\GaussingSplats\models\bonsai\point_cloud\iteration_30000\point_cloud.ply
-2026-01-25 19:41:45 splats: loaded owner=bonsai shape=(200000, 15)
-2026-01-25 19:41:45 splats: scene load complete, rebuilding splats
-2026-01-25 19:41:45 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 19:41:45 scene: clear outliner selection
-2026-01-25 19:41:45 splats: draw active count=200000
-2026-01-25 19:41:47 scene: click empty -> keep gizmo
-2026-01-25 19:41:48 scene: pick owner=bonsai kind=splat
-2026-01-25 19:41:50 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 19:41:52 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 19:41:53 scene: focus lost -> keep gizmo
-2026-01-25 19:41:53 scene: grid_toggle=True vao=True count=204
-2026-01-25 19:41:53 grid: draw attempt count=204
-2026-01-25 19:41:54 grid: draw attempt count=204
-2026-01-25 19:41:55 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 19:41:55 grid: draw attempt count=204
-2026-01-25 19:41:56 grid: draw attempt count=204
-2026-01-25 19:41:56 scene: focus lost -> keep gizmo
-2026-01-25 19:41:56 scene: grid_toggle=False vao=True count=204
-2026-01-25 19:41:57 scene: grid_toggle=True vao=True count=204
-2026-01-25 19:41:57 grid: draw attempt count=204
-2026-01-25 19:41:57 scene: grid_toggle=False vao=True count=204
-2026-01-25 19:41:57 scene: grid_toggle=True vao=True count=204
-2026-01-25 19:41:58 scene: grid_toggle=False vao=True count=204
-2026-01-25 19:42:07 scene: click empty -> keep gizmo
-2026-01-25 19:42:08 scene: click empty -> keep gizmo
-2026-01-25 19:42:09 scene: click empty -> keep gizmo
-2026-01-25 19:42:09 scene: click empty -> keep gizmo
-2026-01-25 19:42:10 scene: focus lost -> keep gizmo
-2026-01-25 19:42:11 scene: click empty -> keep gizmo
-2026-01-25 19:42:12 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 19:42:14 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 19:42:16 scene: pick owner=katana kind=mesh
-2026-01-25 19:42:17 scene: pick owner=bonsai kind=splat
-2026-01-25 19:42:18 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 19:42:21 scene: focus lost -> keep gizmo
-2026-01-25 19:42:22 scene: clear outliner selection
-2026-01-25 19:42:22 splats: load scene asset owner=bonsai visible=True path=E:\GaussingSplats\models\bonsai\point_cloud\iteration_30000\point_cloud.ply
-2026-01-25 19:42:22 splats: loaded owner=bonsai shape=(200000, 15)
-2026-01-25 19:42:22 splats: scene load complete, rebuilding splats
-2026-01-25 19:42:22 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 19:42:22 scene: clear outliner selection
-2026-01-25 19:42:30 scene: pick owner=katana kind=mesh
-2026-01-25 19:42:32 scene: pick owner=bonsai kind=splat
-2026-01-25 19:42:33 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 19:42:36 scene: pick owner=katana kind=mesh
-2026-01-25 19:42:38 scene: pick owner=bonsai kind=splat
-2026-01-25 19:42:39 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 19:42:40 scene: focus lost -> keep gizmo
-2026-01-25 19:42:41 scene: clear outliner selection
-2026-01-25 19:42:41 splats: load scene asset owner=bonsai visible=True path=E:\GaussingSplats\models\bonsai\point_cloud\iteration_30000\point_cloud.ply
-2026-01-25 19:42:41 splats: loaded owner=bonsai shape=(200000, 15)
-2026-01-25 19:42:41 splats: scene load complete, rebuilding splats
-2026-01-25 19:42:41 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 19:42:41 scene: clear outliner selection
-2026-01-25 19:42:45 scene: click empty -> keep gizmo
-2026-01-25 19:42:45 scene: pick owner=bonsai kind=splat
-2026-01-25 19:42:47 scene: click empty -> keep gizmo
-2026-01-25 19:42:48 scene: click empty -> keep gizmo
-2026-01-25 19:42:48 scene: click empty -> keep gizmo
-2026-01-25 19:42:48 scene: click empty -> keep gizmo
-2026-01-25 19:42:49 scene: focus lost -> keep gizmo
-2026-01-25 19:45:54 scene: focus lost -> keep gizmo
-2026-01-25 19:45:54 scene: grid_toggle=True vao=True count=204
-2026-01-25 19:45:54 grid: draw attempt count=204
-2026-01-25 19:45:55 scene: grid_toggle=False vao=True count=204
-2026-01-25 19:53:08 scene: pick owner=bonsai kind=splat
-2026-01-25 19:53:09 scene: click empty -> keep gizmo
-2026-01-25 19:53:10 scene: click empty -> keep gizmo
-2026-01-25 19:53:11 scene: click empty -> keep gizmo
-2026-01-25 19:53:11 scene: click empty -> keep gizmo
-2026-01-25 19:53:11 scene: click empty -> keep gizmo
-2026-01-25 19:53:12 scene: click empty -> keep gizmo
-2026-01-25 19:53:13 scene: pick owner=bonsai kind=splat
-2026-01-25 19:53:13 scene: click empty -> keep gizmo
-2026-01-25 19:53:15 scene: focus lost -> keep gizmo
-2026-01-25 19:53:15 scene: grid_toggle=True vao=True count=204
-2026-01-25 19:53:15 grid: draw attempt count=204
-2026-01-25 19:53:16 grid: draw attempt count=204
-2026-01-25 19:53:16 scene: click empty -> keep gizmo
-2026-01-25 19:53:17 scene: pick owner=bonsai kind=splat
-2026-01-25 19:53:17 grid: draw attempt count=204
-2026-01-25 19:53:17 scene: focus lost -> keep gizmo
-2026-01-25 19:53:18 scene: grid_toggle=False vao=True count=204
-2026-01-25 19:53:18 scene: grid_toggle=True vao=True count=204
-2026-01-25 19:53:18 grid: draw attempt count=204
-2026-01-25 19:53:19 scene: grid_toggle=False vao=True count=204
-2026-01-25 19:53:20 scene: pick owner=bonsai kind=splat
-2026-01-25 19:53:21 scene: click empty -> keep gizmo
-2026-01-25 19:53:21 scene: click empty -> keep gizmo
-2026-01-25 19:53:21 scene: click empty -> keep gizmo
-2026-01-25 19:53:22 scene: click empty -> keep gizmo
-2026-01-25 19:53:23 scene: click empty -> keep gizmo
-2026-01-25 19:53:23 scene: click empty -> keep gizmo
-2026-01-25 19:53:23 scene: click empty -> keep gizmo
-2026-01-25 19:53:24 scene: focus lost -> keep gizmo
-2026-01-25 19:53:30 scene: pick owner=bonsai kind=splat
-2026-01-25 19:53:31 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 19:53:32 scene: click empty -> keep gizmo
-2026-01-25 19:53:32 scene: pick owner=katana kind=mesh
-2026-01-25 19:53:36 scene: click empty -> keep gizmo
-2026-01-25 19:53:37 scene: pick owner=bonsai kind=splat
-2026-01-25 19:53:38 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 19:53:39 scene: focus lost -> keep gizmo
-2026-01-25 19:53:41 scene: grid_toggle=False vao=False count=0
-2026-01-25 19:54:10 scene: clear outliner selection
-2026-01-25 19:54:10 grid: update start size=20.0 cells=50
-2026-01-25 19:54:10 grid: update done count=204 vao=True vbo=True
-2026-01-25 19:54:10 splats: draw skip reason=render_splats=False
-2026-01-25 19:54:10 splats: load scene asset owner=bonsai visible=True path=E:\GaussingSplats\models\bonsai\point_cloud\iteration_30000\point_cloud.ply
-2026-01-25 19:54:10 splats: loaded owner=bonsai shape=(200000, 15)
-2026-01-25 19:54:10 splats: scene load complete, rebuilding splats
-2026-01-25 19:54:10 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 19:54:10 scene: clear outliner selection
-2026-01-25 19:54:10 splats: draw active count=200000
-2026-01-25 19:54:18 scene: pick owner=bonsai kind=splat
-2026-01-25 19:54:20 scene: focus lost -> keep gizmo
-2026-01-25 19:54:20 scene: grid_toggle=True vao=True count=204
-2026-01-25 19:54:20 grid: draw attempt count=204
-2026-01-25 19:54:21 scene: grid_toggle=False vao=True count=204
-2026-01-25 19:54:24 scene: focus lost -> keep gizmo
-2026-01-25 19:54:24 scene: grid_toggle=True vao=True count=204
-2026-01-25 19:54:24 grid: draw attempt count=204
-2026-01-25 19:54:25 grid: draw attempt count=204
-2026-01-25 19:54:26 scene: focus lost -> keep gizmo
-2026-01-25 19:54:26 outliner: eye name=bonsai visible=False hidden_count=1
-2026-01-25 19:54:26 splats: draw skip reason=render_splats=False
-2026-01-25 19:54:26 outliner: eye name=bonsai visible=True hidden_count=0
-2026-01-25 19:54:26 splats: draw active count=200000
-2026-01-25 19:54:26 grid: draw attempt count=204
-2026-01-25 19:54:27 grid: draw attempt count=204
-2026-01-25 19:54:28 scene: focus lost -> keep gizmo
-2026-01-25 19:54:28 outliner: eye name=bonsai visible=False hidden_count=1
-2026-01-25 19:54:28 splats: draw skip reason=render_splats=False
-2026-01-25 19:54:28 outliner: eye name=bonsai visible=True hidden_count=0
-2026-01-25 19:54:28 splats: draw active count=200000
-2026-01-25 19:54:28 grid: draw attempt count=204
-2026-01-25 19:54:29 scene: pick owner=bonsai kind=splat
-2026-01-25 19:54:29 grid: draw attempt count=204
-2026-01-25 19:54:30 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 19:54:30 grid: draw attempt count=204
-2026-01-25 19:54:31 grid: draw attempt count=204
-2026-01-25 19:54:32 scene: focus lost -> keep gizmo
-2026-01-25 19:54:32 scene: grid_toggle=False vao=True count=204
-2026-01-25 19:54:32 scene: grid_toggle=True vao=True count=204
-2026-01-25 19:54:32 grid: draw attempt count=204
-2026-01-25 19:54:33 grid: draw attempt count=204
-2026-01-25 19:54:34 scene: pick owner=katana kind=mesh
-2026-01-25 19:54:34 grid: draw attempt count=204
-2026-01-25 19:54:35 grid: draw attempt count=204
-2026-01-25 19:54:36 scene: pick owner=bonsai kind=splat
-2026-01-25 19:54:36 grid: draw attempt count=204
-2026-01-25 19:54:37 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 19:54:37 grid: draw attempt count=204
-2026-01-25 19:54:39 grid: draw attempt count=204
-2026-01-25 19:54:39 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 19:54:40 grid: draw attempt count=204
-2026-01-25 19:54:40 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 19:54:41 grid: draw attempt count=204
-2026-01-25 19:54:41 scene: focus lost -> keep gizmo
-2026-01-25 19:54:41 scene: grid_toggle=False vao=True count=204
-2026-01-25 19:54:42 scene: grid_toggle=True vao=True count=204
-2026-01-25 19:54:42 grid: draw attempt count=204
-2026-01-25 19:54:43 grid: draw attempt count=204
-2026-01-25 19:54:43 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 19:54:44 grid: draw attempt count=204
-2026-01-25 19:54:45 grid: draw attempt count=204
-2026-01-25 19:54:46 grid: draw attempt count=204
-2026-01-25 19:54:47 grid: draw attempt count=204
-2026-01-25 19:54:47 scene: focus lost -> keep gizmo
-2026-01-25 19:54:51 scene: grid_toggle=False vao=False count=0
-2026-01-25 19:55:05 scene: clear outliner selection
-2026-01-25 19:55:05 grid: update start size=20.0 cells=50
-2026-01-25 19:55:05 grid: update done count=204 vao=True vbo=True
-2026-01-25 19:55:05 splats: draw skip reason=render_splats=False
-2026-01-25 19:55:05 splats: load scene asset owner=bonsai visible=True path=E:\GaussingSplats\models\bonsai\point_cloud\iteration_30000\point_cloud.ply
-2026-01-25 19:55:05 splats: loaded owner=bonsai shape=(200000, 15)
-2026-01-25 19:55:05 splats: scene load complete, rebuilding splats
-2026-01-25 19:55:05 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 19:55:05 scene: clear outliner selection
-2026-01-25 19:55:05 splats: draw active count=200000
-2026-01-25 19:55:11 scene: pick owner=bonsai kind=splat
-2026-01-25 19:55:12 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 19:55:13 scene: pick owner=katana kind=mesh
-2026-01-25 19:55:15 scene: click empty -> keep gizmo
-2026-01-25 19:55:16 scene: pick owner=bonsai kind=splat
-2026-01-25 19:55:16 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 19:55:18 scene: pick owner=katana kind=mesh
-2026-01-25 19:55:20 scene: click empty -> keep gizmo
-2026-01-25 19:55:21 scene: click empty -> keep gizmo
-2026-01-25 19:55:22 scene: pick owner=bonsai kind=splat
-2026-01-25 19:55:23 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 19:55:24 scene: focus lost -> keep gizmo
-2026-01-25 19:55:26 scene: grid_toggle=False vao=False count=0
-2026-01-25 19:55:39 scene: clear outliner selection
-2026-01-25 19:55:39 grid: update start size=20.0 cells=50
-2026-01-25 19:55:39 grid: update done count=204 vao=True vbo=True
-2026-01-25 19:55:39 splats: draw skip reason=render_splats=False
-2026-01-25 19:55:40 splats: load scene asset owner=bonsai visible=True path=E:\GaussingSplats\models\bonsai\point_cloud\iteration_30000\point_cloud.ply
-2026-01-25 19:55:40 splats: loaded owner=bonsai shape=(200000, 15)
-2026-01-25 19:55:40 splats: scene load complete, rebuilding splats
-2026-01-25 19:55:40 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 19:55:40 scene: clear outliner selection
-2026-01-25 19:55:40 splats: draw active count=200000
-2026-01-25 19:55:44 scene: pick owner=katana kind=mesh
-2026-01-25 19:55:49 scene: focus lost -> keep gizmo
-2026-01-25 19:55:51 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 19:55:52 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 19:55:54 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 19:55:55 scene: focus lost -> keep gizmo
-2026-01-25 19:56:00 scene: focus lost -> keep gizmo
-2026-01-25 19:56:01 scene: clear outliner selection
-2026-01-25 19:56:01 splats: load scene asset owner=bonsai visible=True path=E:\GaussingSplats\models\bonsai\point_cloud\iteration_30000\point_cloud.ply
-2026-01-25 19:56:01 splats: loaded owner=bonsai shape=(200000, 15)
-2026-01-25 19:56:01 splats: scene load complete, rebuilding splats
-2026-01-25 19:56:01 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 19:56:01 scene: clear outliner selection
-2026-01-25 19:56:04 scene: pick owner=bonsai kind=splat
-2026-01-25 19:56:05 scene: pick owner=katana kind=mesh
-2026-01-25 19:56:08 scene: pick owner=bonsai kind=splat
-2026-01-25 19:56:09 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 19:56:10 scene: focus lost -> keep gizmo
-2026-01-25 19:56:10 scene: clear outliner selection
-2026-01-25 19:56:10 splats: load scene asset owner=bonsai visible=True path=E:\GaussingSplats\models\bonsai\point_cloud\iteration_30000\point_cloud.ply
-2026-01-25 19:56:11 splats: loaded owner=bonsai shape=(200000, 15)
-2026-01-25 19:56:11 splats: scene load complete, rebuilding splats
-2026-01-25 19:56:11 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 19:56:11 scene: clear outliner selection
-2026-01-25 19:56:13 scene: pick owner=katana kind=mesh
-2026-01-25 19:56:14 scene: pick owner=bonsai kind=splat
-2026-01-25 19:56:15 scene: focus lost -> keep gizmo
-2026-01-25 19:56:19 scene: pick owner=katana kind=mesh
-2026-01-25 19:56:22 scene: focus lost -> keep gizmo
-2026-01-25 19:56:24 scene: grid_toggle=False vao=False count=0
-2026-01-25 19:56:53 scene: clear outliner selection
-2026-01-25 19:56:54 grid: update start size=20.0 cells=50
-2026-01-25 19:56:54 grid: update done count=204 vao=True vbo=True
-2026-01-25 19:56:54 splats: draw skip reason=render_splats=False
-2026-01-25 19:56:54 splats: load scene asset owner=bonsai visible=True path=E:\GaussingSplats\models\bonsai\point_cloud\iteration_30000\point_cloud.ply
-2026-01-25 19:56:54 splats: loaded owner=bonsai shape=(200000, 15)
-2026-01-25 19:56:54 splats: scene load complete, rebuilding splats
-2026-01-25 19:56:54 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 19:56:54 scene: clear outliner selection
-2026-01-25 19:56:54 splats: draw active count=200000
-2026-01-25 19:56:57 scene: pick owner=katana kind=mesh
-2026-01-25 19:56:57 scene: pick owner=bonsai kind=splat
-2026-01-25 19:56:58 scene: pick owner=katana kind=mesh
-2026-01-25 19:57:00 scene: focus lost -> keep gizmo
-2026-01-25 19:58:29 scene: focus lost -> keep gizmo
-2026-01-25 19:58:31 scene: grid_toggle=False vao=False count=0
-2026-01-25 19:58:42 scene: clear outliner selection
-2026-01-25 19:58:43 grid: update start size=20.0 cells=50
-2026-01-25 19:58:43 grid: update done count=204 vao=True vbo=True
-2026-01-25 19:58:43 splats: draw skip reason=render_splats=False
-2026-01-25 19:58:43 splats: load scene asset owner=bonsai visible=True path=E:\GaussingSplats\models\bonsai\point_cloud\iteration_30000\point_cloud.ply
-2026-01-25 19:58:43 splats: loaded owner=bonsai shape=(200000, 15)
-2026-01-25 19:58:43 splats: scene load complete, rebuilding splats
-2026-01-25 19:58:43 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 19:58:43 scene: clear outliner selection
-2026-01-25 19:58:43 splats: draw active count=200000
-2026-01-25 19:59:54 scene: click empty -> keep gizmo
-2026-01-25 19:59:55 scene: focus lost -> keep gizmo
-2026-01-25 19:59:55 scene: grid_toggle=True vao=True count=204
-2026-01-25 19:59:55 grid: draw attempt count=204
-2026-01-25 19:59:55 scene: grid_toggle=False vao=True count=204
-2026-01-25 20:17:33 scene: grid_toggle=False vao=False count=0
-2026-01-25 20:17:58 scene: clear outliner selection
-2026-01-25 20:17:58 grid: update start size=20.0 cells=50
-2026-01-25 20:17:58 grid: update done count=204 vao=True vbo=True
-2026-01-25 20:17:58 splats: draw skip reason=render_splats=False
-2026-01-25 20:17:58 scene: visibility map owners=2 any_visible=True
-2026-01-25 20:17:59 splats: load scene asset owner=bonsai visible=True path=E:\GaussingSplats\models\bonsai\point_cloud\iteration_30000\point_cloud.ply
-2026-01-25 20:17:59 splats: loaded owner=bonsai shape=(200000, 15)
-2026-01-25 20:17:59 splats: scene load complete, rebuilding splats
-2026-01-25 20:17:59 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 20:17:59 scene: clear outliner selection
-2026-01-25 20:17:59 splats: draw active count=200000
-2026-01-25 20:18:00 scene: pick owner=bonsai kind=splat
-2026-01-25 20:18:02 scene: pick owner=katana kind=mesh
-2026-01-25 20:18:03 scene: pick owner=bonsai kind=splat
-2026-01-25 20:18:04 scene: focus lost -> keep gizmo
-2026-01-25 20:18:05 scene: grid_toggle=True vao=True count=204
-2026-01-25 20:18:05 grid: draw attempt count=204
-2026-01-25 20:18:06 grid: draw attempt count=204
-2026-01-25 20:18:07 grid: draw attempt count=204
-2026-01-25 20:18:08 scene: focus lost -> keep gizmo
-2026-01-25 20:18:08 scene: grid_toggle=False vao=True count=204
-2026-01-25 20:18:09 scene: pick owner=bonsai kind=splat
-2026-01-25 20:18:09 scene: pick owner=katana kind=mesh
-2026-01-25 20:18:10 scene: focus lost -> keep gizmo
-2026-01-25 20:18:12 outliner: eye name=bonsai visible=False hidden_count=1
-2026-01-25 20:18:12 splats: draw skip reason=render_splats=False
-2026-01-25 20:18:13 outliner: eye name=bonsai visible=True hidden_count=0
-2026-01-25 20:18:13 splats: draw active count=200000
-2026-01-25 20:18:13 outliner: eye name=katana visible=False hidden_count=1
-2026-01-25 20:18:14 outliner: eye name=katana visible=True hidden_count=0
-2026-01-25 20:18:14 scene: click empty -> keep gizmo
-2026-01-25 20:18:15 scene: pick owner=bonsai kind=splat
-2026-01-25 20:18:16 scene: click empty -> keep gizmo
-2026-01-25 20:18:16 scene: pick owner=katana kind=mesh
-2026-01-25 20:18:17 scene: pick owner=bonsai kind=splat
-2026-01-25 20:18:18 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 20:18:19 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 20:18:22 scene: pick owner=katana kind=mesh
-2026-01-25 20:18:23 scene: pick owner=bonsai kind=splat
-2026-01-25 20:18:24 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 20:18:25 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 20:18:25 scene: pick owner=katana kind=mesh
-2026-01-25 20:18:27 scene: focus lost -> keep gizmo
-2026-01-25 20:18:29 scene: clear outliner selection
-2026-01-25 20:18:29 scene: visibility map owners=2 any_visible=True
-2026-01-25 20:18:30 splats: load scene asset owner=bonsai visible=True path=E:\GaussingSplats\models\bonsai\point_cloud\iteration_30000\point_cloud.ply
-2026-01-25 20:18:30 splats: loaded owner=bonsai shape=(200000, 15)
-2026-01-25 20:18:30 splats: scene load complete, rebuilding splats
-2026-01-25 20:18:30 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 20:18:30 scene: clear outliner selection
-2026-01-25 20:18:32 scene: pick owner=katana kind=mesh
-2026-01-25 20:18:34 scene: pick owner=katana kind=mesh
-2026-01-25 20:18:37 scene: focus lost -> keep gizmo
-2026-01-25 20:18:38 scene: clear outliner selection
-2026-01-25 20:18:38 scene: visibility map owners=2 any_visible=True
-2026-01-25 20:18:39 splats: load scene asset owner=bonsai visible=True path=E:\GaussingSplats\models\bonsai\point_cloud\iteration_30000\point_cloud.ply
-2026-01-25 20:18:39 splats: loaded owner=bonsai shape=(200000, 15)
-2026-01-25 20:18:39 splats: scene load complete, rebuilding splats
-2026-01-25 20:18:39 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 20:18:39 scene: clear outliner selection
-2026-01-25 20:18:40 scene: pick owner=katana kind=mesh
-2026-01-25 20:18:48 scene: focus lost -> keep gizmo
-2026-01-25 20:18:48 scene: clear outliner selection
-2026-01-25 20:18:48 scene: visibility map owners=2 any_visible=True
-2026-01-25 20:18:49 splats: load scene asset owner=bonsai visible=True path=E:\GaussingSplats\models\bonsai\point_cloud\iteration_30000\point_cloud.ply
-2026-01-25 20:18:49 splats: loaded owner=bonsai shape=(200000, 15)
-2026-01-25 20:18:49 splats: scene load complete, rebuilding splats
-2026-01-25 20:18:49 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 20:18:49 scene: clear outliner selection
-2026-01-25 20:18:50 scene: pick owner=katana kind=mesh
-2026-01-25 20:18:53 scene: focus lost -> keep gizmo
-2026-01-25 20:18:57 scene: focus lost -> keep gizmo
-2026-01-25 20:18:57 scene: clear outliner selection
-2026-01-25 20:18:57 scene: visibility map owners=2 any_visible=True
-2026-01-25 20:18:58 splats: load scene asset owner=bonsai visible=True path=E:\GaussingSplats\models\bonsai\point_cloud\iteration_30000\point_cloud.ply
-2026-01-25 20:18:58 splats: loaded owner=bonsai shape=(200000, 15)
-2026-01-25 20:18:58 splats: scene load complete, rebuilding splats
-2026-01-25 20:18:58 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 20:18:58 scene: clear outliner selection
-2026-01-25 20:19:01 scene: pick owner=katana kind=mesh
-2026-01-25 20:19:05 scene: focus lost -> keep gizmo
+2026-01-25 20:30:48 scene: focus lost -> keep gizmo
+2026-01-25 20:33:28 scene: grid_toggle=False vao=False count=0
+2026-01-25 20:33:41 grid: update start size=20.0 cells=50
+2026-01-25 20:33:41 grid: update done count=204 vao=True vbo=True
+2026-01-25 20:33:41 splats: draw skip reason=render_splats=False
+2026-01-25 20:33:45 scene: focus lost -> keep gizmo
+2026-01-25 20:33:46 scene: grid_toggle=True vao=True count=204
+2026-01-25 20:33:46 grid: draw attempt count=204
+2026-01-25 20:33:47 grid: draw attempt count=204
+2026-01-25 20:33:48 grid: draw attempt count=204
+2026-01-25 20:33:48 scene: focus lost -> keep gizmo
+2026-01-25 20:33:49 grid: draw attempt count=204
+2026-01-25 20:33:51 scene: grid_toggle=False vao=False count=0
+2026-01-25 20:34:04 grid: update start size=20.0 cells=50
+2026-01-25 20:34:04 grid: update done count=204 vao=True vbo=True
+2026-01-25 20:34:04 splats: draw skip reason=render_splats=False
+2026-01-25 20:34:06 scene: grid_toggle=True vao=True count=204
+2026-01-25 20:34:06 grid: draw attempt count=204
+2026-01-25 20:34:07 grid: draw attempt count=204
+2026-01-25 20:34:08 grid: draw attempt count=204
+2026-01-25 20:34:09 grid: draw attempt count=204
+2026-01-25 20:34:10 grid: draw attempt count=204
+2026-01-25 20:34:11 grid: draw attempt count=204
+2026-01-25 20:34:12 grid: draw attempt count=204
+2026-01-25 20:34:13 scene: focus lost -> keep gizmo
+2026-01-25 20:34:13 grid: draw attempt count=204
+2026-01-25 20:34:14 grid: draw attempt count=204
+2026-01-25 20:34:15 grid: draw attempt count=204
+2026-01-25 20:34:15 scene: clear outliner selection
+2026-01-25 20:34:15 scene: visibility map owners=2 any_visible=True
+2026-01-25 20:34:16 splats: load scene asset owner=bonsai visible=True path=E:\GaussingSplats\models\bonsai\point_cloud\iteration_30000\point_cloud.ply
+2026-01-25 20:34:16 splats: loaded owner=bonsai shape=(200000, 15)
+2026-01-25 20:34:16 scene: apply saved xforms mesh=0 splat=0
+2026-01-25 20:34:16 splats: scene load complete, rebuilding splats
+2026-01-25 20:34:16 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 20:34:16 scene: clear outliner selection
+2026-01-25 20:34:16 splats: draw active count=200000
+2026-01-25 20:34:16 grid: draw attempt count=204
+2026-01-25 20:34:17 grid: draw attempt count=204
+2026-01-25 20:34:18 grid: draw attempt count=204
+2026-01-25 20:34:19 grid: draw attempt count=204
+2026-01-25 20:34:20 grid: draw attempt count=204
+2026-01-25 20:34:21 scene: focus lost -> keep gizmo
+2026-01-25 20:34:21 grid: draw attempt count=204
+2026-01-25 20:34:22 grid: draw attempt count=204
+2026-01-25 20:34:23 scene: pick owner=katana kind=mesh
+2026-01-25 20:34:23 grid: draw attempt count=204
+2026-01-25 20:34:24 grid: draw attempt count=204
+2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.0422845184803009, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.06325823068618774, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.07275763154029846, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.09382857382297516, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.13414311408996582, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.1747189164161682, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.2587021291255951, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.2705438733100891, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.29224836826324463, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.30211254954338074, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.3358575105667114, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.3557458519935608, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.35776376724243164, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.3897465467453003, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.43196308612823486, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.4764760136604309, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.5192553997039795, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.6722543239593506, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.674281120300293, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:25 grid: draw attempt count=204
+2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.7203863859176636, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.7647734880447388, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.8584721088409424, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.9404526948928833, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.0364196300506592, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.1316852569580078, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.2054287195205688, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.2664744853973389, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.3164396286010742, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:25 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.36859929561615, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:26 scene: pick owner=bonsai kind=splat
+2026-01-25 20:34:26 grid: draw attempt count=204
+2026-01-25 20:34:27 grid: draw attempt count=204
+2026-01-25 20:34:28 grid: draw attempt count=204
+2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 0.0, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:29 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 0.2144002914428711, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 0.40804529190063477, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 0.4237252473831177, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 0.444685697555542, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 0.5599254369735718, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 0.6175707578659058, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 0.67523193359375, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 0.7119261026382446, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 0.7906012535095215, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 0.8850407600402832, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 1.0582977533340454, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 1.1738815307617188, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 1.2316985130310059, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 1.3105525970458984, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 1.405240535736084, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 1.5368380546569824, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 1.7792425155639648, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 1.969139575958252, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:29 grid: draw attempt count=204
+2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 2.0060980319976807, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 1.969139575958252, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 1.93218994140625, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:29 scene: persist xform owner=bonsai pos=(0.0, 1.1998846530914307, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:30 scene: persist xform owner=bonsai pos=(0.0, 0.4444195032119751, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:30 scene: persist xform owner=bonsai pos=(0.0, -0.15672725439071655, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:30 scene: persist xform owner=bonsai pos=(0.0, -0.4071139693260193, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:30 scene: persist xform owner=bonsai pos=(0.0, -0.42790746688842773, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:30 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 20:34:30 scene: persist xform owner=bonsai pos=(0.0, -0.46437349915504456, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:34:30 grid: draw attempt count=204
+2026-01-25 20:34:31 scene: focus lost -> keep gizmo
+2026-01-25 20:34:31 grid: draw attempt count=204
+2026-01-25 20:34:34 scene: grid_toggle=False vao=False count=0
+2026-01-25 20:34:51 scene: clear outliner selection
+2026-01-25 20:34:51 grid: update start size=20.0 cells=50
+2026-01-25 20:34:51 grid: update done count=204 vao=True vbo=True
+2026-01-25 20:34:51 splats: draw skip reason=render_splats=False
+2026-01-25 20:34:51 scene: visibility map owners=2 any_visible=True
+2026-01-25 20:34:52 splats: load scene asset owner=bonsai visible=True path=E:\GaussingSplats\models\bonsai\point_cloud\iteration_30000\point_cloud.ply
+2026-01-25 20:34:52 splats: loaded owner=bonsai shape=(200000, 15)
+2026-01-25 20:34:52 scene: apply saved xforms mesh=0 splat=0
+2026-01-25 20:34:52 splats: scene load complete, rebuilding splats
+2026-01-25 20:34:52 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 20:34:52 scene: clear outliner selection
+2026-01-25 20:34:52 splats: draw active count=200000
+2026-01-25 20:34:55 scene: focus lost -> keep gizmo
+2026-01-25 20:34:58 scene: focus lost -> keep gizmo
+2026-01-25 20:34:58 scene: grid_toggle=True vao=True count=204
+2026-01-25 20:34:58 grid: draw attempt count=204
+2026-01-25 20:34:59 grid: draw attempt count=204
+2026-01-25 20:35:00 scene: pick owner=katana kind=mesh
+2026-01-25 20:35:00 grid: draw attempt count=204
+2026-01-25 20:35:01 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.0422845184803009, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:01 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.05023421719670296, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:01 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.0694710835814476, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:01 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.07745137810707092, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:01 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.08543950319290161, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:01 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.10144101083278656, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:01 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.10945554822683334, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:01 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.12082415819168091, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:01 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.15639065206050873, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:01 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.16446685791015625, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:01 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.18402881920337677, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:01 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.20025388896465302, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:01 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.22806717455387115, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:01 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.247807577252388, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:01 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.2676044702529907, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:01 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.2758110463619232, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:01 grid: draw attempt count=204
+2026-01-25 20:35:01 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.2792346477508545, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.3073630630970001, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.33560416102409363, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.4601876139640808, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.4890451431274414, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.49253568053245544, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.5250208973884583, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.562708854675293, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.6076472997665405, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.6579993963241577, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.7245793342590332, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.8006047010421753, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 0.8989733457565308, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.0205581188201904, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.4555078744888306, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.5627168416976929, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.6713908910751343, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.7777010202407837, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.9139626026153564, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 1.9178489446640015, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 2.0564627647399902, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 2.161266565322876, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 2.2743146419525146, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 2.3668816089630127, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 2.4413270950317383, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 2.607736587524414, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 2.634587526321411, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:02 scene: persist xform owner=katana pos=(-0.02010199800133705, 2.645994186401367, -4.500150680541992e-06) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:02 grid: draw attempt count=204
+2026-01-25 20:35:03 scene: pick owner=bonsai kind=splat
+2026-01-25 20:35:03 grid: draw attempt count=204
+2026-01-25 20:35:04 scene: persist xform owner=bonsai pos=(0.0, 0.0, 0.0) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:04 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 20:35:04 scene: persist xform owner=bonsai pos=(0.0, 0.0, -0.024867534637451172) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:04 scene: persist xform owner=bonsai pos=(0.0, 0.0, -0.04173356294631958) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:04 scene: persist xform owner=bonsai pos=(0.0, 0.0, -0.058613479137420654) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:04 scene: persist xform owner=bonsai pos=(0.0, 0.0, -0.08438003063201904) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:05 grid: draw attempt count=204
+2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -0.09241604804992676) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -0.10933774709701538) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -0.1262737512588501) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -0.16910535097122192) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -0.2030928134918213) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -0.24695324897766113) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -0.3945556879043579) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -0.45605242252349854) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -0.5350302457809448) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -0.6052135825157166) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -0.6582227349281311) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -0.6930803060531616) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -0.7980029582977295) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -0.8941976428031921) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -0.9908080697059631) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -1.052330493927002) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -1.131813406944275) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -1.2031445503234863) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -1.309547781944275) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -1.4621074199676514) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -1.615722417831421) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -1.7606337070465088) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -1.9162975549697876) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:05 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -2.0458455085754395) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -2.054466962814331) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:05 scene: persist xform owner=bonsai pos=(0.0, 0.0, -2.193483829498291) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:06 scene: persist xform owner=bonsai pos=(0.0, 0.0, -2.2957797050476074) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:06 grid: draw attempt count=204
+2026-01-25 20:35:06 scene: persist xform owner=bonsai pos=(0.0, 0.0, -2.407214879989624) rot=(0.0, 0.0, 0.0) scl=(1.0, 1.0, 1.0)
+2026-01-25 20:35:07 grid: draw attempt count=204
+2026-01-25 20:35:07 scene: focus lost -> keep gizmo
+2026-01-25 20:35:08 grid: draw attempt count=204
+2026-01-25 20:35:09 grid: draw attempt count=204
+2026-01-25 20:35:10 grid: draw attempt count=204
+2026-01-25 20:35:11 grid: draw attempt count=204
+2026-01-25 20:35:12 grid: draw attempt count=204
+2026-01-25 20:35:13 grid: draw attempt count=204
+2026-01-25 20:35:14 grid: draw attempt count=204
+2026-01-25 20:35:15 grid: draw attempt count=204
+2026-01-25 20:35:16 grid: draw attempt count=204
+2026-01-25 20:35:17 grid: draw attempt count=204
+2026-01-25 20:35:18 grid: draw attempt count=204
+2026-01-25 20:35:19 grid: draw attempt count=204
+2026-01-25 20:35:20 grid: draw attempt count=204
+2026-01-25 20:35:21 grid: draw attempt count=204
+2026-01-25 20:35:22 grid: draw attempt count=204
+2026-01-25 20:35:23 grid: draw attempt count=204
+2026-01-25 20:35:24 grid: draw attempt count=204
+2026-01-25 20:35:25 grid: draw attempt count=204
+2026-01-25 20:35:26 grid: draw attempt count=204
+2026-01-25 20:35:27 grid: draw attempt count=204
+2026-01-25 20:35:28 grid: draw attempt count=204
+2026-01-25 20:35:29 grid: draw attempt count=204
+2026-01-25 20:35:30 grid: draw attempt count=204
+2026-01-25 20:35:31 grid: draw attempt count=204
+2026-01-25 20:35:32 grid: draw attempt count=204
+2026-01-25 20:35:33 grid: draw attempt count=204
+2026-01-25 20:35:34 grid: draw attempt count=204
+2026-01-25 20:35:35 grid: draw attempt count=204
+2026-01-25 20:35:36 grid: draw attempt count=204
+2026-01-25 20:35:37 grid: draw attempt count=204
+2026-01-25 20:35:38 grid: draw attempt count=204
+2026-01-25 20:35:39 grid: draw attempt count=204
+2026-01-25 20:35:40 grid: draw attempt count=204
+2026-01-25 20:35:41 grid: draw attempt count=204
+2026-01-25 20:35:42 grid: draw attempt count=204
+2026-01-25 20:35:43 grid: draw attempt count=204
+2026-01-25 20:35:44 grid: draw attempt count=204
+2026-01-25 20:35:45 grid: draw attempt count=204

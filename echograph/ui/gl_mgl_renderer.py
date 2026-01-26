@@ -3316,13 +3316,25 @@ class MGLRendererMixin:
         self._mgl_texture_paths = []
 
         try:
+            prev_mesh_xforms = (
+                getattr(self, "_mgl_scene_xforms_by_owner", None)
+                if isinstance(getattr(self, "_mgl_scene_xforms_by_owner", None), dict)
+                else {}
+            )
+            prev_splat_xforms = (
+                getattr(self, "_mgl_scene_splat_xforms_by_owner", None)
+                if isinstance(getattr(self, "_mgl_scene_splat_xforms_by_owner", None), dict)
+                else {}
+            )
             self._mgl_scene_splats = {}
             self._mgl_scene_bounds_by_owner = {}
             self._mgl_scene_splats_world = {}
             self._mgl_scene_splats_bounds_local = {}
-            self._mgl_scene_splat_xforms_by_owner = {}
             self._mgl_scene_splat_bounds_by_owner = {}
             self._mgl_scene_mesh_bounds_by_owner = {}
+            # Preserve xforms loaded from workflow
+            self._mgl_scene_xforms_by_owner = prev_mesh_xforms
+            self._mgl_scene_splat_xforms_by_owner = prev_splat_xforms
         except Exception:
             pass
 
@@ -3667,6 +3679,48 @@ class MGLRendererMixin:
                     preserve_camera = True
                 except Exception:
                     pass
+
+            # Apply saved xforms to scene items before any splat rebuild.
+            try:
+                applied_mesh = 0
+                applied_splat = 0
+                if isinstance(prev_mesh_xforms, dict):
+                    for owner, xf in prev_mesh_xforms.items():
+                        if not isinstance(xf, dict):
+                            continue
+                        self._mgl_set_scene_asset_xform(
+                            owner,
+                            pos=xf.get("pos"),
+                            rot=xf.get("rot"),
+                            scl=xf.get("scl"),
+                            apply_to_scene_models=True,
+                            use_splat_xform=False,
+                        )
+                        applied_mesh += 1
+                if isinstance(prev_splat_xforms, dict):
+                    for owner, xf in prev_splat_xforms.items():
+                        if not isinstance(xf, dict):
+                            continue
+                        self._mgl_set_scene_asset_xform(
+                            owner,
+                            pos=xf.get("pos"),
+                            rot=xf.get("rot"),
+                            scl=xf.get("scl"),
+                            apply_to_scene_models=False,
+                            use_splat_xform=True,
+                        )
+                        applied_splat += 1
+                try:
+                    self._mgl_log(
+                        "scene: apply saved xforms mesh="
+                        + str(applied_mesh)
+                        + " splat="
+                        + str(applied_splat)
+                    )
+                except Exception:
+                    pass
+            except Exception:
+                pass
 
             if has_splats:
                 try:

@@ -3272,9 +3272,30 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     except Exception:
                         is_splat = False
 
+                    # For splats, xform.pos is a translation offset from the original pivot.
+                    set_pos = self._xform_gizmo_pos
+                    if is_splat:
+                        try:
+                            pivot = None
+                            bounds_map = getattr(renderer, "_mgl_scene_splats_bounds_local", None) or getattr(
+                                renderer, "_mgl_scene_splat_bounds_by_owner", None
+                            )
+                            if isinstance(bounds_map, dict) and owner in bounds_map:
+                                bmin, bmax = bounds_map.get(owner) or (None, None)
+                                if bmin is not None and bmax is not None:
+                                    pivot = (bmin + bmax) * 0.5
+                            if pivot is not None:
+                                set_pos = (
+                                    float(new_pos[0] - pivot[0]),
+                                    float(new_pos[1] - pivot[1]),
+                                    float(new_pos[2] - pivot[2]),
+                                )
+                        except Exception:
+                            set_pos = self._xform_gizmo_pos
+
                     self._mgl_set_scene_asset_xform(
                         owner,
-                        pos=self._xform_gizmo_pos,
+                        pos=set_pos,
                         apply_to_scene_models=not is_splat,
                         use_splat_xform=bool(is_splat),
                     )
