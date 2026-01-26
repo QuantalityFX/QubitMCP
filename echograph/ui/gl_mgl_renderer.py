@@ -1732,11 +1732,7 @@ class MGLRendererMixin:
                         1.0,
                     )
                 else:
-                    self._mgl_log_throttled(
-                        "_mgl_grid_draw_ts",
-                        "grid: draw attempt count=" + str(getattr(self, "_mgl_grid_vertex_count", 0)),
-                        1.0,
-                    )
+                    pass
         except Exception:
             pass
         if bool(getattr(self, "_mgl_grid_visible", False)) and self._mgl_grid_vao is not None:
@@ -4092,7 +4088,7 @@ class MGLRendererMixin:
                     sx, sy, sz = x.get("scl", (1.0, 1.0, 1.0))
                     c = (bmin + bmax) * 0.5
                     cx, cy, cz = float(c[0]), float(c[1]), float(c[2])
-                    model = T(px, py, pz) @ (Rz(rz) @ Ry(ry) @ Rx(rx)) @ S(sx, sy, sz) @ T(-cx, -cy, -cz)
+                    model = T(-cx, -cy, -cz) @ (Rz(rz) @ Ry(ry) @ Rx(rx)) @ S(sx, sy, sz) @ T(px, py, pz)
                 except Exception:
                     model = None
 
@@ -4376,7 +4372,7 @@ def pick_hit_at(self, px: int, py: int, viewport_w: int, viewport_h: int):
                 sx, sy, sz = x.get("scl", (1.0, 1.0, 1.0))
                 c = (bmin + bmax) * 0.5
                 cx, cy, cz = float(c[0]), float(c[1]), float(c[2])
-                model = T(px, py, pz) @ (Rz(rz) @ Ry(ry) @ Rx(rx)) @ S(sx, sy, sz) @ T(-cx, -cy, -cz)
+                model = T(-cx, -cy, -cz) @ (Rz(rz) @ Ry(ry) @ Rx(rx)) @ S(sx, sy, sz) @ T(px, py, pz)
             except Exception:
                 model = None
 
