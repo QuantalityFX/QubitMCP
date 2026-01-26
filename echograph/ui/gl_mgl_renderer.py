@@ -645,7 +645,12 @@ class MGLRendererMixin:
                             is_splat = True
                             break
             if is_splat:
-                self._mgl_rebuild_scene_splats(preserve_camera=True)
+                try:
+                    # Mark splats dirty; rebuild in GL paint (safe).
+                    setattr(self, "_mgl_splats_need_rebuild", True)
+                    setattr(self, "_mgl_splats_visibility_dirty", True)
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -907,6 +912,10 @@ class MGLRendererMixin:
         except Exception:
             pass
         self.set_splats(combined)
+        try:
+            self._mgl_splats_need_rebuild = False
+        except Exception:
+            pass
 
         if state is not None:
             self._mgl_queue_camera_state(state)
@@ -1622,6 +1631,42 @@ class MGLRendererMixin:
         self._dbgprint(dbg, "[MGL] before Mvp write", flush=True)
         self._mgl_prog["Mvp"].write(mvp.astype("f4").tobytes())
         self._dbgprint(dbg, "[MGL] after Mvp write", flush=True)
+
+        # Apply any pending visibility changes in GL context (safe).
+        try:
+            if bool(getattr(self, "_mgl_visibility_dirty", False)):
+                self._mgl_visibility_dirty = False
+                pending = getattr(self, "_mgl_pending_visibility", None)
+                if isinstance(pending, dict):
+                    for key, vis in list(pending.items()):
+                        try:
+                            self._mgl_set_scene_item_visibility(key, bool(vis))
+                        except Exception:
+                            pass
+                    pending.clear()
+                # Recompute splat render flag after visibility updates
+                try:
+                    splat_map = getattr(self, "_mgl_scene_splats", None) or {}
+                    visibility = getattr(self, "_mgl_scene_visibility", {}) or {}
+                    any_visible = False
+                    if isinstance(splat_map, dict):
+                        for k in splat_map.keys():
+                            if bool(visibility.get(k, True)):
+                                any_visible = True
+                                break
+                    self._mgl_render_splats = bool(any_visible)
+                    need_rebuild = False
+                    if self._mgl_render_splats:
+                        need_rebuild = bool(
+                            getattr(self, "_mgl_splats_need_rebuild", False)
+                            or getattr(self, "_mgl_splatq_vao", None) is None
+                            or not bool(getattr(self, "_mgl_splat_count", 0))
+                        )
+                    self._mgl_splats_visibility_dirty = bool(need_rebuild)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
         # If splat visibility changed, rebuild in GL context.
         try:

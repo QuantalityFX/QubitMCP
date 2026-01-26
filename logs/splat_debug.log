@@ -1,109 +1,224 @@
-2026-01-25 18:06:17 scene: clear outliner selection
-2026-01-25 18:06:17 splats: draw skip reason=render_splats=False
-2026-01-25 18:06:18 splats: load scene asset owner=bonsai visible=True path=E:\GaussingSplats\models\bonsai\point_cloud\iteration_30000\point_cloud.ply
-2026-01-25 18:06:18 splats: loaded owner=bonsai shape=(200000, 15)
-2026-01-25 18:06:18 splats: scene load complete, rebuilding splats
-2026-01-25 18:06:18 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 18:06:18 scene: clear outliner selection
-2026-01-25 18:06:18 splats: draw active count=200000
-2026-01-25 18:06:20 scene: pick owner=katana kind=mesh
-2026-01-25 18:06:23 scene: click empty -> hide gizmo
-2026-01-25 18:06:23 scene: clear outliner selection
-2026-01-25 18:06:24 scene: pick owner=bonsai kind=splat
-2026-01-25 18:06:25 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 18:06:28 scene: focus lost -> hide gizmo
-2026-01-25 18:06:28 scene: clear outliner selection
-2026-01-25 18:06:28 outliner: eye name=katana visible=False hidden_count=1
-2026-01-25 18:06:28 scene: set_visible owner=katana visible=False
-2026-01-25 18:06:28 outliner: eye name=katana visible=True hidden_count=0
-2026-01-25 18:06:28 scene: set_visible owner=katana visible=True
-2026-01-25 18:06:31 scene: pick owner=bonsai kind=splat
-2026-01-25 18:06:32 scene: focus lost -> hide gizmo
-2026-01-25 18:06:32 scene: clear outliner selection
-2026-01-25 18:06:40 outliner: eye name=bonsai visible=False hidden_count=1
-2026-01-25 18:06:40 scene: set_visible owner=bonsai visible=False
-2026-01-25 18:06:40 scene: set_visible caller=File "V:\Source\Repos\EchoMatrixMCP\echograph_app.py", line 110, in <module>
-    rc = app.exec() | File "V:\Source\Repos\EchoMatrixMCP\nodes\scene\spec.py", line 773, in <lambda>
-    QtCore.QTimer.singleShot(0, lambda: _apply_visibility(n, checked)) | File "V:\Source\Repos\EchoMatrixMCP\nodes\scene\spec.py", line 655, in _apply_visibility
-    handler(name, visible) | File "V:\Source\Repos\EchoMatrixMCP\echograph_shelf.py", line 2583, in set_scene_asset_visible
-    handler(owner, visible) | File "V:\Source\Repos\EchoMatrixMCP\echograph\ui\gl_view.py", line 1393, in set_scene_asset_visible
-    line.strip() for line in traceback.format_stack(limit=6) if line.strip()
-2026-01-25 18:06:40 scene: splat_visibility any=False all=False
-2026-01-25 18:06:40 scene: splat_render=False dirty=False
-2026-01-25 18:06:40 scene: splat_buffers vao=True count=200000
-2026-01-25 18:06:40 splats: draw skip reason=render_splats=False
-2026-01-25 18:06:43 outliner: eye name=bonsai visible=True hidden_count=0
-2026-01-25 18:06:43 scene: set_visible owner=bonsai visible=True
-2026-01-25 18:06:43 scene: set_visible caller=File "V:\Source\Repos\EchoMatrixMCP\echograph_app.py", line 110, in <module>
-    rc = app.exec() | File "V:\Source\Repos\EchoMatrixMCP\nodes\scene\spec.py", line 773, in <lambda>
-    QtCore.QTimer.singleShot(0, lambda: _apply_visibility(n, checked)) | File "V:\Source\Repos\EchoMatrixMCP\nodes\scene\spec.py", line 655, in _apply_visibility
-    handler(name, visible) | File "V:\Source\Repos\EchoMatrixMCP\echograph_shelf.py", line 2583, in set_scene_asset_visible
-    handler(owner, visible) | File "V:\Source\Repos\EchoMatrixMCP\echograph\ui\gl_view.py", line 1393, in set_scene_asset_visible
-    line.strip() for line in traceback.format_stack(limit=6) if line.strip()
-2026-01-25 18:06:43 scene: splat_visibility any=True all=True
-2026-01-25 18:06:43 scene: splat_render=True dirty=False
-2026-01-25 18:06:43 scene: splat_buffers vao=True count=200000
-2026-01-25 18:06:43 splats: draw active count=200000
-2026-01-25 18:06:44 scene: pick owner=bonsai kind=splat
-2026-01-25 18:06:45 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 18:06:46 scene: focus lost -> hide gizmo
-2026-01-25 18:06:46 scene: clear outliner selection
-2026-01-25 18:06:46 outliner: eye name=bonsai visible=False hidden_count=1
-2026-01-25 18:06:46 scene: set_visible owner=bonsai visible=False
-2026-01-25 18:06:46 scene: set_visible caller=File "V:\Source\Repos\EchoMatrixMCP\echograph_app.py", line 110, in <module>
-    rc = app.exec() | File "V:\Source\Repos\EchoMatrixMCP\nodes\scene\spec.py", line 773, in <lambda>
-    QtCore.QTimer.singleShot(0, lambda: _apply_visibility(n, checked)) | File "V:\Source\Repos\EchoMatrixMCP\nodes\scene\spec.py", line 655, in _apply_visibility
-    handler(name, visible) | File "V:\Source\Repos\EchoMatrixMCP\echograph_shelf.py", line 2583, in set_scene_asset_visible
-    handler(owner, visible) | File "V:\Source\Repos\EchoMatrixMCP\echograph\ui\gl_view.py", line 1393, in set_scene_asset_visible
-    line.strip() for line in traceback.format_stack(limit=6) if line.strip()
-2026-01-25 18:06:46 scene: splat_visibility any=False all=False
-2026-01-25 18:06:46 scene: splat_render=False dirty=False
-2026-01-25 18:06:46 scene: splat_buffers vao=True count=200000
-2026-01-25 18:06:46 splats: draw skip reason=render_splats=False
-2026-01-25 18:07:31 scene: clear outliner selection
-2026-01-25 18:07:31 splats: draw skip reason=render_splats=False
-2026-01-25 18:07:32 splats: load scene asset owner=bonsai visible=True path=E:\GaussingSplats\models\bonsai\point_cloud\iteration_30000\point_cloud.ply
-2026-01-25 18:07:32 splats: loaded owner=bonsai shape=(200000, 15)
-2026-01-25 18:07:32 splats: scene load complete, rebuilding splats
-2026-01-25 18:07:32 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 18:07:32 scene: clear outliner selection
-2026-01-25 18:07:32 splats: draw active count=200000
-2026-01-25 18:07:35 outliner: eye name=bonsai visible=False hidden_count=1
-2026-01-25 18:07:35 scene: set_visible owner=bonsai visible=False
-2026-01-25 18:07:35 scene: set_visible caller=File "V:\Source\Repos\EchoMatrixMCP\echograph_app.py", line 110, in <module>
-    rc = app.exec() | File "V:\Source\Repos\EchoMatrixMCP\nodes\scene\spec.py", line 773, in <lambda>
-    QtCore.QTimer.singleShot(0, lambda: _apply_visibility(n, checked)) | File "V:\Source\Repos\EchoMatrixMCP\nodes\scene\spec.py", line 655, in _apply_visibility
-    handler(name, visible) | File "V:\Source\Repos\EchoMatrixMCP\echograph_shelf.py", line 2583, in set_scene_asset_visible
-    handler(owner, visible) | File "V:\Source\Repos\EchoMatrixMCP\echograph\ui\gl_view.py", line 1393, in set_scene_asset_visible
-    line.strip() for line in traceback.format_stack(limit=6) if line.strip()
-2026-01-25 18:07:35 scene: splat_visibility any=False all=False
-2026-01-25 18:07:35 scene: splat_render=False dirty=False
-2026-01-25 18:07:35 scene: splat_buffers vao=True count=200000
-2026-01-25 18:07:35 splats: draw skip reason=render_splats=False
-2026-01-25 18:07:36 outliner: eye name=bonsai visible=True hidden_count=0
-2026-01-25 18:07:36 scene: set_visible owner=bonsai visible=True
-2026-01-25 18:07:36 scene: set_visible caller=File "V:\Source\Repos\EchoMatrixMCP\echograph_app.py", line 110, in <module>
-    rc = app.exec() | File "V:\Source\Repos\EchoMatrixMCP\nodes\scene\spec.py", line 773, in <lambda>
-    QtCore.QTimer.singleShot(0, lambda: _apply_visibility(n, checked)) | File "V:\Source\Repos\EchoMatrixMCP\nodes\scene\spec.py", line 655, in _apply_visibility
-    handler(name, visible) | File "V:\Source\Repos\EchoMatrixMCP\echograph_shelf.py", line 2583, in set_scene_asset_visible
-    handler(owner, visible) | File "V:\Source\Repos\EchoMatrixMCP\echograph\ui\gl_view.py", line 1393, in set_scene_asset_visible
-    line.strip() for line in traceback.format_stack(limit=6) if line.strip()
-2026-01-25 18:07:36 scene: splat_visibility any=True all=True
-2026-01-25 18:07:36 scene: splat_render=True dirty=False
-2026-01-25 18:07:36 scene: splat_buffers vao=True count=200000
-2026-01-25 18:07:37 splats: draw active count=200000
-2026-01-25 18:07:40 splats: rebuild start owners=1 visible=1 preserve_camera=True
-2026-01-25 18:07:42 scene: focus lost -> hide gizmo
-2026-01-25 18:07:42 scene: clear outliner selection
-2026-01-25 18:07:42 outliner: eye name=bonsai visible=False hidden_count=1
-2026-01-25 18:07:42 scene: set_visible owner=bonsai visible=False
-2026-01-25 18:07:42 scene: set_visible caller=File "V:\Source\Repos\EchoMatrixMCP\echograph_app.py", line 110, in <module>
-    rc = app.exec() | File "V:\Source\Repos\EchoMatrixMCP\nodes\scene\spec.py", line 773, in <lambda>
-    QtCore.QTimer.singleShot(0, lambda: _apply_visibility(n, checked)) | File "V:\Source\Repos\EchoMatrixMCP\nodes\scene\spec.py", line 655, in _apply_visibility
-    handler(name, visible) | File "V:\Source\Repos\EchoMatrixMCP\echograph_shelf.py", line 2583, in set_scene_asset_visible
-    handler(owner, visible) | File "V:\Source\Repos\EchoMatrixMCP\echograph\ui\gl_view.py", line 1393, in set_scene_asset_visible
-    line.strip() for line in traceback.format_stack(limit=6) if line.strip()
-2026-01-25 18:07:42 scene: splat_visibility any=False all=False
-2026-01-25 18:07:42 scene: splat_render=False dirty=False
-2026-01-25 18:07:42 scene: splat_buffers vao=True count=200000
-2026-01-25 18:07:42 splats: draw skip reason=render_splats=False
+2026-01-25 18:34:16 scene: clear outliner selection
+2026-01-25 18:34:16 splats: draw skip reason=render_splats=False
+2026-01-25 18:34:16 splats: load scene asset owner=bonsai visible=True path=E:\GaussingSplats\models\bonsai\point_cloud\iteration_30000\point_cloud.ply
+2026-01-25 18:34:17 splats: loaded owner=bonsai shape=(200000, 15)
+2026-01-25 18:34:17 splats: scene load complete, rebuilding splats
+2026-01-25 18:34:17 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 18:34:17 scene: clear outliner selection
+2026-01-25 18:34:17 splats: draw active count=200000
+2026-01-25 18:34:19 scene: pick owner=bonsai kind=splat
+2026-01-25 18:34:20 scene: pick owner=katana kind=mesh
+2026-01-25 18:34:22 scene: pick owner=bonsai kind=splat
+2026-01-25 18:34:23 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 18:34:26 scene: pick owner=katana kind=mesh
+2026-01-25 18:34:28 scene: focus lost -> hide gizmo
+2026-01-25 18:34:28 scene: clear outliner selection
+2026-01-25 18:34:29 outliner: eye name=bonsai visible=False hidden_count=1
+2026-01-25 18:34:29 splats: draw skip reason=render_splats=False
+2026-01-25 18:34:30 outliner: eye name=bonsai visible=True hidden_count=0
+2026-01-25 18:34:30 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 18:34:30 splats: draw active count=200000
+2026-01-25 18:34:32 scene: pick owner=katana kind=mesh
+2026-01-25 18:34:35 scene: pick owner=bonsai kind=splat
+2026-01-25 18:34:36 scene: pick owner=katana kind=mesh
+2026-01-25 18:34:37 scene: focus lost -> hide gizmo
+2026-01-25 18:34:37 scene: clear outliner selection
+2026-01-25 18:34:37 outliner: eye name=bonsai visible=False hidden_count=1
+2026-01-25 18:34:37 splats: draw skip reason=render_splats=False
+2026-01-25 18:43:55 scene: clear outliner selection
+2026-01-25 18:43:55 splats: draw skip reason=render_splats=False
+2026-01-25 18:43:56 splats: load scene asset owner=bonsai visible=True path=E:\GaussingSplats\models\bonsai\point_cloud\iteration_30000\point_cloud.ply
+2026-01-25 18:43:56 splats: loaded owner=bonsai shape=(200000, 15)
+2026-01-25 18:43:56 splats: scene load complete, rebuilding splats
+2026-01-25 18:43:56 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 18:43:56 scene: clear outliner selection
+2026-01-25 18:43:56 splats: draw active count=200000
+2026-01-25 18:43:59 scene: click empty -> hide gizmo
+2026-01-25 18:43:59 scene: clear outliner selection
+2026-01-25 18:43:59 scene: pick owner=bonsai kind=splat
+2026-01-25 18:44:00 scene: pick owner=katana kind=mesh
+2026-01-25 18:44:02 scene: pick owner=bonsai kind=splat
+2026-01-25 18:44:03 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 18:44:05 scene: focus lost -> hide gizmo
+2026-01-25 18:44:05 scene: clear outliner selection
+2026-01-25 18:44:08 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 18:44:10 scene: focus lost -> hide gizmo
+2026-01-25 18:44:10 scene: clear outliner selection
+2026-01-25 18:44:12 outliner: eye name=bonsai visible=False hidden_count=1
+2026-01-25 18:44:12 splats: draw skip reason=render_splats=False
+2026-01-25 18:44:13 outliner: eye name=bonsai visible=True hidden_count=0
+2026-01-25 18:44:13 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 18:44:13 splats: draw active count=200000
+2026-01-25 18:44:15 scene: pick owner=katana kind=mesh
+2026-01-25 18:44:20 scene: pick owner=bonsai kind=splat
+2026-01-25 18:44:21 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 18:44:24 scene: click empty -> hide gizmo
+2026-01-25 18:44:24 scene: clear outliner selection
+2026-01-25 18:44:31 scene: focus lost -> hide gizmo
+2026-01-25 18:44:31 scene: clear outliner selection
+2026-01-25 18:53:02 scene: focus lost -> hide gizmo
+2026-01-25 18:53:02 scene: clear outliner selection
+2026-01-25 18:56:09 scene: clear outliner selection
+2026-01-25 18:56:09 splats: draw skip reason=render_splats=False
+2026-01-25 18:56:10 splats: load scene asset owner=bonsai visible=True path=E:\GaussingSplats\models\bonsai\point_cloud\iteration_30000\point_cloud.ply
+2026-01-25 18:56:10 splats: loaded owner=bonsai shape=(200000, 15)
+2026-01-25 18:56:10 splats: scene load complete, rebuilding splats
+2026-01-25 18:56:10 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 18:56:10 scene: clear outliner selection
+2026-01-25 18:56:10 splats: draw active count=200000
+2026-01-25 18:56:11 scene: pick owner=bonsai kind=splat
+2026-01-25 18:56:12 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 18:56:14 scene: click empty -> keep gizmo
+2026-01-25 18:56:15 scene: click empty -> keep gizmo
+2026-01-25 18:56:15 scene: click empty -> keep gizmo
+2026-01-25 18:56:15 scene: pick owner=bonsai kind=splat
+2026-01-25 18:56:16 scene: click empty -> keep gizmo
+2026-01-25 18:56:16 scene: click empty -> keep gizmo
+2026-01-25 18:56:17 scene: pick owner=bonsai kind=splat
+2026-01-25 18:56:17 scene: click empty -> keep gizmo
+2026-01-25 18:56:19 scene: pick owner=katana kind=mesh
+2026-01-25 18:56:22 scene: click empty -> keep gizmo
+2026-01-25 18:56:23 scene: click empty -> keep gizmo
+2026-01-25 18:56:23 scene: click empty -> keep gizmo
+2026-01-25 18:56:24 scene: pick owner=bonsai kind=splat
+2026-01-25 18:56:25 scene: pick owner=bonsai kind=splat
+2026-01-25 18:56:25 scene: click empty -> keep gizmo
+2026-01-25 18:56:26 scene: pick owner=bonsai kind=splat
+2026-01-25 18:56:27 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 18:56:29 scene: focus lost -> keep gizmo
+2026-01-25 18:56:31 outliner: eye name=bonsai visible=False hidden_count=1
+2026-01-25 18:56:31 splats: draw skip reason=render_splats=False
+2026-01-25 18:56:31 outliner: eye name=bonsai visible=True hidden_count=0
+2026-01-25 18:56:31 splats: draw active count=200000
+2026-01-25 18:56:32 outliner: eye name=bonsai visible=False hidden_count=1
+2026-01-25 18:56:32 splats: draw skip reason=render_splats=False
+2026-01-25 18:56:32 outliner: eye name=bonsai visible=True hidden_count=0
+2026-01-25 18:56:32 splats: draw active count=200000
+2026-01-25 18:56:33 outliner: eye name=bonsai visible=False hidden_count=1
+2026-01-25 18:56:33 splats: draw skip reason=render_splats=False
+2026-01-25 18:56:34 outliner: eye name=bonsai visible=True hidden_count=0
+2026-01-25 18:56:34 splats: draw active count=200000
+2026-01-25 18:56:34 outliner: eye name=bonsai visible=False hidden_count=1
+2026-01-25 18:56:34 splats: draw skip reason=render_splats=False
+2026-01-25 18:56:35 outliner: eye name=bonsai visible=True hidden_count=0
+2026-01-25 18:56:35 splats: draw active count=200000
+2026-01-25 18:56:35 outliner: eye name=bonsai visible=False hidden_count=1
+2026-01-25 18:56:35 splats: draw skip reason=render_splats=False
+2026-01-25 18:56:38 scene: focus lost -> keep gizmo
+2026-01-25 18:56:38 outliner: eye name=bonsai visible=True hidden_count=0
+2026-01-25 18:56:38 splats: draw active count=200000
+2026-01-25 18:56:39 outliner: eye name=bonsai visible=False hidden_count=1
+2026-01-25 18:56:39 splats: draw skip reason=render_splats=False
+2026-01-25 18:56:40 outliner: eye name=bonsai visible=True hidden_count=0
+2026-01-25 18:56:40 splats: draw active count=200000
+2026-01-25 18:56:40 outliner: eye name=bonsai visible=False hidden_count=1
+2026-01-25 18:56:40 splats: draw skip reason=render_splats=False
+2026-01-25 18:56:41 scene: click empty -> keep gizmo
+2026-01-25 18:56:42 scene: click empty -> keep gizmo
+2026-01-25 18:56:42 scene: focus lost -> keep gizmo
+2026-01-25 18:56:43 outliner: eye name=bonsai visible=True hidden_count=0
+2026-01-25 18:56:43 splats: draw active count=200000
+2026-01-25 18:56:44 scene: pick owner=bonsai kind=splat
+2026-01-25 18:56:47 scene: focus lost -> keep gizmo
+2026-01-25 18:56:52 scene: focus lost -> keep gizmo
+2026-01-25 18:56:53 scene: clear outliner selection
+2026-01-25 18:56:54 splats: load scene asset owner=bonsai visible=True path=E:\GaussingSplats\models\bonsai\point_cloud\iteration_30000\point_cloud.ply
+2026-01-25 18:56:54 splats: loaded owner=bonsai shape=(200000, 15)
+2026-01-25 18:56:54 splats: scene load complete, rebuilding splats
+2026-01-25 18:56:54 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 18:56:54 scene: clear outliner selection
+2026-01-25 18:56:57 scene: focus lost -> keep gizmo
+2026-01-25 18:57:22 scene: focus lost -> keep gizmo
+2026-01-25 18:57:23 scene: pick owner=bonsai kind=splat
+2026-01-25 18:57:25 scene: focus lost -> keep gizmo
+2026-01-25 18:57:27 scene: click empty -> keep gizmo
+2026-01-25 18:57:28 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 18:57:29 scene: click empty -> keep gizmo
+2026-01-25 18:57:30 scene: click empty -> keep gizmo
+2026-01-25 18:57:30 scene: click empty -> keep gizmo
+2026-01-25 18:57:31 scene: focus lost -> keep gizmo
+2026-01-25 18:57:33 outliner: eye name=bonsai visible=False hidden_count=1
+2026-01-25 18:57:33 splats: draw skip reason=render_splats=False
+2026-01-25 18:57:35 scene: focus lost -> keep gizmo
+2026-01-25 18:57:37 scene: focus lost -> keep gizmo
+2026-01-25 18:57:40 scene: focus lost -> keep gizmo
+2026-01-25 18:57:40 outliner: eye name=bonsai visible=True hidden_count=0
+2026-01-25 18:57:40 splats: draw active count=200000
+2026-01-25 18:57:44 scene: focus lost -> keep gizmo
+2026-01-25 18:57:50 scene: focus lost -> keep gizmo
+2026-01-25 18:57:52 outliner: eye name=bonsai visible=False hidden_count=1
+2026-01-25 18:57:52 splats: draw skip reason=render_splats=False
+2026-01-25 18:57:52 outliner: eye name=bonsai visible=True hidden_count=0
+2026-01-25 18:57:52 splats: draw active count=200000
+2026-01-25 18:57:53 outliner: eye name=bonsai visible=False hidden_count=1
+2026-01-25 18:57:53 splats: draw skip reason=render_splats=False
+2026-01-25 18:57:58 scene: pick owner=bonsai kind=splat
+2026-01-25 18:57:59 scene: focus lost -> keep gizmo
+2026-01-25 18:57:59 outliner: eye name=bonsai visible=True hidden_count=0
+2026-01-25 18:57:59 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 18:57:59 splats: draw active count=200000
+2026-01-25 18:58:02 scene: focus lost -> keep gizmo
+2026-01-25 18:58:07 scene: pick owner=bonsai kind=splat
+2026-01-25 18:58:08 scene: focus lost -> keep gizmo
+2026-01-25 18:58:08 outliner: eye name=bonsai visible=False hidden_count=1
+2026-01-25 18:58:08 splats: draw skip reason=render_splats=False
+2026-01-25 18:58:09 outliner: eye name=bonsai visible=True hidden_count=0
+2026-01-25 18:58:09 splats: draw active count=200000
+2026-01-25 18:58:10 scene: pick owner=bonsai kind=splat
+2026-01-25 18:58:12 scene: focus lost -> keep gizmo
+2026-01-25 18:58:12 outliner: eye name=bonsai visible=False hidden_count=1
+2026-01-25 18:58:12 splats: draw skip reason=render_splats=False
+2026-01-25 18:58:12 outliner: eye name=bonsai visible=True hidden_count=0
+2026-01-25 18:58:12 splats: draw active count=200000
+2026-01-25 18:58:13 scene: pick owner=bonsai kind=splat
+2026-01-25 18:58:14 scene: focus lost -> keep gizmo
+2026-01-25 18:58:14 outliner: eye name=bonsai visible=False hidden_count=1
+2026-01-25 18:58:14 splats: draw skip reason=render_splats=False
+2026-01-25 18:58:14 outliner: eye name=bonsai visible=True hidden_count=0
+2026-01-25 18:58:14 splats: draw active count=200000
+2026-01-25 18:58:15 scene: click empty -> keep gizmo
+2026-01-25 18:58:15 scene: pick owner=bonsai kind=splat
+2026-01-25 18:58:16 scene: focus lost -> keep gizmo
+2026-01-25 18:58:16 outliner: eye name=katana visible=False hidden_count=1
+2026-01-25 18:58:17 outliner: eye name=katana visible=True hidden_count=0
+2026-01-25 18:58:19 scene: click empty -> keep gizmo
+2026-01-25 18:58:19 scene: pick owner=bonsai kind=splat
+2026-01-25 18:58:20 scene: click empty -> keep gizmo
+2026-01-25 18:58:20 scene: click empty -> keep gizmo
+2026-01-25 18:58:21 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 18:58:22 scene: click empty -> keep gizmo
+2026-01-25 18:58:24 scene: click empty -> keep gizmo
+2026-01-25 18:58:24 scene: click empty -> keep gizmo
+2026-01-25 18:58:25 scene: click empty -> keep gizmo
+2026-01-25 18:58:25 scene: click empty -> keep gizmo
+2026-01-25 18:58:26 scene: click empty -> keep gizmo
+2026-01-25 18:58:27 scene: click empty -> keep gizmo
+2026-01-25 18:58:29 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 18:58:30 scene: click empty -> keep gizmo
+2026-01-25 18:58:30 scene: click empty -> keep gizmo
+2026-01-25 18:58:31 scene: click empty -> keep gizmo
+2026-01-25 18:58:32 scene: click empty -> keep gizmo
+2026-01-25 18:58:33 scene: click empty -> keep gizmo
+2026-01-25 18:58:33 scene: click empty -> keep gizmo
+2026-01-25 18:58:33 scene: click empty -> keep gizmo
+2026-01-25 18:58:34 scene: click empty -> keep gizmo
+2026-01-25 18:58:35 scene: click empty -> keep gizmo
+2026-01-25 18:58:35 scene: click empty -> keep gizmo
+2026-01-25 18:58:35 scene: click empty -> keep gizmo
+2026-01-25 18:58:37 scene: focus lost -> keep gizmo
+2026-01-25 18:58:40 scene: focus lost -> keep gizmo
+2026-01-25 18:58:46 scene: pick owner=katana kind=mesh
+2026-01-25 18:58:47 scene: click empty -> keep gizmo
+2026-01-25 18:58:48 scene: pick owner=bonsai kind=splat
+2026-01-25 18:58:49 scene: pick owner=katana kind=mesh
+2026-01-25 18:58:51 scene: click empty -> keep gizmo
+2026-01-25 18:58:52 scene: pick owner=bonsai kind=splat
+2026-01-25 18:58:53 scene: pick owner=katana kind=mesh
+2026-01-25 18:58:55 scene: pick owner=bonsai kind=splat
+2026-01-25 18:58:57 scene: focus lost -> keep gizmo
+2026-01-25 18:58:57 outliner: eye name=bonsai visible=False hidden_count=1
+2026-01-25 18:58:57 splats: draw skip reason=render_splats=False
+2026-01-25 18:59:00 scene: focus lost -> keep gizmo
+2026-01-25 19:01:30 outliner: eye name=bonsai visible=True hidden_count=0
+2026-01-25 19:01:30 splats: draw active count=200000
+2026-01-25 19:01:34 scene: focus lost -> keep gizmo
