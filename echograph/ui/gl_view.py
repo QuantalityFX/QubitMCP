@@ -3140,6 +3140,42 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                     self._xform_gizmo_pos_locked = True
                                     self._xform_drag_s0 = None
 
+                                    # Log splat drag start with gizmo + xform state.
+                                    try:
+                                        if is_splat:
+                                            xf = {}
+                                            get_xf = getattr(renderer, "_mgl_get_scene_splat_xform", None)
+                                            if callable(get_xf):
+                                                xf = get_xf(owner) or {}
+                                            xf_pos = tuple((xf or {}).get("pos", (0.0, 0.0, 0.0)))
+                                            pivot = None
+                                            bounds_map = (
+                                                getattr(renderer, "_mgl_scene_splats_bounds_local", None)
+                                                or getattr(renderer, "_mgl_scene_splat_bounds_by_owner", None)
+                                            )
+                                            if isinstance(bounds_map, dict) and owner in bounds_map:
+                                                mins, maxs = bounds_map.get(owner) or (None, None)
+                                                if mins is not None and maxs is not None:
+                                                    pivot = (
+                                                        (float(mins[0]) + float(maxs[0])) * 0.5,
+                                                        (float(mins[1]) + float(maxs[1])) * 0.5,
+                                                        (float(mins[2]) + float(maxs[2])) * 0.5,
+                                                    )
+                                            self._mgl_log(
+                                                "splat: drag_start owner="
+                                                + str(owner)
+                                                + " axis="
+                                                + str(best_axis)
+                                                + " gizmo_pos="
+                                                + str(getattr(self, "_xform_gizmo_pos", None))
+                                                + " xf_pos="
+                                                + str(xf_pos)
+                                                + " pivot="
+                                                + str(pivot)
+                                            )
+                                    except Exception:
+                                        pass
+
                                     # Important: prevent old click-pick/orbit press state from interfering
                                     self._mgl_pick_press_pos = None
 
@@ -3481,6 +3517,44 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         if self._use_moderngl:
             # --- 1) If we were dragging the gizmo, ALWAYS end that first ---
             if getattr(self, "_xform_dragging", False):
+                # Log splat drag end with gizmo + xform state.
+                try:
+                    if getattr(self, "_xform_drag_kind", None) == "splat":
+                        renderer = getattr(self, "_mgl_renderer", None) or self
+                        owner = getattr(self, "_xform_drag_owner", None)
+                        xf = {}
+                        get_xf = getattr(renderer, "_mgl_get_scene_splat_xform", None)
+                        if callable(get_xf) and owner:
+                            xf = get_xf(owner) or {}
+                        xf_pos = tuple((xf or {}).get("pos", (0.0, 0.0, 0.0)))
+                        pivot = None
+                        bounds_map = (
+                            getattr(renderer, "_mgl_scene_splats_bounds_local", None)
+                            or getattr(renderer, "_mgl_scene_splat_bounds_by_owner", None)
+                        )
+                        if isinstance(bounds_map, dict) and owner in bounds_map:
+                            mins, maxs = bounds_map.get(owner) or (None, None)
+                            if mins is not None and maxs is not None:
+                                pivot = (
+                                    (float(mins[0]) + float(maxs[0])) * 0.5,
+                                    (float(mins[1]) + float(maxs[1])) * 0.5,
+                                    (float(mins[2]) + float(maxs[2])) * 0.5,
+                                )
+                        self._mgl_log(
+                            "splat: drag_end owner="
+                            + str(owner)
+                            + " gizmo_pos="
+                            + str(getattr(self, "_xform_gizmo_pos", None))
+                            + " xf_pos="
+                            + str(xf_pos)
+                            + " pivot="
+                            + str(pivot)
+                            + " drag_start="
+                            + str(getattr(self, "_xform_drag_start_pos", None))
+                        )
+                except Exception:
+                    pass
+
                 self._xform_dragging = False
                 self._xform_drag_axis = None
                 self._xform_drag_owner = None
@@ -3575,15 +3649,42 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                         if callable(get_xf):
                                             xf = get_xf(owner) or {}
                                         xf_pos = tuple((xf or {}).get("pos", (0.0, 0.0, 0.0)))
+
+                                        # For splats, xform.pos is an offset from the local pivot.
+                                        pivot = None
+                                        if is_splat:
+                                            try:
+                                                bounds_map = (
+                                                    getattr(renderer, "_mgl_scene_splats_bounds_local", None)
+                                                    or getattr(renderer, "_mgl_scene_splat_bounds_by_owner", None)
+                                                )
+                                                if isinstance(bounds_map, dict) and owner in bounds_map:
+                                                    mins, maxs = bounds_map.get(owner) or (None, None)
+                                                    if mins is not None and maxs is not None:
+                                                        pivot = (
+                                                            (float(mins[0]) + float(maxs[0])) * 0.5,
+                                                            (float(mins[1]) + float(maxs[1])) * 0.5,
+                                                            (float(mins[2]) + float(maxs[2])) * 0.5,
+                                                        )
+                                            except Exception:
+                                                pivot = None
+
                                         if xf_pos != (0.0, 0.0, 0.0):
-                                            self._xform_gizmo_pos = (float(xf_pos[0]), float(xf_pos[1]), float(xf_pos[2]))
+                                            if is_splat and pivot is not None:
+                                                self._xform_gizmo_pos = (
+                                                    float(xf_pos[0] + pivot[0]),
+                                                    float(xf_pos[1] + pivot[1]),
+                                                    float(xf_pos[2] + pivot[2]),
+                                                )
+                                            else:
+                                                self._xform_gizmo_pos = (float(xf_pos[0]), float(xf_pos[1]), float(xf_pos[2]))
                                             self._xform_gizmo_pos_locked = True
                                         else:
                                             # fallback to bounds center (splat vs mesh)
                                             if is_splat:
                                                 bounds_map = (
-                                                    getattr(renderer, "_mgl_scene_splat_bounds_by_owner", None)
-                                                    or getattr(renderer, "_mgl_scene_bounds_by_owner", None)
+                                                    getattr(renderer, "_mgl_scene_splats_bounds_local", None)
+                                                    or getattr(renderer, "_mgl_scene_splat_bounds_by_owner", None)
                                                 )
                                             else:
                                                 bounds_map = (
@@ -3599,6 +3700,22 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                                     cz = (float(mins[2]) + float(maxs[2])) * 0.5
                                                     self._xform_gizmo_pos = (cx, cy, cz)
                                                     self._xform_gizmo_pos_locked = True
+
+                                        # Log splat selection + gizmo placement for debugging.
+                                        try:
+                                            if is_splat:
+                                                self._mgl_log(
+                                                    "splat: select owner="
+                                                    + str(owner)
+                                                    + " xf_pos="
+                                                    + str(xf_pos)
+                                                    + " pivot="
+                                                    + str(pivot)
+                                                    + " gizmo_pos="
+                                                    + str(getattr(self, "_xform_gizmo_pos", None))
+                                                )
+                                        except Exception:
+                                            pass
                                     except Exception:
                                         pass
 
