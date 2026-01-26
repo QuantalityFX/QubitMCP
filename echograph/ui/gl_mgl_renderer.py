@@ -322,6 +322,17 @@ class MGLRendererMixin:
 
         # This checkbox controls the procedural grid only
         self._mgl_grid_visible = bool(checked)
+        try:
+            self._mgl_log(
+                "scene: grid_toggle="
+                + str(bool(checked))
+                + " vao="
+                + str(getattr(self, "_mgl_grid_vao", None) is not None)
+                + " count="
+                + str(getattr(self, "_mgl_grid_vertex_count", 0))
+            )
+        except Exception:
+            pass
 
         # Force-disable the legacy grid.obj grid-model system
         try:

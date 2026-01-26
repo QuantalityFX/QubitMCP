@@ -770,7 +770,22 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                         b.setIcon(_eye_icon(checked))
                     except Exception:
                         pass
+                    prev_owner = getattr(card, "_scene_selected_owner", None)
                     QtCore.QTimer.singleShot(0, lambda: _apply_visibility(n, checked))
+                    # Keep current selection/gizmo stable when clicking the eye
+                    if prev_owner:
+                        def _restore_selection(owner=prev_owner):
+                            try:
+                                for i in range(outliner.count()):
+                                    it = outliner.item(i)
+                                    if it is None:
+                                        continue
+                                    if (it.data(QtCore.Qt.UserRole) or "") == owner:
+                                        outliner.setCurrentRow(i)
+                                        return
+                            except Exception:
+                                pass
+                        QtCore.QTimer.singleShot(0, _restore_selection)
                 # Use clicked so programmatic setChecked() during refresh doesn't fire visibility changes.
                 eye_btn.clicked.connect(_on_eye_clicked)
                 row_layout.addWidget(eye_btn, 0)

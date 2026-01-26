@@ -1351,6 +1351,25 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     w.clear_scene_asset_selection()
             except Exception:
                 pass
+            # Auto-select first visible asset so gizmo shows on scene open
+            try:
+                if getattr(self, "_xform_gizmo_owner", None) is None:
+                    pick_owner = None
+                    for entry in assets:
+                        if not isinstance(entry, dict):
+                            continue
+                        if entry.get("visible", True) is False:
+                            continue
+                        name = (entry.get("node") or "").strip()
+                        if name:
+                            pick_owner = name
+                            break
+                    if pick_owner:
+                        w = self.window()
+                        if w is not None and hasattr(w, "select_scene_asset"):
+                            w.select_scene_asset(pick_owner)
+            except Exception:
+                pass
             self.update()
             return
 

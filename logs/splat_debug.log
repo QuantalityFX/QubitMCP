@@ -222,3 +222,51 @@
 2026-01-25 19:01:30 outliner: eye name=bonsai visible=True hidden_count=0
 2026-01-25 19:01:30 splats: draw active count=200000
 2026-01-25 19:01:34 scene: focus lost -> keep gizmo
+2026-01-25 19:07:41 scene: grid_toggle=False vao=False count=0
+2026-01-25 19:08:04 scene: clear outliner selection
+2026-01-25 19:08:04 splats: draw skip reason=render_splats=False
+2026-01-25 19:08:04 splats: load scene asset owner=bonsai visible=True path=E:\GaussingSplats\models\bonsai\point_cloud\iteration_30000\point_cloud.ply
+2026-01-25 19:08:05 splats: loaded owner=bonsai shape=(200000, 15)
+2026-01-25 19:08:05 splats: scene load complete, rebuilding splats
+2026-01-25 19:08:05 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 19:08:05 scene: clear outliner selection
+2026-01-25 19:08:05 splats: draw active count=200000
+2026-01-25 19:08:07 scene: pick owner=bonsai kind=splat
+2026-01-25 19:08:09 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 19:08:11 scene: pick owner=katana kind=mesh
+2026-01-25 19:08:12 scene: click empty -> keep gizmo
+2026-01-25 19:08:13 scene: pick owner=bonsai kind=splat
+2026-01-25 19:08:14 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 19:08:16 scene: focus lost -> keep gizmo
+2026-01-25 19:08:17 outliner: eye name=bonsai visible=False hidden_count=1
+2026-01-25 19:08:17 splats: draw skip reason=render_splats=False
+2026-01-25 19:08:17 outliner: eye name=bonsai visible=True hidden_count=0
+2026-01-25 19:08:17 splats: draw active count=200000
+2026-01-25 19:08:18 outliner: eye name=bonsai visible=False hidden_count=1
+2026-01-25 19:08:18 splats: draw skip reason=render_splats=False
+2026-01-25 19:08:18 outliner: eye name=bonsai visible=True hidden_count=0
+2026-01-25 19:08:18 splats: draw active count=200000
+2026-01-25 19:08:19 outliner: eye name=bonsai visible=False hidden_count=1
+2026-01-25 19:08:19 splats: draw skip reason=render_splats=False
+2026-01-25 19:08:19 outliner: eye name=bonsai visible=True hidden_count=0
+2026-01-25 19:08:19 splats: draw active count=200000
+2026-01-25 19:08:21 scene: pick owner=katana kind=mesh
+2026-01-25 19:08:22 scene: click empty -> keep gizmo
+2026-01-25 19:08:23 scene: pick owner=bonsai kind=splat
+2026-01-25 19:08:25 splats: rebuild start owners=1 visible=1 preserve_camera=True
+2026-01-25 19:08:26 scene: click empty -> keep gizmo
+2026-01-25 19:08:26 scene: pick owner=katana kind=mesh
+2026-01-25 19:08:32 scene: focus lost -> keep gizmo
+2026-01-25 19:08:32 outliner: eye name=bonsai visible=False hidden_count=1
+2026-01-25 19:08:32 splats: draw skip reason=render_splats=False
+2026-01-25 19:08:32 outliner: eye name=bonsai visible=True hidden_count=0
+2026-01-25 19:08:32 splats: draw active count=200000
+2026-01-25 19:08:33 scene: pick owner=bonsai kind=splat
+2026-01-25 19:08:35 scene: focus lost -> keep gizmo
+2026-01-25 19:08:35 scene: grid_toggle=True vao=True count=204
+2026-01-25 19:08:37 scene: focus lost -> keep gizmo
+2026-01-25 19:08:37 scene: grid_toggle=False vao=True count=204
+2026-01-25 19:08:43 scene: grid_toggle=True vao=True count=204
+2026-01-25 19:08:43 scene: grid_toggle=False vao=True count=204
+2026-01-25 19:08:44 scene: grid_toggle=True vao=True count=204
+2026-01-25 19:08:44 scene: grid_toggle=False vao=True count=204
