@@ -898,11 +898,12 @@ class MGLRendererMixin:
 
         combined = arrays15[0] if len(arrays15) == 1 else np.concatenate(arrays15, axis=0)
         try:
-            self._mgl_log_throttled(
-                "_mgl_splat_log_combined_ts",
-                "splats: rebuild combined shape=" + str(getattr(combined, "shape", None)),
-                1.0,
-            )
+            if bool(getattr(self, "_mgl_splat_log_verbose", False)):
+                self._mgl_log_throttled(
+                    "_mgl_splat_log_combined_ts",
+                    "splats: rebuild combined shape=" + str(getattr(combined, "shape", None)),
+                    1.0,
+                )
         except Exception:
             pass
         self.set_splats(combined)
@@ -2440,11 +2441,12 @@ class MGLRendererMixin:
         if dbg:
             print("[SPLAT] set_splats queue:", arr.shape, arr.dtype, flush=True)
         try:
-            self._mgl_log_throttled(
-                "_mgl_splat_log_queue_ts",
-                "splats: set_splats queue shape=" + str(arr.shape),
-                1.0,
-            )
+            if bool(getattr(self, "_mgl_splat_log_verbose", False)):
+                self._mgl_log_throttled(
+                    "_mgl_splat_log_queue_ts",
+                    "splats: set_splats queue shape=" + str(arr.shape),
+                    1.0,
+                )
         except Exception:
             pass
 
@@ -2467,11 +2469,12 @@ class MGLRendererMixin:
         splats_np = self._mgl_pending_splats
         self._mgl_pending_splats = None
         try:
-            self._mgl_log_throttled(
-                "_mgl_splat_log_upload_pending_ts",
-                "splats: upload pending shape=" + str(getattr(splats_np, "shape", None)),
-                1.0,
-            )
+            if bool(getattr(self, "_mgl_splat_log_verbose", False)):
+                self._mgl_log_throttled(
+                    "_mgl_splat_log_upload_pending_ts",
+                    "splats: upload pending shape=" + str(getattr(splats_np, "shape", None)),
+                    1.0,
+                )
         except Exception:
             pass
 
@@ -2667,11 +2670,12 @@ class MGLRendererMixin:
                         ],
                     )
                 try:
-                    self._mgl_log_throttled(
-                        "_mgl_splat_log_upload_done_ts",
-                        "splats: upload done count=" + str(self._mgl_splat_count),
-                        1.0,
-                    )
+                    if bool(getattr(self, "_mgl_splat_log_verbose", False)):
+                        self._mgl_log_throttled(
+                            "_mgl_splat_log_upload_done_ts",
+                            "splats: upload done count=" + str(self._mgl_splat_count),
+                            1.0,
+                        )
                 except Exception:
                     pass
 
