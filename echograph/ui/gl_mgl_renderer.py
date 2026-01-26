@@ -66,7 +66,7 @@ def _mgl_grid(size: float, steps: int) -> "np.ndarray":
     u = np.repeat(np.linspace(-size, size, steps), 2)
     v = np.tile([-size, size], steps)
     w = np.zeros(steps * 2)
-    lower_grid = 0.135
+    lower_grid = 0.0
     y = np.full_like(u, lower_grid)
     # Build grid in XZ plane (Y = constant) so it's visible from the default camera.
     grid = np.concatenate([np.dstack([u, y, v]), np.dstack([v, y, u])])
@@ -1750,9 +1750,14 @@ class MGLRendererMixin:
                 except Exception:
                     _prev_lw = 1.0
 
-                # Draw grid without depth test so it stays visible regardless of scene depth.
+                # Draw grid with depth test so it stays behind meshes/splats.
+                prev_depth_test = True
                 try:
-                    self._mgl_ctx.disable(moderngl.DEPTH_TEST)
+                    prev_depth_test = bool(getattr(self._mgl_ctx, "depth_test", True))
+                except Exception:
+                    prev_depth_test = True
+                try:
+                    self._mgl_ctx.enable(moderngl.DEPTH_TEST)
                 except Exception:
                     pass
                 try:
@@ -1851,7 +1856,10 @@ class MGLRendererMixin:
                 except Exception:
                     pass
                 try:
-                    self._mgl_ctx.enable(moderngl.DEPTH_TEST)
+                    if prev_depth_test:
+                        self._mgl_ctx.enable(moderngl.DEPTH_TEST)
+                    else:
+                        self._mgl_ctx.disable(moderngl.DEPTH_TEST)
                 except Exception:
                     pass
             except Exception:
