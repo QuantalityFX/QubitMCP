@@ -3030,8 +3030,64 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
         # draw center + view ring on top (always constant px)
         target_ring_px = float(rot_shared.xyz_ring_radius_px())  # match the big blue ring
-        rot_shared.draw_center_disc_2d(widget=self, center=center, radius_px=target_ring_px, hovered=False)
-        rot_shared.draw_view_ring_2d(widget=self, center=center, hovered=False)
+        # Hover picking (same usage pattern as gizmo_viewport_smoketest.py)
+        mouse_px = getattr(self, "_rot_shared_mouse_px", None)
+        hit = None
+
+        if mouse_px is not None and (not rot_shared.drag_axis.active):
+            band = max(12.0, float(rot_shared.xyz_ring_radius_px()) * 0.14)
+            hit = rot_shared.pick_axis_2d(
+                widget=self,
+                center=center,
+                mouse_px=mouse_px,
+                viewport_w=self.width(),
+                viewport_h=self.height(),
+                mvp=mvp,
+                view_dir_local=view_dir_local,
+                back_clip_cos=-0.25,
+                clip_enabled=False,
+                threshold_px=float(band),
+            )
+
+        # Resolve hover state
+        if rot_shared.drag_axis.active and rot_shared.drag_axis.axis:
+            hover_axis = str(rot_shared.drag_axis.axis)
+            hover_view = False
+        else:
+            hover_axis = hit if hit in ("x", "y", "z") else None
+            hover_view = bool(hit == "view")
+
+        rot_shared.hover_axis = hover_axis
+        rot_shared.hover_view_ring = bool(hover_view)
+
+        # Center disc hover zone (only when not on rings)
+        hover_center = False
+        if mouse_px is not None and (hover_axis is None) and (not hover_view):
+            mx = float(mouse_px.x())
+            my = float(mouse_px.y())
+            cx = float(center.x())
+            cy = float(center.y())
+            d = ((mx - cx) ** 2 + (my - cy) ** 2) ** 0.5
+            center_grab_r_px = max(10.0, float(rot_shared.xyz_ring_radius_px()) * 0.28)
+            hover_center = (d <= float(center_grab_r_px))
+
+        # Draw center + view ring
+        target_ring_px = float(rot_shared.xyz_ring_radius_px())
+        rot_shared.draw_center_disc_2d(widget=self, center=center, radius_px=target_ring_px, hovered=bool(hover_center))
+        rot_shared.draw_view_ring_2d(widget=self, center=center, hovered=bool(hover_view or rot_shared.drag_view))
+
+        # Draw halo on hovered axis (or active drag axis)
+        if hover_axis:
+            rot_shared.draw_hover_halo_2d(
+                widget=self,
+                axis=str(hover_axis),
+                viewport_w=self.width(),
+                viewport_h=self.height(),
+                mvp=mvp,
+                view_dir_local=view_dir_local,
+                back_clip_cos=-0.25,
+                clip_enabled=False,
+            )
 
     def _get_owner_rot_deg(self, owner: str):
         renderer = getattr(self, "_mgl_renderer", None) or self
@@ -3420,6 +3476,26 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                             # --- shared rotate gizmo drag start ---
                             if getattr(self, "_xform_gizmo_mode", "") == "rotate":
                                 rot_shared = getattr(self, "_rot_shared", None)
+                                if not getattr(self, "_dbg_rot_shared_impl_once", False):
+                                    self._dbg_rot_shared_impl_once = True
+                                    try:
+                                        import sys
+                                        mod = sys.modules.get(rot_shared.__class__.__module__)
+                                        mf = getattr(mod, "__file__", None)
+                                    except Exception:
+                                        mf = None
+
+                                    print(
+                                        "[ROT_SHARED_IMPL]"
+                                        f" type={type(rot_shared)}"
+                                        f" module={rot_shared.__class__.__module__}"
+                                        f" file={mf}"
+                                        f" xyz_px={getattr(rot_shared, 'xyz_ring_radius_px', lambda: None)()}"
+                                        f" view_px={getattr(rot_shared, 'view_ring_radius_px', lambda: None)()}"
+                                        f" view_scale={getattr(rot_shared, 'view_ring_scale', None)}"
+                                        f" ui_scale={getattr(rot_shared, 'gizmo_ui_scale', None)}"
+                                        f" screen_px={getattr(rot_shared, 'gizmo_screen_radius_px', None)}"
+                                    )
                                 center = getattr(self, "_rot_shared_center_px", None)
                                 mvp = getattr(self, "_rot_shared_mvp", None)
                                 owner = getattr(self, "_xform_gizmo_owner", None)
@@ -3444,8 +3520,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
                                         e.accept()
                                         return
-
-                            if mode == "rotate" and p0 is not None:
+                            if False and mode == "rotate" and p0 is not None:
                                 axis_radius = {}
                                 max_axis_len = 0.0
                                 ring_r = 0.9
@@ -3750,6 +3825,21 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
     def mouseMoveEvent(self, e):
         if self._use_moderngl:
+            # cache mouse pos for ROT_SHARED hover (logical pixels, matches project_to_screen usage)
+            try:
+                mp = e.position() if hasattr(e, "position") else QtCore.QPointF(e.x(), e.y())
+                self._rot_shared_mouse_px = QtCore.QPointF(mp)
+            except Exception:
+                pass
+
+            # Hover highlight needs repaints even when not dragging
+            if (
+                getattr(self, "_xform_gizmo_mode", "") == "rotate"
+                and getattr(self, "_rot_shared", None) is not None
+                and not getattr(self, "_rot_shared_dragging", False)
+            ):
+                self.update()
+
             # --- shared rotate gizmo drag move ---
             if getattr(self, "_rot_shared_dragging", False) and (e.buttons() & QtCore.Qt.LeftButton):
                 rot_shared = getattr(self, "_rot_shared", None)
@@ -3796,7 +3886,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     return
                 
               # --- Gizmo dragging (ModernGL) ---
-            if getattr(self, "_xform_rotate_dragging", False) and (e.buttons() & QtCore.Qt.LeftButton):
+            if False and getattr(self, "_xform_rotate_dragging", False) and (e.buttons() & QtCore.Qt.LeftButton):
                 try:
                     if np is None:
                         return
@@ -4201,7 +4291,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 return
 
             # --- 0) End rotation drag first ---
-            if getattr(self, "_xform_rotate_dragging", False):
+            if False and getattr(self, "_xform_rotate_dragging", False):
                 self._xform_rotate_dragging = False
                 self._xform_rotate_axis = None
                 self._xform_rotate_owner = None
