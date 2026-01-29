@@ -3369,7 +3369,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                         center=center,
                                         mouse_px=QtCore.QPointF(mp),
                                     )
-                                    print("[ROT_SHARED] press", "hit=", hit, "owner=", owner, "mode=", mode)
+                                    self._mgl_log(f"[ROT_SHARED] pick hit={hit} mode={getattr(self,'_xform_gizmo_mode',None)} owner={owner}")
                                     if hit is not None:
                                         self._rot_shared_dragging = True
                                         self._rot_shared_axis = hit  # "x" / "y" / "z" / "view"
@@ -3697,6 +3697,9 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 axis = getattr(self, "_rot_shared_axis", None)
                 start_angle = getattr(self, "_rot_shared_start_angle", None)
                 start_rot = getattr(self, "_rot_shared_start_rot", None)
+                # _get_owner_rot_deg can be (rot_deg, is_splat). If we accidentally stored that whole tuple, unwrap it.
+                if isinstance(start_rot, (tuple, list)) and len(start_rot) == 2 and isinstance(start_rot[0], (tuple, list)):
+                    start_rot = start_rot[0]
 
                 if rot_shared is not None and center is not None and owner and axis and start_angle is not None and start_rot is not None:
                     mp = e.position() if hasattr(e, "position") else QtCore.QPointF(e.x(), e.y())

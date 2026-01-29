@@ -408,9 +408,7 @@ class RotateGizmoShared:
         clip_enabled: bool = False,
         threshold_px: float = 14.0,
     ) -> str | None:
-        # 1) view ring first
-        if self.pick_hover_view_ring(mouse_px, center):
-            return "view"
+
 
         # 2) pull viewport and MVP
         if viewport_w is None:
@@ -486,8 +484,12 @@ class RotateGizmoShared:
 
         if best_axis is not None and best_d <= float(threshold_px):
             return best_axis
-        return None
 
+        # view ring fallback (only if we didn't hit xyz)
+        if self.pick_hover_view_ring(mouse_px, center):
+            return "view"
+
+        return None
 
     def begin_view_ring_drag(self) -> None:
         self.drag_view = True
