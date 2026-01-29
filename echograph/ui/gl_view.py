@@ -2929,7 +2929,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 z = abs(float(cp[2]) / w)
 
                 world_per_px = (2.0 * z) / (vh * f)
-                desired_world_radius = float(rot_shared.xyz_ring_radius_px()) * world_per_px
+                target_ring_px = float(rot_shared.view_ring_radius_px())
+                desired_world_radius = target_ring_px * world_per_px
 
                 if float(rot_shared.gizmo_radius) > 1e-6:
                     s = desired_world_radius / float(rot_shared.gizmo_radius)
@@ -2956,22 +2957,26 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._rot_shared_mvp = mvp
         self._rot_shared_world_pos = pos
 
+        # pick up whatever we cached earlier for picking, otherwise fall back
+        view_dir_local = getattr(self, "_rot_shared_view_dir_local", None)
+        if view_dir_local is None:
+            view_dir_local = QtGui.QVector3D(0.0, 0.0, 1.0)
+
         # XYZ rings (new shared gizmo)
         rot_shared.draw_xyz_core_2d(
             widget=self,
             viewport_w=self.width(),
             viewport_h=self.height(),
             mvp=mvp,
-            view_dir_local=QtGui.QVector3D(0.0, 0.0, 1.0),
+            view_dir_local=view_dir_local,
             back_clip_cos=-0.2,
             clip_enabled=False,
             width_px=2,
         )
 
         # draw center + view ring on top (always constant px)
-        target_ring_px = float(rot_shared.xyz_ring_radius_px())
-        disc_px = float(target_ring_px) * 0.28
-        rot_shared.draw_center_disc_2d(widget=self, center=center, radius_px=disc_px, hovered=False)
+        target_ring_px = float(rot_shared.xyz_ring_radius_px())  # match the big blue ring
+        rot_shared.draw_center_disc_2d(widget=self, center=center, radius_px=target_ring_px, hovered=False)
         rot_shared.draw_view_ring_2d(widget=self, center=center, hovered=False)
 
     def _get_owner_rot_deg(self, owner: str):
