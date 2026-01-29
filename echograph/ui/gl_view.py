@@ -474,15 +474,17 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
     def __init__(self, scene, parent=None):
         print("[GL_VIEW] INIT FROM:", __file__)
         super().__init__(parent)
-        # --- Axis overlay (debug) - SAFE import (must not block app boot) ---
+        # --- Axis overlay (debug) and xform gizmo state ---
         self._axis_overlay = None
         self._debug_show_axis_overlay = False
+
         self._xform_gizmo_pos = (0.0, 0.0, 0.0)
         self._xform_gizmo_owner = None
         self._xform_gizmo_owner_kind = None
         self._xform_gizmo_pos_locked = False
         self._xform_gizmo_idle_visible = True
         self._xform_gizmo_mode = "translate"
+
         self._xform_rotate_dragging = False
         self._xform_rotate_axis = None
         self._xform_rotate_owner = None
@@ -491,6 +493,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._xform_rotate_start_rot = None
         self._xform_rotate_center = None
         self._xform_drag_kind = None
+
         try:
             from .axis_gizmo_overlay import AxisGizmoOverlay
             self._axis_overlay = AxisGizmoOverlay()
@@ -498,9 +501,14 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             print("[AXIS_OVERLAY] ready")
         except Exception as exc:
             self._axis_overlay = None
+            try:
+                from echograph.gizmo.rotate_gizmo_shared import RotateGizmoShared
+                self._rot_shared = RotateGizmoShared()
+            except Exception:
+                self._rot_shared = None
+
             self._debug_show_axis_overlay = False
             print("[AXIS_OVERLAY] disabled (boot-safe):", exc)
-
 
         self._dbg_id = f"{id(self):x}"
         print(f"[GL_VIEW] INSTANCE NEW {self._dbg_id}")
@@ -835,6 +843,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             except Exception:
                 pass
         self._draw_overlay()
+        self._draw_rotate_shared_overlay()
 
     def refresh_from_scene(self) -> None:
         if self._render_scene_plane:
@@ -2804,6 +2813,106 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 self._gl.glEnable(GL_DEPTH_TEST)
             except Exception:
                 pass
+
+    def _draw_rotate_shared_overlay(self) -> None:
+        rot_shared = getattr(self, "_rot_shared", None)
+        if rot_shared is None:
+            return
+
+        # only show in rotate mode
+        mode = getattr(self, "_xform_gizmo_mode", "translate") or "translate"
+        if mode != "rotate":
+            return
+
+        # only draw when something is selected (unless idle gizmo is allowed)
+        if getattr(self, "_xform_gizmo_owner", None) is None and not bool(getattr(self, "_xform_gizmo_idle_visible", False)):
+            return
+
+        if np is None:
+            return
+
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        P = getattr(renderer, "_mgl_pick_proj", None)
+        V = getattr(renderer, "_mgl_pick_view", None)
+        M = getattr(renderer, "_mgl_pick_model", None)
+        if P is None or V is None or M is None:
+            return
+
+        pos = getattr(self, "_xform_gizmo_pos", (0.0, 0.0, 0.0)) or (0.0, 0.0, 0.0)
+
+        # build MVP like the axis overlay does (rotate mode uses object rot)
+        T = np.eye(4, dtype=np.float32)
+        T[0, 3] = float(pos[0])
+        T[1, 3] = float(pos[1])
+        T[2, 3] = float(pos[2])
+
+        # try to match existing rotate-mode orientation
+        R = np.eye(4, dtype=np.float32)
+        try:
+            owner = getattr(self, "_xform_gizmo_owner", None)
+            if owner:
+                is_splat = False
+                try:
+                    splat_map = getattr(renderer, "_mgl_scene_splats_world", None)
+                    if not isinstance(splat_map, dict) or not splat_map:
+                        splat_map = getattr(renderer, "_mgl_scene_splats", None)
+                    if isinstance(splat_map, dict) and owner in splat_map:
+                        is_splat = True
+                except Exception:
+                    is_splat = False
+
+                get_xf = getattr(renderer, "_mgl_get_scene_splat_xform", None) if is_splat else getattr(renderer, "_mgl_get_scene_asset_xform", None)
+                xf = get_xf(owner) if callable(get_xf) else {}
+                rot = tuple((xf or {}).get("rot", (0.0, 0.0, 0.0)))
+
+                rx, ry, rz = float(rot[0]), float(rot[1]), float(rot[2])
+                cx, sx = math.cos(math.radians(rx)), math.sin(math.radians(rx))
+                cy, sy = math.cos(math.radians(ry)), math.sin(math.radians(ry))
+                cz, sz = math.cos(math.radians(rz)), math.sin(math.radians(rz))
+
+                Rx = np.array(
+                    [[1.0, 0.0, 0.0, 0.0],
+                     [0.0,  cx,  sx, 0.0],
+                     [0.0, -sx,  cx, 0.0],
+                     [0.0, 0.0, 0.0, 1.0]],
+                    dtype=np.float32,
+                )
+                Ry = np.array(
+                    [[ cy, 0.0, -sy, 0.0],
+                     [0.0, 1.0, 0.0, 0.0],
+                     [ sy, 0.0,  cy, 0.0],
+                     [0.0, 0.0, 0.0, 1.0]],
+                    dtype=np.float32,
+                )
+                Rz = np.array(
+                    [[ cz,  sz, 0.0, 0.0],
+                     [-sz,  cz, 0.0, 0.0],
+                     [0.0, 0.0, 1.0, 0.0],
+                     [0.0, 0.0, 0.0, 1.0]],
+                    dtype=np.float32,
+                )
+                R = (Rz @ Ry @ Rx).astype(np.float32)
+        except Exception:
+            pass
+
+        TR = (T @ R).astype(np.float32)
+        mvp_np = (P @ V @ M @ TR).astype(np.float32)
+
+        mvp = QtGui.QMatrix4x4(
+            float(mvp_np[0, 0]), float(mvp_np[0, 1]), float(mvp_np[0, 2]), float(mvp_np[0, 3]),
+            float(mvp_np[1, 0]), float(mvp_np[1, 1]), float(mvp_np[1, 2]), float(mvp_np[1, 3]),
+            float(mvp_np[2, 0]), float(mvp_np[2, 1]), float(mvp_np[2, 2]), float(mvp_np[2, 3]),
+            float(mvp_np[3, 0]), float(mvp_np[3, 1]), float(mvp_np[3, 2]), float(mvp_np[3, 3]),
+        )
+
+        center = rot_shared.project_to_screen(self.width(), self.height(), mvp, QtGui.QVector3D(0.0, 0.0, 0.0))
+        if center is None:
+            return
+
+        # draw something unmistakably "new" (old gizmo does not have these)
+        target_ring_px = float(rot_shared.xyz_ring_radius_px())
+        rot_shared.draw_center_disc_2d(widget=self, center=center, radius_px=target_ring_px, hovered=False)
+        rot_shared.draw_view_ring_2d(widget=self, center=center, hovered=False)
 
     def _debug_status_lines(self, include_paths: bool = False) -> List[str]:
         w = int(self.width())
