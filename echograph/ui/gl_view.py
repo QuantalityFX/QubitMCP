@@ -2966,8 +2966,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 dist = dist_raw * sm
 
                 # world units per pixel at that depth
-                world_per_px = (2.0 * dist) / (vh * proj_y)
-
+                world_per_px = (1.55 * dist) / (vh * proj_y)
                 # IMPORTANT: match smoketest target size (XYZ ring radius)
                 target_ring_px = float(rot_shared.xyz_ring_radius_px())
                 desired_world_radius = target_ring_px * world_per_px
