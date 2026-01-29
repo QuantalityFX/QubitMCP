@@ -2915,15 +2915,29 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         if center is None:
             return
 
+        self._rot_shared_center_px = center
+        self._rot_shared_mvp = mvp  # the scaled MVP we use for drawing
+        self._rot_shared_world_pos = pos
+
         # scale the local gizmo so the projected XYZ ring radius matches a constant pixel radius
         try:
-            test_p = QtGui.QVector3D(float(rot_shared.gizmo_radius), 0.0, 0.0)
-            sp = rot_shared.project_to_screen(self.width(), self.height(), mvp, test_p)
-            if sp is not None:
-                cur = math.hypot(float(sp.x() - center.x()), float(sp.y() - center.y()))
-                desired = float(rot_shared.xyz_ring_radius_px())
-                if cur > 1e-3:
-                    s = desired / cur
+            # Compute constant screen-size scale from camera depth and projection focal length.
+            # This is stable under orbit because it depends only on depth of the gizmo center.
+            vh = float(max(1, self.height()))
+            f = float(P[1, 1])  # OpenGL-style projection: f = cot(fovy/2)
+            if abs(f) > 1e-6:
+                # camera-space position of gizmo origin
+                vm = (V @ M @ (T @ R)).astype(np.float32)
+                cp = vm @ np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+                w = float(cp[3]) if abs(float(cp[3])) > 1e-6 else 1.0
+                z = abs(float(cp[2]) / w)
+
+                world_per_px = (2.0 * z) / (vh * f)
+                desired_world_radius = float(rot_shared.xyz_ring_radius_px()) * world_per_px
+
+                if float(rot_shared.gizmo_radius) > 1e-6:
+                    s = desired_world_radius / float(rot_shared.gizmo_radius)
+
                     S = np.eye(4, dtype=np.float32)
                     S[0, 0] = s
                     S[1, 1] = s
@@ -2940,8 +2954,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     )
         except Exception:
             pass
-
-        #print("[ROT_SHARED] draw_xyz_core_2d", "w/h=", self.width(), self.height())
+        
         # XYZ rings (new shared gizmo)
         rot_shared.draw_xyz_core_2d(
             widget=self,
