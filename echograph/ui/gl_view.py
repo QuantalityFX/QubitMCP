@@ -501,11 +501,17 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             print("[AXIS_OVERLAY] ready")
         except Exception as exc:
             self._axis_overlay = None
-            try:
-                from echograph.gizmo.rotate_gizmo_shared import RotateGizmoShared
-                self._rot_shared = RotateGizmoShared()
-            except Exception:
-                self._rot_shared = None
+            self._debug_show_axis_overlay = False
+            print("[AXIS_OVERLAY] disabled (boot-safe):", exc)
+
+        try:
+            from echograph.gizmo.rotate_gizmo_shared import RotateGizmoShared
+            self._rot_shared = RotateGizmoShared()
+            print("[ROT_SHARED] ready")
+        except Exception as exc:
+            self._rot_shared = None
+            print("[ROT_SHARED] disabled (boot-safe):", exc)
+            
 
             self._debug_show_axis_overlay = False
             print("[AXIS_OVERLAY] disabled (boot-safe):", exc)
