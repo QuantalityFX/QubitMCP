@@ -393,19 +393,34 @@ class RotateGizmoShared:
 
     def angle_on_ring(self, center_px: QtCore.QPointF, mouse_px: QtCore.QPointF) -> float:
         return float(math.atan2(float(mouse_px.y() - center_px.y()), float(mouse_px.x() - center_px.x())))
-
-    def pick_axis_2d(self, widget, center: QtCore.QPointF, mouse_px: QtCore.QPointF) -> str | None:
-        # 1) view ring (big blue ring)
+    
+    def pick_axis_2d(
+        self,
+        widget,
+        center: QtCore.QPointF,
+        mouse_px: QtCore.QPointF,
+        *,
+        viewport_w: int | None = None,
+        viewport_h: int | None = None,
+        mvp: QtGui.QMatrix4x4 | None = None,
+        view_dir_local: QtGui.QVector3D | None = None,
+        back_clip_cos: float = -0.25,
+        clip_enabled: bool = False,
+        threshold_px: float = 14.0,
+    ) -> str | None:
+        # 1) view ring first
         if self.pick_hover_view_ring(mouse_px, center):
             return "view"
 
-        # 2) xyz rings need the scaled MVP (cached by gl_view)
-        mvp = getattr(widget, "_rot_shared_mvp", None)
+        # 2) pull viewport and MVP
+        if viewport_w is None:
+            viewport_w = int(widget.width())
+        if viewport_h is None:
+            viewport_h = int(widget.height())
+        if mvp is None:
+            mvp = getattr(widget, "_rot_shared_mvp", None)
         if mvp is None:
             return None
-
-        vw = int(getattr(widget, "width")())
-        vh = int(getattr(widget, "height")())
 
         mx = float(mouse_px.x())
         my = float(mouse_px.y())
@@ -429,25 +444,34 @@ class RotateGizmoShared:
 
         r = float(self.gizmo_radius)
         steps = 128
-        threshold_px = 14.0
 
         best_axis: str | None = None
         best_d = 1e30
 
         for axis in ("x", "y", "z"):
-            prev: QtCore.QPointF | None = None
+            if axis == "x":
+                axis_vec = v3(1.0, 0.0, 0.0)
+                def make_p(a: float) -> QtGui.QVector3D:
+                    return v3(0.0, r * math.cos(a), r * math.sin(a))
+            elif axis == "y":
+                axis_vec = v3(0.0, 1.0, 0.0)
+                def make_p(a: float) -> QtGui.QVector3D:
+                    return v3(r * math.cos(a), 0.0, r * math.sin(a))
+            else:
+                axis_vec = v3(0.0, 0.0, 1.0)
+                def make_p(a: float) -> QtGui.QVector3D:
+                    return v3(r * math.cos(a), r * math.sin(a), 0.0)
 
+            prev: QtCore.QPointF | None = None
             for k in range(steps + 1):
                 a = (2.0 * math.pi) * (k / steps)
+                p = make_p(a)
 
-                if axis == "x":
-                    p = v3(0.0, r * math.cos(a), r * math.sin(a))
-                elif axis == "y":
-                    p = v3(r * math.cos(a), 0.0, r * math.sin(a))
-                else:
-                    p = v3(r * math.cos(a), r * math.sin(a), 0.0)
+                if clip_enabled and (view_dir_local is not None) and self.ring_clip_discard(p, axis_vec, view_dir_local, float(back_clip_cos)):
+                    prev = None
+                    continue
 
-                sp = self.project_to_screen(vw, vh, mvp, p)
+                sp = self.project_to_screen(int(viewport_w), int(viewport_h), mvp, p)
                 if sp is None:
                     prev = None
                     continue
@@ -460,7 +484,7 @@ class RotateGizmoShared:
 
                 prev = sp
 
-        if best_axis is not None and best_d <= threshold_px:
+        if best_axis is not None and best_d <= float(threshold_px):
             return best_axis
         return None
 
