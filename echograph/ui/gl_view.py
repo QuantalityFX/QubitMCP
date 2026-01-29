@@ -2915,40 +2915,94 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         if center is None:
             return
 
+        # DEBUG (print once per session when rotate gizmo actually draws)
+        if not getattr(self, "_dbg_rot_shared_sizes_once", False):
+            self._dbg_rot_shared_sizes_once = True
+            try:
+                dpr = float(self.devicePixelRatioF())
+            except Exception:
+                dpr = 1.0
+            print(
+                "[ROT_SHARED_SIZES]"
+                f" dpr={dpr}"
+                f" viewport={self.width()}x{self.height()}"
+                f" gizmo_radius={rot_shared.gizmo_radius}"
+                f" screen_radius_px={rot_shared.gizmo_screen_radius_px}"
+                f" ui_scale={rot_shared.gizmo_ui_scale}"
+                f" xyz_px={rot_shared.xyz_ring_radius_px()}"
+                f" view_px={rot_shared.view_ring_radius_px()}"
+            )
+
         # scale the local gizmo so the projected XYZ ring radius matches a constant pixel radius
         try:
-            # Compute constant screen-size scale from camera depth and projection focal length.
-            # This is stable under orbit because it depends only on depth of the gizmo center.
-            vh = float(max(1, self.height()))
-            f = float(P[1, 1])  # OpenGL-style projection: f = cot(fovy/2)
-            if abs(f) > 1e-6:
+            # Match gizmo_viewport_smoketest.py: use projection focal length + camera-space depth.
+            try:
+                dpr = float(self.devicePixelRatioF())
+            except Exception:
+                dpr = 1.0
+
+            vh = float(max(1, self.height())) * dpr
+
+            # Robust: force numpy 4x4 arrays (Matrix44, lists, etc.)
+            Pn = np.asarray(P, dtype=np.float32)
+            Vn = np.asarray(V, dtype=np.float32)
+            Mn = np.asarray(M, dtype=np.float32)
+
+            proj_y = abs(float(Pn[1, 1]))  # cot(fovy/2)
+            if proj_y > 1e-6 and float(rot_shared.gizmo_radius) > 1e-6:
                 # camera-space position of gizmo origin
-                vm = (V @ M @ (T @ R)).astype(np.float32)
+                vm = (Vn @ Mn @ (T @ R)).astype(np.float32)
                 cp = vm @ np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
                 w = float(cp[3]) if abs(float(cp[3])) > 1e-6 else 1.0
-                z = abs(float(cp[2]) / w)
 
-                world_per_px = (2.0 * z) / (vh * f)
-                target_ring_px = float(rot_shared.view_ring_radius_px())
+                dist_raw = abs(float(cp[2]) / w)
+                dist_raw = max(dist_raw, 0.05)
+
+                try:
+                    sm = float(getattr(renderer, "_mgl_scale_multiplier", 1.0))
+                except Exception:
+                    sm = 1.0
+
+                dist = dist_raw * sm
+
+                # world units per pixel at that depth
+                world_per_px = (2.0 * dist) / (vh * proj_y)
+
+                # IMPORTANT: match smoketest target size (XYZ ring radius)
+                target_ring_px = float(rot_shared.xyz_ring_radius_px())
                 desired_world_radius = target_ring_px * world_per_px
 
-                if float(rot_shared.gizmo_radius) > 1e-6:
-                    s = desired_world_radius / float(rot_shared.gizmo_radius)
+                s = desired_world_radius / float(rot_shared.gizmo_radius)
+                s = max(0.01, min(1000.0, float(s)))
 
-                    S = np.eye(4, dtype=np.float32)
-                    S[0, 0] = s
-                    S[1, 1] = s
-                    S[2, 2] = s
+                # (if you have clamps, keep them here, then print after clamps)
+                # s = max(0.01, min(1000.0, float(s)))
 
-                    TRS = (T @ R @ S).astype(np.float32)
-                    mvp_np = (P @ V @ M @ TRS).astype(np.float32)
-
-                    mvp = QtGui.QMatrix4x4(
-                        float(mvp_np[0, 0]), float(mvp_np[0, 1]), float(mvp_np[0, 2]), float(mvp_np[0, 3]),
-                        float(mvp_np[1, 0]), float(mvp_np[1, 1]), float(mvp_np[1, 2]), float(mvp_np[1, 3]),
-                        float(mvp_np[2, 0]), float(mvp_np[2, 1]), float(mvp_np[2, 2]), float(mvp_np[2, 3]),
-                        float(mvp_np[3, 0]), float(mvp_np[3, 1]), float(mvp_np[3, 2]), float(mvp_np[3, 3]),
+                if not getattr(self, "_dbg_rot_shared_scale_once", False):
+                    self._dbg_rot_shared_scale_once = True
+                    print(
+                        "[ROT_SHARED_SCALE]"
+                        f" target_px={target_ring_px}"
+                        f" dist={dist}"
+                        f" proj_y={proj_y}"
+                        f" vh={vh}"
+                        f" s={s}"
                     )
+
+                S = np.eye(4, dtype=np.float32)
+                S[0, 0] = s
+                S[1, 1] = s
+                S[2, 2] = s
+
+                TRS = (T @ R @ S).astype(np.float32)
+                mvp_np = (Pn @ Vn @ Mn @ TRS).astype(np.float32)
+
+                mvp = QtGui.QMatrix4x4(
+                    float(mvp_np[0, 0]), float(mvp_np[0, 1]), float(mvp_np[0, 2]), float(mvp_np[0, 3]),
+                    float(mvp_np[1, 0]), float(mvp_np[1, 1]), float(mvp_np[1, 2]), float(mvp_np[1, 3]),
+                    float(mvp_np[2, 0]), float(mvp_np[2, 1]), float(mvp_np[2, 2]), float(mvp_np[2, 3]),
+                    float(mvp_np[3, 0]), float(mvp_np[3, 1]), float(mvp_np[3, 2]), float(mvp_np[3, 3]),
+                )
         except Exception:
             pass
 
