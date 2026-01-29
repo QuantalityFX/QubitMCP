@@ -2580,7 +2580,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                             float(mvp_np[3, 0]), float(mvp_np[3, 1]), float(mvp_np[3, 2]), float(mvp_np[3, 3]),
                         )
 
-                        self._axis_overlay.draw(mvp, mode=mode)
+                        self._axis_overlay.draw(mvp, mode=mode, draw_rotate_rings=(mode != "rotate"))
                 except Exception as exc:
                     print("[AXIS_OVERLAY] disabled:", exc, flush=True)
                     self._debug_show_axis_overlay = False
@@ -2915,7 +2915,46 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         if center is None:
             return
 
-        # draw something unmistakably "new" (old gizmo does not have these)
+        # scale the local gizmo so the projected XYZ ring radius matches a constant pixel radius
+        try:
+            test_p = QtGui.QVector3D(float(rot_shared.gizmo_radius), 0.0, 0.0)
+            sp = rot_shared.project_to_screen(self.width(), self.height(), mvp, test_p)
+            if sp is not None:
+                cur = math.hypot(float(sp.x() - center.x()), float(sp.y() - center.y()))
+                desired = float(rot_shared.xyz_ring_radius_px())
+                if cur > 1e-3:
+                    s = desired / cur
+                    S = np.eye(4, dtype=np.float32)
+                    S[0, 0] = s
+                    S[1, 1] = s
+                    S[2, 2] = s
+
+                    TRS = (T @ R @ S).astype(np.float32)
+                    mvp_np = (P @ V @ M @ TRS).astype(np.float32)
+
+                    mvp = QtGui.QMatrix4x4(
+                        float(mvp_np[0, 0]), float(mvp_np[0, 1]), float(mvp_np[0, 2]), float(mvp_np[0, 3]),
+                        float(mvp_np[1, 0]), float(mvp_np[1, 1]), float(mvp_np[1, 2]), float(mvp_np[1, 3]),
+                        float(mvp_np[2, 0]), float(mvp_np[2, 1]), float(mvp_np[2, 2]), float(mvp_np[2, 3]),
+                        float(mvp_np[3, 0]), float(mvp_np[3, 1]), float(mvp_np[3, 2]), float(mvp_np[3, 3]),
+                    )
+        except Exception:
+            pass
+
+        #print("[ROT_SHARED] draw_xyz_core_2d", "w/h=", self.width(), self.height())
+        # XYZ rings (new shared gizmo)
+        rot_shared.draw_xyz_core_2d(
+            widget=self,
+            viewport_w=self.width(),
+            viewport_h=self.height(),
+            mvp=mvp,
+            view_dir_local=QtGui.QVector3D(0.0, 0.0, 1.0),
+            back_clip_cos=-0.2,
+            clip_enabled=False,
+            width_px=2,
+        )
+
+        # draw center + view ring on top (always constant px)
         target_ring_px = float(rot_shared.xyz_ring_radius_px())
         rot_shared.draw_center_disc_2d(widget=self, center=center, radius_px=target_ring_px, hovered=False)
         rot_shared.draw_view_ring_2d(widget=self, center=center, hovered=False)

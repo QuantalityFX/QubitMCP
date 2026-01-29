@@ -195,7 +195,7 @@ class AxisGizmoOverlay:
         self._ready = True
         return True
 
-    def draw(self, mvp: QtGui.QMatrix4x4, mode: str = "translate") -> None:
+    def draw(self, mvp: QtGui.QMatrix4x4, mode: str = "translate", draw_rotate_rings: bool = True) -> None:
         if not self._ready or self._gl is None or self._prog is None or self._vao is None:
             return
 
@@ -209,7 +209,7 @@ class AxisGizmoOverlay:
 
         self._vao.bind()
         if mode == "rotate":
-            if self._circle_vert_count:
+            if draw_rotate_rings and self._circle_vert_count:
                 self._gl.glDrawArrays(GL_LINES, self._circle_vert_offset, self._circle_vert_count)
         else:
             self._gl.glDrawArrays(GL_LINES, 0, self._line_vert_count)
