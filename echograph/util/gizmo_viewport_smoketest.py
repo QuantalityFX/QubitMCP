@@ -899,37 +899,54 @@ class GizmoControlSmoke(QOpenGLWidget):
 
         # Left click (no Alt): arcball rotate only if inside gizmo radius on screen
         if e.button() == QtCore.Qt.LeftButton:
+            
+            # Unified pick using RotateGizmoShared (matches main app)
+            center_px = getattr(self, "_center_obj", None)
+            mvp_rings = getattr(self, "_mvp_rings", None)
+            view_dir_local = getattr(self, "_view_dir_local", None)
+            back_clip_cos = float(getattr(self, "_back_clip_cos", -0.25))
 
-            # View ring drag (camera-facing) - shared
-            res = self._gizmo_screen_circle()
-            if res is not None:
-                center_px, _radius_px = res
-                if self._rot_shared.pick_hover_view_ring(mp, center_px):
+            if center_px is not None and mvp_rings is not None and (not self._drag_axis.active) and (not self._drag_arc.active):
+                band = max(12.0, float(self._rot_shared.xyz_ring_radius_px()) * 0.14)
+
+                hit = self._rot_shared.pick_axis_2d(
+                    widget=self,
+                    center=center_px,
+                    mouse_px=mp,
+                    viewport_w=self.width(),
+                    viewport_h=self.height(),
+                    mvp=mvp_rings,
+                    view_dir_local=view_dir_local,
+                    back_clip_cos=back_clip_cos,
+                    clip_enabled=bool(self._clip_enabled),
+                    threshold_px=float(band),
+                )
+
+                if hit == "view":
                     self._rot_shared.begin_view_ring_drag()
                     e.accept()
                     return
 
-            # Axis drag wins over arcball when clicking a hovered ring
-            if self._hover_axis in ("x", "y", "z"):
-                self._mouse_pos = mp
+                if hit in ("x", "y", "z"):
+                    self._mouse_pos = mp
 
-                _proj, _view, _model, cam = self._build_mats()
+                    _proj, _view, _model, cam = self._build_mats()
 
-                axis_local = v3(1, 0, 0) if self._hover_axis == "x" else (v3(0, 1, 0) if self._hover_axis == "y" else v3(0, 0, 1))
-                axis_world = self._obj_rot.rotatedVector(axis_local)
-                if axis_world.length() > 1e-6:
-                    axis_world = axis_world / axis_world.length()
+                    axis_local = v3(1, 0, 0) if hit == "x" else (v3(0, 1, 0) if hit == "y" else v3(0, 0, 1))
+                    axis_world = self._obj_rot.rotatedVector(axis_local)
+                    if axis_world.length() > 1e-6:
+                        axis_world = axis_world / axis_world.length()
 
-                start_dir = self._axis_ring_dir_world(mp, axis_world, cam)
-                if start_dir is not None:
-                    self._rot_shared.begin_axis_drag(
-                        axis=str(self._hover_axis),
-                        start_rot=self._obj_rot,
-                        axis_world=axis_world,
-                        start_dir=start_dir,
-                    )
-                    e.accept()
-                    return
+                    start_dir = self._axis_ring_dir_world(mp, axis_world, cam)
+                    if start_dir is not None:
+                        self._rot_shared.begin_axis_drag(
+                            axis=str(hit),
+                            start_rot=self._obj_rot,
+                            axis_world=axis_world,
+                            start_dir=start_dir,
+                        )
+                        e.accept()
+                        return
 
             if self._rot_shared.drag_axis.active:
                 e.accept()
@@ -1010,7 +1027,7 @@ class GizmoControlSmoke(QOpenGLWidget):
             return
 
         # Axis-constrained ring drag (shared) - must run BEFORE orbit/zoom and BEFORE any early return
-        if self._rot_shared.drag_axis.active:
+        if self._rot_shared.drag_axis.active or bool(getattr(self._rot_shared, "drag_view", False)):
             _proj, _view, _model, cam = self._build_mats()
 
             axis_world = self._rot_shared.drag_axis.axis_world
@@ -1156,6 +1173,13 @@ class GizmoControlSmoke(QOpenGLWidget):
 
         # Hover picking (use the same scaled MVP as the drawn rings)
         c_obj = self._project_to_screen(mvp_obj, v3(0.0, 0.0, 0.0))
+        
+        # cache for mousePressEvent so it can use RotateGizmoShared.pick_axis_2d()
+        self._center_obj = c_obj
+        self._mvp_rings = mvp_rings
+        self._view_dir_local = view_dir_local
+        self._back_clip_cos = float(back_clip_cos)
+
         # Center "grab" hover zone (for arcball / free rotate)
         hover_center = False
         center_grab_r_px = None
@@ -1184,7 +1208,7 @@ class GizmoControlSmoke(QOpenGLWidget):
         else:
             self._hover_axis = hit if hit in ("x", "y", "z") else None
             self._rot_shared.hover_view_ring = bool(hit == "view")
-            
+
         # Show the center disc only when hovering the center area (and not on rings)
         if c_obj is not None and (self._hover_axis is None) and (not self._rot_shared.hover_view_ring):
             mx = float(self._mouse_pos.x())
