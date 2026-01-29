@@ -1160,72 +1160,30 @@ class GizmoControlSmoke(QOpenGLWidget):
         hover_center = False
         center_grab_r_px = None
 
+        # Hover picking (use shared picker so smoketest + main app match)
+        hit = None
+
+        if c_obj is not None and (not self._drag_axis.active) and (not self._drag_arc.active):
+            band = max(12.0, float(target_ring_px) * 0.14)
+            hit = self._rot_shared.pick_axis_2d(
+                widget=self,
+                center=c_obj,
+                mouse_px=self._mouse_pos,
+                viewport_w=self.width(),
+                viewport_h=self.height(),
+                mvp=mvp_rings,
+                view_dir_local=view_dir_local,
+                back_clip_cos=float(back_clip_cos),
+                clip_enabled=(clip_val > 0.5),
+                threshold_px=float(band),
+            )
+
         if self._drag_axis.active and self._drag_axis.axis:
             self._hover_axis = self._drag_axis.axis
-        else:
-            self._hover_axis = None
-            if c_obj is not None:
-                mx = float(self._mouse_pos.x())
-                my = float(self._mouse_pos.y())
-
-                ring_r_px = float(target_ring_px)
-                band = max(12.0, ring_r_px * 0.14)
-
-                clip_enabled = bool(self._clip_enabled)
-
-                def ring_dist(axis: str) -> float:
-                    best_d = 1e9
-                    steps = 48
-
-                    if axis == "x":
-                        axis_vec = v3(1.0, 0.0, 0.0)
-                    elif axis == "y":
-                        axis_vec = v3(0.0, 1.0, 0.0)
-                    else:
-                        axis_vec = v3(0.0, 0.0, 1.0)
-
-                    for i in range(steps):
-                        t = (i / steps) * (2.0 * math.pi)
-                        ct = math.cos(t) * float(self._gizmo_radius)
-                        st = math.sin(t) * float(self._gizmo_radius)
-
-                        if axis == "x":
-                            p = v3(0.0, ct, st)      # ring in YZ plane
-                        elif axis == "y":
-                            p = v3(ct, 0.0, st)      # ring in XZ plane
-                        else:
-                            p = v3(ct, st, 0.0)      # ring in XY plane
-
-                        if clip_enabled and self._ring_clip_discard(p, axis_vec, view_dir_local, float(back_clip_cos)):
-                            continue
-
-                        sp = self._project_to_screen(mvp_rings, p)
-                        if sp is None:
-                            continue
-
-                        d = math.hypot(mx - float(sp.x()), my - float(sp.y()))
-                        if d < best_d:
-                            best_d = d
-
-                    return best_d
-
-                dx = ring_dist("x")
-                dy = ring_dist("y")
-                dz = ring_dist("z")
-
-                best_pick = min(dx, dy, dz)
-                if best_pick <= band:
-                    if best_pick == dx:
-                        self._hover_axis = "x"
-                    elif best_pick == dy:
-                        self._hover_axis = "y"
-                    else:
-                        self._hover_axis = "z"
-
-        if c_obj is not None:
-            self._rot_shared.hover_view_ring = (not self._drag_axis.active and not self._drag_arc.active) and self._rot_shared.pick_hover_view_ring(self._mouse_pos, c_obj)
-        else:
             self._rot_shared.hover_view_ring = False
+        else:
+            self._hover_axis = hit if hit in ("x", "y", "z") else None
+            self._rot_shared.hover_view_ring = bool(hit == "view")
             
         # Show the center disc only when hovering the center area (and not on rings)
         if c_obj is not None and (self._hover_axis is None) and (not self._rot_shared.hover_view_ring):
