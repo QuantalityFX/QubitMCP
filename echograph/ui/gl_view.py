@@ -2915,10 +2915,6 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         if center is None:
             return
 
-        self._rot_shared_center_px = center
-        self._rot_shared_mvp = mvp  # the scaled MVP we use for drawing
-        self._rot_shared_world_pos = pos
-
         # scale the local gizmo so the projected XYZ ring radius matches a constant pixel radius
         try:
             # Compute constant screen-size scale from camera depth and projection focal length.
@@ -2954,7 +2950,12 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     )
         except Exception:
             pass
-        
+
+        # cache AFTER scaling so pick matches draw
+        self._rot_shared_center_px = center
+        self._rot_shared_mvp = mvp
+        self._rot_shared_world_pos = pos
+
         # XYZ rings (new shared gizmo)
         rot_shared.draw_xyz_core_2d(
             widget=self,
@@ -2969,7 +2970,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
         # draw center + view ring on top (always constant px)
         target_ring_px = float(rot_shared.xyz_ring_radius_px())
-        rot_shared.draw_center_disc_2d(widget=self, center=center, radius_px=target_ring_px, hovered=False)
+        disc_px = float(target_ring_px) * 0.28
+        rot_shared.draw_center_disc_2d(widget=self, center=center, radius_px=disc_px, hovered=False)
         rot_shared.draw_view_ring_2d(widget=self, center=center, hovered=False)
 
     def _get_owner_rot_deg(self, owner: str):

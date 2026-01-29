@@ -97,6 +97,10 @@ class RotateGizmoShared:
     def view_ring_radius_px(self) -> float:
         return float(self.gizmo_screen_radius_px) * float(self.gizmo_ui_scale) * float(self.view_ring_scale)
 
+    def center_disc_radius_px(self) -> float:
+        # fraction of the xyz ring radius
+        return float(self.xyz_ring_radius_px()) * 0.28
+
     def project_to_screen(self, viewport_w: int, viewport_h: int, mvp: QtGui.QMatrix4x4, p: QtGui.QVector3D) -> QtCore.QPointF | None:
         x = float(p.x())
         y = float(p.y())
