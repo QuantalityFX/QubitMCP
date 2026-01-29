@@ -2972,6 +2972,46 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         rot_shared.draw_center_disc_2d(widget=self, center=center, radius_px=target_ring_px, hovered=False)
         rot_shared.draw_view_ring_2d(widget=self, center=center, hovered=False)
 
+    def _get_owner_rot_deg(self, owner: str):
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        # detect splat
+        is_splat = False
+        try:
+            splat_map = getattr(renderer, "_mgl_scene_splats_world", None)
+            if not isinstance(splat_map, dict) or not splat_map:
+                splat_map = getattr(renderer, "_mgl_scene_splats", None)
+            if isinstance(splat_map, dict) and owner in splat_map:
+                is_splat = True
+        except Exception:
+            is_splat = False
+
+        get_xf = getattr(renderer, "_mgl_get_scene_splat_xform", None) if is_splat else getattr(renderer, "_mgl_get_scene_asset_xform", None)
+        xf = get_xf(owner) if callable(get_xf) else {}
+        rot = tuple((xf or {}).get("rot", (0.0, 0.0, 0.0)))
+        return (float(rot[0]), float(rot[1]), float(rot[2])), is_splat
+
+    def _set_owner_rot_deg(self, owner: str, rot_deg, is_splat: bool) -> None:
+        # Use the existing API that gl_view already uses for transforms.
+        try:
+            renderer = getattr(self, "_mgl_renderer", None) or self
+            fn = getattr(renderer, "_mgl_set_scene_asset_xform", None)
+            if callable(fn):
+                fn(
+                    owner,
+                    rot=(float(rot_deg[0]), float(rot_deg[1]), float(rot_deg[2])),
+                    apply_to_scene_models=not bool(is_splat),
+                    use_splat_xform=bool(is_splat),
+                )
+            # optional UI sync
+            try:
+                w = self.window()
+                if hasattr(w, "update_scene_asset_xform"):
+                    w.update_scene_asset_xform(owner)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
     def _debug_status_lines(self, include_paths: bool = False) -> List[str]:
         w = int(self.width())
         h = int(self.height())
@@ -3316,10 +3356,36 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                             }
 
                             p0 = project(g)
+                            # --- shared rotate gizmo drag start ---
+                            if getattr(self, "_xform_gizmo_mode", "") == "rotate":
+                                rot_shared = getattr(self, "_rot_shared", None)
+                                center = getattr(self, "_rot_shared_center_px", None)
+                                mvp = getattr(self, "_rot_shared_mvp", None)
+                                owner = getattr(self, "_xform_gizmo_owner", None)
+
+                                if rot_shared is not None and center is not None and mvp is not None and owner:
+                                    mp = e.position() if hasattr(e, "position") else QtCore.QPointF(e.x(), e.y())
+
+                                    hit = rot_shared.pick_axis_2d(widget=self, center=center, mouse_px=mp)
+                                    if hit is not None:
+                                        self._rot_shared_dragging = True
+                                        self._rot_shared_axis = hit  # "x" / "y" / "z" / "view"
+                                        self._rot_shared_owner = owner
+
+                                        (rot_deg, is_splat) = self._get_owner_rot_deg(owner)
+                                        self._rot_shared_is_splat = bool(is_splat)
+                                        self._rot_shared_start_rot = rot_deg
+
+                                        self._rot_shared_start_angle = math.atan2(float(mp.y() - center.y()), float(mp.x() - center.x()))
+                                        e.accept()
+                                        return
+
                             if mode == "rotate" and p0 is not None:
                                 axis_radius = {}
                                 max_axis_len = 0.0
                                 ring_r = 0.9
+
+
 
                                 def ring_radius(axis_name: str) -> float | None:
                                     if axis_name == "x":
@@ -3619,7 +3685,48 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
     def mouseMoveEvent(self, e):
         if self._use_moderngl:
-            # --- Gizmo dragging (ModernGL) ---
+            # --- shared rotate gizmo drag move ---
+            if getattr(self, "_rot_shared_dragging", False) and (e.buttons() & QtCore.Qt.LeftButton):
+                rot_shared = getattr(self, "_rot_shared", None)
+                center = getattr(self, "_rot_shared_center_px", None)
+                owner = getattr(self, "_rot_shared_owner", None)
+                axis = getattr(self, "_rot_shared_axis", None)
+                start_angle = getattr(self, "_rot_shared_start_angle", None)
+                start_rot = getattr(self, "_rot_shared_start_rot", None)
+
+                if rot_shared is not None and center is not None and owner and axis and start_angle is not None and start_rot is not None:
+                    mp = e.position() if hasattr(e, "position") else QtCore.QPointF(e.x(), e.y())
+                    ang = math.atan2(float(mp.y() - center.y()), float(mp.x() - center.x()))
+                    delta = float(ang) - float(start_angle)
+
+                    while delta > math.pi:
+                        delta -= 2.0 * math.pi
+                    while delta < -math.pi:
+                        delta += 2.0 * math.pi
+
+                    delta_deg = math.degrees(delta)
+
+                    ring_sign = {"x": -1.0, "y": -1.0, "z": -1.0}
+                    delta_deg = float(delta_deg) * float(ring_sign.get(axis, 1.0))
+
+                    rx, ry, rz = float(start_rot[0]), float(start_rot[1]), float(start_rot[2])
+                    if axis == "x":
+                        rx = rx + delta_deg
+                    elif axis == "y":
+                        ry = ry + delta_deg
+                    elif axis == "z":
+                        rz = rz + delta_deg
+                    else:
+                        # "view" ring: rotate around camera forward as a fallback, treat as Z for now
+                        rz = rz + delta_deg
+
+                    self._set_owner_rot_deg(owner, (rx, ry, rz), bool(getattr(self, "_rot_shared_is_splat", False)))
+
+                    self.update()
+                    e.accept()
+                    return
+                
+              # --- Gizmo dragging (ModernGL) ---
             if getattr(self, "_xform_rotate_dragging", False) and (e.buttons() & QtCore.Qt.LeftButton):
                 try:
                     if np is None:
@@ -4015,6 +4122,15 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
     def mouseReleaseEvent(self, e):
         if self._use_moderngl:
+            if getattr(self, "_rot_shared_dragging", False):
+                self._rot_shared_dragging = False
+                self._rot_shared_axis = None
+                self._rot_shared_owner = None
+                self._rot_shared_start_angle = None
+                self._rot_shared_start_rot = None
+                e.accept()
+                return
+
             # --- 0) End rotation drag first ---
             if getattr(self, "_xform_rotate_dragging", False):
                 self._xform_rotate_dragging = False
