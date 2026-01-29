@@ -3362,21 +3362,25 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                 center = getattr(self, "_rot_shared_center_px", None)
                                 mvp = getattr(self, "_rot_shared_mvp", None)
                                 owner = getattr(self, "_xform_gizmo_owner", None)
-
                                 if rot_shared is not None and center is not None and mvp is not None and owner:
                                     mp = e.position() if hasattr(e, "position") else QtCore.QPointF(e.x(), e.y())
-
-                                    hit = rot_shared.pick_axis_2d(widget=self, center=center, mouse_px=mp)
+                                    hit = rot_shared.pick_axis_2d(
+                                        widget=self,
+                                        center=center,
+                                        mouse_px=QtCore.QPointF(mp),
+                                    )
+                                    print("[ROT_SHARED] press", "hit=", hit, "owner=", owner, "mode=", mode)
                                     if hit is not None:
                                         self._rot_shared_dragging = True
                                         self._rot_shared_axis = hit  # "x" / "y" / "z" / "view"
+                                        self._rot_shared_start_angle = rot_shared.angle_on_ring(center, QtCore.QPointF(mp))
+
                                         self._rot_shared_owner = owner
+                                        self._rot_shared_start_rot = self._get_owner_rot_deg(owner)
 
-                                        (rot_deg, is_splat) = self._get_owner_rot_deg(owner)
-                                        self._rot_shared_is_splat = bool(is_splat)
-                                        self._rot_shared_start_rot = rot_deg
+                                        # IMPORTANT: make rotation apply to splats when a splat is selected
+                                        self._rot_shared_is_splat = (getattr(self, "_xform_gizmo_owner_kind", None) == "splat")
 
-                                        self._rot_shared_start_angle = math.atan2(float(mp.y() - center.y()), float(mp.x() - center.x()))
                                         e.accept()
                                         return
 
@@ -3720,7 +3724,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                         # "view" ring: rotate around camera forward as a fallback, treat as Z for now
                         rz = rz + delta_deg
 
-                    self._set_owner_rot_deg(owner, (rx, ry, rz), bool(getattr(self, "_rot_shared_is_splat", False)))
+                    is_splat = bool(getattr(self, "_xform_gizmo_owner_kind", None) == "splat")
+                    self._set_owner_rot_deg(owner, (rx, ry, rz), is_splat)
 
                     self.update()
                     e.accept()

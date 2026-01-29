@@ -391,6 +391,79 @@ class RotateGizmoShared:
         band = max(10.0, r * 0.12)
         return abs(d - r) <= float(band)
 
+    def angle_on_ring(self, center_px: QtCore.QPointF, mouse_px: QtCore.QPointF) -> float:
+        return float(math.atan2(float(mouse_px.y() - center_px.y()), float(mouse_px.x() - center_px.x())))
+
+    def pick_axis_2d(self, widget, center: QtCore.QPointF, mouse_px: QtCore.QPointF) -> str | None:
+        # 1) view ring (big blue ring)
+        if self.pick_hover_view_ring(mouse_px, center):
+            return "view"
+
+        # 2) xyz rings need the scaled MVP (cached by gl_view)
+        mvp = getattr(widget, "_rot_shared_mvp", None)
+        if mvp is None:
+            return None
+
+        vw = int(getattr(widget, "width")())
+        vh = int(getattr(widget, "height")())
+
+        mx = float(mouse_px.x())
+        my = float(mouse_px.y())
+
+        def dist_pt_seg(px: float, py: float, ax: float, ay: float, bx: float, by: float) -> float:
+            vx = bx - ax
+            vy = by - ay
+            wx = px - ax
+            wy = py - ay
+            denom = vx * vx + vy * vy
+            if denom <= 1e-12:
+                return math.hypot(px - ax, py - ay)
+            t = (wx * vx + wy * vy) / denom
+            if t < 0.0:
+                t = 0.0
+            elif t > 1.0:
+                t = 1.0
+            cx = ax + t * vx
+            cy = ay + t * vy
+            return math.hypot(px - cx, py - cy)
+
+        r = float(self.gizmo_radius)
+        steps = 128
+        threshold_px = 14.0
+
+        best_axis: str | None = None
+        best_d = 1e30
+
+        for axis in ("x", "y", "z"):
+            prev: QtCore.QPointF | None = None
+
+            for k in range(steps + 1):
+                a = (2.0 * math.pi) * (k / steps)
+
+                if axis == "x":
+                    p = v3(0.0, r * math.cos(a), r * math.sin(a))
+                elif axis == "y":
+                    p = v3(r * math.cos(a), 0.0, r * math.sin(a))
+                else:
+                    p = v3(r * math.cos(a), r * math.sin(a), 0.0)
+
+                sp = self.project_to_screen(vw, vh, mvp, p)
+                if sp is None:
+                    prev = None
+                    continue
+
+                if prev is not None:
+                    d = dist_pt_seg(mx, my, float(prev.x()), float(prev.y()), float(sp.x()), float(sp.y()))
+                    if d < best_d:
+                        best_d = d
+                        best_axis = axis
+
+                prev = sp
+
+        if best_axis is not None and best_d <= threshold_px:
+            return best_axis
+        return None
+
 
     def begin_view_ring_drag(self) -> None:
         self.drag_view = True
