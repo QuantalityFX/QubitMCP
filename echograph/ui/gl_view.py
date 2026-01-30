@@ -3653,9 +3653,21 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                                             ray_d = QtGui.QVector3D(float(rd[0]), float(rd[1]), float(rd[2]))
 
                                                             center_w = self._rot_shared_axis_center_world
+                                                            # Intersect ray with plane orthogonal to axis_world through center_w
                                                             to_c = QtGui.QVector3D(center_w.x() - cam.x(), center_w.y() - cam.y(), center_w.z() - cam.z())
-                                                            t = QtGui.QVector3D.dotProduct(to_c, ray_d)
-                                                            p = QtGui.QVector3D(cam.x() + ray_d.x() * t, cam.y() + ray_d.y() * t, cam.z() + ray_d.z() * t)
+                                                            den = float(QtGui.QVector3D.dotProduct(axis_world, ray_d))
+
+                                                            if abs(den) > 1e-6:
+                                                                t = float(QtGui.QVector3D.dotProduct(axis_world, to_c)) / den
+                                                            else:
+                                                                # Fallback if ray is near-parallel to the plane
+                                                                t = float(QtGui.QVector3D.dotProduct(to_c, ray_d))
+
+                                                            p = QtGui.QVector3D(
+                                                                cam.x() + ray_d.x() * t,
+                                                                cam.y() + ray_d.y() * t,
+                                                                cam.z() + ray_d.z() * t,
+                                                            )
 
                                                             v = QtGui.QVector3D(p.x() - center_w.x(), p.y() - center_w.y(), p.z() - center_w.z())
                                                             v = v - axis_world * QtGui.QVector3D.dotProduct(v, axis_world)
@@ -3953,6 +3965,148 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 and not getattr(self, "_rot_shared_dragging", False)
             ):
                 self.update()
+
+            # --- shared axis-ring drag update (rot_shared.drag_axis.active) ---
+            rot_shared = getattr(self, "_rot_shared", None)
+            if (
+                rot_shared is not None
+                and getattr(rot_shared, "drag_axis", None) is not None
+                and rot_shared.drag_axis.active
+                and (e.buttons() & QtCore.Qt.LeftButton)
+            ):
+                owner = getattr(self, "_rot_shared_owner", None)
+                if owner:
+                    try:
+                        mp = e.position() if hasattr(e, "position") else QtCore.QPointF(e.x(), e.y())
+
+                        dpr = float(getattr(self, "devicePixelRatioF", lambda: 1.0)())
+                        px = float(mp.x()) * dpr
+                        py = float(mp.y()) * dpr
+                        vw = float(self.width()) * dpr
+                        vh = float(self.height()) * dpr
+
+                        renderer = getattr(self, "_mgl_renderer", None)
+                        Pn = getattr(renderer, "_mgl_pick_proj", None) if renderer is not None else None
+                        Vn = getattr(renderer, "_mgl_pick_view", None) if renderer is not None else None
+                        Mn = getattr(renderer, "_mgl_pick_model", None) if renderer is not None else None
+
+                        if np is not None and Pn is not None and Vn is not None and Mn is not None:
+                            # camera world position (inv(V@M) * origin)
+                            VM = (np.asarray(Vn, dtype=np.float32) @ np.asarray(Mn, dtype=np.float32)).astype(np.float32)
+                            invVM = np.linalg.inv(VM)
+                            cam4 = invVM @ np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+                            cw = float(cam4[3]) if abs(float(cam4[3])) > 1e-8 else 1.0
+                            c = cam4[:3] / cw
+                            cam = QtGui.QVector3D(float(c[0]), float(c[1]), float(c[2]))
+
+                            # mouse ray dir (same unproject style as press)
+                            PV = (
+                                np.asarray(Pn, dtype=np.float32)
+                                @ np.asarray(Vn, dtype=np.float32)
+                                @ np.asarray(Mn, dtype=np.float32)
+                            ).astype(np.float32)
+                            invPV = np.linalg.inv(PV)
+
+                            x = (2.0 * (px / max(1.0, vw))) - 1.0
+                            y = 1.0 - (2.0 * (py / max(1.0, vh)))
+                            near = np.array([x, y, -1.0, 1.0], dtype=np.float32)
+                            far = np.array([x, y, 1.0, 1.0], dtype=np.float32)
+
+                            pN = invPV @ near
+                            pF = invPV @ far
+                            pN = pN[:3] / pN[3]
+                            pF = pF[:3] / pF[3]
+
+                            rd = pF - pN
+                            ln = float(np.linalg.norm(rd))
+                            if ln > 1e-8:
+                                rd = rd / ln
+                                ray_d = QtGui.QVector3D(float(rd[0]), float(rd[1]), float(rd[2]))
+
+                                center_w = getattr(self, "_rot_shared_axis_center_world", None)
+                                axis_world = getattr(rot_shared.drag_axis, "axis_world", None)
+
+                                if isinstance(center_w, QtGui.QVector3D) and isinstance(axis_world, QtGui.QVector3D):
+                                    if axis_world.length() > 1e-6:
+                                        axis_world = axis_world / axis_world.length()
+
+                                    # closest point to center along the ray
+                                    to_c = QtGui.QVector3D(
+                                        center_w.x() - cam.x(),
+                                        center_w.y() - cam.y(),
+                                        center_w.z() - cam.z(),
+                                    )
+                                    den = float(QtGui.QVector3D.dotProduct(axis_world, ray_d))
+
+                                    if abs(den) > 1e-6:
+                                        t = float(QtGui.QVector3D.dotProduct(axis_world, to_c)) / den
+                                    else:
+                                        t = float(QtGui.QVector3D.dotProduct(to_c, ray_d))
+
+                                    p = QtGui.QVector3D(
+                                        cam.x() + ray_d.x() * t,
+                                        cam.y() + ray_d.y() * t,
+                                        cam.z() + ray_d.z() * t,
+                                    )
+
+                                    v = QtGui.QVector3D(
+                                        p.x() - center_w.x(),
+                                        p.y() - center_w.y(),
+                                        p.z() - center_w.z(),
+                                    )
+                                    v = v - axis_world * QtGui.QVector3D.dotProduct(v, axis_world)
+
+                                    if v.length() > 1e-6:
+                                        cur_dir = v / v.length()
+                                        qnew = rot_shared.update_axis_drag(cur_dir)
+
+                                        # quat -> euler (Rz @ Ry @ Rx), same math as your view-ring block
+                                        w = float(qnew.scalar())
+                                        xq = float(qnew.x())
+                                        yq = float(qnew.y())
+                                        zq = float(qnew.z())
+                                        n = math.sqrt(w * w + xq * xq + yq * yq + zq * zq)
+                                        if n > 1e-8:
+                                            w /= n
+                                            xq /= n
+                                            yq /= n
+                                            zq /= n
+
+                                        r00 = 1.0 - 2.0 * (yq * yq + zq * zq)
+                                        r10 = 2.0 * (xq * yq + zq * w)
+                                        r20 = 2.0 * (xq * zq - yq * w)
+                                        r21 = 2.0 * (yq * zq + xq * w)
+                                        r22 = 1.0 - 2.0 * (xq * xq + yq * yq)
+
+                                        sy = -r20
+                                        sy = max(-1.0, min(1.0, sy))
+                                        ry = math.asin(sy)
+                                        cy = math.cos(ry)
+
+                                        if abs(cy) > 1e-6:
+                                            rx = math.atan2(r21, r22)
+                                            rz = math.atan2(r10, r00)
+                                        else:
+                                            rx = 0.0
+                                            r01 = 2.0 * (xq * yq - zq * w)
+                                            r11 = 1.0 - 2.0 * (xq * xq + zq * zq)
+                                            rz = math.atan2(-r01, r11)
+
+                                        rx = math.degrees(rx)
+                                        ry = math.degrees(ry)
+                                        rz = math.degrees(rz)
+
+                                        self._set_owner_rot_deg(
+                                            owner,
+                                            (rx, ry, rz),
+                                            bool(getattr(self, "_rot_shared_is_splat", False)),
+                                        )
+
+                                        self.update()
+                                        e.accept()
+                                        return
+                    except Exception:
+                        pass
 
             # --- shared rotate gizmo drag move ---
             if getattr(self, "_rot_shared_dragging", False) and (e.buttons() & QtCore.Qt.LeftButton):
