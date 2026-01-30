@@ -1187,7 +1187,12 @@ class GizmoControlSmoke(QOpenGLWidget):
         # Hover picking (use shared picker so smoketest + main app match)
         hit = None
 
-        if c_obj is not None and (not self._drag_axis.active) and (not self._drag_arc.active):
+        if (
+            c_obj is not None
+            and (not self._rot_shared.drag_axis.active)
+            and (not self._rot_shared.drag_view)
+            and (not self._drag_arc.active)
+        ):
             band = max(12.0, float(target_ring_px) * 0.14)
             hit = self._rot_shared.pick_axis_2d(
                 widget=self,
@@ -1202,10 +1207,16 @@ class GizmoControlSmoke(QOpenGLWidget):
                 threshold_px=float(band),
             )
 
-        if self._drag_axis.active and self._drag_axis.axis:
-            self._hover_axis = self._drag_axis.axis
+        if self._rot_shared.drag_axis.active and self._rot_shared.drag_axis.axis:
+            # Constrained axis drag: freeze hover to the locked axis
+            self._hover_axis = self._rot_shared.drag_axis.axis
             self._rot_shared.hover_view_ring = False
+        elif self._rot_shared.drag_view:
+            # View-ring drag: keep view ring highlighted, no XYZ hover
+            self._hover_axis = None
+            self._rot_shared.hover_view_ring = True
         else:
+            # Normal hover
             self._hover_axis = hit if hit in ("x", "y", "z") else None
             self._rot_shared.hover_view_ring = bool(hit == "view")
 
