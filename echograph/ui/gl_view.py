@@ -3584,9 +3584,9 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                         if hit in ("x", "y", "z"):
                                             # Build start quaternion from current Euler degrees (Rz * Ry * Rx)
                                             try:
-                                                rx = float(self._rot_shared_start_rot[0])
-                                                ry = float(self._rot_shared_start_rot[1])
-                                                rz = float(self._rot_shared_start_rot[2])
+                                                rx = -float(self._rot_shared_start_rot[0])
+                                                ry = -float(self._rot_shared_start_rot[1])
+                                                rz = -float(self._rot_shared_start_rot[2])
                                             except Exception:
                                                 rx, ry, rz = 0.0, 0.0, 0.0
 
@@ -3700,9 +3700,9 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
                                             # Build start quaternion from current Euler degrees (Rz * Ry * Rx)
                                             try:
-                                                rx = float(self._rot_shared_start_rot[0])
-                                                ry = float(self._rot_shared_start_rot[1])
-                                                rz = float(self._rot_shared_start_rot[2])
+                                                rx = -float(self._rot_shared_start_rot[0])
+                                                ry = -float(self._rot_shared_start_rot[1])
+                                                rz = -float(self._rot_shared_start_rot[2])
                                             except Exception:
                                                 rx, ry, rz = 0.0, 0.0, 0.0
 
@@ -4095,6 +4095,11 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                         rx = math.degrees(rx)
                                         ry = math.degrees(ry)
                                         rz = math.degrees(rz)
+
+                                        # Your renderer builds matrices with the opposite sign convention vs QQuaternion angles
+                                        rx = -rx
+                                        ry = -ry
+                                        rz = -rz
 
                                         self._set_owner_rot_deg(
                                             owner,
