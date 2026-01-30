@@ -3464,6 +3464,45 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._grid_center = QtCore.QPointF(self._cam_target)
         self._update_grid(self._world_extent)
 
+    def _axis_ring_dir_world(
+        self,
+        cam: QtGui.QVector3D,
+        ray_d: QtGui.QVector3D,
+        center_w: QtGui.QVector3D,
+        axis_world: QtGui.QVector3D,
+    ) -> QtGui.QVector3D:
+        # Matches the smoketest approach:
+        # 1) closest point on the mouse ray to the gizmo center
+        # 2) project onto plane perpendicular to the axis
+        rd = QtGui.QVector3D(ray_d)
+        if rd.lengthSquared() > 1e-12:
+            rd.normalize()
+
+        axis = QtGui.QVector3D(axis_world)
+        if axis.lengthSquared() > 1e-12:
+            axis.normalize()
+
+        # Closest point on ray to center: cam + rd * dot(center-cam, rd)
+        oc = center_w - cam
+        t = float(QtGui.QVector3D.dotProduct(oc, rd))
+        closest = cam + rd * t
+
+        v = closest - center_w
+        # Remove axis component so v lies in the ring plane
+        v = v - axis * float(QtGui.QVector3D.dotProduct(v, axis))
+
+        if v.lengthSquared() < 1e-12:
+            # Fallback: any stable perpendicular vector
+            up = QtGui.QVector3D(0.0, 1.0, 0.0)
+            v = QtGui.QVector3D.crossProduct(axis, up)
+            if v.lengthSquared() < 1e-12:
+                up = QtGui.QVector3D(1.0, 0.0, 0.0)
+                v = QtGui.QVector3D.crossProduct(axis, up)
+
+        v.normalize()
+        return v
+
+
     def mousePressEvent(self, e):
         if self._use_moderngl:
             # Safety: never stay grabbed between interactions
@@ -3563,16 +3602,15 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                         self._rot_shared_start_rot = start_rot_deg
                                         self._rot_shared_is_splat = bool(is_splat)
 
-                                        # Build start quaternion from the stored Euler degrees (Qt convention)
+                                        # Build start quaternion from the stored Euler degrees (use our shared convention)
                                         try:
-                                            rx = float(start_rot[0])
-                                            ry = float(start_rot[1])
-                                            rz = float(start_rot[2])
+                                            rx = float(start_rot_deg[0])
+                                            ry = float(start_rot_deg[1])
+                                            rz = float(start_rot_deg[2])
                                         except Exception:
                                             rx, ry, rz = 0.0, 0.0, 0.0
 
-                                        q0 = QtGui.QQuaternion.fromEulerAngles(rx, ry, rz).normalized()
-
+                                        q0 = self._rot_shared_q_from_euler_deg((rx, ry, rz))
 
                                         axis_local = (
                                             QtGui.QVector3D(1.0, 0.0, 0.0)
@@ -3635,10 +3673,12 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                                     )
 
                                                     den = float(QtGui.QVector3D.dotProduct(axis_world, rd))
-                                                    if abs(den) > 1e-6:
-                                                        t = float(QtGui.QVector3D.dotProduct(axis_world, to_c)) / den
-                                                    else:
-                                                        t = float(QtGui.QVector3D.dotProduct(to_c, rd))
+                                                    if abs(den) < 1e-6:
+                                                        # Ray is nearly parallel to the rotation plane, so start_dir becomes unstable.
+                                                        e.accept()
+                                                        return
+
+                                                    t = float(QtGui.QVector3D.dotProduct(to_c, axis_world)) / den
 
                                                     p = QtGui.QVector3D(
                                                         ro.x() + rd.x() * t,
@@ -3651,6 +3691,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                                         p.y() - center_w.y(),
                                                         p.z() - center_w.z(),
                                                     )
+                                                    # Safety: keep it on the axis plane (should already be, but this avoids drift)
                                                     v = v - axis_world * QtGui.QVector3D.dotProduct(v, axis_world)
 
                                                     v_len = float(v.length())
@@ -3675,6 +3716,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
                                                     e.accept()
                                                     return
+
 
                                     if hit == "view":
                                         try:
@@ -4052,22 +4094,17 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     if axis_world.length() > 1e-6:
                         axis_world = axis_world / axis_world.length()
 
-                    # intersect ray with the SAME plane used at begin-drag:
-                    # plane through center_w with normal = axis_world (plane perpendicular to axis)
-                    plane_n = axis_world  # already normalized above
+                    # ring-plane intersection (matches axis begin)
+                    den = float(QtGui.QVector3D.dotProduct(axis_world, ray_d))
+                    if abs(den) < 1e-6:
+                        return
 
                     to_c = QtGui.QVector3D(
                         center_w.x() - cam.x(),
                         center_w.y() - cam.y(),
                         center_w.z() - cam.z(),
                     )
-
-                    den = float(QtGui.QVector3D.dotProduct(plane_n, ray_d))
-                    if abs(den) <= 1e-6:
-                        _rot_dbg("[ROT_SHARED_AXIS_MOVE_ERR] ray nearly parallel to axis plane")
-                        return
-
-                    t = float(QtGui.QVector3D.dotProduct(plane_n, to_c)) / den
+                    t = float(QtGui.QVector3D.dotProduct(to_c, axis_world)) / den
 
                     p = QtGui.QVector3D(
                         cam.x() + ray_d.x() * t,
@@ -4075,13 +4112,20 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                         cam.z() + ray_d.z() * t,
                     )
 
-                    v = QtGui.QVector3D(p.x() - center_w.x(), p.y() - center_w.y(), p.z() - center_w.z())
+                    v = QtGui.QVector3D(
+                        p.x() - center_w.x(),
+                        p.y() - center_w.y(),
+                        p.z() - center_w.z(),
+                    )
+                    # numerical safety: keep v in the ring plane
                     v = v - axis_world * QtGui.QVector3D.dotProduct(v, axis_world)
-                    if v.length() <= 1e-6:
-                        _rot_dbg("[ROT_SHARED_AXIS_MOVE_ERR] v too small after project")
+
+                    v_len = float(v.length())
+                    if v_len <= 1e-6:
                         return
 
-                    cur_dir = v / v.length()
+                    cur_dir = v / v_len
+
 
                     _rot_dbg(
                         "[ROT_SHARED_AXIS_MOVE]"
