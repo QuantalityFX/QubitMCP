@@ -535,12 +535,29 @@ class RotateGizmoShared:
         q = QtGui.QQuaternion.fromAxisAndAngle(forward_world, float(ang_deg))
         return (q * obj_rot).normalized()        
     
-    def begin_axis_drag(self, axis: str, start_rot: QtGui.QQuaternion, axis_world: QtGui.QVector3D, start_dir: QtGui.QVector3D) -> None:
+    def begin_axis_drag(
+        self,
+        axis: str,
+        start_rot: QtGui.QQuaternion,
+        axis_world: QtGui.QVector3D,
+        start_dir: QtGui.QVector3D,
+    ) -> None:
         self.drag_axis.active = True
+
+        # IMPORTANT: axis drag must clear view-ring highlight so it cannot stay "sticky"
+        self.hover_view_ring = False
+        self.drag_view = False
+
         self.drag_axis.axis = axis
-        self.drag_axis.start_rot = QtGui.QQuaternion(float(start_rot.scalar()), float(start_rot.x()), float(start_rot.y()), float(start_rot.z()))
+        self.drag_axis.start_rot = QtGui.QQuaternion(
+            float(start_rot.scalar()),
+            float(start_rot.x()),
+            float(start_rot.y()),
+            float(start_rot.z()),
+        )
         self.drag_axis.axis_world = axis_world
         self.drag_axis.start_dir = start_dir
+
 
     def end_axis_drag(self) -> None:
         self.drag_axis.active = False
