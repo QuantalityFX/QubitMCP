@@ -3565,10 +3565,10 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                         self._rot_shared_start_angle = rot_shared.angle_on_ring(center, QtCore.QPointF(mp))
 
                                         self._rot_shared_owner = owner
-                                        self._rot_shared_start_rot = self._get_owner_rot_deg(owner)
 
-                                        # IMPORTANT: make rotation apply to splats when a splat is selected
-                                        self._rot_shared_is_splat = (getattr(self, "_xform_gizmo_owner_kind", None) == "splat")
+                                        start_rot, is_splat = self._get_owner_rot_deg(owner)
+                                        self._rot_shared_start_rot = start_rot            # (rx, ry, rz) only
+                                        self._rot_shared_is_splat = bool(is_splat)        # store flag separately
                                         # Axis rings: start shared constrained drag (smoketest behavior)
                                         if hit in ("x", "y", "z"):
                                             # Build start quaternion from current Euler degrees (Rz * Ry * Rx)
@@ -4050,7 +4050,21 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     # VIEW ring drag must use shared incremental quaternion around camera forward (smoketest behavior)
                     if axis == "view":
                         qcur = getattr(self, "_rot_shared_view_q", None)
-                        forward_world = getattr(self, "_rot_shared_view_forward_world", QtGui.QVector3D(0.0, 0.0, -1.0))
+                        # camera forward in WORLD space from the current view matrix (this is the "on rails" axis)
+                        forward_world = QtGui.QVector3D(0.0, 0.0, -1.0)
+                        try:
+                            renderer = getattr(self, "_mgl_renderer", None)
+                            Vn = getattr(renderer, "_mgl_pick_view", None) if renderer is not None else None
+                            if Vn is not None and np is not None:
+                                invV = np.linalg.inv(np.asarray(Vn, dtype=np.float32))
+                                f = invV[:3, :3] @ np.array([0.0, 0.0, -1.0], dtype=np.float32)
+                                ln = float(np.linalg.norm(f))
+                                if ln > 1e-6:
+                                    f = f / ln
+                                    forward_world = QtGui.QVector3D(float(f[0]), float(f[1]), float(f[2]))
+                        except Exception:
+                            pass
+
 
                         if qcur is not None:
                             qnew = rot_shared.update_view_ring_drag(QtCore.QPointF(mp), center, forward_world, qcur)
