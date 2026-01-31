@@ -569,6 +569,19 @@ class MGLRendererMixin:
         rx, ry, rz = x["rot"]  # degrees
         sx, sy, sz = x["scl"]
 
+        # IMPORTANT:
+        # gl_view/gizmo is already working, so do NOT change gizmo math.
+        # The mesh rotation is currently inverted relative to the gizmo.
+        # Fix it here by negating the rotation only when applying to scene mesh items.
+        if apply_to_scene_models and (not use_splat_xform):
+            try:
+                rx = -float(rx)
+                ry = -float(ry)
+                rz = -float(rz)
+            except Exception:
+                pass
+
+
         def T(tx, ty, tz):
             m = np.eye(4, dtype=np.float32)
             m[3, 0] = tx

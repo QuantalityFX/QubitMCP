@@ -2204,6 +2204,25 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         rot = tuple((xf or {}).get("rot", (0.0, 0.0, 0.0)))
         return (float(rot[0]), float(rot[1]), float(rot[2])), is_splat
 
+    def _rot_shared_sync_q0_from_owner(self, owner: str) -> QtGui.QQuaternion:
+        start_rot_deg, is_splat = self._get_owner_rot_deg(owner)
+        self._rot_shared_start_rot = start_rot_deg
+        self._rot_shared_is_splat = bool(is_splat)
+
+        try:
+            rx = float(start_rot_deg[0])
+            ry = float(start_rot_deg[1])
+            rz = float(start_rot_deg[2])
+        except Exception:
+            rx, ry, rz = 0.0, 0.0, 0.0
+
+        q0 = self._rot_shared_q_from_euler_deg((rx, ry, rz))
+        try:
+            self._rot_owner_quat[owner] = q0
+        except Exception:
+            pass
+        return q0
+
     def _set_owner_rot_deg(self, owner: str, rot_deg, is_splat: bool) -> None:
         # Use the existing API that gl_view already uses for transforms.
         try:
@@ -2248,6 +2267,24 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         except Exception:
             pass
         return q
+
+    def _rot_shared_sync_q0_from_owner(self, owner: str) -> QtGui.QQuaternion:
+        # Always sync drag-start quaternion from the current scene/outliner values.
+        # This prevents snapping when the cached quat is stale.
+        start_rot_deg, is_splat = self._get_owner_rot_deg(owner)
+        self._rot_shared_start_rot = start_rot_deg
+        self._rot_shared_is_splat = bool(is_splat)
+
+        q0 = self._rot_shared_q_from_euler_deg(
+            (float(start_rot_deg[0]), float(start_rot_deg[1]), float(start_rot_deg[2]))
+        )
+
+        try:
+            self._rot_owner_quat[owner] = q0
+        except Exception:
+            pass
+
+        return q0
 
     def _rot_shared_euler_deg_from_q(self, q: QtGui.QQuaternion):
         # quat -> euler in the standard Rz @ Ry @ Rx sense, then negate
@@ -2735,32 +2772,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                     if hit in ("x", "y", "z"):
                                         self._rot_shared_owner = owner
 
-                                        # Prefer persisted quaternion for this owner (prevents euler drift / wobble)
-                                        q0 = None
-                                        try:
-                                            q0 = self._rot_owner_quat.get(owner)
-                                        except Exception:
-                                            q0 = None
-
-                                        if q0 is None:
-                                            start_rot_deg, is_splat = self._get_owner_rot_deg(owner)
-                                            self._rot_shared_start_rot = start_rot_deg
-                                            self._rot_shared_is_splat = bool(is_splat)
-
-                                            # Build start quaternion from the stored Euler degrees (use our shared convention)
-                                            try:
-                                                rx = float(start_rot_deg[0])
-                                                ry = float(start_rot_deg[1])
-                                                rz = float(start_rot_deg[2])
-                                            except Exception:
-                                                rx, ry, rz = 0.0, 0.0, 0.0
-
-                                            q0 = self._rot_shared_q_from_euler_deg((rx, ry, rz))
-
-                                            try:
-                                                self._rot_owner_quat[owner] = q0
-                                            except Exception:
-                                                pass
+        
+                                        q0 = self._rot_shared_sync_q0_from_owner(owner)
 
                                         axis_local = (
                                             QtGui.QVector3D(1.0, 0.0, 0.0)
@@ -2926,28 +2939,9 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                     if (dx0 * dx0 + dy0 * dy0) <= (disc_r * disc_r):
                                         self._rot_shared_owner = owner
 
-                                        # get persisted quaternion or build from euler once
-                                        q0 = None
-                                        try:
-                                            q0 = self._rot_owner_quat.get(owner)
-                                        except Exception:
-                                            q0 = None
-
-                                        if q0 is None:
-                                            start_rot_deg, is_splat = self._get_owner_rot_deg(owner)
-                                            self._rot_shared_start_rot = start_rot_deg
-                                            self._rot_shared_is_splat = bool(is_splat)
-                                            try:
-                                                rx = float(start_rot_deg[0])
-                                                ry = float(start_rot_deg[1])
-                                                rz = float(start_rot_deg[2])
-                                            except Exception:
-                                                rx, ry, rz = 0.0, 0.0, 0.0
-                                            q0 = self._rot_shared_q_from_euler_deg((rx, ry, rz))
-                                            try:
-                                                self._rot_owner_quat[owner] = q0
-                                            except Exception:
-                                                pass
+                                        # Always sync q0 from the owner's CURRENT outliner rotation
+                                        # (prevents first-drag snap after manual edits / zeroing)
+                                        q0 = self._rot_shared_sync_q0_from_owner(owner)
 
                                         # camera basis from inverse view matrix
                                         invV = np.linalg.inv(np.asarray(V, dtype=np.float32))
