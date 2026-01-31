@@ -2165,7 +2165,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             cx = float(center.x())
             cy = float(center.y())
             d = ((mx - cx) ** 2 + (my - cy) ** 2) ** 0.5
-            center_grab_r_px = max(10.0, float(rot_shared.xyz_ring_radius_px()) * 0.28)
+            center_grab_r_px = max(10.0, float(rot_shared.xyz_ring_radius_px()))
             hover_center = (d <= float(center_grab_r_px))
 
         # Draw center + view ring
@@ -2918,7 +2918,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                             # --- ROT_SHARED center-disc arcball drag (smoketest style) ---
                             if mode == "rotate" and rot_shared is not None and p0 is not None and hit is None:
                                 try:
-                                    disc_r = float(rot_shared.center_disc_radius_px())
+                                    disc_r = float(rot_shared.xyz_ring_radius_px()) * float(dpr)
 
                                     dx0 = float(px_dev) - float(p0[0])
                                     dy0 = float(py_dev) - float(p0[1])
