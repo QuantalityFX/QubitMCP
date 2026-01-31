@@ -944,6 +944,7 @@ class GizmoControlSmoke(QOpenGLWidget):
                             start_rot=self._obj_rot,
                             axis_world=axis_world,
                             start_dir=start_dir,
+                            start_euler_deg=(0.0, 0.0, 0.0),  # smoketest uses quats, euler UI not needed
                         )
                         e.accept()
                         return
@@ -1020,7 +1021,10 @@ class GizmoControlSmoke(QOpenGLWidget):
                 return
             center_px, _ = res
 
-            self._obj_rot = self._rot_shared.update_view_ring_drag(mp, center_px, forward, self._obj_rot)
+            new_rot = self._rot_shared.update_view_ring_drag(mp, center_px, forward, self._obj_rot)
+            if new_rot is not None:
+                self._obj_rot = new_rot
+
 
             self.update()
             e.accept()
@@ -1036,7 +1040,13 @@ class GizmoControlSmoke(QOpenGLWidget):
                 if cur_dir is not None:
                     new_rot = self._rot_shared.update_axis_drag(cur_dir)
                     if new_rot is not None:
-                        self._obj_rot = new_rot
+                        start_rot = getattr(self._rot_shared.drag_axis, "start_rot", None)
+                        if start_rot is not None:
+                            qdelta = (new_rot * start_rot.conjugated()).normalized()
+                            self._obj_rot = (qdelta.conjugated() * start_rot).normalized()
+                        else:
+                            self._obj_rot = new_rot
+
 
             self.update()
             self._last_mouse = mp
