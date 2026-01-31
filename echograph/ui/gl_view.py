@@ -2883,6 +2883,15 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                                     )
 
                                                     start_rot_deg, _is_splat = self._get_owner_rot_deg(owner)
+                                                    # cache axis name + start euler for an axis-only update (prevents X/Z drift when dragging Y)
+                                                    self._rot_shared_axis = str(hit)
+                                                    self._rot_shared_axis_start_euler_deg = (
+                                                        float(start_rot_deg[0]),
+                                                        float(start_rot_deg[1]),
+                                                        float(start_rot_deg[2]),
+                                                    )
+                                                    self._rot_shared_axis_last_ang_deg = 0.0
+
                                                     rot_shared.begin_axis_drag(
                                                         axis=str(hit),
                                                         start_rot=q0,
@@ -2890,6 +2899,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                                         start_dir=start_dir,
                                                         start_euler_deg=(float(start_rot_deg[0]), float(start_rot_deg[1]), float(start_rot_deg[2])),
                                                     )
+
 
 
                                                     rot_shared.drag_axis.last_dir = QtGui.QVector3D(start_dir)
@@ -3386,11 +3396,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     except Exception:
                         pass
 
-                    # persist quaternion cache (so rings + subsequent drags stay consistent)
-                    try:
-                        self._rot_owner_quat[owner] = qnew
-                    except Exception:
-                        pass
+                    # do NOT cache qnew here (qnew is pre-flip and causes snap/wobble)
+                    pass
 
                     # APPLY to owner so the object visibly rotates during arcball drag
                     # unwrap vs current outliner values so angles keep accumulating past 180
@@ -3552,20 +3559,14 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                         _rot_dbg("[ROT_SHARED_AXIS_MOVE_ERR] qnew None")
                         return
 
-                    # normalize
+                    # normalize (kept for logging/debug; we apply qapply below)
                     try:
                         if hasattr(qnew, "normalized"):
                             qnew = qnew.normalized()
                     except Exception:
                         pass
 
-                    # persist quaternion (prevents euler drift / wobble feedback)
-                    try:
-                        self._rot_owner_quat[owner] = qnew
-                    except Exception:
-                        pass
-
-                    # APPLY to owner for live visual update (use qnew, pick the closest Euler solution)
+                    # APPLY: use quaternion result so rings stay constrained (no wobble)
                     try:
                         # flip axis-drag direction by inverting the incremental delta from drag start
                         qapply = qnew
@@ -3577,11 +3578,15 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                             except Exception:
                                 qapply = qnew
 
+                        # cache the applied quat so view-ring continues from the same baseline (prevents snap)
+                        try:
+                            self._rot_owner_quat[owner] = qapply
+                        except Exception:
+                            pass
+
+                        # convert quat->euler, but pick the closest equivalent solution to avoid flips
                         rx0, ry0, rz0 = self._rot_shared_euler_deg_from_q(qapply)
 
-
-                        # Multiple Euler triples can represent the same orientation.
-                        # These alternates help avoid the classic +/-180 flip near singularities.
                         candidates = [
                             (float(rx0), float(ry0), float(rz0)),
                             (float(rx0) + 180.0, 180.0 - float(ry0), float(rz0) + 180.0),
@@ -3598,7 +3603,6 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                             ux = self._unwrap_deg(cx, ax)
                             uy = self._unwrap_deg(cy, ay)
                             uz = self._unwrap_deg(cz, az)
-
                             err = (ux - cx) * (ux - cx) + (uy - cy) * (uy - cy) + (uz - cz) * (uz - cz)
                             if err < best_err:
                                 best_err = err
@@ -3614,7 +3618,6 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                         )
                     except Exception as ex:
                         _rot_dbg("[ROT_SHARED_AXIS_APPLY_ERR] " + repr(ex))
-
 
                 except Exception as ex:
                     _rot_dbg("[ROT_SHARED_AXIS_MOVE_ERR] " + repr(ex))
@@ -3999,9 +4002,13 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             except Exception:
                 pass
             self._rot_shared_axis_center_world = None
+            self._rot_shared_axis = None
+            self._rot_shared_axis_start_euler_deg = None
+            self._rot_shared_axis_last_ang_deg = 0.0
             self.update()
             e.accept()
             return
+
 
         if self._use_moderngl:
             # --- 1) If we were dragging the gizmo, ALWAYS end that first ---
