@@ -3396,8 +3396,11 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     except Exception:
                         pass
 
-                    # do NOT cache qnew here (qnew is pre-flip and causes snap/wobble)
-                    pass
+                    # persist quaternion cache (arcball uses qnew directly)
+                    try:
+                        self._rot_owner_quat[owner] = qnew
+                    except Exception:
+                        pass
 
                     # APPLY to owner so the object visibly rotates during arcball drag
                     # unwrap vs current outliner values so angles keep accumulating past 180
