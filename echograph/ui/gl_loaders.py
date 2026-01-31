@@ -1448,3 +1448,23 @@ def _decode_data_uri(uri: str) -> bytes:
     if "base64" in header:
         return base64.b64decode(data)
     return data.encode("utf-8")
+
+
+# ----------------------------------------------------------------------
+# Default loader registration
+# ----------------------------------------------------------------------
+
+_DEFAULT_LOADERS_REGISTERED = False
+
+def register_default_model_loaders() -> None:
+    global _DEFAULT_LOADERS_REGISTERED
+    if _DEFAULT_LOADERS_REGISTERED:
+        return
+    _DEFAULT_LOADERS_REGISTERED = True
+
+    register_model_loader([".gltf", ".glb"], load_gltf_model)
+    register_model_loader([".obj"], load_obj_model)
+    register_model_loader([".fbx"], load_fbx_model)
+
+# Auto-register on import so load_model() works everywhere.
+register_default_model_loaders()

@@ -18,11 +18,8 @@ from .gl_debug_geo import debug_cube_vertices, debug_cube_wire_vertices
 from .gl_mesh import _GLMesh
 from .gl_mgl_renderer import MGLRendererMixin
 from .gl_loaders import ensure_assimp_dll
-from .gl_loaders import load_gltf_model
 from .gl_loaders import load_model
-from .gl_loaders import register_model_loader
-from .gl_loaders import load_obj_model
-from .gl_loaders import load_fbx_model
+
 
 from echograph.ui.gl_view_paint import paint_gl as _paint_gl
 from echograph.ui.gl_view_paint import paint_example as _paint_example
@@ -159,10 +156,6 @@ GL_BLEND = 0x0BE2
 GL_SRC_ALPHA = 0x0302
 GL_ONE_MINUS_SRC_ALPHA = 0x0303
 GL_DEPTH_TEST = 0x0B71
-
-register_model_loader([".gltf", ".glb"], load_gltf_model)
-register_model_loader([".obj"], load_obj_model)
-register_model_loader([".fbx"], load_fbx_model)
 
 _HAS_MGL = moderngl is not None and np is not None and Matrix44 is not None
 
