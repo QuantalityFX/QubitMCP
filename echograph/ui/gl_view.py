@@ -3565,45 +3565,45 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     except Exception:
                         pass
 
-                    # APPLY to owner for live visual update (axis-only: do NOT quat->euler)
+                    # APPLY to owner for live visual update (use qnew, pick the closest Euler solution)
                     try:
-                        # start euler at drag start
-                        start_euler = getattr(rot_shared.drag_axis, "start_euler_deg", None)
-                        if start_euler is None:
-                            start_rot_deg, _ = self._get_owner_rot_deg(owner)
-                            start_euler = (float(start_rot_deg[0]), float(start_rot_deg[1]), float(start_rot_deg[2]))
+                        # qnew is already computed above by rot_shared.update_axis_drag(cur_dir)
+                        rx0, ry0, rz0 = self._rot_shared_euler_deg_from_q(qnew)
 
-                        # continuous signed angle from drag start (degrees)
-                        ang = float(getattr(rot_shared.drag_axis, "ang_deg", 0.0))
-                        axis = str(getattr(rot_shared.drag_axis, "axis", ""))
+                        # Multiple Euler triples can represent the same orientation.
+                        # These alternates help avoid the classic +/-180 flip near singularities.
+                        candidates = [
+                            (float(rx0), float(ry0), float(rz0)),
+                            (float(rx0) + 180.0, 180.0 - float(ry0), float(rz0) + 180.0),
+                            (float(rx0) - 180.0, 180.0 - float(ry0), float(rz0) - 180.0),
+                        ]
 
-                        rx, ry, rz = float(start_euler[0]), float(start_euler[1]), float(start_euler[2])
-
-                        if axis == "x":
-                            rx = rx + ang
-                        elif axis == "y":
-                            ry = ry + ang
-                        elif axis == "z":
-                            rz = rz + ang
-
-                        # keep continuity vs current outliner values
                         cur_rot_deg, _ = self._get_owner_rot_deg(owner)
-                        rx = self._unwrap_deg(float(cur_rot_deg[0]), rx)
-                        ry = self._unwrap_deg(float(cur_rot_deg[1]), ry)
-                        rz = self._unwrap_deg(float(cur_rot_deg[2]), rz)
+                        cx, cy, cz = float(cur_rot_deg[0]), float(cur_rot_deg[1]), float(cur_rot_deg[2])
+
+                        best = None
+                        best_err = 1e30
+
+                        for ax, ay, az in candidates:
+                            ux = self._unwrap_deg(cx, ax)
+                            uy = self._unwrap_deg(cy, ay)
+                            uz = self._unwrap_deg(cz, az)
+
+                            err = (ux - cx) * (ux - cx) + (uy - cy) * (uy - cy) + (uz - cz) * (uz - cz)
+                            if err < best_err:
+                                best_err = err
+                                best = (ux, uy, uz)
+
+                        if best is None:
+                            best = (self._unwrap_deg(cx, rx0), self._unwrap_deg(cy, ry0), self._unwrap_deg(cz, rz0))
 
                         self._set_owner_rot_deg(
                             owner,
-                            (rx, ry, rz),
+                            best,
                             bool(getattr(self, "_rot_shared_is_splat", False)),
                         )
                     except Exception as ex:
                         _rot_dbg("[ROT_SHARED_AXIS_APPLY_ERR] " + repr(ex))
-
-                    self.update()
-                    e.accept()
-                    return
-
 
 
                 except Exception as ex:
