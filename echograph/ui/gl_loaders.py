@@ -23,6 +23,12 @@ try:
 except Exception:
     PILImage = None
 
+try:
+    import trimesh
+except Exception:
+    trimesh = None
+
+
 _MODEL_LOADERS: Dict[str, Callable[[Path], "ModelData"]] = {}
 
 _COMPONENT_SIZES = {
@@ -654,6 +660,256 @@ def load_obj_mesh_arrays(path: Path) -> Tuple["np.ndarray", "np.ndarray", "np.nd
     norm_arr = np.array(out_norm, dtype="f4").reshape(-1, 3)
     uv_arr = np.array(out_uv, dtype="f4").reshape(-1, 2)
     return pos_arr, norm_arr, uv_arr
+
+def load_obj_model(path: Path) -> ModelData:
+    """
+    Simple OBJ loader that returns ModelData (positions only).
+    Supports: v, f
+    Ignores: vt, vn, mtllib/usemtl, groups, smoothing.
+    Triangulates ngons by fan.
+    """
+    positions: List[Tuple[float, float, float]] = []
+    vertices: List[float] = []
+    bounds = [math.inf, math.inf, math.inf, -math.inf, -math.inf, -math.inf]
+
+    try:
+        raw = path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        raw = path.read_text(errors="ignore")
+
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if not parts:
+            continue
+        head = parts[0].lower()
+
+        if head == "v" and len(parts) >= 4:
+            try:
+                x, y, z = float(parts[1]), float(parts[2]), float(parts[3])
+            except Exception:
+                continue
+            positions.append((x, y, z))
+
+        elif head == "f" and len(parts) >= 4:
+            indices: List[int] = []
+            for token in parts[1:]:
+                if not token:
+                    continue
+                idx_str = token.split("/")[0]
+                if not idx_str:
+                    continue
+                try:
+                    idx = int(idx_str)
+                except Exception:
+                    continue
+                if idx < 0:
+                    idx = len(positions) + idx + 1
+                if idx <= 0 or idx > len(positions):
+                    continue
+                indices.append(idx - 1)
+
+            if len(indices) < 3:
+                continue
+
+            root = indices[0]
+            for i in range(1, len(indices) - 1):
+                tri = (root, indices[i], indices[i + 1])
+                for vidx in tri:
+                    try:
+                        vx, vy, vz = positions[vidx]
+                    except Exception:
+                        continue
+                    vertices.extend([vx, vy, vz])
+                    bounds[0] = min(bounds[0], vx)
+                    bounds[1] = min(bounds[1], vy)
+                    bounds[2] = min(bounds[2], vz)
+                    bounds[3] = max(bounds[3], vx)
+                    bounds[4] = max(bounds[4], vy)
+                    bounds[5] = max(bounds[5], vz)
+
+    if not vertices:
+        bounds = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+    return ModelData(vertices=vertices, bounds=tuple(bounds))
+
+def _normalize_color(value: object) -> Optional[Tuple[float, float, float, float]]:
+    try:
+        vals = [float(v) for v in value]
+    except Exception:
+        return None
+    if not vals:
+        return None
+    if len(vals) == 3:
+        vals.append(1.0)
+    vals = vals[:4]
+    if max(vals) > 1.0:
+        vals = [v / 255.0 for v in vals]
+    return tuple(max(0.0, min(1.0, v)) for v in vals)
+
+
+def _extract_trimesh_material(
+    mesh,
+    path: Path,
+) -> Tuple[Optional[Path], Optional[object], Optional[Tuple[float, float, float, float]]]:
+    material = getattr(getattr(mesh, "visual", None), "material", None)
+    if material is None:
+        colors = getattr(getattr(mesh, "visual", None), "vertex_colors", None)
+        if np is not None and colors is not None:
+            try:
+                avg = np.mean(np.asarray(colors), axis=0)
+                return None, None, _normalize_color(avg)
+            except Exception:
+                pass
+        return None, None, None
+
+    base_color = None
+    for attr in ("baseColorFactor", "diffuse", "ambient", "color"):
+        val = getattr(material, attr, None)
+        if val is not None:
+            base_color = _normalize_color(val)
+            if base_color is not None:
+                break
+
+    texture_path = None
+    image_path = getattr(material, "image_path", None)
+    if image_path:
+        candidate = Path(str(image_path))
+        if not candidate.is_absolute():
+            candidate = (path.parent / candidate).resolve()
+        if candidate.exists():
+            texture_path = candidate
+
+    texture_image = getattr(material, "image", None)
+    return texture_path, texture_image, base_color
+
+def _load_fbx_mesh_arrays(path: Path) -> MeshArrays:
+    if np is None:
+        raise RuntimeError("numpy unavailable")
+    ensure_assimp_dll()
+    use_trimesh = trimesh is not None
+    if use_trimesh:
+        try:
+            from trimesh.exchange import load as trimesh_load
+            if "fbx" not in trimesh_load.mesh_loaders:
+                use_trimesh = False
+        except Exception:
+            use_trimesh = False
+
+    if use_trimesh:
+        scene = trimesh.load(path, force="scene")
+        meshes = []
+        if isinstance(scene, trimesh.Scene):
+            for geom in scene.geometry.values():
+                if getattr(geom, "faces", None) is not None:
+                    meshes.append(geom)
+        else:
+            meshes = [scene]
+        if not meshes:
+            raise RuntimeError("FBX mesh missing")
+    else:
+        return load_fbx_mesh_arrays_pyassimp(path)
+
+    points_all: List["np.ndarray"] = []
+    normals_all: List["np.ndarray"] = []
+    uvs_all: List["np.ndarray"] = []
+    submeshes: List[SubMeshData] = []
+    texture_path = None
+    texture_image = None
+    base_color = None
+
+    for mesh in meshes:
+        faces = getattr(mesh, "faces", None)
+        vertices = getattr(mesh, "vertices", None)
+        if faces is None or vertices is None:
+            continue
+        faces = np.asarray(faces, dtype=np.int64)
+        if faces.size == 0:
+            continue
+        vertices = np.asarray(vertices, dtype="f4")
+        tri_vertices = vertices[faces].reshape(-1, 3)
+
+        mesh_normals = getattr(mesh, "vertex_normals", None)
+        if mesh_normals is None or len(mesh_normals) != len(vertices):
+            v0 = vertices[faces[:, 0]]
+            v1 = vertices[faces[:, 1]]
+            v2 = vertices[faces[:, 2]]
+            n = np.cross(v1 - v0, v2 - v0)
+            lengths = np.linalg.norm(n, axis=1)
+            lengths[lengths < 1e-6] = 1.0
+            n = (n.T / lengths).T
+            tri_normals = np.repeat(n[:, None, :], 3, axis=1).reshape(-1, 3)
+        else:
+            normals = np.asarray(mesh_normals, dtype="f4")
+            tri_normals = normals[faces].reshape(-1, 3)
+
+        uv = None
+        visual = getattr(mesh, "visual", None)
+        if visual is not None and getattr(visual, "uv", None) is not None:
+            uv_raw = np.asarray(visual.uv, dtype="f4")
+            if uv_raw.shape[0] == vertices.shape[0]:
+                uv = uv_raw[faces].reshape(-1, 2)
+        if uv is None:
+            uv = np.zeros((tri_vertices.shape[0], 2), dtype="f4")
+
+        tri_vertices = tri_vertices.astype("f4")
+        tri_normals = tri_normals.astype("f4")
+        uv = uv.astype("f4")
+        points_all.append(tri_vertices)
+        normals_all.append(tri_normals)
+        uvs_all.append(uv)
+
+        t_path, t_image, color = _extract_trimesh_material(mesh, path)
+        submeshes.append(
+            SubMeshData(
+                points=tri_vertices,
+                normals=tri_normals,
+                uvs=uv,
+                texture_path=t_path,
+                texture_image=t_image,
+                base_color=color,
+            )
+        )
+
+        if texture_path is None and texture_image is None:
+            if t_path is not None or t_image is not None:
+                texture_path = t_path
+                texture_image = t_image
+        if base_color is None and color is not None:
+            base_color = color
+
+    if not points_all:
+        raise RuntimeError("FBX mesh empty")
+
+    points = np.concatenate(points_all, axis=0)
+    normals = np.concatenate(normals_all, axis=0)
+    uvs = np.concatenate(uvs_all, axis=0)
+    return MeshArrays(
+        points=points,
+        normals=normals,
+        uvs=uvs,
+        texture_path=texture_path,
+        texture_image=texture_image,
+        base_color=base_color,
+        submeshes=submeshes if submeshes else None,
+    )
+
+
+def load_fbx_model(path: Path) -> ModelData:
+    mesh_arrays = _load_fbx_mesh_arrays(path)
+    points = mesh_arrays.points
+    bounds = [
+        float(np.min(points[:, 0])),
+        float(np.min(points[:, 1])),
+        float(np.min(points[:, 2])),
+        float(np.max(points[:, 0])),
+        float(np.max(points[:, 1])),
+        float(np.max(points[:, 2])),
+    ]
+    vertices = points.reshape(-1).astype("f4").tolist()
+    return ModelData(vertices=vertices, bounds=tuple(bounds))
 
 def _read_glb(path: Path) -> Tuple[dict, List[bytes]]:
     raw = path.read_bytes()
