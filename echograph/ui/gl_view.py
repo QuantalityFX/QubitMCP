@@ -2330,7 +2330,16 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         # negate to match gl_view's convention
         return (-math.degrees(rx), -math.degrees(ry), -math.degrees(rz))
 
-    
+    def _unwrap_deg(self, prev_deg: float, new_deg_wrapped: float) -> float:
+        # new_deg_wrapped is usually in [-180, 180]
+        # return an equivalent angle close to prev_deg (continuous)
+        d = new_deg_wrapped - prev_deg
+        if d > 180.0:
+            new_deg_wrapped -= 360.0
+        elif d < -180.0:
+            new_deg_wrapped += 360.0
+        return new_deg_wrapped
+
     def _dbgprint(self, enabled: bool, *a, **k) -> None:
         if enabled:
             print(*a, **k)
@@ -3274,11 +3283,14 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                         pass
 
                     rx, ry, rz = self._rot_shared_euler_deg_from_q(qnew)
-                    self._set_owner_rot_deg(
-                        owner,
-                        (rx, ry, rz),
-                        bool(getattr(self, "_rot_shared_is_splat", False)),
-                    )
+
+                    # unwrap against the current outliner value so numbers stay continuous
+                    cur_rot_deg, _is_splat = self._get_owner_rot_deg(owner)
+                    rx = self._unwrap_deg(float(cur_rot_deg[0]), float(rx))
+                    ry = self._unwrap_deg(float(cur_rot_deg[1]), float(ry))
+                    rz = self._unwrap_deg(float(cur_rot_deg[2]), float(rz))
+
+                    self._set_owner_rot_deg(owner, (rx, ry, rz), bool(getattr(self, "_rot_shared_is_splat", False)))
 
                     self.update()
                     e.accept()
@@ -3346,8 +3358,15 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                         pass
 
                     # APPLY to owner so the object visibly rotates during arcball drag
+                    # unwrap vs current outliner values so angles keep accumulating past 180
                     try:
                         rx, ry, rz = self._rot_shared_euler_deg_from_q(qnew)
+
+                        cur_rot_deg, _is_splat = self._get_owner_rot_deg(owner)
+                        rx = self._unwrap_deg(float(cur_rot_deg[0]), float(rx))
+                        ry = self._unwrap_deg(float(cur_rot_deg[1]), float(ry))
+                        rz = self._unwrap_deg(float(cur_rot_deg[2]), float(rz))
+
                         self._set_owner_rot_deg(
                             owner,
                             (rx, ry, rz),
@@ -3530,88 +3549,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 except Exception as ex:
                     _rot_dbg("[ROT_SHARED_AXIS_MOVE_ERR] " + repr(ex))
 
-            # --- ROT_SHARED: view-ring drag (camera-facing ring) ---
-            if rot_shared is not None and getattr(rot_shared, "drag_view", False):
-                try:
-                    owner = getattr(self, "_rot_shared_owner", None)
-                    if owner is None:
-                        _rot_dbg("[ROT_SHARED_VIEW_MOVE_ERR] owner None")
-                        return
-
-                    forward_world = getattr(self, "_rot_shared_view_forward_world", None)
-                    center_px = getattr(self, "_rot_shared_view_center_px", None)
-
-                    if not isinstance(forward_world, QtGui.QVector3D) or not isinstance(center_px, QtCore.QPointF):
-                        _rot_dbg("[ROT_SHARED_VIEW_MOVE_ERR] missing forward_world/center_px")
-                        return
-
-                    # current mouse in logical px
-                    mouse_px = getattr(self, "_rot_shared_mouse_px", None)
-                    if mouse_px is None:
-                        mp = e.position() if hasattr(e, "position") else QtCore.QPointF(e.x(), e.y())
-                        mouse_px = QtCore.QPointF(float(mp.x()), float(mp.y()))
-
-                    # get current quaternion for this owner (persisted), or build from owner euler once
-                    qcur = None
-                    try:
-                        qcur = self._rot_owner_quat.get(owner)
-                    except Exception:
-                        qcur = None
-
-                    if qcur is None:
-                        rot_deg, is_splat = self._get_owner_rot_deg(owner)
-                        self._rot_shared_is_splat = bool(is_splat)
-                        try:
-                            qcur = self._rot_shared_q_from_euler_deg(
-                                (float(rot_deg[0]), float(rot_deg[1]), float(rot_deg[2]))
-                            )
-                        except Exception:
-                            qcur = QtGui.QQuaternion()
-
-                        try:
-                            self._rot_owner_quat[owner] = qcur
-                        except Exception:
-                            pass
-
-                    qnew = rot_shared.update_view_ring_drag(
-                        mouse_px=mouse_px,
-                        center_px=center_px,
-                        forward_world=forward_world,
-                        obj_rot=qcur,
-                    )
-                    if qnew is None:
-                        _rot_dbg("[ROT_SHARED_VIEW_MOVE_ERR] qnew None")
-                        return
-
-                    try:
-                        if hasattr(qnew, "normalized"):
-                            qnew = qnew.normalized()
-                    except Exception:
-                        pass
-
-                    # persist quaternion
-                    try:
-                        self._rot_owner_quat[owner] = qnew
-                    except Exception:
-                        pass
-
-                    # apply to owner using the same path as axis drag (quat -> euler -> owner)
-                    rx, ry, rz = self._rot_shared_euler_deg_from_q(qnew)
-                    self._set_owner_rot_deg(
-                        owner,
-                        (rx, ry, rz),
-                        bool(getattr(self, "_rot_shared_is_splat", False)),
-                    )
-
-                    self.update()
-                    e.accept()
-                    return
-
-                except Exception as ex:
-                    _rot_dbg("[ROT_SHARED_VIEW_MOVE_ERR] " + repr(ex))
-                    return
-
-
+        
             if getattr(self, "_xform_dragging", False) and (e.buttons() & QtCore.Qt.LeftButton):
                 try:
                     if np is None:
