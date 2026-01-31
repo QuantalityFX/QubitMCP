@@ -2330,6 +2330,38 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         # negate to match gl_view's convention
         return (-math.degrees(rx), -math.degrees(ry), -math.degrees(rz))
 
+    def _rot_shared_euler_deg_from_q_continuous(self, q: QtGui.QQuaternion, prev_rot_deg):
+        # Get the "principal" euler triple from quat
+        rx1, ry1, rz1 = self._rot_shared_euler_deg_from_q(q)
+
+        px = float(prev_rot_deg[0])
+        py = float(prev_rot_deg[1])
+        pz = float(prev_rot_deg[2])
+
+        def unwrap_to_prev(rx, ry, rz):
+            rx = self._unwrap_deg(px, float(rx))
+            ry = self._unwrap_deg(py, float(ry))
+            rz = self._unwrap_deg(pz, float(rz))
+            return rx, ry, rz
+
+        def score(rx, ry, rz):
+            rx, ry, rz = unwrap_to_prev(rx, ry, rz)
+            dx = rx - px
+            dy = ry - py
+            dz = rz - pz
+            return (dx * dx + dy * dy + dz * dz), (rx, ry, rz)
+
+        # Second valid solution for Rz @ Ry @ Rx decomposition:
+        # (rx + 180, 180 - ry, rz + 180) represents the same orientation.
+        rx2 = float(rx1) + 180.0
+        ry2 = 180.0 - float(ry1)
+        rz2 = float(rz1) + 180.0
+
+        s1, e1 = score(rx1, ry1, rz1)
+        s2, e2 = score(rx2, ry2, rz2)
+
+        return e1 if s1 <= s2 else e2
+
     def _unwrap_deg(self, prev_deg: float, new_deg_wrapped: float) -> float:
         # new_deg_wrapped is usually in [-180, 180]
         # return an equivalent angle close to prev_deg (continuous)
@@ -3284,17 +3316,19 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
                     rx, ry, rz = self._rot_shared_euler_deg_from_q(qnew)
 
-                    # unwrap against the current outliner value so numbers stay continuous
                     cur_rot_deg, _is_splat = self._get_owner_rot_deg(owner)
-                    rx = self._unwrap_deg(float(cur_rot_deg[0]), float(rx))
-                    ry = self._unwrap_deg(float(cur_rot_deg[1]), float(ry))
-                    rz = self._unwrap_deg(float(cur_rot_deg[2]), float(rz))
+                    rx, ry, rz = self._rot_shared_euler_deg_from_q_continuous(qnew, cur_rot_deg)
 
-                    self._set_owner_rot_deg(owner, (rx, ry, rz), bool(getattr(self, "_rot_shared_is_splat", False)))
+                    self._set_owner_rot_deg(
+                        owner,
+                        (rx, ry, rz),
+                        bool(getattr(self, "_rot_shared_is_splat", False)),
+                    )
 
                     self.update()
                     e.accept()
                     return
+
 
                 except Exception as ex:
                     _rot_dbg("[ROT_SHARED_VIEW_MOVE_ERR] " + repr(ex))
