@@ -3,7 +3,12 @@ from __future__ import annotations
 import math
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, TYPE_CHECKING, Any, TypeAlias
+
+if TYPE_CHECKING:
+    from numpy.typing import NDArray as NDArray
+else:
+    NDArray: TypeAlias = Any
 
 try:
     import numpy as np
@@ -21,7 +26,7 @@ except Exception:
     Matrix44 = None
 
 try:
-    import openmesh
+    import openmesh  # type: ignore[reportMissingImports]
 except Exception:
     openmesh = None
 
@@ -55,7 +60,7 @@ GL_DEPTH_BUFFER_BIT = 0x00000100
 _HAS_MGL = moderngl is not None and np is not None and Matrix44 is not None
 
 
-def _mgl_grid(size: float, steps: int) -> "np.ndarray":
+def _mgl_grid(size: float, steps: int) -> NDArray:
     if np is None:
         raise RuntimeError("numpy unavailable")
 
@@ -103,7 +108,7 @@ class MGLRendererMixin:
     def _mgl_add_wire_item_from_points(
         self,
         name: str,
-        line_points: "np.ndarray",
+        line_points: NDArray,
         visible: bool,
         tag: str,
         owner: Optional[str] = None,
@@ -161,7 +166,7 @@ class MGLRendererMixin:
         return item
 
     @staticmethod
-    def _mgl_load_obj_edge_vertices(path: Path) -> "np.ndarray":
+    def _mgl_load_obj_edge_vertices(path: Path) -> NDArray:
         if np is None:
             raise RuntimeError("numpy unavailable")
         positions: List[Tuple[float, float, float]] = []
@@ -626,8 +631,16 @@ class MGLRendererMixin:
             m[1, 1] = c
             return m
 
-        # Apply pivot first, then rotate/scale, then translate to world pivot.
-        model = T(-cx, -cy, -cz) @ (Rz(rz) @ Ry(ry) @ Rx(rx)) @ S(sx, sy, sz) @ T(px, py, pz)
+
+        # Build rotation
+        R = (Rz(rz) @ Ry(ry) @ Rx(rx))
+
+        # Mesh rotations need to be the inverse of the gizmo convention.
+        # For multi-axis rotations, the inverse requires reversed order.
+        if apply_to_scene_models and (not use_splat_xform):
+            R = (Rx(-rx) @ Ry(-ry) @ Rz(-rz))
+
+        model = T(-cx, -cy, -cz) @ R @ S(sx, sy, sz) @ T(px, py, pz)
 
         scene = getattr(self, "_mgl_scene", None)
         if scene is None:
@@ -1229,10 +1242,10 @@ class MGLRendererMixin:
 
     def _mgl_build_mesh_entry(
         self,
-        points: "np.ndarray",
-        normals: "np.ndarray",
-        uvs: Optional["np.ndarray"] = None,
-        indices: Optional["np.ndarray"] = None,
+        points: NDArray,
+        normals: NDArray,
+        uvs: Optional[NDArray] = None,
+        indices: Optional[NDArray] = None,
     ) -> Optional[Dict[str, object]]:
         if not _HAS_MGL or self._mgl_ctx is None or self._mgl_prog is None:
             return None
@@ -1270,9 +1283,9 @@ class MGLRendererMixin:
     def _mgl_build_submesh_entries(
         self,
         submeshes: List[SubMeshData],
-    ) -> Tuple[List[Dict[str, object]], List["np.ndarray"], List[str], int]:
+    ) -> Tuple[List[Dict[str, object]], List[NDArray], List[str], int]:
         entries: List[Dict[str, object]] = []
-        combined_uvs: List["np.ndarray"] = []
+        combined_uvs: List[NDArray] = []
         texture_paths: List[str] = []
         total_indices = 0
         if self._mgl_ctx is None or self._mgl_prog is None:
@@ -3032,9 +3045,9 @@ class MGLRendererMixin:
 
     def _mgl_set_raw_mesh(
         self,
-        points: "np.ndarray",
-        normals: "np.ndarray",
-        uvs: Optional["np.ndarray"] = None,
+        points: NDArray,
+        normals: NDArray,
+        uvs: Optional[NDArray] = None,
     ) -> None:
         if not _HAS_MGL or self._mgl_ctx is None:
             return
@@ -3091,7 +3104,7 @@ class MGLRendererMixin:
         self._mgl_mesh = None
         if combined_uvs:
             self._mgl_set_uv_overlay(np.concatenate(combined_uvs, axis=0))
-        combined_points: List["np.ndarray"] = []
+        combined_points: List[NDArray] = []
         for sub in submeshes:
             combined_points.append(sub.points.astype("f4").reshape(-1, 3))
         if combined_points:
@@ -3120,7 +3133,7 @@ class MGLRendererMixin:
             )
             scene.add(item)
 
-    def _mgl_set_uv_overlay(self, uvs: Optional["np.ndarray"]) -> None:
+    def _mgl_set_uv_overlay(self, uvs: Optional[NDArray]) -> None:
         if uvs is None or uvs.size == 0 or np is None:
             self._mgl_uv_segments = []
             self._mgl_uv_bounds = None
@@ -3145,7 +3158,7 @@ class MGLRendererMixin:
         self._mgl_uv_segments = segments
         self._mgl_uv_cache = None
 
-    def _mgl_init_arcball(self, points: "np.ndarray") -> None:
+    def _mgl_init_arcball(self, points: NDArray) -> None:
         if self._mgl_arcball is None:
             self._mgl_arcball = _ArcBallUtil(self.width(), self.height())
 

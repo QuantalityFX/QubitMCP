@@ -42,6 +42,12 @@ from echograph.ui.gl_view_example import build_example_program as _ex_build_exam
 from echograph.ui.gl_view_example import example_cube_data as _ex_cube_data
 from echograph.ui.gl_view_example import example_grid_data as _ex_grid_data
 
+from typing import TYPE_CHECKING, Any, TypeAlias
+if TYPE_CHECKING:
+    from numpy.typing import NDArray as NDArray
+else:
+    NDArray: TypeAlias = Any
+
 try:
     import numpy as np
 except Exception:
@@ -398,10 +404,10 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._mgl_grid_model_pending_path = None
         self._mgl_scene = MGLScene()
         self._mgl_scene_visibility: Dict[str, bool] = {}
-        self._mgl_scene_splats: Dict[str, "np.ndarray"] = {}
-        self._mgl_scene_splats_bounds_local: Dict[str, "np.ndarray"] = {}
-        self._mgl_scene_splat_bounds_by_owner: Dict[str, "np.ndarray"] = {}
-        self._mgl_scene_mesh_bounds_by_owner: Dict[str, "np.ndarray"] = {}
+        self._mgl_scene_splats: Dict[str, NDArray] = {}
+        self._mgl_scene_splats_bounds_local: Dict[str, NDArray] = {}
+        self._mgl_scene_splat_bounds_by_owner: Dict[str, NDArray] = {}
+        self._mgl_scene_mesh_bounds_by_owner: Dict[str, NDArray] = {}
         self._mgl_scene_splat_xforms_by_owner: Dict[str, Dict[str, Tuple[float, float, float]]] = {}
         self._mgl_splat_bbox_vao = None
         self._mgl_splat_bbox_vbo = None
