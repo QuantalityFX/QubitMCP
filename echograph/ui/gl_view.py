@@ -4278,12 +4278,36 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
                                     self.update()
                                 else:
-                                    # Clicked empty space: keep gizmo/selection as-is
+                                    # Clicked empty space: clear selection + hide gizmo
                                     try:
-                                        self._mgl_log("scene: click empty -> keep gizmo")
+                                        self._mgl_log("scene: click empty -> clear selection")
                                     except Exception:
                                         pass
+
+                                    # Clear gizmo selection state
+                                    self._xform_gizmo_owner = None
+                                    self._xform_gizmo_owner_kind = None
+                                    self._xform_gizmo_pos_locked = False
+                                    self._xform_gizmo_pos = (0.0, 0.0, 0.0)
+
+                                    # Stop any active rotate drags safely
+                                    try:
+                                        rot_shared = getattr(self, "_rot_shared", None)
+                                        if rot_shared is not None:
+                                            rot_shared.end_drag()
+                                    except Exception:
+                                        pass
+
+                                    # Clear outliner selection if the window exposes the helper
+                                    try:
+                                        w = self.window()
+                                        if w is not None and hasattr(w, "clear_scene_asset_selection"):
+                                            w.clear_scene_asset_selection()
+                                    except Exception:
+                                        pass
+
                                     self.update()
+
                 except Exception:
                     pass
 
