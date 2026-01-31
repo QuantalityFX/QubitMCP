@@ -3567,8 +3567,18 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
                     # APPLY to owner for live visual update (use qnew, pick the closest Euler solution)
                     try:
-                        # qnew is already computed above by rot_shared.update_axis_drag(cur_dir)
-                        rx0, ry0, rz0 = self._rot_shared_euler_deg_from_q(qnew)
+                        # flip axis-drag direction by inverting the incremental delta from drag start
+                        qapply = qnew
+                        start_rot = getattr(rot_shared.drag_axis, "start_rot", None)
+                        if start_rot is not None:
+                            try:
+                                qdelta = (qnew * start_rot.conjugated()).normalized()
+                                qapply = (qdelta.conjugated() * start_rot).normalized()
+                            except Exception:
+                                qapply = qnew
+
+                        rx0, ry0, rz0 = self._rot_shared_euler_deg_from_q(qapply)
+
 
                         # Multiple Euler triples can represent the same orientation.
                         # These alternates help avoid the classic +/-180 flip near singularities.
