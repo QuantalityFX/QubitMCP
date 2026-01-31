@@ -2228,41 +2228,51 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         except Exception:
             pass
 
+
     def _rot_shared_q_from_euler_deg(self, rot_deg) -> QtGui.QQuaternion:
-        rx, ry, rz = float(rot_deg[0]), float(rot_deg[1]), float(rot_deg[2])
+        # IMPORTANT:
+        # gl_view builds its rotation matrices as R = Rz(-rz) @ Ry(-ry) @ Rx(-rx)
+        # (you can see the sin signs in the matrices). So to match what the viewport
+        # considers "rot_deg", we negate here when building the quaternion.
+        try:
+            rx = -float(rot_deg[0])
+            ry = -float(rot_deg[1])
+            rz = -float(rot_deg[2])
+        except Exception:
+            rx, ry, rz = 0.0, 0.0, 0.0
+
         qx = QtGui.QQuaternion.fromAxisAndAngle(QtGui.QVector3D(1.0, 0.0, 0.0), rx)
         qy = QtGui.QQuaternion.fromAxisAndAngle(QtGui.QVector3D(0.0, 1.0, 0.0), ry)
         qz = QtGui.QQuaternion.fromAxisAndAngle(QtGui.QVector3D(0.0, 0.0, 1.0), rz)
-        q = qz * qy * qx
+        q = (qz * qy * qx)
         try:
-            q = q.normalized()
+            if hasattr(q, "normalized"):
+                q = q.normalized()
         except Exception:
             pass
         return q
 
-
     def _rot_shared_euler_deg_from_q(self, q: QtGui.QQuaternion):
-        # Extract Euler for R = Rz @ Ry @ Rx (matches your gizmo draw code)
+        # quat -> euler in the standard Rz @ Ry @ Rx sense, then negate
+        # to match gl_view's stored convention (since it applies -angles in matrices).
         w = float(q.scalar())
-        x = float(q.x())
-        y = float(q.y())
-        z = float(q.z())
+        xq = float(q.x())
+        yq = float(q.y())
+        zq = float(q.z())
 
-        n = math.sqrt(w * w + x * x + y * y + z * z)
+        n = math.sqrt(w * w + xq * xq + yq * yq + zq * zq)
         if n > 1e-8:
             w /= n
-            x /= n
-            y /= n
-            z /= n
+            xq /= n
+            yq /= n
+            zq /= n
 
-        # quaternion -> rotation matrix (3x3)
-        r00 = 1.0 - 2.0 * (y * y + z * z)
-        r10 = 2.0 * (x * y + z * w)
-        r20 = 2.0 * (x * z - y * w)
-        r21 = 2.0 * (y * z + x * w)
-        r22 = 1.0 - 2.0 * (x * x + y * y)
+        r00 = 1.0 - 2.0 * (yq * yq + zq * zq)
+        r10 = 2.0 * (xq * yq + zq * w)
+        r20 = 2.0 * (xq * zq - yq * w)
+        r21 = 2.0 * (yq * zq + xq * w)
+        r22 = 1.0 - 2.0 * (xq * xq + yq * yq)
 
-        # For RzRyRx: r20 = -sin(ry)
         sy = -r20
         sy = max(-1.0, min(1.0, sy))
         ry = math.asin(sy)
@@ -2272,15 +2282,15 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             rx = math.atan2(r21, r22)
             rz = math.atan2(r10, r00)
         else:
-            # gimbal: ry near +-90
             rx = 0.0
-            r01 = 2.0 * (x * y - z * w)
-            r11 = 1.0 - 2.0 * (x * x + z * z)
+            r01 = 2.0 * (xq * yq - zq * w)
+            r11 = 1.0 - 2.0 * (xq * xq + zq * zq)
             rz = math.atan2(-r01, r11)
 
-        return (math.degrees(rx), math.degrees(ry), math.degrees(rz))
-            
+        # negate to match gl_view's convention
+        return (-math.degrees(rx), -math.degrees(ry), -math.degrees(rz))
 
+    
     def _dbgprint(self, enabled: bool, *a, **k) -> None:
         if enabled:
             print(*a, **k)
