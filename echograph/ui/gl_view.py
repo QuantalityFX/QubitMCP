@@ -3533,6 +3533,13 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     # APPLY to owner for live visual update (derive euler from quaternion using shared convention)
                     try:
                         rx, ry, rz = self._rot_shared_euler_deg_from_q(qnew)
+
+                        # unwrap against the current outliner value so numbers stay continuous
+                        cur_rot_deg, _is_splat = self._get_owner_rot_deg(owner)
+                        rx = self._unwrap_deg(float(cur_rot_deg[0]), float(rx))
+                        ry = self._unwrap_deg(float(cur_rot_deg[1]), float(ry))
+                        rz = self._unwrap_deg(float(cur_rot_deg[2]), float(rz))
+
                         self._set_owner_rot_deg(
                             owner,
                             (rx, ry, rz),
