@@ -53,6 +53,15 @@ def quat_from_two_vectors(a: QtGui.QVector3D, b: QtGui.QVector3D) -> QtGui.QQuat
     q = QtGui.QQuaternion(float(w), float(axis.x()), float(axis.y()), float(axis.z()))
     return q.normalized()
 
+def unwrap_deg(prev: float, wrapped: float) -> float:
+    prev = float(prev)
+    wrapped = float(wrapped)
+    while wrapped - prev > 180.0:
+        wrapped -= 360.0
+    while wrapped - prev < -180.0:
+        wrapped += 360.0
+    return wrapped
+
 
 @dataclass
 class DragArcball:
@@ -70,6 +79,14 @@ class DragAxis:
     start_rot: QtGui.QQuaternion | None = None
     axis_world: QtGui.QVector3D | None = None
     start_dir: QtGui.QVector3D | None = None
+
+    # euler at drag start (for axis-only UI updates)
+    start_euler_deg: tuple[float, float, float] | None = None
+
+    # continuous signed angle (degrees) from drag start around this axis
+    last_ang_deg: float = 0.0
+    ang_deg: float = 0.0
+
 
 
 class RotateGizmoShared:
@@ -559,6 +576,7 @@ class RotateGizmoShared:
         start_rot: QtGui.QQuaternion,
         axis_world: QtGui.QVector3D,
         start_dir: QtGui.QVector3D,
+        start_euler_deg: tuple[float, float, float],
     ) -> None:
         self.drag_axis.active = True
 
@@ -575,6 +593,10 @@ class RotateGizmoShared:
         )
         self.drag_axis.axis_world = axis_world
         self.drag_axis.start_dir = start_dir
+
+        self.drag_axis.start_euler_deg = (float(start_euler_deg[0]), float(start_euler_deg[1]), float(start_euler_deg[2]))
+        self.drag_axis.last_ang_deg = 0.0
+        self.drag_axis.ang_deg = 0.0
 
 
     def end_axis_drag(self) -> None:
@@ -607,7 +629,12 @@ class RotateGizmoShared:
         cross = QtGui.QVector3D.crossProduct(a, b)
         s = float(QtGui.QVector3D.dotProduct(cross, axis))
         c = float(QtGui.QVector3D.dotProduct(a, b))
-        ang = math.degrees(math.atan2(s, c))
+        ang_wrapped = math.degrees(math.atan2(s, c))
 
-        q = QtGui.QQuaternion.fromAxisAndAngle(axis, float(ang))
+        # make the axis angle continuous across 180/-180
+        ang_cont = unwrap_deg(self.drag_axis.last_ang_deg, ang_wrapped)
+        self.drag_axis.last_ang_deg = ang_cont
+        self.drag_axis.ang_deg = ang_cont
+
+        q = QtGui.QQuaternion.fromAxisAndAngle(axis, float(ang_wrapped))
         return (q * self.drag_axis.start_rot).normalized()

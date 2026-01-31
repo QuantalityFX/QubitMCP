@@ -2882,14 +2882,15 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                                         axis_world=axis_world,
                                                     )
 
-                                                    self._rot_shared_axis_center_world = center_w
-
+                                                    start_rot_deg, _is_splat = self._get_owner_rot_deg(owner)
                                                     rot_shared.begin_axis_drag(
                                                         axis=str(hit),
                                                         start_rot=q0,
                                                         axis_world=axis_world,
                                                         start_dir=start_dir,
+                                                        start_euler_deg=(float(start_rot_deg[0]), float(start_rot_deg[1]), float(start_rot_deg[2])),
                                                     )
+
 
                                                     rot_shared.drag_axis.last_dir = QtGui.QVector3D(start_dir)
 
@@ -3564,15 +3565,32 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     except Exception:
                         pass
 
-                    # APPLY to owner for live visual update (derive euler from quaternion using shared convention)
+                    # APPLY to owner for live visual update (axis-only: do NOT quat->euler)
                     try:
-                        rx, ry, rz = self._rot_shared_euler_deg_from_q(qnew)
+                        # start euler at drag start
+                        start_euler = getattr(rot_shared.drag_axis, "start_euler_deg", None)
+                        if start_euler is None:
+                            start_rot_deg, _ = self._get_owner_rot_deg(owner)
+                            start_euler = (float(start_rot_deg[0]), float(start_rot_deg[1]), float(start_rot_deg[2]))
 
-                        # unwrap against the current outliner value so numbers stay continuous
-                        cur_rot_deg, _is_splat = self._get_owner_rot_deg(owner)
-                        rx = self._unwrap_deg(float(cur_rot_deg[0]), float(rx))
-                        ry = self._unwrap_deg(float(cur_rot_deg[1]), float(ry))
-                        rz = self._unwrap_deg(float(cur_rot_deg[2]), float(rz))
+                        # continuous signed angle from drag start (degrees)
+                        ang = float(getattr(rot_shared.drag_axis, "ang_deg", 0.0))
+                        axis = str(getattr(rot_shared.drag_axis, "axis", ""))
+
+                        rx, ry, rz = float(start_euler[0]), float(start_euler[1]), float(start_euler[2])
+
+                        if axis == "x":
+                            rx = rx + ang
+                        elif axis == "y":
+                            ry = ry + ang
+                        elif axis == "z":
+                            rz = rz + ang
+
+                        # keep continuity vs current outliner values
+                        cur_rot_deg, _ = self._get_owner_rot_deg(owner)
+                        rx = self._unwrap_deg(float(cur_rot_deg[0]), rx)
+                        ry = self._unwrap_deg(float(cur_rot_deg[1]), ry)
+                        rz = self._unwrap_deg(float(cur_rot_deg[2]), rz)
 
                         self._set_owner_rot_deg(
                             owner,
@@ -3585,6 +3603,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     self.update()
                     e.accept()
                     return
+
 
 
                 except Exception as ex:
