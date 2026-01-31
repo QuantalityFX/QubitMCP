@@ -198,6 +198,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         try:
             from echograph.gizmo.rotate_gizmo_shared import RotateGizmoShared
             self._rot_shared = RotateGizmoShared()
+            self._rot_owner_quat = {}
             import sys
             mod = sys.modules.get(RotateGizmoShared.__module__)
             mf = getattr(mod, "__file__", None)
@@ -212,6 +213,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             print("[ROT_SHARED] ready")
         except Exception as exc:
             self._rot_shared = None
+            self._rot_owner_quat = {}
             print("[ROT_SHARED] disabled (boot-safe):", exc)
             
 
@@ -2693,19 +2695,32 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                     if hit in ("x", "y", "z"):
                                         self._rot_shared_owner = owner
 
-                                        start_rot_deg, is_splat = self._get_owner_rot_deg(owner)
-                                        self._rot_shared_start_rot = start_rot_deg
-                                        self._rot_shared_is_splat = bool(is_splat)
-
-                                        # Build start quaternion from the stored Euler degrees (use our shared convention)
+                                        # Prefer persisted quaternion for this owner (prevents euler drift / wobble)
+                                        q0 = None
                                         try:
-                                            rx = float(start_rot_deg[0])
-                                            ry = float(start_rot_deg[1])
-                                            rz = float(start_rot_deg[2])
+                                            q0 = self._rot_owner_quat.get(owner)
                                         except Exception:
-                                            rx, ry, rz = 0.0, 0.0, 0.0
+                                            q0 = None
 
-                                        q0 = self._rot_shared_q_from_euler_deg((rx, ry, rz))
+                                        if q0 is None:
+                                            start_rot_deg, is_splat = self._get_owner_rot_deg(owner)
+                                            self._rot_shared_start_rot = start_rot_deg
+                                            self._rot_shared_is_splat = bool(is_splat)
+
+                                            # Build start quaternion from the stored Euler degrees (use our shared convention)
+                                            try:
+                                                rx = float(start_rot_deg[0])
+                                                ry = float(start_rot_deg[1])
+                                                rz = float(start_rot_deg[2])
+                                            except Exception:
+                                                rx, ry, rz = 0.0, 0.0, 0.0
+
+                                            q0 = self._rot_shared_q_from_euler_deg((rx, ry, rz))
+
+                                            try:
+                                                self._rot_owner_quat[owner] = q0
+                                            except Exception:
+                                                pass
 
                                         axis_local = (
                                             QtGui.QVector3D(1.0, 0.0, 0.0)
@@ -2788,42 +2803,44 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                                     e.accept()
                                                     return
 
-                                                    
-
                                     if hit == "view":
-                                        try:
-                                            rot_shared.begin_view_ring_drag()
-                                        except Exception:
-                                            pass
-
                                         self._rot_shared_owner = owner
-                                        start_rot_deg, is_splat = self._get_owner_rot_deg(owner)
-                                        self._rot_shared_start_rot = start_rot_deg
-                                        self._rot_shared_is_splat = bool(is_splat)
 
-                                        # Store the starting object rotation for view-ring update
+                                        # Prefer persisted quaternion for this owner
+                                        q0 = None
                                         try:
-                                            rx = -float(start_rot_deg[0])
-                                            ry = -float(start_rot_deg[1])
-                                            rz = -float(start_rot_deg[2])
+                                            q0 = self._rot_owner_quat.get(owner)
                                         except Exception:
-                                            rx, ry, rz = 0.0, 0.0, 0.0
+                                            q0 = None
 
-                                        qx = QtGui.QQuaternion.fromAxisAndAngle(QtGui.QVector3D(1.0, 0.0, 0.0), rx)
-                                        qy = QtGui.QQuaternion.fromAxisAndAngle(QtGui.QVector3D(0.0, 1.0, 0.0), ry)
-                                        qz = QtGui.QQuaternion.fromAxisAndAngle(QtGui.QVector3D(0.0, 0.0, 1.0), rz)
-                                        self._rot_shared_view_q = (qz * qy * qx).normalized()
+                                        if q0 is None:
+                                            start_rot_deg, is_splat = self._get_owner_rot_deg(owner)
+                                            self._rot_shared_start_rot = start_rot_deg
+                                            self._rot_shared_is_splat = bool(is_splat)
 
-                                        # Camera forward in world space, from camera to gizmo center
+                                            try:
+                                                rx = float(start_rot_deg[0])
+                                                ry = float(start_rot_deg[1])
+                                                rz = float(start_rot_deg[2])
+                                            except Exception:
+                                                rx, ry, rz = 0.0, 0.0, 0.0
+
+                                            q0 = self._rot_shared_q_from_euler_deg((rx, ry, rz))
+                                            try:
+                                                self._rot_owner_quat[owner] = q0
+                                            except Exception:
+                                                pass
+
+                                        # Camera->gizmo direction in world (this is the "axis" for the view ring plane)
                                         forward_world = QtGui.QVector3D(0.0, 0.0, -1.0)
                                         try:
                                             VM = (np.asarray(V, dtype=np.float32) @ np.asarray(M, dtype=np.float32)).astype(np.float32)
                                             invVM = np.linalg.inv(VM)
                                             cam4 = invVM @ np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
                                             cw = float(cam4[3]) if abs(float(cam4[3])) > 1e-8 else 1.0
-                                            cam = cam4[:3] / cw
+                                            cam_np = cam4[:3] / cw
 
-                                            f = g - cam
+                                            f = g - cam_np
                                             ln = float(np.linalg.norm(f))
                                             if ln > 1e-6:
                                                 f = f / ln
@@ -2833,8 +2850,72 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
                                         self._rot_shared_view_forward_world = forward_world
 
+                                        # Build mouse ray, compute smoketest-style start_dir on the view-ring plane
+                                        center_w = QtGui.QVector3D(float(g[0]), float(g[1]), float(g[2]))
+                                        self._rot_shared_axis_center_world = center_w
+
+                                        try:
+                                            invPV = np.linalg.inv(PV)
+                                            mx = float(e.x()) * dpr
+                                            my = float(e.y()) * dpr
+                                            x_ndc = (mx / vw) * 2.0 - 1.0
+                                            y_ndc = 1.0 - (my / vh) * 2.0
+
+                                            pN4 = invPV @ np.array([x_ndc, y_ndc, -1.0, 1.0], dtype=np.float32)
+                                            pF4 = invPV @ np.array([x_ndc, y_ndc,  1.0, 1.0], dtype=np.float32)
+
+                                            if abs(float(pN4[3])) < 1e-8 or abs(float(pF4[3])) < 1e-8:
+                                                self._mgl_log("[ROT_SHARED_VIEW_BEGIN_ERR] bad clip w")
+                                            else:
+                                                pN = pN4[:3] / pN4[3]
+                                                pF = pF4[:3] / pF4[3]
+
+                                                ro = QtGui.QVector3D(float(pN[0]), float(pN[1]), float(pN[2]))
+                                                rd_np = (pF - pN).astype(np.float32)
+                                                ln = float(np.linalg.norm(rd_np))
+                                                if ln < 1e-8:
+                                                    self._mgl_log("[ROT_SHARED_VIEW_BEGIN_ERR] ray too small")
+                                                else:
+                                                    rd_np /= ln
+                                                    rd = QtGui.QVector3D(float(rd_np[0]), float(rd_np[1]), float(rd_np[2]))
+
+                                                    start_dir = self._axis_ring_dir_world(
+                                                        cam=ro,
+                                                        ray_d=rd,
+                                                        center_w=center_w,
+                                                        axis_world=forward_world,
+                                                    )
+
+                                                    try:
+                                                        rot_shared.begin_view_ring_drag(
+                                                            start_rot=q0,
+                                                            forward_world=forward_world,
+                                                            start_dir=start_dir,
+                                                        )
+                                                    except Exception:
+                                                        pass
+
+                                                    # keep continuity so view cur_dir can't flip 180 degrees mid-drag
+                                                    try:
+                                                        rot_shared.drag_view_last_dir = QtGui.QVector3D(start_dir)
+                                                    except Exception:
+                                                        rot_shared.drag_view_last_dir = start_dir
+                                        except Exception as ex:
+                                            self._mgl_log("[ROT_SHARED_VIEW_BEGIN_ERR] " + repr(ex))
+
                                         e.accept()
                                         return
+
+
+                            # mouse in device pixels (must match project() output space)
+                            try:
+                                mp = e.position() if hasattr(e, "position") else QtCore.QPointF(e.x(), e.y())
+                            except Exception:
+                                mp = QtCore.QPointF(e.x(), e.y())
+
+                            dpr = float(self.devicePixelRatioF()) if hasattr(self, "devicePixelRatioF") else 1.0
+                            px_dev = float(mp.x()) * dpr
+                            py_dev = float(mp.y()) * dpr
 
                             # --- translate gizmo drag start (existing axis line pick) ---
                             if p0 is not None and mode != "rotate":
@@ -3087,25 +3168,24 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     if mp is None:
                         mp = e.position() if hasattr(e, "position") else QtCore.QPointF(e.x(), e.y())
 
-                    dpr = float(getattr(self, "devicePixelRatioF", lambda: 1.0)())
-                    px = float(mp.x()) * dpr
-                    py = float(mp.y()) * dpr
-                    vw = float(self.width()) * dpr
-                    vh = float(self.height()) * dpr
-
-                    # Prefer cached invPV from mousePressEvent so drag keeps working even if P/V/M go None mid-drag
+                    # Prefer cached viewport + dpr from mousePressEvent so unproject stays stable during drag
                     invPV = getattr(self, "_rot_shared_invPV", None)
+
+                    dpr = float(getattr(self, "_rot_shared_dpr", 0.0) or 0.0)
+                    if dpr <= 0.0:
+                        dpr = float(getattr(self, "devicePixelRatioF", lambda: 1.0)())
 
                     vw = float(getattr(self, "_rot_shared_vw", 0.0) or 0.0)
                     vh = float(getattr(self, "_rot_shared_vh", 0.0) or 0.0)
-                    dpr = float(getattr(self, "_rot_shared_dpr", 0.0) or 0.0)
-
-                    if dpr <= 0.0:
-                        dpr = float(getattr(self, "devicePixelRatioF", lambda: 1.0)())
                     if vw <= 1.0:
                         vw = float(self.width()) * dpr
                     if vh <= 1.0:
                         vh = float(self.height()) * dpr
+
+                    # IMPORTANT: compute mouse in the same pixel space as vw/vh
+                    px = float(mp.x()) * dpr
+                    py = float(mp.y()) * dpr
+
 
                     if invPV is None:
                         renderer = getattr(self, "_mgl_renderer", None)
@@ -3181,10 +3261,12 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                             cur_dir = QtGui.QVector3D(-cur_dir.x(), -cur_dir.y(), -cur_dir.z())
 
                     # store for next move
-                    rot_shared.drag_axis.last_dir = QtGui.QVector3D(cur_dir)
+                    try:
+                        rot_shared.drag_axis.last_dir = QtGui.QVector3D(cur_dir)
+                    except Exception:
+                        pass
 
                     den_dbg = float(QtGui.QVector3D.dotProduct(axis_world, ray_d))
-
                     _rot_dbg(
                         "[ROT_SHARED_AXIS_MOVE]"
                         f" axis={getattr(rot_shared.drag_axis,'axis',None)}"
@@ -3198,55 +3280,35 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                         _rot_dbg("[ROT_SHARED_AXIS_MOVE_ERR] qnew None")
                         return
 
-                    # quat -> euler (Rz @ Ry @ Rx)
-                    w = float(qnew.scalar())
-                    xq = float(qnew.x())
-                    yq = float(qnew.y())
-                    zq = float(qnew.z())
+                    # normalize
+                    try:
+                        if hasattr(qnew, "normalized"):
+                            qnew = qnew.normalized()
+                    except Exception:
+                        pass
 
+                    # persist quaternion (prevents euler drift / wobble feedback)
+                    try:
+                        self._rot_owner_quat[owner] = qnew
+                    except Exception:
+                        pass
 
-                    n = math.sqrt(w * w + xq * xq + yq * yq + zq * zq)
-                    if n > 1e-8:
-                        w /= n
-                        xq /= n
-                        yq /= n
-                        zq /= n
-
-                    r00 = 1.0 - 2.0 * (yq * yq + zq * zq)
-                    r10 = 2.0 * (xq * yq + zq * w)
-                    r20 = 2.0 * (xq * zq - yq * w)
-                    r21 = 2.0 * (yq * zq + xq * w)
-                    r22 = 1.0 - 2.0 * (xq * xq + yq * yq)
-
-                    sy = -r20
-                    sy = max(-1.0, min(1.0, sy))
-                    ry = math.asin(sy)
-                    cy = math.cos(ry)
-
-                    if abs(cy) > 1e-6:
-                        rx = math.atan2(r21, r22)
-                        rz = math.atan2(r10, r00)
-                    else:
-                        rx = 0.0
-                        r01 = 2.0 * (xq * yq - zq * w)
-                        r11 = 1.0 - 2.0 * (xq * xq + zq * zq)
-                        rz = math.atan2(-r01, r11)
-
-                    rx = math.degrees(rx)
-                    ry = math.degrees(ry)
-                    rz = math.degrees(rz)
-
-                    _rot_dbg(f"[ROT_SHARED_AXIS_EULER] rx={rx:.2f} ry={ry:.2f} rz={rz:.2f}")
-
-                    self._set_owner_rot_deg(
-                        owner,
-                        (rx, ry, rz),
-                        bool(getattr(self, "_rot_shared_is_splat", False)),
-                    )
+                    # APPLY to owner for live visual update (derive euler from quaternion using shared convention)
+                    try:
+                        rx, ry, rz = self._rot_shared_euler_deg_from_q(qnew)
+                        self._set_owner_rot_deg(
+                            owner,
+                            (rx, ry, rz),
+                            bool(getattr(self, "_rot_shared_is_splat", False)),
+                        )
+                    except Exception as ex:
+                        _rot_dbg("[ROT_SHARED_AXIS_APPLY_ERR] " + repr(ex))
 
                     self.update()
                     e.accept()
                     return
+
+
                 except Exception as ex:
                     _rot_dbg("[ROT_SHARED_AXIS_MOVE_ERR] " + repr(ex))
 
