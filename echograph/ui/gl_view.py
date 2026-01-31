@@ -3251,11 +3251,10 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
                     if qcur is None:
                         rot_deg, is_splat = self._get_owner_rot_deg(owner)
-                        qcur = QtGui.QQuaternion.fromEulerAngles(
-                            float(rot_deg[0]), float(rot_deg[1]), float(rot_deg[2])
+                        self._rot_shared_is_splat = bool(is_splat)
+                        qcur = self._rot_shared_q_from_euler_deg(
+                            (float(rot_deg[0]), float(rot_deg[1]), float(rot_deg[2]))
                         )
-                        if hasattr(qcur, "normalized"):
-                            qcur = qcur.normalized()
                         try:
                             self._rot_owner_quat[owner] = qcur
                         except Exception:
@@ -3268,10 +3267,19 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     if hasattr(qnew, "normalized"):
                         qnew = qnew.normalized()
 
+                    # persist quaternion
                     try:
                         self._rot_owner_quat[owner] = qnew
                     except Exception:
                         pass
+
+                    # APPLY to owner so the object visibly rotates in gl_view
+                    rx, ry, rz = self._rot_shared_euler_deg_from_q(qnew)
+                    self._set_owner_rot_deg(
+                        owner,
+                        (rx, ry, rz),
+                        bool(getattr(self, "_rot_shared_is_splat", False)),
+                    )
 
                     self.update()
                     e.accept()
