@@ -629,7 +629,8 @@ class RotateGizmoShared:
         cross = QtGui.QVector3D.crossProduct(a, b)
         s = float(QtGui.QVector3D.dotProduct(cross, axis))
         c = float(QtGui.QVector3D.dotProduct(a, b))
-        ang_wrapped = math.degrees(math.atan2(s, c))
+        # inverts rotation
+        ang_wrapped = -math.degrees(math.atan2(s, c))
 
         # make the axis angle continuous across 180/-180
         ang_cont = unwrap_deg(self.drag_axis.last_ang_deg, ang_wrapped)
