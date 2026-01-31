@@ -204,6 +204,10 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             from echograph.gizmo.rotate_gizmo_shared import RotateGizmoShared
             self._rot_shared = RotateGizmoShared()
             self._rot_owner_quat = {}
+            # rotate gizmo backside clipping (match smoketest behavior)
+            self._rot_clip_enabled = True
+            self._rot_clip_frac = 0.55  # 0..1, higher = more aggressive backside trimming
+
             import sys
             mod = sys.modules.get(RotateGizmoShared.__module__)
             mf = getattr(mod, "__file__", None)
@@ -2114,20 +2118,49 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._rot_shared_mvp = mvp
         self._rot_shared_world_pos = pos
 
-        # pick up whatever we cached earlier for picking, otherwise fall back
-        view_dir_local = getattr(self, "_rot_shared_view_dir_local", None)
-        if view_dir_local is None:
-            view_dir_local = QtGui.QVector3D(0.0, 0.0, 1.0)
+        # Compute view_dir_local in the SAME gizmo-local space used by mvp = Pn @ Vn @ Mn @ (T @ R @ S)
+        view_dir_local = QtGui.QVector3D(0.0, 0.0, 1.0)
+        try:
+            Vn = np.asarray(V, dtype=np.float32)
+            Mn = np.asarray(M, dtype=np.float32)
+
+            # camera position in the same "world" space that Vn views
+            invV = np.linalg.inv(Vn)
+            cam4 = invV @ np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+            cw = float(cam4[3]) if abs(float(cam4[3])) > 1e-6 else 1.0
+            cam_world = np.array([float(cam4[0]) / cw, float(cam4[1]) / cw, float(cam4[2]) / cw, 1.0], dtype=np.float32)
+
+            # gizmo local -> world is (Mn @ (T @ R))  (ignore S for direction)
+            TR = (T @ R).astype(np.float32)
+            G = (Mn @ TR).astype(np.float32)
+
+            invG = np.linalg.inv(G)
+            cam_local4 = invG @ cam_world
+
+            lx, ly, lz = float(cam_local4[0]), float(cam_local4[1]), float(cam_local4[2])
+            ln = (lx * lx + ly * ly + lz * lz) ** 0.5
+            if ln > 1e-6:
+                view_dir_local = QtGui.QVector3D(lx / ln, ly / ln, lz / ln)
+
+            # cache so draw and pick stay consistent
+            self._rot_shared_view_dir_local = view_dir_local
+        except Exception:
+            pass
+
+
 
         # XYZ rings (new shared gizmo)
+        clip_val = 1.0 if bool(getattr(self, "_rot_clip_enabled", True)) else 0.0
+        back_clip_cos = -math.cos(math.pi * float(getattr(self, "_rot_clip_frac", 0.55)))
+
         rot_shared.draw_xyz_core_2d(
             widget=self,
             viewport_w=self.width(),
             viewport_h=self.height(),
             mvp=mvp,
             view_dir_local=view_dir_local,
-            back_clip_cos=-0.2,
-            clip_enabled=False,
+            back_clip_cos=float(back_clip_cos),
+            clip_enabled=(clip_val > 0.5),
             width_px=2,
         )
 
@@ -2147,10 +2180,11 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 viewport_h=self.height(),
                 mvp=mvp,
                 view_dir_local=view_dir_local,
-                back_clip_cos=-0.25,
-                clip_enabled=False,
+                back_clip_cos=float(back_clip_cos),
+                clip_enabled=(clip_val > 0.5),
                 threshold_px=float(band),
             )
+
 
         # Resolve hover state
         if rot_shared.drag_axis.active and rot_shared.drag_axis.axis:
