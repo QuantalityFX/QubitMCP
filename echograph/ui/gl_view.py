@@ -206,7 +206,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             self._rot_owner_quat = {}
             # rotate gizmo backside clipping (match smoketest behavior)
             self._rot_clip_enabled = True
-            self._rot_clip_frac = 0.55  # 0..1, higher = more aggressive backside trimming
+            self._rot_clip_frac = 0.30  # 0..1, higher = more aggressive backside trimming
 
             import sys
             mod = sys.modules.get(RotateGizmoShared.__module__)
@@ -2214,17 +2214,17 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         rot_shared.draw_view_ring_2d(widget=self, center=center, hovered=bool(hover_view or rot_shared.drag_view))
 
         # Draw halo on hovered axis (or active drag axis)
-        if hover_axis:
-            rot_shared.draw_hover_halo_2d(
-                widget=self,
-                axis=str(hover_axis),
-                viewport_w=self.width(),
-                viewport_h=self.height(),
-                mvp=mvp,
-                view_dir_local=view_dir_local,
-                back_clip_cos=-0.25,
-                clip_enabled=False,
-            )
+        rot_shared.draw_hover_halo_2d(
+            widget=self,
+            axis=str(hover_axis),
+            viewport_w=self.width(),
+            viewport_h=self.height(),
+            mvp=mvp,
+            view_dir_local=view_dir_local,
+            back_clip_cos=float(back_clip_cos),
+            clip_enabled=(clip_val > 0.5),
+        )
+
 
     def _get_owner_rot_deg(self, owner: str):
         renderer = getattr(self, "_mgl_renderer", None) or self
@@ -2840,11 +2840,29 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                 if rot_shared is not None and center is not None and mvp is not None and owner:
                                     mp = e.position() if hasattr(e, "position") else QtCore.QPointF(e.x(), e.y())
 
+                                    # match smoketest-style picking (same args as hover/draw)
+                                    band = max(12.0, float(rot_shared.xyz_ring_radius_px()) * 0.14)
+
+                                    clip_enabled = bool(getattr(self, "_rot_clip_enabled", True))
+                                    back_clip_cos = -math.cos(math.pi * float(getattr(self, "_rot_clip_frac", 0.30)))
+
+                                    view_dir_local = getattr(self, "_rot_shared_view_dir_local", None)
+                                    if view_dir_local is None:
+                                        view_dir_local = QtGui.QVector3D(0.0, 0.0, 1.0)
+
                                     hit = rot_shared.pick_axis_2d(
                                         widget=self,
                                         center=center,
-                                        mouse_px=QtCore.QPointF(mp),
+                                        mouse_px=QtCore.QPointF(mp),   # logical px
+                                        viewport_w=self.width(),       # logical px (must match center/mouse)
+                                        viewport_h=self.height(),
+                                        mvp=mvp,
+                                        view_dir_local=view_dir_local,
+                                        back_clip_cos=float(back_clip_cos),
+                                        clip_enabled=bool(clip_enabled),
+                                        threshold_px=float(band),
                                     )
+
 
                                     self._mgl_log(
                                         f"[ROT_SHARED] pick hit={hit} mode={getattr(self,'_xform_gizmo_mode',None)} owner={owner}"
