@@ -513,8 +513,26 @@ class RotateGizmoShared:
         forward_world: QtGui.QVector3D,
         obj_rot: QtGui.QQuaternion,
     ) -> QtGui.QQuaternion:
-        vx = float(mouse_px.x() - center_px.x())
-        vy = float(mouse_px.y() - center_px.y())
+        # accept QPointF or (x,y) tuple/list for both mouse and center
+        try:
+            if hasattr(mouse_px, "x") and hasattr(mouse_px, "y"):
+                mx = float(mouse_px.x())
+                my = float(mouse_px.y())
+            else:
+                mx = float(mouse_px[0])
+                my = float(mouse_px[1])
+
+            if hasattr(center_px, "x") and hasattr(center_px, "y"):
+                cx = float(center_px.x())
+                cy = float(center_px.y())
+            else:
+                cx = float(center_px[0])
+                cy = float(center_px[1])
+        except Exception:
+            return obj_rot
+
+        vx = mx - cx
+        vy = my - cy
         l = math.hypot(vx, vy)
         if l <= 1e-6:
             return obj_rot

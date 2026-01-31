@@ -2986,7 +2986,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                         self._mgl_log("[ROT_SHARED_ARC_BEGIN_ERR] " + repr(ex))
                                     except Exception:
                                         print("[ROT_SHARED_ARC_BEGIN_ERR] " + repr(ex), flush=True)
-                                        
+
                             # --- translate gizmo drag start (existing axis line pick) ---
                             if p0 is not None and mode != "rotate":
                                 axis_proj = {}
@@ -3217,7 +3217,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             ):
                 self.update()
 
-            # --- ROT_SHARED view-ring drag (smoketest style) ---
+            # --- ROT_SHARED view-ring drag update (smoketest style) ---
             rot_shared = getattr(self, "_rot_shared", None)
             if (
                 rot_shared is not None
@@ -3236,44 +3236,37 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     forward_world = getattr(self, "_rot_shared_view_forward_world", None)
                     if not isinstance(forward_world, QtGui.QVector3D):
                         return
-                    if forward_world.length() > 1e-6:
-                        forward_world = forward_world / forward_world.length()
 
+                    # Use device pixels so it matches center_pf (which you stored from p0)
                     dpr = float(self.devicePixelRatioF()) if hasattr(self, "devicePixelRatioF") else 1.0
                     mp = e.position() if hasattr(e, "position") else QtCore.QPointF(e.x(), e.y())
                     mouse_pf = QtCore.QPointF(float(mp.x()) * dpr, float(mp.y()) * dpr)
 
-                    # get current quaternion (prefer persisted quat)
-                    q0 = None
+                    # Current rotation for this owner (persisted quaternion)
+                    qcur = None
                     try:
-                        q0 = self._rot_owner_quat.get(owner)
+                        qcur = self._rot_owner_quat.get(owner)
                     except Exception:
-                        q0 = None
+                        qcur = None
 
-                    if q0 is None:
+                    if qcur is None:
                         rot_deg, is_splat = self._get_owner_rot_deg(owner)
-                        q0 = QtGui.QQuaternion.fromEulerAngles(
+                        qcur = QtGui.QQuaternion.fromEulerAngles(
                             float(rot_deg[0]), float(rot_deg[1]), float(rot_deg[2])
                         )
-                        if hasattr(q0, "normalized"):
-                            q0 = q0.normalized()
+                        if hasattr(qcur, "normalized"):
+                            qcur = qcur.normalized()
                         try:
-                            self._rot_owner_quat[owner] = q0
+                            self._rot_owner_quat[owner] = qcur
                         except Exception:
                             pass
 
-                    qnew = rot_shared.update_view_ring_drag(
-                        mouse_px=mouse_pf,
-                        center_px=center_pf,
-                        forward_world=forward_world,
-                        obj_rot=q0,
-                    )
+                    qnew = rot_shared.update_view_ring_drag(mouse_pf, center_pf, forward_world, qcur)
+                    if qnew is None:
+                        return
 
-                    try:
-                        if hasattr(qnew, "normalized"):
-                            qnew = qnew.normalized()
-                    except Exception:
-                        pass
+                    if hasattr(qnew, "normalized"):
+                        qnew = qnew.normalized()
 
                     try:
                         self._rot_owner_quat[owner] = qnew
