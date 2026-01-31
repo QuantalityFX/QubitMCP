@@ -24,7 +24,25 @@ from .gl_loaders import load_model
 from .gl_loaders import register_model_loader
 from echograph.ui.gl_view_paint import paint_gl as _paint_gl
 from echograph.ui.gl_view_paint import paint_example as _paint_example
-from echograph.ui.gl_view_debug import debug_status_lines as _debug_status_lines
+from echograph.ui.gl_view_example import upload_example_grid as _ex_upload_example_grid
+from echograph.ui.gl_view_example import upload_example_vertices as _ex_upload_example_vertices
+from echograph.ui.gl_view_example import init_example_pipeline as _ex_init_example_pipeline
+from echograph.ui.gl_view_example import queue_example_model as _ex_queue_example_model
+from echograph.ui.gl_view_example import apply_example_pending as _ex_apply_example_pending
+from echograph.ui.gl_view_example import apply_example_bounds as _ex_apply_example_bounds
+from echograph.ui.gl_view_example import example_scaled_extent as _ex_example_scaled_extent
+from echograph.ui.gl_view_example import update_example_projection as _ex_update_example_projection
+from echograph.ui.gl_view_example import update_example_transform as _ex_update_example_transform
+from echograph.ui.gl_view_example import frame_example_camera as _ex_frame_example_camera
+from echograph.ui.gl_view_example import update_example_camera_basis as _ex_update_example_camera_basis
+from echograph.ui.gl_view_example import sync_example_gizmo as _ex_sync_example_gizmo
+from echograph.ui.gl_view_example import example_view_matrix as _ex_example_view_matrix
+from echograph.ui.gl_view_example import example_orbit as _ex_example_orbit
+from echograph.ui.gl_view_example import example_pan as _ex_example_pan
+from echograph.ui.gl_view_example import example_zoom as _ex_example_zoom
+from echograph.ui.gl_view_example import build_example_program as _ex_build_example_program
+from echograph.ui.gl_view_example import example_cube_data as _ex_cube_data
+from echograph.ui.gl_view_example import example_grid_data as _ex_grid_data
 
 try:
     import numpy as np
@@ -141,18 +159,9 @@ else:
             pass
 
 # OpenGL constants (avoid optional PyOpenGL dependency).
-GL_TRIANGLES = 0x0004
-GL_TRIANGLE_STRIP = 0x0005
-GL_LINES = 0x0001
-GL_FLOAT = 0x1406
-GL_UNSIGNED_SHORT = 0x1403
 GL_BLEND = 0x0BE2
 GL_SRC_ALPHA = 0x0302
 GL_ONE_MINUS_SRC_ALPHA = 0x0303
-GL_CULL_FACE = 0x0B44
-GL_LESS = 0x0201
-GL_COLOR_BUFFER_BIT = 0x00004000
-GL_DEPTH_BUFFER_BIT = 0x00000100
 GL_DEPTH_TEST = 0x0B71
 
 
@@ -1633,7 +1642,6 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             self._render_paused = False
             self.update()
 
-
     def _capture_scene_texture(self) -> None:
         if not self._render_scene_plane:
             return
@@ -1771,66 +1779,13 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._grid_dirty = False
 
     def _example_cube_data(self) -> Tuple[List[float], List[int]]:
-        colors = [
-            (0.94, 0.41, 0.41, 1.0),
-            (0.40, 0.84, 0.47, 1.0),
-            (0.39, 0.56, 0.92, 1.0),
-            (0.96, 0.78, 0.33, 1.0),
-            (0.34, 0.87, 0.84, 1.0),
-            (0.86, 0.47, 0.92, 1.0),
-        ]
-        faces = [
-            [(-1.0, -1.0,  1.0), (1.0, -1.0,  1.0), (-1.0,  1.0,  1.0), (1.0,  1.0,  1.0)],
-            [(1.0, -1.0,  1.0), (1.0, -1.0, -1.0), (1.0,  1.0,  1.0), (1.0,  1.0, -1.0)],
-            [(1.0, -1.0, -1.0), (-1.0, -1.0, -1.0), (1.0,  1.0, -1.0), (-1.0,  1.0, -1.0)],
-            [(-1.0, -1.0, -1.0), (-1.0, -1.0,  1.0), (-1.0,  1.0, -1.0), (-1.0,  1.0,  1.0)],
-            [(-1.0, -1.0, -1.0), (1.0, -1.0, -1.0), (-1.0, -1.0,  1.0), (1.0, -1.0,  1.0)],
-            [(-1.0,  1.0,  1.0), (1.0,  1.0,  1.0), (-1.0,  1.0, -1.0), (1.0,  1.0, -1.0)],
-        ]
-        vertices: List[float] = []
-        for face_index, face in enumerate(faces):
-            color = colors[face_index % len(colors)]
-            a, b, c, d = face
-            for x, y, z in (a, b, c):
-                vertices.extend([x, y, z, color[0], color[1], color[2], color[3]])
-            for x, y, z in (c, b, d):
-                vertices.extend([x, y, z, color[0], color[1], color[2], color[3]])
-        return vertices, []
+        return _ex_cube_data(self)
 
     def _example_grid_data(self, extent: float = 12.0, step: float = 1.0) -> List[float]:
-        color = (0.36, 0.42, 0.52, 0.65)
-        step = max(0.1, float(step))
-        count = max(1, int(extent / step))
-        size = count * step
-        verts: List[float] = []
-        for i in range(-count, count + 1):
-            x = i * step
-            verts.extend([x, 0.0, -size, color[0], color[1], color[2], color[3]])
-            verts.extend([x, 0.0,  size, color[0], color[1], color[2], color[3]])
-            z = i * step
-            verts.extend([-size, 0.0, z, color[0], color[1], color[2], color[3]])
-            verts.extend([ size, 0.0, z, color[0], color[1], color[2], color[3]])
-        return verts
+        return _ex_grid_data(self, extent=extent, step=step)
 
     def _upload_example_grid(self, vertices: List[float]) -> bool:
-        if QOpenGLBuffer is None:
-            return False
-        if not vertices:
-            return False
-        if self._example_grid_vbo is None:
-            self._example_grid_vbo = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
-            self._example_grid_vbo.create()
-        if not self._example_grid_vbo.bind():
-            return False
-        try:
-            data = self._float_bytes(vertices)
-        except Exception:
-            self._example_grid_vbo.release()
-            return False
-        self._example_grid_vbo.allocate(data, data.size())
-        self._example_grid_vbo.release()
-        self._example_grid_count = len(vertices) // 7
-        return True
+        return _ex_upload_example_grid(self, vertices)
 
     def _build_example_program(
         self,
@@ -1838,272 +1793,55 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         fragment_src: str,
         bind_locations: Optional[Dict[str, int]] = None,
     ) -> Optional[QtGui.QOpenGLShaderProgram]:
-        program, err = build_qt_program(
-            QOpenGLShaderProgram,
-            QOpenGLShader,
-            vertex_src,
-            fragment_src,
-            bind_locations,
-        )
-        if program is None:
-            self._shader_error = err
-            return None
-        return program
+        return _ex_build_example_program(self, vertex_src, fragment_src, bind_locations)
 
     def _float_bytes(self, values: List[float]) -> QtCore.QByteArray:
         return float_bytes(QtCore, array, values)
 
     def _upload_example_vertices(self, vertices: List[float]) -> bool:
-        if QOpenGLBuffer is None:
-            self._shader_error = "OpenGL buffers unavailable"
-            return False
-        if not vertices:
-            self._shader_error = "No vertices to upload"
-            return False
-        if self._example_vbo is None:
-            self._example_vbo = QOpenGLBuffer(QOpenGLBuffer.VertexBuffer)
-            self._example_vbo.create()
-        if not self._example_vbo.bind():
-            self._shader_error = "Vertex buffer bind failed"
-            return False
-        try:
-            data = self._float_bytes(vertices)
-        except Exception:
-            self._shader_error = "Vertex buffer build failed"
-            self._example_vbo.release()
-            return False
-        self._example_vbo.allocate(data, data.size())
-        self._example_vbo.release()
-        self._example_draw_count = len(vertices) // 7
-        self._example_index_count = 0
-        return True
+        return _ex_upload_example_vertices(self, vertices)
 
     def _init_example_pipeline(self) -> None:
-        if self._gl is None:
-            self._shader_error = "GL functions unavailable"
-            return
-        if QOpenGLShaderProgram is None or QOpenGLShader is None:
-            self._shader_error = "Shaders unavailable"
-            return
-        try:
-            self._gl.glEnable(GL_DEPTH_TEST)
-            self._gl.glClearColor(0.8, 0.8, 0.8, 1.0)
-        except Exception:
-            self._shader_error = "OpenGL state init failed"
-            return
-        if QOpenGLVertexArrayObject is not None:
-            self._example_vao = QOpenGLVertexArrayObject()
-            try:
-                self._example_vao.create()
-            except Exception:
-                self._example_vao = None
-
-        # Example Vertex Debug Shader
-        self._shader_error = ""
-        vertex_330 = SHADERS["example_vertex_330"]
-        fragment_330 = SHADERS["example_fragment_330"]
-        vertex_legacy = SHADERS["example_vertex_legacy"]
-        fragment_legacy = SHADERS["example_fragment_legacy"]
-
-        bind_locations = {"a_position": 0, "a_color": 1}
-        program = self._build_example_program(vertex_330, fragment_330, bind_locations)
-        if program is None:
-            program = self._build_example_program(vertex_legacy, fragment_legacy, bind_locations)
-        if program is None:
-            if not self._shader_error:
-                self._shader_error = "Shader compile failed"
-            return
-        self._shader_error = ""
-        self._example_program = program
-
-        vertices, _ = self._example_cube_data()
-        if not self._upload_example_vertices(vertices):
-            return
-        grid_vertices = self._example_grid_data(self._example_grid_extent, 1.0)
-        self._upload_example_grid(grid_vertices)
-        self._example_model_center = (0.0, 0.0, 0.0)
-        self._example_model_base_scale = 1.0
-        self._example_model_scale = 1.0
-        self._update_example_transform()
-        self._update_example_projection()
+        return _ex_init_example_pipeline(self)
 
     def _queue_example_model(self, path: Path) -> None:
-        try:
-            model_data = load_model(path)
-        except Exception:
-            model_data = None
-        if not model_data or not model_data.vertices:
-            self._shader_error = "Model load failed"
-            return
-        color = (0.56, 0.86, 0.98, 1.0)
-        vertices: List[float] = []
-        src = model_data.vertices
-        for i in range(0, len(src), 3):
-            vertices.extend([src[i], src[i + 1], src[i + 2], color[0], color[1], color[2], color[3]])
-        self._example_pending_vertices = vertices
-        self._example_pending_bounds = model_data.bounds
-        self._example_model_path = str(path)
-        self._example_pending_count = len(vertices) // 7
-        self.update()
+        return _ex_queue_example_model(self, path)
 
     def _apply_example_bounds(self, bounds: Tuple[float, float, float, float, float, float]) -> None:
-        min_x, min_y, min_z, max_x, max_y, max_z = bounds
-        cx = (min_x + max_x) * 0.5
-        cy = (min_y + max_y) * 0.5
-        cz = (min_z + max_z) * 0.5
-        extent = max(max_x - min_x, max_y - min_y, max_z - min_z, 1.0)
-        self._example_model_center = (cx, cy, cz)
-        self._example_model_base_scale = 18.0 / extent
-        self._example_model_extent = extent
-        scaled_extent = self._example_scaled_extent()
-        self._example_grid_extent = max(6.0, scaled_extent * 1.2)
-        step = max(0.5, self._example_grid_extent / 20.0)
-        self._upload_example_grid(self._example_grid_data(self._example_grid_extent, step))
-        self._update_example_transform()
-        self._update_example_projection()
+        return _ex_apply_example_bounds(self, bounds)
 
     def _example_scaled_extent(self) -> float:
-        extent = max(1.0, float(self._example_model_extent))
-        scale = max(1e-4, float(self._example_model_base_scale * self._example_model_scale))
-        return max(0.1, extent * scale)
+        return _ex_example_scaled_extent(self)
 
     def _update_example_transform(self) -> None:
-        if not self._use_example_pipeline:
-            return
-        cx, cy, cz = self._example_model_center
-        scale = self._example_model_base_scale * self._example_model_scale
-        self._example_transform.setToIdentity()
-        self._example_transform.scale(scale, scale, scale)
-        self._example_transform.translate(-cx, -cy, -cz)
-        self._update_example_projection()
+        return _ex_update_example_transform(self)
 
     def _frame_example_camera(self) -> None:
-        center = QtGui.QVector3D(*self._example_model_center)
-        extent = self._example_scaled_extent()
-        direction = QtGui.QVector3D(1.0, 1.0, 1.0)
-        direction.normalize()
-        distance = max(12.0, extent * 2.5)
-        self._example_cam_look = center
-        self._example_cam_pos = center + direction * distance
-        self._update_example_projection()
-
+        return _ex_frame_example_camera(self)
+    
     def _apply_example_pending(self) -> None:
-        if self._example_pending_vertices is None:
-            return
-        vertices = self._example_pending_vertices
-        if not self._upload_example_vertices(vertices):
-            return
-        bounds = self._example_pending_bounds
-        if bounds is not None:
-            self._apply_example_bounds(bounds)
-            self._frame_example_camera()
-        self._example_pending_vertices = None
-        self._example_pending_bounds = None
-        self._example_pending_count = 0
+        return _ex_apply_example_pending(self)
 
     def _update_example_projection(self) -> None:
-        w = max(1, self.width())
-        h = max(1, self.height())
-        distance = (self._example_cam_pos - self._example_cam_look).length()
-        extent = self._example_scaled_extent()
-        near = max(0.02, distance - extent * 4.0)
-        far = max(distance + extent * 4.0, near + extent * 8.0)
-        self._example_near = near
-        self._example_far = far
-        self._example_proj.setToIdentity()
-        self._example_proj.perspective(self._example_fov, w / float(h), self._example_near, self._example_far)
-
-    def _dbgprint(self, enabled: bool, *a, **k) -> None:
-        if enabled:
-            print(*a, **k)
-
-    def _camdbg(self, *a) -> None:
-        if bool(getattr(self, "_mgl_cam_debug", False)):
-            print(*a, flush=True)
+        return _ex_update_example_projection(self)
 
     def _update_example_camera_basis(self) -> None:
-        direction = self._example_cam_pos - self._example_cam_look
-        if direction.lengthSquared() < 1e-6:
-            direction = QtGui.QVector3D(0.0, 0.0, 1.0)
-        direction.normalize()
-        world_up = QtGui.QVector3D(0.0, 1.0, 0.0)
-        right = QtGui.QVector3D.crossProduct(world_up, direction)
-        if right.lengthSquared() < 1e-6:
-            right = QtGui.QVector3D(1.0, 0.0, 0.0)
-        right.normalize()
-        up = QtGui.QVector3D.crossProduct(direction, right)
-        up.normalize()
-        self._example_cam_right = right
-        self._example_cam_up = up
+        return _ex_update_example_camera_basis(self)
 
     def _example_view_matrix(self) -> QtGui.QMatrix4x4:
-        self._update_example_camera_basis()
-        self._sync_example_gizmo()
-        view = QtGui.QMatrix4x4()
-        view.lookAt(self._example_cam_pos, self._example_cam_look, self._example_cam_up)
-        return view
+        return _ex_example_view_matrix(self)
 
     def _sync_example_gizmo(self) -> None:
-        direction = self._example_cam_pos - self._example_cam_look
-        if direction.lengthSquared() < 1e-6:
-            return
-        dist = direction.length()
-        if dist <= 1e-6:
-            return
-        try:
-            self._cam_yaw = math.atan2(direction.x(), direction.z())
-            self._cam_pitch = math.asin(direction.y() / dist)
-        except Exception:
-            return
+        return _ex_sync_example_gizmo(self)
 
     def _example_orbit(self, delta: QtCore.QPointF) -> None:
-        if delta is None:
-            return
-        self._update_example_camera_basis()
-        axis_up = self._example_cam_up
-        axis_right = self._example_cam_right
-        yaw_deg = -float(delta.x()) * self._example_rotate_speed
-        pitch_deg = -float(delta.y()) * self._example_rotate_speed
-        direction = self._example_cam_pos - self._example_cam_look
-        if direction.lengthSquared() < 1e-6:
-            return
-        q_yaw = QtGui.QQuaternion.fromAxisAndAngle(axis_up, yaw_deg)
-        q_pitch = QtGui.QQuaternion.fromAxisAndAngle(axis_right, pitch_deg)
-        direction = q_yaw.rotatedVector(direction)
-        direction = q_pitch.rotatedVector(direction)
-        self._example_cam_pos = self._example_cam_look + direction
+        return _ex_example_orbit(self, delta)
 
     def _example_pan(self, delta: QtCore.QPointF) -> None:
-        if delta is None:
-            return
-        self._update_example_camera_basis()
-        distance = (self._example_cam_pos - self._example_cam_look).length()
-        scale = max(0.1, distance) * self._example_pan_speed
-        offset = (-float(delta.x()) * self._example_cam_right + float(delta.y()) * self._example_cam_up) * scale
-        self._example_cam_pos += offset
-        self._example_cam_look += offset
+        return _ex_example_pan(self, delta)    
 
     def _example_zoom(self, delta_steps: float) -> None:
-        if abs(delta_steps) < 1e-6:
-            return
-        direction = self._example_cam_pos - self._example_cam_look
-        dist = direction.length()
-        if dist < 1e-6:
-            return
-        direction.normalize()
-        base = 1.0 + 0.12 * self._example_zoom_step
-        if base <= 1.0:
-            base = 1.05
-        zoom = math.pow(base, abs(delta_steps))
-        if delta_steps > 0.0:
-            dist = dist / zoom
-        else:
-            dist = dist * zoom
-        min_dist = 0.1
-        max_dist = max(min_dist * 2.0, self._example_far * 0.95)
-        dist = max(min_dist, min(max_dist, dist))
-        self._example_cam_pos = self._example_cam_look + direction * dist
-        self._update_example_projection()
+        return _ex_example_zoom(self, delta_steps)
 
     def _paint_example(self) -> None:
         return _paint_example(self)
@@ -2861,9 +2599,141 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
         return (math.degrees(rx), math.degrees(ry), math.degrees(rz))
             
-    def _debug_status_lines(self, include_paths: bool = False) -> List[str]:
-        return _debug_status_lines(self, include_paths=include_paths)
 
+    def _dbgprint(self, enabled: bool, *a, **k) -> None:
+        if enabled:
+            print(*a, **k)
+
+    def _camdbg(self, *a) -> None:
+        if bool(getattr(self, "_mgl_cam_debug", False)):
+            print(*a, flush=True)
+
+    def _debug_status_lines(self, include_paths: bool = False) -> List[str]:
+        w = int(self.width())
+        h = int(self.height())
+
+        lines = ["3D View Debug"]
+        lines.append(f"Viewport: {w}x{h}")
+        lines.append(f"FPS: {self._fps:5.1f}")
+        lines.append(f"QOpenGLWidget: {'OK' if QOpenGLWidget is not None else 'missing'}")
+        lines.append(f"GL context: {'OK' if hasattr(self, '_gl') else 'missing'}")
+        ctx = None
+        try:
+            ctx = self.context()
+        except Exception:
+            ctx = None
+        if ctx is not None:
+            try:
+                fmt = ctx.format()
+                lines.append(f"Depth buffer: {fmt.depthBufferSize()}")
+            except Exception:
+                pass
+        if self._use_moderngl:
+            lines.append(f"Shaders: {'OK' if self._mgl_prog is not None else 'init'}")
+        else:
+            if QOpenGLShaderProgram is None:
+                lines.append("Shaders: unavailable")
+            elif self._shader_error:
+                lines.append("Shaders: error")
+            elif self._use_example_pipeline and self._example_program:
+                lines.append("Shaders: OK")
+            elif self._quad_program and self._mesh_program:
+                lines.append("Shaders: OK")
+            else:
+                lines.append("Shaders: init")
+        lines.append(f"QOpenGLTexture: {'OK' if QOpenGLTexture is not None else 'missing'}")
+        lines.append(f"QOpenGLBuffer: {'OK' if QOpenGLBuffer is not None else 'missing'}")
+        lines.append(f"VAO: {'OK' if self._vao is not None else 'none'}")
+        lines.append(f"Mipmaps: {'on' if self._mipmaps_enabled else 'off'}")
+        lines.append(f"Render paused: {'on' if self._render_paused else 'off'}")
+        if self._use_moderngl:
+            lines.append("Renderer: ModernGL")
+            lines.append(f"ModernGL: {'OK' if self._mgl_ctx is not None else 'missing'}")
+            lines.append(f"Camera FOV: {self._mgl_fov:.1f}")
+            lines.append(f"Camera zoom: {self._mgl_camera_zoom:.2f}")
+            if self._mgl_mesh_path:
+                lines.append(f"Model: {Path(self._mgl_mesh_path).name}")
+            if self._mgl_texture_override and self._mgl_texture_path:
+                lines.append(f"Texture: {Path(self._mgl_texture_path).name}")
+            elif self._mgl_texture_paths:
+                names = [Path(p).name for p in self._mgl_texture_paths if p]
+                if len(names) > 3:
+                    shown = ", ".join(names[:3])
+                    lines.append(f"Textures: {shown} (+{len(names) - 3} more)")
+                else:
+                    lines.append("Textures: " + ", ".join(names))
+            else:
+                lines.append("Texture: none")
+            lines.append(f"Mesh indices: {self._mgl_mesh_vertex_count}")
+            if self._mgl_uv_vertex_count:
+                lines.append(f"UV verts: {self._mgl_uv_vertex_count}")
+            lines.append(f"Grid lines: {self._mgl_grid_vertex_count}")
+            if self._mgl_error:
+                lines.append(f"ModernGL error: {self._mgl_error}")
+        elif self._use_example_pipeline:
+            lines.append("Example pipeline: on")
+            shader_state = "error" if self._shader_error else ("OK" if self._example_program else "init")
+            lines.append(f"Example shaders: {shader_state}")
+            lines.append(f"Camera FOV: {self._example_fov:.1f}")
+            distance = (self._example_cam_pos - self._example_cam_look).length()
+            lines.append(f"Camera dist: {distance:.2f}")
+            lines.append(f"Clip range: {self._example_near:.2f}-{self._example_far:.1f}")
+            lines.append(f"Model extent: {self._example_model_extent:.2f}")
+            lines.append(f"Scaled extent: {self._example_scaled_extent():.2f}")
+            if self._example_model_path:
+                lines.append(f"Example model: {Path(self._example_model_path).name}")
+            if self._example_vao is not None:
+                lines.append("Example VAO: OK")
+            lines.append(f"Example verts: {self._example_draw_count}")
+            if self._shader_error:
+                lines.append(f"Example error: {self._shader_error}")
+        if not self._render_scene_plane:
+            lines.append("Scene tex: disabled")
+        elif self._scene_texture is not None:
+            lines.append("Scene tex: ready")
+        else:
+            lines.append("Scene tex: none")
+        if not self._render_scene_models:
+            lines.append("Meshes: disabled")
+        else:
+            lines.append(f"Meshes: {len(self._meshes)}")
+        lines.append(f"Model scale: {self._model_scale_multiplier:.2f}x")
+        if self._show_test_cube:
+            lines.append("Test cube: on (1x1)")
+        if self._debug_wire is not None and self._show_test_cube:
+            lines.append("Cube wire: on")
+        if self._use_moderngl:
+            lines.append("Projection: perspective")
+        elif self._use_example_pipeline:
+            lines.append("Projection: perspective")
+        else:
+            lines.append(f"Projection: {'ortho' if self._use_ortho else 'perspective'}")
+        mesh_paths = []
+        for meta in self._mesh_meta.values():
+            path_val = meta.get("path")
+            if path_val:
+                mesh_paths.append(str(path_val))
+        if mesh_paths:
+            names = [Path(p).name for p in mesh_paths if p]
+            if names:
+                shown = ", ".join(names[:3])
+                if len(names) > 3:
+                    shown += f" +{len(names) - 3}"
+                lines.append(f"Mesh files: {shown}")
+        if include_paths and mesh_paths:
+            lines.append("Mesh paths: " + "; ".join(mesh_paths))
+        lines.append(f"Scene content: {'blank' if self._scene_content_blank else 'ok'}")
+        if self._use_moderngl:
+            pass
+        elif self._use_example_pipeline:
+            if self._example_grid_count:
+                lines.append(f"Example grid lines: {self._example_grid_count}")
+        elif self._grid_count:
+            lines.append(f"Grid lines: {self._grid_count}")
+        rect = QtCore.QRectF(self._scene_src_rect)
+        if not rect.isNull():
+            lines.append(f"Scene rect: {int(rect.width())}x{int(rect.height())}")
+        return lines
 
     def _draw_uv_overlay(self, painter: QtGui.QPainter) -> None:
         panel_size = 360.0
