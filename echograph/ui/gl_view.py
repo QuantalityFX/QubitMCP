@@ -2759,48 +2759,15 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                                 else:
                                                     rd_np /= ln
                                                     rd = QtGui.QVector3D(float(rd_np[0]), float(rd_np[1]), float(rd_np[2]))
-
-                                                    # Intersect ray with plane through center_w, plane normal axis_world
-                                                    to_c = QtGui.QVector3D(
-                                                        center_w.x() - ro.x(),
-                                                        center_w.y() - ro.y(),
-                                                        center_w.z() - ro.z(),
+                                                    # Smoketest-style: closest point on ray to gizmo center, then project onto ring plane
+                                                    start_dir = self._axis_ring_dir_world(
+                                                        cam=ro,              # ro is fine as ray origin (it lies on the same ray)
+                                                        ray_d=rd,
+                                                        center_w=center_w,
+                                                        axis_world=axis_world,
                                                     )
 
-                                                    den = float(QtGui.QVector3D.dotProduct(axis_world, rd))
-                                                    if abs(den) < 1e-6:
-                                                        # Ray is nearly parallel to the rotation plane, so start_dir becomes unstable.
-                                                        e.accept()
-                                                        return
-
-                                                    t = float(QtGui.QVector3D.dotProduct(to_c, axis_world)) / den
-
-                                                    p = QtGui.QVector3D(
-                                                        ro.x() + rd.x() * t,
-                                                        ro.y() + rd.y() * t,
-                                                        ro.z() + rd.z() * t,
-                                                    )
-
-                                                    v = QtGui.QVector3D(
-                                                        p.x() - center_w.x(),
-                                                        p.y() - center_w.y(),
-                                                        p.z() - center_w.z(),
-                                                    )
-                                                    # Safety: keep it on the axis plane (should already be, but this avoids drift)
-                                                    v = v - axis_world * QtGui.QVector3D.dotProduct(v, axis_world)
-
-                                                    v_len = float(v.length())
-                                                    if v_len > 1e-6:
-                                                        start_dir = v / v_len
-                                                    else:
-                                                        up = QtGui.QVector3D(0.0, 1.0, 0.0)
-                                                        if abs(float(QtGui.QVector3D.dotProduct(up, axis_world))) > 0.9:
-                                                            up = QtGui.QVector3D(1.0, 0.0, 0.0)
-                                                        start_dir = QtGui.QVector3D.crossProduct(axis_world, up)
-                                                        if start_dir.length() > 1e-6:
-                                                            start_dir = start_dir / start_dir.length()
-                                                        else:
-                                                            start_dir = QtGui.QVector3D(1.0, 0.0, 0.0)
+                                                    self._rot_shared_axis_center_world = center_w
 
                                                     rot_shared.begin_axis_drag(
                                                         axis=str(hit),
@@ -2809,9 +2776,19 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                                         start_dir=start_dir,
                                                     )
 
+                                                    rot_shared.drag_axis.last_dir = QtGui.QVector3D(start_dir)
+
+                                                    # keep continuity so cur_dir can't flip 180 degrees mid-drag
+                                                    try:
+                                                        rot_shared.drag_axis.last_dir = QtGui.QVector3D(start_dir)
+                                                    except Exception:
+                                                        rot_shared.drag_axis.last_dir = start_dir
+
+
                                                     e.accept()
                                                     return
 
+                                                    
 
                                     if hit == "view":
                                         try:
@@ -3189,44 +3166,30 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     if axis_world.length() > 1e-6:
                         axis_world = axis_world / axis_world.length()
 
-                    # ring-plane intersection (matches axis begin)
-                    den = float(QtGui.QVector3D.dotProduct(axis_world, ray_d))
-                    if abs(den) < 1e-6:
-                        return
-
-                    to_c = QtGui.QVector3D(
-                        center_w.x() - cam.x(),
-                        center_w.y() - cam.y(),
-                        center_w.z() - cam.z(),
-                    )
-                    t = float(QtGui.QVector3D.dotProduct(to_c, axis_world)) / den
-
-                    p = QtGui.QVector3D(
-                        cam.x() + ray_d.x() * t,
-                        cam.y() + ray_d.y() * t,
-                        cam.z() + ray_d.z() * t,
+                    # Smoketest-style: closest point on ray to gizmo center, then project onto ring plane
+                    cur_dir = self._axis_ring_dir_world(
+                        cam=cam,
+                        ray_d=ray_d,
+                        center_w=center_w,
+                        axis_world=axis_world,
                     )
 
-                    v = QtGui.QVector3D(
-                        p.x() - center_w.x(),
-                        p.y() - center_w.y(),
-                        p.z() - center_w.z(),
-                    )
-                    # numerical safety: keep v in the ring plane
-                    v = v - axis_world * QtGui.QVector3D.dotProduct(v, axis_world)
+                    # continuity: keep cur_dir on the same hemisphere as last_dir (prevents 180 flips / wobble)
+                    last_dir = getattr(rot_shared.drag_axis, "last_dir", None)
+                    if isinstance(last_dir, QtGui.QVector3D):
+                        if float(QtGui.QVector3D.dotProduct(last_dir, cur_dir)) < 0.0:
+                            cur_dir = QtGui.QVector3D(-cur_dir.x(), -cur_dir.y(), -cur_dir.z())
 
-                    v_len = float(v.length())
-                    if v_len <= 1e-6:
-                        return
+                    # store for next move
+                    rot_shared.drag_axis.last_dir = QtGui.QVector3D(cur_dir)
 
-                    cur_dir = v / v_len
-
+                    den_dbg = float(QtGui.QVector3D.dotProduct(axis_world, ray_d))
 
                     _rot_dbg(
                         "[ROT_SHARED_AXIS_MOVE]"
                         f" axis={getattr(rot_shared.drag_axis,'axis',None)}"
                         f" owner={owner}"
-                        f" den={den:.6f}"
+                        f" den={den_dbg:.6f}"
                         f" cur_dir=({cur_dir.x():.3f},{cur_dir.y():.3f},{cur_dir.z():.3f})"
                     )
 
@@ -3240,6 +3203,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     xq = float(qnew.x())
                     yq = float(qnew.y())
                     zq = float(qnew.z())
+
+
                     n = math.sqrt(w * w + xq * xq + yq * yq + zq * zq)
                     if n > 1e-8:
                         w /= n
@@ -3632,12 +3597,20 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
     def mouseReleaseEvent(self, e):
         rot_shared = getattr(self, "_rot_shared", None)
-        if e.button() == QtCore.Qt.LeftButton and rot_shared is not None and rot_shared.drag_axis.active:
-            rot_shared.end_axis_drag()
-            self._rot_shared_axis_center_world = None
-            self.update()
-            e.accept()
-            return
+
+        if e.button() == QtCore.Qt.LeftButton and rot_shared is not None:
+            if rot_shared.drag_axis.active:
+                rot_shared.end_axis_drag()
+                self._rot_shared_axis_center_world = None
+                self.update()
+                e.accept()
+                return
+
+            if hasattr(rot_shared, "drag_view") and rot_shared.drag_view:
+                rot_shared.end_view_ring_drag()
+                self.update()
+                e.accept()
+                return
 
         if self._use_moderngl:
             # --- 1) If we were dragging the gizmo, ALWAYS end that first ---
