@@ -19,8 +19,6 @@ from .gl_mesh import _GLMesh
 from .gl_mgl_renderer import MGLRendererMixin
 from .gl_loaders import ensure_assimp_dll
 from .gl_loaders import load_model
-
-
 from echograph.ui.gl_view_paint import paint_gl as _paint_gl
 from echograph.ui.gl_view_paint import paint_example as _paint_example
 from echograph.ui.gl_view_example import upload_example_grid as _ex_upload_example_grid
@@ -1232,7 +1230,6 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
             self.update()
 
-
     def _default_models_dir(self) -> Optional[Path]:
         try:
             root = Path(__file__).resolve().parents[2]
@@ -2228,7 +2225,6 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         except Exception:
             pass
 
-
     def _rot_shared_q_from_euler_deg(self, rot_deg) -> QtGui.QQuaternion:
         # IMPORTANT:
         # gl_view builds its rotation matrices as R = Rz(-rz) @ Ry(-ry) @ Rx(-rx)
@@ -2816,7 +2812,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                     if hit == "view":
                                         self._rot_shared_owner = owner
 
-                                        # Prefer persisted quaternion for this owner
+                                        # Persisted quaternion for this owner (same idea as axis rings)
                                         q0 = None
                                         try:
                                             q0 = self._rot_owner_quat.get(owner)
@@ -2841,16 +2837,22 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                             except Exception:
                                                 pass
 
-                                        # Camera->gizmo direction in world (this is the "axis" for the view ring plane)
+                                        # Store view ring center in DEVICE pixels (project() returns device px)
+                                        try:
+                                            self._rot_shared_view_center_px = QtCore.QPointF(float(p0[0]), float(p0[1]))
+                                        except Exception:
+                                            self._rot_shared_view_center_px = None
+
+                                        # Compute camera forward direction in world (same logic you had before)
                                         forward_world = QtGui.QVector3D(0.0, 0.0, -1.0)
                                         try:
                                             VM = (np.asarray(V, dtype=np.float32) @ np.asarray(M, dtype=np.float32)).astype(np.float32)
                                             invVM = np.linalg.inv(VM)
                                             cam4 = invVM @ np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
                                             cw = float(cam4[3]) if abs(float(cam4[3])) > 1e-8 else 1.0
-                                            cam_np = cam4[:3] / cw
+                                            cam = cam4[:3] / cw
 
-                                            f = g - cam_np
+                                            f = g - cam
                                             ln = float(np.linalg.norm(f))
                                             if ln > 1e-6:
                                                 f = f / ln
@@ -2860,61 +2862,14 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
                                         self._rot_shared_view_forward_world = forward_world
 
-                                        # Build mouse ray, compute smoketest-style start_dir on the view-ring plane
-                                        center_w = QtGui.QVector3D(float(g[0]), float(g[1]), float(g[2]))
-                                        self._rot_shared_axis_center_world = center_w
-
                                         try:
-                                            invPV = np.linalg.inv(PV)
-                                            mx = float(e.x()) * dpr
-                                            my = float(e.y()) * dpr
-                                            x_ndc = (mx / vw) * 2.0 - 1.0
-                                            y_ndc = 1.0 - (my / vh) * 2.0
-
-                                            pN4 = invPV @ np.array([x_ndc, y_ndc, -1.0, 1.0], dtype=np.float32)
-                                            pF4 = invPV @ np.array([x_ndc, y_ndc,  1.0, 1.0], dtype=np.float32)
-
-                                            if abs(float(pN4[3])) < 1e-8 or abs(float(pF4[3])) < 1e-8:
-                                                self._mgl_log("[ROT_SHARED_VIEW_BEGIN_ERR] bad clip w")
-                                            else:
-                                                pN = pN4[:3] / pN4[3]
-                                                pF = pF4[:3] / pF4[3]
-
-                                                ro = QtGui.QVector3D(float(pN[0]), float(pN[1]), float(pN[2]))
-                                                rd_np = (pF - pN).astype(np.float32)
-                                                ln = float(np.linalg.norm(rd_np))
-                                                if ln < 1e-8:
-                                                    self._mgl_log("[ROT_SHARED_VIEW_BEGIN_ERR] ray too small")
-                                                else:
-                                                    rd_np /= ln
-                                                    rd = QtGui.QVector3D(float(rd_np[0]), float(rd_np[1]), float(rd_np[2]))
-
-                                                    start_dir = self._axis_ring_dir_world(
-                                                        cam=ro,
-                                                        ray_d=rd,
-                                                        center_w=center_w,
-                                                        axis_world=forward_world,
-                                                    )
-
-                                                    try:
-                                                        rot_shared.begin_view_ring_drag(
-                                                            start_rot=q0,
-                                                            forward_world=forward_world,
-                                                            start_dir=start_dir,
-                                                        )
-                                                    except Exception:
-                                                        pass
-
-                                                    # keep continuity so view cur_dir can't flip 180 degrees mid-drag
-                                                    try:
-                                                        rot_shared.drag_view_last_dir = QtGui.QVector3D(start_dir)
-                                                    except Exception:
-                                                        rot_shared.drag_view_last_dir = start_dir
-                                        except Exception as ex:
-                                            self._mgl_log("[ROT_SHARED_VIEW_BEGIN_ERR] " + repr(ex))
+                                            rot_shared.begin_view_ring_drag()  # smoketest-style: no ray math here
+                                        except Exception:
+                                            pass
 
                                         e.accept()
                                         return
+
 
 
                             # mouse in device pixels (must match project() output space)
@@ -3157,6 +3112,77 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             ):
                 self.update()
 
+            # --- ROT_SHARED view-ring drag (smoketest style) ---
+            rot_shared = getattr(self, "_rot_shared", None)
+            if (
+                rot_shared is not None
+                and bool(getattr(rot_shared, "drag_view", False))
+                and (e.buttons() & QtCore.Qt.LeftButton)
+            ):
+                try:
+                    owner = getattr(self, "_rot_shared_owner", None)
+                    if owner is None:
+                        return
+
+                    center_px = getattr(self, "_rot_shared_view_center_px", None)
+                    if not isinstance(center_px, QtCore.QPointF):
+                        return
+
+                    forward_world = getattr(self, "_rot_shared_view_forward_world", None)
+                    if not isinstance(forward_world, QtGui.QVector3D):
+                        return
+
+                    # mouse in device pixels to match center_px
+                    mp_dev = QtCore.QPointF(float(mp.x()) * dpr, float(mp.y()) * dpr)
+
+                    # current persisted quaternion for this owner
+                    q0 = None
+                    try:
+                        q0 = self._rot_owner_quat.get(owner)
+                    except Exception:
+                        q0 = None
+
+                    if q0 is None:
+                        rot_deg, is_splat = self._get_owner_rot_deg(owner)
+                        try:
+                            rx = float(rot_deg[0])
+                            ry = float(rot_deg[1])
+                            rz = float(rot_deg[2])
+                        except Exception:
+                            rx, ry, rz = 0.0, 0.0, 0.0
+
+                        q0 = self._rot_shared_q_from_euler_deg((rx, ry, rz))
+                        try:
+                            self._rot_owner_quat[owner] = q0
+                        except Exception:
+                            pass
+
+                    qnew = rot_shared.update_view_ring_drag(
+                        mouse_px=mp_dev,
+                        center_px=center_px,
+                        forward_world=forward_world,
+                        obj_rot=q0,
+                    )
+
+                    try:
+                        if hasattr(qnew, "normalized"):
+                            qnew = qnew.normalized()
+                    except Exception:
+                        pass
+
+                    try:
+                        self._rot_owner_quat[owner] = qnew
+                    except Exception:
+                        pass
+
+                    self.update()
+                    e.accept()
+                    return
+
+                except Exception as ex:
+                    self._mgl_log("[ROT_SHARED_VIEW_MOVE_ERR] " + repr(ex))
+
+
             # --- shared axis-ring drag update (constrained, uses RotateGizmoShared.drag_axis) ---
             rot_shared = getattr(self, "_rot_shared", None)
             if (
@@ -3321,6 +3347,88 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
                 except Exception as ex:
                     _rot_dbg("[ROT_SHARED_AXIS_MOVE_ERR] " + repr(ex))
+
+            # --- ROT_SHARED: view-ring drag (camera-facing ring) ---
+            if rot_shared is not None and getattr(rot_shared, "drag_view", False):
+                try:
+                    owner = getattr(self, "_rot_shared_owner", None)
+                    if owner is None:
+                        _rot_dbg("[ROT_SHARED_VIEW_MOVE_ERR] owner None")
+                        return
+
+                    forward_world = getattr(self, "_rot_shared_view_forward_world", None)
+                    center_px = getattr(self, "_rot_shared_view_center_px", None)
+
+                    if not isinstance(forward_world, QtGui.QVector3D) or not isinstance(center_px, QtCore.QPointF):
+                        _rot_dbg("[ROT_SHARED_VIEW_MOVE_ERR] missing forward_world/center_px")
+                        return
+
+                    # current mouse in logical px
+                    mouse_px = getattr(self, "_rot_shared_mouse_px", None)
+                    if mouse_px is None:
+                        mp = e.position() if hasattr(e, "position") else QtCore.QPointF(e.x(), e.y())
+                        mouse_px = QtCore.QPointF(float(mp.x()), float(mp.y()))
+
+                    # get current quaternion for this owner (persisted), or build from owner euler once
+                    qcur = None
+                    try:
+                        qcur = self._rot_owner_quat.get(owner)
+                    except Exception:
+                        qcur = None
+
+                    if qcur is None:
+                        rot_deg, is_splat = self._get_owner_rot_deg(owner)
+                        self._rot_shared_is_splat = bool(is_splat)
+                        try:
+                            qcur = self._rot_shared_q_from_euler_deg(
+                                (float(rot_deg[0]), float(rot_deg[1]), float(rot_deg[2]))
+                            )
+                        except Exception:
+                            qcur = QtGui.QQuaternion()
+
+                        try:
+                            self._rot_owner_quat[owner] = qcur
+                        except Exception:
+                            pass
+
+                    qnew = rot_shared.update_view_ring_drag(
+                        mouse_px=mouse_px,
+                        center_px=center_px,
+                        forward_world=forward_world,
+                        obj_rot=qcur,
+                    )
+                    if qnew is None:
+                        _rot_dbg("[ROT_SHARED_VIEW_MOVE_ERR] qnew None")
+                        return
+
+                    try:
+                        if hasattr(qnew, "normalized"):
+                            qnew = qnew.normalized()
+                    except Exception:
+                        pass
+
+                    # persist quaternion
+                    try:
+                        self._rot_owner_quat[owner] = qnew
+                    except Exception:
+                        pass
+
+                    # apply to owner using the same path as axis drag (quat -> euler -> owner)
+                    rx, ry, rz = self._rot_shared_euler_deg_from_q(qnew)
+                    self._set_owner_rot_deg(
+                        owner,
+                        (rx, ry, rz),
+                        bool(getattr(self, "_rot_shared_is_splat", False)),
+                    )
+
+                    self.update()
+                    e.accept()
+                    return
+
+                except Exception as ex:
+                    _rot_dbg("[ROT_SHARED_VIEW_MOVE_ERR] " + repr(ex))
+                    return
+
 
             if getattr(self, "_xform_dragging", False) and (e.buttons() & QtCore.Qt.LeftButton):
                 try:
@@ -3670,19 +3778,34 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
     def mouseReleaseEvent(self, e):
         rot_shared = getattr(self, "_rot_shared", None)
 
-        if e.button() == QtCore.Qt.LeftButton and rot_shared is not None:
-            if rot_shared.drag_axis.active:
-                rot_shared.end_axis_drag()
-                self._rot_shared_axis_center_world = None
-                self.update()
-                e.accept()
-                return
-
-            if hasattr(rot_shared, "drag_view") and rot_shared.drag_view:
+        # --- ROT_SHARED view-ring drag end ---
+        if (
+            e.button() == QtCore.Qt.LeftButton
+            and rot_shared is not None
+            and bool(getattr(rot_shared, "drag_view", False))
+        ):
+            try:
                 rot_shared.end_view_ring_drag()
-                self.update()
-                e.accept()
-                return
+            except Exception:
+                pass
+            self.update()
+            e.accept()
+            return
+
+        # --- ROT_SHARED axis-ring drag end ---
+        if (
+            e.button() == QtCore.Qt.LeftButton
+            and rot_shared is not None
+            and bool(getattr(getattr(rot_shared, "drag_axis", None), "active", False))
+        ):
+            try:
+                rot_shared.end_axis_drag()
+            except Exception:
+                pass
+            self._rot_shared_axis_center_world = None
+            self.update()
+            e.accept()
+            return
 
         if self._use_moderngl:
             # --- 1) If we were dragging the gizmo, ALWAYS end that first ---
