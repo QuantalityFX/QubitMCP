@@ -3237,12 +3237,10 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     if not isinstance(forward_world, QtGui.QVector3D):
                         return
 
-                    # Use device pixels so it matches center_pf (which you stored from p0)
                     dpr = float(self.devicePixelRatioF()) if hasattr(self, "devicePixelRatioF") else 1.0
                     mp = e.position() if hasattr(e, "position") else QtCore.QPointF(e.x(), e.y())
                     mouse_pf = QtCore.QPointF(float(mp.x()) * dpr, float(mp.y()) * dpr)
 
-                    # Current rotation for this owner (persisted quaternion)
                     qcur = None
                     try:
                         qcur = self._rot_owner_quat.get(owner)
@@ -3264,16 +3262,17 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     if qnew is None:
                         return
 
-                    if hasattr(qnew, "normalized"):
-                        qnew = qnew.normalized()
+                    try:
+                        if hasattr(qnew, "normalized"):
+                            qnew = qnew.normalized()
+                    except Exception:
+                        pass
 
-                    # persist quaternion
                     try:
                         self._rot_owner_quat[owner] = qnew
                     except Exception:
                         pass
 
-                    # APPLY to owner so the object visibly rotates in gl_view
                     rx, ry, rz = self._rot_shared_euler_deg_from_q(qnew)
                     self._set_owner_rot_deg(
                         owner,
@@ -3286,8 +3285,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     return
 
                 except Exception as ex:
-                    self._mgl_log("[ROT_SHARED_VIEW_MOVE_ERR] " + repr(ex))
-
+                    _rot_dbg("[ROT_SHARED_VIEW_MOVE_ERR] " + repr(ex))
 
             # --- ROT_SHARED center-disc arcball drag update (smoketest style) ---
             if bool(getattr(self, "_rot_shared_arc_active", False)) and (e.buttons() & QtCore.Qt.LeftButton):
@@ -3311,7 +3309,11 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     right_world = getattr(self, "_rot_shared_arc_right_world", None)
                     up_world = getattr(self, "_rot_shared_arc_up_world", None)
                     forward_world = getattr(self, "_rot_shared_arc_forward_world", None)
-                    if not (isinstance(right_world, QtGui.QVector3D) and isinstance(up_world, QtGui.QVector3D) and isinstance(forward_world, QtGui.QVector3D)):
+                    if not (
+                        isinstance(right_world, QtGui.QVector3D)
+                        and isinstance(up_world, QtGui.QVector3D)
+                        and isinstance(forward_world, QtGui.QVector3D)
+                    ):
                         return
 
                     radius_px = float(getattr(self, "_rot_shared_arc_radius_px", 1.0))
@@ -3324,16 +3326,33 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                         forward_world=forward_world,
                     )
 
-                    # smoketest: delta between vectors, then apply to start rotation
                     q_delta = quat_from_two_vectors(start_vec, cur_vec)
+
                     q0 = getattr(self, "_rot_shared_arc_start_q", None)
                     if q0 is None:
                         return
 
-                    qnew = (q_delta * q0).normalized()
+                    qnew = (q_delta * q0)
+                    try:
+                        if hasattr(qnew, "normalized"):
+                            qnew = qnew.normalized()
+                    except Exception:
+                        pass
 
+                    # persist quaternion cache (so rings + subsequent drags stay consistent)
                     try:
                         self._rot_owner_quat[owner] = qnew
+                    except Exception:
+                        pass
+
+                    # APPLY to owner so the object visibly rotates during arcball drag
+                    try:
+                        rx, ry, rz = self._rot_shared_euler_deg_from_q(qnew)
+                        self._set_owner_rot_deg(
+                            owner,
+                            (rx, ry, rz),
+                            bool(getattr(self, "_rot_shared_is_splat", False)),
+                        )
                     except Exception:
                         pass
 
@@ -3342,10 +3361,11 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     return
 
                 except Exception as ex:
-                    _rot_dbg("[ROT_SHARED_ARC_MOVE_ERR] " + repr(ex))
+                    try:
+                        self._mgl_log("[ROT_SHARED_ARC_MOVE_ERR] " + repr(ex))
+                    except Exception:
+                        pass
 
-
-            # --- shared axis-ring drag update (constrained, uses RotateGizmoShared.drag_axis) ---
             rot_shared = getattr(self, "_rot_shared", None)
             if (
                 rot_shared is not None
