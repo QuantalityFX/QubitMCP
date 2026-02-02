@@ -4011,8 +4011,6 @@ class MGLRendererMixin:
             or getattr(self, "_mgl_scene_bounds_by_owner", None)
             or {}
         )
-        if not bounds:
-            return None
 
         P = getattr(self, "_mgl_pick_proj", None)
         V = getattr(self, "_mgl_pick_view", None)
@@ -4181,7 +4179,7 @@ class MGLRendererMixin:
         best_mesh_owner = None
         best_mesh_t = 1e30
 
-        for owner, (bmin, bmax) in bounds.items():
+        for owner, (bmin, bmax) in (bounds or {}).items():
             if owner in splats_map and (mesh_owners is None or owner not in mesh_owners):
                 continue
             try:
@@ -4297,8 +4295,6 @@ def pick_hit_at(self, px: int, py: int, viewport_w: int, viewport_h: int):
         or getattr(self, "_mgl_scene_bounds_by_owner", None)
         or {}
     )
-    if not bounds:
-        return None, None
 
     P = getattr(self, "_mgl_pick_proj", None)
     V = getattr(self, "_mgl_pick_view", None)
@@ -4481,7 +4477,7 @@ def pick_hit_at(self, px: int, py: int, viewport_w: int, viewport_h: int):
     best_mesh_t = 1e30
     best_mesh_hit = None
 
-    for owner, (bmin, bmax) in bounds.items():
+    for owner, (bmin, bmax) in (bounds or {}).items():
         if owner in splats_map and (mesh_owners is None or owner not in mesh_owners):
             continue
         try:
