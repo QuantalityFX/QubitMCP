@@ -466,7 +466,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._mgl_grid_alpha = 0.90
         self._mgl_grid_size = 20.0
         self._mgl_grid_cells = 50
-        self._mgl_grid_extend = 6.0
+        self._mgl_grid_extend = 40.0
         self._mgl_grid_major_step = 10.0
         self._mgl_grid_major_boost = 1.15
         self._mgl_grid_fade_start = 0.55
@@ -1216,21 +1216,27 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             return
         yaw = float(getattr(self, "_mgl_orbit_yaw", 0.0))
         pitch = float(getattr(self, "_mgl_orbit_pitch", 0.0))
-        pitch = max(-1.45, min(1.45, pitch))
-        self._mgl_orbit_pitch = pitch
         cy = math.cos(yaw)
         sy = math.sin(yaw)
         cp = math.cos(pitch)
         sp = math.sin(pitch)
         forward = np.array([sy * cp, sp, cy * cp], dtype=np.float32)
-        up_world = np.array([0.0, 1.0, 0.0], dtype=np.float32)
-        right = np.cross(up_world, forward)
-        n = float(np.linalg.norm(right))
-        if n < 1e-6:
+        right = np.array([cy, 0.0, -sy], dtype=np.float32)
+        rn = float(np.linalg.norm(right))
+        if rn < 1e-6:
             right = np.array([1.0, 0.0, 0.0], dtype=np.float32)
-            n = 1.0
-        right /= n
+        else:
+            right /= rn
         up = np.cross(forward, right)
+        un = float(np.linalg.norm(up))
+        if un < 1e-6:
+            up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+        else:
+            up /= un
+        right = np.cross(up, forward)
+        rn = float(np.linalg.norm(right))
+        if rn > 1e-6:
+            right /= rn
         rot = np.stack([right, up, forward], axis=1)
         try:
             arc.Transform = arc._set_rotation(arc.Transform, rot)
@@ -5031,7 +5037,10 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     self._mgl_orbit_last_pos = e.pos()
                     self._mgl_orbit_yaw -= float(delta.x()) * self._orbit_sensitivity
                     self._mgl_orbit_pitch += float(delta.y()) * self._orbit_sensitivity
-                    self._mgl_orbit_pitch = max(-1.45, min(1.45, self._mgl_orbit_pitch))
+                    if self._mgl_orbit_pitch > math.pi:
+                        self._mgl_orbit_pitch -= (2.0 * math.pi)
+                    elif self._mgl_orbit_pitch < -math.pi:
+                        self._mgl_orbit_pitch += (2.0 * math.pi)
                     self._apply_locked_orbit()
                 else:
                     self._mgl_arcball.onDrag(e.x(), e.y())

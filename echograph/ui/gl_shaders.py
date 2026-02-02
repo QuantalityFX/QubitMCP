@@ -52,11 +52,13 @@ void main() {
     "grid_vertex": """
 #version 330
 uniform mat4 Mvp;
+uniform vec2 GridOffset;
 in vec3 in_position;
 out vec3 v_pos;
 void main() {
-    v_pos = in_position;
-    gl_Position = Mvp * vec4(in_position, 1.0);
+    vec3 pos = in_position + vec3(GridOffset.x, 0.0, GridOffset.y);
+    v_pos = pos;
+    gl_Position = Mvp * vec4(pos, 1.0);
 }
 """,
 
@@ -68,6 +70,8 @@ uniform float MajorStep;
 uniform float MajorBoost;
 uniform float FadeStart;
 uniform float FadeEnd;
+uniform vec2 FadeOrigin;
+uniform float LineSkip;
 in vec3 v_pos;
 out vec4 f_color;
 void main() {
@@ -84,11 +88,18 @@ void main() {
     float is_major = (modv < 0.5) ? 1.0 : 0.0;
     vec3 major = clamp(base * MajorBoost, 0.0, 1.0);
     vec3 rgb = mix(base, major, is_major);
-    float dist = length(v_pos.xz);
+    vec2 rel = v_pos.xz - FadeOrigin;
+    float dist = length(rel);
     float fade = 1.0;
     if (FadeEnd > FadeStart) {
         fade = 1.0 - smoothstep(FadeStart, FadeEnd, dist);
     }
+    float skip = max(LineSkip, 1.0);
+    float idx = round(line_idx);
+    float keep = 1.0 - step(0.5, mod(idx, skip));
+    rgb *= keep;
+    alpha *= keep;
+    rgb *= fade;
     f_color = vec4(rgb, alpha * fade);
 }
 """,
