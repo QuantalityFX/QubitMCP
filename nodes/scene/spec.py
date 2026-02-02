@@ -604,13 +604,22 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                         renderer = getattr(glv, "_mgl_renderer", None) or glv
 
                         xf = {}
-                        get_xf = getattr(renderer, "_mgl_get_scene_asset_xform", None)
+                        is_splat = False
                         try:
-                            splat_map = getattr(renderer, "_mgl_scene_splats", None)
+                            splat_map = getattr(renderer, "_mgl_scene_splats_world", None)
+                            if not isinstance(splat_map, dict) or not splat_map:
+                                splat_map = getattr(renderer, "_mgl_scene_splats", None)
                             if isinstance(splat_map, dict) and owner in splat_map:
-                                get_xf = getattr(renderer, "_mgl_get_scene_splat_xform", get_xf)
+                                is_splat = True
+                        except Exception:
+                            is_splat = False
+
+                        try:
+                            glv._xform_gizmo_owner_kind = "splat" if is_splat else "mesh"
                         except Exception:
                             pass
+
+                        get_xf = getattr(renderer, "_mgl_get_scene_splat_xform", None) if is_splat else getattr(renderer, "_mgl_get_scene_asset_xform", None)
                         if callable(get_xf):
                             xf = get_xf(owner) or {}
 
