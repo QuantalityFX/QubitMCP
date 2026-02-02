@@ -180,6 +180,13 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._xform_gizmo_pos_locked = False
         self._xform_gizmo_idle_visible = True
         self._xform_gizmo_mode = "translate"
+        self._xform_mouse_px = None
+        self._xform_hover_axis = None
+        self._xform_hover_center = False
+        self._xform_hover_center_px = None
+        self._xform_hover_axis_proj = None
+        self._xform_drag_plane_normal = None
+        self._xform_drag_plane_start = None
         self._xform_use_local = True
         self._mgl_xform_space = "local"
 
@@ -3592,6 +3599,88 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                     p0 = None
 
                             if p0 is not None and mode == "translate":
+                                dx0 = float(px_dev) - float(p0[0])
+                                dy0 = float(py_dev) - float(p0[1])
+                                try:
+                                    center_r = 10.0 * float(dpr)
+                                except Exception:
+                                    center_r = 10.0
+                                if (dx0 * dx0 + dy0 * dy0) <= (center_r * center_r):
+                                    # free-move on view plane (camera-facing)
+                                    is_splat = False
+                                    try:
+                                        splat_map = getattr(renderer, "_mgl_scene_splats_world", None)
+                                        if not isinstance(splat_map, dict) or not splat_map:
+                                            splat_map = getattr(renderer, "_mgl_scene_splats", None)
+                                        if isinstance(splat_map, dict) and owner in splat_map:
+                                            is_splat = True
+                                    except Exception:
+                                        is_splat = False
+
+                                    self._xform_dragging = True
+                                    self._xform_drag_mode = "translate"
+                                    self._xform_drag_axis = "view"
+                                    self._xform_drag_owner = owner
+                                    self._xform_drag_kind = "splat" if is_splat else "mesh"
+                                    self._xform_drag_start_pos = g.copy()
+                                    self._xform_gizmo_pos_locked = True
+                                    self._xform_drag_s0 = None
+                                    self._xform_drag_axis_world = None
+                                    self._xform_drag_plane_normal = None
+                                    self._xform_drag_plane_start = None
+
+                                    try:
+                                        invVM = np.linalg.inv(
+                                            (np.asarray(V, dtype=np.float32) @ np.asarray(M, dtype=np.float32)).astype(
+                                                np.float32
+                                            )
+                                        )
+                                        n = -invVM[:3, 2]
+                                        nlen = float(np.linalg.norm(n))
+                                        if nlen > 1e-6:
+                                            n = n / nlen
+                                        else:
+                                            n = None
+                                    except Exception:
+                                        n = None
+
+                                    try:
+                                        PV = (P @ V @ M).astype("f4")
+                                        invPV = np.linalg.inv(PV)
+                                        x = (2.0 * (px_dev / max(1.0, vw))) - 1.0
+                                        y = 1.0 - (2.0 * (py_dev / max(1.0, vh)))
+                                        near = np.array([x, y, -1.0, 1.0], dtype="f4")
+                                        far = np.array([x, y, 1.0, 1.0], dtype="f4")
+                                        pN = invPV @ near
+                                        pF = invPV @ far
+                                        pN = pN[:3] / pN[3]
+                                        pF = pF[:3] / pF[3]
+                                        ray_o = pN.astype("f4")
+                                        ray_d = (pF - pN).astype("f4")
+                                        rn = float(np.linalg.norm(ray_d))
+                                        if rn > 1e-8:
+                                            ray_d /= rn
+                                        else:
+                                            ray_d = None
+                                    except Exception:
+                                        ray_o = None
+                                        ray_d = None
+
+                                    if n is not None and ray_o is not None and ray_d is not None:
+                                        denom = float(np.dot(ray_d, n))
+                                        if abs(denom) > 1e-6:
+                                            t = float(np.dot((g - ray_o), n)) / denom
+                                            hit = ray_o + (t * ray_d)
+                                            self._xform_drag_plane_normal = n
+                                            self._xform_drag_plane_start = hit
+
+                                    # Important: prevent old click-pick/orbit press state from interfering
+                                    self._mgl_pick_press_pos = None
+
+                                    self.setCursor(QtCore.Qt.SizeAllCursor)
+                                    e.accept()
+                                    return
+
                                 best_axis = None
                                 best_d = 1e30
                                 for name, p1 in axis_proj.items():
@@ -3771,6 +3860,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             try:
                 mp = e.position() if hasattr(e, "position") else QtCore.QPointF(e.x(), e.y())
                 self._rot_shared_mouse_px = QtCore.QPointF(mp)
+                self._xform_mouse_px = QtCore.QPointF(mp)
             except Exception:
                 mp = None
 
@@ -3798,6 +3888,11 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 getattr(self, "_xform_gizmo_mode", "") == "rotate"
                 and getattr(self, "_rot_shared", None) is not None
                 and not getattr(self, "_rot_shared_dragging", False)
+            ):
+                self.update()
+            if (
+                getattr(self, "_xform_gizmo_mode", "") in ("translate", "scale")
+                and not getattr(self, "_xform_dragging", False)
             ):
                 self.update()
 
@@ -4354,75 +4449,108 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                         return
                     ray_d /= n
 
-                    axes = {
-                        "x": np.array([1.0, 0.0, 0.0], dtype="f4"),
-                        "y": np.array([0.0, 1.0, 0.0], dtype="f4"),
-                        "z": np.array([0.0, 0.0, 1.0], dtype="f4"),
-                    }
-                    a = getattr(self, "_xform_drag_axis_world", None)
-                    if a is None:
-                        a = axes.get(axis)
-                        if a is None:
-                            return
-                        if bool(getattr(self, "_xform_use_local", False)):
+                    new_pos = None
+                    if axis == "view":
+                        nrm = getattr(self, "_xform_drag_plane_normal", None)
+                        if nrm is None:
                             try:
-                                rot_deg, _ = self._get_owner_rot_deg(owner)
-                                rx, ry, rz = float(rot_deg[0]), float(rot_deg[1]), float(rot_deg[2])
-                                cx, sx = math.cos(math.radians(rx)), math.sin(math.radians(rx))
-                                cy, sy = math.cos(math.radians(ry)), math.sin(math.radians(ry))
-                                cz, sz = math.cos(math.radians(rz)), math.sin(math.radians(rz))
-
-                                Rx = np.array(
-                                    [[1.0, 0.0, 0.0, 0.0],
-                                     [0.0,  cx,  sx, 0.0],
-                                     [0.0, -sx,  cx, 0.0],
-                                     [0.0, 0.0, 0.0, 1.0]],
-                                    dtype=np.float32,
+                                invVM = np.linalg.inv(
+                                    (np.asarray(V, dtype=np.float32) @ np.asarray(M, dtype=np.float32)).astype(
+                                        np.float32
+                                    )
                                 )
-                                Ry = np.array(
-                                    [[ cy, 0.0, -sy, 0.0],
-                                     [0.0, 1.0, 0.0, 0.0],
-                                     [ sy, 0.0,  cy, 0.0],
-                                     [0.0, 0.0, 0.0, 1.0]],
-                                    dtype=np.float32,
-                                )
-                                Rz = np.array(
-                                    [[ cz,  sz, 0.0, 0.0],
-                                     [-sz,  cz, 0.0, 0.0],
-                                     [0.0, 0.0, 1.0, 0.0],
-                                     [0.0, 0.0, 0.0, 1.0]],
-                                    dtype=np.float32,
-                                )
-                                R = (Rz @ Ry @ Rx).astype(np.float32)
-                                a = (R[:3, :3] @ a).astype(np.float32)
+                                nrm = -invVM[:3, 2]
+                                nlen = float(np.linalg.norm(nrm))
+                                if nlen > 1e-6:
+                                    nrm = nrm / nlen
+                                else:
+                                    nrm = None
                             except Exception:
-                                a = axes.get(axis)
-
-                    if isinstance(a, QtGui.QVector3D):
-                        a = np.array([a.x(), a.y(), a.z()], dtype="f4")
-
-                    a = np.asarray(a, dtype="f4")
-                    al = float(np.linalg.norm(a))
-                    if al > 1e-8:
-                        a = a / al
-
-                    # Compute parameter "s" along axis line closest to the mouse ray
-                    w0 = ray_o - g0
-                    ad = float(np.dot(a, ray_d))
-                    denom = 1.0 - ad * ad
-                    if abs(denom) < 1e-6:
-                        s = float(np.dot(a, w0))
+                                nrm = None
+                        start_hit = getattr(self, "_xform_drag_plane_start", None)
+                        if nrm is not None:
+                            denom = float(np.dot(ray_d, nrm))
+                            if abs(denom) > 1e-6:
+                                t = float(np.dot((g0 - ray_o), nrm)) / denom
+                                hit = ray_o + (t * ray_d)
+                                if start_hit is None:
+                                    self._xform_drag_plane_start = hit
+                                    start_hit = hit
+                                delta = hit - start_hit
+                                new_pos = g0 + delta
                     else:
-                        s = float((ad * float(np.dot(ray_d, w0)) - float(np.dot(a, w0))) / denom)
+                        axes = {
+                            "x": np.array([1.0, 0.0, 0.0], dtype="f4"),
+                            "y": np.array([0.0, 1.0, 0.0], dtype="f4"),
+                            "z": np.array([0.0, 0.0, 1.0], dtype="f4"),
+                        }
+                        a = getattr(self, "_xform_drag_axis_world", None)
+                        if a is None:
+                            a = axes.get(axis)
+                            if a is None:
+                                return
+                            if bool(getattr(self, "_xform_use_local", False)):
+                                try:
+                                    rot_deg, _ = self._get_owner_rot_deg(owner)
+                                    rx, ry, rz = float(rot_deg[0]), float(rot_deg[1]), float(rot_deg[2])
+                                    cx, sx = math.cos(math.radians(rx)), math.sin(math.radians(rx))
+                                    cy, sy = math.cos(math.radians(ry)), math.sin(math.radians(ry))
+                                    cz, sz = math.cos(math.radians(rz)), math.sin(math.radians(rz))
 
-                    # On first move after pick, capture s0
-                    s0 = getattr(self, "_xform_drag_s0", None)
-                    if s0 is None:
-                        self._xform_drag_s0 = s
-                        s0 = s
+                                    Rx = np.array(
+                                        [[1.0, 0.0, 0.0, 0.0],
+                                         [0.0,  cx,  sx, 0.0],
+                                         [0.0, -sx,  cx, 0.0],
+                                         [0.0, 0.0, 0.0, 1.0]],
+                                        dtype=np.float32,
+                                    )
+                                    Ry = np.array(
+                                        [[ cy, 0.0, -sy, 0.0],
+                                         [0.0, 1.0, 0.0, 0.0],
+                                         [ sy, 0.0,  cy, 0.0],
+                                         [0.0, 0.0, 0.0, 1.0]],
+                                        dtype=np.float32,
+                                    )
+                                    Rz = np.array(
+                                        [[ cz,  sz, 0.0, 0.0],
+                                         [-sz,  cz, 0.0, 0.0],
+                                         [0.0, 0.0, 1.0, 0.0],
+                                         [0.0, 0.0, 0.0, 1.0]],
+                                        dtype=np.float32,
+                                    )
+                                    R = (Rz @ Ry @ Rx).astype(np.float32)
+                                    a = (R[:3, :3] @ a).astype(np.float32)
+                                except Exception:
+                                    a = axes.get(axis)
 
-                    delta = (float(s0) - s) * a
-                    new_pos = g0 + delta
+                        if isinstance(a, QtGui.QVector3D):
+                            a = np.array([a.x(), a.y(), a.z()], dtype="f4")
+
+                        a = np.asarray(a, dtype="f4")
+                        al = float(np.linalg.norm(a))
+                        if al > 1e-8:
+                            a = a / al
+
+                        # Compute parameter "s" along axis line closest to the mouse ray
+                        w0 = ray_o - g0
+                        ad = float(np.dot(a, ray_d))
+                        denom = 1.0 - ad * ad
+                        if abs(denom) < 1e-6:
+                            s = float(np.dot(a, w0))
+                        else:
+                            s = float((ad * float(np.dot(ray_d, w0)) - float(np.dot(a, w0))) / denom)
+
+                        # On first move after pick, capture s0
+                        s0 = getattr(self, "_xform_drag_s0", None)
+                        if s0 is None:
+                            self._xform_drag_s0 = s
+                            s0 = s
+
+                        delta = (float(s0) - s) * a
+                        new_pos = g0 + delta
+
+                    if new_pos is None:
+                        return
 
                     self._xform_gizmo_pos = (float(new_pos[0]), float(new_pos[1]), float(new_pos[2]))
 
@@ -4792,6 +4920,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 self._xform_scale_axis_world = None
                 self._xform_scale_center_px = None
                 self._xform_drag_axis_world = None
+                self._xform_drag_plane_normal = None
+                self._xform_drag_plane_start = None
                 self._xform_gizmo_pos_locked = False
 
                 # Important: don't let a gizmo drag "fall through" into click-pick or orbit

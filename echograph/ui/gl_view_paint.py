@@ -212,6 +212,159 @@ def paint_gl(view: Any) -> None:
                     )
 
                     view._axis_overlay.draw(mvp, mode=mode, draw_rotate_rings=(mode != "rotate"))
+
+                    # Hover highlight + center square for translate/scale
+                    try:
+                        if mode in ("translate", "scale"):
+                            mouse_px = getattr(view, "_xform_mouse_px", None)
+                            hover_axis = None
+                            hover_center = False
+                            hover_p1 = None
+                            center = None
+
+                            def project_local(x, y, z):
+                                r3 = mvp.row(3)
+                                clip_w = float(r3.x()) * x + float(r3.y()) * y + float(r3.z()) * z + float(r3.w())
+                                if abs(clip_w) < 1e-9:
+                                    return None
+                                v = mvp.map(QtGui.QVector3D(float(x), float(y), float(z)))
+                                ndc_x = float(v.x())
+                                ndc_y = float(v.y())
+                                w = float(max(1, int(view.width())))
+                                h = float(max(1, int(view.height())))
+                                sx = (ndc_x * 0.5 + 0.5) * w
+                                sy = (1.0 - (ndc_y * 0.5 + 0.5)) * h
+                                return QtCore.QPointF(float(sx), float(sy))
+
+                            def dist_pt_seg(px2, py2, ax, ay, bx, by):
+                                abx = bx - ax
+                                aby = by - ay
+                                apx = px2 - ax
+                                apy = py2 - ay
+                                ab2 = abx * abx + aby * aby
+                                if ab2 < 1e-8:
+                                    dx = px2 - ax
+                                    dy = py2 - ay
+                                    return (dx * dx + dy * dy) ** 0.5
+                                t = max(0.0, min(1.0, (apx * abx + apy * aby) / ab2))
+                                cx = ax + t * abx
+                                cy = ay + t * aby
+                                dx = px2 - cx
+                                dy = py2 - cy
+                                return (dx * dx + dy * dy) ** 0.5
+
+                            if isinstance(mouse_px, QtCore.QPointF):
+                                center = project_local(0.0, 0.0, 0.0)
+                                if center is not None:
+                                    axis_len = 1.0
+                                    line_end = axis_len - 0.18
+                                    cube_size = 0.12
+                                    axis_end = line_end + (cube_size * 0.5) if mode == "scale" else line_end
+
+                                    axis_proj = {
+                                        "x": project_local(axis_end, 0.0, 0.0),
+                                        "y": project_local(0.0, axis_end, 0.0),
+                                        "z": project_local(0.0, 0.0, axis_end),
+                                    }
+
+                                    dx0 = float(mouse_px.x()) - float(center.x())
+                                    dy0 = float(mouse_px.y()) - float(center.y())
+                                    if mode == "translate":
+                                        center_r = 10.0
+                                        if (dx0 * dx0 + dy0 * dy0) <= (center_r * center_r):
+                                            hover_center = True
+
+                                    if not hover_center:
+                                        best_axis = None
+                                        best_d = 1e30
+                                        best_p1 = None
+                                        for name, p1 in axis_proj.items():
+                                            if p1 is None:
+                                                continue
+                                            d = dist_pt_seg(
+                                                float(mouse_px.x()),
+                                                float(mouse_px.y()),
+                                                float(center.x()),
+                                                float(center.y()),
+                                                float(p1.x()),
+                                                float(p1.y()),
+                                            )
+                                            if d < best_d:
+                                                best_d = d
+                                                best_axis = name
+                                                best_p1 = p1
+                                        if best_axis is not None and best_d <= 10.0:
+                                            hover_axis = best_axis
+                                            hover_p1 = best_p1
+
+                            if (
+                                getattr(view, "_xform_dragging", False)
+                                and getattr(view, "_xform_drag_mode", "") == "translate"
+                                and getattr(view, "_xform_drag_axis", None) == "view"
+                            ):
+                                hover_center = True
+
+                            setattr(view, "_xform_hover_axis", hover_axis)
+                            setattr(view, "_xform_hover_center", bool(hover_center))
+                            setattr(view, "_xform_hover_center_px", center)
+                            if hover_axis and center is not None and hover_p1 is not None:
+                                setattr(view, "_xform_hover_axis_proj", (center, hover_p1))
+                            else:
+                                setattr(view, "_xform_hover_axis_proj", None)
+
+                            if (hover_axis and center is not None and hover_p1 is not None) or (
+                                hover_center and center is not None
+                            ):
+                                painter = QtGui.QPainter(view)
+                                if painter.isActive():
+                                    painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+
+                                    if hover_axis and center is not None and hover_p1 is not None:
+                                        col_map = {
+                                            "x": QtGui.QColor(255, 90, 90),
+                                            "y": QtGui.QColor(90, 255, 90),
+                                            "z": QtGui.QColor(90, 160, 255),
+                                        }
+                                        base_col = col_map.get(hover_axis, QtGui.QColor(255, 255, 255))
+
+                                        for width, alpha in ((8, 25), (5, 60)):
+                                            c = QtGui.QColor(base_col)
+                                            c.setAlpha(int(alpha))
+                                            pen = QtGui.QPen(c)
+                                            pen.setWidth(int(width))
+                                            pen.setCapStyle(QtCore.Qt.RoundCap)
+                                            pen.setJoinStyle(QtCore.Qt.RoundJoin)
+                                            painter.setPen(pen)
+                                            painter.drawLine(center, hover_p1)
+
+                                        pen = QtGui.QPen(base_col)
+                                        pen.setWidth(3)
+                                        pen.setCapStyle(QtCore.Qt.RoundCap)
+                                        pen.setJoinStyle(QtCore.Qt.RoundJoin)
+                                        painter.setPen(pen)
+                                        painter.drawLine(center, hover_p1)
+
+                                    if hover_center and center is not None:
+                                        size = 10.0
+                                        half = size * 0.5
+                                        rect = QtCore.QRectF(
+                                            float(center.x() - half),
+                                            float(center.y() - half),
+                                            float(size),
+                                            float(size),
+                                        )
+                                        painter.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 180)))
+                                        painter.setBrush(QtGui.QColor(255, 255, 255, 30))
+                                        painter.drawRect(rect)
+
+                                    painter.end()
+                        else:
+                            setattr(view, "_xform_hover_axis", None)
+                            setattr(view, "_xform_hover_center", False)
+                            setattr(view, "_xform_hover_center_px", None)
+                            setattr(view, "_xform_hover_axis_proj", None)
+                    except Exception:
+                        pass
             except Exception as exc:
                 print("[AXIS_OVERLAY] disabled:", exc, flush=True)
                 view._debug_show_axis_overlay = False
