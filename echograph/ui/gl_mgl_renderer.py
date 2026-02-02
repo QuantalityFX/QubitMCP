@@ -886,14 +886,31 @@ class MGLRendererMixin:
                 # rotate position around pivot
                 if (rx != 0.0) or (ry != 0.0) or (rz != 0.0):
                     qg = _quat_from_euler_deg(rx, ry, rz)
-                    # rotate each row (not super fast, but OK for now)
-                    for i in range(p.shape[0]):
-                        p[i, :] = _quat_rotate_vec(qg, p[i, :])
 
-                    # rotate per-splat orientation too: q' = qg * qlocal
+                    # Vectorized rotate for p (N,3) using: v' = v + w*t + cross(q, t), t = 2*cross(q, v)
+                    qx, qy, qz, qw = float(qg[0]), float(qg[1]), float(qg[2]), float(qg[3])
+                    qv = np.array([qx, qy, qz], dtype=np.float32)
+
+                    t = 2.0 * np.cross(qv[None, :], p)
+                    p = p + (qw * t) + np.cross(qv[None, :], t)
+
+                    # Vectorized quaternion multiply: q' = qg * qlocal
                     qlocal = out[:, 11:15]
-                    for i in range(qlocal.shape[0]):
-                        qlocal[i, :] = _quat_mul(qg, qlocal[i, :])
+                    bx = qlocal[:, 0]
+                    by = qlocal[:, 1]
+                    bz = qlocal[:, 2]
+                    bw = qlocal[:, 3]
+
+                    qlocal = np.stack(
+                        [
+                            (qw * bx + qx * bw + qy * bz - qz * by),
+                            (qw * by - qx * bz + qy * bw + qz * bx),
+                            (qw * bz + qx * by - qy * bx + qz * bw),
+                            (qw * bw - qx * bx - qy * by - qz * bz),
+                        ],
+                        axis=1,
+                    ).astype(np.float32, copy=False)
+
                     out[:, 11:15] = qlocal
 
                 out[:, :3] = p + pivot[None, :] + np.array([px, py, pz], dtype=np.float32)[None, :]
