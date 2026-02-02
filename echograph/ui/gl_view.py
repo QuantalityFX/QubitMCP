@@ -476,6 +476,11 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._mgl_scale = 1.0
         self._mgl_scale_multiplier = 1.0
         self._mgl_arcball = None
+        self._mgl_orbit_locked = True
+        self._mgl_orbit_dragging = False
+        self._mgl_orbit_last_pos = None
+        self._mgl_orbit_yaw = 0.0
+        self._mgl_orbit_pitch = 0.0
         self._mgl_grid_vertex_count = 0
         self._mgl_mesh_vertex_count = 0
         self._mgl_prev_x = 0
@@ -508,6 +513,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._debug_toggle_icon_inactive = None
         self._debug_overlay_cache = None
         self._debug_overlay_cache_key = None
+        self._cam_orbit_icon_locked = None
+        self._cam_orbit_icon_free = None
 
         self._fps = 0.0
         self._fps_last_t = time.perf_counter()
@@ -523,6 +530,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._build_scale_controls()
         self._build_debug_toggle_button()
         self._build_debug_copy_button()
+        self._build_camera_orbit_button()
         
 
 
@@ -550,6 +558,9 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         btn = getattr(self, "_debug_copy_btn", None)
         if btn is not None:
             btn.setGeometry(38, 10, 46, 22)
+        orbit_btn = getattr(self, "_cam_orbit_btn", None)
+        if orbit_btn is not None:
+            orbit_btn.setGeometry(10, 38, 22, 22)
         if getattr(self, "_mgl_uv_cache", None) is not None:
             self._mgl_uv_cache = None
 
@@ -982,6 +993,143 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             btn.setVisible(self._debug_overlay)
         except Exception:
             self._debug_copy_btn = None
+
+    def _build_camera_orbit_button(self) -> None:
+        try:
+            btn = QtWidgets.QToolButton(self)
+            btn.setCursor(QtCore.Qt.PointingHandCursor)
+            btn.setCheckable(True)
+            btn.setIconSize(QtCore.QSize(14, 14))
+            btn.clicked.connect(self._on_camera_orbit_toggled)
+            self._cam_orbit_btn = btn
+            self._update_camera_orbit_button()
+            btn.show()
+        except Exception:
+            self._cam_orbit_btn = None
+
+    def _load_camera_orbit_icons(self) -> None:
+        if self._cam_orbit_icon_locked is not None or self._cam_orbit_icon_free is not None:
+            return
+        icon_locked = None
+        icon_free = None
+        try:
+            root = Path(__file__).resolve().parents[2]
+            locked_path = root / "icons" / "CameraCtrl_On_Icon.png"
+            free_path = root / "icons" / "CameraCtrl_Off_Icon.png"
+            if locked_path.exists():
+                icon_locked = QtGui.QIcon(str(locked_path))
+            if free_path.exists():
+                icon_free = QtGui.QIcon(str(free_path))
+        except Exception:
+            icon_locked = None
+            icon_free = None
+        self._cam_orbit_icon_locked = icon_locked
+        self._cam_orbit_icon_free = icon_free
+
+    def _update_camera_orbit_button(self) -> None:
+        btn = getattr(self, "_cam_orbit_btn", None)
+        if btn is None:
+            return
+        locked = bool(getattr(self, "_mgl_orbit_locked", True))
+        btn.setChecked(locked)
+        self._load_camera_orbit_icons()
+        if locked:
+            btn.setToolTip("Camera Orbit: Locked (no roll)")
+            icon = self._cam_orbit_icon_locked
+            bg = "rgba(30,41,59,230)"
+            fallback = "Lock"
+        else:
+            btn.setToolTip("Camera Orbit: Free (roll)")
+            icon = self._cam_orbit_icon_free
+            bg = "rgba(15,23,42,210)"
+            fallback = "Free"
+        if icon is not None:
+            btn.setIcon(icon)
+            btn.setText("")
+        else:
+            btn.setText(fallback)
+        btn.setStyleSheet(
+            "QToolButton{background:%s;border:1px solid #334155;"
+            "color:#e2e8f0;padding:0px;border-radius:4px;font-size:10px;}"
+            "QToolButton:hover{background:rgba(51,65,85,230);}"
+            % bg
+        )
+
+    def _on_camera_orbit_toggled(self, checked=None) -> None:
+        if checked is None:
+            checked = bool(getattr(self, "_cam_orbit_btn", None) and self._cam_orbit_btn.isChecked())
+        self._mgl_orbit_locked = bool(checked)
+        self._mgl_orbit_dragging = False
+        self._mgl_orbit_last_pos = None
+        if self._mgl_orbit_locked:
+            self._sync_locked_orbit_from_arcball()
+            self._apply_locked_orbit()
+        else:
+            try:
+                self._mgl_arcball_sync_after_set_transform()
+            except Exception:
+                pass
+        self._update_camera_orbit_button()
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    def _sync_locked_orbit_from_arcball(self) -> None:
+        arc = getattr(self, "_mgl_arcball", None)
+        if arc is None or np is None or not hasattr(arc, "Transform"):
+            return
+        try:
+            t = np.array(arc.Transform, dtype=np.float32)
+            if t.shape != (4, 4):
+                return
+            rmat = t[:3, :3].astype(np.float32, copy=False)
+            umat, _, vmat = np.linalg.svd(rmat)
+            r_norm = (umat @ vmat).astype(np.float32, copy=False)
+            if np.linalg.det(r_norm) < 0:
+                umat[:, -1] *= -1.0
+                r_norm = (umat @ vmat).astype(np.float32, copy=False)
+            f = r_norm[:, 2]
+            dist = float(np.linalg.norm(f))
+            if dist < 1e-6:
+                return
+            yaw = math.atan2(float(f[0]), float(f[2]))
+            pitch = math.asin(max(-1.0, min(1.0, float(f[1] / dist))))
+            self._mgl_orbit_yaw = yaw
+            self._mgl_orbit_pitch = pitch
+        except Exception:
+            pass
+
+    def _apply_locked_orbit(self) -> None:
+        arc = getattr(self, "_mgl_arcball", None)
+        if arc is None or np is None:
+            return
+        yaw = float(getattr(self, "_mgl_orbit_yaw", 0.0))
+        pitch = float(getattr(self, "_mgl_orbit_pitch", 0.0))
+        pitch = max(-1.45, min(1.45, pitch))
+        self._mgl_orbit_pitch = pitch
+        cy = math.cos(yaw)
+        sy = math.sin(yaw)
+        cp = math.cos(pitch)
+        sp = math.sin(pitch)
+        forward = np.array([sy * cp, sp, cy * cp], dtype=np.float32)
+        up_world = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+        right = np.cross(up_world, forward)
+        n = float(np.linalg.norm(right))
+        if n < 1e-6:
+            right = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+            n = 1.0
+        right /= n
+        up = np.cross(forward, right)
+        rot = np.stack([right, up, forward], axis=1)
+        try:
+            arc.Transform = arc._set_rotation(arc.Transform, rot)
+        except Exception:
+            return
+        try:
+            self._mgl_arcball_sync_after_set_transform()
+        except Exception:
+            pass
 
     def _copy_debug_details(self) -> None:
         try:
@@ -3789,8 +3937,13 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 except Exception as exc:
                     print("[GIZMO_PICK] failed:", exc, flush=True)
 
-            if e.button() == QtCore.Qt.LeftButton and self._mgl_arcball is not None and alt_pressed:
-                self._mgl_arcball.onClickLeftDown(e.x(), e.y())
+            if e.button() == QtCore.Qt.LeftButton and alt_pressed and self._mgl_arcball is not None:
+                if bool(getattr(self, "_mgl_orbit_locked", True)):
+                    self._sync_locked_orbit_from_arcball()
+                    self._mgl_orbit_dragging = True
+                    self._mgl_orbit_last_pos = e.pos()
+                else:
+                    self._mgl_arcball.onClickLeftDown(e.x(), e.y())
                 self._mgl_pick_press_pos = e.pos()
                 self.setCursor(QtCore.Qt.ClosedHandCursor)
                 e.accept()
@@ -4683,7 +4836,19 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                         return
                 except Exception:
                     pass
-                self._mgl_arcball.onDrag(e.x(), e.y())
+                if bool(getattr(self, "_mgl_orbit_locked", True)):
+                    if not self._mgl_orbit_dragging:
+                        self._sync_locked_orbit_from_arcball()
+                        self._mgl_orbit_dragging = True
+                        self._mgl_orbit_last_pos = e.pos()
+                    delta = e.pos() - self._mgl_orbit_last_pos
+                    self._mgl_orbit_last_pos = e.pos()
+                    self._mgl_orbit_yaw -= float(delta.x()) * self._orbit_sensitivity
+                    self._mgl_orbit_pitch -= float(delta.y()) * self._orbit_sensitivity
+                    self._mgl_orbit_pitch = max(-1.45, min(1.45, self._mgl_orbit_pitch))
+                    self._apply_locked_orbit()
+                else:
+                    self._mgl_arcball.onDrag(e.x(), e.y())
                 self.update()  # ensure pick matrices stay fresh
                 e.accept()
                 return
@@ -5196,6 +5361,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             # --- 3) Always end camera interactions cleanly ---
             if e.button() == QtCore.Qt.LeftButton:
                 self._mgl_pick_press_pos = None
+                self._mgl_orbit_dragging = False
+                self._mgl_orbit_last_pos = None
                 if self._mgl_arcball is not None:
                     try:
                         self._mgl_arcball.onClickLeftUp()
