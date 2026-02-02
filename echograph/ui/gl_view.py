@@ -242,6 +242,10 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 fmt = QtGui.QSurfaceFormat()
                 fmt.setDepthBufferSize(24)
                 fmt.setStencilBufferSize(8)
+                try:
+                    fmt.setSamples(4)
+                except Exception:
+                    pass
                 self.setFormat(fmt)
             except Exception:
                 pass
@@ -1690,6 +1694,11 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             self._gl = ctx.functions()
             try:
                 self._gl.initializeOpenGLFunctions()
+            except Exception:
+                pass
+            # MSAA (helps jaggies on lines)
+            try:
+                self._gl.glEnable(0x809D)  # GL_MULTISAMPLE
             except Exception:
                 pass
 
