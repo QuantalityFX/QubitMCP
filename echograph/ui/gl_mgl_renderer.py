@@ -1783,6 +1783,38 @@ class MGLRendererMixin:
                 self._mgl_pick_model = np.array(transform, dtype="f4").T
         except Exception:
             pass
+        # cache camera world position for debug + grid falloff
+        try:
+            cam_world = None
+            if np is not None:
+                arc = getattr(self, "_mgl_arcball", None)
+                center = getattr(self, "_mgl_center", None)
+                zoom = float(getattr(self, "_mgl_camera_zoom", 0.0))
+                if arc is not None and hasattr(arc, "Transform"):
+                    rot = np.array(arc.Transform[:3, :3], dtype=np.float32)
+                    # remove uniform scale so we only apply rotation
+                    scale = float(np.linalg.norm(rot, ord="fro") / math.sqrt(3.0))
+                    if scale > 1e-6:
+                        rot = rot / scale
+                    cam_local = np.array([0.0, 0.0, zoom], dtype=np.float32)
+                    cam_rot = rot.T @ cam_local
+                    if center is not None:
+                        cam_world = (
+                            float(cam_rot[0] + float(center[0])),
+                            float(cam_rot[1] + float(center[1])),
+                            float(cam_rot[2] + float(center[2])),
+                        )
+                    else:
+                        cam_world = (float(cam_rot[0]), float(cam_rot[1]), float(cam_rot[2]))
+                if cam_world is None:
+                    view_mat = (lookat * transform).astype("f4")
+                    view_np = np.array(view_mat, dtype=np.float32)
+                    inv = np.linalg.inv(view_np)
+                    cam = inv @ np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+                    cam_world = (float(cam[0]), float(cam[1]), float(cam[2]))
+            self._mgl_cam_world = cam_world
+        except Exception:
+            self._mgl_cam_world = None
 
         # cache stable 3x3 rotation for gizmo (no yaw/pitch)
         try:
@@ -1984,6 +2016,7 @@ class MGLRendererMixin:
                 fade_start = 0.0
                 fade_end = 0.0
                 zoom_scale = 1.0
+                cam_height = None
                 try:
                     fade_start_frac = float(getattr(self, "_mgl_grid_fade_start", 0.55))
                 except Exception:
@@ -2004,6 +2037,12 @@ class MGLRendererMixin:
                     base_zoom = max(1e-6, zoom)
                 if zoom > 0.0 and base_zoom > 0.0:
                     zoom_scale = max(0.5, zoom / base_zoom)
+                try:
+                    cam_world = getattr(self, "_mgl_cam_world", None)
+                    if cam_world is not None:
+                        cam_height = abs(float(cam_world[1]))
+                except Exception:
+                    cam_height = None
                 if render_size > 0.0:
                     fade_start = render_size * max(0.0, min(1.0, fade_start_frac))
                     fade_end = render_size * max(0.0, min(1.0, fade_end_frac))
@@ -2016,6 +2055,15 @@ class MGLRendererMixin:
                     if cam_dist > 0.0:
                         fade_end = min(render_size * 0.98, cam_dist * 2.0)
                         fade_start = max(0.0, fade_end * 0.35)
+                    if cam_height is not None:
+                        try:
+                            height_ref = float(getattr(self, "_mgl_grid_fade_height", 5.0))
+                        except Exception:
+                            height_ref = 5.0
+                        if height_ref > 0.0:
+                            height_scale = min(1.0, height_ref / max(cam_height, height_ref))
+                            fade_start *= height_scale
+                            fade_end *= height_scale
                     if zoom_scale != 1.0:
                         fade_start *= zoom_scale
                         fade_end *= zoom_scale
@@ -2028,6 +2076,11 @@ class MGLRendererMixin:
                     if fade_end <= fade_start:
                         fade_start = 0.0
                         fade_end = 0.0
+                try:
+                    self._mgl_grid_fade_start_current = float(fade_start)
+                    self._mgl_grid_fade_end_current = float(fade_end)
+                except Exception:
+                    pass
 
                 grid_offset_x = 0.0
                 grid_offset_z = 0.0

@@ -471,6 +471,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._mgl_grid_major_boost = 1.15
         self._mgl_grid_fade_start = 0.55
         self._mgl_grid_fade_end = 0.95
+        self._mgl_grid_fade_height = 5.0
         self._mgl_grid_visible = False
         self._mgl_fov = 60.0
         self._mgl_clip_far = 1000.0
@@ -3010,7 +3011,19 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             lines.append(f"Camera FOV: {self._mgl_fov:.1f}")
             lines.append(f"Camera zoom: {self._mgl_camera_zoom:.2f}")
             cam_dist_origin = None
-            if Matrix44 is not None and np is not None:
+            cam_height = None
+            cam_world = getattr(self, "_mgl_cam_world", None)
+            if cam_world is not None:
+                try:
+                    cx = float(cam_world[0])
+                    cy = float(cam_world[1])
+                    cz = float(cam_world[2])
+                    cam_height = cy
+                    cam_dist_origin = math.sqrt((cx * cx) + (cy * cy) + (cz * cz))
+                except Exception:
+                    cam_dist_origin = None
+                    cam_height = None
+            if cam_dist_origin is None and Matrix44 is not None and np is not None:
                 try:
                     zoom = float(getattr(self, "_mgl_camera_zoom", 0.0))
                     lookat = Matrix44.look_at(
@@ -3031,16 +3044,28 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     inv = np.linalg.inv(view_np)
                     cam = inv @ np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
                     cam_dist_origin = float(np.linalg.norm(cam[:3]))
+                    cam_height = float(cam[1])
                 except Exception:
                     cam_dist_origin = None
+                    cam_height = None
             if cam_dist_origin is not None:
-                lines.append(f"Cam→Origin: {cam_dist_origin:.2f}")
+                lines.append(f"Cam->Origin: {cam_dist_origin:.2f}")
+            if cam_height is not None:
+                lines.append(f"Cam height: {cam_height:.2f}")
+            fade_end_current = None
             try:
-                zoom = float(getattr(self, "_mgl_camera_zoom", 0.0))
-                if zoom > 0.0:
-                    lines.append(f"Grid fade radius: {zoom * 2.0:.2f}")
+                fade_end_current = float(getattr(self, "_mgl_grid_fade_end_current", 0.0))
             except Exception:
-                pass
+                fade_end_current = None
+            if fade_end_current is not None and fade_end_current > 0.0:
+                lines.append(f"Grid fade radius: {fade_end_current:.2f}")
+            else:
+                try:
+                    zoom = float(getattr(self, "_mgl_camera_zoom", 0.0))
+                    if zoom > 0.0:
+                        lines.append(f"Grid fade radius: {zoom * 2.0:.2f}")
+                except Exception:
+                    pass
             if self._mgl_mesh_path:
                 lines.append(f"Model: {Path(self._mgl_mesh_path).name}")
             if self._mgl_texture_override and self._mgl_texture_path:
