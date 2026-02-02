@@ -128,12 +128,24 @@ def serialize_scene(scene) -> Dict[str, Any]:
         except Exception:
             comments = []
     llm_scale = float(getattr(scene, "_llm_scale", LLM_SCALE_DEFAULT))
+    settings = {"llm_scale": llm_scale}
+    try:
+        view_settings = getattr(scene, "_view_settings", None)
+        if isinstance(view_settings, dict):
+            for key in ("pan_base", "pan_exp", "pan_boost"):
+                if key in view_settings:
+                    try:
+                        settings[key] = float(view_settings[key])
+                    except Exception:
+                        pass
+    except Exception:
+        pass
     return {
         "nodes": nodes,
         "edges": edges,
         "comments": comments,
         "llm_scale": llm_scale,                 # legacy top-level
-        "settings": {"llm_scale": llm_scale},   # preferred
+        "settings": settings,                   # preferred
     }
 
 
@@ -150,6 +162,20 @@ def deserialize_scene(
         set_scale_cb(float(raw))
     except Exception:
         set_scale_cb(LLM_SCALE_DEFAULT)
+    try:
+        settings = data.get("settings", {}) or {}
+        if isinstance(settings, dict):
+            view_settings = {}
+            for key in ("pan_base", "pan_exp", "pan_boost"):
+                if key in settings:
+                    try:
+                        view_settings[key] = float(settings[key])
+                    except Exception:
+                        pass
+            if view_settings:
+                scene._view_settings = view_settings
+    except Exception:
+        pass
 
     # 2) clear
     scene.clear_scene()

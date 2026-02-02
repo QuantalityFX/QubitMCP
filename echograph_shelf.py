@@ -2900,9 +2900,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         settings_btn.setCursor(QtCore.Qt.PointingHandCursor)
         settings_btn.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
         settings_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        settings_btn.setFixedHeight(24)
         settings_btn.setStyleSheet(
             "QToolButton#SettingsButton{color:#ffffff;background:#2a2f36;border:1px solid #3a3f46;"
-            "border-radius:4px;padding:4px 10px;}"
+            "border-radius:4px;padding:2px 10px;}"
             "QToolButton#SettingsButton:hover{background:#353b45;}"
             "QToolButton#SettingsButton[active=\"true\"]{background:#1f7a45;border-color:#2a8a52;}"
         )
@@ -2918,6 +2919,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         panel.setStyleSheet(
             "#SettingsPanel{background:#1b2026;border:0px;border-radius:6px;}"
             "#SettingsPanel QLabel{color:#e5e7eb;}"
+            "#SettingsPanel QToolButton{background:transparent;border:0px;padding:0px;}"
+            "#SettingsPanel QToolButton:hover{background:#2b313a;}"
         )
         grid = QtWidgets.QGridLayout(panel)
         grid.setContentsMargins(10, 10, 10, 10)
@@ -2937,6 +2940,18 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         grid.addWidget(QtWidgets.QLabel("LLM Scale"), 0, 0)
         grid.addWidget(self._llm_slider, 0, 1)
         grid.addWidget(self._llm_value_lbl, 0, 2)
+        refresh_btn = QtWidgets.QToolButton(panel)
+        refresh_btn.setToolTip("Reset settings to defaults")
+        refresh_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        refresh_btn.setAutoRaise(True)
+        refresh_btn.setIconSize(QtCore.QSize(14, 14))
+        refresh_icon = QtGui.QIcon(str(script_dir() / "icons" / "Refresh_Icon.png"))
+        if not refresh_icon.isNull():
+            refresh_btn.setIcon(refresh_icon)
+        else:
+            refresh_btn.setText("Reset")
+        refresh_btn.clicked.connect(self._reset_settings_to_defaults)
+        grid.addWidget(refresh_btn, 0, 3)
 
         self._pan_base = float(getattr(self, "_pan_base", 0.01))
         self._pan_exp = float(getattr(self, "_pan_exp", 1.2))
@@ -3000,6 +3015,69 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         except Exception:
             pass
 
+    def _reset_settings_to_defaults(self) -> None:
+        try:
+            default_llm = float(LLM_SCALE_DEFAULT)
+        except Exception:
+            default_llm = 0.5
+        try:
+            set_global_llm_scale(default_llm, self.scene)
+        except Exception:
+            pass
+        if hasattr(self, "_llm_slider"):
+            try:
+                self._llm_slider.blockSignals(True)
+                self._llm_slider.setValue(int(round(default_llm * 100)))
+                self._llm_slider.blockSignals(False)
+            except Exception:
+                pass
+        if hasattr(self, "_llm_value_lbl"):
+            try:
+                self._llm_value_lbl.setText(f"{int(round(default_llm * 100))}%")
+            except Exception:
+                pass
+
+        self._pan_base = 0.01
+        self._pan_exp = 1.2
+        self._pan_boost = 10.0
+        if hasattr(self, "_pan_base_slider"):
+            try:
+                self._pan_base_slider.blockSignals(True)
+                self._pan_base_slider.setValue(int(round(self._pan_base * 1000.0)))
+                self._pan_base_slider.blockSignals(False)
+            except Exception:
+                pass
+        if hasattr(self, "_pan_exp_slider"):
+            try:
+                self._pan_exp_slider.blockSignals(True)
+                self._pan_exp_slider.setValue(int(round(self._pan_exp * 100.0)))
+                self._pan_exp_slider.blockSignals(False)
+            except Exception:
+                pass
+        if hasattr(self, "_pan_boost_slider"):
+            try:
+                self._pan_boost_slider.blockSignals(True)
+                self._pan_boost_slider.setValue(int(round(self._pan_boost)))
+                self._pan_boost_slider.blockSignals(False)
+            except Exception:
+                pass
+        if hasattr(self, "_pan_base_value_lbl"):
+            try:
+                self._pan_base_value_lbl.setText(f"{self._pan_base:.3f}")
+            except Exception:
+                pass
+        if hasattr(self, "_pan_exp_value_lbl"):
+            try:
+                self._pan_exp_value_lbl.setText(f"{self._pan_exp:.2f}")
+            except Exception:
+                pass
+        if hasattr(self, "_pan_boost_value_lbl"):
+            try:
+                self._pan_boost_value_lbl.setText(f"{self._pan_boost:.1f}")
+            except Exception:
+                pass
+        self._apply_pan_settings_to_gl_view()
+
     def _apply_pan_settings_to_gl_view(self) -> None:
         gv = getattr(self, "gl_view", None)
         if gv is None:
@@ -3011,6 +3089,19 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             gv._mgl_pan_ref_zoom = None
         except Exception:
             pass
+        sc = getattr(self, "scene", None)
+        if sc is not None:
+            try:
+                settings = getattr(sc, "_view_settings", None)
+                if not isinstance(settings, dict):
+                    settings = {}
+                settings = dict(settings)
+                settings["pan_base"] = float(getattr(self, "_pan_base", 0.01))
+                settings["pan_exp"] = float(getattr(self, "_pan_exp", 1.2))
+                settings["pan_boost"] = float(getattr(self, "_pan_boost", 10.0))
+                sc._view_settings = settings
+            except Exception:
+                pass
 
     def _on_pan_base_changed(self, value: int) -> None:
         try:
@@ -3191,6 +3282,44 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             if hasattr(self, "_llm_value_lbl"):
                 self._llm_value_lbl.setText(f"{int(round(s*100))}%")
             self._llm_slider.blockSignals(False)
+        settings = data.get("settings", {}) if isinstance(data, dict) else {}
+        try:
+            pan_base = float(settings.get("pan_base", getattr(self, "_pan_base", 0.01)))
+        except Exception:
+            pan_base = getattr(self, "_pan_base", 0.01)
+        try:
+            pan_exp = float(settings.get("pan_exp", getattr(self, "_pan_exp", 1.2)))
+        except Exception:
+            pan_exp = getattr(self, "_pan_exp", 1.2)
+        try:
+            pan_boost = float(settings.get("pan_boost", getattr(self, "_pan_boost", 10.0)))
+        except Exception:
+            pan_boost = getattr(self, "_pan_boost", 10.0)
+        self._pan_base = pan_base
+        self._pan_exp = pan_exp
+        self._pan_boost = pan_boost
+        if hasattr(self, "_pan_base_slider"):
+            self._pan_base_slider.blockSignals(True)
+            self._pan_base_slider.setValue(int(round(pan_base * 1000.0)))
+            self._pan_base_slider.blockSignals(False)
+        if hasattr(self, "_pan_exp_slider"):
+            self._pan_exp_slider.blockSignals(True)
+            self._pan_exp_slider.setValue(int(round(pan_exp * 100.0)))
+            self._pan_exp_slider.blockSignals(False)
+        if hasattr(self, "_pan_boost_slider"):
+            self._pan_boost_slider.blockSignals(True)
+            self._pan_boost_slider.setValue(int(round(pan_boost)))
+            self._pan_boost_slider.blockSignals(False)
+        if hasattr(self, "_pan_base_value_lbl"):
+            self._pan_base_value_lbl.setText(f"{pan_base:.3f}")
+        if hasattr(self, "_pan_exp_value_lbl"):
+            self._pan_exp_value_lbl.setText(f"{pan_exp:.2f}")
+        if hasattr(self, "_pan_boost_value_lbl"):
+            self._pan_boost_value_lbl.setText(f"{pan_boost:.1f}")
+        try:
+            self._apply_pan_settings_to_gl_view()
+        except Exception:
+            pass
 
         self._current_path = path
         self._remember_recent(path)
