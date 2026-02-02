@@ -2214,16 +2214,17 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         rot_shared.draw_view_ring_2d(widget=self, center=center, hovered=bool(hover_view or rot_shared.drag_view))
 
         # Draw halo on hovered axis (or active drag axis)
-        rot_shared.draw_hover_halo_2d(
-            widget=self,
-            axis=str(hover_axis),
-            viewport_w=self.width(),
-            viewport_h=self.height(),
-            mvp=mvp,
-            view_dir_local=view_dir_local,
-            back_clip_cos=float(back_clip_cos),
-            clip_enabled=(clip_val > 0.5),
-        )
+        if hover_axis in ("x", "y", "z"):
+            rot_shared.draw_hover_halo_2d(
+                widget=self,
+                axis=str(hover_axis),
+                viewport_w=self.width(),
+                viewport_h=self.height(),
+                mvp=mvp,
+                view_dir_local=view_dir_local,
+                back_clip_cos=float(back_clip_cos),
+                clip_enabled=(clip_val > 0.5),
+            )
 
 
     def _get_owner_rot_deg(self, owner: str):
@@ -2735,7 +2736,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
     ) -> QtGui.QVector3D:
         # map 2D mouse to virtual sphere (arcball), then convert to world using camera basis
         dx = (float(mouse_px_dev.x()) - float(center_px_dev.x())) / max(1e-6, float(radius_px))
-        dy = (float(mouse_px_dev.y()) - float(center_px_dev.y())) / max(1e-6, float(radius_px))
+        # Match smoketest: flip Y so up is positive.
+        dy = (float(center_px_dev.y()) - float(mouse_px_dev.y())) / max(1e-6, float(radius_px))
 
         # clamp to unit disk
         r2 = dx * dx + dy * dy
@@ -3053,15 +3055,30 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                         # (prevents first-drag snap after manual edits / zeroing)
                                         q0 = self._rot_shared_sync_q0_from_owner(owner)
 
-                                        # camera basis from inverse view matrix
-                                        invV = np.linalg.inv(np.asarray(V, dtype=np.float32))
-                                        r = invV[:3, 0]
-                                        u = invV[:3, 1]
-                                        f = -invV[:3, 2]  # camera looks down -Z
+                                        # camera basis from inverse view*model (matches pick/unproject space)
+                                        invVM = np.linalg.inv(
+                                            (np.asarray(V, dtype=np.float32) @ np.asarray(M, dtype=np.float32)).astype(
+                                                np.float32
+                                            )
+                                        )
+                                        r = invVM[:3, 0]
+                                        u = invVM[:3, 1]
+                                        f = -invVM[:3, 2]  # camera looks down -Z
 
                                         right_world = QtGui.QVector3D(float(r[0]), float(r[1]), float(r[2]))
                                         up_world = QtGui.QVector3D(float(u[0]), float(u[1]), float(u[2]))
                                         forward_world = QtGui.QVector3D(float(f[0]), float(f[1]), float(f[2]))
+
+                                        # normalize basis for stability
+                                        try:
+                                            if right_world.length() > 1e-6:
+                                                right_world = right_world / right_world.length()
+                                            if up_world.length() > 1e-6:
+                                                up_world = up_world / up_world.length()
+                                            if forward_world.length() > 1e-6:
+                                                forward_world = forward_world / forward_world.length()
+                                        except Exception:
+                                            pass
 
                                         # stash arcball drag state
                                         self._rot_shared_arc_active = True
@@ -3435,8 +3452,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                         forward_world=forward_world,
                     )
 
-                    # Invert arcball drag direction to match center-disc drag expectation.
-                    q_delta = quat_from_two_vectors(cur_vec, start_vec)
+                    q_delta = quat_from_two_vectors(start_vec, cur_vec)
 
                     q0 = getattr(self, "_rot_shared_arc_start_q", None)
                     if q0 is None:
