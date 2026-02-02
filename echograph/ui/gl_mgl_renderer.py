@@ -949,7 +949,33 @@ class MGLRendererMixin:
                 )
         except Exception:
             pass
-        self.set_splats(combined)
+        did_in_place = False
+        try:
+            # Fast path: same-size buffer, just overwrite bytes (no VAO/VBO rebuild)
+            if combined is not None and getattr(combined, "ndim", 0) == 2 and int(combined.shape[1]) == 15:
+                splats15 = combined.astype("f4", copy=False)
+
+                vbo = getattr(self, "_mgl_splatq_vbo", None)
+                if vbo is not None:
+                    try:
+                        vbo_size = int(getattr(vbo, "size", 0) or 0)
+                    except Exception:
+                        vbo_size = 0
+
+                    if vbo_size == int(splats15.nbytes):
+                        # keep CPU copy (sorting path relies on this)
+                        self._mgl_splat_count = int(splats15.shape[0])
+                        self._mgl_splats15_cpu = splats15
+
+                        vbo.write(splats15.tobytes())
+                        did_in_place = True
+        except Exception:
+            did_in_place = False
+
+        # Fallback: count changed or buffer missing, do the full rebuild
+        if not did_in_place:
+            self.set_splats(combined)
+
         try:
             self._mgl_splats_need_rebuild = False
         except Exception:
