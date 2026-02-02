@@ -2116,9 +2116,9 @@ class MGLRendererMixin:
                         pass
                     try:
                         self._mgl_grid_prog["GridOffset"].value = (0.0, 0.0)
-                        self._mgl_grid_prog["FadeOrigin"].value = (0.0, 0.0)
-                        self._mgl_grid_prog["FadeStart"].value = 0.0
-                        self._mgl_grid_prog["FadeEnd"].value = 0.0
+                        self._mgl_grid_prog["FadeOrigin"].value = (fade_origin_x, fade_origin_z)
+                        self._mgl_grid_prog["FadeStart"].value = float(fade_start)
+                        self._mgl_grid_prog["FadeEnd"].value = float(fade_end)
                     except Exception:
                         pass
                     first_center_z = 2 * mid
