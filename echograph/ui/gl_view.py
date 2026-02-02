@@ -1538,6 +1538,12 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._manual_model_frame = bool(frame)
 
         if self._use_moderngl:
+            # Clear any prior scene assets so picking doesn't hit hidden scene models.
+            try:
+                self._clear_scene_asset_state()
+            except Exception:
+                pass
+
             # Keep scale fixed to 1.0 for model preview loads.
             try:
                 self._mgl_scale_multiplier = 1.0
@@ -1585,6 +1591,45 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
         #QtCore.QTimer.singleShot(0, self._apply_manual_model)
         #QtCore.QTimer.singleShot(0, lambda: self.gl_view.debug_points())
+
+    def _clear_scene_asset_state(self) -> None:
+        if not self._use_moderngl:
+            return
+        try:
+            self._mgl_clear_scene_models()
+        except Exception:
+            pass
+        try:
+            self._mgl_disable_splats()
+        except Exception:
+            pass
+        for name in (
+            "_mgl_scene_visibility",
+            "_mgl_scene_splats",
+            "_mgl_scene_bounds_by_owner",
+            "_mgl_scene_mesh_bounds_by_owner",
+            "_mgl_scene_splats_world",
+            "_mgl_scene_splats_bounds_local",
+            "_mgl_scene_splat_bounds_by_owner",
+            "_mgl_scene_xforms_by_owner",
+            "_mgl_scene_splat_xforms_by_owner",
+        ):
+            try:
+                setattr(self, name, {})
+            except Exception:
+                pass
+        try:
+            self._mgl_pending_visibility = {}
+            self._mgl_visibility_dirty = False
+        except Exception:
+            pass
+        try:
+            self._xform_gizmo_owner = None
+            self._xform_gizmo_owner_kind = None
+            self._xform_gizmo_pos_locked = False
+            self._xform_gizmo_pos = (0.0, 0.0, 0.0)
+        except Exception:
+            pass
 
     def load_scene_assets(self, assets: List[Dict[str, str]], frame: bool = True) -> None:
         if not assets:

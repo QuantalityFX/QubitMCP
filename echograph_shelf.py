@@ -2771,6 +2771,11 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             try:
                 gv = getattr(self, "gl_view", None)
                 if gv is not None:
+                    try:
+                        if hasattr(gv, "_clear_scene_asset_state"):
+                            gv._clear_scene_asset_state()
+                    except Exception:
+                        pass
                     gv._render_scene_models = True
                     gv._meshes.clear()
                     gv._mesh_colors.clear()
