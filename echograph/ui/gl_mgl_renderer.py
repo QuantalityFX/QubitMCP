@@ -884,7 +884,8 @@ class MGLRendererMixin:
 
                 # rotate position around pivot
                 if (rx != 0.0) or (ry != 0.0) or (rz != 0.0):
-                    qg = _quat_from_euler_deg(rx, ry, rz)
+                    # Match mesh convention: gl_view stores rot_deg with negated-angle convention.
+                    qg = _quat_from_euler_deg(-rx, -ry, -rz)
 
                     # Vectorized rotate for p (N,3) using: v' = v + w*t + cross(q, t), t = 2*cross(q, v)
                     qx, qy, qz, qw = float(qg[0]), float(qg[1]), float(qg[2]), float(qg[3])
