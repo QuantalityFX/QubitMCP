@@ -3440,8 +3440,10 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
                             # --- translate gizmo drag start (existing axis line pick) ---
                             if p0 is not None and mode == "translate":
+                                use_local = bool(getattr(self, "_xform_use_local", False))
                                 axis_dirs = axes
-                                if bool(getattr(self, "_xform_use_local", False)):
+                                R = np.eye(4, dtype=np.float32)
+                                if use_local:
                                     try:
                                         rot_deg, _is_splat = self._get_owner_rot_deg(owner)
                                         rx, ry, rz = float(rot_deg[0]), float(rot_deg[1]), float(rot_deg[2])
@@ -3478,18 +3480,109 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                         }
                                     except Exception:
                                         axis_dirs = axes
+                                        R = np.eye(4, dtype=np.float32)
+
+                                # Project using the same scaled gizmo transform as the draw path.
                                 axis_proj = {}
                                 max_axis_len = 0.0
-                                for name, a in axis_dirs.items():
-                                    p1 = project(g + a * axis_len)
-                                    if p1 is None:
-                                        continue
-                                    axis_proj[name] = p1
-                                    dx1 = float(p1[0]) - float(p0[0])
-                                    dy1 = float(p1[1]) - float(p0[1])
-                                    dist = (dx1 * dx1 + dy1 * dy1) ** 0.5
-                                    if dist > max_axis_len:
-                                        max_axis_len = dist
+                                try:
+                                    T = np.eye(4, dtype=np.float32)
+                                    T[0, 3] = float(g[0])
+                                    T[1, 3] = float(g[1])
+                                    T[2, 3] = float(g[2])
+
+                                    s = 1.0
+                                    try:
+                                        dpr_s = float(dpr)
+                                        vh_s = float(max(1, self.height())) * dpr_s
+                                        Pn = np.asarray(P, dtype=np.float32)
+                                        Vn = np.asarray(V, dtype=np.float32)
+                                        Mn = np.asarray(M, dtype=np.float32)
+                                        proj_y = abs(float(Pn[1, 1]))
+                                        if proj_y > 1e-6:
+                                            vm = (Vn @ Mn @ (T @ R)).astype(np.float32)
+                                            cp = vm @ np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+                                            w = float(cp[3]) if abs(float(cp[3])) > 1e-6 else 1.0
+                                            dist_raw = abs(float(cp[2]) / w)
+                                            dist_raw = max(dist_raw, 1e-6)
+
+                                            try:
+                                                sm = float(getattr(renderer, "_mgl_scale_multiplier", 1.0))
+                                            except Exception:
+                                                sm = 1.0
+                                            dist = dist_raw * sm
+
+                                            rot_shared = getattr(self, "_rot_shared", None)
+                                            if rot_shared is not None:
+                                                target_ring_px = float(rot_shared.xyz_ring_radius_px())
+                                                ring_r = float(getattr(rot_shared, "gizmo_radius", 0.9))
+                                            else:
+                                                target_ring_px = 110.0 * 1.3
+                                                ring_r = 0.9
+
+                                            if ring_r > 1e-6:
+                                                scene_scale = 1.0
+                                                try:
+                                                    sx = float(np.linalg.norm(Mn[:3, 0]))
+                                                    sy = float(np.linalg.norm(Mn[:3, 1]))
+                                                    sz = float(np.linalg.norm(Mn[:3, 2]))
+                                                    scene_scale = (sx + sy + sz) / 3.0
+                                                    if scene_scale <= 1e-6:
+                                                        scene_scale = 1.0
+                                                except Exception:
+                                                    scene_scale = 1.0
+
+                                                s = (target_ring_px * 2.0 * dist) / (vh_s * proj_y * ring_r * scene_scale)
+                                                s = max(1e-6, min(1000.0, float(s)))
+                                    except Exception:
+                                        s = 1.0
+
+                                    S = np.eye(4, dtype=np.float32)
+                                    S[0, 0] = s
+                                    S[1, 1] = s
+                                    S[2, 2] = s
+
+                                    TRS = (T @ R @ S).astype(np.float32)
+                                    PVTRS = (P @ V @ M @ TRS).astype(np.float32)
+
+                                    def project_local(local_xyz):
+                                        p = np.array([local_xyz[0], local_xyz[1], local_xyz[2], 1.0], dtype="f4")
+                                        c = PVTRS @ p
+                                        if abs(float(c[3])) < 1e-8:
+                                            return None
+                                        ndc = c[:3] / c[3]
+                                        sx = (ndc[0] * 0.5 + 0.5) * vw
+                                        sy = (1.0 - (ndc[1] * 0.5 + 0.5)) * vh
+                                        return float(sx), float(sy)
+
+                                    line_end = float(axis_len) - 0.18
+                                    axis_proj = {
+                                        "x": project_local((line_end, 0.0, 0.0)),
+                                        "y": project_local((0.0, line_end, 0.0)),
+                                        "z": project_local((0.0, 0.0, line_end)),
+                                    }
+                                    for name, p1 in axis_proj.items():
+                                        if p1 is None:
+                                            continue
+                                        dx1 = float(p1[0]) - float(p0[0])
+                                        dy1 = float(p1[1]) - float(p0[1])
+                                        dist = (dx1 * dx1 + dy1 * dy1) ** 0.5
+                                        if dist > max_axis_len:
+                                            max_axis_len = dist
+                                except Exception:
+                                    axis_proj = {}
+                                    max_axis_len = 0.0
+                                if not axis_proj:
+                                    for name, a in axis_dirs.items():
+                                        p1 = project(g + a * axis_len)
+                                        if p1 is None:
+                                            continue
+                                        axis_proj[name] = p1
+                                        dx1 = float(p1[0]) - float(p0[0])
+                                        dy1 = float(p1[1]) - float(p0[1])
+                                        dist = (dx1 * dx1 + dy1 * dy1) ** 0.5
+                                        if dist > max_axis_len:
+                                            max_axis_len = dist
 
                                 # Avoid stealing orbit clicks far from the gizmo center
                                 dx0 = float(px_dev) - float(p0[0])
