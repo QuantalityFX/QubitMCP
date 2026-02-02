@@ -2052,7 +2052,7 @@ class MGLRendererMixin:
                     except Exception:
                         cam_dist = 0.0
                     if cam_dist > 0.0:
-                        fade_end = min(render_size * 0.98, cam_dist * 2.5)
+                        fade_end = min(render_size * 0.98, cam_dist * 2.4)
                         fade_start = max(0.0, fade_end * 0.35)
                     if cam_height is not None:
                         try:
@@ -2067,6 +2067,17 @@ class MGLRendererMixin:
                                 height_scale = height_ref / cam_height
                             fade_start *= height_scale
                             fade_end *= height_scale
+                        try:
+                            low_height = float(getattr(self, "_mgl_grid_fade_low_height", 0.0))
+                        except Exception:
+                            low_height = 0.0
+                        try:
+                            low_boost = float(getattr(self, "_mgl_grid_fade_low_boost", 1.0))
+                        except Exception:
+                            low_boost = 1.0
+                        if low_height > 0.0 and low_boost > 1.0 and cam_height <= low_height:
+                            fade_start *= low_boost
+                            fade_end *= low_boost
                     if zoom_scale != 1.0:
                         fade_start *= zoom_scale
                         fade_end *= zoom_scale
