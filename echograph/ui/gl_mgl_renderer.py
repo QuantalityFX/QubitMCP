@@ -2052,18 +2052,50 @@ class MGLRendererMixin:
                         steps += 1
                     mid = steps // 2
 
-                    # Draw all grid lines except the center axes so the thick pass doesn't double-blend.
-                    before = 2 * mid
-                    after = 2 * (steps - mid - 1)
-                    if before > 0:
-                        self._mgl_grid_vao.render(mode=moderngl.LINES, vertices=before, first=0)
-                    if after > 0:
-                        self._mgl_grid_vao.render(mode=moderngl.LINES, vertices=after, first=2 * (mid + 1))
-                    base = steps * 2
-                    if before > 0:
-                        self._mgl_grid_vao.render(mode=moderngl.LINES, vertices=before, first=base)
-                    if after > 0:
-                        self._mgl_grid_vao.render(mode=moderngl.LINES, vertices=after, first=base + 2 * (mid + 1))
+                    skip_x = None
+                    skip_z = None
+                    if spacing > 1e-6:
+                        try:
+                            offset_steps_x = int(round(grid_offset_x / spacing))
+                            skip_x = mid - offset_steps_x
+                            if skip_x < 0 or skip_x >= steps:
+                                skip_x = None
+                        except Exception:
+                            skip_x = None
+                        try:
+                            offset_steps_z = int(round(grid_offset_z / spacing))
+                            skip_z = mid - offset_steps_z
+                            if skip_z < 0 or skip_z >= steps:
+                                skip_z = None
+                        except Exception:
+                            skip_z = None
+
+                    block_verts = steps * 2
+                    # Block 0: lines parallel to Z at constant X (skip X=0 when it falls inside this block)
+                    if skip_x is None:
+                        self._mgl_grid_vao.render(mode=moderngl.LINES, vertices=block_verts, first=0)
+                    else:
+                        before = skip_x * 2
+                        after = (steps - skip_x - 1) * 2
+                        if before > 0:
+                            self._mgl_grid_vao.render(mode=moderngl.LINES, vertices=before, first=0)
+                        if after > 0:
+                            self._mgl_grid_vao.render(mode=moderngl.LINES, vertices=after, first=(skip_x + 1) * 2)
+                    # Block 1: lines parallel to X at constant Z (skip Z=0 when it falls inside this block)
+                    base = block_verts
+                    if skip_z is None:
+                        self._mgl_grid_vao.render(mode=moderngl.LINES, vertices=block_verts, first=base)
+                    else:
+                        before = skip_z * 2
+                        after = (steps - skip_z - 1) * 2
+                        if before > 0:
+                            self._mgl_grid_vao.render(mode=moderngl.LINES, vertices=before, first=base)
+                        if after > 0:
+                            self._mgl_grid_vao.render(
+                                mode=moderngl.LINES,
+                                vertices=after,
+                                first=base + (skip_z + 1) * 2,
+                            )
 
                     # Draw the 2 center axes once (thicker) so origin reads as "+"
                     try:
@@ -2080,6 +2112,13 @@ class MGLRendererMixin:
                         pass
                     try:
                         self._mgl_grid_prog["MajorBoost"].value = 1.0
+                    except Exception:
+                        pass
+                    try:
+                        self._mgl_grid_prog["GridOffset"].value = (0.0, 0.0)
+                        self._mgl_grid_prog["FadeOrigin"].value = (0.0, 0.0)
+                        self._mgl_grid_prog["FadeStart"].value = 0.0
+                        self._mgl_grid_prog["FadeEnd"].value = 0.0
                     except Exception:
                         pass
                     first_center_z = 2 * mid
