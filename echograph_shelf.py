@@ -2960,7 +2960,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
         self._pan_base_value_lbl = QtWidgets.QLabel(f"{self._pan_base:.3f}")
         self._pan_base_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        self._pan_base_slider.setMinimum(1); self._pan_base_slider.setMaximum(200)
+        self._pan_base_slider.setMinimum(1); self._pan_base_slider.setMaximum(500)
         self._pan_base_slider.setSingleStep(1); self._pan_base_slider.setPageStep(10)
         self._pan_base_slider.setFixedWidth(160)
         self._pan_base_slider.setValue(int(round(self._pan_base * 1000.0)))
@@ -2993,7 +2993,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
         self._gizmo_zoom_value_lbl = QtWidgets.QLabel(f"{self._gizmo_zoom_scale:.3f}")
         self._gizmo_zoom_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        self._gizmo_zoom_slider.setMinimum(1); self._gizmo_zoom_slider.setMaximum(200)
+        self._gizmo_zoom_slider.setMinimum(1); self._gizmo_zoom_slider.setMaximum(1000)
         self._gizmo_zoom_slider.setSingleStep(1); self._gizmo_zoom_slider.setPageStep(10)
         self._gizmo_zoom_slider.setFixedWidth(160)
         self._gizmo_zoom_slider.setValue(int(round(self._gizmo_zoom_scale * 1000.0)))
