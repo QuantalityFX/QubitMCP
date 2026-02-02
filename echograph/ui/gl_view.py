@@ -484,6 +484,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._mgl_pan_base = 0.01
         self._mgl_pan_zoom_exp_out = 1.2
         self._mgl_pan_zoom_boost = 10.0
+        self._mgl_pan_zoom_threshold = 2.0
+        self._mgl_pan_ref_zoom = None
         self._mgl_center = None
         self._mgl_base_center = None
         self._mgl_base_zoom = None
@@ -5217,17 +5219,22 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     zoom = float(getattr(self, "_mgl_camera_zoom", 0.0))
                 except Exception:
                     zoom = 0.0
+                ref_zoom = getattr(self, "_mgl_pan_ref_zoom", None)
                 try:
-                    base_zoom = float(getattr(self, "_mgl_base_zoom", 0.0))
+                    ref_zoom = float(ref_zoom) if ref_zoom is not None else 0.0
                 except Exception:
-                    base_zoom = 0.0
-                if not math.isfinite(base_zoom) or base_zoom <= 0.0:
+                    ref_zoom = 0.0
+                if not math.isfinite(ref_zoom) or ref_zoom <= 0.0:
                     try:
-                        base_zoom = float(self._mgl_camera_distance(self._mgl_fov))
+                        ref_zoom = float(self._mgl_camera_distance(self._mgl_fov))
                     except Exception:
-                        base_zoom = max(1e-6, zoom)
-                if base_zoom > 0.0:
-                    ratio = zoom / base_zoom if zoom > 0.0 else 0.0
+                        ref_zoom = max(1e-6, zoom)
+                    try:
+                        self._mgl_pan_ref_zoom = ref_zoom
+                    except Exception:
+                        pass
+                if ref_zoom > 0.0:
+                    ratio = zoom / ref_zoom if zoom > 0.0 else 0.0
                     if ratio > 1.0:
                         try:
                             exp_out = float(getattr(self, "_mgl_pan_zoom_exp_out", 1.2))
@@ -5241,7 +5248,15 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                             boost = 10.0
                         if boost < 1.0:
                             boost = 1.0
-                        pan_scale *= (ratio ** exp_out) * boost
+                        try:
+                            threshold = float(getattr(self, "_mgl_pan_zoom_threshold", 2.0))
+                        except Exception:
+                            threshold = 2.0
+                        if threshold <= 1.0:
+                            threshold = 1.0
+                        ramp = (ratio - 1.0) / (threshold - 1.0) if threshold > 1.0 else 1.0
+                        ramp = max(0.0, min(1.0, ramp))
+                        pan_scale *= (ratio ** exp_out) * (1.0 + (boost - 1.0) * ramp)
                 right = np.array([1.0, 0.0, 0.0], dtype="f4")
                 up = np.array([0.0, 1.0, 0.0], dtype="f4")
                 if self._mgl_arcball is not None:
