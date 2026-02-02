@@ -561,8 +561,16 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         if getattr(self, "_controls", None) is not None:
             h = int(getattr(self, "_controls_h", 44))
             self._controls.setGeometry(0, max(0, self.height() - h), self.width(), h)
+        toggle_frame = getattr(self, "_debug_toggle_btn_frame", None)
         toggle = getattr(self, "_debug_toggle_btn", None)
-        if toggle is not None:
+        if toggle_frame is not None:
+            toggle_frame.setGeometry(
+                self._side_btn_margin,
+                self._side_btn_margin,
+                self._side_btn_size,
+                self._side_btn_size,
+            )
+        elif toggle is not None:
             toggle.setGeometry(
                 self._side_btn_margin,
                 self._side_btn_margin,
@@ -965,6 +973,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             btn.clicked.connect(self._toggle_debug_overlay)
             self._debug_toggle_btn = btn
             self._update_debug_toggle_button()
+            self._debug_toggle_btn_frame = self._wrap_side_button(self._debug_toggle_btn, "_debug_toggle_btn_frame")
             btn.show()
         except Exception:
             self._debug_toggle_btn = None
@@ -1020,16 +1029,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             btn.setText("")
         else:
             btn.setText("^" if self._debug_overlay else "v")
-        if self._debug_overlay:
-            bg = "rgba(30,41,59,230)"
-        else:
-            bg = "rgba(15,23,42,210)"
-        btn.setStyleSheet(
-            "QToolButton{background:%s;border:1px solid #334155;"
-            "color:#e2e8f0;padding:0px;border-radius:4px;font-size:11px;}"
-            "QToolButton:hover{background:rgba(51,65,85,230);}"
-            % bg
-        )
+        self._apply_side_icon_style(btn, active=self._debug_overlay)
 
     def _toggle_debug_overlay(self) -> None:
         self._debug_overlay = not self._debug_overlay
@@ -1062,16 +1062,17 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
     def _apply_side_icon_style(self, btn: QtWidgets.QToolButton | None, active: bool = False) -> None:
         if btn is None:
             return
-        bg = "#9aa2aa" if active else "#8f959c"
-        hover = "#a9b0b8"
-        pressed = "#7c828a"
+        bg = "#2a2f34" if active else "#22272c"
+        hover = "#3a4046"
+        pressed = "#1b2025"
         btn.setStyleSheet(
             "QToolButton{background:%s;border:0px;"
-            "color:#1f2937;padding:0px;border-radius:4px;font-size:10px;}"
+            "color:#1f2937;padding:0px;border-radius:3px;font-size:10px;}"
             "QToolButton:hover{background:%s;}"
             "QToolButton:pressed{background:%s;}"
             "QToolButton:checked{background:%s;}"
-            % (bg, hover, pressed, bg)
+            "QToolButton:checked:hover{background:%s;}"
+            % (bg, hover, pressed, bg, hover)
         )
 
     def _wrap_side_button(
@@ -1090,7 +1091,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         else:
             frame.setParent(self)
         frame.setStyleSheet(
-            "QFrame#GLSideIconFrame{background:#c3c8ce;border:1px solid #2f353c;border-radius:6px;}"
+            "QFrame#GLSideIconFrame{background:#555b61;border:1px solid #0f1418;border-radius:4px;}"
         )
         inner = max(1, int(self._side_btn_size - (2 * self._side_btn_inner_pad)))
         icon = min(self._side_btn_icon, inner)
