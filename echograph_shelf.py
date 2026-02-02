@@ -2081,6 +2081,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._view_splitter.setStretchFactor(0, 1)
         self._view_splitter.setStretchFactor(1, 1)
         self.gl_view.hide()
+        try:
+            self._apply_pan_settings_to_gl_view()
+        except Exception:
+            pass
         self._view_mode = "2d"
         self._frame_margin_x = 400.0
         self._frame_margin_y = 125.0
@@ -2889,27 +2893,157 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             QtCore.QUrl.fromLocalFile(__import__("os").path.join(__import__("tempfile").gettempdir(), "EchoGraph"))
         ))
         h.addWidget(btn_logs, 0)
-                
-        # --- LLM Scale slider ---
-        # LLM Scale (LEFT side)
-        # h.addStretch(1)  # ← move content that follows to the right
+
+        settings_btn = QtWidgets.QToolButton(bar)
+        settings_btn.setObjectName("SettingsButton")
+        settings_btn.setText("Settings")
+        settings_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        settings_btn.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
+        settings_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        settings_btn.setStyleSheet(
+            "QToolButton#SettingsButton{color:#ffffff;background:#2a2f36;border:1px solid #3a3f46;"
+            "border-radius:4px;padding:4px 10px;}"
+            "QToolButton#SettingsButton:hover{background:#353b45;}"
+            "QToolButton#SettingsButton[active=\"true\"]{background:#1f7a45;border-color:#2a8a52;}"
+        )
+
+        settings_menu = QtWidgets.QMenu(settings_btn)
+        settings_menu.setObjectName("SettingsMenu")
+        settings_menu.setStyleSheet(
+            "#SettingsMenu{background:#1b2026;border:1px solid #333;padding:0px;}"
+        )
+
+        panel = QtWidgets.QFrame(settings_menu)
+        panel.setObjectName("SettingsPanel")
+        panel.setStyleSheet(
+            "#SettingsPanel{background:#1b2026;border:0px;border-radius:6px;}"
+            "#SettingsPanel QLabel{color:#e5e7eb;}"
+        )
+        grid = QtWidgets.QGridLayout(panel)
+        grid.setContentsMargins(10, 10, 10, 10)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(6)
 
         self._llm_value_lbl = QtWidgets.QLabel(f"{int(round(LLM_SCALE*100))}%")
         self._llm_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self._llm_slider.setMinimum(25); self._llm_slider.setMaximum(175)
         self._llm_slider.setSingleStep(1); self._llm_slider.setPageStep(5)
-        self._llm_slider.setFixedWidth(140)
+        self._llm_slider.setFixedWidth(160)
         self._llm_slider.setValue(int(round(LLM_SCALE * 100)))
         self._llm_slider.valueChanged.connect(
             lambda v: (set_global_llm_scale(max(0.25, min(1.75, v/100.0)), self.scene),
                     self._llm_value_lbl.setText(f"{v}%"))
         )
-        h.addWidget(QtWidgets.QLabel("LLM Scale"))
-        h.addWidget(self._llm_slider)
-        h.addWidget(self._llm_value_lbl)
+        grid.addWidget(QtWidgets.QLabel("LLM Scale"), 0, 0)
+        grid.addWidget(self._llm_slider, 0, 1)
+        grid.addWidget(self._llm_value_lbl, 0, 2)
 
-        h.addStretch(1)   # ← stretch AFTER the slider block to keep it left
+        self._pan_base = float(getattr(self, "_pan_base", 0.01))
+        self._pan_exp = float(getattr(self, "_pan_exp", 1.2))
+        self._pan_boost = float(getattr(self, "_pan_boost", 10.0))
+
+        self._pan_base_value_lbl = QtWidgets.QLabel(f"{self._pan_base:.3f}")
+        self._pan_base_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self._pan_base_slider.setMinimum(1); self._pan_base_slider.setMaximum(200)
+        self._pan_base_slider.setSingleStep(1); self._pan_base_slider.setPageStep(10)
+        self._pan_base_slider.setFixedWidth(160)
+        self._pan_base_slider.setValue(int(round(self._pan_base * 1000.0)))
+        self._pan_base_slider.valueChanged.connect(self._on_pan_base_changed)
+        grid.addWidget(QtWidgets.QLabel("Pan Base"), 1, 0)
+        grid.addWidget(self._pan_base_slider, 1, 1)
+        grid.addWidget(self._pan_base_value_lbl, 1, 2)
+
+        self._pan_exp_value_lbl = QtWidgets.QLabel(f"{self._pan_exp:.2f}")
+        self._pan_exp_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self._pan_exp_slider.setMinimum(50); self._pan_exp_slider.setMaximum(300)
+        self._pan_exp_slider.setSingleStep(1); self._pan_exp_slider.setPageStep(10)
+        self._pan_exp_slider.setFixedWidth(160)
+        self._pan_exp_slider.setValue(int(round(self._pan_exp * 100.0)))
+        self._pan_exp_slider.valueChanged.connect(self._on_pan_exp_changed)
+        grid.addWidget(QtWidgets.QLabel("Pan Exp"), 2, 0)
+        grid.addWidget(self._pan_exp_slider, 2, 1)
+        grid.addWidget(self._pan_exp_value_lbl, 2, 2)
+
+        self._pan_boost_value_lbl = QtWidgets.QLabel(f"{self._pan_boost:.1f}")
+        self._pan_boost_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self._pan_boost_slider.setMinimum(1); self._pan_boost_slider.setMaximum(50)
+        self._pan_boost_slider.setSingleStep(1); self._pan_boost_slider.setPageStep(5)
+        self._pan_boost_slider.setFixedWidth(160)
+        self._pan_boost_slider.setValue(int(round(self._pan_boost)))
+        self._pan_boost_slider.valueChanged.connect(self._on_pan_boost_changed)
+        grid.addWidget(QtWidgets.QLabel("Pan Boost"), 3, 0)
+        grid.addWidget(self._pan_boost_slider, 3, 1)
+        grid.addWidget(self._pan_boost_value_lbl, 3, 2)
+
+        panel_action = QtWidgets.QWidgetAction(settings_menu)
+        panel_action.setDefaultWidget(panel)
+        settings_menu.addAction(panel_action)
+
+        settings_menu.aboutToShow.connect(lambda: self._set_settings_menu_active(True))
+        settings_menu.aboutToHide.connect(lambda: self._set_settings_menu_active(False))
+        settings_btn.setMenu(settings_menu)
+        self._settings_btn = settings_btn
+        h.addWidget(settings_btn, 0)
+
+        h.addStretch(1)   # ← stretch AFTER the settings block to keep it left
         return bar
+
+    def _set_settings_menu_active(self, active: bool) -> None:
+        btn = getattr(self, "_settings_btn", None)
+        if btn is None:
+            return
+        try:
+            btn.setProperty("active", bool(active))
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+            btn.update()
+        except Exception:
+            pass
+
+    def _apply_pan_settings_to_gl_view(self) -> None:
+        gv = getattr(self, "gl_view", None)
+        if gv is None:
+            return
+        try:
+            gv._mgl_pan_base = float(getattr(self, "_pan_base", 0.01))
+            gv._mgl_pan_zoom_exp_out = float(getattr(self, "_pan_exp", 1.2))
+            gv._mgl_pan_zoom_boost = float(getattr(self, "_pan_boost", 10.0))
+            gv._mgl_pan_ref_zoom = None
+        except Exception:
+            pass
+
+    def _on_pan_base_changed(self, value: int) -> None:
+        try:
+            base = max(0.0001, float(value) / 1000.0)
+        except Exception:
+            base = 0.01
+        self._pan_base = base
+        lbl = getattr(self, "_pan_base_value_lbl", None)
+        if lbl is not None:
+            lbl.setText(f"{base:.3f}")
+        self._apply_pan_settings_to_gl_view()
+
+    def _on_pan_exp_changed(self, value: int) -> None:
+        try:
+            exp = max(0.1, float(value) / 100.0)
+        except Exception:
+            exp = 1.2
+        self._pan_exp = exp
+        lbl = getattr(self, "_pan_exp_value_lbl", None)
+        if lbl is not None:
+            lbl.setText(f"{exp:.2f}")
+        self._apply_pan_settings_to_gl_view()
+
+    def _on_pan_boost_changed(self, value: int) -> None:
+        try:
+            boost = max(1.0, float(value))
+        except Exception:
+            boost = 10.0
+        self._pan_boost = boost
+        lbl = getattr(self, "_pan_boost_value_lbl", None)
+        if lbl is not None:
+            lbl.setText(f"{boost:.1f}")
+        self._apply_pan_settings_to_gl_view()
 
     def _create_node_interactive(self):
         dlg = CreateNodeDialog(self, existing_names=list(self.scene._nodes_by_name.keys()))

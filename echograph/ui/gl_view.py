@@ -509,7 +509,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._mgl_zoom_cam_dir = None
         self._mgl_zoom_ray_dir = None
         self._mgl_zoom_pan_scale = 0.02
-        self._mgl_zoom_infinite = True
+        self._mgl_zoom_infinite = False
         self._turntable_ctrl = None
 
         # --- IM3D bridge (safe no-op by default) ---
