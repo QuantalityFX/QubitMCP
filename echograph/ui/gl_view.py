@@ -522,6 +522,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._side_btn_icon = 28
         self._side_btn_gap = 6
         self._side_btn_margin = 10
+        self._side_btn_inner_pad = 2
 
         self._fps = 0.0
         self._fps_last_t = time.perf_counter()
@@ -577,24 +578,43 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 self._side_btn_size,
             )
         y = self._side_btn_margin + self._side_btn_size + self._side_btn_gap
+        grid_frame = getattr(self, "_grid_btn_frame", None)
         grid_btn = getattr(self, "_grid_btn", None)
-        if grid_btn is not None:
+        if grid_frame is not None:
+            grid_frame.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
+            y += self._side_btn_size + self._side_btn_gap
+        elif grid_btn is not None:
             grid_btn.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
             y += self._side_btn_size + self._side_btn_gap
+        xform_frame = getattr(self, "_xform_space_btn_frame", None)
         xform_btn = getattr(self, "_xform_space_btn", None)
-        if xform_btn is not None:
+        if xform_frame is not None:
+            xform_frame.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
+            y += self._side_btn_size + self._side_btn_gap
+        elif xform_btn is not None:
             xform_btn.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
             y += self._side_btn_size + self._side_btn_gap
+        orbit_frame = getattr(self, "_cam_orbit_btn_frame", None)
         orbit_btn = getattr(self, "_cam_orbit_btn", None)
-        if orbit_btn is not None:
+        if orbit_frame is not None:
+            orbit_frame.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
+            y += self._side_btn_size + self._side_btn_gap
+        elif orbit_btn is not None:
             orbit_btn.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
             y += self._side_btn_size + self._side_btn_gap
+        frame_frame = getattr(self, "_frame_btn_frame", None)
         frame_btn = getattr(self, "_frame_btn", None)
-        if frame_btn is not None:
+        if frame_frame is not None:
+            frame_frame.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
+            y += self._side_btn_size + self._side_btn_gap
+        elif frame_btn is not None:
             frame_btn.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
             y += self._side_btn_size + self._side_btn_gap
+        snap_frame = getattr(self, "_snapgrab_btn_frame", None)
         snap_btn = getattr(self, "_snapgrab_btn", None)
-        if snap_btn is not None:
+        if snap_frame is not None:
+            snap_frame.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
+        elif snap_btn is not None:
             snap_btn.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
         if getattr(self, "_mgl_uv_cache", None) is not None:
             self._mgl_uv_cache = None
@@ -675,6 +695,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             else:
                 self._frame_btn.setText("Frame")
             self._frame_btn.clicked.connect(self._on_frame_clicked)
+            self._apply_side_icon_style(self._frame_btn, active=False)
+            self._frame_btn_frame = self._wrap_side_button(self._frame_btn, "_frame_btn_frame")
             self._frame_btn.show()
 
             self._camlog_btn = QtWidgets.QPushButton("LogCam")
@@ -690,6 +712,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             if icon_path.exists():
                 self._snapgrab_btn.setIcon(QtGui.QIcon(str(icon_path)))
             self._snapgrab_btn.clicked.connect(self._on_snapgrab_clicked)
+            self._apply_side_icon_style(self._snapgrab_btn, active=False)
+            self._snapgrab_btn_frame = self._wrap_side_button(self._snapgrab_btn, "_snapgrab_btn_frame")
             self._snapgrab_btn.show()
 
             self._xform_space_btn = QtWidgets.QToolButton(self)
@@ -699,6 +723,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             self._xform_space_btn.setFixedSize(self._side_btn_size, self._side_btn_size)
             self._xform_space_btn.clicked.connect(self._on_xform_space_toggled)
             self._update_xform_space_button()
+            self._xform_space_btn_frame = self._wrap_side_button(self._xform_space_btn, "_xform_space_btn_frame")
             self._xform_space_btn.show()
             
             self._example_model_btn = QtWidgets.QPushButton("Model...")
@@ -792,11 +817,14 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 btn.setText("")
             else:
                 btn.setText("World")
-        btn.setIconSize(QtCore.QSize(self._side_btn_icon, self._side_btn_icon))
+        inner = max(1, int(self._side_btn_size - (2 * self._side_btn_inner_pad)))
+        icon = min(self._side_btn_icon, inner)
+        btn.setIconSize(QtCore.QSize(icon, icon))
         try:
-            btn.setFixedSize(self._side_btn_size, self._side_btn_size)
+            btn.setFixedSize(inner, inner)
         except Exception:
             pass
+        self._apply_side_icon_style(btn, active=use_local)
 
     def _on_xform_space_toggled(self, checked=None) -> None:
         if checked is None:
@@ -1031,6 +1059,50 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         except Exception:
             self._debug_copy_btn = None
 
+    def _apply_side_icon_style(self, btn: QtWidgets.QToolButton | None, active: bool = False) -> None:
+        if btn is None:
+            return
+        bg = "#9aa2aa" if active else "#8f959c"
+        hover = "#a9b0b8"
+        pressed = "#7c828a"
+        btn.setStyleSheet(
+            "QToolButton{background:%s;border:0px;"
+            "color:#1f2937;padding:0px;border-radius:4px;font-size:10px;}"
+            "QToolButton:hover{background:%s;}"
+            "QToolButton:pressed{background:%s;}"
+            "QToolButton:checked{background:%s;}"
+            % (bg, hover, pressed, bg)
+        )
+
+    def _wrap_side_button(
+        self,
+        btn: QtWidgets.QToolButton | None,
+        frame_attr: str,
+    ) -> QtWidgets.QFrame | None:
+        if btn is None:
+            return None
+        frame = getattr(self, frame_attr, None)
+        if frame is None:
+            frame = QtWidgets.QFrame(self)
+            frame.setObjectName("GLSideIconFrame")
+            frame.setAttribute(QtCore.Qt.WA_StyledBackground, True)
+            setattr(self, frame_attr, frame)
+        else:
+            frame.setParent(self)
+        frame.setStyleSheet(
+            "QFrame#GLSideIconFrame{background:#c3c8ce;border:1px solid #2f353c;border-radius:6px;}"
+        )
+        inner = max(1, int(self._side_btn_size - (2 * self._side_btn_inner_pad)))
+        icon = min(self._side_btn_icon, inner)
+        btn.setParent(frame)
+        btn.move(self._side_btn_inner_pad, self._side_btn_inner_pad)
+        btn.setFixedSize(inner, inner)
+        btn.setIconSize(QtCore.QSize(icon, icon))
+        frame.setFixedSize(self._side_btn_size, self._side_btn_size)
+        frame.show()
+        btn.show()
+        return frame
+
     def _build_camera_orbit_button(self) -> None:
         try:
             btn = QtWidgets.QToolButton(self)
@@ -1041,6 +1113,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             btn.clicked.connect(self._on_camera_orbit_toggled)
             self._cam_orbit_btn = btn
             self._update_camera_orbit_button()
+            self._cam_orbit_btn_frame = self._wrap_side_button(self._cam_orbit_btn, "_cam_orbit_btn_frame")
             btn.show()
         except Exception:
             self._cam_orbit_btn = None
@@ -1074,24 +1147,17 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         if locked:
             btn.setToolTip("Camera Orbit: Locked (no roll)")
             icon = self._cam_orbit_icon_locked
-            bg = "rgba(30,41,59,230)"
             fallback = "Lock"
         else:
             btn.setToolTip("Camera Orbit: Free (roll)")
             icon = self._cam_orbit_icon_free
-            bg = "rgba(15,23,42,210)"
             fallback = "Free"
         if icon is not None:
             btn.setIcon(icon)
             btn.setText("")
         else:
             btn.setText(fallback)
-        btn.setStyleSheet(
-            "QToolButton{background:%s;border:1px solid #334155;"
-            "color:#e2e8f0;padding:0px;border-radius:4px;font-size:10px;}"
-            "QToolButton:hover{background:rgba(51,65,85,230);}"
-            % bg
-        )
+        self._apply_side_icon_style(btn, active=locked)
 
     def _on_camera_orbit_toggled(self, checked=None) -> None:
         if checked is None:
@@ -1179,6 +1245,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             btn.clicked.connect(self._on_grid_button_toggled)
             self._grid_btn = btn
             self._update_grid_button()
+            self._grid_btn_frame = self._wrap_side_button(self._grid_btn, "_grid_btn_frame")
             try:
                 self._on_mgl_grid_toggled(bool(getattr(self, "_mgl_grid_visible", False)))
             except Exception:
@@ -1216,24 +1283,17 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         if visible:
             btn.setToolTip("Grid: On")
             icon = self._grid_icon_on
-            bg = "rgba(30,41,59,230)"
             fallback = "Grid"
         else:
             btn.setToolTip("Grid: Off")
             icon = self._grid_icon_off
-            bg = "rgba(15,23,42,210)"
             fallback = "Grid"
         if icon is not None:
             btn.setIcon(icon)
             btn.setText("")
         else:
             btn.setText(fallback)
-        btn.setStyleSheet(
-            "QToolButton{background:%s;border:1px solid #334155;"
-            "color:#e2e8f0;padding:0px;border-radius:4px;font-size:10px;}"
-            "QToolButton:hover{background:rgba(51,65,85,230);}"
-            % bg
-        )
+        self._apply_side_icon_style(btn, active=visible)
 
     def _on_grid_button_toggled(self, checked=None) -> None:
         if checked is None:
