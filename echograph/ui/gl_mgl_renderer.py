@@ -2054,17 +2054,15 @@ class MGLRendererMixin:
 
                     skip_x = None
                     skip_z = None
-                    if spacing > 1e-6:
+                    if spacing > 1e-6 and render_size > 0.0:
                         try:
-                            offset_steps_x = int(round(grid_offset_x / spacing))
-                            skip_x = mid - offset_steps_x
+                            skip_x = int(round((render_size - grid_offset_x) / spacing))
                             if skip_x < 0 or skip_x >= steps:
                                 skip_x = None
                         except Exception:
                             skip_x = None
                         try:
-                            offset_steps_z = int(round(grid_offset_z / spacing))
-                            skip_z = mid - offset_steps_z
+                            skip_z = int(round((render_size - grid_offset_z) / spacing))
                             if skip_z < 0 or skip_z >= steps:
                                 skip_z = None
                         except Exception:
