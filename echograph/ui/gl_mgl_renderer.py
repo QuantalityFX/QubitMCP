@@ -2046,14 +2046,13 @@ class MGLRendererMixin:
                 if render_size > 0.0:
                     fade_start = render_size * max(0.0, min(1.0, fade_start_frac))
                     fade_end = render_size * max(0.0, min(1.0, fade_end_frac))
-                    # Test override: tie fade radius to camera distance
-                    # so at distance=10 -> radius=5.
+                    # Tie fade radius to camera distance.
                     try:
                         cam_dist = float(getattr(self, "_mgl_camera_zoom", 0.0))
                     except Exception:
                         cam_dist = 0.0
                     if cam_dist > 0.0:
-                        fade_end = min(render_size * 0.98, cam_dist * 2.0)
+                        fade_end = min(render_size * 0.98, cam_dist * 2.5)
                         fade_start = max(0.0, fade_end * 0.35)
                     if cam_height is not None:
                         try:
@@ -2061,7 +2060,11 @@ class MGLRendererMixin:
                         except Exception:
                             height_ref = 5.0
                         if height_ref > 0.0:
-                            height_scale = min(1.0, height_ref / max(cam_height, height_ref))
+                            if cam_height <= height_ref:
+                                # boost falloff when the camera is near the grid plane
+                                height_scale = 1.0 + ((height_ref - cam_height) / height_ref) * 0.6
+                            else:
+                                height_scale = height_ref / cam_height
                             fade_start *= height_scale
                             fade_end *= height_scale
                     if zoom_scale != 1.0:
