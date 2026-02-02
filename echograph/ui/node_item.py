@@ -3144,10 +3144,101 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 pass
 
 
+            # Capture per-asset transforms from this scene node (prefer live GL values).
+            scene_xf_mesh = {}
+            scene_xf_splat = {}
+            try:
+                node_xforms = getattr(getattr(self, "model", None), "_scene_xforms", None)
+                if not isinstance(node_xforms, dict):
+                    node_xforms = {}
+
+                def _find_owner_key(d, owner):
+                    if not isinstance(d, dict):
+                        return None
+                    if owner in d:
+                        return owner
+                    lo = str(owner).strip().lower()
+                    for k in d.keys():
+                        try:
+                            if str(k).strip().lower() == lo:
+                                return k
+                        except Exception:
+                            continue
+                    return None
+
+                splat_map = getattr(gl_view, "_mgl_scene_splats", None) or {}
+                splat_world = getattr(gl_view, "_mgl_scene_splats_world", None) or {}
+                mesh_bounds = getattr(gl_view, "_mgl_scene_mesh_bounds_by_owner", None)
+                if not isinstance(mesh_bounds, dict):
+                    mesh_bounds = getattr(gl_view, "_mgl_scene_bounds_by_owner", None) or {}
+
+                splat_xforms = getattr(gl_view, "_mgl_scene_splat_xforms_by_owner", None) or {}
+                mesh_xforms = getattr(gl_view, "_mgl_scene_xforms_by_owner", None) or {}
+
+                for asset in assets or []:
+                    owner = (asset.get("node") or "").strip()
+                    if not owner:
+                        p = (asset.get("path") or "").strip()
+                        if p:
+                            owner = Path(p).name
+                    if not owner:
+                        continue
+                    ext = str(asset.get("ext") or Path(asset.get("path") or "").suffix).lower()
+                    is_splat = (ext == ".ply")
+
+                    xf = None
+                    if is_splat:
+                        if _find_owner_key(splat_map, owner) or _find_owner_key(splat_world, owner):
+                            kx = _find_owner_key(splat_xforms, owner)
+                            if kx is not None:
+                                xf = splat_xforms.get(kx)
+                    else:
+                        if _find_owner_key(mesh_bounds, owner):
+                            kx = _find_owner_key(mesh_xforms, owner)
+                            if kx is not None:
+                                xf = mesh_xforms.get(kx)
+
+                    if not isinstance(xf, dict):
+                        xf = node_xforms.get(owner)
+                        if xf is None:
+                            lo = str(owner).strip().lower()
+                            for k, v in node_xforms.items():
+                                if str(k).strip().lower() == lo:
+                                    xf = v
+                                    break
+
+                    if not isinstance(xf, dict):
+                        continue
+
+                    try:
+                        pos = [float(v) for v in xf.get("pos", (0.0, 0.0, 0.0))]
+                        rot = [float(v) for v in xf.get("rot", (0.0, 0.0, 0.0))]
+                        scl = [float(v) for v in xf.get("scl", (1.0, 1.0, 1.0))]
+                    except Exception:
+                        continue
+
+                    entry = {"pos": pos, "rot": rot, "scl": scl}
+                    if is_splat:
+                        scene_xf_splat[str(owner)] = entry
+                    else:
+                        scene_xf_mesh[str(owner)] = entry
+                    node_xforms[str(owner)] = entry
+
+                try:
+                    if getattr(self, "model", None) is not None:
+                        setattr(self.model, "_scene_xforms", node_xforms)
+                except Exception:
+                    pass
+            except Exception:
+                scene_xf_mesh = {}
+                scene_xf_splat = {}
+
             # save camera state beside the thumbnail: same name, .json
             try:
                 if hasattr(gl_view, "_mgl_get_camera_state"):
                     cam = gl_view._mgl_get_camera_state()
+                    if scene_xf_mesh or scene_xf_splat:
+                        cam["scene_xforms"] = {"mesh": scene_xf_mesh, "splat": scene_xf_splat}
                     cam_path = Path(thumb).with_suffix(".json")
                     with open(cam_path, "w", encoding="utf-8") as f:
                         json.dump(cam, f, indent=2)
