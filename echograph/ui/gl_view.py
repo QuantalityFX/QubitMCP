@@ -3035,6 +3035,12 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     cam_dist_origin = None
             if cam_dist_origin is not None:
                 lines.append(f"Cam→Origin: {cam_dist_origin:.2f}")
+            try:
+                zoom = float(getattr(self, "_mgl_camera_zoom", 0.0))
+                if zoom > 0.0:
+                    lines.append(f"Grid fade radius: {zoom * 2.0:.2f}")
+            except Exception:
+                pass
             if self._mgl_mesh_path:
                 lines.append(f"Model: {Path(self._mgl_mesh_path).name}")
             if self._mgl_texture_override and self._mgl_texture_path:

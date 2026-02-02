@@ -1983,6 +1983,7 @@ class MGLRendererMixin:
 
                 fade_start = 0.0
                 fade_end = 0.0
+                zoom_scale = 1.0
                 try:
                     fade_start_frac = float(getattr(self, "_mgl_grid_fade_start", 0.55))
                 except Exception:
@@ -1991,9 +1992,39 @@ class MGLRendererMixin:
                     fade_end_frac = float(getattr(self, "_mgl_grid_fade_end", 0.95))
                 except Exception:
                     fade_end_frac = 0.95
+                try:
+                    zoom = float(getattr(self, "_mgl_camera_zoom", 0.0))
+                except Exception:
+                    zoom = 0.0
+                try:
+                    base_zoom = float(getattr(self, "_mgl_base_zoom", zoom))
+                except Exception:
+                    base_zoom = zoom
+                if not math.isfinite(base_zoom) or base_zoom <= 0.0:
+                    base_zoom = max(1e-6, zoom)
+                if zoom > 0.0 and base_zoom > 0.0:
+                    zoom_scale = max(0.5, zoom / base_zoom)
                 if render_size > 0.0:
                     fade_start = render_size * max(0.0, min(1.0, fade_start_frac))
                     fade_end = render_size * max(0.0, min(1.0, fade_end_frac))
+                    # Test override: tie fade radius to camera distance
+                    # so at distance=10 -> radius=5.
+                    try:
+                        cam_dist = float(getattr(self, "_mgl_camera_zoom", 0.0))
+                    except Exception:
+                        cam_dist = 0.0
+                    if cam_dist > 0.0:
+                        fade_end = min(render_size * 0.98, cam_dist * 2.0)
+                        fade_start = max(0.0, fade_end * 0.35)
+                    if zoom_scale != 1.0:
+                        fade_start *= zoom_scale
+                        fade_end *= zoom_scale
+                    max_fade = render_size * 0.98
+                    if fade_end > max_fade:
+                        if fade_end > 1e-6:
+                            scale = max_fade / fade_end
+                            fade_start *= scale
+                        fade_end = max_fade
                     if fade_end <= fade_start:
                         fade_start = 0.0
                         fade_end = 0.0
