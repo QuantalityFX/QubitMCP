@@ -4300,7 +4300,9 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                     start_dist = max(1e-6, float(cur_dist))
                                     self._xform_scale_start_dist = start_dist
 
-                                factor = float(cur_dist) / float(start_dist) if float(start_dist) > 1e-6 else 1.0
+                                raw = float(cur_dist) / float(start_dist) if float(start_dist) > 1e-6 else 1.0
+                                # Reduce uniform-scale sensitivity (smaller mouse motion -> smaller scale change).
+                                factor = 1.0 + (raw - 1.0) * 0.35
                                 factor = max(0.01, float(factor))
                                 new_scl = (
                                     max(0.01, float(start_scl[0]) * factor),
