@@ -41,6 +41,7 @@ from echograph.ui.gl_view_example import example_zoom as _ex_example_zoom
 from echograph.ui.gl_view_example import build_example_program as _ex_build_example_program
 from echograph.ui.gl_view_example import example_cube_data as _ex_cube_data
 from echograph.ui.gl_view_example import example_grid_data as _ex_grid_data
+from echograph.rigging.turntable import TurntableController
 
 from typing import TYPE_CHECKING, Any, TypeAlias
 if TYPE_CHECKING:
@@ -509,6 +510,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._mgl_zoom_ray_dir = None
         self._mgl_zoom_pan_scale = 0.02
         self._mgl_zoom_infinite = True
+        self._turntable_ctrl = None
 
         # --- IM3D bridge (safe no-op by default) ---
         self._im3d = None
@@ -803,6 +805,14 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 self._mgl_grid_fx_toggle.setChecked(bool(self._mgl_grid_fx_enabled))
                 self._mgl_grid_fx_toggle.toggled.connect(self._on_mgl_grid_fx_toggled)
                 layout.addWidget(self._mgl_grid_fx_toggle, 0)
+
+                if self._turntable_ctrl is None:
+                    self._turntable_ctrl = TurntableController(self)
+                try:
+                    turntable_panel = self._turntable_ctrl.build_panel(controls)
+                    layout.addWidget(turntable_panel, 0)
+                except Exception:
+                    pass
 
             layout.addStretch(1)
             self._controls = controls
