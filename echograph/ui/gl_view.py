@@ -636,24 +636,22 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 self._mgl_texture_btn = QtWidgets.QPushButton("Texture...")
                 self._mgl_texture_btn.clicked.connect(self._on_mgl_pick_texture)
                 layout.addWidget(self._mgl_texture_btn, 0)
-            self._example_scale_label = QtWidgets.QLabel("Scale 1.00x")
-            try:
-                fm = self._example_scale_label.fontMetrics()
-                self._example_scale_label.setFixedWidth(fm.horizontalAdvance("Scale 20.00x") + 6)
-                self._example_scale_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
-            except Exception:
-                pass
-            self._example_scale_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-            self._example_scale_slider.setRange(1, 2000)
-            scale_val = self._mgl_scale_multiplier if self._use_moderngl else self._example_model_scale
-            self._example_scale_slider.setValue(int(scale_val * 100))
-            self._example_scale_slider.setFixedWidth(160)
-            if self._use_moderngl:
-                self._example_scale_slider.valueChanged.connect(self._on_mgl_scale_changed)
-            else:
+            if not self._use_moderngl:
+                self._example_scale_label = QtWidgets.QLabel("Scale 1.00x")
+                try:
+                    fm = self._example_scale_label.fontMetrics()
+                    self._example_scale_label.setFixedWidth(fm.horizontalAdvance("Scale 20.00x") + 6)
+                    self._example_scale_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+                except Exception:
+                    pass
+                self._example_scale_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+                self._example_scale_slider.setRange(1, 2000)
+                scale_val = self._example_model_scale
+                self._example_scale_slider.setValue(int(scale_val * 100))
+                self._example_scale_slider.setFixedWidth(160)
                 self._example_scale_slider.valueChanged.connect(self._on_example_scale_changed)
-            layout.addWidget(self._example_scale_label, 0)
-            layout.addWidget(self._example_scale_slider, 0)
+                layout.addWidget(self._example_scale_label, 0)
+                layout.addWidget(self._example_scale_slider, 0)
             if self._use_moderngl:
                 self._mgl_light_label = QtWidgets.QLabel("Light 1.00x")
                 self._mgl_light_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
@@ -2073,23 +2071,36 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 w = float(cp[3]) if abs(float(cp[3])) > 1e-6 else 1.0
 
                 dist_raw = abs(float(cp[2]) / w)
-                dist_raw = max(dist_raw, 0.05)
+                dist_raw = max(dist_raw, 1e-6)
 
                 try:
                     sm = float(getattr(renderer, "_mgl_scale_multiplier", 1.0))
                 except Exception:
                     sm = 1.0
 
+                # Keep gizmo size consistent across scene scale changes.
                 dist = dist_raw * sm
 
-                # world units per pixel at that depth
-                world_per_px = (1.55 * dist) / (vh * proj_y)
-                # IMPORTANT: match smoketest target size (XYZ ring radius)
+                # Match smoketest derivation for stable pixel size.
+                ring_r = float(rot_shared.gizmo_radius)
                 target_ring_px = float(rot_shared.xyz_ring_radius_px())
-                desired_world_radius = target_ring_px * world_per_px
+                if ring_r <= 1e-6:
+                    return
 
-                s = desired_world_radius / float(rot_shared.gizmo_radius)
-                s = max(0.01, min(1000.0, float(s)))
+                # Compensate for scene normalization scale baked into Mn.
+                scene_scale = 1.0
+                try:
+                    sx = float(np.linalg.norm(Mn[:3, 0]))
+                    sy = float(np.linalg.norm(Mn[:3, 1]))
+                    sz = float(np.linalg.norm(Mn[:3, 2]))
+                    scene_scale = (sx + sy + sz) / 3.0
+                    if scene_scale <= 1e-6:
+                        scene_scale = 1.0
+                except Exception:
+                    scene_scale = 1.0
+
+                s = (target_ring_px * 2.0 * dist) / (vh * proj_y * ring_r * scene_scale)
+                s = max(1e-6, min(1000.0, float(s)))
 
                 # (if you have clamps, keep them here, then print after clamps)
                 # s = max(0.01, min(1000.0, float(s)))

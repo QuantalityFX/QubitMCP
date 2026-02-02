@@ -2369,21 +2369,13 @@ class MGLRendererMixin:
             except Exception:
                 pass
 
-        # scale slider multiplier (the "Scale xx.x" UI)
+        # Ignore snapshot scale multiplier; keep default scale 1.0 for all scenes.
         try:
-            sm = state.get("scale_multiplier", None)
-            if sm is not None:
-                self._camdbg("[CAM] apply scale_multiplier ->", sm)
-                self._camdbg("[CAM] has _example_scale_slider:", bool(getattr(self, "_example_scale_slider", None)))
-
-                self._mgl_scale_multiplier = float(sm)
-
-                if hasattr(self, "_example_scale_slider") and self._example_scale_slider is not None:
-                    self._example_scale_slider.setValue(int(self._mgl_scale_multiplier * 100.0))
-                    self._camdbg("[CAM] slider now:", self._example_scale_slider.value())
-
-                if hasattr(self, "_example_scale_label") and self._example_scale_label is not None:
-                    self._example_scale_label.setText(f"Scale {self._mgl_scale_multiplier:.2f}x")
+            self._mgl_scale_multiplier = 1.0
+            if hasattr(self, "_example_scale_label") and self._example_scale_label is not None:
+                self._example_scale_label.setText("Scale 1.00x")
+            if hasattr(self, "_example_scale_slider") and self._example_scale_slider is not None:
+                self._example_scale_slider.setValue(100)
         except Exception:
             pass
 
@@ -3505,6 +3497,21 @@ class MGLRendererMixin:
             return np.minimum(bmin, new_min), np.maximum(bmax, new_max)
 
         self._mgl_error = ""
+        # Reset scene scale for every load (snapshots should not override this).
+        try:
+            self._mgl_scale_multiplier = 1.0
+            label = getattr(self, "_example_scale_label", None)
+            if label is not None:
+                label.setText("Scale 1.00x")
+            slider = getattr(self, "_example_scale_slider", None)
+            if slider is not None:
+                try:
+                    slider.blockSignals(True)
+                    slider.setValue(100)
+                finally:
+                    slider.blockSignals(False)
+        except Exception:
+            pass
         self._mgl_clear_scene_models()
         self._mgl_submeshes = []
         self._mgl_vao = None
