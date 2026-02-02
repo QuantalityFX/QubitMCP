@@ -180,6 +180,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._xform_gizmo_pos_locked = False
         self._xform_gizmo_idle_visible = True
         self._xform_gizmo_mode = "translate"
+        self._xform_use_local = True
+        self._mgl_xform_space = "local"
 
         self._xform_rotate_dragging = False
         self._xform_rotate_axis = None
@@ -194,6 +196,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._xform_scale_start_dist = None
         self._xform_scale_axis_world = None
         self._xform_scale_center_px = None
+        self._xform_drag_axis_world = None
 
         try:
             from .axis_gizmo_overlay import AxisGizmoOverlay
@@ -630,6 +633,14 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 self._snapgrab_btn.setIcon(QtGui.QIcon(str(icon_path)))
             self._snapgrab_btn.clicked.connect(self._on_snapgrab_clicked)
             layout.addWidget(self._snapgrab_btn, 0)
+
+            self._xform_space_btn = QtWidgets.QPushButton()
+            self._xform_space_btn.setToolTip("Gizmo Space: World")
+            self._xform_space_btn.setCheckable(True)
+            self._xform_space_btn.setFixedSize(26, 24)
+            self._xform_space_btn.clicked.connect(self._on_xform_space_toggled)
+            layout.addWidget(self._xform_space_btn, 0)
+            self._update_xform_space_button()
             
             self._example_model_btn = QtWidgets.QPushButton("Model...")
             if self._use_moderngl:
@@ -690,6 +701,65 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         except Exception:
             self._controls = None
             self._controls_h = 0
+
+    def _load_xform_space_icons(self) -> None:
+        if getattr(self, "_xform_space_icon_world", None) is not None:
+            return
+        icon_world = None
+        icon_local = None
+        try:
+            root = Path(__file__).resolve().parents[2]
+            world_path = root / "icons" / "WorldGizmoOn_Icon.png"
+            local_path = root / "icons" / "WorldGizmoOff_Icon.png"
+            if world_path.exists():
+                icon_world = QtGui.QIcon(str(world_path))
+            if local_path.exists():
+                icon_local = QtGui.QIcon(str(local_path))
+        except Exception:
+            icon_world = None
+            icon_local = None
+        self._xform_space_icon_world = icon_world
+        self._xform_space_icon_local = icon_local
+
+    def _update_xform_space_button(self) -> None:
+        btn = getattr(self, "_xform_space_btn", None)
+        if btn is None:
+            return
+        use_local = bool(getattr(self, "_xform_use_local", False))
+        btn.setChecked(use_local)
+        self._load_xform_space_icons()
+        icon_world = getattr(self, "_xform_space_icon_world", None)
+        icon_local = getattr(self, "_xform_space_icon_local", None)
+        if use_local:
+            btn.setToolTip("Gizmo Space: Local")
+            if icon_local is not None:
+                btn.setIcon(icon_local)
+                btn.setText("")
+            else:
+                btn.setText("Local")
+        else:
+            btn.setToolTip("Gizmo Space: World")
+            if icon_world is not None:
+                btn.setIcon(icon_world)
+                btn.setText("")
+            else:
+                btn.setText("World")
+        btn.setIconSize(QtCore.QSize(16, 16))
+
+    def _on_xform_space_toggled(self, checked=None) -> None:
+        if checked is None:
+            checked = bool(getattr(self, "_xform_space_btn", None) and self._xform_space_btn.isChecked())
+        self._xform_use_local = bool(checked)
+        try:
+            renderer = getattr(self, "_mgl_renderer", None) or self
+            setattr(renderer, "_mgl_xform_space", "local" if self._xform_use_local else "world")
+        except Exception:
+            pass
+        self._update_xform_space_button()
+        try:
+            self.update()
+        except Exception:
+            pass
 
     def _on_camlog_clicked(self) -> None:
         self._write_camera_debug_snapshot()
@@ -3153,39 +3223,41 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                             # --- scale gizmo drag start (axis cubes + center) ---
                             if p0 is not None and mode == "scale":
                                 try:
+                                    use_local = bool(getattr(self, "_xform_use_local", False))
                                     # Rotation matrix (scale gizmo follows object orientation).
                                     R = np.eye(4, dtype=np.float32)
-                                    try:
-                                        rot_deg, _is_splat = self._get_owner_rot_deg(owner)
-                                        rx, ry, rz = float(rot_deg[0]), float(rot_deg[1]), float(rot_deg[2])
-                                        cx, sx = math.cos(math.radians(rx)), math.sin(math.radians(rx))
-                                        cy, sy = math.cos(math.radians(ry)), math.sin(math.radians(ry))
-                                        cz, sz = math.cos(math.radians(rz)), math.sin(math.radians(rz))
+                                    if use_local:
+                                        try:
+                                            rot_deg, _is_splat = self._get_owner_rot_deg(owner)
+                                            rx, ry, rz = float(rot_deg[0]), float(rot_deg[1]), float(rot_deg[2])
+                                            cx, sx = math.cos(math.radians(rx)), math.sin(math.radians(rx))
+                                            cy, sy = math.cos(math.radians(ry)), math.sin(math.radians(ry))
+                                            cz, sz = math.cos(math.radians(rz)), math.sin(math.radians(rz))
 
-                                        Rx = np.array(
-                                            [[1.0, 0.0, 0.0, 0.0],
-                                             [0.0,  cx,  sx, 0.0],
-                                             [0.0, -sx,  cx, 0.0],
-                                             [0.0, 0.0, 0.0, 1.0]],
-                                            dtype=np.float32,
-                                        )
-                                        Ry = np.array(
-                                            [[ cy, 0.0, -sy, 0.0],
-                                             [0.0, 1.0, 0.0, 0.0],
-                                             [ sy, 0.0,  cy, 0.0],
-                                             [0.0, 0.0, 0.0, 1.0]],
-                                            dtype=np.float32,
-                                        )
-                                        Rz = np.array(
-                                            [[ cz,  sz, 0.0, 0.0],
-                                             [-sz,  cz, 0.0, 0.0],
-                                             [0.0, 0.0, 1.0, 0.0],
-                                             [0.0, 0.0, 0.0, 1.0]],
-                                            dtype=np.float32,
-                                        )
-                                        R = (Rz @ Ry @ Rx).astype(np.float32)
-                                    except Exception:
-                                        R = np.eye(4, dtype=np.float32)
+                                            Rx = np.array(
+                                                [[1.0, 0.0, 0.0, 0.0],
+                                                 [0.0,  cx,  sx, 0.0],
+                                                 [0.0, -sx,  cx, 0.0],
+                                                 [0.0, 0.0, 0.0, 1.0]],
+                                                dtype=np.float32,
+                                            )
+                                            Ry = np.array(
+                                                [[ cy, 0.0, -sy, 0.0],
+                                                 [0.0, 1.0, 0.0, 0.0],
+                                                 [ sy, 0.0,  cy, 0.0],
+                                                 [0.0, 0.0, 0.0, 1.0]],
+                                                dtype=np.float32,
+                                            )
+                                            Rz = np.array(
+                                                [[ cz,  sz, 0.0, 0.0],
+                                                 [-sz,  cz, 0.0, 0.0],
+                                                 [0.0, 0.0, 1.0, 0.0],
+                                                 [0.0, 0.0, 0.0, 1.0]],
+                                                dtype=np.float32,
+                                            )
+                                            R = (Rz @ Ry @ Rx).astype(np.float32)
+                                        except Exception:
+                                            R = np.eye(4, dtype=np.float32)
 
                                     T = np.eye(4, dtype=np.float32)
                                     T[0, 3] = float(g[0])
@@ -3257,10 +3329,11 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                         sy = (1.0 - (ndc[1] * 0.5 + 0.5)) * vh
                                         return float(sx), float(sy)
 
+                                    cube_axis_pos = axis_len - 0.18 + (0.12 * 0.5)
                                     axis_proj = {
-                                        "x": project_local((axis_len, 0.0, 0.0)),
-                                        "y": project_local((0.0, axis_len, 0.0)),
-                                        "z": project_local((0.0, 0.0, axis_len)),
+                                        "x": project_local((cube_axis_pos, 0.0, 0.0)),
+                                        "y": project_local((0.0, cube_axis_pos, 0.0)),
+                                        "z": project_local((0.0, 0.0, cube_axis_pos)),
                                     }
 
                                     # Avoid stealing orbit clicks far from the gizmo center.
@@ -3345,10 +3418,11 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                                 else (np.array([0.0, 1.0, 0.0], dtype="f4") if pick_axis == "y" else np.array([0.0, 0.0, 1.0], dtype="f4"))
                                             )
                                             axis_world = axis_local
-                                            try:
-                                                axis_world = (R[:3, :3] @ axis_local).astype(np.float32)
-                                            except Exception:
-                                                axis_world = axis_local
+                                            if use_local:
+                                                try:
+                                                    axis_world = (R[:3, :3] @ axis_local).astype(np.float32)
+                                                except Exception:
+                                                    axis_world = axis_local
                                             ln = float(np.linalg.norm(axis_world))
                                             if ln > 1e-8:
                                                 axis_world = axis_world / ln
@@ -3366,9 +3440,47 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
                             # --- translate gizmo drag start (existing axis line pick) ---
                             if p0 is not None and mode == "translate":
+                                axis_dirs = axes
+                                if bool(getattr(self, "_xform_use_local", False)):
+                                    try:
+                                        rot_deg, _is_splat = self._get_owner_rot_deg(owner)
+                                        rx, ry, rz = float(rot_deg[0]), float(rot_deg[1]), float(rot_deg[2])
+                                        cx, sx = math.cos(math.radians(rx)), math.sin(math.radians(rx))
+                                        cy, sy = math.cos(math.radians(ry)), math.sin(math.radians(ry))
+                                        cz, sz = math.cos(math.radians(rz)), math.sin(math.radians(rz))
+
+                                        Rx = np.array(
+                                            [[1.0, 0.0, 0.0, 0.0],
+                                             [0.0,  cx,  sx, 0.0],
+                                             [0.0, -sx,  cx, 0.0],
+                                             [0.0, 0.0, 0.0, 1.0]],
+                                            dtype=np.float32,
+                                        )
+                                        Ry = np.array(
+                                            [[ cy, 0.0, -sy, 0.0],
+                                             [0.0, 1.0, 0.0, 0.0],
+                                             [ sy, 0.0,  cy, 0.0],
+                                             [0.0, 0.0, 0.0, 1.0]],
+                                            dtype=np.float32,
+                                        )
+                                        Rz = np.array(
+                                            [[ cz,  sz, 0.0, 0.0],
+                                             [-sz,  cz, 0.0, 0.0],
+                                             [0.0, 0.0, 1.0, 0.0],
+                                             [0.0, 0.0, 0.0, 1.0]],
+                                            dtype=np.float32,
+                                        )
+                                        R = (Rz @ Ry @ Rx).astype(np.float32)
+                                        axis_dirs = {
+                                            "x": (R[:3, :3] @ axes["x"]).astype("f4"),
+                                            "y": (R[:3, :3] @ axes["y"]).astype("f4"),
+                                            "z": (R[:3, :3] @ axes["z"]).astype("f4"),
+                                        }
+                                    except Exception:
+                                        axis_dirs = axes
                                 axis_proj = {}
                                 max_axis_len = 0.0
-                                for name, a in axes.items():
+                                for name, a in axis_dirs.items():
                                     p1 = project(g + a * axis_len)
                                     if p1 is None:
                                         continue
@@ -3415,6 +3527,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                     self._xform_drag_start_pos = g.copy()
                                     self._xform_gizmo_pos_locked = True
                                     self._xform_drag_s0 = None
+                                    self._xform_drag_axis_world = axis_dirs.get(best_axis) if isinstance(axis_dirs, dict) else None
 
                                     # Important: prevent old click-pick/orbit press state from interfering
                                     self._mgl_pick_press_pos = None
@@ -3978,6 +4091,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
                     if drag_mode == "scale":
                         try:
+                            use_local = bool(getattr(self, "_xform_use_local", False))
                             start_scl = getattr(self, "_xform_drag_start_scl", None)
                             if start_scl is None:
                                 try:
@@ -4017,38 +4131,39 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                         else (np.array([0.0, 1.0, 0.0], dtype="f4") if axis == "y" else np.array([0.0, 0.0, 1.0], dtype="f4"))
                                     )
                                     axis_world = axis_local
-                                    try:
-                                        rot_deg, _ = self._get_owner_rot_deg(owner)
-                                        rx, ry, rz = float(rot_deg[0]), float(rot_deg[1]), float(rot_deg[2])
-                                        cx, sx = math.cos(math.radians(rx)), math.sin(math.radians(rx))
-                                        cy, sy = math.cos(math.radians(ry)), math.sin(math.radians(ry))
-                                        cz, sz = math.cos(math.radians(rz)), math.sin(math.radians(rz))
+                                    if use_local:
+                                        try:
+                                            rot_deg, _ = self._get_owner_rot_deg(owner)
+                                            rx, ry, rz = float(rot_deg[0]), float(rot_deg[1]), float(rot_deg[2])
+                                            cx, sx = math.cos(math.radians(rx)), math.sin(math.radians(rx))
+                                            cy, sy = math.cos(math.radians(ry)), math.sin(math.radians(ry))
+                                            cz, sz = math.cos(math.radians(rz)), math.sin(math.radians(rz))
 
-                                        Rx = np.array(
-                                            [[1.0, 0.0, 0.0, 0.0],
-                                             [0.0,  cx,  sx, 0.0],
-                                             [0.0, -sx,  cx, 0.0],
-                                             [0.0, 0.0, 0.0, 1.0]],
-                                            dtype=np.float32,
-                                        )
-                                        Ry = np.array(
-                                            [[ cy, 0.0, -sy, 0.0],
-                                             [0.0, 1.0, 0.0, 0.0],
-                                             [ sy, 0.0,  cy, 0.0],
-                                             [0.0, 0.0, 0.0, 1.0]],
-                                            dtype=np.float32,
-                                        )
-                                        Rz = np.array(
-                                            [[ cz,  sz, 0.0, 0.0],
-                                             [-sz,  cz, 0.0, 0.0],
-                                             [0.0, 0.0, 1.0, 0.0],
-                                             [0.0, 0.0, 0.0, 1.0]],
-                                            dtype=np.float32,
-                                        )
-                                        R = (Rz @ Ry @ Rx).astype(np.float32)
-                                        axis_world = (R[:3, :3] @ axis_local).astype(np.float32)
-                                    except Exception:
-                                        axis_world = axis_local
+                                            Rx = np.array(
+                                                [[1.0, 0.0, 0.0, 0.0],
+                                                 [0.0,  cx,  sx, 0.0],
+                                                 [0.0, -sx,  cx, 0.0],
+                                                 [0.0, 0.0, 0.0, 1.0]],
+                                                dtype=np.float32,
+                                            )
+                                            Ry = np.array(
+                                                [[ cy, 0.0, -sy, 0.0],
+                                                 [0.0, 1.0, 0.0, 0.0],
+                                                 [ sy, 0.0,  cy, 0.0],
+                                                 [0.0, 0.0, 0.0, 1.0]],
+                                                dtype=np.float32,
+                                            )
+                                            Rz = np.array(
+                                                [[ cz,  sz, 0.0, 0.0],
+                                                 [-sz,  cz, 0.0, 0.0],
+                                                 [0.0, 0.0, 1.0, 0.0],
+                                                 [0.0, 0.0, 0.0, 1.0]],
+                                                dtype=np.float32,
+                                            )
+                                            R = (Rz @ Ry @ Rx).astype(np.float32)
+                                            axis_world = (R[:3, :3] @ axis_local).astype(np.float32)
+                                        except Exception:
+                                            axis_world = axis_local
 
                                 if isinstance(axis_world, QtGui.QVector3D):
                                     axis_world = np.array([axis_world.x(), axis_world.y(), axis_world.z()], dtype="f4")
@@ -4151,9 +4266,52 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                         "y": np.array([0.0, 1.0, 0.0], dtype="f4"),
                         "z": np.array([0.0, 0.0, 1.0], dtype="f4"),
                     }
-                    a = axes.get(axis)
+                    a = getattr(self, "_xform_drag_axis_world", None)
                     if a is None:
-                        return
+                        a = axes.get(axis)
+                        if a is None:
+                            return
+                        if bool(getattr(self, "_xform_use_local", False)):
+                            try:
+                                rot_deg, _ = self._get_owner_rot_deg(owner)
+                                rx, ry, rz = float(rot_deg[0]), float(rot_deg[1]), float(rot_deg[2])
+                                cx, sx = math.cos(math.radians(rx)), math.sin(math.radians(rx))
+                                cy, sy = math.cos(math.radians(ry)), math.sin(math.radians(ry))
+                                cz, sz = math.cos(math.radians(rz)), math.sin(math.radians(rz))
+
+                                Rx = np.array(
+                                    [[1.0, 0.0, 0.0, 0.0],
+                                     [0.0,  cx,  sx, 0.0],
+                                     [0.0, -sx,  cx, 0.0],
+                                     [0.0, 0.0, 0.0, 1.0]],
+                                    dtype=np.float32,
+                                )
+                                Ry = np.array(
+                                    [[ cy, 0.0, -sy, 0.0],
+                                     [0.0, 1.0, 0.0, 0.0],
+                                     [ sy, 0.0,  cy, 0.0],
+                                     [0.0, 0.0, 0.0, 1.0]],
+                                    dtype=np.float32,
+                                )
+                                Rz = np.array(
+                                    [[ cz,  sz, 0.0, 0.0],
+                                     [-sz,  cz, 0.0, 0.0],
+                                     [0.0, 0.0, 1.0, 0.0],
+                                     [0.0, 0.0, 0.0, 1.0]],
+                                    dtype=np.float32,
+                                )
+                                R = (Rz @ Ry @ Rx).astype(np.float32)
+                                a = (R[:3, :3] @ a).astype(np.float32)
+                            except Exception:
+                                a = axes.get(axis)
+
+                    if isinstance(a, QtGui.QVector3D):
+                        a = np.array([a.x(), a.y(), a.z()], dtype="f4")
+
+                    a = np.asarray(a, dtype="f4")
+                    al = float(np.linalg.norm(a))
+                    if al > 1e-8:
+                        a = a / al
 
                     # Compute parameter "s" along axis line closest to the mouse ray
                     w0 = ray_o - g0
@@ -4540,6 +4698,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 self._xform_scale_start_dist = None
                 self._xform_scale_axis_world = None
                 self._xform_scale_center_px = None
+                self._xform_drag_axis_world = None
                 self._xform_gizmo_pos_locked = False
 
                 # Important: don't let a gizmo drag "fall through" into click-pick or orbit

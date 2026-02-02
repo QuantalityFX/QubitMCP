@@ -635,7 +635,11 @@ class MGLRendererMixin:
         # Build rotation in row-vector order to match gl_view's column-vector convention.
         R = (Rx(rot_rx) @ Ry(rot_ry) @ Rz(rot_rz))
 
-        model = T(-cx, -cy, -cz) @ R @ S(sx, sy, sz) @ T(px, py, pz)
+        xform_space = str(getattr(self, "_mgl_xform_space", "world") or "world").lower()
+        if xform_space == "local":
+            model = T(-cx, -cy, -cz) @ S(sx, sy, sz) @ R @ T(px, py, pz)
+        else:
+            model = T(-cx, -cy, -cz) @ R @ S(sx, sy, sz) @ T(px, py, pz)
 
         scene = getattr(self, "_mgl_scene", None)
         if scene is None:
@@ -4160,12 +4164,21 @@ class MGLRendererMixin:
                     c = (bmin + bmax) * 0.5
                     cx, cy, cz = float(c[0]), float(c[1]), float(c[2])
                     rot_rx, rot_ry, rot_rz = -float(rx), -float(ry), -float(rz)
-                    model = (
-                        T(-cx, -cy, -cz)
-                        @ (Rx(rot_rx) @ Ry(rot_ry) @ Rz(rot_rz))
-                        @ S(sx, sy, sz)
-                        @ T(px, py, pz)
-                    )
+                    xform_space = str(getattr(self, "_mgl_xform_space", "world") or "world").lower()
+                    if xform_space == "local":
+                        model = (
+                            T(-cx, -cy, -cz)
+                            @ S(sx, sy, sz)
+                            @ (Rx(rot_rx) @ Ry(rot_ry) @ Rz(rot_rz))
+                            @ T(px, py, pz)
+                        )
+                    else:
+                        model = (
+                            T(-cx, -cy, -cz)
+                            @ (Rx(rot_rx) @ Ry(rot_ry) @ Rz(rot_rz))
+                            @ S(sx, sy, sz)
+                            @ T(px, py, pz)
+                        )
                 except Exception:
                     model = None
 
@@ -4450,12 +4463,21 @@ def pick_hit_at(self, px: int, py: int, viewport_w: int, viewport_h: int):
                 c = (bmin + bmax) * 0.5
                 cx, cy, cz = float(c[0]), float(c[1]), float(c[2])
                 rot_rx, rot_ry, rot_rz = -float(rx), -float(ry), -float(rz)
-                model = (
-                    T(-cx, -cy, -cz)
-                    @ (Rx(rot_rx) @ Ry(rot_ry) @ Rz(rot_rz))
-                    @ S(sx, sy, sz)
-                    @ T(px, py, pz)
-                )
+                xform_space = str(getattr(self, "_mgl_xform_space", "world") or "world").lower()
+                if xform_space == "local":
+                    model = (
+                        T(-cx, -cy, -cz)
+                        @ S(sx, sy, sz)
+                        @ (Rx(rot_rx) @ Ry(rot_ry) @ Rz(rot_rz))
+                        @ T(px, py, pz)
+                    )
+                else:
+                    model = (
+                        T(-cx, -cy, -cz)
+                        @ (Rx(rot_rx) @ Ry(rot_ry) @ Rz(rot_rz))
+                        @ S(sx, sy, sz)
+                        @ T(px, py, pz)
+                    )
             except Exception:
                 model = None
 

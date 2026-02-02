@@ -171,9 +171,10 @@ class AxisGizmoOverlay:
         # scale cubes
         self._scale_cube_vert_offset = len(verts) // 6
         cube_size = 0.12
-        add_cube((axis_len, 0.0, 0.0), cube_size, (1.0, 0.0, 0.0))
-        add_cube((0.0, axis_len, 0.0), cube_size, (0.0, 1.0, 0.0))
-        add_cube((0.0, 0.0, axis_len), cube_size, (0.0, 0.0, 1.0))
+        cube_axis_pos = line_end + (cube_size * 0.5)
+        add_cube((cube_axis_pos, 0.0, 0.0), cube_size, (1.0, 0.0, 0.0))
+        add_cube((0.0, cube_axis_pos, 0.0), cube_size, (0.0, 1.0, 0.0))
+        add_cube((0.0, 0.0, cube_axis_pos), cube_size, (0.0, 0.0, 1.0))
         add_cube((0.0, 0.0, 0.0), cube_size * 1.15, (0.7, 0.2, 0.8))
         self._scale_cube_vert_count = (len(verts) // 6) - self._scale_cube_vert_offset
 
