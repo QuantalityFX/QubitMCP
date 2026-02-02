@@ -53,7 +53,9 @@ void main() {
 #version 330
 uniform mat4 Mvp;
 in vec3 in_position;
+out vec3 v_pos;
 void main() {
+    v_pos = in_position;
     gl_Position = Mvp * vec4(in_position, 1.0);
 }
 """,
@@ -61,9 +63,33 @@ void main() {
     "grid_fragment": """
 #version 330
 uniform vec4 Color;
+uniform float GridSpacing;
+uniform float MajorStep;
+uniform float MajorBoost;
+uniform float FadeStart;
+uniform float FadeEnd;
+in vec3 v_pos;
 out vec4 f_color;
 void main() {
-    f_color = Color;
+    vec3 base = Color.rgb;
+    float alpha = Color.a;
+    float spacing = max(GridSpacing, 1e-6);
+    float ix = abs(v_pos.x) / spacing;
+    float iz = abs(v_pos.z) / spacing;
+    float fx = abs(ix - round(ix));
+    float fz = abs(iz - round(iz));
+    float line_idx = (fz <= fx) ? iz : ix;
+    float major_step = max(MajorStep, 1.0);
+    float modv = mod(round(line_idx), major_step);
+    float is_major = (modv < 0.5) ? 1.0 : 0.0;
+    vec3 major = clamp(base * MajorBoost, 0.0, 1.0);
+    vec3 rgb = mix(base, major, is_major);
+    float dist = length(v_pos.xz);
+    float fade = 1.0;
+    if (FadeEnd > FadeStart) {
+        fade = 1.0 - smoothstep(FadeStart, FadeEnd, dist);
+    }
+    f_color = vec4(rgb, alpha * fade);
 }
 """,
 

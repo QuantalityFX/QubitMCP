@@ -1934,18 +1934,86 @@ class MGLRendererMixin:
                 grid_alpha = max(0.2, min(1.0, grid_alpha))
                 grid_rgb = (0.35, 0.35, 0.35)
 
-                self._mgl_grid_prog["Mvp"].write(mvp.astype("f4").tobytes())
-                self._mgl_grid_prog["Color"].value = (grid_rgb[0], grid_rgb[1], grid_rgb[2], grid_alpha)
+                spacing = 1.0
+                render_size = 0.0
+                render_steps = 0
                 try:
-                    steps = int(getattr(self, "_mgl_grid_cells", 0))
-                    if steps <= 0:
-                        steps = 1
+                    render_steps = int(getattr(self, "_mgl_grid_render_steps", 0))
+                except Exception:
+                    render_steps = 0
+                try:
+                    render_size = float(getattr(self, "_mgl_grid_render_size", 0.0))
+                except Exception:
+                    render_size = 0.0
+                try:
+                    spacing = float(getattr(self, "_mgl_grid_spacing", 0.0))
+                except Exception:
+                    spacing = 0.0
+                if render_steps <= 0:
                     try:
                         vcount = int(getattr(self, "_mgl_grid_vertex_count", 0))
                         if vcount > 0:
-                            steps = max(1, vcount // 4)
+                            render_steps = max(1, vcount // 4)
                     except Exception:
-                        pass
+                        render_steps = 0
+                if render_steps > 0 and spacing <= 0.0:
+                    denom = max(1, render_steps - 1)
+                    spacing = float((max(render_size, 0.0) * 2.0) / float(denom)) if render_size > 0.0 else 1.0
+
+                major_step = 10.0
+                major_boost = 1.15
+                try:
+                    major_step = float(getattr(self, "_mgl_grid_major_step", major_step))
+                except Exception:
+                    pass
+                try:
+                    major_boost = float(getattr(self, "_mgl_grid_major_boost", major_boost))
+                except Exception:
+                    pass
+
+                fade_start = 0.0
+                fade_end = 0.0
+                try:
+                    fade_start_frac = float(getattr(self, "_mgl_grid_fade_start", 0.55))
+                except Exception:
+                    fade_start_frac = 0.55
+                try:
+                    fade_end_frac = float(getattr(self, "_mgl_grid_fade_end", 0.95))
+                except Exception:
+                    fade_end_frac = 0.95
+                if render_size > 0.0:
+                    fade_start = render_size * max(0.0, min(1.0, fade_start_frac))
+                    fade_end = render_size * max(0.0, min(1.0, fade_end_frac))
+                    if fade_end <= fade_start:
+                        fade_start = 0.0
+                        fade_end = 0.0
+
+                self._mgl_grid_prog["Mvp"].write(mvp.astype("f4").tobytes())
+                self._mgl_grid_prog["Color"].value = (grid_rgb[0], grid_rgb[1], grid_rgb[2], grid_alpha)
+                try:
+                    self._mgl_grid_prog["GridSpacing"].value = float(spacing)
+                except Exception:
+                    pass
+                try:
+                    self._mgl_grid_prog["MajorStep"].value = float(major_step)
+                except Exception:
+                    pass
+                try:
+                    self._mgl_grid_prog["MajorBoost"].value = float(major_boost)
+                except Exception:
+                    pass
+                try:
+                    self._mgl_grid_prog["FadeStart"].value = float(fade_start)
+                except Exception:
+                    pass
+                try:
+                    self._mgl_grid_prog["FadeEnd"].value = float(fade_end)
+                except Exception:
+                    pass
+                try:
+                    steps = render_steps
+                    if steps <= 0:
+                        steps = 1
                     if (steps % 2) == 0:
                         steps += 1
                     mid = steps // 2
@@ -1974,6 +2042,10 @@ class MGLRendererMixin:
                         pass
                     try:
                         self._mgl_grid_prog["Color"].value = (0.24, 0.24, 0.24, 0.12)
+                    except Exception:
+                        pass
+                    try:
+                        self._mgl_grid_prog["MajorBoost"].value = 1.0
                     except Exception:
                         pass
                     first_center_z = 2 * mid
@@ -3112,7 +3184,33 @@ class MGLRendererMixin:
             )
         except Exception:
             pass
-        grid = _mgl_grid(self._mgl_grid_size, int(self._mgl_grid_cells))
+        try:
+            base_size = float(getattr(self, "_mgl_grid_size", 20.0))
+        except Exception:
+            base_size = 20.0
+        try:
+            base_cells = int(getattr(self, "_mgl_grid_cells", 50))
+        except Exception:
+            base_cells = 50
+        try:
+            extend = float(getattr(self, "_mgl_grid_extend", 1.0))
+        except Exception:
+            extend = 1.0
+        if not math.isfinite(extend) or extend < 1.0:
+            extend = 1.0
+        render_size = base_size * extend
+        render_steps = max(3, int(round(base_cells * extend)))
+        if (render_steps % 2) == 0:
+            render_steps += 1
+        try:
+            self._mgl_grid_render_size = float(render_size)
+            self._mgl_grid_render_steps = int(render_steps)
+            denom = max(1, render_steps - 1)
+            self._mgl_grid_spacing = float((render_size * 2.0) / float(denom))
+        except Exception:
+            pass
+
+        grid = _mgl_grid(render_size, render_steps)
         grid = grid.astype("f4").reshape(-1, 3)
         self._mgl_grid_vertex_count = int(grid.shape[0])
         self._mgl_grid_vbo = self._mgl_ctx.buffer(grid.tobytes())

@@ -466,6 +466,11 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._mgl_grid_alpha = 0.90
         self._mgl_grid_size = 20.0
         self._mgl_grid_cells = 50
+        self._mgl_grid_extend = 6.0
+        self._mgl_grid_major_step = 10.0
+        self._mgl_grid_major_boost = 1.15
+        self._mgl_grid_fade_start = 0.55
+        self._mgl_grid_fade_end = 0.95
         self._mgl_grid_visible = False
         self._mgl_fov = 60.0
         self._mgl_clip_far = 1000.0
