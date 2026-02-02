@@ -503,6 +503,12 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._mgl_prev_y = 0
         self._mgl_zoom_press_pos = None
         self._mgl_zoom_start = None
+        self._mgl_zoom_center_start = None
+        self._mgl_zoom_cam_start = None
+        self._mgl_zoom_cam_dir = None
+        self._mgl_zoom_ray_dir = None
+        self._mgl_zoom_pan_scale = 0.02
+        self._mgl_zoom_infinite = True
 
         # --- IM3D bridge (safe no-op by default) ---
         self._im3d = None
@@ -533,6 +539,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._cam_orbit_icon_free = None
         self._grid_icon_on = None
         self._grid_icon_off = None
+        self._zoom_mode_icon_on = None
+        self._zoom_mode_icon_off = None
         self._side_btn_size = 32
         self._side_btn_icon = 28
         self._side_btn_gap = 6
@@ -555,6 +563,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._build_debug_copy_button()
         self._build_camera_orbit_button()
         self._build_grid_button()
+        self._build_zoom_mode_button()
         
 
 
@@ -600,6 +609,14 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             y += self._side_btn_size + self._side_btn_gap
         elif grid_btn is not None:
             grid_btn.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
+            y += self._side_btn_size + self._side_btn_gap
+        zoom_frame = getattr(self, "_zoom_mode_btn_frame", None)
+        zoom_btn = getattr(self, "_zoom_mode_btn", None)
+        if zoom_frame is not None:
+            zoom_frame.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
+            y += self._side_btn_size + self._side_btn_gap
+        elif zoom_btn is not None:
+            zoom_btn.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
             y += self._side_btn_size + self._side_btn_gap
         xform_frame = getattr(self, "_xform_space_btn_frame", None)
         xform_btn = getattr(self, "_xform_space_btn", None)
@@ -1359,6 +1376,72 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 pass
         self._update_grid_button()
 
+    def _build_zoom_mode_button(self) -> None:
+        try:
+            btn = QtWidgets.QToolButton(self)
+            btn.setCursor(QtCore.Qt.PointingHandCursor)
+            btn.setCheckable(True)
+            btn.setIconSize(QtCore.QSize(self._side_btn_icon, self._side_btn_icon))
+            btn.setFixedSize(self._side_btn_size, self._side_btn_size)
+            btn.clicked.connect(self._on_zoom_mode_toggled)
+            self._zoom_mode_btn = btn
+            self._update_zoom_mode_button()
+            self._zoom_mode_btn_frame = self._wrap_side_button(self._zoom_mode_btn, "_zoom_mode_btn_frame")
+            btn.show()
+        except Exception:
+            self._zoom_mode_btn = None
+
+    def _load_zoom_mode_icons(self) -> None:
+        if self._zoom_mode_icon_on is not None or self._zoom_mode_icon_off is not None:
+            return
+        icon_on = None
+        icon_off = None
+        try:
+            root = Path(__file__).resolve().parents[2]
+            on_path = root / "icons" / "GizmoZoom_On_Icon.png"
+            off_path = root / "icons" / "GizmoZoom_Off_Icon.png"
+            if on_path.exists():
+                icon_on = QtGui.QIcon(str(on_path))
+            if off_path.exists():
+                icon_off = QtGui.QIcon(str(off_path))
+        except Exception:
+            icon_on = None
+            icon_off = None
+        self._zoom_mode_icon_on = icon_on
+        self._zoom_mode_icon_off = icon_off
+
+    def _update_zoom_mode_button(self) -> None:
+        btn = getattr(self, "_zoom_mode_btn", None)
+        if btn is None:
+            return
+        infinite = bool(getattr(self, "_mgl_zoom_infinite", True))
+        btn.setChecked(infinite)
+        self._load_zoom_mode_icons()
+        if infinite:
+            btn.setToolTip("Zoom Mode: Infinite")
+            icon = self._zoom_mode_icon_on
+            fallback = "Zoom+"
+        else:
+            btn.setToolTip("Zoom Mode: Legacy")
+            icon = self._zoom_mode_icon_off
+            fallback = "Zoom"
+        if icon is not None:
+            btn.setIcon(icon)
+            btn.setText("")
+        else:
+            btn.setText(fallback)
+        self._apply_side_icon_style(btn, active=infinite)
+
+    def _on_zoom_mode_toggled(self, checked=None) -> None:
+        if checked is None:
+            checked = bool(getattr(self, "_zoom_mode_btn", None) and self._zoom_mode_btn.isChecked())
+        self._mgl_zoom_infinite = bool(checked)
+        self._update_zoom_mode_button()
+        try:
+            self.update()
+        except Exception:
+            pass
+
     def _copy_debug_details(self) -> None:
         try:
             lines = self._debug_status_lines(include_paths=True)
@@ -1453,6 +1536,48 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         except Exception:
             renderer._mgl_camera_zoom = float(base_zoom)
         return True
+
+    def _ray_from_mouse(self, pos: QtCore.QPoint):
+        if not self._use_moderngl or np is None:
+            return None
+        try:
+            renderer = getattr(self, "_mgl_renderer", None) or self
+            Pn = getattr(renderer, "_mgl_pick_proj", None)
+            Vn = getattr(renderer, "_mgl_pick_view", None)
+            Mn = getattr(renderer, "_mgl_pick_model", None)
+            if Pn is None or Vn is None or Mn is None:
+                return None
+
+            dpr = float(getattr(self, "devicePixelRatioF", lambda: 1.0)())
+            vw = float(self.width()) * dpr
+            vh = float(self.height()) * dpr
+            px = float(pos.x()) * dpr
+            py = float(pos.y()) * dpr
+
+            PV = (
+                np.asarray(Pn, dtype=np.float32)
+                @ np.asarray(Vn, dtype=np.float32)
+                @ np.asarray(Mn, dtype=np.float32)
+            ).astype(np.float32)
+            invPV = np.linalg.inv(PV)
+
+            x = (2.0 * (px / max(1.0, vw))) - 1.0
+            y = 1.0 - (2.0 * (py / max(1.0, vh)))
+            near = np.array([x, y, -1.0, 1.0], dtype=np.float32)
+            far = np.array([x, y, 1.0, 1.0], dtype=np.float32)
+            pN = invPV @ near
+            pF = invPV @ far
+            pN = pN[:3] / pN[3]
+            pF = pF[:3] / pF[3]
+            ray_o = pN
+            ray_d = pF - pN
+            rn = float(np.linalg.norm(ray_d))
+            if rn <= 1e-8:
+                return None
+            ray_d /= rn
+            return ray_o.astype("f4"), ray_d.astype("f4")
+        except Exception:
+            return None
     def _on_snapgrab_clicked(self) -> None:
         paused = False
         try:
@@ -4322,6 +4447,92 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     return
                 self._mgl_zoom_press_pos = e.pos()
                 self._mgl_zoom_start = float(self._mgl_camera_zoom)
+                try:
+                    center = getattr(self, "_mgl_center", None)
+                    if center is None:
+                        center = (0.0, 0.0, 0.0)
+                    if np is not None:
+                        self._mgl_zoom_center_start = np.array(center, dtype=np.float32)
+                    else:
+                        self._mgl_zoom_center_start = (
+                            float(center[0]),
+                            float(center[1]),
+                            float(center[2]),
+                        )
+                except Exception:
+                    self._mgl_zoom_center_start = None
+                try:
+                    ray = self._ray_from_mouse(e.pos())
+                    if ray is not None:
+                        _, ray_d = ray
+                        if np is not None:
+                            self._mgl_zoom_ray_dir = np.array(ray_d, dtype=np.float32)
+                        else:
+                            self._mgl_zoom_ray_dir = (
+                                float(ray_d[0]),
+                                float(ray_d[1]),
+                                float(ray_d[2]),
+                            )
+                    else:
+                        self._mgl_zoom_ray_dir = None
+                except Exception:
+                    self._mgl_zoom_ray_dir = None
+                try:
+                    cam_world = getattr(self, "_mgl_cam_world", None)
+                    if cam_world is None and np is not None:
+                        arc = getattr(self, "_mgl_arcball", None)
+                        zoom = float(getattr(self, "_mgl_camera_zoom", 0.0))
+                        if arc is not None and hasattr(arc, "Transform"):
+                            rot = np.array(arc.Transform[:3, :3], dtype=np.float32)
+                            scale = float(np.linalg.norm(rot, ord="fro") / math.sqrt(3.0))
+                            if scale > 1e-6:
+                                rot = rot / scale
+                            cam_local = np.array([0.0, 0.0, zoom], dtype=np.float32)
+                            cam_rot = rot.T @ cam_local
+                            c0 = getattr(self, "_mgl_zoom_center_start", None)
+                            if c0 is not None:
+                                cam_world = cam_rot + np.array(c0, dtype=np.float32)
+                            else:
+                                cam_world = cam_rot
+                    if cam_world is not None:
+                        if np is not None:
+                            self._mgl_zoom_cam_start = np.array(cam_world, dtype=np.float32)
+                        else:
+                            self._mgl_zoom_cam_start = (
+                                float(cam_world[0]),
+                                float(cam_world[1]),
+                                float(cam_world[2]),
+                            )
+                    else:
+                        self._mgl_zoom_cam_start = None
+                except Exception:
+                    self._mgl_zoom_cam_start = None
+                try:
+                    cam_start = self._mgl_zoom_cam_start
+                    c0 = self._mgl_zoom_center_start
+                    if cam_start is not None and c0 is not None:
+                        if np is not None:
+                            cs = np.array(cam_start, dtype=np.float32)
+                            c = np.array(c0, dtype=np.float32)
+                            v = cs - c
+                            vn = float(np.linalg.norm(v))
+                            if vn > 1e-6:
+                                self._mgl_zoom_cam_dir = (v / vn).astype("f4")
+                            else:
+                                self._mgl_zoom_cam_dir = None
+                        else:
+                            dx = float(cam_start[0]) - float(c0[0])
+                            dy = float(cam_start[1]) - float(c0[1])
+                            dz = float(cam_start[2]) - float(c0[2])
+                            dn = math.sqrt(dx * dx + dy * dy + dz * dz)
+                            if dn > 1e-6:
+                                self._mgl_zoom_cam_dir = (dx / dn, dy / dn, dz / dn)
+                            else:
+                                self._mgl_zoom_cam_dir = None
+                    else:
+                        self._mgl_zoom_cam_dir = None
+                except Exception:
+                    self._mgl_zoom_cam_dir = None
                 self.setCursor(QtCore.Qt.SizeVerCursor)
                 e.accept()
                 return
@@ -5283,19 +5494,62 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     pass
                 dx = e.pos().x() - self._mgl_zoom_press_pos.x()
                 dy = e.pos().y() - self._mgl_zoom_press_pos.y()
-                distance = dx - dy
-                exponent = abs(distance) / self._drag_divisor
-                base = self._zoom_multiplier
-                factor = base ** exponent
-                start = self._mgl_zoom_start if self._mgl_zoom_start is not None else self._mgl_camera_zoom
-                if distance > 0:
-                    target = start / factor
+                try:
+                    infinite = bool(getattr(self, "_mgl_zoom_infinite", True))
+                except Exception:
+                    infinite = True
+                if infinite:
+                    cam_start = getattr(self, "_mgl_zoom_cam_start", None)
+                    cam_dir = getattr(self, "_mgl_zoom_cam_dir", None)
+                    ray_dir = getattr(self, "_mgl_zoom_ray_dir", None)
+                    center_start = getattr(self, "_mgl_zoom_center_start", None)
+                    if cam_start is not None and cam_dir is not None and ray_dir is not None:
+                        scale = float(getattr(self, "_mgl_zoom_pan_scale", 0.02))
+                        delta = (dx - dy) * scale
+                        if np is not None:
+                            cs = np.array(cam_start, dtype=np.float32)
+                            rd = np.array(ray_dir, dtype=np.float32)
+                            cd = np.array(cam_dir, dtype=np.float32)
+                            cam_pos = cs + (rd * float(delta))
+                            self._mgl_center = (cam_pos - cd * float(self._mgl_camera_zoom)).astype("f4")
+                        else:
+                            csx, csy, csz = float(cam_start[0]), float(cam_start[1]), float(cam_start[2])
+                            rdx, rdy, rdz = float(ray_dir[0]), float(ray_dir[1]), float(ray_dir[2])
+                            cdx, cdy, cdz = float(cam_dir[0]), float(cam_dir[1]), float(cam_dir[2])
+                            cam_x = csx + rdx * float(delta)
+                            cam_y = csy + rdy * float(delta)
+                            cam_z = csz + rdz * float(delta)
+                            z = float(self._mgl_camera_zoom)
+                            self._mgl_center = (cam_x - cdx * z, cam_y - cdy * z, cam_z - cdz * z)
+                    elif ray_dir is not None and center_start is not None:
+                        scale = float(getattr(self, "_mgl_zoom_pan_scale", 0.02))
+                        delta = (dx - dy) * scale
+                        if np is not None:
+                            c0 = np.array(center_start, dtype=np.float32)
+                            rd = np.array(ray_dir, dtype=np.float32)
+                            self._mgl_center = (c0 + rd * float(delta)).astype("f4")
+                        else:
+                            cx, cy, cz = float(center_start[0]), float(center_start[1]), float(center_start[2])
+                            rdx, rdy, rdz = float(ray_dir[0]), float(ray_dir[1]), float(ray_dir[2])
+                            self._mgl_center = (
+                                cx + rdx * float(delta),
+                                cy + rdy * float(delta),
+                                cz + rdz * float(delta),
+                            )
                 else:
-                    target = start * factor
-                min_zoom = float(getattr(self, "_mgl_min_zoom", 0.001))
-                self._mgl_camera_zoom = max(min_zoom, min(10000.0, target))
-                self._mgl_zoom_start = self._mgl_camera_zoom
-                self._mgl_zoom_press_pos = e.pos()
+                    distance = dx - dy
+                    exponent = abs(distance) / self._drag_divisor
+                    base = self._zoom_multiplier
+                    factor = base ** exponent
+                    start = self._mgl_zoom_start if self._mgl_zoom_start is not None else self._mgl_camera_zoom
+                    if distance > 0:
+                        target = start / factor
+                    else:
+                        target = start * factor
+                    min_zoom = float(getattr(self, "_mgl_min_zoom", 0.001))
+                    self._mgl_camera_zoom = max(min_zoom, min(10000.0, target))
+                    self._mgl_zoom_start = self._mgl_camera_zoom
+                    self._mgl_zoom_press_pos = e.pos()
                 self.update()
                 e.accept()
                 return
@@ -5767,6 +6021,10 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             if e.button() == QtCore.Qt.RightButton:
                 self._mgl_zoom_press_pos = None
                 self._mgl_zoom_start = None
+                self._mgl_zoom_center_start = None
+                self._mgl_zoom_cam_start = None
+                self._mgl_zoom_cam_dir = None
+                self._mgl_zoom_ray_dir = None
 
             # Safety: if we somehow grabbed the mouse, release it now
             try:
