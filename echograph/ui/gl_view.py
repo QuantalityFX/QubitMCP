@@ -469,6 +469,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._mgl_fov = 60.0
         self._mgl_clip_far = 1000.0
         self._mgl_camera_zoom = 2.0
+        self._mgl_min_zoom = 0.001
         self._mgl_center = None
         self._mgl_base_center = None
         self._mgl_base_zoom = None
@@ -4731,7 +4732,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     target = start / factor
                 else:
                     target = start * factor
-                self._mgl_camera_zoom = max(0.1, min(10000.0, target))
+                min_zoom = float(getattr(self, "_mgl_min_zoom", 0.001))
+                self._mgl_camera_zoom = max(min_zoom, min(10000.0, target))
                 self._mgl_zoom_start = self._mgl_camera_zoom
                 self._mgl_zoom_press_pos = e.pos()
                 self.update()
@@ -5254,8 +5256,9 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             delta = e.angleDelta().y()
             if delta:
                 self._mgl_camera_zoom += delta * 0.001
-                if self._mgl_camera_zoom < 0.1:
-                    self._mgl_camera_zoom = 0.1
+                min_zoom = float(getattr(self, "_mgl_min_zoom", 0.001))
+                if self._mgl_camera_zoom < min_zoom:
+                    self._mgl_camera_zoom = min_zoom
                 self.update()
             e.accept()
             return
