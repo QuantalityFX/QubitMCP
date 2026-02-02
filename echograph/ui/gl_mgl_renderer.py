@@ -1932,70 +1932,69 @@ class MGLRendererMixin:
                 if not math.isfinite(grid_alpha):
                     grid_alpha = 0.35
                 grid_alpha = max(0.2, min(1.0, grid_alpha))
-                grid_rgb = (0.75, 0.75, 0.75)
+                grid_rgb = (0.35, 0.35, 0.35)
 
                 self._mgl_grid_prog["Mvp"].write(mvp.astype("f4").tobytes())
                 self._mgl_grid_prog["Color"].value = (grid_rgb[0], grid_rgb[1], grid_rgb[2], grid_alpha)
-                self._mgl_grid_vao.render(moderngl.LINES)
-                # Draw the 2 center axes again (thicker) so origin reads as "+"
                 try:
                     steps = int(getattr(self, "_mgl_grid_cells", 0))
                     if steps <= 0:
                         steps = 1
+                    try:
+                        vcount = int(getattr(self, "_mgl_grid_vertex_count", 0))
+                        if vcount > 0:
+                            steps = max(1, vcount // 4)
+                    except Exception:
+                        pass
                     if (steps % 2) == 0:
                         steps += 1
                     mid = steps // 2
 
-                    # Save and bump line width
-                    try:
-                        _prev_lw = float(getattr(self._mgl_ctx, "line_width", 1.0))
-                    except Exception:
-                        _prev_lw = 1.0
+                    # Draw all grid lines except the center axes so the thick pass doesn't double-blend.
+                    before = 2 * mid
+                    after = 2 * (steps - mid - 1)
+                    if before > 0:
+                        self._mgl_grid_vao.render(mode=moderngl.LINES, vertices=before, first=0)
+                    if after > 0:
+                        self._mgl_grid_vao.render(mode=moderngl.LINES, vertices=after, first=2 * (mid + 1))
+                    base = steps * 2
+                    if before > 0:
+                        self._mgl_grid_vao.render(mode=moderngl.LINES, vertices=before, first=base)
+                    if after > 0:
+                        self._mgl_grid_vao.render(mode=moderngl.LINES, vertices=after, first=base + 2 * (mid + 1))
 
+                    # Draw the 2 center axes once (thicker) so origin reads as "+"
+                    try:
+                        _center_prev_lw = float(getattr(self._mgl_ctx, "line_width", 1.0))
+                    except Exception:
+                        _center_prev_lw = 1.0
                     try:
                         self._mgl_ctx.line_width = 2.0
                     except Exception:
                         pass
-
-                    # Slightly stronger alpha for center lines (optional)
                     try:
-                        center_alpha = min(1.0, grid_alpha * 1.4)
-                        self._mgl_grid_prog["Color"].value = (
-                            grid_rgb[0],
-                            grid_rgb[1],
-                            grid_rgb[2],
-                            center_alpha,
-                        )
+                        self._mgl_grid_prog["Color"].value = (0.24, 0.24, 0.24, 0.12)
                     except Exception:
                         pass
-
-                    # Grid layout in VBO:
-                    # first  steps*2 vertices  = lines along X at constant Z
-                    # second steps*2 vertices  = lines along Z at constant X
                     first_center_z = 2 * mid
                     first_center_x = (steps * 2) + (2 * mid)
-
                     self._mgl_grid_vao.render(mode=moderngl.LINES, vertices=2, first=first_center_z)
                     self._mgl_grid_vao.render(mode=moderngl.LINES, vertices=2, first=first_center_x)
-
-                    # Restore line width
                     try:
-                        self._mgl_ctx.line_width = _prev_lw
+                        self._mgl_ctx.line_width = _center_prev_lw
                     except Exception:
                         pass
-
-                    # Restore normal grid alpha (optional, if you changed it above)
                     try:
                         self._mgl_grid_prog["Color"].value = (
-                            grid_rgb[0],
-                            grid_rgb[1],
-                            grid_rgb[2],
-                            grid_alpha,
+                            0.35,
+                            0.35,
+                            0.35,
+                            float(getattr(self, "_mgl_grid_alpha", 0.35)),
                         )
                     except Exception:
                         pass
                 except Exception:
-                    pass
+                    self._mgl_grid_vao.render(moderngl.LINES)
 
                 # Restore
                 try:
