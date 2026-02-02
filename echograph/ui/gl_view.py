@@ -636,22 +636,6 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 self._mgl_texture_btn = QtWidgets.QPushButton("Texture...")
                 self._mgl_texture_btn.clicked.connect(self._on_mgl_pick_texture)
                 layout.addWidget(self._mgl_texture_btn, 0)
-            if not self._use_moderngl:
-                self._example_scale_label = QtWidgets.QLabel("Scale 1.00x")
-                try:
-                    fm = self._example_scale_label.fontMetrics()
-                    self._example_scale_label.setFixedWidth(fm.horizontalAdvance("Scale 20.00x") + 6)
-                    self._example_scale_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
-                except Exception:
-                    pass
-                self._example_scale_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-                self._example_scale_slider.setRange(1, 2000)
-                scale_val = self._example_model_scale
-                self._example_scale_slider.setValue(int(scale_val * 100))
-                self._example_scale_slider.setFixedWidth(160)
-                self._example_scale_slider.valueChanged.connect(self._on_example_scale_changed)
-                layout.addWidget(self._example_scale_label, 0)
-                layout.addWidget(self._example_scale_slider, 0)
             if self._use_moderngl:
                 self._mgl_light_label = QtWidgets.QLabel("Light 1.00x")
                 self._mgl_light_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
@@ -1039,6 +1023,22 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._manual_model_frame = bool(frame)
 
         if self._use_moderngl:
+            # Keep scale fixed to 1.0 for model preview loads.
+            try:
+                self._mgl_scale_multiplier = 1.0
+                lab = getattr(self, "_example_scale_label", None)
+                if lab is not None:
+                    lab.setText("Scale 1.00x")
+                sld = getattr(self, "_example_scale_slider", None)
+                if sld is not None:
+                    try:
+                        sld.blockSignals(True)
+                        sld.setValue(100)
+                    finally:
+                        sld.blockSignals(False)
+            except Exception:
+                pass
+
             self._mgl_load_mesh(model_path)
             if texture_str:
                 self._apply_texture_path(texture_str)
