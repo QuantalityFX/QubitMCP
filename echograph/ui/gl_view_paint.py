@@ -211,7 +211,14 @@ def paint_gl(view: Any) -> None:
                         float(mvp_np[3, 0]), float(mvp_np[3, 1]), float(mvp_np[3, 2]), float(mvp_np[3, 3]),
                     )
 
-                    view._axis_overlay.draw(mvp, mode=mode, draw_rotate_rings=(mode != "rotate"))
+                    gizmo_visible = bool(getattr(view, "_mgl_gizmo_visible", True))
+                    alpha = 1.0 if gizmo_visible else 0.0
+                    view._axis_overlay.draw(
+                        mvp,
+                        mode=mode,
+                        draw_rotate_rings=(mode != "rotate"),
+                        alpha=alpha,
+                    )
 
                     # Hover highlight + center square for translate/scale
                     try:
@@ -318,8 +325,12 @@ def paint_gl(view: Any) -> None:
                             else:
                                 setattr(view, "_xform_hover_axis_proj", None)
 
-                            if (hover_axis and center is not None and hover_p1 is not None) or (
-                                hover_center and center is not None
+                            if (
+                                gizmo_visible
+                                and (
+                                    (hover_axis and center is not None and hover_p1 is not None)
+                                    or (hover_center and center is not None)
+                                )
                             ):
                                 painter = QtGui.QPainter(view)
                                 if painter.isActive():

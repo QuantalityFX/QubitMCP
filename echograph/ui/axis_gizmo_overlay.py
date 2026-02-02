@@ -36,9 +36,10 @@ void main() {
 FRAG = """
 #version 330
 in vec3 v_col;
+uniform float u_alpha;
 out vec4 fragColor;
 void main() {
-    fragColor = vec4(v_col, 1.0);
+    fragColor = vec4(v_col, u_alpha);
 }
 """
 
@@ -235,7 +236,13 @@ class AxisGizmoOverlay:
         self._ready = True
         return True
 
-    def draw(self, mvp: QtGui.QMatrix4x4, mode: str = "translate", draw_rotate_rings: bool = True) -> None:
+    def draw(
+        self,
+        mvp: QtGui.QMatrix4x4,
+        mode: str = "translate",
+        draw_rotate_rings: bool = True,
+        alpha: float = 1.0,
+    ) -> None:
         if not self._ready or self._gl is None or self._prog is None or self._vao is None:
             return
 
@@ -246,6 +253,10 @@ class AxisGizmoOverlay:
 
         self._prog.bind()
         self._prog.setUniformValue("u_mvp", mvp)
+        try:
+            self._prog.setUniformValue("u_alpha", float(alpha))
+        except Exception:
+            pass
 
         self._vao.bind()
         if mode == "rotate":

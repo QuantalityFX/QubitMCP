@@ -477,6 +477,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._mgl_grid_fade_low_boost = 1.0
         self._mgl_grid_fade_zoom_exp = 1.1
         self._mgl_grid_fx_enabled = True
+        self._mgl_gizmo_visible = True
         self._mgl_grid_visible = False
         self._mgl_fov = 60.0
         self._mgl_clip_far = 1000.0
@@ -806,6 +807,11 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 self._mgl_grid_fx_toggle.toggled.connect(self._on_mgl_grid_fx_toggled)
                 layout.addWidget(self._mgl_grid_fx_toggle, 0)
 
+                self._mgl_gizmo_toggle = QtWidgets.QCheckBox("Gizmo")
+                self._mgl_gizmo_toggle.setChecked(bool(self._mgl_gizmo_visible))
+                self._mgl_gizmo_toggle.toggled.connect(self._on_mgl_gizmo_toggled)
+                layout.addWidget(self._mgl_gizmo_toggle, 0)
+
                 if self._turntable_ctrl is None:
                     self._turntable_ctrl = TurntableController(self)
                 try:
@@ -883,6 +889,16 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         except Exception:
             pass
         self._update_xform_space_button()
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    def _on_mgl_gizmo_toggled(self, checked: bool) -> None:
+        try:
+            self._mgl_gizmo_visible = bool(checked)
+        except Exception:
+            self._mgl_gizmo_visible = True
         try:
             self.update()
         except Exception:
