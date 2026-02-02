@@ -52,6 +52,8 @@ class AxisGizmoOverlay:
         self._ready = False
         self._line_vert_count = 0
         self._tri_vert_count = 0
+        self._scale_cube_vert_offset = 0
+        self._scale_cube_vert_count = 0
         self._circle_vert_offset = 0
         self._circle_vert_count = 0
 
@@ -113,6 +115,33 @@ class AxisGizmoOverlay:
                 verts.extend([x0, y0, z0, r, g, b])
                 verts.extend([x1, y1, z1, r, g, b])
 
+        def add_cube(center, size, col):
+            cx, cy, cz = center
+            h = size * 0.5
+            r, g, b = col
+            corners = [
+                (cx - h, cy - h, cz - h),
+                (cx + h, cy - h, cz - h),
+                (cx + h, cy + h, cz - h),
+                (cx - h, cy + h, cz - h),
+                (cx - h, cy - h, cz + h),
+                (cx + h, cy - h, cz + h),
+                (cx + h, cy + h, cz + h),
+                (cx - h, cy + h, cz + h),
+            ]
+            faces = [
+                (0, 1, 2, 3),  # back
+                (4, 5, 6, 7),  # front
+                (0, 1, 5, 4),  # bottom
+                (2, 3, 7, 6),  # top
+                (1, 2, 6, 5),  # right
+                (3, 0, 4, 7),  # left
+            ]
+            for i0, i1, i2, i3 in faces:
+                for i in (i0, i1, i2, i0, i2, i3):
+                    x, y, z = corners[i]
+                    verts.extend([x, y, z, r, g, b])
+
         axis_len = 1.0
         cone_radius = 0.06
         cone_height = 0.18
@@ -139,7 +168,17 @@ class AxisGizmoOverlay:
         base_verts = len(verts) // 6
         self._tri_vert_count = base_verts - self._line_vert_count
 
+        # scale cubes
+        self._scale_cube_vert_offset = len(verts) // 6
+        cube_size = 0.12
+        add_cube((axis_len, 0.0, 0.0), cube_size, (1.0, 0.0, 0.0))
+        add_cube((0.0, axis_len, 0.0), cube_size, (0.0, 1.0, 0.0))
+        add_cube((0.0, 0.0, axis_len), cube_size, (0.0, 0.0, 1.0))
+        add_cube((0.0, 0.0, 0.0), cube_size * 1.15, (0.7, 0.2, 0.8))
+        self._scale_cube_vert_count = (len(verts) // 6) - self._scale_cube_vert_offset
+
         # rotation circles (3 rings)
+        base_verts = len(verts) // 6
         self._circle_vert_offset = base_verts
 
         def add_circle(axis: str, radius: float, segments: int, col):
@@ -211,6 +250,10 @@ class AxisGizmoOverlay:
         if mode == "rotate":
             if draw_rotate_rings and self._circle_vert_count:
                 self._gl.glDrawArrays(GL_LINES, self._circle_vert_offset, self._circle_vert_count)
+        elif mode == "scale":
+            self._gl.glDrawArrays(GL_LINES, 0, self._line_vert_count)
+            if self._scale_cube_vert_count:
+                self._gl.glDrawArrays(GL_TRIANGLES, self._scale_cube_vert_offset, self._scale_cube_vert_count)
         else:
             self._gl.glDrawArrays(GL_LINES, 0, self._line_vert_count)
             self._gl.glDrawArrays(GL_TRIANGLES, self._line_vert_count, self._tri_vert_count)

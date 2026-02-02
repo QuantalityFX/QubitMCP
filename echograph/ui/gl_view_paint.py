@@ -83,7 +83,7 @@ def paint_gl(view: Any) -> None:
                     T[2, 3] = float(pos[2])
 
                     mode = getattr(view, "_xform_gizmo_mode", "translate") or "translate"
-                    use_rot = (mode == "rotate")
+                    use_rot = (mode in ("rotate", "scale"))
                     R = None
                     if use_rot:
                         try:
