@@ -2900,10 +2900,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         settings_btn.setCursor(QtCore.Qt.PointingHandCursor)
         settings_btn.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
         settings_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
-        settings_btn.setFixedHeight(24)
+        settings_btn.setFixedHeight(22)
         settings_btn.setStyleSheet(
             "QToolButton#SettingsButton{color:#ffffff;background:#2a2f36;border:1px solid #3a3f46;"
-            "border-radius:4px;padding:2px 10px;}"
+            "border-radius:4px;padding:1px 10px;}"
             "QToolButton#SettingsButton:hover{background:#353b45;}"
             "QToolButton#SettingsButton[active=\"true\"]{background:#1f7a45;border-color:#2a8a52;}"
         )
@@ -2956,6 +2956,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._pan_base = float(getattr(self, "_pan_base", 0.01))
         self._pan_exp = float(getattr(self, "_pan_exp", 1.2))
         self._pan_boost = float(getattr(self, "_pan_boost", 10.0))
+        self._gizmo_zoom_scale = float(getattr(self, "_gizmo_zoom_scale", 0.02))
 
         self._pan_base_value_lbl = QtWidgets.QLabel(f"{self._pan_base:.3f}")
         self._pan_base_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
@@ -2989,6 +2990,17 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         grid.addWidget(QtWidgets.QLabel("Pan Boost"), 3, 0)
         grid.addWidget(self._pan_boost_slider, 3, 1)
         grid.addWidget(self._pan_boost_value_lbl, 3, 2)
+
+        self._gizmo_zoom_value_lbl = QtWidgets.QLabel(f"{self._gizmo_zoom_scale:.3f}")
+        self._gizmo_zoom_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self._gizmo_zoom_slider.setMinimum(1); self._gizmo_zoom_slider.setMaximum(200)
+        self._gizmo_zoom_slider.setSingleStep(1); self._gizmo_zoom_slider.setPageStep(10)
+        self._gizmo_zoom_slider.setFixedWidth(160)
+        self._gizmo_zoom_slider.setValue(int(round(self._gizmo_zoom_scale * 1000.0)))
+        self._gizmo_zoom_slider.valueChanged.connect(self._on_gizmo_zoom_scale_changed)
+        grid.addWidget(QtWidgets.QLabel("Gizmo Zoom"), 4, 0)
+        grid.addWidget(self._gizmo_zoom_slider, 4, 1)
+        grid.addWidget(self._gizmo_zoom_value_lbl, 4, 2)
 
         panel_action = QtWidgets.QWidgetAction(settings_menu)
         panel_action.setDefaultWidget(panel)
@@ -3040,6 +3052,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._pan_base = 0.01
         self._pan_exp = 1.2
         self._pan_boost = 10.0
+        self._gizmo_zoom_scale = 0.02
         if hasattr(self, "_pan_base_slider"):
             try:
                 self._pan_base_slider.blockSignals(True)
@@ -3061,6 +3074,13 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 self._pan_boost_slider.blockSignals(False)
             except Exception:
                 pass
+        if hasattr(self, "_gizmo_zoom_slider"):
+            try:
+                self._gizmo_zoom_slider.blockSignals(True)
+                self._gizmo_zoom_slider.setValue(int(round(self._gizmo_zoom_scale * 1000.0)))
+                self._gizmo_zoom_slider.blockSignals(False)
+            except Exception:
+                pass
         if hasattr(self, "_pan_base_value_lbl"):
             try:
                 self._pan_base_value_lbl.setText(f"{self._pan_base:.3f}")
@@ -3076,6 +3096,11 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 self._pan_boost_value_lbl.setText(f"{self._pan_boost:.1f}")
             except Exception:
                 pass
+        if hasattr(self, "_gizmo_zoom_value_lbl"):
+            try:
+                self._gizmo_zoom_value_lbl.setText(f"{self._gizmo_zoom_scale:.3f}")
+            except Exception:
+                pass
         self._apply_pan_settings_to_gl_view()
 
     def _apply_pan_settings_to_gl_view(self) -> None:
@@ -3086,6 +3111,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             gv._mgl_pan_base = float(getattr(self, "_pan_base", 0.01))
             gv._mgl_pan_zoom_exp_out = float(getattr(self, "_pan_exp", 1.2))
             gv._mgl_pan_zoom_boost = float(getattr(self, "_pan_boost", 10.0))
+            gv._mgl_zoom_pan_scale = float(getattr(self, "_gizmo_zoom_scale", 0.02))
             gv._mgl_pan_ref_zoom = None
         except Exception:
             pass
@@ -3099,6 +3125,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 settings["pan_base"] = float(getattr(self, "_pan_base", 0.01))
                 settings["pan_exp"] = float(getattr(self, "_pan_exp", 1.2))
                 settings["pan_boost"] = float(getattr(self, "_pan_boost", 10.0))
+                settings["gizmo_zoom_scale"] = float(getattr(self, "_gizmo_zoom_scale", 0.02))
                 sc._view_settings = settings
             except Exception:
                 pass
@@ -3134,6 +3161,17 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         lbl = getattr(self, "_pan_boost_value_lbl", None)
         if lbl is not None:
             lbl.setText(f"{boost:.1f}")
+        self._apply_pan_settings_to_gl_view()
+
+    def _on_gizmo_zoom_scale_changed(self, value: int) -> None:
+        try:
+            scale = max(0.0001, float(value) / 1000.0)
+        except Exception:
+            scale = 0.02
+        self._gizmo_zoom_scale = scale
+        lbl = getattr(self, "_gizmo_zoom_value_lbl", None)
+        if lbl is not None:
+            lbl.setText(f"{scale:.3f}")
         self._apply_pan_settings_to_gl_view()
 
     def _create_node_interactive(self):
@@ -3295,9 +3333,14 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             pan_boost = float(settings.get("pan_boost", getattr(self, "_pan_boost", 10.0)))
         except Exception:
             pan_boost = getattr(self, "_pan_boost", 10.0)
+        try:
+            gizmo_zoom = float(settings.get("gizmo_zoom_scale", getattr(self, "_gizmo_zoom_scale", 0.02)))
+        except Exception:
+            gizmo_zoom = getattr(self, "_gizmo_zoom_scale", 0.02)
         self._pan_base = pan_base
         self._pan_exp = pan_exp
         self._pan_boost = pan_boost
+        self._gizmo_zoom_scale = gizmo_zoom
         if hasattr(self, "_pan_base_slider"):
             self._pan_base_slider.blockSignals(True)
             self._pan_base_slider.setValue(int(round(pan_base * 1000.0)))
@@ -3310,12 +3353,18 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             self._pan_boost_slider.blockSignals(True)
             self._pan_boost_slider.setValue(int(round(pan_boost)))
             self._pan_boost_slider.blockSignals(False)
+        if hasattr(self, "_gizmo_zoom_slider"):
+            self._gizmo_zoom_slider.blockSignals(True)
+            self._gizmo_zoom_slider.setValue(int(round(gizmo_zoom * 1000.0)))
+            self._gizmo_zoom_slider.blockSignals(False)
         if hasattr(self, "_pan_base_value_lbl"):
             self._pan_base_value_lbl.setText(f"{pan_base:.3f}")
         if hasattr(self, "_pan_exp_value_lbl"):
             self._pan_exp_value_lbl.setText(f"{pan_exp:.2f}")
         if hasattr(self, "_pan_boost_value_lbl"):
             self._pan_boost_value_lbl.setText(f"{pan_boost:.1f}")
+        if hasattr(self, "_gizmo_zoom_value_lbl"):
+            self._gizmo_zoom_value_lbl.setText(f"{gizmo_zoom:.3f}")
         try:
             self._apply_pan_settings_to_gl_view()
         except Exception:

@@ -132,7 +132,7 @@ def serialize_scene(scene) -> Dict[str, Any]:
     try:
         view_settings = getattr(scene, "_view_settings", None)
         if isinstance(view_settings, dict):
-            for key in ("pan_base", "pan_exp", "pan_boost"):
+            for key in ("pan_base", "pan_exp", "pan_boost", "gizmo_zoom_scale"):
                 if key in view_settings:
                     try:
                         settings[key] = float(view_settings[key])
@@ -166,7 +166,7 @@ def deserialize_scene(
         settings = data.get("settings", {}) or {}
         if isinstance(settings, dict):
             view_settings = {}
-            for key in ("pan_base", "pan_exp", "pan_boost"):
+            for key in ("pan_base", "pan_exp", "pan_boost", "gizmo_zoom_scale"):
                 if key in settings:
                     try:
                         view_settings[key] = float(settings[key])
