@@ -575,14 +575,14 @@ class MGLRendererMixin:
         sx, sy, sz = x["scl"]
 
         # IMPORTANT:
-        # gl_view/gizmo is already working, so do NOT change gizmo math.
-        # The mesh rotation is currently inverted relative to the gizmo.
-        # Fix it here by negating the rotation only when applying to scene mesh items.
+        # gl_view/gizmo stores rot_deg using its negated-angle convention.
+        # Match that here for scene meshes so they follow the gizmo orientation.
+        rot_rx, rot_ry, rot_rz = rx, ry, rz
         if apply_to_scene_models and (not use_splat_xform):
             try:
-                rx = -float(rx)
-                ry = -float(ry)
-                rz = -float(rz)
+                rot_rx = -float(rx)
+                rot_ry = -float(ry)
+                rot_rz = -float(rz)
             except Exception:
                 pass
 
@@ -632,13 +632,8 @@ class MGLRendererMixin:
             return m
 
 
-        # Build rotation
-        R = (Rz(rz) @ Ry(ry) @ Rx(rx))
-
-        # Mesh rotations need to be the inverse of the gizmo convention.
-        # For multi-axis rotations, the inverse requires reversed order.
-        if apply_to_scene_models and (not use_splat_xform):
-            R = (Rx(-rx) @ Ry(-ry) @ Rz(-rz))
+        # Build rotation (same order as gl_view: Rz @ Ry @ Rx)
+        R = (Rz(rot_rz) @ Ry(rot_ry) @ Rx(rot_rx))
 
         model = T(-cx, -cy, -cz) @ R @ S(sx, sy, sz) @ T(px, py, pz)
 
@@ -4157,7 +4152,13 @@ class MGLRendererMixin:
                     sx, sy, sz = x.get("scl", (1.0, 1.0, 1.0))
                     c = (bmin + bmax) * 0.5
                     cx, cy, cz = float(c[0]), float(c[1]), float(c[2])
-                    model = T(-cx, -cy, -cz) @ (Rz(rz) @ Ry(ry) @ Rx(rx)) @ S(sx, sy, sz) @ T(px, py, pz)
+                    rot_rx, rot_ry, rot_rz = -float(rx), -float(ry), -float(rz)
+                    model = (
+                        T(-cx, -cy, -cz)
+                        @ (Rz(rot_rz) @ Ry(rot_ry) @ Rx(rot_rx))
+                        @ S(sx, sy, sz)
+                        @ T(px, py, pz)
+                    )
                 except Exception:
                     model = None
 
@@ -4441,7 +4442,13 @@ def pick_hit_at(self, px: int, py: int, viewport_w: int, viewport_h: int):
                 sx, sy, sz = x.get("scl", (1.0, 1.0, 1.0))
                 c = (bmin + bmax) * 0.5
                 cx, cy, cz = float(c[0]), float(c[1]), float(c[2])
-                model = T(-cx, -cy, -cz) @ (Rz(rz) @ Ry(ry) @ Rx(rx)) @ S(sx, sy, sz) @ T(px, py, pz)
+                rot_rx, rot_ry, rot_rz = -float(rx), -float(ry), -float(rz)
+                model = (
+                    T(-cx, -cy, -cz)
+                    @ (Rz(rot_rz) @ Ry(rot_ry) @ Rx(rot_rx))
+                    @ S(sx, sy, sz)
+                    @ T(px, py, pz)
+                )
             except Exception:
                 model = None
 
