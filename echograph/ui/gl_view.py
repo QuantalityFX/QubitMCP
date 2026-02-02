@@ -5218,11 +5218,14 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 except Exception:
                     zoom = 0.0
                 try:
-                    base_zoom = float(getattr(self, "_mgl_base_zoom", zoom))
+                    base_zoom = float(getattr(self, "_mgl_base_zoom", 0.0))
                 except Exception:
-                    base_zoom = zoom
-                if base_zoom <= 0.0:
-                    base_zoom = max(1e-6, zoom)
+                    base_zoom = 0.0
+                if not math.isfinite(base_zoom) or base_zoom <= 0.0:
+                    try:
+                        base_zoom = float(self._mgl_camera_distance(self._mgl_fov))
+                    except Exception:
+                        base_zoom = max(1e-6, zoom)
                 if base_zoom > 0.0:
                     ratio = zoom / base_zoom if zoom > 0.0 else 0.0
                     if ratio > 1.0:
