@@ -576,8 +576,16 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 46,
                 self._side_btn_size,
             )
-        orbit_btn = getattr(self, "_cam_orbit_btn", None)
         y = self._side_btn_margin + self._side_btn_size + self._side_btn_gap
+        grid_btn = getattr(self, "_grid_btn", None)
+        if grid_btn is not None:
+            grid_btn.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
+            y += self._side_btn_size + self._side_btn_gap
+        xform_btn = getattr(self, "_xform_space_btn", None)
+        if xform_btn is not None:
+            xform_btn.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
+            y += self._side_btn_size + self._side_btn_gap
+        orbit_btn = getattr(self, "_cam_orbit_btn", None)
         if orbit_btn is not None:
             orbit_btn.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
             y += self._side_btn_size + self._side_btn_gap
@@ -588,14 +596,6 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         snap_btn = getattr(self, "_snapgrab_btn", None)
         if snap_btn is not None:
             snap_btn.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
-            y += self._side_btn_size + self._side_btn_gap
-        xform_btn = getattr(self, "_xform_space_btn", None)
-        if xform_btn is not None:
-            xform_btn.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
-            y += self._side_btn_size + self._side_btn_gap
-        grid_btn = getattr(self, "_grid_btn", None)
-        if grid_btn is not None:
-            grid_btn.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
         if getattr(self, "_mgl_uv_cache", None) is not None:
             self._mgl_uv_cache = None
 
