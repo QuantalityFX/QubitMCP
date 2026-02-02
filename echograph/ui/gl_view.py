@@ -201,6 +201,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._xform_drag_mode = None
         self._xform_drag_start_scl = None
         self._xform_scale_start_dist = None
+        self._xform_scale_start_px = None
         self._xform_scale_axis_world = None
         self._xform_scale_center_px = None
         self._xform_drag_axis_world = None
@@ -3414,10 +3415,15 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                         self._xform_scale_start_dist = None
                                         self._xform_scale_axis_world = None
                                         self._xform_scale_center_px = None
+                                        self._xform_scale_start_px = None
 
                                         if pick_axis == "u":
                                             self._xform_scale_center_px = QtCore.QPointF(float(p0[0]), float(p0[1]))
                                             self._xform_scale_start_dist = max(1e-6, (dx0 * dx0 + dy0 * dy0) ** 0.5)
+                                            try:
+                                                self._xform_scale_start_px = float(px_dev)
+                                            except Exception:
+                                                self._xform_scale_start_px = None
                                         else:
                                             axis_local = (
                                                 np.array([1.0, 0.0, 0.0], dtype="f4")
@@ -4291,18 +4297,18 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                             is_splat = bool(getattr(self, "_xform_drag_kind", None) == "splat")
 
                             if axis == "u":
-                                center_px = getattr(self, "_xform_scale_center_px", None)
-                                if not isinstance(center_px, QtCore.QPointF):
-                                    center_px = QtCore.QPointF(float(px), float(py))
-                                cur_dist = math.hypot(float(px) - float(center_px.x()), float(py) - float(center_px.y()))
-                                start_dist = getattr(self, "_xform_scale_start_dist", None)
-                                if start_dist is None or float(start_dist) <= 1e-6:
-                                    start_dist = max(1e-6, float(cur_dist))
-                                    self._xform_scale_start_dist = start_dist
+                                start_px = getattr(self, "_xform_scale_start_px", None)
+                                if start_px is None:
+                                    try:
+                                        start_px = float(px)
+                                        self._xform_scale_start_px = start_px
+                                    except Exception:
+                                        start_px = float(px)
 
-                                raw = float(cur_dist) / float(start_dist) if float(start_dist) > 1e-6 else 1.0
-                                # Reduce uniform-scale sensitivity (smaller mouse motion -> smaller scale change).
-                                factor = 1.0 + (raw - 1.0) * 0.35
+                                dx = float(px) - float(start_px)
+                                # Horizontal-only uniform scale: right = bigger, left = smaller.
+                                sensitivity = 0.0020
+                                factor = 1.0 + (dx * sensitivity)
                                 factor = max(0.01, float(factor))
                                 new_scl = (
                                     max(0.01, float(start_scl[0]) * factor),
@@ -4919,6 +4925,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 self._xform_drag_mode = None
                 self._xform_drag_start_scl = None
                 self._xform_scale_start_dist = None
+                self._xform_scale_start_px = None
                 self._xform_scale_axis_world = None
                 self._xform_scale_center_px = None
                 self._xform_drag_axis_world = None
