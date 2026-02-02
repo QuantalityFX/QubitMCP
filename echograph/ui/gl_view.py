@@ -1211,12 +1211,24 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             if np.linalg.det(r_norm) < 0:
                 umat[:, -1] *= -1.0
                 r_norm = (umat @ vmat).astype(np.float32, copy=False)
+            right = r_norm[:, 0]
+            up = r_norm[:, 1]
             f = r_norm[:, 2]
             dist = float(np.linalg.norm(f))
             if dist < 1e-6:
                 return
-            yaw = math.atan2(float(f[0]), float(f[2]))
-            pitch = math.asin(max(-1.0, min(1.0, float(f[1] / dist))))
+            rn = float(np.linalg.norm(right))
+            if rn > 1e-6:
+                yaw = math.atan2(float(-right[2]), float(right[0]))
+            else:
+                yaw = math.atan2(float(f[0]), float(f[2]))
+            fh = math.sqrt(float(f[0] * f[0] + f[2] * f[2]))
+            pitch = math.atan2(float(f[1]), float(fh))
+            if float(up[1]) < 0.0:
+                if pitch >= 0.0:
+                    pitch = math.pi - pitch
+                else:
+                    pitch = -math.pi - pitch
             self._mgl_orbit_yaw = yaw
             self._mgl_orbit_pitch = pitch
         except Exception:
