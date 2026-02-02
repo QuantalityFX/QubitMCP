@@ -1959,6 +1959,22 @@ class NodeItem(QtWidgets.QGraphicsObject):
             print(traceback.format_exc(), flush=True)
             return
 
+        # Auto-select this Scene node so the info card updates on View Scene.
+        try:
+            scene = self.scene()
+            if scene is not None:
+                try:
+                    scene.clearSelection()
+                except Exception:
+                    for it in list(scene.selectedItems()):
+                        if it is self:
+                            continue
+                        it.setSelected(False)
+            self.setSelected(True)
+            self.clicked.emit(self.model)
+        except Exception:
+            pass
+
         # restore camera from selected snapshot sidecar json (apply after load settles)
         try:
             thumb_base = (self._param_value("thumbnail") or "").strip()
