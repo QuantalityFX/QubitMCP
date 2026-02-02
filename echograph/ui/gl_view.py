@@ -582,14 +582,6 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 self._side_btn_size,
                 self._side_btn_size,
             )
-        btn = getattr(self, "_debug_copy_btn", None)
-        if btn is not None:
-            btn.setGeometry(
-                self._side_btn_margin + self._side_btn_size + self._side_btn_gap,
-                self._side_btn_margin,
-                46,
-                self._side_btn_size,
-            )
         y = self._side_btn_margin + self._side_btn_size + self._side_btn_gap
         grid_frame = getattr(self, "_grid_btn_frame", None)
         grid_btn = getattr(self, "_grid_btn", None)
@@ -1047,16 +1039,33 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
     def _build_debug_copy_button(self) -> None:
         try:
             btn = QtWidgets.QToolButton(self)
-            btn.setText("Copy")
             btn.setCursor(QtCore.Qt.PointingHandCursor)
+            btn.setToolTip("Copy stats")
+            icon_path = Path(__file__).resolve().parents[2] / "icons" / "Copy_Icon.png"
+            if icon_path.exists():
+                pix = QtGui.QPixmap(str(icon_path))
+                if not pix.isNull():
+                    faded = QtGui.QPixmap(pix.size())
+                    faded.fill(QtCore.Qt.transparent)
+                    p = QtGui.QPainter(faded)
+                    p.setOpacity(0.6)
+                    p.drawPixmap(0, 0, pix)
+                    p.end()
+                    btn.setIcon(QtGui.QIcon(faded))
+                    btn.setText("")
+                else:
+                    btn.setIcon(QtGui.QIcon(str(icon_path)))
+                    btn.setText("")
+            else:
+                btn.setText("Copy")
             try:
-                btn.setFixedHeight(self._side_btn_size)
+                btn.setFixedSize(18, 18)
             except Exception:
                 pass
             btn.setStyleSheet(
-                "QToolButton{background:rgba(15,23,42,210);border:1px solid #334155;"
-                "color:#e2e8f0;padding:2px 6px;border-radius:4px;font-size:10px;}"
-                "QToolButton:hover{background:rgba(30,41,59,230);}"
+                "QToolButton{background:rgba(30,41,59,200);border:1px solid #475569;"
+                "color:#e2e8f0;padding:0px;border-radius:3px;font-size:10px;}"
+                "QToolButton:hover{background:rgba(51,65,85,220);}"
             )
             btn.clicked.connect(self._copy_debug_details)
             self._debug_copy_btn = btn
@@ -2368,10 +2377,17 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     text_width = max(metrics.width(line) for line in lines)
                 text_height = len(lines) * metrics.height() + max(0, len(lines) - 1) * 2
                 pad = 8
+                panel_left = 10.0
                 panel_top = 10.0
-                btn = getattr(self, "_debug_copy_btn", None)
-                if btn is not None and btn.isVisible():
-                    panel_top = btn.geometry().bottom() + 6.0
+                toggle_btn = getattr(self, "_debug_toggle_btn", None)
+                if toggle_btn is not None and toggle_btn.isVisible():
+                    panel_left = (
+                        toggle_btn.geometry().right()
+                        + float(self._side_btn_gap)
+                        + float(self._side_btn_margin)
+                        + 4.0
+                    )
+                    panel_top = toggle_btn.geometry().top()
                 panel_w = text_width + pad * 2
                 panel_h = text_height + pad * 2
                 dpr = 1.0
@@ -2389,8 +2405,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     ip = QtGui.QPainter(image)
                     ip.setRenderHint(QtGui.QPainter.Antialiasing, True)
                     ip.setRenderHint(QtGui.QPainter.TextAntialiasing, True)
-                    ip.setPen(QtCore.Qt.NoPen)
-                    ip.setBrush(QtCore.Qt.NoBrush)
+                    ip.setPen(QtGui.QColor(51, 65, 85, 160))
+                    ip.setBrush(QtGui.QColor(15, 23, 42, 180))
                     ip.drawRoundedRect(QtCore.QRectF(0, 0, panel_w, panel_h), 6, 6)
                     ip.setPen(QtGui.QColor("#e2e8f0"))
                     x = pad
@@ -2401,7 +2417,21 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     ip.end()
                     self._debug_overlay_cache = image
                     self._debug_overlay_cache_key = cache_key
-                painter.drawImage(QtCore.QPointF(10, panel_top), self._debug_overlay_cache)
+                desired_left = panel_left
+                panel_left = max(desired_left, min(panel_left, float(self.width()) - panel_w - 10.0))
+                panel_top = max(10.0, min(panel_top, float(self.height()) - panel_h - 10.0))
+                copy_btn = getattr(self, "_debug_copy_btn", None)
+                if copy_btn is not None and copy_btn.isVisible():
+                    btn_size = 18
+                    try:
+                        copy_btn.setFixedSize(btn_size, btn_size)
+                        copy_btn.setIconSize(QtCore.QSize(btn_size - 4, btn_size - 4))
+                    except Exception:
+                        pass
+                    btn_x = panel_left + panel_w - btn_size - 4.0
+                    btn_y = panel_top + 4.0
+                    copy_btn.setGeometry(int(btn_x), int(btn_y), btn_size, btn_size)
+                painter.drawImage(QtCore.QPointF(panel_left, panel_top), self._debug_overlay_cache)
         if self._shader_error:
             painter.setPen(QtGui.QColor("#fca5a5"))
             painter.drawText(self.rect(), QtCore.Qt.AlignCenter, "3D View: shader error")
