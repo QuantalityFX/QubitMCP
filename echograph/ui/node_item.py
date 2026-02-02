@@ -1441,6 +1441,16 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     current_names = { (p.get("name") or "") for p in (self.model.params or []) if (p.get("name") or "") }
                     feat_set = self._pruned_featured_set(current_names)
                     feat_heights = self._featured_heights_map(current_names)
+                    # Cache note eye icons for expand/collapse
+                    try:
+                        eye_open, eye_close = getattr(self, "_note_eye_icons", (None, None))
+                        if eye_open is None or eye_close is None:
+                            icons_dir = Path(__file__).resolve().parents[2] / "icons"
+                            eye_open = QtGui.QIcon(str(icons_dir / "EyeOpen_s_Icon.png"))
+                            eye_close = QtGui.QIcon(str(icons_dir / "EyeClose_s_Icon.png"))
+                            self._note_eye_icons = (eye_open, eye_close)
+                    except Exception:
+                        eye_open, eye_close = (None, None)
                 else:
                     feat_set = set()
                     feat_heights = {}
@@ -1474,9 +1484,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         is_featured = pname in feat_set
                         feat_btn.setAutoRaise(True)
                         feat_btn.setToolTip("Toggle big view for this parameter")
-                        feat_btn.setText("\N{SEE-NO-EVIL MONKEY}" if not is_featured else "\N{EYE}")
+                        if eye_open is not None and eye_close is not None:
+                            feat_btn.setIcon(eye_open if is_featured else eye_close)
+                            feat_btn.setIconSize(QtCore.QSize(16, 16))
+                            feat_btn.setText("")
+                        else:
+                            feat_btn.setText("\N{SEE-NO-EVIL MONKEY}" if not is_featured else "\N{EYE}")
 
-                        def _mk_toggle(nm=pname):
+                        def _mk_toggle(nm=pname, btn=feat_btn, _open=eye_open, _close=eye_close):
                             def _toggle():
                                 fs = set(self._get_featured_set())
                                 if nm in fs:
@@ -1487,6 +1502,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
                                     setattr(self.model, "_featured_params", set(fs))
                                 except Exception:
                                     pass
+                                if _open is not None and _close is not None:
+                                    try:
+                                        btn.setIcon(_open if nm in fs else _close)
+                                    except Exception:
+                                        pass
                                 self._schedule_rebuild()
                             return _toggle
 
