@@ -2016,6 +2016,7 @@ class MGLRendererMixin:
                 fade_start = 0.0
                 fade_end = 0.0
                 zoom_scale = 1.0
+                grid_fx = bool(getattr(self, "_mgl_grid_fx_enabled", True))
                 cam_height = None
                 try:
                     fade_start_frac = float(getattr(self, "_mgl_grid_fade_start", 0.55))
@@ -2036,7 +2037,7 @@ class MGLRendererMixin:
                 if not math.isfinite(base_zoom) or base_zoom <= 0.0:
                     base_zoom = max(1e-6, zoom)
                 if zoom > 0.0 and base_zoom > 0.0:
-                    zoom_scale = max(0.5, zoom / base_zoom)
+                    zoom_scale = zoom / base_zoom
                 try:
                     cam_world = getattr(self, "_mgl_cam_world", None)
                     if cam_world is not None:
@@ -2046,42 +2047,46 @@ class MGLRendererMixin:
                 if render_size > 0.0:
                     fade_start = render_size * max(0.0, min(1.0, fade_start_frac))
                     fade_end = render_size * max(0.0, min(1.0, fade_end_frac))
-                    # Tie fade radius to camera distance.
-                    try:
-                        cam_dist = float(getattr(self, "_mgl_camera_zoom", 0.0))
-                    except Exception:
-                        cam_dist = 0.0
-                    if cam_dist > 0.0:
-                        fade_end = min(render_size * 0.98, cam_dist * 2.4)
-                        fade_start = max(0.0, fade_end * 0.35)
-                    if cam_height is not None:
+                    max_fade = render_size * 0.98
+                    if not grid_fx:
+                        if max_fade > 0.0:
+                            ratio = 0.0
+                            if fade_end_frac > 1e-6:
+                                ratio = max(0.0, fade_start_frac / fade_end_frac)
+                            fade_end = max_fade
+                            fade_start = max(0.0, fade_end * ratio)
+                    else:
+                        # Tie fade radius to camera distance with smooth exponential scaling.
                         try:
-                            height_ref = float(getattr(self, "_mgl_grid_fade_height", 5.0))
+                            cam_dist = float(getattr(self, "_mgl_camera_zoom", 0.0))
                         except Exception:
-                            height_ref = 5.0
-                        if height_ref > 0.0:
-                            if cam_height <= height_ref:
-                                # boost falloff when the camera is near the grid plane
-                                height_scale = 1.0 + ((height_ref - cam_height) / height_ref) * 0.6
-                            else:
-                                height_scale = height_ref / cam_height
-                            fade_start *= height_scale
-                            fade_end *= height_scale
+                            cam_dist = 0.0
+                        if cam_dist > 0.0:
+                            fade_end = cam_dist * 2.4
+                            fade_start = max(0.0, fade_end * 0.35)
+                        zoom_scale = max(1e-6, zoom_scale)
                         try:
-                            low_height = float(getattr(self, "_mgl_grid_fade_low_height", 0.0))
+                            zoom_exp = float(getattr(self, "_mgl_grid_fade_zoom_exp", 1.1))
                         except Exception:
-                            low_height = 0.0
-                        try:
-                            low_boost = float(getattr(self, "_mgl_grid_fade_low_boost", 1.0))
-                        except Exception:
-                            low_boost = 1.0
-                        if low_height > 0.0 and low_boost > 1.0 and cam_height <= low_height:
-                            fade_start *= low_boost
-                            fade_end *= low_boost
-                    if zoom_scale != 1.0:
+                            zoom_exp = 1.1
+                        if zoom_exp <= 0.0:
+                            zoom_exp = 1.0
+                        zoom_scale = zoom_scale ** zoom_exp
                         fade_start *= zoom_scale
                         fade_end *= zoom_scale
-                    max_fade = render_size * 0.98
+                        if cam_height is not None:
+                            try:
+                                height_ref = float(getattr(self, "_mgl_grid_fade_height", 5.0))
+                            except Exception:
+                                height_ref = 5.0
+                            try:
+                                height_boost = float(getattr(self, "_mgl_grid_fade_low_boost", 1.0))
+                            except Exception:
+                                height_boost = 1.0
+                            if height_ref > 0.0 and height_boost > 0.0:
+                                height_scale = 1.0 + (height_boost * math.exp(-cam_height / height_ref))
+                                fade_start *= height_scale
+                                fade_end *= height_scale
                     if fade_end > max_fade:
                         if fade_end > 1e-6:
                             scale = max_fade / fade_end
@@ -3012,6 +3017,12 @@ class MGLRendererMixin:
             return
         self._mgl_uv_overlay_enabled = bool(checked)
         self._mgl_uv_cache = None
+        self.update()
+
+    def _on_mgl_grid_fx_toggled(self, checked: bool) -> None:
+        if not self._use_moderngl:
+            return
+        self._mgl_grid_fx_enabled = bool(checked)
         self.update()
 
     @staticmethod

@@ -472,8 +472,10 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._mgl_grid_fade_start = 0.55
         self._mgl_grid_fade_end = 0.95
         self._mgl_grid_fade_height = 10.0
-        self._mgl_grid_fade_low_height = 3.0
-        self._mgl_grid_fade_low_boost = 2.0
+        self._mgl_grid_fade_low_height = 0.0
+        self._mgl_grid_fade_low_boost = 1.0
+        self._mgl_grid_fade_zoom_exp = 1.1
+        self._mgl_grid_fx_enabled = True
         self._mgl_grid_visible = False
         self._mgl_fov = 60.0
         self._mgl_clip_far = 1000.0
@@ -774,6 +776,11 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 self._mgl_uv_toggle.setChecked(bool(self._mgl_uv_overlay_enabled))
                 self._mgl_uv_toggle.toggled.connect(self._on_mgl_uv_toggled)
                 layout.addWidget(self._mgl_uv_toggle, 0)
+
+                self._mgl_grid_fx_toggle = QtWidgets.QCheckBox("Grid FX")
+                self._mgl_grid_fx_toggle.setChecked(bool(self._mgl_grid_fx_enabled))
+                self._mgl_grid_fx_toggle.toggled.connect(self._on_mgl_grid_fx_toggled)
+                layout.addWidget(self._mgl_grid_fx_toggle, 0)
 
             layout.addStretch(1)
             self._controls = controls
