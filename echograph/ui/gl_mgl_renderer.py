@@ -1308,7 +1308,6 @@ class MGLRendererMixin:
                 self._mgl_grid_prog["MajorBoost"].value = 1.0
                 self._mgl_grid_prog["MajorStep"].value = 1.0
                 self._mgl_grid_prog["GridSpacing"].value = 1.0
-                self._mgl_grid_prog["LineSkip"].value = 1.0
             except Exception:
                 pass
         except Exception:
@@ -1973,7 +1972,6 @@ class MGLRendererMixin:
 
                 major_step = 10.0
                 major_boost = 1.15
-                line_skip = 1.0
                 try:
                     major_step = float(getattr(self, "_mgl_grid_major_step", major_step))
                 except Exception:
@@ -1982,26 +1980,6 @@ class MGLRendererMixin:
                     major_boost = float(getattr(self, "_mgl_grid_major_boost", major_boost))
                 except Exception:
                     pass
-                try:
-                    zoom = float(getattr(self, "_mgl_camera_zoom", 0.0))
-                except Exception:
-                    zoom = 0.0
-                try:
-                    base_zoom = float(getattr(self, "_mgl_base_zoom", zoom))
-                except Exception:
-                    base_zoom = zoom
-                if not math.isfinite(base_zoom) or base_zoom <= 0.0:
-                    base_zoom = max(1e-6, zoom)
-                zoom_ratio = 1.0
-                if zoom > 0.0 and base_zoom > 0.0:
-                    zoom_ratio = zoom / base_zoom
-                zoom_scale = max(0.5, zoom_ratio)
-                if zoom_ratio >= 8.0:
-                    line_skip = 10.0
-                elif zoom_ratio >= 4.0:
-                    line_skip = 5.0
-                elif zoom_ratio >= 2.0:
-                    line_skip = 2.0
 
                 fade_start = 0.0
                 fade_end = 0.0
@@ -2016,15 +1994,6 @@ class MGLRendererMixin:
                 if render_size > 0.0:
                     fade_start = render_size * max(0.0, min(1.0, fade_start_frac))
                     fade_end = render_size * max(0.0, min(1.0, fade_end_frac))
-                    if zoom_scale > 1.0:
-                        fade_start *= zoom_scale
-                        fade_end *= zoom_scale
-                    max_fade = render_size * 0.98
-                    if fade_end > max_fade:
-                        if fade_end > 1e-6:
-                            scale = max_fade / fade_end
-                            fade_start *= scale
-                        fade_end = max_fade
                     if fade_end <= fade_start:
                         fade_start = 0.0
                         fade_end = 0.0
@@ -2060,10 +2029,6 @@ class MGLRendererMixin:
                 except Exception:
                     pass
                 try:
-                    self._mgl_grid_prog["LineSkip"].value = float(line_skip)
-                except Exception:
-                    pass
-                try:
                     self._mgl_grid_prog["FadeStart"].value = float(fade_start)
                 except Exception:
                     pass
@@ -2087,52 +2052,18 @@ class MGLRendererMixin:
                         steps += 1
                     mid = steps // 2
 
-                    skip_z = None
-                    skip_x = None
-                    if spacing > 1e-6:
-                        try:
-                            offset_steps_z = int(round(grid_offset_z / spacing))
-                            skip_z = mid - offset_steps_z
-                            if skip_z < 0 or skip_z >= steps:
-                                skip_z = None
-                        except Exception:
-                            skip_z = None
-                        try:
-                            offset_steps_x = int(round(grid_offset_x / spacing))
-                            skip_x = mid - offset_steps_x
-                            if skip_x < 0 or skip_x >= steps:
-                                skip_x = None
-                        except Exception:
-                            skip_x = None
-
-                    block_verts = steps * 2
-                    if skip_z is None:
-                        self._mgl_grid_vao.render(mode=moderngl.LINES, vertices=block_verts, first=0)
-                    else:
-                        before = skip_z * 2
-                        after = (steps - skip_z - 1) * 2
-                        if before > 0:
-                            self._mgl_grid_vao.render(mode=moderngl.LINES, vertices=before, first=0)
-                        if after > 0:
-                            self._mgl_grid_vao.render(
-                                mode=moderngl.LINES,
-                                vertices=after,
-                                first=(skip_z + 1) * 2,
-                            )
-                    base = block_verts
-                    if skip_x is None:
-                        self._mgl_grid_vao.render(mode=moderngl.LINES, vertices=block_verts, first=base)
-                    else:
-                        before = skip_x * 2
-                        after = (steps - skip_x - 1) * 2
-                        if before > 0:
-                            self._mgl_grid_vao.render(mode=moderngl.LINES, vertices=before, first=base)
-                        if after > 0:
-                            self._mgl_grid_vao.render(
-                                mode=moderngl.LINES,
-                                vertices=after,
-                                first=base + (skip_x + 1) * 2,
-                            )
+                    # Draw all grid lines except the center axes so the thick pass doesn't double-blend.
+                    before = 2 * mid
+                    after = 2 * (steps - mid - 1)
+                    if before > 0:
+                        self._mgl_grid_vao.render(mode=moderngl.LINES, vertices=before, first=0)
+                    if after > 0:
+                        self._mgl_grid_vao.render(mode=moderngl.LINES, vertices=after, first=2 * (mid + 1))
+                    base = steps * 2
+                    if before > 0:
+                        self._mgl_grid_vao.render(mode=moderngl.LINES, vertices=before, first=base)
+                    if after > 0:
+                        self._mgl_grid_vao.render(mode=moderngl.LINES, vertices=after, first=base + 2 * (mid + 1))
 
                     # Draw the 2 center axes once (thicker) so origin reads as "+"
                     try:
@@ -2151,20 +2082,8 @@ class MGLRendererMixin:
                         self._mgl_grid_prog["MajorBoost"].value = 1.0
                     except Exception:
                         pass
-                    try:
-                        self._mgl_grid_prog["LineSkip"].value = 1.0
-                    except Exception:
-                        pass
-                    try:
-                        self._mgl_grid_prog["FadeOrigin"].value = (0.0, 0.0)
-                        self._mgl_grid_prog["FadeStart"].value = 0.0
-                        self._mgl_grid_prog["FadeEnd"].value = 0.0
-                    except Exception:
-                        pass
-                    center_z = skip_z if skip_z is not None else mid
-                    center_x = skip_x if skip_x is not None else mid
-                    first_center_z = 2 * center_z
-                    first_center_x = (steps * 2) + (2 * center_x)
+                    first_center_z = 2 * mid
+                    first_center_x = (steps * 2) + (2 * mid)
                     self._mgl_grid_vao.render(mode=moderngl.LINES, vertices=2, first=first_center_z)
                     self._mgl_grid_vao.render(mode=moderngl.LINES, vertices=2, first=first_center_x)
                     try:
@@ -2181,14 +2100,7 @@ class MGLRendererMixin:
                     except Exception:
                         pass
                     try:
-                        self._mgl_grid_prog["GridOffset"].value = (0.0, 0.0)
-                        self._mgl_grid_prog["FadeOrigin"].value = (0.0, 0.0)
-                        self._mgl_grid_prog["FadeStart"].value = 0.0
-                        self._mgl_grid_prog["FadeEnd"].value = 0.0
                         self._mgl_grid_prog["MajorBoost"].value = 1.0
-                        self._mgl_grid_prog["MajorStep"].value = 1.0
-                        self._mgl_grid_prog["GridSpacing"].value = 1.0
-                        self._mgl_grid_prog["LineSkip"].value = 1.0
                     except Exception:
                         pass
                 except Exception:
@@ -2427,7 +2339,6 @@ class MGLRendererMixin:
                     self._mgl_grid_prog["MajorBoost"].value = 1.0
                     self._mgl_grid_prog["MajorStep"].value = 1.0
                     self._mgl_grid_prog["GridSpacing"].value = 1.0
-                    self._mgl_grid_prog["LineSkip"].value = 1.0
                 except Exception:
                     pass
             except Exception:
