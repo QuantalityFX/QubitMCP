@@ -632,8 +632,8 @@ class MGLRendererMixin:
             return m
 
 
-        # Build rotation (same order as gl_view: Rz @ Ry @ Rx)
-        R = (Rz(rot_rz) @ Ry(rot_ry) @ Rx(rot_rx))
+        # Build rotation in row-vector order to match gl_view's column-vector convention.
+        R = (Rx(rot_rx) @ Ry(rot_ry) @ Rz(rot_rz))
 
         model = T(-cx, -cy, -cz) @ R @ S(sx, sy, sz) @ T(px, py, pz)
 
@@ -4155,7 +4155,7 @@ class MGLRendererMixin:
                     rot_rx, rot_ry, rot_rz = -float(rx), -float(ry), -float(rz)
                     model = (
                         T(-cx, -cy, -cz)
-                        @ (Rz(rot_rz) @ Ry(rot_ry) @ Rx(rot_rx))
+                        @ (Rx(rot_rx) @ Ry(rot_ry) @ Rz(rot_rz))
                         @ S(sx, sy, sz)
                         @ T(px, py, pz)
                     )
@@ -4445,7 +4445,7 @@ def pick_hit_at(self, px: int, py: int, viewport_w: int, viewport_h: int):
                 rot_rx, rot_ry, rot_rz = -float(rx), -float(ry), -float(rz)
                 model = (
                     T(-cx, -cy, -cz)
-                    @ (Rz(rot_rz) @ Ry(rot_ry) @ Rx(rot_rx))
+                    @ (Rx(rot_rx) @ Ry(rot_ry) @ Rz(rot_rz))
                     @ S(sx, sy, sz)
                     @ T(px, py, pz)
                 )
