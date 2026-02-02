@@ -3009,6 +3009,32 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             lines.append(f"ModernGL: {'OK' if self._mgl_ctx is not None else 'missing'}")
             lines.append(f"Camera FOV: {self._mgl_fov:.1f}")
             lines.append(f"Camera zoom: {self._mgl_camera_zoom:.2f}")
+            cam_dist_origin = None
+            if Matrix44 is not None and np is not None:
+                try:
+                    zoom = float(getattr(self, "_mgl_camera_zoom", 0.0))
+                    lookat = Matrix44.look_at(
+                        (0.0, 0.0, zoom),
+                        (0.0, 0.0, 0.0),
+                        (0.0, 1.0, 0.0),
+                    )
+                    transform = Matrix44.identity(dtype="f4")
+                    arc = getattr(self, "_mgl_arcball", None)
+                    if arc is not None and hasattr(arc, "Transform"):
+                        src = arc.Transform
+                        if hasattr(src, "tolist"):
+                            transform = Matrix44(src.tolist(), dtype="f4")
+                        else:
+                            transform = Matrix44(src, dtype="f4")
+                    view = lookat * transform
+                    view_np = np.array(view, dtype=np.float32)
+                    inv = np.linalg.inv(view_np)
+                    cam = inv @ np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+                    cam_dist_origin = float(np.linalg.norm(cam[:3]))
+                except Exception:
+                    cam_dist_origin = None
+            if cam_dist_origin is not None:
+                lines.append(f"Cam→Origin: {cam_dist_origin:.2f}")
             if self._mgl_mesh_path:
                 lines.append(f"Model: {Path(self._mgl_mesh_path).name}")
             if self._mgl_texture_override and self._mgl_texture_path:
