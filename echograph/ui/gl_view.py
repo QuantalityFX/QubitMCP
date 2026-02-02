@@ -1006,6 +1006,12 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
     def _on_frame_clicked(self) -> None:
         if self._use_moderngl:
+            try:
+                if self._frame_selected_owner():
+                    self.update()
+                    return
+            except Exception:
+                pass
             self._mgl_frame_camera()
             self.update()
             return
@@ -1016,6 +1022,60 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._reset_camera()
         self.update()
 
+    def _frame_selected_owner(self) -> bool:
+        owner = getattr(self, "_xform_gizmo_owner", None)
+        if not owner:
+            return False
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        get_bounds = getattr(renderer, "get_scene_owner_bounds", None)
+        if not callable(get_bounds):
+            return False
+        if np is None:
+            return False
+        b = get_bounds(owner)
+        if not isinstance(b, (list, tuple)) or len(b) < 2:
+            return False
+        bmin, bmax = b
+        if bmin is None or bmax is None:
+            return False
+        try:
+            mins = np.array(bmin, dtype=np.float32)
+            maxs = np.array(bmax, dtype=np.float32)
+            if mins.shape[0] < 3 or maxs.shape[0] < 3:
+                return False
+        except Exception:
+            return False
+        center = (mins + maxs) * 0.5
+        extent = (maxs - mins) * 0.5
+        radius = float(max(extent[0], extent[1], extent[2]))
+        if radius <= 1e-6:
+            return False
+        inv_scale = 1.0
+        try:
+            arc = getattr(renderer, "_mgl_arcball", None)
+            if arc is not None and np is not None and hasattr(arc, "Transform"):
+                t = np.array(arc.Transform, dtype=np.float32)
+                if t.shape == (4, 4):
+                    sx = float(np.linalg.norm(t[0, :3]))
+                    sy = float(np.linalg.norm(t[1, :3]))
+                    sz = float(np.linalg.norm(t[2, :3]))
+                    s_avg = (sx + sy + sz) / 3.0
+                    if s_avg > 1e-6:
+                        inv_scale = s_avg
+        except Exception:
+            inv_scale = 1.0
+        fov = float(getattr(renderer, "_mgl_fov", 60.0))
+        dist = (radius * inv_scale) / max(1e-6, math.tan(math.radians(fov * 0.5)))
+        base_zoom = max(0.1, float(dist) * 1.2)
+        try:
+            renderer._mgl_center = center.astype("f4")
+        except Exception:
+            renderer._mgl_center = center
+        try:
+            renderer._mgl_camera_zoom = float(base_zoom) * max(0.01, float(getattr(renderer, "_mgl_scale_multiplier", 1.0)))
+        except Exception:
+            renderer._mgl_camera_zoom = float(base_zoom)
+        return True
     def _on_snapgrab_clicked(self) -> None:
         paused = False
         try:

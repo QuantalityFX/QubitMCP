@@ -458,15 +458,100 @@ class MGLRendererMixin:
             if not isinstance(mesh_bounds, dict):
                 mesh_bounds = getattr(self, "_mgl_scene_bounds_by_owner", None)
             if isinstance(mesh_bounds, dict):
+                match_owner = None
+                bounds = None
                 if key in mesh_bounds:
-                    return mesh_bounds[key]
-                lk = key.lower()
-                for k, v in mesh_bounds.items():
+                    match_owner = key
+                    bounds = mesh_bounds[key]
+                else:
+                    lk = key.lower()
+                    for k, v in mesh_bounds.items():
+                        try:
+                            if str(k).strip().lower() == lk:
+                                match_owner = k
+                                bounds = v
+                                break
+                        except Exception:
+                            continue
+
+                if bounds is None:
+                    pass
+                elif np is None:
+                    return bounds
+                else:
                     try:
-                        if str(k).strip().lower() == lk:
-                            return v
+                        bmin, bmax = bounds
+                        bmin = np.array(bmin, dtype=np.float32)
+                        bmax = np.array(bmax, dtype=np.float32)
+                        if bmin.shape[0] < 3 or bmax.shape[0] < 3:
+                            return bounds
                     except Exception:
-                        continue
+                        return bounds
+
+                    try:
+                        xf_owner = match_owner if match_owner is not None else owner
+                        model = None
+                        scene = getattr(self, "_mgl_scene", None)
+                        if scene is not None:
+                            try:
+                                for item in scene.iter_by_tag("scene-model"):
+                                    payload = getattr(item, "payload", None) or {}
+                                    o = payload.get("owner")
+                                    if o == xf_owner:
+                                        model = payload.get("model")
+                                    elif o is not None:
+                                        try:
+                                            if str(o).strip().lower() == str(xf_owner).strip().lower():
+                                                model = payload.get("model")
+                                        except Exception:
+                                            pass
+                                    if model is not None:
+                                        break
+                            except Exception:
+                                model = None
+
+                        if model is None:
+                            return bounds
+
+                        try:
+                            if Matrix44 is not None and isinstance(model, Matrix44):
+                                model = np.array(model, dtype=np.float32)
+                            else:
+                                model = np.array(model, dtype=np.float32)
+                        except Exception:
+                            return bounds
+
+                        if getattr(model, "shape", None) != (4, 4):
+                            return bounds
+
+                        corners = np.array(
+                            [
+                                [bmin[0], bmin[1], bmin[2]],
+                                [bmin[0], bmin[1], bmax[2]],
+                                [bmin[0], bmax[1], bmin[2]],
+                                [bmin[0], bmax[1], bmax[2]],
+                                [bmax[0], bmin[1], bmin[2]],
+                                [bmax[0], bmin[1], bmax[2]],
+                                [bmax[0], bmax[1], bmin[2]],
+                                [bmax[0], bmax[1], bmax[2]],
+                            ],
+                            dtype=np.float32,
+                        )
+                        corners_h = np.concatenate(
+                            [corners, np.ones((corners.shape[0], 1), dtype=np.float32)],
+                            axis=1,
+                        )
+                        world = corners_h @ model
+                        w = world[:, 3]
+                        world_xyz = world[:, :3].copy()
+                        mask = np.abs(w) > 1e-8
+                        if np.any(mask):
+                            world_xyz[mask] = world_xyz[mask] / w[mask, None]
+                        mins = world_xyz.min(axis=0).astype(np.float32)
+                        maxs = world_xyz.max(axis=0).astype(np.float32)
+                        return (mins, maxs)
+                    except Exception:
+                        return bounds
         except Exception:
             pass
 
