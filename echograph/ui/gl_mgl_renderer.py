@@ -2235,6 +2235,22 @@ class MGLRendererMixin:
                         continue
                     splat_xf[str(owner)] = {"pos": pos, "rot": rot, "scl": scl}
 
+            # Reclassify any splat owners that were stored in mesh_xf.
+            try:
+                splat_map = getattr(self, "_mgl_scene_splats", None) or {}
+                if isinstance(splat_map, dict) and splat_map:
+                    splat_keys = {str(k).strip().lower() for k in splat_map.keys()}
+                    for owner in list(mesh_xf.keys()):
+                        key = str(owner).strip().lower()
+                        if key in splat_keys and owner not in splat_xf:
+                            splat_xf[str(owner)] = mesh_xf[owner]
+                            try:
+                                del mesh_xf[owner]
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+
             if mesh_xf or splat_xf:
                 state["scene_xforms"] = {"mesh": mesh_xf, "splat": splat_xf}
         except Exception:
@@ -2274,9 +2290,27 @@ class MGLRendererMixin:
                 mesh_xf = xf_state.get("mesh") or xf_state.get("meshes") or {}
                 splat_xf = xf_state.get("splat") or xf_state.get("splats") or {}
 
+                # Reclassify any splat owners that were stored under mesh_xf.
+                try:
+                    splat_map = getattr(self, "_mgl_scene_splats", None) or {}
+                    if isinstance(splat_map, dict) and splat_map:
+                        splat_keys = {str(k).strip().lower() for k in splat_map.keys()}
+                        for owner in list(mesh_xf.keys()) if isinstance(mesh_xf, dict) else []:
+                            key = str(owner).strip().lower()
+                            if key in splat_keys and isinstance(mesh_xf.get(owner), dict):
+                                splat_xf = dict(splat_xf) if not isinstance(splat_xf, dict) else splat_xf
+                                splat_xf[str(owner)] = mesh_xf[owner]
+                                try:
+                                    del mesh_xf[owner]
+                                except Exception:
+                                    pass
+                except Exception:
+                    pass
+
+                updated_owners = []
+
                 # Apply mesh transforms
                 if isinstance(mesh_xf, dict):
-                    updated_owners = []
                     for owner, xf in mesh_xf.items():
                         if not isinstance(xf, dict):
                             continue
