@@ -3435,7 +3435,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                         forward_world=forward_world,
                     )
 
-                    q_delta = quat_from_two_vectors(start_vec, cur_vec)
+                    # Invert arcball drag direction to match center-disc drag expectation.
+                    q_delta = quat_from_two_vectors(cur_vec, start_vec)
 
                     q0 = getattr(self, "_rot_shared_arc_start_q", None)
                     if q0 is None:
