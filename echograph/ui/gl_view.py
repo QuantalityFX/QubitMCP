@@ -192,6 +192,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._xform_use_local = True
         self._mgl_xform_space = "local"
         self._xform_hist_start = None
+        self._gizmo_hotkeys_active = False
 
         self._xform_rotate_dragging = False
         self._xform_rotate_axis = None
@@ -6240,6 +6241,9 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             key = e.key()
         except Exception:
             key = None
+        if getattr(self, "_gizmo_hotkeys_active", False):
+            super().keyPressEvent(e)
+            return
         if key == QtCore.Qt.Key_T:
             self._xform_gizmo_mode = "translate"
             try:

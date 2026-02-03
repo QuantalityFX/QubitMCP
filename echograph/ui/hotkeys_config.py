@@ -20,7 +20,10 @@ DEFAULT_KEYMAP = {
     "view_mode_split": "2",
     "view_mode_3d": "3",
     "gl_frame": "F",
-    "gl_reset_view": "R",
+    "gl_reset_view": "Shift+R",
+    "gizmo_translate": "T",
+    "gizmo_rotate": "R",
+    "gizmo_scale": "E",
     "app_undo": "Ctrl+Z",
     "app_redo": "Ctrl+Y",
 }

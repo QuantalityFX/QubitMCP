@@ -2216,6 +2216,60 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             self._shortcut_gl_frame = None
 
         try:
+            self._shortcut_gl_reset = hotkeys.add_shortcut(
+                self.gl_view,
+                "gl_reset_view",
+                "Shift+R",
+                self._reset_gl_view,
+                context=QtCore.Qt.WidgetWithChildrenShortcut,
+            )
+            self._register_shortcut("gl_reset_view", self._shortcut_gl_reset)
+        except Exception:
+            self._shortcut_gl_reset = None
+
+        try:
+            self._shortcut_gizmo_translate = hotkeys.add_shortcut(
+                self.gl_view,
+                "gizmo_translate",
+                "T",
+                lambda: self._set_gizmo_mode("translate"),
+                context=QtCore.Qt.WidgetWithChildrenShortcut,
+            )
+            self._register_shortcut("gizmo_translate", self._shortcut_gizmo_translate)
+        except Exception:
+            self._shortcut_gizmo_translate = None
+
+        try:
+            self._shortcut_gizmo_rotate = hotkeys.add_shortcut(
+                self.gl_view,
+                "gizmo_rotate",
+                "R",
+                lambda: self._set_gizmo_mode("rotate"),
+                context=QtCore.Qt.WidgetWithChildrenShortcut,
+            )
+            self._register_shortcut("gizmo_rotate", self._shortcut_gizmo_rotate)
+        except Exception:
+            self._shortcut_gizmo_rotate = None
+
+        try:
+            self._shortcut_gizmo_scale = hotkeys.add_shortcut(
+                self.gl_view,
+                "gizmo_scale",
+                "E",
+                lambda: self._set_gizmo_mode("scale"),
+                context=QtCore.Qt.WidgetWithChildrenShortcut,
+            )
+            self._register_shortcut("gizmo_scale", self._shortcut_gizmo_scale)
+        except Exception:
+            self._shortcut_gizmo_scale = None
+
+        try:
+            if self.gl_view is not None:
+                self.gl_view._gizmo_hotkeys_active = True
+        except Exception:
+            pass
+
+        try:
             self._shortcut_node_delete = hotkeys.add_shortcut(
                 self.view,
                 "node_delete",
@@ -2453,6 +2507,32 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         else:
             btn.setText("2D/3D View")
             btn.setToolTip("Split view active")
+
+    def _set_gizmo_mode(self, mode: str) -> None:
+        gv = getattr(self, "gl_view", None)
+        if gv is None:
+            return
+        try:
+            gv._xform_gizmo_mode = str(mode or "translate")
+        except Exception:
+            pass
+        try:
+            gv.update()
+        except Exception:
+            pass
+
+    def _reset_gl_view(self) -> None:
+        gv = getattr(self, "gl_view", None)
+        if gv is None:
+            return
+        try:
+            gv._reset_camera()
+        except Exception:
+            pass
+        try:
+            gv.update()
+        except Exception:
+            pass
 
     def _register_shortcut(self, action_id: str, shortcut) -> None:
         try:

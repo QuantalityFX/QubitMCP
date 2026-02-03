@@ -174,7 +174,7 @@ def wire_big_editor_for_lineedit(node_item, edit: QtWidgets.QLineEdit, param_nam
     QtCore.QTimer.singleShot(50, _late_register)
 
 
-_HISTORY_LIMIT = 10
+_HISTORY_LIMIT = 20
 
 
 def _history_path() -> Path:
