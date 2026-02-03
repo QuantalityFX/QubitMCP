@@ -2521,16 +2521,37 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         btn = getattr(self, "_btn_3d", None)
         if btn is None:
             return
+        try:
+            if not hasattr(self, "_view_mode_btn_w"):
+                fm = QtGui.QFontMetrics(btn.font())
+                labels = ["2D View", "3D View", "2D / 3D"]
+                max_w = max(fm.horizontalAdvance(t) for t in labels)
+                self._view_mode_btn_w = int(max_w + 20)
+            btn.setFixedWidth(int(self._view_mode_btn_w))
+        except Exception:
+            pass
         mode = getattr(self, "_view_mode", "2d")
         if mode == "2d":
             btn.setText("2D View")
             btn.setToolTip("2D view active")
+            color = "#22c55e"
         elif mode == "3d":
             btn.setText("3D View")
             btn.setToolTip("3D view active")
+            color = "#facc15"
         else:
-            btn.setText("2D/3D View")
+            btn.setText("2D / 3D")
             btn.setToolTip("Split view active")
+            color = "#fb923c"
+        try:
+            btn.setStyleSheet(
+                "QPushButton{background:transparent;border:0px;padding:6px 10px;font-weight:600;"
+                "text-align:left;"
+                "color:" + str(color) + ";}"
+                "QPushButton:hover{background:#2b313a;}"
+            )
+        except Exception:
+            pass
 
     def _set_gizmo_mode(self, mode: str) -> None:
         gv = getattr(self, "gl_view", None)
@@ -3240,9 +3261,17 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
     def _build_topbar(self):
         bar = QtWidgets.QFrame(); bar.setObjectName("TopBar")
-        bar.setStyleSheet("#TopBar{background:#20242b;border-bottom:1px solid #333;} PushButton{padding:6px 12px;font-weight:600;}")
+        bar.setStyleSheet(
+            "#TopBar{background:#20242b;border-bottom:1px solid #333;}"
+            "QPushButton{background:transparent;border:0px;padding:1px 6px;font-weight:600;color:#e5e7eb;border-radius:2px;}"
+            "QPushButton:hover{background:#2b313a;}"
+            "QToolButton{background:transparent;border:0px;padding:1px 6px;color:#e5e7eb;border-radius:2px;}"
+            "QToolButton:hover{background:#2b313a;}"
+            "QToolButton::menu-indicator{image:none;width:0px;height:0px;}"
+            "QToolButton[active=\"true\"]{background:#1f7a45;}"
+        )
         bar.setFixedHeight(36)
-        h = QtWidgets.QHBoxLayout(bar); h.setContentsMargins(8,4,8,4); h.setSpacing(8)
+        h = QtWidgets.QHBoxLayout(bar); h.setContentsMargins(8,4,8,4); h.setSpacing(1)
 
         file_btn = QtWidgets.QToolButton(bar)
         file_btn.setObjectName("FileButton")
@@ -3252,10 +3281,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         file_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
         file_btn.setFixedHeight(22)
         file_btn.setStyleSheet(
-            "QToolButton#FileButton{color:#ffffff;background:#2a2f36;border:1px solid #3a3f46;"
-            "border-radius:4px;padding:1px 10px;}"
-            "QToolButton#FileButton:hover{background:#353b45;}"
-            "QToolButton#FileButton[active=\"true\"]{background:#1f7a45;border-color:#2a8a52;}"
+            "QToolButton#FileButton{border-radius:2px;text-align:center;}"
         )
 
         file_menu = QtWidgets.QMenu(file_btn)
@@ -3269,7 +3295,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         file_panel.setStyleSheet(
             "#FilePanel{background:#1b2026;border:0px;border-radius:6px;}"
             "#FilePanel QToolButton{color:#e5e7eb;background:transparent;border:0px;padding:6px 10px;text-align:left;}"
-            "#FilePanel QToolButton:hover{background:#1f7a45;}"
+            "#FilePanel QToolButton:hover{color:#e5e7eb;background:#1f7a45;}"
         )
         file_layout = QtWidgets.QVBoxLayout(file_panel)
         file_layout.setContentsMargins(6, 6, 6, 6)
@@ -3278,24 +3304,32 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         file_new = QtWidgets.QToolButton(file_panel)
         file_new.setText("New")
         file_new.setToolTip("Launch a fresh EchoGraph window")
+        file_new.setStyleSheet("text-align:left;")
+        file_new.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         file_new.clicked.connect(self._launch_new_instance)
         file_layout.addWidget(file_new, 0)
 
         file_open = QtWidgets.QToolButton(file_panel)
         file_open.setText("Open")
         file_open.setToolTip("Load a graph from a .json file")
+        file_open.setStyleSheet("text-align:left;")
+        file_open.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         file_open.clicked.connect(self._open_graph)
         file_layout.addWidget(file_open, 0)
 
         file_save = QtWidgets.QToolButton(file_panel)
         file_save.setText("Save")
         file_save.setToolTip("Save to the last opened/exported .json (Save)")
+        file_save.setStyleSheet("text-align:left;")
+        file_save.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         file_save.clicked.connect(self._save_graph)
         file_layout.addWidget(file_save, 0)
 
         file_export = QtWidgets.QToolButton(file_panel)
         file_export.setText("Save As")
         file_export.setToolTip("Save current graph to a new .json (Save As)")
+        file_export.setStyleSheet("text-align:left;")
+        file_export.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         file_export.clicked.connect(self._export_graph)
         file_layout.addWidget(file_export, 0)
 
@@ -3317,10 +3351,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         create_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
         create_btn.setFixedHeight(22)
         create_btn.setStyleSheet(
-            "QToolButton#CreateButton{color:#ffffff;background:#2a2f36;border:1px solid #3a3f46;"
-            "border-radius:4px;padding:1px 10px;}"
-            "QToolButton#CreateButton:hover{background:#353b45;}"
-            "QToolButton#CreateButton[active=\"true\"]{background:#1f7a45;border-color:#2a8a52;}"
+            "QToolButton#CreateButton{border-radius:2px;text-align:center;}"
         )
 
         create_menu = QtWidgets.QMenu(create_btn)
@@ -3334,7 +3365,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         create_panel.setStyleSheet(
             "#CreatePanel{background:#1b2026;border:0px;border-radius:6px;}"
             "#CreatePanel QToolButton{color:#e5e7eb;background:transparent;border:0px;padding:6px 10px;text-align:left;}"
-            "#CreatePanel QToolButton:hover{background:#1f7a45;}"
+            "#CreatePanel QToolButton:hover{color:#e5e7eb;background:#1f7a45;}"
         )
         create_layout = QtWidgets.QVBoxLayout(create_panel)
         create_layout.setContentsMargins(6, 6, 6, 6)
@@ -3343,6 +3374,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         create_node = QtWidgets.QToolButton(create_panel)
         create_node.setText("Node")
         create_node.setToolTip("Create a new node with type & params")
+        create_node.setStyleSheet("text-align:left;")
+        create_node.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         create_node.clicked.connect(self._create_node_interactive)
         create_layout.addWidget(create_node, 0)
 
@@ -3364,10 +3397,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         settings_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
         settings_btn.setFixedHeight(22)
         settings_btn.setStyleSheet(
-            "QToolButton#SettingsButton{color:#ffffff;background:#2a2f36;border:1px solid #3a3f46;"
-            "border-radius:4px;padding:1px 10px;}"
-            "QToolButton#SettingsButton:hover{background:#353b45;}"
-            "QToolButton#SettingsButton[active=\"true\"]{background:#1f7a45;border-color:#2a8a52;}"
+            "QToolButton#SettingsButton{border-radius:2px;text-align:center;}"
         )
 
         settings_menu = QtWidgets.QMenu(settings_btn)
@@ -3487,20 +3517,14 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         hotkeys_btn.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
         hotkeys_btn.setFixedHeight(22)
         hotkeys_btn.setStyleSheet(
-            "QToolButton#HotkeysButton{color:#ffffff;background:#2a2f36;border:1px solid #3a3f46;"
-            "border-radius:4px;padding:1px 10px;}"
-            "QToolButton#HotkeysButton:hover{background:#353b45;}"
+            "QToolButton#HotkeysButton{border-radius:2px;text-align:center;}"
         )
         hotkeys_btn.clicked.connect(self._open_hotkeys_dialog)
         h.addWidget(hotkeys_btn, 0)
 
-        self._btn_3d = QtWidgets.QPushButton("3D View", bar)
-        self._btn_3d.setToolTip("Switch to 3D viewport")
-        self._btn_3d.clicked.connect(self._cycle_view_mode)
-        h.addWidget(self._btn_3d, 0)
-
         btn_frame = QtWidgets.QPushButton(bar)
         btn_frame.setToolTip("Fit view to all nodes")
+        btn_frame.setFixedHeight(22)
         try:
             frame_icon = QtGui.QIcon(str(script_dir() / "icons" / "Frame_Icon.png"))
             if not frame_icon.isNull():
@@ -3516,6 +3540,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
         btn_logs = QtWidgets.QPushButton(bar)
         btn_logs.setToolTip("Open EchoGraph log folder")
+        btn_logs.setFixedHeight(22)
         try:
             logs_icon = QtGui.QIcon(str(script_dir() / "icons" / "debug_002_Icon_s.png"))
             if not logs_icon.isNull():
@@ -3530,6 +3555,12 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             QtCore.QUrl.fromLocalFile(__import__("os").path.join(__import__("tempfile").gettempdir(), "EchoGraph"))
         ))
         h.addWidget(btn_logs, 0)
+
+        self._btn_3d = QtWidgets.QPushButton("3D View", bar)
+        self._btn_3d.setToolTip("Switch to 3D viewport")
+        self._btn_3d.setFixedHeight(22)
+        self._btn_3d.clicked.connect(self._cycle_view_mode)
+        h.addWidget(self._btn_3d, 0)
 
         h.addStretch(1)   # ← stretch AFTER the settings block to keep it left
         return bar
