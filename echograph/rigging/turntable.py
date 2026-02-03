@@ -7,6 +7,8 @@ try:
 except Exception:
     from PySide2 import QtCore, QtGui, QtWidgets  # type: ignore
 
+from echograph.ui import actions
+
 
 class TurntableController(QtCore.QObject):
     def __init__(self, view):
@@ -18,6 +20,9 @@ class TurntableController(QtCore.QObject):
         self._timer = None
         self._last_t = None
         self._speed_deg = 45.0
+        self._hist_owner = None
+        self._hist_before = None
+        self._hist_scene = None
 
     def build_panel(self, parent: QtWidgets.QWidget) -> QtWidgets.QFrame:
         if self._panel is not None:
@@ -92,8 +97,82 @@ class TurntableController(QtCore.QObject):
             rot, is_splat = (0.0, 0.0, 0.0), False
         return owner, bool(is_splat), {"rot": rot}
 
+    def _snapshot_xform(self, owner: str) -> dict:
+        if not owner:
+            return {}
+        renderer = getattr(self._view, "_mgl_renderer", None) or self._view
+        is_splat = False
+        try:
+            splat_map = getattr(renderer, "_mgl_scene_splats", None)
+            if isinstance(splat_map, dict) and owner in splat_map:
+                is_splat = True
+        except Exception:
+            is_splat = False
+        getf = getattr(renderer, "_mgl_get_scene_splat_xform", None) if is_splat else getattr(renderer, "_mgl_get_scene_asset_xform", None)
+        if callable(getf):
+            raw = getf(owner) or {}
+        else:
+            raw = {}
+        return {
+            "pos": tuple(raw.get("pos", (0.0, 0.0, 0.0))),
+            "rot": tuple(raw.get("rot", (0.0, 0.0, 0.0))),
+            "scl": tuple(raw.get("scl", (1.0, 1.0, 1.0))),
+        }
+
+    def _resolve_scene_node(self, owner: str):
+        try:
+            win = self._view.window()
+        except Exception:
+            win = None
+        if win is None:
+            return None
+        scene_node = getattr(win, "_active_scene_node", None)
+        if scene_node is not None:
+            kind = (getattr(scene_node, "kind", "") or "").lower()
+            if kind in ("scene", "scene_assembly", "scene_outliner"):
+                return scene_node
+        try:
+            for card in (getattr(win, "_card_by_node", {}) or {}).values():
+                if getattr(card, "_scene_selected_owner", None) != owner:
+                    continue
+                node = getattr(card, "_node_ref", None)
+                kind = (getattr(node, "kind", "") or "").lower() if node is not None else ""
+                if kind in ("scene", "scene_assembly", "scene_outliner"):
+                    return node
+        except Exception:
+            pass
+        return None
+
+    def _start_history(self, owner: str) -> None:
+        if not owner or self._hist_owner is not None:
+            return
+        scene_node = self._resolve_scene_node(owner)
+        if scene_node is None:
+            return
+        self._hist_owner = owner
+        self._hist_scene = scene_node
+        self._hist_before = self._snapshot_xform(owner)
+
+    def _commit_history(self) -> None:
+        owner = self._hist_owner
+        scene_node = self._hist_scene
+        before = self._hist_before or {}
+        self._hist_owner = None
+        self._hist_scene = None
+        self._hist_before = None
+        if not owner or scene_node is None:
+            return
+        after = self._snapshot_xform(owner)
+        try:
+            win = self._view.window()
+            actions.record_scene_xform(win, scene_node, owner, before, after)
+        except Exception:
+            pass
+
     def _on_axis_toggle(self, axis: str, state: int) -> None:
         if state:
+            if self._axis and self._axis != axis:
+                self._commit_history()
             for other, cb in self._axis_checks.items():
                 if other != axis and cb.isChecked():
                     cb.blockSignals(True)
@@ -102,6 +181,12 @@ class TurntableController(QtCore.QObject):
             self._axis = axis
             self._last_t = time.perf_counter()
             try:
+                owner = getattr(self._view, "_xform_gizmo_owner", None)
+                if owner:
+                    self._start_history(str(owner))
+            except Exception:
+                pass
+            try:
                 self._view._xform_gizmo_mode = "rotate"
             except Exception:
                 pass
@@ -109,6 +194,7 @@ class TurntableController(QtCore.QObject):
             if self._axis == axis:
                 self._axis = None
                 self._last_t = time.perf_counter()
+                self._commit_history()
         try:
             self._view.update()
         except Exception:
