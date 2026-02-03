@@ -473,9 +473,29 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         rot_w, rot_xyz = _xyz_row((0.0, 0.0, 0.0))
         scl_w, scl_xyz = _xyz_row((1.0, 1.0, 1.0))
 
-        fp.addRow("Position", pos_w)
-        fp.addRow("Rotation", rot_w)
-        fp.addRow("Scale", scl_w)
+        label_pos = QtWidgets.QLabel("Position")
+        label_rot = QtWidgets.QLabel("Rotation")
+        label_scl = QtWidgets.QLabel("Scale")
+        labels = [label_pos, label_rot, label_scl]
+        max_w = 0
+        for lb in labels:
+            try:
+                w = lb.fontMetrics().horizontalAdvance(lb.text())
+            except Exception:
+                try:
+                    w = lb.sizeHint().width()
+                except Exception:
+                    w = 0
+            if w > max_w:
+                max_w = w
+        max_w = int(max_w + 12)
+        for lb in labels:
+            lb.setFixedWidth(max_w)
+            lb.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+
+        fp.addRow(label_pos, pos_w)
+        fp.addRow(label_rot, rot_w)
+        fp.addRow(label_scl, scl_w)
 
         card._xform_panel = xform_panel
         card._xform_pos = pos_xyz
