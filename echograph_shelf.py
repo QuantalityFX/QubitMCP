@@ -2404,9 +2404,9 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
     def _cycle_view_mode(self) -> None:
         mode = getattr(self, "_view_mode", "2d")
         if mode == "2d":
-            next_mode = "3d"
-        elif mode == "3d":
             next_mode = "split"
+        elif mode == "split":
+            next_mode = "3d"
         else:
             next_mode = "2d"
         self._set_view_mode(next_mode)
@@ -2567,7 +2567,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
         dlg = QtWidgets.QDialog(self)
         dlg.setWindowTitle("Hotkeys")
-        dlg.resize(520, 360)
+        dlg.resize(500, 615)
         lay = QtWidgets.QVBoxLayout(dlg)
         lay.setContentsMargins(10, 10, 10, 10)
         lay.setSpacing(8)
