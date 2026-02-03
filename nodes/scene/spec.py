@@ -411,10 +411,12 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         layout.addWidget(xform_title)
 
         xform_panel = QtWidgets.QWidget()
+        xform_panel.setObjectName("SceneXformPanel")
         xform_panel.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         xform_panel.setMinimumWidth(0)
         xform_panel.setStyleSheet(
-            "QWidget{background:#0f1216;color:#e2e8f0;border:1px solid #3c4450;border-radius:6px;}"
+            "#SceneXformPanel{background:#0f1216;color:#e2e8f0;border:1px solid #3c4450;border-radius:6px;}"
+            "#SceneXformPanel QLabel{color:#e2e8f0;border:0px;}"
         )
 
         fp = QtWidgets.QFormLayout(xform_panel)
