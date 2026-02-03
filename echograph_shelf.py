@@ -3239,6 +3239,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         recents = [p for p in getattr(self, "_recent_files", []) if p]
         if not recents:
             return
+        self._open_recent_dialog()
+
+    def _open_recent_dialog(self):
+        recents = [p for p in getattr(self, "_recent_files", []) if p]
         dlg = RecentGraphsDialog(self, recents)
         if _qexec(dlg) == QtWidgets.QDialog.Accepted:
             action = getattr(dlg, "result_action", lambda: "open")()
@@ -3293,7 +3297,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
         file_panel = QtWidgets.QFrame(file_menu)
         file_panel.setObjectName("FilePanel")
-        file_panel.setFixedWidth(84)
+        file_panel.setFixedWidth(101)
         file_panel.setStyleSheet(
             "#FilePanel{background:#1b2026;border:0px;border-radius:6px;}"
             "#FilePanel QPushButton{color:#e5e7eb;background:transparent;border:0px;padding:0px 6px;text-align:left;}"
@@ -3320,6 +3324,15 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         file_open.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         file_open.clicked.connect(self._open_graph)
         file_layout.addWidget(file_open, 0)
+
+        file_recent = QtWidgets.QPushButton("Open Recent", file_panel)
+        file_recent.setToolTip("Open a recent workflow")
+        file_recent.setFixedHeight(22)
+        file_recent.setCursor(QtCore.Qt.PointingHandCursor)
+        file_recent.setFlat(True)
+        file_recent.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        file_recent.clicked.connect(self._open_recent_dialog)
+        file_layout.addWidget(file_recent, 0)
 
         file_save = QtWidgets.QPushButton("Save", file_panel)
         file_save.setToolTip("Save to the last opened/exported .json (Save)")
