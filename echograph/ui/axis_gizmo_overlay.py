@@ -143,7 +143,7 @@ class AxisGizmoOverlay:
                     verts.extend([x, y, z, r, g, b])
 
         axis_len = 1.0
-        cone_radius = 0.06
+        cone_radius = 0.05
         cone_height = 0.18
         line_end = axis_len - cone_height
         segs = 12
@@ -170,7 +170,7 @@ class AxisGizmoOverlay:
 
         # scale cubes
         self._scale_cube_vert_offset = len(verts) // 6
-        cube_size = 0.12
+        cube_size = 0.10
         cube_axis_pos = line_end + (cube_size * 0.5)
         add_cube((cube_axis_pos, 0.0, 0.0), cube_size, (1.0, 0.0, 0.0))
         add_cube((0.0, cube_axis_pos, 0.0), cube_size, (0.0, 1.0, 0.0))
@@ -248,7 +248,7 @@ class AxisGizmoOverlay:
         self._gl.glDisable(GL_DEPTH_TEST)
         self._gl.glEnable(GL_BLEND)
         self._gl.glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-        self._gl.glLineWidth(2.0 if mode == "rotate" else 3.0)
+        self._gl.glLineWidth(2.0)
         try:
             if alpha <= 0.0:
                 self._gl.glColorMask(False, False, False, False)
