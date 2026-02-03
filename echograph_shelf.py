@@ -2047,6 +2047,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._bigedit_registry = {}
         self._recent_files = _load_recent_graphs()
         self._hotkey_shortcuts = {}
+        self._update_window_title()
 
         central = QtWidgets.QWidget(self)
         v = QtWidgets.QVBoxLayout(central)
@@ -3610,6 +3611,17 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         except Exception:
             pass
 
+    def _update_window_title(self) -> None:
+        try:
+            path = (self._current_path or "").strip()
+        except Exception:
+            path = ""
+        title = APP_TITLE if not path else f"{APP_TITLE} — {path}"
+        try:
+            self.setWindowTitle(title)
+        except Exception:
+            pass
+
     def _reset_settings_to_defaults(self) -> None:
         try:
             default_llm = float(LLM_SCALE_DEFAULT)
@@ -3978,6 +3990,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
         self._current_path = path
         self._remember_recent(path)
+        self._update_window_title()
         self._frame_all_nodes()
         return True
 
@@ -3995,6 +4008,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             with open(self._current_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
             self._remember_recent(self._current_path)
+            self._update_window_title()
             try:
                 QtWidgets.QToolTip.showText(
                     QtGui.QCursor.pos(),
@@ -4034,6 +4048,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
             self._current_path = path
             self._remember_recent(path)
+            self._update_window_title()
             try:
                 QtWidgets.QToolTip.showText(
                     QtGui.QCursor.pos(),
