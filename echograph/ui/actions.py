@@ -390,6 +390,47 @@ def _apply_xform_entry(win, entry: dict, use_before: bool) -> bool:
                 win.update_scene_asset_xform(owner)
         except Exception:
             pass
+        # Keep gizmo aligned with the undone/redone asset.
+        try:
+            glv._xform_gizmo_owner = owner
+            glv._xform_gizmo_owner_kind = "splat" if is_splat else "mesh"
+            xf_pos = tuple(xf.get("pos", (0.0, 0.0, 0.0)))
+            if is_splat:
+                pivot = None
+                try:
+                    bounds_map = (
+                        getattr(renderer, "_mgl_scene_splats_bounds_local", None)
+                        or getattr(renderer, "_mgl_scene_splat_bounds_by_owner", None)
+                    )
+                    if isinstance(bounds_map, dict) and owner in bounds_map:
+                        mins, maxs = bounds_map.get(owner) or (None, None)
+                        if mins is not None and maxs is not None:
+                            pivot = (
+                                (float(mins[0]) + float(maxs[0])) * 0.5,
+                                (float(mins[1]) + float(maxs[1])) * 0.5,
+                                (float(mins[2]) + float(maxs[2])) * 0.5,
+                            )
+                except Exception:
+                    pivot = None
+                if pivot is not None:
+                    pos = (
+                        float(xf_pos[0] + pivot[0]),
+                        float(xf_pos[1] + pivot[1]),
+                        float(xf_pos[2] + pivot[2]),
+                    )
+                else:
+                    pos = xf_pos
+            else:
+                pos = xf_pos
+            glv._xform_gizmo_pos_locked = False
+            glv._xform_gizmo_pos = pos
+        except Exception:
+            pass
+        try:
+            if hasattr(win, "select_scene_asset"):
+                win.select_scene_asset(owner)
+        except Exception:
+            pass
         try:
             glv.update()
         except Exception:

@@ -38,6 +38,7 @@ from echograph.ui.gl_view_example import example_view_matrix as _ex_example_view
 from echograph.ui.gl_view_example import example_orbit as _ex_example_orbit
 from echograph.ui.gl_view_example import example_pan as _ex_example_pan
 from echograph.ui.gl_view_example import example_zoom as _ex_example_zoom
+from echograph.ui import hotkeys_config
 from echograph.ui.gl_view_example import build_example_program as _ex_build_example_program
 from echograph.ui.gl_view_example import example_cube_data as _ex_cube_data
 from echograph.ui.gl_view_example import example_grid_data as _ex_grid_data
@@ -167,6 +168,59 @@ GL_DEPTH_TEST = 0x0B71
 _HAS_MGL = moderngl is not None and np is not None and Matrix44 is not None
 
 print("[GL_VIEW] LOADED FROM:", __file__)
+
+class _ViewportHotkeyFilter(QtCore.QObject):
+    def __init__(self, view):
+        super().__init__(view)
+        self._view = view
+
+    def eventFilter(self, obj, ev):
+        try:
+            if ev.type() != QtCore.QEvent.KeyPress:
+                return False
+        except Exception:
+            return False
+        view = self._view
+        if view is None:
+            return False
+        try:
+            if not view.isVisible() or not view.isEnabled():
+                return False
+        except Exception:
+            return False
+        try:
+            w = QtWidgets.QApplication.widgetAt(QtGui.QCursor.pos())
+            in_view = False
+            while w is not None:
+                if w is view:
+                    in_view = True
+                    break
+                w = w.parentWidget()
+            if not in_view:
+                return False
+        except Exception:
+            return False
+        try:
+            w = QtWidgets.QApplication.widgetAt(QtGui.QCursor.pos())
+            if isinstance(
+                w,
+                (
+                    QtWidgets.QLineEdit,
+                    QtWidgets.QTextEdit,
+                    QtWidgets.QPlainTextEdit,
+                    QtWidgets.QSpinBox,
+                    QtWidgets.QDoubleSpinBox,
+                ),
+            ):
+                return False
+        except Exception:
+            pass
+        try:
+            if view._handle_viewport_hotkeys(ev, require_no_text_focus=False):
+                return True
+        except Exception:
+            pass
+        return False
 
 class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWidget):
     def __init__(self, scene, parent=None):
@@ -564,6 +618,14 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
         self.setMouseTracking(True)
         self.setFocusPolicy(QtCore.Qt.StrongFocus)
+        self._viewport_hotkey_filter = None
+        try:
+            app = QtWidgets.QApplication.instance()
+            if app is not None:
+                self._viewport_hotkey_filter = _ViewportHotkeyFilter(self)
+                app.installEventFilter(self._viewport_hotkey_filter)
+        except Exception:
+            self._viewport_hotkey_filter = None
         self._build_scale_controls()
         self._build_debug_toggle_button()
         self._build_debug_copy_button()
@@ -6236,11 +6298,125 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             return
         super().wheelEvent(e)
 
+    def _handle_viewport_hotkeys(self, e, *, require_no_text_focus: bool = True) -> bool:
+        try:
+            if e is None:
+                return False
+            key = e.key()
+        except Exception:
+            key = None
+        if key is None:
+            return False
+        if require_no_text_focus:
+            try:
+                fw = QtWidgets.QApplication.focusWidget()
+                if isinstance(
+                    fw,
+                    (
+                        QtWidgets.QLineEdit,
+                        QtWidgets.QTextEdit,
+                        QtWidgets.QPlainTextEdit,
+                        QtWidgets.QSpinBox,
+                        QtWidgets.QDoubleSpinBox,
+                    ),
+                ):
+                    return False
+            except Exception:
+                pass
+
+        mod_mask = (
+            QtCore.Qt.ControlModifier
+            | QtCore.Qt.AltModifier
+            | QtCore.Qt.ShiftModifier
+            | QtCore.Qt.MetaModifier
+        )
+
+        def _seq_to_keymods(seq: str):
+            try:
+                if not seq:
+                    return None, None
+                q = QtGui.QKeySequence(str(seq))
+                if q.count() < 1:
+                    return None, None
+                val = int(q[0])
+                mods = QtCore.Qt.KeyboardModifiers(int(val) & int(mod_mask))
+                key = int(val) & ~int(mod_mask)
+                if "shift+" not in str(seq).lower():
+                    if QtCore.Qt.Key_A <= key <= QtCore.Qt.Key_Z:
+                        mods = QtCore.Qt.KeyboardModifiers(int(mods) & ~int(QtCore.Qt.ShiftModifier))
+                return key, mods
+            except Exception:
+                return None, None
+
+        def _matches_hotkey(seq: str) -> bool:
+            try:
+                key, mods = _seq_to_keymods(seq)
+                if key is None:
+                    return False
+                ev_mods = e.modifiers() if e is not None else QtCore.Qt.NoModifier
+                ev_mods = QtCore.Qt.KeyboardModifiers(int(ev_mods) & int(mod_mask))
+                if (e.key() == key) and (ev_mods == mods):
+                    return True
+                # Fallback for plain letter keys (handles Shift/Caps quirks).
+                try:
+                    s = str(seq or "").strip()
+                    if len(s) == 1 and s.isalpha() and int(mods) == 0:
+                        txt = str(e.text() or "")
+                        if txt and txt.lower() == s.lower() and int(ev_mods) in (0, int(QtCore.Qt.ShiftModifier)):
+                            return True
+                except Exception:
+                    pass
+                return False
+            except Exception:
+                return False
+
+        try:
+            wire_seq = hotkeys_config.keyseq("gl_wireframe_toggle", "W")
+            grid_seq = hotkeys_config.keyseq("gl_grid_toggle", "G")
+        except Exception:
+            wire_seq = "W"
+            grid_seq = "G"
+
+        if not (_matches_hotkey(wire_seq) or _matches_hotkey(grid_seq)):
+            return False
+
+        try:
+            if e.isAutoRepeat():
+                return True
+        except Exception:
+            pass
+
+        if _matches_hotkey(wire_seq):
+            try:
+                toggle = getattr(self, "_mgl_wireframe_toggle", None)
+                if toggle is not None:
+                    toggle.setChecked(not bool(toggle.isChecked()))
+                else:
+                    self._on_mgl_wireframe_toggled(not bool(getattr(self, "_mgl_wireframe", False)))
+            except Exception:
+                pass
+        else:
+            try:
+                checked = not bool(getattr(self, "_mgl_grid_visible", False))
+                btn = getattr(self, "_grid_btn", None)
+                if btn is not None:
+                    btn.setChecked(bool(checked))
+                self._on_grid_button_toggled(bool(checked))
+            except Exception:
+                pass
+        try:
+            e.accept()
+        except Exception:
+            pass
+        return True
+
     def keyPressEvent(self, e):
         try:
             key = e.key()
         except Exception:
             key = None
+        if self._handle_viewport_hotkeys(e, require_no_text_focus=True):
+            return
         if getattr(self, "_gizmo_hotkeys_active", False):
             super().keyPressEvent(e)
             return

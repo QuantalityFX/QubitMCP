@@ -2567,7 +2567,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
         dlg = QtWidgets.QDialog(self)
         dlg.setWindowTitle("Hotkeys")
-        dlg.resize(510, 650)
+        dlg.resize(500, 670)
         lay = QtWidgets.QVBoxLayout(dlg)
         lay.setContentsMargins(10, 10, 10, 10)
         lay.setSpacing(8)
