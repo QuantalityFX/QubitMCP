@@ -26,7 +26,48 @@ DEFAULT_KEYMAP = {
     "gizmo_scale": "E",
     "app_undo": "Ctrl+Z",
     "app_redo": "Ctrl+Y",
+    "wire_add_pin": "Ctrl+LeftClick",
+    "wire_remove": "Alt+LeftClick",
 }
+
+_MOD_MASK = (
+    QtCore.Qt.ControlModifier
+    | QtCore.Qt.AltModifier
+    | QtCore.Qt.ShiftModifier
+    | QtCore.Qt.MetaModifier
+)
+
+def parse_mouse_binding(spec: str) -> tuple[QtCore.Qt.KeyboardModifiers, QtCore.Qt.MouseButton]:
+    """
+    Parse a mouse binding string like "Ctrl+LeftClick" into modifiers + button.
+    Only modifiers are supported (Ctrl/Alt/Shift/Meta).
+    """
+    s = str(spec or "").lower().replace(" ", "")
+    mods = QtCore.Qt.KeyboardModifiers()
+    if "ctrl" in s or "control" in s:
+        mods |= QtCore.Qt.ControlModifier
+    if "alt" in s:
+        mods |= QtCore.Qt.AltModifier
+    if "shift" in s:
+        mods |= QtCore.Qt.ShiftModifier
+    if "meta" in s or "cmd" in s or "command" in s:
+        mods |= QtCore.Qt.MetaModifier
+
+    btn = QtCore.Qt.NoButton
+    if ("left" in s) or ("lmb" in s):
+        btn = QtCore.Qt.LeftButton
+    elif ("right" in s) or ("rmb" in s):
+        btn = QtCore.Qt.RightButton
+    elif ("middle" in s) or ("mmb" in s):
+        btn = QtCore.Qt.MiddleButton
+    return mods, btn
+
+def mouse_binding(action_id: str, fallback: str) -> tuple[QtCore.Qt.KeyboardModifiers, QtCore.Qt.MouseButton]:
+    spec = keyseq(action_id, fallback)
+    return parse_mouse_binding(spec)
+
+def normalize_mods(mods: QtCore.Qt.KeyboardModifiers) -> QtCore.Qt.KeyboardModifiers:
+    return QtCore.Qt.KeyboardModifiers(int(mods) & int(_MOD_MASK))
 
 def _log(*args):
     print("[HOTKEYS]", *args, flush=True)

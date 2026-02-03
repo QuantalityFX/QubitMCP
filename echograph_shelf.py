@@ -2567,7 +2567,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
         dlg = QtWidgets.QDialog(self)
         dlg.setWindowTitle("Hotkeys")
-        dlg.resize(500, 615)
+        dlg.resize(510, 650)
         lay = QtWidgets.QVBoxLayout(dlg)
         lay.setContentsMargins(10, 10, 10, 10)
         lay.setSpacing(8)
@@ -2581,18 +2581,86 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         table.setAlternatingRowColors(True)
         table.setColumnWidth(0, 220)
 
+        wire_actions = {"wire_add_pin", "wire_remove"}
+
+        def _mods_to_text(mods) -> str:
+            bits = []
+            if mods & QtCore.Qt.ControlModifier:
+                bits.append("Ctrl")
+            if mods & QtCore.Qt.AltModifier:
+                bits.append("Alt")
+            if mods & QtCore.Qt.ShiftModifier:
+                bits.append("Shift")
+            if mods & QtCore.Qt.MetaModifier:
+                bits.append("Meta")
+            return "+".join(bits)
+
+        def _normalize_mod_text(text: str) -> str:
+            s = str(text or "").lower()
+            mods = QtCore.Qt.KeyboardModifiers()
+            if "ctrl" in s or "control" in s:
+                mods |= QtCore.Qt.ControlModifier
+            if "alt" in s:
+                mods |= QtCore.Qt.AltModifier
+            if "shift" in s:
+                mods |= QtCore.Qt.ShiftModifier
+            if "meta" in s or "cmd" in s or "command" in s:
+                mods |= QtCore.Qt.MetaModifier
+            return _mods_to_text(mods)
+
+        class _MouseHotkeyEditor(QtWidgets.QWidget):
+            def __init__(self, parent=None):
+                super().__init__(parent)
+                layout = QtWidgets.QHBoxLayout(self)
+                layout.setContentsMargins(0, 0, 0, 0)
+                layout.setSpacing(6)
+
+                self.key_edit = QtWidgets.QLineEdit(self)
+                self.key_edit.setPlaceholderText("Ctrl/Alt/Shift")
+                self.key_edit.setToolTip("Modifiers only (Ctrl/Alt/Shift/Meta).")
+                self.key_edit.setMaximumWidth(140)
+                layout.addWidget(self.key_edit, 1)
+
+                self.btn_combo = QtWidgets.QComboBox(self)
+                self.btn_combo.addItem("Left Click", "LeftClick")
+                self.btn_combo.addItem("Right Click", "RightClick")
+                self.btn_combo.addItem("Middle Click", "MiddleClick")
+                self.btn_combo.setMaximumWidth(120)
+                layout.addWidget(self.btn_combo, 0)
+
+            def set_value(self, spec: str) -> None:
+                mods, btn = hotkeys_config.parse_mouse_binding(spec)
+                self.key_edit.setText(_mods_to_text(mods))
+                if btn == QtCore.Qt.RightButton:
+                    self.btn_combo.setCurrentIndex(1)
+                elif btn == QtCore.Qt.MiddleButton:
+                    self.btn_combo.setCurrentIndex(2)
+                else:
+                    self.btn_combo.setCurrentIndex(0)
+
+            def value(self) -> str:
+                mod_text = _normalize_mod_text(self.key_edit.text())
+                btn_text = str(self.btn_combo.currentData() or "LeftClick")
+                return f"{mod_text}+{btn_text}" if mod_text else btn_text
+
         editors = {}
         for row, action_id in enumerate(keys):
             item = QtWidgets.QTableWidgetItem(action_id)
             table.setItem(row, 0, item)
-            editor = QtWidgets.QKeySequenceEdit(table)
             seq = mapping.get(action_id, hotkeys_config.DEFAULT_KEYMAP.get(action_id, ""))
-            try:
-                editor.setKeySequence(QtGui.QKeySequence(str(seq or "")))
-            except Exception:
-                pass
-            table.setCellWidget(row, 1, editor)
-            editors[action_id] = editor
+            if action_id in wire_actions:
+                editor = _MouseHotkeyEditor(table)
+                editor.set_value(str(seq or ""))
+                table.setCellWidget(row, 1, editor)
+                editors[action_id] = ("mouse", editor)
+            else:
+                editor = QtWidgets.QKeySequenceEdit(table)
+                try:
+                    editor.setKeySequence(QtGui.QKeySequence(str(seq or "")))
+                except Exception:
+                    pass
+                table.setCellWidget(row, 1, editor)
+                editors[action_id] = ("key", editor)
 
         lay.addWidget(table, 1)
 
@@ -2603,14 +2671,21 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
         def _save():
             new_map = {}
-            for action_id, editor in editors.items():
-                try:
-                    seq = editor.keySequence().toString()
-                except Exception:
+            for action_id, data in editors.items():
+                kind, editor = data
+                if kind == "mouse":
                     try:
-                        seq = str(editor.text()).strip()
+                        seq = editor.value()
                     except Exception:
                         seq = ""
+                else:
+                    try:
+                        seq = editor.keySequence().toString()
+                    except Exception:
+                        try:
+                            seq = str(editor.text()).strip()
+                        except Exception:
+                            seq = ""
                 new_map[action_id] = str(seq or "")
             try:
                 path = hotkeys_config.keymap_path()

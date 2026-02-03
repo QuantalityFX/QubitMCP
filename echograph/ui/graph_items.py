@@ -1,6 +1,14 @@
 # echograph/ui/graph_items.py
 import math
 from echograph.qt_compat import QtCore, QtGui, QtWidgets
+from echograph.ui import hotkeys_config
+
+
+def _mods_match(current, required) -> bool:
+    try:
+        return hotkeys_config.normalize_mods(current) == hotkeys_config.normalize_mods(required)
+    except Exception:
+        return False
 
 
 def _rounded_polyline_path(points, radius: float) -> QtGui.QPainterPath:
@@ -870,8 +878,12 @@ class EdgeItem(QtWidgets.QGraphicsPathItem):
         if e.button() == QtCore.Qt.LeftButton:
             if not (e.modifiers() & QtCore.Qt.ShiftModifier):
                 _deselect_node_items(self.scene())
-        # Alt+LMB deletes the edge (with bookkeeping in Scene)
-        if e.button() == QtCore.Qt.LeftButton and (e.modifiers() & QtCore.Qt.AltModifier):
+
+        remove_mods, remove_btn = hotkeys_config.mouse_binding("wire_remove", "Alt+LeftClick")
+        add_mods, add_btn = hotkeys_config.mouse_binding("wire_add_pin", "Ctrl+LeftClick")
+
+        # Mouse hotkeys: remove edge / add pin
+        if remove_btn != QtCore.Qt.NoButton and e.button() == remove_btn and _mods_match(e.modifiers(), remove_mods):
             sc = self.scene()
             if sc and hasattr(sc, "_edges"):
                 try:
@@ -893,7 +905,7 @@ class EdgeItem(QtWidgets.QGraphicsPathItem):
                     pass
                 e.accept()
                 return
-        if e.button() == QtCore.Qt.LeftButton and (e.modifiers() & QtCore.Qt.ControlModifier):
+        if add_btn != QtCore.Qt.NoButton and e.button() == add_btn and _mods_match(e.modifiers(), add_mods):
             try:
                 self.add_pin(QtCore.QPointF(e.scenePos()))
             except Exception:
