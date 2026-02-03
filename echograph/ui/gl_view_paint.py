@@ -233,7 +233,7 @@ def paint_gl(view: Any) -> None:
                             def project_local(x, y, z):
                                 r3 = mvp.row(3)
                                 clip_w = float(r3.x()) * x + float(r3.y()) * y + float(r3.z()) * z + float(r3.w())
-                                if abs(clip_w) < 1e-9:
+                                if clip_w <= 1e-6:
                                     return None
                                 v = mvp.map(QtGui.QVector3D(float(x), float(y), float(z)))
                                 ndc_x = float(v.x())
