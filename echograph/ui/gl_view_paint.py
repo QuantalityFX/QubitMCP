@@ -277,7 +277,7 @@ def paint_gl(view: Any) -> None:
 
                                     dx0 = float(mouse_px.x()) - float(center.x())
                                     dy0 = float(mouse_px.y()) - float(center.y())
-                                    center_r = 10.0 if mode == "translate" else 12.0
+                                    center_r = 14.0 if mode == "translate" else 12.0
                                     if (dx0 * dx0 + dy0 * dy0) <= (center_r * center_r):
                                         hover_center = True
 
@@ -300,7 +300,8 @@ def paint_gl(view: Any) -> None:
                                                 best_d = d
                                                 best_axis = name
                                                 best_p1 = p1
-                                        if best_axis is not None and best_d <= 10.0:
+                                        hit_thresh = 14.0 if mode == "translate" else 10.0
+                                        if best_axis is not None and best_d <= hit_thresh:
                                             hover_axis = best_axis
                                             hover_p1 = best_p1
 
@@ -408,12 +409,20 @@ def paint_gl(view: Any) -> None:
                                                 )
 
                                         if hover_center and center is not None:
-                                            draw_cube_marker(
-                                                center,
-                                                10.0,
-                                                QtGui.QColor(180, 90, 210, 90),
-                                                QtGui.QColor(230, 200, 255, 200),
-                                            )
+                                            if mode == "translate":
+                                                draw_cube_marker(
+                                                    center,
+                                                    14.0,
+                                                    QtGui.QColor(180, 90, 210, 110),
+                                                    QtGui.QColor(230, 200, 255, 220),
+                                                )
+                                            else:
+                                                draw_cube_marker(
+                                                    center,
+                                                    10.0,
+                                                    QtGui.QColor(180, 90, 210, 90),
+                                                    QtGui.QColor(230, 200, 255, 200),
+                                                )
 
                                     painter.end()
                         else:

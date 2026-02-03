@@ -4424,9 +4424,9 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                 dx0 = float(px_dev) - float(p0[0])
                                 dy0 = float(py_dev) - float(p0[1])
                                 try:
-                                    center_r = 10.0 * float(dpr)
+                                    center_r = 14.0 * float(dpr)
                                 except Exception:
-                                    center_r = 10.0
+                                    center_r = 14.0
                                 if (dx0 * dx0 + dy0 * dy0) <= (center_r * center_r):
                                     # free-move on view plane (camera-facing)
                                     is_splat = False
@@ -4512,7 +4512,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                         best_d = d
                                         best_axis = name
 
-                                if best_axis is not None and best_d <= 14.0:
+                                if best_axis is not None and best_d <= 20.0:
                                     # Determine kind directly from renderer state to avoid stale selection state
                                     is_splat = False
                                     try:
