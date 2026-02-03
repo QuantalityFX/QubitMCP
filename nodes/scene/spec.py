@@ -341,21 +341,32 @@ def augment_infocard_footer(card, footer_layout) -> bool:
 
         rp = QtWidgets.QHBoxLayout(render_panel)
         rp.setContentsMargins(6, 4, 6, 4)
-        rp.setSpacing(8)
+        rp.setSpacing(4)
 
         lab = QtWidgets.QLabel("Depth Test (Splats)")
         lab.setStyleSheet("color:#cbd5e1;")
         lab.setWordWrap(True)
         lab.setMinimumWidth(0)
         lab.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        rp.addWidget(lab, 1, QtCore.Qt.AlignLeft)
 
         raw = ""
         try:
             raw = _param_value(node, "splat_depth_test").strip().lower()
         except Exception:
             raw = ""
-        depth_on = True if raw in ("1", "true", "yes", "on") else False
+        if raw:
+            depth_on = raw in ("1", "true", "yes", "on")
+        else:
+            # If no param is stored, default to renderer's effective behavior (depth test ON).
+            depth_on = True
+            try:
+                win = card.window()
+                glv = getattr(win, "gl_view", None) if win is not None else None
+                raw_gl = str(getattr(glv, "_mgl_splat_depth_test", "") or "").strip().lower() if glv is not None else ""
+                if raw_gl:
+                    depth_on = raw_gl in ("1", "true", "yes", "on")
+            except Exception:
+                pass
 
         chk = QtWidgets.QCheckBox()
         chk.setText("")
@@ -373,6 +384,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         box_lay.addWidget(chk)
 
         rp.addWidget(box, 0, QtCore.Qt.AlignLeft)
+        rp.addWidget(lab, 1, QtCore.Qt.AlignLeft)
         box.mousePressEvent = lambda e: chk.toggle()
         rp.addStretch(1)
 
