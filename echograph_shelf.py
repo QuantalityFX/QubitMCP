@@ -2680,7 +2680,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
         dlg = QtWidgets.QDialog(self)
         dlg.setWindowTitle("Hotkeys")
-        dlg.resize(500, 670)
+        dlg.resize(500, 720)
         lay = QtWidgets.QVBoxLayout(dlg)
         lay.setContentsMargins(10, 10, 10, 10)
         lay.setSpacing(8)
@@ -3292,43 +3292,48 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
         file_panel = QtWidgets.QFrame(file_menu)
         file_panel.setObjectName("FilePanel")
+        file_panel.setFixedWidth(84)
         file_panel.setStyleSheet(
             "#FilePanel{background:#1b2026;border:0px;border-radius:6px;}"
-            "#FilePanel QToolButton{color:#e5e7eb;background:transparent;border:0px;padding:6px 10px;text-align:left;}"
-            "#FilePanel QToolButton:hover{color:#e5e7eb;background:#1f7a45;}"
+            "#FilePanel QPushButton{color:#e5e7eb;background:transparent;border:0px;padding:0px 6px;text-align:left;}"
+            "#FilePanel QPushButton:hover{color:#e5e7eb;background:#1f7a45;}"
         )
         file_layout = QtWidgets.QVBoxLayout(file_panel)
-        file_layout.setContentsMargins(6, 6, 6, 6)
-        file_layout.setSpacing(4)
+        file_layout.setContentsMargins(0, 0, 0, 0)
+        file_layout.setSpacing(0)
 
-        file_new = QtWidgets.QToolButton(file_panel)
-        file_new.setText("New")
+        file_new = QtWidgets.QPushButton("New", file_panel)
         file_new.setToolTip("Launch a fresh EchoGraph window")
-        file_new.setStyleSheet("text-align:left;")
+        file_new.setFixedHeight(22)
+        file_new.setCursor(QtCore.Qt.PointingHandCursor)
+        file_new.setFlat(True)
         file_new.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         file_new.clicked.connect(self._launch_new_instance)
         file_layout.addWidget(file_new, 0)
 
-        file_open = QtWidgets.QToolButton(file_panel)
-        file_open.setText("Open")
+        file_open = QtWidgets.QPushButton("Open", file_panel)
         file_open.setToolTip("Load a graph from a .json file")
-        file_open.setStyleSheet("text-align:left;")
+        file_open.setFixedHeight(22)
+        file_open.setCursor(QtCore.Qt.PointingHandCursor)
+        file_open.setFlat(True)
         file_open.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         file_open.clicked.connect(self._open_graph)
         file_layout.addWidget(file_open, 0)
 
-        file_save = QtWidgets.QToolButton(file_panel)
-        file_save.setText("Save")
+        file_save = QtWidgets.QPushButton("Save", file_panel)
         file_save.setToolTip("Save to the last opened/exported .json (Save)")
-        file_save.setStyleSheet("text-align:left;")
+        file_save.setFixedHeight(22)
+        file_save.setCursor(QtCore.Qt.PointingHandCursor)
+        file_save.setFlat(True)
         file_save.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         file_save.clicked.connect(self._save_graph)
         file_layout.addWidget(file_save, 0)
 
-        file_export = QtWidgets.QToolButton(file_panel)
-        file_export.setText("Save As")
+        file_export = QtWidgets.QPushButton("Save As", file_panel)
         file_export.setToolTip("Save current graph to a new .json (Save As)")
-        file_export.setStyleSheet("text-align:left;")
+        file_export.setFixedHeight(22)
+        file_export.setCursor(QtCore.Qt.PointingHandCursor)
+        file_export.setFlat(True)
         file_export.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         file_export.clicked.connect(self._export_graph)
         file_layout.addWidget(file_export, 0)
@@ -3362,19 +3367,21 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
         create_panel = QtWidgets.QFrame(create_menu)
         create_panel.setObjectName("CreatePanel")
+        create_panel.setFixedWidth(84)
         create_panel.setStyleSheet(
             "#CreatePanel{background:#1b2026;border:0px;border-radius:6px;}"
-            "#CreatePanel QToolButton{color:#e5e7eb;background:transparent;border:0px;padding:6px 10px;text-align:left;}"
-            "#CreatePanel QToolButton:hover{color:#e5e7eb;background:#1f7a45;}"
+            "#CreatePanel QPushButton{color:#e5e7eb;background:transparent;border:0px;padding:0px 6px;text-align:left;}"
+            "#CreatePanel QPushButton:hover{color:#e5e7eb;background:#1f7a45;}"
         )
         create_layout = QtWidgets.QVBoxLayout(create_panel)
-        create_layout.setContentsMargins(6, 6, 6, 6)
-        create_layout.setSpacing(4)
+        create_layout.setContentsMargins(0, 0, 0, 0)
+        create_layout.setSpacing(0)
 
-        create_node = QtWidgets.QToolButton(create_panel)
-        create_node.setText("Node")
+        create_node = QtWidgets.QPushButton("Node", create_panel)
         create_node.setToolTip("Create a new node with type & params")
-        create_node.setStyleSheet("text-align:left;")
+        create_node.setFixedHeight(22)
+        create_node.setCursor(QtCore.Qt.PointingHandCursor)
+        create_node.setFlat(True)
         create_node.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         create_node.clicked.connect(self._create_node_interactive)
         create_layout.addWidget(create_node, 0)
@@ -3495,10 +3502,12 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         grid.addWidget(self._gizmo_zoom_value_lbl, 4, 2)
 
         self._splat_log_enabled = bool(getattr(self, "_splat_log_enabled", False))
-        self._splat_log_toggle = QtWidgets.QCheckBox("Debug Log")
+        splat_log_label = QtWidgets.QLabel("Debug Log")
+        self._splat_log_toggle = QtWidgets.QCheckBox()
         self._splat_log_toggle.setChecked(self._splat_log_enabled)
         self._splat_log_toggle.toggled.connect(self._on_splat_log_toggled)
-        grid.addWidget(self._splat_log_toggle, 5, 0, 1, 2)
+        grid.addWidget(splat_log_label, 5, 0, 1, 1, QtCore.Qt.AlignVCenter)
+        grid.addWidget(self._splat_log_toggle, 5, 1, 1, 1, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
 
         panel_action = QtWidgets.QWidgetAction(settings_menu)
         panel_action.setDefaultWidget(panel)
