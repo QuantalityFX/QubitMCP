@@ -3309,27 +3309,52 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         h.addWidget(file_btn, 0)
         self._file_btn = file_btn
 
-        btn_create = QtWidgets.QPushButton("Create Node", bar)
-        btn_create.setToolTip("Create a new node with type & params")
-        btn_create.clicked.connect(self._create_node_interactive)
-        h.addWidget(btn_create, 0)
+        create_btn = QtWidgets.QToolButton(bar)
+        create_btn.setObjectName("CreateButton")
+        create_btn.setText("Create")
+        create_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        create_btn.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
+        create_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        create_btn.setFixedHeight(22)
+        create_btn.setStyleSheet(
+            "QToolButton#CreateButton{color:#ffffff;background:#2a2f36;border:1px solid #3a3f46;"
+            "border-radius:4px;padding:1px 10px;}"
+            "QToolButton#CreateButton:hover{background:#353b45;}"
+            "QToolButton#CreateButton[active=\"true\"]{background:#1f7a45;border-color:#2a8a52;}"
+        )
 
-        btn_frame = QtWidgets.QPushButton("Frame", bar)
-        btn_frame.setToolTip("Fit view to all nodes")
-        btn_frame.clicked.connect(self._frame_all_nodes)
-        h.addWidget(btn_frame, 0)
+        create_menu = QtWidgets.QMenu(create_btn)
+        create_menu.setObjectName("CreateMenu")
+        create_menu.setStyleSheet(
+            "#CreateMenu{background:#1b2026;border:1px solid #333;padding:0px;}"
+        )
 
-        self._btn_3d = QtWidgets.QPushButton("3D View", bar)
-        self._btn_3d.setToolTip("Switch to 3D viewport")
-        self._btn_3d.clicked.connect(self._cycle_view_mode)
-        h.addWidget(self._btn_3d, 0)
+        create_panel = QtWidgets.QFrame(create_menu)
+        create_panel.setObjectName("CreatePanel")
+        create_panel.setStyleSheet(
+            "#CreatePanel{background:#1b2026;border:0px;border-radius:6px;}"
+            "#CreatePanel QToolButton{color:#e5e7eb;background:transparent;border:0px;padding:6px 10px;text-align:left;}"
+            "#CreatePanel QToolButton:hover{background:#1f7a45;}"
+        )
+        create_layout = QtWidgets.QVBoxLayout(create_panel)
+        create_layout.setContentsMargins(6, 6, 6, 6)
+        create_layout.setSpacing(4)
 
-        btn_logs = QtWidgets.QPushButton("Logs")
-        btn_logs.setToolTip("Open EchoGraph log folder")
-        btn_logs.clicked.connect(lambda: QtGui.QDesktopServices.openUrl(
-            QtCore.QUrl.fromLocalFile(__import__("os").path.join(__import__("tempfile").gettempdir(), "EchoGraph"))
-        ))
-        h.addWidget(btn_logs, 0)
+        create_node = QtWidgets.QToolButton(create_panel)
+        create_node.setText("Node")
+        create_node.setToolTip("Create a new node with type & params")
+        create_node.clicked.connect(self._create_node_interactive)
+        create_layout.addWidget(create_node, 0)
+
+        create_action = QtWidgets.QWidgetAction(create_menu)
+        create_action.setDefaultWidget(create_panel)
+        create_menu.addAction(create_action)
+
+        create_menu.aboutToShow.connect(lambda: self._set_create_menu_active(True))
+        create_menu.aboutToHide.connect(lambda: self._set_create_menu_active(False))
+        create_btn.setMenu(create_menu)
+        h.addWidget(create_btn, 0)
+        self._create_btn = create_btn
 
         settings_btn = QtWidgets.QToolButton(bar)
         settings_btn.setObjectName("SettingsButton")
@@ -3469,6 +3494,43 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         hotkeys_btn.clicked.connect(self._open_hotkeys_dialog)
         h.addWidget(hotkeys_btn, 0)
 
+        self._btn_3d = QtWidgets.QPushButton("3D View", bar)
+        self._btn_3d.setToolTip("Switch to 3D viewport")
+        self._btn_3d.clicked.connect(self._cycle_view_mode)
+        h.addWidget(self._btn_3d, 0)
+
+        btn_frame = QtWidgets.QPushButton(bar)
+        btn_frame.setToolTip("Fit view to all nodes")
+        try:
+            frame_icon = QtGui.QIcon(str(script_dir() / "icons" / "Frame_Icon.png"))
+            if not frame_icon.isNull():
+                btn_frame.setIcon(frame_icon)
+                btn_frame.setIconSize(QtCore.QSize(16, 16))
+                btn_frame.setText("")
+            else:
+                btn_frame.setText("Frame")
+        except Exception:
+            btn_frame.setText("Frame")
+        btn_frame.clicked.connect(self._frame_all_nodes)
+        h.addWidget(btn_frame, 0)
+
+        btn_logs = QtWidgets.QPushButton(bar)
+        btn_logs.setToolTip("Open EchoGraph log folder")
+        try:
+            logs_icon = QtGui.QIcon(str(script_dir() / "icons" / "debug_002_Icon_s.png"))
+            if not logs_icon.isNull():
+                btn_logs.setIcon(logs_icon)
+                btn_logs.setIconSize(QtCore.QSize(16, 16))
+                btn_logs.setText("")
+            else:
+                btn_logs.setText("Logs")
+        except Exception:
+            btn_logs.setText("Logs")
+        btn_logs.clicked.connect(lambda: QtGui.QDesktopServices.openUrl(
+            QtCore.QUrl.fromLocalFile(__import__("os").path.join(__import__("tempfile").gettempdir(), "EchoGraph"))
+        ))
+        h.addWidget(btn_logs, 0)
+
         h.addStretch(1)   # ← stretch AFTER the settings block to keep it left
         return bar
 
@@ -3486,6 +3548,18 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
     def _set_file_menu_active(self, active: bool) -> None:
         btn = getattr(self, "_file_btn", None)
+        if btn is None:
+            return
+        try:
+            btn.setProperty("active", bool(active))
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+            btn.update()
+        except Exception:
+            pass
+
+    def _set_create_menu_active(self, active: bool) -> None:
+        btn = getattr(self, "_create_btn", None)
         if btn is None:
             return
         try:
