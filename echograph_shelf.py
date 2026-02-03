@@ -3557,6 +3557,12 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         hotkeys_btn.clicked.connect(self._open_hotkeys_dialog)
         h.addWidget(hotkeys_btn, 0)
 
+        help_btn = QtWidgets.QPushButton("Help", bar)
+        help_btn.setToolTip("Open the Qubit manual")
+        help_btn.setFixedHeight(22)
+        help_btn.clicked.connect(self._open_help_docs)
+        h.addWidget(help_btn, 0)
+
         btn_frame = QtWidgets.QPushButton(bar)
         btn_frame.setToolTip("Fit view to all nodes")
         btn_frame.setFixedHeight(22)
@@ -3599,6 +3605,22 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
         h.addStretch(1)   # ← stretch AFTER the settings block to keep it left
         return bar
+
+    def _open_help_docs(self) -> None:
+        try:
+            doc_path = script_dir() / "Doc" / "index.html"
+        except Exception:
+            doc_path = None
+        if not doc_path or not doc_path.exists():
+            try:
+                QtWidgets.QMessageBox.warning(self, APP_TITLE, "Help docs not found.")
+            except Exception:
+                pass
+            return
+        try:
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(doc_path)))
+        except Exception:
+            pass
 
     def _set_settings_menu_active(self, active: bool) -> None:
         btn = getattr(self, "_settings_btn", None)
