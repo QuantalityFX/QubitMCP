@@ -3616,7 +3616,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             path = (self._current_path or "").strip()
         except Exception:
             path = ""
-        title = APP_TITLE if not path else f"{APP_TITLE} — {path}"
+        title = f"{path} - {APP_TITLE}" if path else APP_TITLE
         try:
             self.setWindowTitle(title)
         except Exception:
