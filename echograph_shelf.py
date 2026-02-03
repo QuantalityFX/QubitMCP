@@ -2474,6 +2474,11 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             gl_view._render_scene_models = True
         except Exception:
             pass
+        try:
+            if hasattr(gl_view, "set_gizmo_visible"):
+                gl_view.set_gizmo_visible(False)
+        except Exception:
+            pass
 
         loader = getattr(gl_view, "load_model_path", None)
         if not callable(loader):
@@ -2584,6 +2589,11 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         if gl_view is None:
             print("[open_scene_assets] gl_view is None", flush=True)
             return
+        try:
+            if hasattr(gl_view, "set_gizmo_visible"):
+                gl_view.set_gizmo_visible(True)
+        except Exception:
+            pass
 
         try:
             gl_view._mgl_scene_visibility = dict(visibility_map)
@@ -2815,6 +2825,11 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             if dbg:
                 print("[SPLAT] loaded:", splats.shape, splats.dtype, flush=True)
 
+            try:
+                if hasattr(self.gl_view, "set_gizmo_visible"):
+                    self.gl_view.set_gizmo_visible(False)
+            except Exception:
+                pass
             self.gl_view.set_splats(splats)
             if dbg:
                 print("[SPLAT] set_splats done", flush=True)

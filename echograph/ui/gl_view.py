@@ -904,6 +904,28 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         except Exception:
             pass
 
+    def set_gizmo_visible(self, visible: bool) -> None:
+        try:
+            self._mgl_gizmo_visible = bool(visible)
+        except Exception:
+            self._mgl_gizmo_visible = True
+        toggle = getattr(self, "_mgl_gizmo_toggle", None)
+        if toggle is not None:
+            try:
+                toggle.blockSignals(True)
+                toggle.setChecked(bool(self._mgl_gizmo_visible))
+            except Exception:
+                pass
+            finally:
+                try:
+                    toggle.blockSignals(False)
+                except Exception:
+                    pass
+        try:
+            self.update()
+        except Exception:
+            pass
+
     def _on_camlog_clicked(self) -> None:
         self._write_camera_debug_snapshot()
 
