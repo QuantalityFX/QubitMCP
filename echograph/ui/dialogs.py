@@ -355,7 +355,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
 class RecentGraphsDialog(QtWidgets.QDialog):
     def __init__(self, parent=None, recent_paths=None):
         super().__init__(parent)
-        self.setWindowTitle("Recent Graphs")
+        self.setWindowTitle("Recent Workflows")
         self.setMinimumWidth(420)
         self._paths = [str(p) for p in (recent_paths or []) if isinstance(p, str) and p.strip()]
         self._action = "open"
@@ -364,7 +364,7 @@ class RecentGraphsDialog(QtWidgets.QDialog):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
 
-        label = QtWidgets.QLabel("Select a recent graph to open:")
+        label = QtWidgets.QLabel("Select a recent workflow to open:")
         layout.addWidget(label)
 
         self.list = QtWidgets.QListWidget()
