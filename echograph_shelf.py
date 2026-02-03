@@ -2157,6 +2157,18 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             self._shortcut_comment_group = None
 
         try:
+            self._shortcut_node_view = hotkeys.add_shortcut(
+                self.view,
+                "node_view",
+                "V",
+                self._open_selected_node_view,
+                context=QtCore.Qt.WidgetWithChildrenShortcut,
+            )
+            self._register_shortcut("node_view", self._shortcut_node_view)
+        except Exception:
+            self._shortcut_node_view = None
+
+        try:
             self._shortcut_node_menu = hotkeys.add_shortcut(
                 self.view,
                 "node_menu",
@@ -2681,7 +2693,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
         dlg = QtWidgets.QDialog(self)
         dlg.setWindowTitle("Hotkeys")
-        dlg.resize(500, 720)
+        dlg.resize(500, 730)
         lay = QtWidgets.QVBoxLayout(dlg)
         lay.setContentsMargins(10, 10, 10, 10)
         lay.setSpacing(8)
@@ -3870,6 +3882,42 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             sc.show_create_dialog_at(scene_pos)
         except Exception:
             pass
+
+    def _open_selected_node_view(self) -> None:
+        try:
+            if actions._focus_is_text_input():
+                return
+        except Exception:
+            pass
+        sc = getattr(self, "scene", None)
+        if sc is None:
+            return
+        try:
+            items = [it for it in sc.selectedItems() if isinstance(it, NodeItem)]
+        except Exception:
+            items = []
+        if not items:
+            return
+        for it in items:
+            kind = (getattr(getattr(it, "model", None), "kind", "") or "").lower()
+            if kind in {"scene", "scene_assembly", "scene_outliner"}:
+                try:
+                    it._open_scene_assets()
+                except Exception:
+                    pass
+                return
+        for it in items:
+            kind = (getattr(getattr(it, "model", None), "kind", "") or "").lower()
+            if kind == "import":
+                try:
+                    path = (it._param_value("path") or "").strip()
+                except Exception:
+                    path = ""
+                try:
+                    it._open_import_preview(path)
+                except Exception:
+                    pass
+                return
 
     def _set_view_mode_from_hotkey(self, mode: str) -> None:
         try:
