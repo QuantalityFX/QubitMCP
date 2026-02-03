@@ -2046,6 +2046,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._card_by_node = {}
         self._bigedit_registry = {}
         self._recent_files = _load_recent_graphs()
+        self._hotkey_shortcuts = {}
 
         central = QtWidgets.QWidget(self)
         v = QtWidgets.QVBoxLayout(central)
@@ -2113,6 +2114,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 self._save_graph,
                 context=QtCore.Qt.ApplicationShortcut,
             )
+            self._register_shortcut("app_save", self._shortcut_save)
         except Exception:
             self._shortcut_save = None
 
@@ -2124,6 +2126,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 lambda: actions.undo_scene_xform(self),
                 context=QtCore.Qt.ApplicationShortcut,
             )
+            self._register_shortcut("app_undo", self._shortcut_undo)
         except Exception:
             self._shortcut_undo = None
 
@@ -2135,6 +2138,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 lambda: actions.redo_scene_xform(self),
                 context=QtCore.Qt.ApplicationShortcut,
             )
+            self._register_shortcut("app_redo", self._shortcut_redo)
         except Exception:
             self._shortcut_redo = None
 
@@ -2147,6 +2151,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 lambda: actions.create_comment_group_from_window(self),
                 context=QtCore.Qt.WidgetWithChildrenShortcut,
             )
+            self._register_shortcut("comment_group", self._shortcut_comment_group)
         except Exception:
             self._shortcut_comment_group = None
 
@@ -2158,6 +2163,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 self._open_create_menu_from_hotkey,
                 context=QtCore.Qt.WidgetWithChildrenShortcut,
             )
+            self._register_shortcut("node_menu", self._shortcut_node_menu)
         except Exception:
             self._shortcut_node_menu = None
 
@@ -2169,6 +2175,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 lambda: self._set_view_mode_from_hotkey("2d"),
                 context=QtCore.Qt.WidgetWithChildrenShortcut,
             )
+            self._register_shortcut("view_mode_2d", self._shortcut_view_mode_2d)
         except Exception:
             self._shortcut_view_mode_2d = None
 
@@ -2180,6 +2187,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 lambda: self._set_view_mode_from_hotkey("split"),
                 context=QtCore.Qt.WidgetWithChildrenShortcut,
             )
+            self._register_shortcut("view_mode_split", self._shortcut_view_mode_split)
         except Exception:
             self._shortcut_view_mode_split = None
 
@@ -2191,6 +2199,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 lambda: self._set_view_mode_from_hotkey("3d"),
                 context=QtCore.Qt.WidgetWithChildrenShortcut,
             )
+            self._register_shortcut("view_mode_3d", self._shortcut_view_mode_3d)
         except Exception:
             self._shortcut_view_mode_3d = None
 
@@ -2202,6 +2211,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 self._frame_from_hotkey,
                 context=QtCore.Qt.WidgetWithChildrenShortcut,
             )
+            self._register_shortcut("gl_frame", self._shortcut_gl_frame)
         except Exception:
             self._shortcut_gl_frame = None
 
@@ -2213,6 +2223,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 lambda: actions.delete_selected_nodes_from_window(self),
                 context=QtCore.Qt.WidgetWithChildrenShortcut,
             )
+            self._register_shortcut("node_delete", self._shortcut_node_delete)
         except Exception:
             self._shortcut_node_delete = None
 
@@ -2224,6 +2235,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 lambda: actions.copy_selected_nodes_from_window(self),
                 context=QtCore.Qt.WidgetWithChildrenShortcut,
             )
+            self._register_shortcut("node_copy", self._shortcut_node_copy)
         except Exception:
             self._shortcut_node_copy = None
 
@@ -2235,6 +2247,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 lambda: actions.paste_nodes_from_window(self),
                 context=QtCore.Qt.WidgetWithChildrenShortcut,
             )
+            self._register_shortcut("node_paste", self._shortcut_node_paste)
         except Exception:
             self._shortcut_node_paste = None
 
@@ -2440,6 +2453,97 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         else:
             btn.setText("2D/3D View")
             btn.setToolTip("Split view active")
+
+    def _register_shortcut(self, action_id: str, shortcut) -> None:
+        try:
+            if shortcut is None:
+                return
+            self._hotkey_shortcuts[action_id] = shortcut
+        except Exception:
+            pass
+
+    def _apply_hotkey_map(self, mapping: dict) -> None:
+        try:
+            hotkeys_config._KEYMAP_CACHE = dict(mapping or {})
+        except Exception:
+            pass
+        for action_id, sc in (getattr(self, "_hotkey_shortcuts", {}) or {}).items():
+            try:
+                seq = mapping.get(action_id, hotkeys_config.DEFAULT_KEYMAP.get(action_id, ""))
+                sc.setKey(QtGui.QKeySequence(str(seq or "")))
+            except Exception:
+                pass
+
+    def _open_hotkeys_dialog(self) -> None:
+        try:
+            mapping = hotkeys_config.load_keymap()
+        except Exception:
+            mapping = dict(hotkeys_config.DEFAULT_KEYMAP)
+        keys = list(hotkeys_config.DEFAULT_KEYMAP.keys())
+        for k in mapping.keys():
+            if k not in keys:
+                keys.append(k)
+        keys = sorted(keys)
+
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("Hotkeys")
+        dlg.resize(520, 360)
+        lay = QtWidgets.QVBoxLayout(dlg)
+        lay.setContentsMargins(10, 10, 10, 10)
+        lay.setSpacing(8)
+
+        table = QtWidgets.QTableWidget(len(keys), 2, dlg)
+        table.setHorizontalHeaderLabels(["Action", "Shortcut"])
+        table.horizontalHeader().setStretchLastSection(True)
+        table.verticalHeader().setVisible(False)
+        table.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
+        table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        table.setAlternatingRowColors(True)
+        table.setColumnWidth(0, 220)
+
+        editors = {}
+        for row, action_id in enumerate(keys):
+            item = QtWidgets.QTableWidgetItem(action_id)
+            table.setItem(row, 0, item)
+            editor = QtWidgets.QKeySequenceEdit(table)
+            seq = mapping.get(action_id, hotkeys_config.DEFAULT_KEYMAP.get(action_id, ""))
+            try:
+                editor.setKeySequence(QtGui.QKeySequence(str(seq or "")))
+            except Exception:
+                pass
+            table.setCellWidget(row, 1, editor)
+            editors[action_id] = editor
+
+        lay.addWidget(table, 1)
+
+        btns = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel, parent=dlg
+        )
+        lay.addWidget(btns, 0)
+
+        def _save():
+            new_map = {}
+            for action_id, editor in editors.items():
+                try:
+                    seq = editor.keySequence().toString()
+                except Exception:
+                    try:
+                        seq = str(editor.text()).strip()
+                    except Exception:
+                        seq = ""
+                new_map[action_id] = str(seq or "")
+            try:
+                path = hotkeys_config.keymap_path()
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(new_map, indent=2), encoding="utf-8")
+            except Exception:
+                pass
+            self._apply_hotkey_map(new_map)
+            dlg.accept()
+
+        btns.accepted.connect(_save)
+        btns.rejected.connect(dlg.reject)
+        dlg.exec()
 
     def open_3d_model(self, path: str, texture_path: str | None = None) -> None:
         import traceback
@@ -3052,6 +3156,20 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         settings_btn.setMenu(settings_menu)
         self._settings_btn = settings_btn
         h.addWidget(settings_btn, 0)
+
+        hotkeys_btn = QtWidgets.QToolButton(bar)
+        hotkeys_btn.setObjectName("HotkeysButton")
+        hotkeys_btn.setText("Hotkeys")
+        hotkeys_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        hotkeys_btn.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
+        hotkeys_btn.setFixedHeight(22)
+        hotkeys_btn.setStyleSheet(
+            "QToolButton#HotkeysButton{color:#ffffff;background:#2a2f36;border:1px solid #3a3f46;"
+            "border-radius:4px;padding:1px 10px;}"
+            "QToolButton#HotkeysButton:hover{background:#353b45;}"
+        )
+        hotkeys_btn.clicked.connect(self._open_hotkeys_dialog)
+        h.addWidget(hotkeys_btn, 0)
 
         h.addStretch(1)   # ← stretch AFTER the settings block to keep it left
         return bar
