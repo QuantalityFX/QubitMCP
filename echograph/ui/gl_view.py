@@ -515,6 +515,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._mgl_wire_color = (0.25, 0.25, 0.25, 1.0)
         self._mgl_wire_line_width = 1.0
         self._mgl_wire_edge_width = 2.0
+        self._mgl_splat_log = False
         self._mgl_uv_overlay_enabled = False
         self._mgl_uv_segments: List[Tuple[float, float, float, float]] = []
         self._mgl_uv_bounds: Optional[Tuple[float, float, float, float]] = None
@@ -4844,20 +4845,21 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
             # light state dump, throttled
             try:
-                now = time.perf_counter()
-                last = float(getattr(self, "_rot_shared_dbg_t", 0.0))
-                if (now - last) > 0.20:
-                    self._rot_shared_dbg_t = now
-                    rot_shared = getattr(self, "_rot_shared", None)
-                    drag_axis = getattr(rot_shared, "drag_axis", None) if rot_shared is not None else None
-                    _rot_dbg(
-                        "[ROT_DBG]"
-                        f" mode={getattr(self,'_xform_gizmo_mode',None)}"
-                        f" _rot_shared_dragging={bool(getattr(self,'_rot_shared_dragging',False))}"
-                        f" _rot_shared_axis={getattr(self,'_rot_shared_axis',None)}"
-                        f" drag_axis.active={bool(getattr(drag_axis,'active',False))}"
-                        f" drag_axis.axis={getattr(drag_axis,'axis',None)}"
-                    )
+                if bool(getattr(self, "_mgl_splat_log", False)):
+                    now = time.perf_counter()
+                    last = float(getattr(self, "_rot_shared_dbg_t", 0.0))
+                    if (now - last) > 0.20:
+                        self._rot_shared_dbg_t = now
+                        rot_shared = getattr(self, "_rot_shared", None)
+                        drag_axis = getattr(rot_shared, "drag_axis", None) if rot_shared is not None else None
+                        _rot_dbg(
+                            "[ROT_DBG]"
+                            f" mode={getattr(self,'_xform_gizmo_mode',None)}"
+                            f" _rot_shared_dragging={bool(getattr(self,'_rot_shared_dragging',False))}"
+                            f" _rot_shared_axis={getattr(self,'_rot_shared_axis',None)}"
+                            f" drag_axis.active={bool(getattr(drag_axis,'active',False))}"
+                            f" drag_axis.axis={getattr(drag_axis,'axis',None)}"
+                        )
             except Exception:
                 pass
 

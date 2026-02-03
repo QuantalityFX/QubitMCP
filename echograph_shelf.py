@@ -3394,6 +3394,12 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         grid.addWidget(self._gizmo_zoom_slider, 4, 1)
         grid.addWidget(self._gizmo_zoom_value_lbl, 4, 2)
 
+        self._splat_log_enabled = bool(getattr(self, "_splat_log_enabled", False))
+        self._splat_log_toggle = QtWidgets.QCheckBox("Debug Log")
+        self._splat_log_toggle.setChecked(self._splat_log_enabled)
+        self._splat_log_toggle.toggled.connect(self._on_splat_log_toggled)
+        grid.addWidget(self._splat_log_toggle, 5, 0, 1, 2)
+
         panel_action = QtWidgets.QWidgetAction(settings_menu)
         panel_action.setDefaultWidget(panel)
         settings_menu.addAction(panel_action)
@@ -3459,6 +3465,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._pan_exp = 1.2
         self._pan_boost = 10.0
         self._gizmo_zoom_scale = 0.02
+        self._splat_log_enabled = False
         if hasattr(self, "_pan_base_slider"):
             try:
                 self._pan_base_slider.blockSignals(True)
@@ -3485,6 +3492,13 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 self._gizmo_zoom_slider.blockSignals(True)
                 self._gizmo_zoom_slider.setValue(int(round(self._gizmo_zoom_scale * 1000.0)))
                 self._gizmo_zoom_slider.blockSignals(False)
+            except Exception:
+                pass
+        if hasattr(self, "_splat_log_toggle"):
+            try:
+                self._splat_log_toggle.blockSignals(True)
+                self._splat_log_toggle.setChecked(bool(self._splat_log_enabled))
+                self._splat_log_toggle.blockSignals(False)
             except Exception:
                 pass
         if hasattr(self, "_pan_base_value_lbl"):
@@ -3519,6 +3533,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             gv._mgl_pan_zoom_boost = float(getattr(self, "_pan_boost", 10.0))
             gv._mgl_zoom_pan_scale = float(getattr(self, "_gizmo_zoom_scale", 0.02))
             gv._mgl_pan_ref_zoom = None
+            gv._mgl_splat_log = bool(getattr(self, "_splat_log_enabled", False))
         except Exception:
             pass
         sc = getattr(self, "scene", None)
@@ -3532,6 +3547,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 settings["pan_exp"] = float(getattr(self, "_pan_exp", 1.2))
                 settings["pan_boost"] = float(getattr(self, "_pan_boost", 10.0))
                 settings["gizmo_zoom_scale"] = float(getattr(self, "_gizmo_zoom_scale", 0.02))
+                settings["splat_log"] = bool(getattr(self, "_splat_log_enabled", False))
                 sc._view_settings = settings
             except Exception:
                 pass
@@ -3578,6 +3594,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         lbl = getattr(self, "_gizmo_zoom_value_lbl", None)
         if lbl is not None:
             lbl.setText(f"{scale:.3f}")
+        self._apply_pan_settings_to_gl_view()
+
+    def _on_splat_log_toggled(self, checked: bool) -> None:
+        self._splat_log_enabled = bool(checked)
         self._apply_pan_settings_to_gl_view()
 
     def _create_node_interactive(self):
@@ -3743,10 +3763,15 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             gizmo_zoom = float(settings.get("gizmo_zoom_scale", getattr(self, "_gizmo_zoom_scale", 0.02)))
         except Exception:
             gizmo_zoom = getattr(self, "_gizmo_zoom_scale", 0.02)
+        try:
+            splat_log = bool(settings.get("splat_log", getattr(self, "_splat_log_enabled", False)))
+        except Exception:
+            splat_log = getattr(self, "_splat_log_enabled", False)
         self._pan_base = pan_base
         self._pan_exp = pan_exp
         self._pan_boost = pan_boost
         self._gizmo_zoom_scale = gizmo_zoom
+        self._splat_log_enabled = splat_log
         if hasattr(self, "_pan_base_slider"):
             self._pan_base_slider.blockSignals(True)
             self._pan_base_slider.setValue(int(round(pan_base * 1000.0)))
@@ -3763,6 +3788,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             self._gizmo_zoom_slider.blockSignals(True)
             self._gizmo_zoom_slider.setValue(int(round(gizmo_zoom * 1000.0)))
             self._gizmo_zoom_slider.blockSignals(False)
+        if hasattr(self, "_splat_log_toggle"):
+            self._splat_log_toggle.blockSignals(True)
+            self._splat_log_toggle.setChecked(bool(splat_log))
+            self._splat_log_toggle.blockSignals(False)
         if hasattr(self, "_pan_base_value_lbl"):
             self._pan_base_value_lbl.setText(f"{pan_base:.3f}")
         if hasattr(self, "_pan_exp_value_lbl"):
