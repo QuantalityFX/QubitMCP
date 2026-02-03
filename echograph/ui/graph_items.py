@@ -6,7 +6,9 @@ from echograph.ui import hotkeys_config
 
 def _mods_match(current, required) -> bool:
     try:
-        return hotkeys_config.normalize_mods(current) == hotkeys_config.normalize_mods(required)
+        cur = hotkeys_config.normalize_mods(current)
+        req = hotkeys_config.normalize_mods(required)
+        return (cur & req) == req
     except Exception:
         return False
 
@@ -882,6 +884,8 @@ class EdgeItem(QtWidgets.QGraphicsPathItem):
         remove_mods, remove_btn = hotkeys_config.mouse_binding("wire_remove", "Alt+LeftClick")
         add_mods, add_btn = hotkeys_config.mouse_binding("wire_add_pin", "Ctrl+LeftClick")
 
+        handled = False
+
         # Mouse hotkeys: remove edge / add pin
         if remove_btn != QtCore.Qt.NoButton and e.button() == remove_btn and _mods_match(e.modifiers(), remove_mods):
             sc = self.scene()
@@ -904,15 +908,49 @@ class EdgeItem(QtWidgets.QGraphicsPathItem):
                 except Exception:
                     pass
                 e.accept()
-                return
-        if add_btn != QtCore.Qt.NoButton and e.button() == add_btn and _mods_match(e.modifiers(), add_mods):
+                handled = True
+        if not handled and add_btn != QtCore.Qt.NoButton and e.button() == add_btn and _mods_match(e.modifiers(), add_mods):
             try:
                 self.add_pin(QtCore.QPointF(e.scenePos()))
             except Exception:
                 self.add_pin(e.scenePos())
             self._select_clicked()
             e.accept()
-            return
+            handled = True
+
+        # Legacy fallback: Alt+LeftClick remove, Ctrl+LeftClick add pin
+        if not handled and e.button() == QtCore.Qt.LeftButton:
+            mods = e.modifiers()
+            if mods & QtCore.Qt.AltModifier:
+                sc = self.scene()
+                if sc and hasattr(sc, "_edges"):
+                    try:
+                        self.clear_pins()
+                    except Exception:
+                        pass
+                    try:
+                        sc.removeItem(self)
+                    except Exception:
+                        pass
+                    try:
+                        sc._edges.remove(self)
+                    except Exception:
+                        pass
+                    try:
+                        if hasattr(sc, "_on_edge_removed"):
+                            sc._on_edge_removed(self)
+                    except Exception:
+                        pass
+                    e.accept()
+                    return
+            if mods & QtCore.Qt.ControlModifier:
+                try:
+                    self.add_pin(QtCore.QPointF(e.scenePos()))
+                except Exception:
+                    self.add_pin(e.scenePos())
+                self._select_clicked()
+                e.accept()
+                return
         if e.button() == QtCore.Qt.LeftButton:
             self._select_clicked()
             e.accept()
