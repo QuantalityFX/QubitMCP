@@ -36,10 +36,9 @@ void main() {
 FRAG = """
 #version 330
 in vec3 v_col;
-uniform float u_alpha;
 out vec4 fragColor;
 void main() {
-    fragColor = vec4(v_col, u_alpha);
+    fragColor = vec4(v_col, 1.0);
 }
 """
 
@@ -250,13 +249,16 @@ class AxisGizmoOverlay:
         self._gl.glEnable(GL_BLEND)
         self._gl.glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
         self._gl.glLineWidth(2.0 if mode == "rotate" else 3.0)
+        try:
+            if alpha <= 0.0:
+                self._gl.glColorMask(False, False, False, False)
+            else:
+                self._gl.glColorMask(True, True, True, True)
+        except Exception:
+            pass
 
         self._prog.bind()
         self._prog.setUniformValue("u_mvp", mvp)
-        try:
-            self._prog.setUniformValue("u_alpha", float(alpha))
-        except Exception:
-            pass
 
         self._vao.bind()
         if mode == "rotate":
@@ -272,3 +274,7 @@ class AxisGizmoOverlay:
         self._vao.release()
 
         self._prog.release()
+        try:
+            self._gl.glColorMask(True, True, True, True)
+        except Exception:
+            pass
