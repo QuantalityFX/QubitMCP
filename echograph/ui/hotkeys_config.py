@@ -21,6 +21,8 @@ DEFAULT_KEYMAP = {
     "view_mode_3d": "3",
     "gl_frame": "F",
     "gl_reset_view": "R",
+    "app_undo": "Ctrl+Z",
+    "app_redo": "Ctrl+Y",
 }
 
 def _log(*args):

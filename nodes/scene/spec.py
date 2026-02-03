@@ -9,6 +9,7 @@ except Exception:
     from PySide2 import QtWidgets, QtCore, QtGui  # type: ignore
 
 from nodes.core import Spec
+from echograph.ui import actions
 import traceback
 
 SUPPORTED_EXTS = {".fbx", ".obj", ".gltf", ".glb", ".ply", ".stl", ".off", ".om"}
@@ -626,6 +627,16 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             setf = getattr(glv, "_mgl_set_scene_asset_xform", None)
             if not callable(setf):
                 return
+            before = {}
+            try:
+                getf = getattr(glv, "_mgl_get_scene_asset_xform", None)
+                splat_map = getattr(glv, "_mgl_scene_splats", None)
+                if isinstance(splat_map, dict) and owner in splat_map:
+                    getf = getattr(glv, "_mgl_get_scene_splat_xform", getf)
+                if callable(getf):
+                    before = getf(owner) or {}
+            except Exception:
+                before = {}
 
             pos = (card._xform_pos[0].value(), card._xform_pos[1].value(), card._xform_pos[2].value())
             rot = (card._xform_rot[0].value(), card._xform_rot[1].value(), card._xform_rot[2].value())
@@ -647,6 +658,14 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 setf(owner, scl=scl, apply_to_scene_models=not is_splat, use_splat_xform=bool(is_splat))
             else:
                 setf(owner, pos=pos, rot=rot, scl=scl, apply_to_scene_models=not is_splat, use_splat_xform=bool(is_splat))
+
+            try:
+                win = card.window()
+                scene_node = getattr(card, "_node_ref", None)
+                after = {"pos": list(pos), "rot": list(rot), "scl": list(scl)}
+                actions.record_scene_xform(win, scene_node, owner, before, after)
+            except Exception:
+                pass
             # Keep gizmo aligned with edits made via the outliner.
             try:
                 win = card.window()

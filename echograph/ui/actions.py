@@ -1,6 +1,10 @@
 # echograph/ui/actions.py
 from __future__ import annotations
+import json
+import time
+from pathlib import Path
 from echograph.qt_compat import QtCore, QtGui, QtWidgets
+from echograph.constants import script_dir
 from echograph.ui import hotkeys_config
 
 def _focus_is_text_input() -> bool:
@@ -168,3 +172,254 @@ def wire_big_editor_for_lineedit(node_item, edit: QtWidgets.QLineEdit, param_nam
 
     QtCore.QTimer.singleShot(0, _late_register)
     QtCore.QTimer.singleShot(50, _late_register)
+
+
+_HISTORY_LIMIT = 10
+
+
+def _history_path() -> Path:
+    try:
+        root = script_dir()
+    except Exception:
+        root = Path.cwd()
+    return Path(root) / "logs" / "history.log"
+
+
+def _log_history(entry: dict) -> None:
+    try:
+        path = _history_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+def _ensure_scene_rev(win, node) -> int | None:
+    if node is None:
+        return None
+    rev = getattr(node, "_rev_number", None)
+    if rev is None:
+        rev = getattr(node, "rev_number", None)
+    if rev is None:
+        try:
+            counter = int(getattr(win, "_scene_rev_counter", 0)) + 1
+        except Exception:
+            counter = 1
+        try:
+            setattr(win, "_scene_rev_counter", counter)
+        except Exception:
+            pass
+        rev = counter
+        try:
+            setattr(node, "_rev_number", rev)
+        except Exception:
+            pass
+    try:
+        return int(rev)
+    except Exception:
+        return None
+
+
+def _xform_tuple(xf: dict) -> tuple:
+    try:
+        pos = tuple(float(v) for v in xf.get("pos", (0.0, 0.0, 0.0)))
+        rot = tuple(float(v) for v in xf.get("rot", (0.0, 0.0, 0.0)))
+        scl = tuple(float(v) for v in xf.get("scl", (1.0, 1.0, 1.0)))
+        return pos + rot + scl
+    except Exception:
+        return ()
+
+
+def record_scene_xform(win, scene_node, owner: str, before: dict, after: dict) -> None:
+    if win is None or scene_node is None:
+        return
+    if not owner:
+        return
+    try:
+        if _xform_tuple(before) == _xform_tuple(after):
+            return
+    except Exception:
+        pass
+    try:
+        if getattr(win, "_xform_history_busy", False):
+            return
+    except Exception:
+        pass
+    rev = _ensure_scene_rev(win, scene_node)
+    entry = {
+        "ts": time.time(),
+        "scene_rev": rev,
+        "scene_name": getattr(scene_node, "name", None),
+        "owner": str(owner),
+        "before": before,
+        "after": after,
+    }
+    undo = getattr(win, "_scene_xform_undo", None)
+    redo = getattr(win, "_scene_xform_redo", None)
+    if not isinstance(undo, list):
+        undo = []
+        setattr(win, "_scene_xform_undo", undo)
+    if not isinstance(redo, list):
+        redo = []
+        setattr(win, "_scene_xform_redo", redo)
+    undo.append(entry)
+    if len(undo) > _HISTORY_LIMIT:
+        del undo[:-_HISTORY_LIMIT]
+    redo.clear()
+    _log_history({"action": "record", **entry})
+
+
+def _find_scene_node_by_rev(win, scene_rev: int | None, scene_name: str | None):
+    scene = getattr(win, "scene", None)
+    if scene is None:
+        return None
+    try:
+        for item in getattr(scene, "_node_items", {}).values():
+            node = getattr(item, "model", None)
+            if node is None:
+                continue
+            rev = getattr(node, "_rev_number", None)
+            if rev is None:
+                rev = getattr(node, "rev_number", None)
+            if scene_rev is not None and rev is not None and int(rev) == int(scene_rev):
+                return node
+    except Exception:
+        pass
+    if scene_name:
+        try:
+            node = getattr(scene, "_nodes_by_name", {}).get(scene_name)
+            if node is not None:
+                return node
+        except Exception:
+            pass
+    return None
+
+
+def _apply_xform_entry(win, entry: dict, use_before: bool) -> bool:
+    try:
+        scene_rev = entry.get("scene_rev")
+        scene_name = entry.get("scene_name")
+        owner = entry.get("owner")
+        xf = entry.get("before") if use_before else entry.get("after")
+    except Exception:
+        return False
+    if not owner or not isinstance(xf, dict):
+        return False
+    node = _find_scene_node_by_rev(win, scene_rev, scene_name)
+    if node is None:
+        return False
+
+    # Update the node model so workflow save matches undo/redo.
+    try:
+        xforms = getattr(node, "_scene_xforms", None)
+        if not isinstance(xforms, dict):
+            xforms = {}
+        xforms = dict(xforms)
+        xforms[str(owner)] = {
+            "pos": list(xf.get("pos", (0.0, 0.0, 0.0))),
+            "rot": list(xf.get("rot", (0.0, 0.0, 0.0))),
+            "scl": list(xf.get("scl", (1.0, 1.0, 1.0))),
+        }
+        setattr(node, "_scene_xforms", xforms)
+    except Exception:
+        pass
+
+    # Apply to viewport if this scene is currently active.
+    try:
+        active = getattr(win, "_active_scene_node", None)
+        active_rev = _ensure_scene_rev(win, active) if active is not None else None
+    except Exception:
+        active_rev = None
+    try:
+        if active_rev is not None and scene_rev is not None and int(active_rev) != int(scene_rev):
+            return True
+    except Exception:
+        pass
+
+    glv = getattr(win, "gl_view", None)
+    if glv is None:
+        return True
+    try:
+        renderer = getattr(glv, "_mgl_renderer", None) or glv
+        is_splat = False
+        try:
+            splat_map = getattr(renderer, "_mgl_scene_splats", None)
+            if isinstance(splat_map, dict) and owner in splat_map:
+                is_splat = True
+        except Exception:
+            is_splat = False
+        setf = getattr(renderer, "_mgl_set_scene_asset_xform", None)
+        if callable(setf):
+            setf(
+                owner,
+                pos=xf.get("pos", (0.0, 0.0, 0.0)),
+                rot=xf.get("rot", (0.0, 0.0, 0.0)),
+                scl=xf.get("scl", (1.0, 1.0, 1.0)),
+                apply_to_scene_models=not is_splat,
+                use_splat_xform=bool(is_splat),
+            )
+        try:
+            if hasattr(win, "update_scene_asset_xform"):
+                win.update_scene_asset_xform(owner)
+        except Exception:
+            pass
+        try:
+            glv.update()
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return True
+
+
+def undo_scene_xform(win) -> bool:
+    if win is None:
+        return False
+    if _focus_is_text_input():
+        return False
+    undo = getattr(win, "_scene_xform_undo", None)
+    if not isinstance(undo, list) or not undo:
+        return False
+    redo = getattr(win, "_scene_xform_redo", None)
+    if not isinstance(redo, list):
+        redo = []
+        setattr(win, "_scene_xform_redo", redo)
+    entry = undo.pop()
+    try:
+        win._xform_history_busy = True
+        ok = _apply_xform_entry(win, entry, use_before=True)
+    finally:
+        win._xform_history_busy = False
+    if ok:
+        redo.append(entry)
+        if len(redo) > _HISTORY_LIMIT:
+            del redo[:-_HISTORY_LIMIT]
+        _log_history({"action": "undo", **entry})
+    return ok
+
+
+def redo_scene_xform(win) -> bool:
+    if win is None:
+        return False
+    if _focus_is_text_input():
+        return False
+    redo = getattr(win, "_scene_xform_redo", None)
+    if not isinstance(redo, list) or not redo:
+        return False
+    undo = getattr(win, "_scene_xform_undo", None)
+    if not isinstance(undo, list):
+        undo = []
+        setattr(win, "_scene_xform_undo", undo)
+    entry = redo.pop()
+    try:
+        win._xform_history_busy = True
+        ok = _apply_xform_entry(win, entry, use_before=False)
+    finally:
+        win._xform_history_busy = False
+    if ok:
+        undo.append(entry)
+        if len(undo) > _HISTORY_LIMIT:
+            del undo[:-_HISTORY_LIMIT]
+        _log_history({"action": "redo", **entry})
+    return ok

@@ -2112,6 +2112,28 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         except Exception:
             self._shortcut_save = None
 
+        try:
+            self._shortcut_undo = hotkeys.add_shortcut(
+                self,
+                "app_undo",
+                "Ctrl+Z",
+                lambda: actions.undo_scene_xform(self),
+                context=QtCore.Qt.ApplicationShortcut,
+            )
+        except Exception:
+            self._shortcut_undo = None
+
+        try:
+            self._shortcut_redo = hotkeys.add_shortcut(
+                self,
+                "app_redo",
+                "Ctrl+Y",
+                lambda: actions.redo_scene_xform(self),
+                context=QtCore.Qt.ApplicationShortcut,
+            )
+        except Exception:
+            self._shortcut_redo = None
+
         # GraphView-only shortcuts (avoid firing while typing in param line edits)
         try:
             self._shortcut_comment_group = hotkeys.add_shortcut(

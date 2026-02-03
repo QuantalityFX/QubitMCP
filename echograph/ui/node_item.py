@@ -1965,6 +1965,23 @@ class NodeItem(QtWidgets.QGraphicsObject):
             return
 
         try:
+            try:
+                setattr(parent, "_active_scene_node", self.model)
+                if not hasattr(self.model, "_rev_number"):
+                    try:
+                        counter = int(getattr(parent, "_scene_rev_counter", 0)) + 1
+                    except Exception:
+                        counter = 1
+                    try:
+                        setattr(parent, "_scene_rev_counter", counter)
+                    except Exception:
+                        pass
+                    try:
+                        setattr(self.model, "_rev_number", counter)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             handler(assets)
 
             # Push Scene-node render toggle into the viewport (used by splat draw)

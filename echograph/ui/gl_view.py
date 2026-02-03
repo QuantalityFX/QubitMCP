@@ -42,6 +42,7 @@ from echograph.ui.gl_view_example import build_example_program as _ex_build_exam
 from echograph.ui.gl_view_example import example_cube_data as _ex_cube_data
 from echograph.ui.gl_view_example import example_grid_data as _ex_grid_data
 from echograph.rigging.turntable import TurntableController
+from echograph.ui import actions
 
 from typing import TYPE_CHECKING, Any, TypeAlias
 if TYPE_CHECKING:
@@ -190,6 +191,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._xform_drag_plane_start = None
         self._xform_use_local = True
         self._mgl_xform_space = "local"
+        self._xform_hist_start = None
 
         self._xform_rotate_dragging = False
         self._xform_rotate_axis = None
@@ -901,6 +903,65 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             self._mgl_gizmo_visible = True
         try:
             self.update()
+        except Exception:
+            pass
+
+    def _begin_xform_history(self, owner: str) -> None:
+        if not owner:
+            return
+        if self._xform_hist_start is not None:
+            return
+        try:
+            win = self.window()
+        except Exception:
+            win = None
+        if win is None:
+            return
+        scene_node = getattr(win, "_active_scene_node", None)
+        if scene_node is None:
+            return
+        kind = (getattr(scene_node, "kind", "") or "").lower()
+        if kind not in ("scene", "scene_assembly", "scene_outliner"):
+            return
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        before = {}
+        try:
+            is_splat = False
+            splat_map = getattr(renderer, "_mgl_scene_splats", None)
+            if isinstance(splat_map, dict) and owner in splat_map:
+                is_splat = True
+            getf = getattr(renderer, "_mgl_get_scene_splat_xform", None) if is_splat else getattr(renderer, "_mgl_get_scene_asset_xform", None)
+            if callable(getf):
+                before = getf(owner) or {}
+        except Exception:
+            before = {}
+        self._xform_hist_start = {"owner": owner, "before": before, "scene_node": scene_node}
+
+    def _commit_xform_history(self) -> None:
+        data = getattr(self, "_xform_hist_start", None)
+        if not isinstance(data, dict):
+            return
+        self._xform_hist_start = None
+        owner = data.get("owner")
+        scene_node = data.get("scene_node")
+        before = data.get("before") or {}
+        if not owner or scene_node is None:
+            return
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        after = {}
+        try:
+            is_splat = False
+            splat_map = getattr(renderer, "_mgl_scene_splats", None)
+            if isinstance(splat_map, dict) and owner in splat_map:
+                is_splat = True
+            getf = getattr(renderer, "_mgl_get_scene_splat_xform", None) if is_splat else getattr(renderer, "_mgl_get_scene_asset_xform", None)
+            if callable(getf):
+                after = getf(owner) or {}
+        except Exception:
+            after = {}
+        try:
+            win = self.window()
+            actions.record_scene_xform(win, scene_node, owner, before, after)
         except Exception:
             pass
 
@@ -3724,6 +3785,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
                                     if hit in ("x", "y", "z"):
                                         self._rot_shared_owner = owner
+                                        self._begin_xform_history(owner)
+                                        self._begin_xform_history(owner)
 
         
                                         q0 = self._rot_shared_sync_q0_from_owner(owner)
@@ -3822,6 +3885,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
                                     if hit == "view":
                                         self._rot_shared_owner = owner
+                                        self._begin_xform_history(owner)
 
                                         # Persisted quaternion for this owner (same idea as axis rings)
                                         q0 = None
@@ -3902,6 +3966,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
                                     if (dx0 * dx0 + dy0 * dy0) <= (disc_r * disc_r):
                                         self._rot_shared_owner = owner
+                                        self._begin_xform_history(owner)
 
                                         # Always sync q0 from the owner's CURRENT outliner rotation
                                         # (prevents first-drag snap after manual edits / zeroing)
@@ -4136,6 +4201,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                             start_scl = (1.0, 1.0, 1.0)
 
                                         self._xform_dragging = True
+                                        self._begin_xform_history(owner)
                                         self._xform_drag_mode = "scale"
                                         self._xform_drag_axis = pick_axis
                                         self._xform_drag_owner = owner
@@ -4356,6 +4422,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                         is_splat = False
 
                                     self._xform_dragging = True
+                                    self._begin_xform_history(owner)
                                     self._xform_drag_mode = "translate"
                                     self._xform_drag_axis = "view"
                                     self._xform_drag_owner = owner
@@ -4440,6 +4507,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                         is_splat = False
 
                                     self._xform_dragging = True
+                                    self._begin_xform_history(owner)
                                     self._xform_drag_mode = "translate"
                                     self._xform_drag_axis = best_axis
                                     self._xform_drag_owner = owner
@@ -5763,6 +5831,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
         if e.button() == QtCore.Qt.LeftButton and bool(getattr(self, "_rot_shared_arc_active", False)):
             self._rot_shared_arc_active = False
+            self._commit_xform_history()
             self.update()
             e.accept()
             return
@@ -5777,6 +5846,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 rot_shared.end_view_ring_drag()
             except Exception:
                 pass
+            self._commit_xform_history()
             self.update()
             e.accept()
             return
@@ -5795,6 +5865,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             self._rot_shared_axis = None
             self._rot_shared_axis_start_euler_deg = None
             self._rot_shared_axis_last_ang_deg = 0.0
+            self._commit_xform_history()
             self.update()
             e.accept()
             return
@@ -5803,6 +5874,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         if self._use_moderngl:
             # --- 1) If we were dragging the gizmo, ALWAYS end that first ---
             if getattr(self, "_xform_dragging", False):
+                self._commit_xform_history()
                 # Log splat drag end with gizmo + xform state.
                 try:
                     if getattr(self, "_xform_drag_kind", None) == "splat":
