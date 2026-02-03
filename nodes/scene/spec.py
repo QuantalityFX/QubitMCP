@@ -416,7 +416,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         xform_panel.setMinimumWidth(0)
         xform_panel.setStyleSheet(
             "#SceneXformPanel{background:#0f1216;color:#e2e8f0;border:1px solid #3c4450;border-radius:6px;}"
-            "#SceneXformPanel QLabel{color:#e2e8f0;border:0px;}"
+            "#SceneXformPanel QLabel{color:#e2e8f0;border:0px;padding-right:4px;}"
         )
 
         fp = QtWidgets.QFormLayout(xform_panel)
@@ -491,7 +491,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         max_w = int(max_w + 12)
         for lb in labels:
             lb.setFixedWidth(max_w)
-            lb.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+            lb.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
 
         fp.addRow(label_pos, pos_w)
         fp.addRow(label_rot, rot_w)
@@ -523,6 +523,63 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                     sb.blockSignals(False)
             finally:
                 card._xform_updating = False
+
+        def _menu_icon(name: str, alpha: float = 0.7) -> QtGui.QIcon:
+            try:
+                icon_path = Path(__file__).resolve().parents[2] / "icons" / name
+                if not icon_path.exists():
+                    return QtGui.QIcon()
+                pm = QtGui.QPixmap(str(icon_path))
+                if alpha >= 1.0:
+                    return QtGui.QIcon(pm)
+                out = QtGui.QPixmap(pm.size())
+                out.fill(QtCore.Qt.transparent)
+                painter = QtGui.QPainter(out)
+                painter.setOpacity(float(alpha))
+                painter.drawPixmap(0, 0, pm)
+                painter.end()
+                return QtGui.QIcon(out)
+            except Exception:
+                return QtGui.QIcon()
+
+        def _show_xform_menu(kind: str, anchor: QtCore.QPoint):
+            if kind == "pos":
+                spins = card._xform_pos
+                reset_vals = (0.0, 0.0, 0.0)
+            elif kind == "rot":
+                spins = card._xform_rot
+                reset_vals = (0.0, 0.0, 0.0)
+            else:
+                spins = card._xform_scl
+                reset_vals = (0.0, 0.0, 0.0)
+
+            menu = QtWidgets.QMenu(card)
+            copy_act = QtWidgets.QAction(_menu_icon("Copy_Icon.png", 0.7), "Copy", menu)
+            reset_act = QtWidgets.QAction(_menu_icon("Refresh_Icon.png", 0.7), "Reset", menu)
+
+            def _do_copy():
+                try:
+                    vals = [float(s.value()) for s in spins]
+                    text = f"{vals[0]:.3f}, {vals[1]:.3f}, {vals[2]:.3f}"
+                    QtWidgets.QApplication.clipboard().setText(text)
+                except Exception:
+                    pass
+
+            def _do_reset():
+                _set_xyz(spins, reset_vals)
+                _apply_xform(kind)
+
+            copy_act.triggered.connect(_do_copy)
+            reset_act.triggered.connect(_do_reset)
+            menu.addAction(copy_act)
+            menu.addAction(reset_act)
+            try:
+                menu.exec_(anchor)
+            except Exception:
+                try:
+                    menu.exec(anchor)
+                except Exception:
+                    pass
 
         def _load_xform_from_view(owner: str):
             glv = _get_glv()
@@ -691,6 +748,20 @@ def augment_infocard_footer(card, footer_layout) -> bool:
 
 
         outliner.currentItemChanged.connect(lambda *_: _on_outliner_select())
+
+        for kind, lbl in (("pos", label_pos), ("rot", label_rot), ("scl", label_scl)):
+            lbl.setCursor(QtCore.Qt.PointingHandCursor)
+            lbl.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+            lbl.customContextMenuRequested.connect(
+                lambda pt, k=kind, w=lbl: _show_xform_menu(k, w.mapToGlobal(pt))
+            )
+            def _ctx_ev(ev, k=kind):
+                try:
+                    _show_xform_menu(k, ev.globalPos())
+                    ev.accept()
+                except Exception:
+                    pass
+            lbl.contextMenuEvent = _ctx_ev
 
         # Push edits on commit
         for sb in card._xform_pos:
