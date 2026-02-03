@@ -919,6 +919,18 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             return
         scene_node = getattr(win, "_active_scene_node", None)
         if scene_node is None:
+            try:
+                for card in (getattr(win, "_card_by_node", {}) or {}).values():
+                    if getattr(card, "_scene_selected_owner", None) != owner:
+                        continue
+                    node = getattr(card, "_node_ref", None)
+                    kind = (getattr(node, "kind", "") or "").lower() if node is not None else ""
+                    if kind in ("scene", "scene_assembly", "scene_outliner"):
+                        scene_node = node
+                        break
+            except Exception:
+                scene_node = None
+        if scene_node is None:
             return
         kind = (getattr(scene_node, "kind", "") or "").lower()
         if kind not in ("scene", "scene_assembly", "scene_outliner"):
@@ -932,7 +944,10 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 is_splat = True
             getf = getattr(renderer, "_mgl_get_scene_splat_xform", None) if is_splat else getattr(renderer, "_mgl_get_scene_asset_xform", None)
             if callable(getf):
-                before = getf(owner) or {}
+                raw = getf(owner) or {}
+                before = {"pos": tuple(raw.get("pos", (0.0, 0.0, 0.0))),
+                          "rot": tuple(raw.get("rot", (0.0, 0.0, 0.0))),
+                          "scl": tuple(raw.get("scl", (1.0, 1.0, 1.0)))}
         except Exception:
             before = {}
         self._xform_hist_start = {"owner": owner, "before": before, "scene_node": scene_node}
@@ -956,7 +971,10 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 is_splat = True
             getf = getattr(renderer, "_mgl_get_scene_splat_xform", None) if is_splat else getattr(renderer, "_mgl_get_scene_asset_xform", None)
             if callable(getf):
-                after = getf(owner) or {}
+                raw = getf(owner) or {}
+                after = {"pos": tuple(raw.get("pos", (0.0, 0.0, 0.0))),
+                         "rot": tuple(raw.get("rot", (0.0, 0.0, 0.0))),
+                         "scl": tuple(raw.get("scl", (1.0, 1.0, 1.0)))}
         except Exception:
             after = {}
         try:

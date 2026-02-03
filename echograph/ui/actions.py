@@ -195,6 +195,16 @@ def _log_history(entry: dict) -> None:
         pass
 
 
+def init_history_log() -> None:
+    try:
+        path = _history_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            path.write_text("", encoding="utf-8")
+    except Exception:
+        pass
+
+
 def _ensure_scene_rev(win, node) -> int | None:
     if node is None:
         return None
@@ -221,12 +231,26 @@ def _ensure_scene_rev(win, node) -> int | None:
         return None
 
 
-def _xform_tuple(xf: dict) -> tuple:
+def _clean_xform(xf: dict) -> dict:
     try:
         pos = tuple(float(v) for v in xf.get("pos", (0.0, 0.0, 0.0)))
+    except Exception:
+        pos = (0.0, 0.0, 0.0)
+    try:
         rot = tuple(float(v) for v in xf.get("rot", (0.0, 0.0, 0.0)))
+    except Exception:
+        rot = (0.0, 0.0, 0.0)
+    try:
         scl = tuple(float(v) for v in xf.get("scl", (1.0, 1.0, 1.0)))
-        return pos + rot + scl
+    except Exception:
+        scl = (1.0, 1.0, 1.0)
+    return {"pos": pos, "rot": rot, "scl": scl}
+
+
+def _xform_tuple(xf: dict) -> tuple:
+    try:
+        clean = _clean_xform(xf)
+        return tuple(clean["pos"]) + tuple(clean["rot"]) + tuple(clean["scl"])
     except Exception:
         return ()
 
@@ -236,6 +260,8 @@ def record_scene_xform(win, scene_node, owner: str, before: dict, after: dict) -
         return
     if not owner:
         return
+    before = _clean_xform(before or {})
+    after = _clean_xform(after or {})
     try:
         if _xform_tuple(before) == _xform_tuple(after):
             return

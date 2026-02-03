@@ -2068,6 +2068,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             pass
 
         set_global_llm_scale(0.5, self.scene)  # ← apply global LLM scale here
+        try:
+            actions.init_history_log()
+        except Exception:
+            pass
         
         self.view = GraphView(self.scene)
         self.gl_view = GraphGLView(self.scene)

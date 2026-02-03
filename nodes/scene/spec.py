@@ -634,7 +634,12 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 if isinstance(splat_map, dict) and owner in splat_map:
                     getf = getattr(glv, "_mgl_get_scene_splat_xform", getf)
                 if callable(getf):
-                    before = getf(owner) or {}
+                    raw_before = getf(owner) or {}
+                    before = {
+                        "pos": tuple(raw_before.get("pos", (0.0, 0.0, 0.0))),
+                        "rot": tuple(raw_before.get("rot", (0.0, 0.0, 0.0))),
+                        "scl": tuple(raw_before.get("scl", (1.0, 1.0, 1.0))),
+                    }
             except Exception:
                 before = {}
 
