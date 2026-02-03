@@ -139,6 +139,7 @@ body {
   border-radius: 10px;
   padding: 6px;
   overflow-x: auto;
+  max-width: 520px;
 }
 
 table {
