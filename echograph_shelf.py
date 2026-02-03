@@ -2228,6 +2228,30 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             self._shortcut_gl_reset = None
 
         try:
+            self._shortcut_gl_wireframe = hotkeys.add_shortcut(
+                self,
+                "gl_wireframe_toggle",
+                "W",
+                self._shortcut_gl_wireframe_toggle,
+                context=QtCore.Qt.ApplicationShortcut,
+            )
+            self._register_shortcut("gl_wireframe_toggle", self._shortcut_gl_wireframe)
+        except Exception:
+            self._shortcut_gl_wireframe = None
+
+        try:
+            self._shortcut_gl_grid = hotkeys.add_shortcut(
+                self,
+                "gl_grid_toggle",
+                "G",
+                self._shortcut_gl_grid_toggle,
+                context=QtCore.Qt.ApplicationShortcut,
+            )
+            self._register_shortcut("gl_grid_toggle", self._shortcut_gl_grid)
+        except Exception:
+            self._shortcut_gl_grid = None
+
+        try:
             self._shortcut_gizmo_translate = hotkeys.add_shortcut(
                 self.gl_view,
                 "gizmo_translate",
@@ -2531,6 +2555,74 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             pass
         try:
             gv.update()
+        except Exception:
+            pass
+
+    def _viewport_hotkey_ok(self) -> bool:
+        gv = getattr(self, "gl_view", None)
+        if gv is None:
+            return False
+        try:
+            if not gv.isVisible() or not gv.isEnabled():
+                return False
+        except Exception:
+            return False
+        try:
+            w = QtWidgets.QApplication.widgetAt(QtGui.QCursor.pos())
+        except Exception:
+            w = None
+        if w is None:
+            return False
+        try:
+            if isinstance(
+                w,
+                (
+                    QtWidgets.QLineEdit,
+                    QtWidgets.QTextEdit,
+                    QtWidgets.QPlainTextEdit,
+                    QtWidgets.QSpinBox,
+                    QtWidgets.QDoubleSpinBox,
+                ),
+            ):
+                return False
+        except Exception:
+            pass
+        while w is not None:
+            if w is gv:
+                return True
+            w = w.parentWidget()
+        return False
+
+    def _shortcut_gl_wireframe_toggle(self) -> None:
+        if not self._viewport_hotkey_ok():
+            return
+        gv = getattr(self, "gl_view", None)
+        if gv is None:
+            return
+        try:
+            toggle = getattr(gv, "_mgl_wireframe_toggle", None)
+            if toggle is not None:
+                toggle.setChecked(not bool(toggle.isChecked()))
+                return
+        except Exception:
+            pass
+        try:
+            gv._on_mgl_wireframe_toggled(not bool(getattr(gv, "_mgl_wireframe", False)))
+        except Exception:
+            pass
+
+    def _shortcut_gl_grid_toggle(self) -> None:
+        if not self._viewport_hotkey_ok():
+            return
+        gv = getattr(self, "gl_view", None)
+        if gv is None:
+            return
+        try:
+            checked = not bool(getattr(gv, "_mgl_grid_visible", False))
+            btn = getattr(gv, "_grid_btn", None)
+            if btn is not None:
+                btn.setChecked(bool(checked))
+            gv._on_grid_button_toggled(bool(checked))
         except Exception:
             pass
 
