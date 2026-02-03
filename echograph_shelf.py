@@ -3244,30 +3244,75 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         bar.setFixedHeight(36)
         h = QtWidgets.QHBoxLayout(bar); h.setContentsMargins(8,4,8,4); h.setSpacing(8)
 
-        btn_new = QtWidgets.QPushButton("New Workflow", bar)
-        btn_new.setToolTip("Launch a fresh EchoGraph window")
-        btn_new.clicked.connect(self._launch_new_instance)
-        h.addWidget(btn_new, 0)
+        file_btn = QtWidgets.QToolButton(bar)
+        file_btn.setObjectName("FileButton")
+        file_btn.setText("File")
+        file_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        file_btn.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
+        file_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        file_btn.setFixedHeight(22)
+        file_btn.setStyleSheet(
+            "QToolButton#FileButton{color:#ffffff;background:#2a2f36;border:1px solid #3a3f46;"
+            "border-radius:4px;padding:1px 10px;}"
+            "QToolButton#FileButton:hover{background:#353b45;}"
+            "QToolButton#FileButton[active=\"true\"]{background:#1f7a45;border-color:#2a8a52;}"
+        )
+
+        file_menu = QtWidgets.QMenu(file_btn)
+        file_menu.setObjectName("FileMenu")
+        file_menu.setStyleSheet(
+            "#FileMenu{background:#1b2026;border:1px solid #333;padding:0px;}"
+        )
+
+        file_panel = QtWidgets.QFrame(file_menu)
+        file_panel.setObjectName("FilePanel")
+        file_panel.setStyleSheet(
+            "#FilePanel{background:#1b2026;border:0px;border-radius:6px;}"
+            "#FilePanel QToolButton{color:#e5e7eb;background:transparent;border:0px;padding:6px 10px;text-align:left;}"
+            "#FilePanel QToolButton:hover{background:#1f7a45;}"
+        )
+        file_layout = QtWidgets.QVBoxLayout(file_panel)
+        file_layout.setContentsMargins(6, 6, 6, 6)
+        file_layout.setSpacing(4)
+
+        file_new = QtWidgets.QToolButton(file_panel)
+        file_new.setText("New")
+        file_new.setToolTip("Launch a fresh EchoGraph window")
+        file_new.clicked.connect(self._launch_new_instance)
+        file_layout.addWidget(file_new, 0)
+
+        file_open = QtWidgets.QToolButton(file_panel)
+        file_open.setText("Open")
+        file_open.setToolTip("Load a graph from a .json file")
+        file_open.clicked.connect(self._open_graph)
+        file_layout.addWidget(file_open, 0)
+
+        file_save = QtWidgets.QToolButton(file_panel)
+        file_save.setText("Save")
+        file_save.setToolTip("Save to the last opened/exported .json (Save)")
+        file_save.clicked.connect(self._save_graph)
+        file_layout.addWidget(file_save, 0)
+
+        file_export = QtWidgets.QToolButton(file_panel)
+        file_export.setText("Save As")
+        file_export.setToolTip("Save current graph to a new .json (Save As)")
+        file_export.clicked.connect(self._export_graph)
+        file_layout.addWidget(file_export, 0)
+
+        file_action = QtWidgets.QWidgetAction(file_menu)
+        file_action.setDefaultWidget(file_panel)
+        file_menu.addAction(file_action)
+
+        file_menu.aboutToShow.connect(lambda: self._set_file_menu_active(True))
+        file_menu.aboutToHide.connect(lambda: self._set_file_menu_active(False))
+        file_btn.setMenu(file_menu)
+        h.addWidget(file_btn, 0)
+        self._file_btn = file_btn
 
         btn_create = QtWidgets.QPushButton("Create Node", bar)
         btn_create.setToolTip("Create a new node with type & params")
         btn_create.clicked.connect(self._create_node_interactive)
         h.addWidget(btn_create, 0)
-
-        btn_open = QtWidgets.QPushButton("Open", bar)
-        btn_open.setToolTip("Load a graph from a .json file")
-        btn_open.clicked.connect(self._open_graph)
-        h.addWidget(btn_open, 0)
-
-        btn_save = QtWidgets.QPushButton("Save", bar)
-        btn_save.setToolTip("Save to the last opened/exported .json (Save)")
-        btn_save.clicked.connect(self._save_graph)
-        h.addWidget(btn_save, 0)
-
-        btn_export = QtWidgets.QPushButton("Save As", bar)
-        btn_export.setToolTip("Save current graph to a new .json (Save As)")
-        btn_export.clicked.connect(self._export_graph)
-        h.addWidget(btn_export, 0)
 
         btn_frame = QtWidgets.QPushButton("Frame", bar)
         btn_frame.setToolTip("Fit view to all nodes")
@@ -3429,6 +3474,18 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
     def _set_settings_menu_active(self, active: bool) -> None:
         btn = getattr(self, "_settings_btn", None)
+        if btn is None:
+            return
+        try:
+            btn.setProperty("active", bool(active))
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+            btn.update()
+        except Exception:
+            pass
+
+    def _set_file_menu_active(self, active: bool) -> None:
+        btn = getattr(self, "_file_btn", None)
         if btn is None:
             return
         try:
