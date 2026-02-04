@@ -1771,16 +1771,10 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             return None
     def _on_snapgrab_clicked(self) -> None:
         paused = False
+        image = None
         try:
-            self._render_paused = True
-            paused = True
-
             if hasattr(self, "makeCurrent"):
                 self.makeCurrent()
-
-            image = self.grabFramebuffer()
-            if image is None or image.isNull():
-                return
 
             # force GPU completion (driver stability)
             try:
@@ -1791,6 +1785,16 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                         f.glFinish()
             except Exception:
                 pass
+            
+            # ensure we capture a freshly rendered frame
+            try:
+                self.update()
+                self.repaint()
+                QtWidgets.QApplication.processEvents()
+            except Exception:
+                pass
+
+            image = self.grabFramebuffer()
 
         finally:
             try:
@@ -1801,6 +1805,9 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             if paused:
                 self._render_paused = False
                 self.update()
+
+        if image is None or image.isNull():
+            return
 
         start_dir = str(Path.home() / "Pictures")
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
