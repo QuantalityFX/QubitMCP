@@ -358,7 +358,8 @@ class InfoCard(QtWidgets.QFrame):
             pass
 
         try:
-            self.refresh_params_from_model()
+            if not self._refresh_params_incremental(params):
+                self.refresh_params_from_model()
         except Exception:
             pass
 
@@ -371,6 +372,65 @@ class InfoCard(QtWidgets.QFrame):
             pass
             
     # ---------- shared helpers ----------
+    def _hidden_signature_from_params(self, params: list) -> str:
+        raw = ""
+        has_override = False
+        for pp in (params or []):
+            if (pp.get("name") or "").strip().lower() == "__ui_hidden_params":
+                raw = (pp.get("value") or "").strip()
+                has_override = True
+                break
+        return f"{1 if has_override else 0}:{raw}"
+
+    def _visible_param_rows(self, params: list) -> tuple[list[str], dict[str, str]]:
+        visible = []
+        values: dict[str, str] = {}
+        for p in (params or []):
+            pname = (p.get("name", "") or "").strip()
+            if not pname:
+                continue
+            if pname.strip().lower() == "__ui_hidden_params":
+                continue
+            visible.append(pname)
+            values[pname] = p.get("value", "") or ""
+        return visible, values
+
+    def _refresh_params_incremental(self, params: list) -> bool:
+        tbl = getattr(self, "_param_table", None)
+        if not tbl:
+            return False
+        try:
+            current_names = []
+            for r in range(tbl.rowCount()):
+                item = tbl.item(r, 1)
+                if not item:
+                    return False
+                current_names.append(item.text())
+
+            visible, values = self._visible_param_rows(params)
+            if visible != current_names:
+                return False
+
+            hidden_sig = self._hidden_signature_from_params(params)
+            if getattr(self, "_hidden_sig", "") != hidden_sig:
+                return False
+
+            tbl.blockSignals(True)
+            for r, pname in enumerate(visible):
+                val = values.get(pname, "")
+                item = tbl.item(r, 2)
+                if item is None:
+                    tbl.setItem(r, 2, QtWidgets.QTableWidgetItem(val))
+                else:
+                    if item.text() != val:
+                        item.setText(val)
+            return True
+        finally:
+            try:
+                tbl.blockSignals(False)
+            except Exception:
+                pass
+
     def refresh_params_from_model(self):
         if not hasattr(self, "_param_table"):
             return
@@ -1029,6 +1089,10 @@ class InfoCard(QtWidgets.QFrame):
                 raw = (pp.get("value") or "").strip()
                 has_override = True
                 break
+        try:
+            self._hidden_sig = f"{1 if has_override else 0}:{raw}"
+        except Exception:
+            pass
 
         hidden = set()
         if raw:

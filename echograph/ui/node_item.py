@@ -124,6 +124,19 @@ class _ParamNameLabel(QtWidgets.QLabel):
             return
         super().mouseDoubleClickEvent(e)
 
+class _ParamValueTextEdit(QtWidgets.QTextEdit):
+    def __init__(self, commit_cb=None, parent=None):
+        super().__init__(parent)
+        self._commit_cb = commit_cb
+
+    def focusOutEvent(self, e):
+        if callable(self._commit_cb):
+            try:
+                self._commit_cb()
+            except Exception:
+                pass
+        super().focusOutEvent(e)
+
 def _top_level_parent_for_dialog() -> QtWidgets.QWidget | None:
     aw = QtWidgets.QApplication.activeWindow()
     if aw and aw.isWindow():
@@ -173,6 +186,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
     _NOTE_FEATURED_CTRL_H = 28
     _NOTE_FEATURED_HANDLE_H = 10
     _PORT_HIT_TOL = 9.0
+    _PARAM_EMIT_DEBOUNCE_MS = 250
     _IMG_CANVAS_W = 720
     _IMG_CANVAS_H = 420
     _IMG_CTRL_H = 40
@@ -295,6 +309,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
         self._busy_timer = QtCore.QTimer(self)
         self._busy_timer.setInterval(320)
         self._busy_timer.timeout.connect(self._on_busy_timeout)
+        self._param_emit_timer = QtCore.QTimer(self)
+        self._param_emit_timer.setSingleShot(True)
+        self._param_emit_timer.setInterval(self._PARAM_EMIT_DEBOUNCE_MS)
+        self._param_emit_timer.timeout.connect(self._emit_param_changed)
         self._note_resize_mode: str | None = None
         self._note_resize_start = QtCore.QPointF()
         self._note_scene_start = QtCore.QPointF()
@@ -1698,7 +1716,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         )
                     else:
                         edit.setToolTip("")
-                    edit.textChanged.connect(lambda txt, idx=i: self._on_param_changed(idx, txt))
+                    is_note = (kind == "note")
+                    edit.textChanged.connect(
+                        lambda txt, idx=i, emit=not is_note: self._on_param_changed(idx, txt, emit_scene=emit)
+                    )
+                    if is_note:
+                        edit.editingFinished.connect(
+                            lambda e=edit, idx=i: self._on_param_changed(idx, e.text(), emit_scene=True)
+                        )
                     lay.addWidget(edit, 1)
                     if attach_import_browse:
                         edit.editingFinished.connect(lambda e=edit: self._commit_import_path_edit(e))
@@ -1745,7 +1770,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         vlay.setContentsMargins(6, 4, 6, 2)  # leave a bit for the grip
                         vlay.setSpacing(2)
 
-                        big = QtWidgets.QTextEdit()
+                        big = _ParamValueTextEdit()
                         big.setAcceptRichText(False)
                         big.setPlainText(pval)
                         big.setMinimumHeight(text_h)
@@ -1754,8 +1779,18 @@ class NodeItem(QtWidgets.QGraphicsObject):
                             "border:1px solid #3c4450;border-radius:6px;padding:6px;}"
                         )
                         def _sync_big(idx=i, w=big):
-                            self._on_param_changed(idx, w.toPlainText())
+                            self._on_param_changed(idx, w.toPlainText(), emit_scene=False)
                         big.textChanged.connect(_sync_big)
+                        def _commit_big(idx=i, w=big, e=edit):
+                            text = w.toPlainText()
+                            if e is not None:
+                                try:
+                                    e.blockSignals(True)
+                                    e.setText(text)
+                                finally:
+                                    e.blockSignals(False)
+                            self._on_param_changed(idx, text, emit_scene=True)
+                        big._commit_cb = _commit_big
                         vlay.addWidget(big, 1)
 
                         big_row.setMinimumHeight(block_h)
@@ -3915,18 +3950,31 @@ class NodeItem(QtWidgets.QGraphicsObject):
             label_widget.setText(self._switch_label_text())
         self.switchIndexChanged.emit(self, self.model.switch_index)
 
-    def _on_param_changed(self, idx, txt):
+    def _schedule_param_emit(self) -> None:
+        sc = self.scene()
+        if not sc or not hasattr(sc, "paramChanged"):
+            return
         try:
-            self.model.params[idx]["value"] = txt
+            self._param_emit_timer.start()
         except Exception:
-            pass
+            self._emit_param_changed()
 
+    def _emit_param_changed(self) -> None:
         sc = self.scene()
         if sc and hasattr(sc, "paramChanged"):
             try:
                 sc.paramChanged.emit(self.model.name, list(self.model.params))
             except Exception:
                 pass
+
+    def _on_param_changed(self, idx, txt, *, emit_scene: bool = True):
+        try:
+            self.model.params[idx]["value"] = txt
+        except Exception:
+            pass
+
+        if emit_scene:
+            self._schedule_param_emit()
 
         if (self.model.kind or "").lower() == "llm":
             try:
