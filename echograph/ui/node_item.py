@@ -101,6 +101,29 @@ class _FeatureResizeHandle(QtWidgets.QWidget):
             return
         super().mouseReleaseEvent(e)
 
+class _ParamNameLabel(QtWidgets.QLabel):
+    def __init__(self, text: str = "", dbl_click_cb=None, parent=None):
+        super().__init__(text, parent)
+        self._dbl_click_cb = dbl_click_cb
+        self.setCursor(QtCore.Qt.IBeamCursor)
+        self.setFocusPolicy(QtCore.Qt.ClickFocus)
+
+    def mousePressEvent(self, e):
+        if e.button() == QtCore.Qt.LeftButton:
+            e.accept()
+            return
+        super().mousePressEvent(e)
+
+    def mouseDoubleClickEvent(self, e):
+        if e.button() == QtCore.Qt.LeftButton and callable(self._dbl_click_cb):
+            try:
+                self._dbl_click_cb()
+            except Exception:
+                pass
+            e.accept()
+            return
+        super().mouseDoubleClickEvent(e)
+
 def _top_level_parent_for_dialog() -> QtWidgets.QWidget | None:
     aw = QtWidgets.QApplication.activeWindow()
     if aw and aw.isWindow():
@@ -616,6 +639,122 @@ class NodeItem(QtWidgets.QGraphicsObject):
             setattr(self.model, "_featured_heights", raw)
         except Exception:
             pass
+
+    def _rename_featured_param(self, old_name: str, new_name: str) -> None:
+        if not old_name or not new_name or old_name == new_name:
+            return
+        try:
+            feat = self._get_featured_set()
+            if old_name in feat:
+                feat.discard(old_name)
+                feat.add(new_name)
+                self._set_featured_set(feat)
+        except Exception:
+            pass
+        raw = getattr(self.model, "_featured_heights", None)
+        if isinstance(raw, dict) and old_name in raw:
+            try:
+                raw[new_name] = raw.pop(old_name)
+                setattr(self.model, "_featured_heights", raw)
+            except Exception:
+                pass
+        try:
+            if getattr(self.model, "_featured_param", "") == old_name:
+                setattr(self.model, "_featured_param", new_name)
+        except Exception:
+            pass
+
+    def _rename_hidden_param_value(self, params: list, old_name: str, new_name: str) -> None:
+        if not old_name or not new_name or old_name == new_name:
+            return
+        old_key = old_name.strip().lower()
+        new_key = new_name.strip().lower()
+        if not old_key or not new_key:
+            return
+        for p in params:
+            nm = (p.get("name") or "").strip().lower()
+            if nm != "__ui_hidden_params":
+                continue
+            raw = p.get("value", "")
+            items = []
+            changed = False
+            for tok in str(raw).split(","):
+                key = tok.strip()
+                if not key:
+                    continue
+                if key.lower() == old_key:
+                    items.append(new_key)
+                    changed = True
+                else:
+                    items.append(key)
+            if changed:
+                p["value"] = ",".join(items)
+            return
+
+    def _unique_param_name_for_rename(self, desired: str, idx: int) -> str:
+        base = (desired or "").strip() or "param"
+        existing = {
+            (p.get("name") or "").strip().lower()
+            for i, p in enumerate(self.model.params or [])
+            if i != idx
+        }
+        if base.strip().lower() not in existing:
+            return base
+        i = 2
+        while True:
+            candidate = f"{base} {i}"
+            if candidate.strip().lower() not in existing:
+                return candidate
+            i += 1
+
+    def _apply_param_rename(self, idx: int, new_name: str) -> str | None:
+        params = list(self.model.params or [])
+        if idx < 0 or idx >= len(params):
+            return None
+        old = (params[idx].get("name") or "").strip()
+        desired = (new_name or "").strip()
+        if not desired:
+            return old
+        final = self._unique_param_name_for_rename(desired, idx)
+        if final == old:
+            return old
+        params[idx]["name"] = final
+        self._rename_featured_param(old, final)
+        self._rename_hidden_param_value(params, old, final)
+        self.model.params = params
+
+        def _apply_to_scene():
+            sc = self.scene()
+            if sc and hasattr(sc, "set_node_params"):
+                try:
+                    sc.set_node_params(self.model.name, params)
+                except Exception:
+                    pass
+        try:
+            QtCore.QTimer.singleShot(0, _apply_to_scene)
+        except Exception:
+            _apply_to_scene()
+
+        self._schedule_rebuild()
+        return final
+
+    def _prompt_rename_param(self, idx: int) -> None:
+        params = list(self.model.params or [])
+        if idx < 0 or idx >= len(params):
+            return
+        old = (params[idx].get("name") or "").strip()
+        if not old:
+            old = "param"
+        parent = _top_level_parent_for_dialog()
+        text, ok = QtWidgets.QInputDialog.getText(
+            parent, "Rename Parameter", "New name:", QtWidgets.QLineEdit.Normal, old
+        )
+        if not ok:
+            return
+        new_name = (text or "").strip()
+        if not new_name:
+            return
+        self._apply_param_rename(idx, new_name)
 
 
     def _unique_param_name(self, base: str = "param") -> str:
@@ -1524,7 +1663,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     lab_holder.setContentsMargins(0, 0, 0, 0)
                     lab_holder.setSpacing(4)
 
-                    lab = QtWidgets.QLabel(pname)
+                    if kind == "note":
+                        lab = _ParamNameLabel(
+                            pname,
+                            dbl_click_cb=lambda idx=i: self._prompt_rename_param(idx),
+                        )
+                        lab.setToolTip("Double-click to rename")
+                    else:
+                        lab = QtWidgets.QLabel(pname)
                     lab.setStyleSheet("color:#cbd5e1;")
                     lab.setMinimumWidth(50)
                     lab_holder.addWidget(lab, 0)
