@@ -266,6 +266,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     _scene.register()
             except Exception:
                 pass
+        # Ensure Primitive spec is registered even if the loader was skipped.
+        if (self.model.kind or "").strip().lower() == "primitive":
+            try:
+                from nodes import primitive as _primitive  # type: ignore
+                if hasattr(_primitive, "register"):
+                    _primitive.register()
+            except Exception:
+                pass
 
         self.setFlag(QtWidgets.QGraphicsItem.ItemIsMovable, True)
         self.setFlag(QtWidgets.QGraphicsItem.ItemSendsGeometryChanges, True)
@@ -337,13 +345,36 @@ class NodeItem(QtWidgets.QGraphicsObject):
         except Exception:
             pass
 
-        if (self.model.kind or "").lower() in ("import", "html_preview"):
+        kind_lower = (self.model.kind or "").lower()
+        if kind_lower in ("import", "html_preview"):
             params = list(self.model.params or [])
             names = {(p.get("name") or "").strip().lower() for p in params}
             if "path" not in names:
                 params.append({"name": "path", "value": ""})
                 self.model.params = params
-        elif (self.model.kind or "").lower() == "note":
+        elif kind_lower == "primitive":
+            params = list(self.model.params or [])
+            names = {(p.get("name") or "").strip().lower() for p in params}
+            if "primitive" not in names:
+                params.append({"name": "primitive", "value": "sphere"})
+            if "path" not in names:
+                params.append({"name": "path", "value": ""})
+            # Hide internal params on the node surface.
+            store_key = "__ui_hidden_params"
+            hidden_entry = None
+            for p in params:
+                if (p.get("name") or "").strip().lower() == store_key:
+                    hidden_entry = p
+                    break
+            if hidden_entry is None:
+                hidden_entry = {"name": store_key, "value": ""}
+                params.append(hidden_entry)
+            raw = hidden_entry.get("value", "")
+            hidden = {t.strip().lower() for t in str(raw).split(",") if t.strip()}
+            hidden.update({"primitive", "path"})
+            hidden_entry["value"] = ",".join(sorted(hidden))
+            self.model.params = params
+        elif kind_lower == "note":
             # Ensure notes always start with at least one parameter for convenience
             if not (self.model.params or []):
                 self.model.params = [{"name": "note", "value": ""}]
@@ -446,6 +477,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
             hidden.update({"thumbnail", "thumbnail_rev", "thumbnail_choice"})
         elif kind in ("scene", "scene_assembly", "scene_outliner"):
             hidden.update({"thumbnail", "thumbnail_rev", "thumbnail_choice", "splat_depth_test"})
+        elif kind == "primitive":
+            hidden.update({"primitive", "path"})
 
         return hidden
 
@@ -960,6 +993,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
         elif kind in ("chatbot", "chat bot", "chat_bot"):
             body_h = self._CHATBOT_BODY_H
             node_w = max(self._BASE_W, self._CHATBOT_BODY_W)
+        elif kind == "primitive":
+            body_h = 40
+            node_w = self._BASE_W
         else:
             body_h = 0
             node_w = self._BASE_W
@@ -1486,6 +1522,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
             # --- Inline Scene body to guarantee the view button is present ---
             if kind_lower in ("scene", "scene_assembly", "scene_outliner"):
                 kind_lower = None
+            # --- Inline Primitive body to guarantee the dropdown + view button are present ---
+            if kind_lower == "primitive":
+                try:
+                    from nodes.primitive import spec as _primitive_spec  # type: ignore
+                    y_cursor = _primitive_spec.render_node_body(self, y_cursor)
+                    kind_lower = None
+                except Exception:
+                    pass
 
             # --- Plugin body hook (lets specs draw a custom node body) ---
             try:

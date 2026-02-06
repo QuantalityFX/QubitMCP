@@ -109,6 +109,17 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] HTML Preview plugin import failed:", e)
 
+    # 8.5) Primitive
+    try:
+        from nodes import primitive
+        if hasattr(primitive, "register"):
+            primitive.register()
+            _safe_probe("primitive")
+        else:
+            print("[EchoGraph] Primitive module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Primitive plugin import failed:", e)
+
     # 9) GPT Prompt
     try:
         from nodes import gpt_prompt
