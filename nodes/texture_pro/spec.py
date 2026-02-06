@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import random
 import time
 from pathlib import Path
 from typing import Optional
@@ -14,8 +15,30 @@ from nodes.core import Spec
 
 SUPPORTED_MESH_EXTS = {".obj", ".fbx", ".gltf", ".glb"}
 PREVIEW_SIZE = 72
+TEXTURE_SIZE = 256
 CHECKER_CELLS = 8
 DEFAULT_PATTERN = "checkerboard"
+PATTERN_OPTIONS = [
+    ("Checkerboard", "checkerboard"),
+    ("Matrix Rain", "matrix_rain"),
+]
+PATTERN_LABELS = {key: label for label, key in PATTERN_OPTIONS}
+
+MATRIX_GLYPHS = (
+    "ｦｧｨｩｪｫｬｭｮｯｰ"
+    "ｱｲｳｴｵ"
+    "ｶｷｸｹｺ"
+    "ｻｼｽｾｿ"
+    "ﾀﾁﾂﾃﾄ"
+    "ﾅﾆﾇﾈﾉ"
+    "ﾊﾋﾌﾍﾎ"
+    "ﾏﾐﾑﾒﾓ"
+    "ﾔﾕﾖ"
+    "ﾗﾘﾙﾚﾛ"
+    "ﾜﾝ"
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "0123456789"
+)
 
 
 def _param_value(model, name: str) -> str:
@@ -140,8 +163,8 @@ def _resolve_window(node_item):
     return None
 
 
-class CheckerboardProvider:
-    def __init__(self, size: int = PREVIEW_SIZE, cells: int = CHECKER_CELLS):
+class CheckerboardGenerator:
+    def __init__(self, size: int = TEXTURE_SIZE, cells: int = CHECKER_CELLS):
         self.size = int(size)
         self.cells = int(cells) if cells else 8
         self._time = 0.0
@@ -203,11 +226,160 @@ class CheckerboardProvider:
         return img
 
 
-def _get_provider(node_item) -> CheckerboardProvider:
+class MatrixRainGenerator:
+    def __init__(self, size: int = TEXTURE_SIZE, cell: int = 12):
+        self.size = int(size)
+        self.cell = max(8, int(cell))
+        self._image: Optional[QtGui.QImage] = None
+        self._revision = 0
+        self._last_frame_id: Optional[int] = None
+        self._rng = random.Random()
+        self._cols = []
+        self._init_columns()
+
+    def _init_columns(self) -> None:
+        self._cols = []
+        count = max(6, int(self.size // self.cell))
+        for i in range(count):
+            self._cols.append(self._new_column(i))
+
+    def _new_column(self, idx: int) -> dict:
+        return {
+            "x": idx * self.cell,
+            "y": self._rng.uniform(-self.size, self.size),
+            "speed": self._rng.uniform(6.0, 18.0),
+            "trail": self._rng.randint(8, 16),
+            "glyphs": [self._random_glyph() for _ in range(20)],
+        }
+
+    def _random_glyph(self) -> str:
+        return self._rng.choice(MATRIX_GLYPHS)
+
+    def advance(self, dt: float, frame_id: Optional[int] = None) -> bool:
+        if frame_id is not None and self._last_frame_id == frame_id:
+            return False
+        if frame_id is not None:
+            self._last_frame_id = frame_id
+        if dt <= 0.0:
+            return False
+        height = self.size
+        cell = self.cell
+        for idx, col in enumerate(self._cols):
+            col["y"] = float(col.get("y", 0.0)) + float(col.get("speed", 10.0)) * cell * dt
+            trail = int(col.get("trail", 12))
+            if col["y"] - (trail * cell) > height + cell:
+                self._cols[idx] = self._new_column(idx)
+                continue
+            if self._rng.random() < 0.45:
+                glyphs = col.get("glyphs") or []
+                if glyphs:
+                    glyphs[self._rng.randrange(len(glyphs))] = self._random_glyph()
+        self._image = self._build_image()
+        self._revision += 1
+        return True
+
+    @property
+    def revision(self) -> int:
+        return int(self._revision)
+
+    def image(self) -> QtGui.QImage:
+        if self._image is None:
+            self._image = self._build_image()
+            self._revision += 1
+        return self._image
+
+    def _build_image(self) -> QtGui.QImage:
+        size = max(16, int(self.size))
+        cell = max(6, int(self.cell))
+        fmt = QtGui.QImage.Format_RGBA8888 if hasattr(QtGui.QImage, "Format_RGBA8888") else QtGui.QImage.Format_ARGB32
+        img = QtGui.QImage(size, size, fmt)
+        img.fill(QtGui.QColor("#050b07"))
+        painter = QtGui.QPainter(img)
+        painter.setRenderHint(QtGui.QPainter.TextAntialiasing, True)
+        font = QtGui.QFont("Consolas")
+        font.setStyleHint(QtGui.QFont.Monospace)
+        font.setPixelSize(int(cell * 0.9))
+        painter.setFont(font)
+
+        for col in self._cols:
+            x = int(col.get("x", 0))
+            head_y = float(col.get("y", 0.0))
+            trail = int(col.get("trail", 12))
+            glyphs = col.get("glyphs") or []
+            for t in range(trail):
+                y = head_y - t * cell
+                if y < -cell or y > size:
+                    continue
+                if t == 0:
+                    color = QtGui.QColor("#bbf7d0")
+                    color.setAlpha(230)
+                else:
+                    alpha = max(0.05, 1.0 - (t / max(trail, 1)))
+                    color = QtGui.QColor("#22c55e")
+                    color.setAlpha(int(200 * alpha))
+                painter.setPen(color)
+                ch = glyphs[t % len(glyphs)] if glyphs else self._random_glyph()
+                mirror = self._rng.random() < 0.22
+                if mirror:
+                    painter.save()
+                    painter.translate(x + cell, y)
+                    painter.scale(-1.0, 1.0)
+                    rect = QtCore.QRectF(0, 0, cell, cell)
+                    painter.drawText(rect, QtCore.Qt.AlignCenter, ch)
+                    painter.restore()
+                else:
+                    rect = QtCore.QRectF(x, y, cell, cell)
+                    painter.drawText(rect, QtCore.Qt.AlignCenter, ch)
+        painter.end()
+        return img
+
+
+class TextureProProvider:
+    def __init__(self, size: int = TEXTURE_SIZE):
+        self._generators = {
+            "checkerboard": CheckerboardGenerator(size=size),
+            "matrix_rain": MatrixRainGenerator(size=size),
+        }
+        self._mode = DEFAULT_PATTERN
+        self._revision = 0
+        self._last_gen_rev = self._generators[self._mode].revision
+
+    def set_mode(self, mode: str) -> None:
+        mode = (mode or "").strip().lower()
+        if mode not in self._generators:
+            mode = DEFAULT_PATTERN
+        if mode == self._mode:
+            return
+        self._mode = mode
+        self._revision += 1
+        self._last_gen_rev = self._generators[self._mode].revision
+
+    def mode(self) -> str:
+        return self._mode
+
+    def advance(self, dt: float, frame_id: Optional[int] = None) -> bool:
+        gen = self._generators[self._mode]
+        changed = gen.advance(dt, frame_id)
+        gen_rev = gen.revision
+        if changed or gen_rev != self._last_gen_rev:
+            self._last_gen_rev = gen_rev
+            self._revision += 1
+            return True
+        return False
+
+    def image(self) -> QtGui.QImage:
+        return self._generators[self._mode].image()
+
+    @property
+    def revision(self) -> int:
+        return int(self._revision)
+
+
+def _get_provider(node_item) -> TextureProProvider:
     model = getattr(node_item, "model", None)
     provider = getattr(model, "_texture_pro_provider", None) if model is not None else None
-    if not isinstance(provider, CheckerboardProvider):
-        provider = CheckerboardProvider()
+    if not isinstance(provider, TextureProProvider):
+        provider = TextureProProvider()
         if model is not None:
             try:
                 setattr(model, "_texture_pro_provider", provider)
@@ -244,9 +416,31 @@ class TextureProWidget(QtWidgets.QWidget):
         right.setContentsMargins(0, 0, 0, 0)
         right.setSpacing(4)
 
-        self._label = QtWidgets.QLabel("Checkerboard")
-        self._label.setStyleSheet("color:#e2e8f0;font-size:11px;")
-        right.addWidget(self._label, 0)
+        self._combo = QtWidgets.QComboBox()
+        self._combo.setMinimumWidth(0)
+        self._combo.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        try:
+            lv = QtWidgets.QListView()
+            lv.setMouseTracking(True)
+            lv.setUniformItemSizes(True)
+            self._combo.setView(lv)
+        except Exception:
+            pass
+        self._combo.setStyleSheet(
+            "QComboBox{background:#0f1216;color:#e6edf3;border:1px solid #3c4450;"
+            "border-radius:6px;padding:2px 6px;}"
+            "QComboBox::drop-down{border:none;}"
+            "QComboBox QAbstractItemView{"
+            "  background:#0f1216;color:#e6edf3;border:1px solid #3c4450;"
+            "  outline:0px;}"
+            "QComboBox QAbstractItemView::item{padding:6px 10px;}"
+            "QComboBox QAbstractItemView::item:hover{background:#1f2937;}"
+            "QComboBox QAbstractItemView::item:selected{background:#22c55e;color:#0f1216;}"
+        )
+        for label_text, key in PATTERN_OPTIONS:
+            self._combo.addItem(label_text, key)
+        self._combo.currentIndexChanged.connect(self._on_pattern_changed)
+        right.addWidget(self._combo, 0)
         right.addStretch(1)
 
         self._view_btn = QtWidgets.QPushButton("View")
@@ -314,10 +508,50 @@ class TextureProWidget(QtWidgets.QWidget):
         except Exception:
             pass
 
+    def _set_combo_value(self, pattern: str) -> None:
+        try:
+            idx = self._combo.findData(pattern)
+        except Exception:
+            idx = -1
+        if idx >= 0 and self._combo.currentIndex() != idx:
+            try:
+                self._combo.blockSignals(True)
+                self._combo.setCurrentIndex(idx)
+            finally:
+                self._combo.blockSignals(False)
+
+    def _apply_pattern(self, pattern: str, notify_scene: bool = False) -> None:
+        key = (pattern or "").strip().lower()
+        if key not in PATTERN_LABELS:
+            key = DEFAULT_PATTERN
+        try:
+            if hasattr(self._provider, "set_mode"):
+                self._provider.set_mode(key)
+        except Exception:
+            pass
+        self._set_param("pattern", key, notify_scene=notify_scene)
+        self._set_combo_value(key)
+        try:
+            self._refresh_preview()
+        except Exception:
+            pass
+
+    def _on_pattern_changed(self):
+        key = self._combo.currentData() or self._combo.currentText()
+        self._apply_pattern(str(key), notify_scene=True)
+
     def _update_inputs(self):
         self._pending = False
         self._ensure_scene()
-        self._set_param("pattern", DEFAULT_PATTERN, notify_scene=False)
+        pattern = ""
+        try:
+            pattern = _param_value(self._node_item.model, "pattern").strip().lower()
+        except Exception:
+            pattern = ""
+        if not pattern:
+            pattern = DEFAULT_PATTERN
+            self._set_param("pattern", pattern, notify_scene=False)
+        self._apply_pattern(pattern, notify_scene=False)
 
         src_path = (_resolve_input_path(self._node_item) or "").strip()
         if not src_path:
@@ -476,7 +710,13 @@ class TextureProWidget(QtWidgets.QWidget):
         glv = getattr(win, "gl_view", None) if win is not None else None
         if glv is not None and hasattr(glv, "set_procedural_texture_provider"):
             try:
-                glv.set_procedural_texture_provider(self._provider, "Checkerboard")
+                label = "Procedural"
+                try:
+                    mode = self._provider.mode() if hasattr(self._provider, "mode") else ""
+                    label = PATTERN_LABELS.get(mode, label)
+                except Exception:
+                    label = "Procedural"
+                glv.set_procedural_texture_provider(self._provider, label)
             except Exception:
                 pass
 
