@@ -24,7 +24,9 @@ PATTERN_OPTIONS = [
 ]
 PATTERN_LABELS = {key: label for label, key in PATTERN_OPTIONS}
 TILING_MIN = 1
-TILING_MAX = 8
+TILING_MAX = 100
+PACK_MIN = 1
+PACK_MAX = 100
 RESOLUTION_OPTIONS = [256, 512, 1024]
 
 MATRIX_GLYPHS = (
@@ -81,6 +83,8 @@ def _ensure_param(node_item, name: str, default: str = "") -> None:
 def build_ports(node_item) -> None:
     _ensure_param(node_item, "pattern", DEFAULT_PATTERN)
     _ensure_param(node_item, "tiling", "1")
+    _ensure_param(node_item, "pack_x", "1")
+    _ensure_param(node_item, "pack_y", "1")
     _ensure_param(node_item, "resolution", str(TEXTURE_SIZE))
     _ensure_param(node_item, "source", "")
     _ensure_param(node_item, "path", "")
@@ -227,7 +231,11 @@ class CheckerboardGenerator:
     def __init__(self, size: int = TEXTURE_SIZE, cells: int = CHECKER_CELLS):
         self.size = int(size)
         self.base_cells = max(2, int(cells) if cells else 8)
-        self.cells = int(self.base_cells)
+        self.cells_x = int(self.base_cells)
+        self.cells_y = int(self.base_cells)
+        self._density = 1
+        self._pack_x = 1
+        self._pack_y = 1
         self._time = 0.0
         self._phase = -1
         self._image: Optional[QtGui.QImage] = None
@@ -266,17 +274,34 @@ class CheckerboardGenerator:
 
     def set_density(self, density: int) -> None:
         density = max(1, int(density))
-        new_cells = max(2, int(self.base_cells * density))
-        if new_cells == self.cells:
+        if density == self._density:
             return
-        self.cells = new_cells
-        self._rebuild()
+        self._density = density
+        self._recompute_cells()
+
+    def set_pack(self, pack_x: int, pack_y: int) -> None:
+        pack_x = max(1, int(pack_x))
+        pack_y = max(1, int(pack_y))
+        if pack_x == self._pack_x and pack_y == self._pack_y:
+            return
+        self._pack_x = pack_x
+        self._pack_y = pack_y
+        self._recompute_cells()
 
     def set_size(self, size: int) -> None:
         size = max(16, int(size))
         if size == self.size:
             return
         self.size = size
+        self._rebuild()
+
+    def _recompute_cells(self) -> None:
+        new_x = max(2, int(self.base_cells * self._density * self._pack_x))
+        new_y = max(2, int(self.base_cells * self._density * self._pack_y))
+        if new_x == self.cells_x and new_y == self.cells_y:
+            return
+        self.cells_x = new_x
+        self.cells_y = new_y
         self._rebuild()
 
     def _rebuild(self) -> None:
@@ -287,8 +312,10 @@ class CheckerboardGenerator:
 
     def _build_image(self, phase: int) -> QtGui.QImage:
         size = max(16, int(self.size))
-        cells = max(2, int(self.cells))
-        cell = max(1, size // cells)
+        cells_x = max(2, int(self.cells_x))
+        cells_y = max(2, int(self.cells_y))
+        cell_w = max(1, size // cells_x)
+        cell_h = max(1, size // cells_y)
 
         if phase % 2 == 0:
             c0 = QtGui.QColor("#0f172a")
@@ -300,10 +327,10 @@ class CheckerboardGenerator:
         fmt = QtGui.QImage.Format_RGBA8888 if hasattr(QtGui.QImage, "Format_RGBA8888") else QtGui.QImage.Format_ARGB32
         img = QtGui.QImage(size, size, fmt)
         painter = QtGui.QPainter(img)
-        for y in range(0, size, cell):
-            for x in range(0, size, cell):
-                color = c0 if ((x // cell) + (y // cell)) % 2 == 0 else c1
-                painter.fillRect(x, y, cell, cell, color)
+        for y in range(0, size, cell_h):
+            for x in range(0, size, cell_w):
+                color = c0 if ((x // cell_w) + (y // cell_h)) % 2 == 0 else c1
+                painter.fillRect(x, y, cell_w, cell_h, color)
         painter.end()
         return img
 
@@ -312,7 +339,11 @@ class MatrixRainGenerator:
     def __init__(self, size: int = TEXTURE_SIZE, cell: int = 12):
         self.size = int(size)
         self.base_cell = max(6, int(cell))
-        self.cell = int(self.base_cell)
+        self.cell_x = int(self.base_cell)
+        self.cell_y = int(self.base_cell)
+        self._density = 1
+        self._pack_x = 1
+        self._pack_y = 1
         self._image: Optional[QtGui.QImage] = None
         self._revision = 0
         self._last_frame_id: Optional[int] = None
@@ -322,13 +353,13 @@ class MatrixRainGenerator:
 
     def _init_columns(self) -> None:
         self._cols = []
-        count = max(6, int(self.size // self.cell))
+        count = max(6, int(self.size // max(1, self.cell_x)))
         for i in range(count):
             self._cols.append(self._new_column(i))
 
     def _new_column(self, idx: int) -> dict:
         return {
-            "x": idx * self.cell,
+            "x": idx * self.cell_x,
             "y": self._rng.uniform(-self.size, self.size),
             "speed": self._rng.uniform(6.0, 18.0),
             "trail": self._rng.randint(8, 16),
@@ -346,11 +377,11 @@ class MatrixRainGenerator:
         if dt <= 0.0:
             return False
         height = self.size
-        cell = self.cell
+        cell_y = self.cell_y
         for idx, col in enumerate(self._cols):
-            col["y"] = float(col.get("y", 0.0)) + float(col.get("speed", 10.0)) * cell * dt
+            col["y"] = float(col.get("y", 0.0)) + float(col.get("speed", 10.0)) * cell_y * dt
             trail = int(col.get("trail", 12))
-            if col["y"] - (trail * cell) > height + cell:
+            if col["y"] - (trail * cell_y) > height + cell_y:
                 self._cols[idx] = self._new_column(idx)
                 continue
             if self._rng.random() < 0.45:
@@ -373,12 +404,19 @@ class MatrixRainGenerator:
 
     def set_density(self, density: int) -> None:
         density = max(1, int(density))
-        new_cell = max(2, int(self.base_cell / density))
-        if new_cell == self.cell:
+        if density == self._density:
             return
-        self.cell = new_cell
-        self._init_columns()
-        self._mark_dirty()
+        self._density = density
+        self._recompute_cells()
+
+    def set_pack(self, pack_x: int, pack_y: int) -> None:
+        pack_x = max(1, int(pack_x))
+        pack_y = max(1, int(pack_y))
+        if pack_x == self._pack_x and pack_y == self._pack_y:
+            return
+        self._pack_x = pack_x
+        self._pack_y = pack_y
+        self._recompute_cells()
 
     def set_size(self, size: int) -> None:
         size = max(16, int(size))
@@ -388,13 +426,24 @@ class MatrixRainGenerator:
         self._init_columns()
         self._mark_dirty()
 
+    def _recompute_cells(self) -> None:
+        new_x = max(1, int(self.base_cell / max(1, self._density * self._pack_x)))
+        new_y = max(1, int(self.base_cell / max(1, self._density * self._pack_y)))
+        if new_x == self.cell_x and new_y == self.cell_y:
+            return
+        self.cell_x = new_x
+        self.cell_y = new_y
+        self._init_columns()
+        self._mark_dirty()
+
     def _mark_dirty(self) -> None:
         self._image = None
         self._revision += 1
 
     def _build_image(self) -> QtGui.QImage:
         size = max(16, int(self.size))
-        cell = max(6, int(self.cell))
+        cell_x = max(1, int(self.cell_x))
+        cell_y = max(1, int(self.cell_y))
         fmt = QtGui.QImage.Format_RGBA8888 if hasattr(QtGui.QImage, "Format_RGBA8888") else QtGui.QImage.Format_ARGB32
         img = QtGui.QImage(size, size, fmt)
         img.fill(QtGui.QColor("#050b07"))
@@ -402,7 +451,7 @@ class MatrixRainGenerator:
         painter.setRenderHint(QtGui.QPainter.TextAntialiasing, True)
         font = QtGui.QFont("Consolas")
         font.setStyleHint(QtGui.QFont.Monospace)
-        font.setPixelSize(int(cell * 0.9))
+        font.setPixelSize(int(min(cell_x, cell_y) * 0.9))
         painter.setFont(font)
 
         for col in self._cols:
@@ -411,8 +460,8 @@ class MatrixRainGenerator:
             trail = int(col.get("trail", 12))
             glyphs = col.get("glyphs") or []
             for t in range(trail):
-                y = head_y - t * cell
-                if y < -cell or y > size:
+                y = head_y - t * cell_y
+                if y < -cell_y or y > size:
                     continue
                 if t == 0:
                     color = QtGui.QColor("#bbf7d0")
@@ -426,13 +475,13 @@ class MatrixRainGenerator:
                 mirror = self._rng.random() < 0.22
                 if mirror:
                     painter.save()
-                    painter.translate(x + cell, y)
+                    painter.translate(x + cell_x, y)
                     painter.scale(-1.0, 1.0)
-                    rect = QtCore.QRectF(0, 0, cell, cell)
+                    rect = QtCore.QRectF(0, 0, cell_x, cell_y)
                     painter.drawText(rect, QtCore.Qt.AlignCenter, ch)
                     painter.restore()
                 else:
-                    rect = QtCore.QRectF(x, y, cell, cell)
+                    rect = QtCore.QRectF(x, y, cell_x, cell_y)
                     painter.drawText(rect, QtCore.Qt.AlignCenter, ch)
         painter.end()
         return img
@@ -442,6 +491,8 @@ class TextureProProvider:
     def __init__(self, size: int = TEXTURE_SIZE, density: int = 1):
         self._size = max(16, int(size))
         self._density = max(1, int(density))
+        self._pack_x = 1
+        self._pack_y = 1
         self._generators = {
             "checkerboard": CheckerboardGenerator(size=self._size),
             "matrix_rain": MatrixRainGenerator(size=self._size),
@@ -450,6 +501,7 @@ class TextureProProvider:
         self._revision = 0
         self._apply_size(self._size)
         self._apply_density(self._density)
+        self._apply_pack(self._pack_x, self._pack_y)
         self._last_gen_rev = self._generators[self._mode].revision
 
     def set_mode(self, mode: str) -> None:
@@ -483,6 +535,17 @@ class TextureProProvider:
         self._revision += 1
         self._last_gen_rev = self._generators[self._mode].revision
 
+    def set_pack(self, pack_x: int, pack_y: int) -> None:
+        pack_x = max(1, int(pack_x))
+        pack_y = max(1, int(pack_y))
+        if pack_x == self._pack_x and pack_y == self._pack_y:
+            return
+        self._pack_x = pack_x
+        self._pack_y = pack_y
+        self._apply_pack(pack_x, pack_y)
+        self._revision += 1
+        self._last_gen_rev = self._generators[self._mode].revision
+
     def advance(self, dt: float, frame_id: Optional[int] = None) -> bool:
         gen = self._generators[self._mode]
         changed = gen.advance(dt, frame_id)
@@ -511,6 +574,15 @@ class TextureProProvider:
             if callable(fn):
                 try:
                     fn(size)
+                except Exception:
+                    pass
+
+    def _apply_pack(self, pack_x: int, pack_y: int) -> None:
+        for gen in self._generators.values():
+            fn = getattr(gen, "set_pack", None)
+            if callable(fn):
+                try:
+                    fn(pack_x, pack_y)
                 except Exception:
                     pass
 
@@ -631,6 +703,52 @@ class TextureProWidget(QtWidgets.QWidget):
         settings_row.addWidget(self._res_combo, 0)
 
         right.addLayout(settings_row, 0)
+
+        pack_row = QtWidgets.QHBoxLayout()
+        pack_row.setContentsMargins(0, 0, 0, 0)
+        pack_row.setSpacing(6)
+
+        pack_row.addStretch(1)
+
+        pack_x_label = QtWidgets.QLabel("X")
+        pack_x_label.setStyleSheet("color:#94a3b8;font-size:10px;")
+        pack_row.addWidget(pack_x_label, 0)
+
+        self._pack_x = QtWidgets.QSpinBox()
+        self._pack_x.setRange(PACK_MIN, PACK_MAX)
+        self._pack_x.setSingleStep(1)
+        self._pack_x.setFixedWidth(48)
+        self._pack_x.setAlignment(QtCore.Qt.AlignRight)
+        self._pack_x.setToolTip("Horizontal packing")
+        self._pack_x.setStyleSheet(
+            "QSpinBox{background:#0f1216;color:#e6edf3;border:1px solid #3c4450;"
+            "border-radius:6px;padding:1px 4px;}"
+            "QSpinBox::up-button{width:10px;border:none;}"
+            "QSpinBox::down-button{width:10px;border:none;}"
+        )
+        self._pack_x.valueChanged.connect(self._on_pack_changed)
+        pack_row.addWidget(self._pack_x, 0)
+
+        pack_y_label = QtWidgets.QLabel("Y")
+        pack_y_label.setStyleSheet("color:#94a3b8;font-size:10px;")
+        pack_row.addWidget(pack_y_label, 0)
+
+        self._pack_y = QtWidgets.QSpinBox()
+        self._pack_y.setRange(PACK_MIN, PACK_MAX)
+        self._pack_y.setSingleStep(1)
+        self._pack_y.setFixedWidth(48)
+        self._pack_y.setAlignment(QtCore.Qt.AlignRight)
+        self._pack_y.setToolTip("Vertical packing")
+        self._pack_y.setStyleSheet(
+            "QSpinBox{background:#0f1216;color:#e6edf3;border:1px solid #3c4450;"
+            "border-radius:6px;padding:1px 4px;}"
+            "QSpinBox::up-button{width:10px;border:none;}"
+            "QSpinBox::down-button{width:10px;border:none;}"
+        )
+        self._pack_y.valueChanged.connect(self._on_pack_changed)
+        pack_row.addWidget(self._pack_y, 0)
+
+        right.addLayout(pack_row, 0)
         right.addStretch(1)
 
         self._view_btn = QtWidgets.QPushButton("View")
@@ -657,7 +775,7 @@ class TextureProWidget(QtWidgets.QWidget):
         QtCore.QTimer.singleShot(0, self._update_inputs)
 
     def sizeHint(self):
-        return QtCore.QSize(220, PREVIEW_SIZE + 12)
+        return QtCore.QSize(220, PREVIEW_SIZE + 30)
 
     def _is_selected(self) -> bool:
         sc = None
@@ -770,6 +888,41 @@ class TextureProWidget(QtWidgets.QWidget):
         value = int(self._tiling.value())
         self._apply_tiling(value, notify_scene=True)
 
+    def _set_pack_values(self, pack_x: int, pack_y: int) -> None:
+        pack_x = max(PACK_MIN, min(PACK_MAX, int(pack_x)))
+        pack_y = max(PACK_MIN, min(PACK_MAX, int(pack_y)))
+        try:
+            self._pack_x.blockSignals(True)
+            self._pack_x.setValue(pack_x)
+        finally:
+            self._pack_x.blockSignals(False)
+        try:
+            self._pack_y.blockSignals(True)
+            self._pack_y.setValue(pack_y)
+        finally:
+            self._pack_y.blockSignals(False)
+
+    def _apply_pack(self, pack_x: int, pack_y: int, notify_scene: bool = False) -> None:
+        pack_x = max(PACK_MIN, min(PACK_MAX, int(pack_x)))
+        pack_y = max(PACK_MIN, min(PACK_MAX, int(pack_y)))
+        try:
+            if hasattr(self._provider, "set_pack"):
+                self._provider.set_pack(pack_x, pack_y)
+        except Exception:
+            pass
+        self._set_param("pack_x", str(pack_x), notify_scene=notify_scene)
+        self._set_param("pack_y", str(pack_y), notify_scene=notify_scene)
+        self._set_pack_values(pack_x, pack_y)
+        try:
+            self._refresh_preview()
+        except Exception:
+            pass
+
+    def _on_pack_changed(self):
+        pack_x = int(self._pack_x.value())
+        pack_y = int(self._pack_y.value())
+        self._apply_pack(pack_x, pack_y, notify_scene=True)
+
     def _set_resolution_value(self, value: int) -> None:
         try:
             idx = self._res_combo.findData(int(value))
@@ -829,6 +982,20 @@ class TextureProWidget(QtWidgets.QWidget):
             tiling = 1
         tiling = max(TILING_MIN, min(TILING_MAX, int(tiling)))
         self._apply_tiling(tiling, notify_scene=False)
+
+        pack_x = 1
+        pack_y = 1
+        try:
+            pack_x = int(_param_value(self._node_item.model, "pack_x") or 1)
+        except Exception:
+            pack_x = 1
+        try:
+            pack_y = int(_param_value(self._node_item.model, "pack_y") or 1)
+        except Exception:
+            pack_y = 1
+        pack_x = max(PACK_MIN, min(PACK_MAX, int(pack_x)))
+        pack_y = max(PACK_MIN, min(PACK_MAX, int(pack_y)))
+        self._apply_pack(pack_x, pack_y, notify_scene=False)
 
         resolution = TEXTURE_SIZE
         try:

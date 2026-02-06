@@ -451,6 +451,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 params.append({"name": "pattern", "value": "checkerboard"})
             if "tiling" not in names:
                 params.append({"name": "tiling", "value": "1"})
+            if "pack_x" not in names:
+                params.append({"name": "pack_x", "value": "1"})
+            if "pack_y" not in names:
+                params.append({"name": "pack_y", "value": "1"})
             if "resolution" not in names:
                 params.append({"name": "resolution", "value": "256"})
             if "source" not in names:
@@ -469,7 +473,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 params.append(hidden_entry)
             raw = hidden_entry.get("value", "")
             hidden = {t.strip().lower() for t in str(raw).split(",") if t.strip()}
-            hidden.update({"pattern", "tiling", "resolution", "source", "path"})
+            hidden.update({"pattern", "tiling", "pack_x", "pack_y", "resolution", "source", "path"})
             hidden_entry["value"] = ",".join(sorted(hidden))
             self.model.params = params
         elif kind_lower == "note":
@@ -582,7 +586,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         elif kind == "texture":
             hidden.update({"texture", "source", "path"})
         elif kind == "texture_pro":
-            hidden.update({"pattern", "tiling", "resolution", "source", "path"})
+            hidden.update({"pattern", "tiling", "pack_x", "pack_y", "resolution", "source", "path"})
 
         return hidden
 
@@ -1107,7 +1111,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             body_h = 32
             node_w = self._BASE_W
         elif kind == "texture_pro":
-            body_h = 84
+            body_h = 104
             node_w = self._BASE_W
         else:
             body_h = 0
