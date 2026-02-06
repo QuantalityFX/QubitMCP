@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import random
 import time
+import math
 from pathlib import Path
 from typing import Optional
 
@@ -45,6 +46,11 @@ MATRIX_GLYPHS = (
     "0123456789"
 )
 
+GLYPH_ATLAS_COLS = 16
+GLYPH_ATLAS_CELL = 32
+_GLYPH_ATLAS = None
+_GLYPH_ATLAS_GRID = None
+
 
 def _param_value(model, name: str) -> str:
     key = (name or "").strip().lower()
@@ -78,6 +84,37 @@ def _ensure_param(node_item, name: str, default: str = "") -> None:
                 entry["value"] = default
             return
     params.append({"name": name, "value": default})
+
+
+def _build_glyph_atlas():
+    glyphs = list(MATRIX_GLYPHS)
+    cols = GLYPH_ATLAS_COLS
+    rows = max(1, int(math.ceil(len(glyphs) / float(cols))))
+    cell = GLYPH_ATLAS_CELL
+    fmt = QtGui.QImage.Format_RGBA8888 if hasattr(QtGui.QImage, "Format_RGBA8888") else QtGui.QImage.Format_ARGB32
+    img = QtGui.QImage(cols * cell, rows * cell, fmt)
+    img.fill(QtGui.QColor(0, 0, 0, 255))
+    painter = QtGui.QPainter(img)
+    painter.setRenderHint(QtGui.QPainter.TextAntialiasing, True)
+    font = QtGui.QFont("Consolas")
+    font.setStyleHint(QtGui.QFont.Monospace)
+    font.setPixelSize(int(cell * 0.78))
+    painter.setFont(font)
+    painter.setPen(QtGui.QColor("#f1f5f9"))
+    for idx, ch in enumerate(glyphs):
+        x = (idx % cols) * cell
+        y = (idx // cols) * cell
+        rect = QtCore.QRectF(x, y, cell, cell)
+        painter.drawText(rect, QtCore.Qt.AlignCenter, ch)
+    painter.end()
+    return img, (cols, rows)
+
+
+def _get_glyph_atlas():
+    global _GLYPH_ATLAS, _GLYPH_ATLAS_GRID
+    if _GLYPH_ATLAS is None or _GLYPH_ATLAS_GRID is None:
+        _GLYPH_ATLAS, _GLYPH_ATLAS_GRID = _build_glyph_atlas()
+    return _GLYPH_ATLAS, _GLYPH_ATLAS_GRID
 
 
 def build_ports(node_item) -> None:
@@ -493,6 +530,7 @@ class TextureProProvider:
         self._density = max(1, int(density))
         self._pack_x = 1
         self._pack_y = 1
+        self._gpu_seed = random.Random().randint(1, 1_000_000)
         self._generators = {
             "checkerboard": CheckerboardGenerator(size=self._size),
             "matrix_rain": MatrixRainGenerator(size=self._size),
@@ -558,6 +596,18 @@ class TextureProProvider:
 
     def image(self) -> QtGui.QImage:
         return self._generators[self._mode].image()
+
+    def gpu_state(self) -> dict:
+        atlas, grid = _get_glyph_atlas()
+        return {
+            "mode": self._mode,
+            "tiling": int(self._density),
+            "pack_x": int(self._pack_x),
+            "pack_y": int(self._pack_y),
+            "seed": float(self._gpu_seed),
+            "glyph_atlas": atlas,
+            "glyph_grid": grid,
+        }
 
     def _apply_density(self, density: int) -> None:
         for gen in self._generators.values():

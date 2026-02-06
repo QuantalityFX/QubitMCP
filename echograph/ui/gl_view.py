@@ -505,6 +505,12 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._mgl_proc_provider = None
         self._mgl_proc_label = ""
         self._mgl_proc_rev = -1
+        self._mgl_proc_gpu_enabled = False
+        self._mgl_proc_gpu_state = None
+        self._mgl_proc_time = 0.0
+        self._mgl_proc_glyph_tex = None
+        self._mgl_proc_glyph_grid = (1, 1)
+        self._mgl_proc_glyph_key = None
         self._mgl_scene_proc_textures_by_owner: Dict[str, Dict[str, object]] = {}
         self._mgl_frame_id = 0
         self._mgl_submeshes: List[Dict[str, object]] = []
@@ -1959,7 +1965,26 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._mgl_proc_provider = provider
         self._mgl_proc_label = (label or "procedural").strip() or "procedural"
         self._mgl_proc_rev = -1
+        self._mgl_proc_gpu_enabled = False
+        self._mgl_proc_gpu_state = None
         img = None
+        try:
+            gpu_state = getattr(provider, "gpu_state", None)
+            if callable(gpu_state):
+                gpu_state = gpu_state()
+            if isinstance(gpu_state, dict) and gpu_state:
+                self._mgl_proc_gpu_enabled = True
+                self._mgl_proc_gpu_state = gpu_state
+        except Exception:
+            self._mgl_proc_gpu_enabled = False
+            self._mgl_proc_gpu_state = None
+        if self._mgl_proc_gpu_enabled:
+            self._mgl_texture_override = False
+            self._mgl_texture_paths = []
+            self._mgl_uv_bg_path = ""
+            self._mgl_uv_cache = None
+            self.update()
+            return
         try:
             img = getattr(provider, "image", None)
             if callable(img):
@@ -2011,6 +2036,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._mgl_proc_provider = None
         self._mgl_proc_label = ""
         self._mgl_proc_rev = -1
+        self._mgl_proc_gpu_enabled = False
+        self._mgl_proc_gpu_state = None
 
     def _clear_scene_asset_state(self) -> None:
         if not self._use_moderngl:

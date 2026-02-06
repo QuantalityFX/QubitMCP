@@ -1177,6 +1177,25 @@ class MGLRendererMixin:
 
         except Exception:
             pass
+        proc_state = None
+        try:
+            owner = payload.get("owner")
+        except Exception:
+            owner = None
+        if owner:
+            try:
+                entry = getattr(self, "_mgl_scene_proc_textures_by_owner", {}).get(owner)
+            except Exception:
+                entry = None
+            if isinstance(entry, dict) and entry.get("gpu"):
+                proc_state = entry.get("gpu_state")
+        else:
+            try:
+                if bool(getattr(self, "_mgl_proc_gpu_enabled", False)):
+                    proc_state = getattr(self, "_mgl_proc_gpu_state", None)
+            except Exception:
+                proc_state = None
+        self._mgl_apply_procedural_uniforms(proc_state)
         manual_texture = self._mgl_texture if self._mgl_texture_override else None
         wire_overlay = bool(self._mgl_wireframe and not edge_wire and (submeshes or vao is not None))
         if wire_overlay:
@@ -1216,6 +1235,7 @@ class MGLRendererMixin:
                     pass
                 self._mgl_ctx.wireframe = True
                 try:
+                    self._mgl_apply_procedural_uniforms(None)
                     self._mgl_prog["UseTexture"].value = 0
                     self._mgl_prog["UseLighting"].value = 0
                     self._mgl_prog["Color"].value = self._mgl_wire_color
@@ -1259,6 +1279,7 @@ class MGLRendererMixin:
                     pass
                 self._mgl_ctx.wireframe = True
                 try:
+                    self._mgl_apply_procedural_uniforms(None)
                     self._mgl_prog["UseTexture"].value = 0
                     self._mgl_prog["UseLighting"].value = 0
                     self._mgl_prog["Color"].value = self._mgl_wire_color
@@ -1555,6 +1576,107 @@ class MGLRendererMixin:
         except Exception:
             return None
 
+    def _mgl_proc_state(self, provider: object) -> Optional[dict]:
+        if provider is None:
+            return None
+        try:
+            fn = getattr(provider, "gpu_state", None)
+            if callable(fn):
+                state = fn()
+                if isinstance(state, dict) and state:
+                    return state
+        except Exception:
+            return None
+        return None
+
+    def _mgl_ensure_proc_glyph(self, state: dict) -> Optional[object]:
+        if self._mgl_ctx is None or not isinstance(state, dict):
+            return None
+        atlas = state.get("glyph_atlas")
+        grid = state.get("glyph_grid") or (1, 1)
+        if atlas is None:
+            return None
+        key = id(atlas)
+        if key != getattr(self, "_mgl_proc_glyph_key", None) or getattr(self, "_mgl_proc_glyph_tex", None) is None:
+            try:
+                if isinstance(atlas, QtGui.QImage):
+                    qimg = atlas
+                else:
+                    qimg = self._mgl_qimage_from_texture(atlas)
+                if qimg is None or qimg.isNull():
+                    return None
+                if hasattr(QtGui.QImage, "Format_RGBA8888"):
+                    qimg = qimg.convertToFormat(QtGui.QImage.Format_RGBA8888)
+                else:
+                    qimg = qimg.convertToFormat(QtGui.QImage.Format_ARGB32)
+                qimg = qimg.mirrored(False, True)
+                tex = self._mgl_make_texture(qimg)
+            except Exception:
+                return None
+            try:
+                prev = getattr(self, "_mgl_proc_glyph_tex", None)
+                if prev is not None:
+                    prev.release()
+            except Exception:
+                pass
+            try:
+                self._mgl_proc_glyph_tex = tex
+                self._mgl_proc_glyph_grid = (int(grid[0]), int(grid[1]))
+                self._mgl_proc_glyph_key = key
+            except Exception:
+                pass
+        return getattr(self, "_mgl_proc_glyph_tex", None)
+
+    def _mgl_apply_procedural_uniforms(self, state: Optional[dict]) -> None:
+        if self._mgl_prog is None:
+            return
+        if not state:
+            try:
+                self._mgl_prog["UseProcedural"].value = 0
+            except Exception:
+                pass
+            return
+        try:
+            self._mgl_prog["UseProcedural"].value = 1
+        except Exception:
+            pass
+        mode = str(state.get("mode") or "").strip().lower()
+        proc_mode = 1 if mode == "matrix_rain" else 0
+        try:
+            self._mgl_prog["ProceduralMode"].value = int(proc_mode)
+        except Exception:
+            pass
+        try:
+            params = (
+                float(state.get("tiling", 1) or 1),
+                float(state.get("pack_x", 1) or 1),
+                float(state.get("pack_y", 1) or 1),
+                float(state.get("seed", 0.0) or 0.0),
+            )
+            self._mgl_prog["ProcParams"].value = params
+        except Exception:
+            pass
+        try:
+            self._mgl_prog["ProcTime"].value = float(getattr(self, "_mgl_proc_time", 0.0) or 0.0)
+        except Exception:
+            pass
+        if proc_mode == 1:
+            tex = self._mgl_ensure_proc_glyph(state)
+            if tex is not None:
+                try:
+                    tex.use(location=1)
+                except Exception:
+                    pass
+            try:
+                self._mgl_prog["ProcGlyph"].value = 1
+            except Exception:
+                pass
+            grid = state.get("glyph_grid") or getattr(self, "_mgl_proc_glyph_grid", (1, 1))
+            try:
+                self._mgl_prog["ProcGlyphGrid"].value = (float(grid[0]), float(grid[1]))
+            except Exception:
+                pass
+
     def _mgl_upload_texture(self, image: QtGui.QImage, source_path: str = "") -> None:
         if image.isNull():
             raise RuntimeError("Texture load failed")
@@ -1579,6 +1701,10 @@ class MGLRendererMixin:
     def _mgl_update_procedural_textures(self, step: float, frame_id: int) -> None:
         if self._mgl_ctx is None or step <= 0.0:
             return
+        try:
+            self._mgl_proc_time = float(getattr(self, "_mgl_proc_time", 0.0) or 0.0) + float(step)
+        except Exception:
+            self._mgl_proc_time = float(step)
 
         def _advance(provider) -> bool:
             if provider is None:
@@ -1598,24 +1724,33 @@ class MGLRendererMixin:
 
         provider = getattr(self, "_mgl_proc_provider", None)
         if provider is not None:
-            changed = _advance(provider)
-            rev = None
-            try:
-                rev = int(getattr(provider, "revision", 0))
-            except Exception:
+            gpu_state = self._mgl_proc_state(provider)
+            if gpu_state:
+                try:
+                    self._mgl_proc_gpu_enabled = True
+                    self._mgl_proc_gpu_state = gpu_state
+                except Exception:
+                    pass
+                self._mgl_ensure_proc_glyph(gpu_state)
+            else:
+                changed = _advance(provider)
                 rev = None
-            if changed or (rev is not None and rev != getattr(self, "_mgl_proc_rev", None)):
-                img = self._mgl_provider_image(provider)
-                if img is not None and not img.isNull():
-                    try:
-                        label = getattr(self, "_mgl_proc_label", "") or "procedural"
-                        self._mgl_upload_texture(img, label)
-                        self._mgl_texture_override = True
-                        self._mgl_texture_paths = [label]
-                        if rev is not None:
-                            self._mgl_proc_rev = rev
-                    except Exception:
-                        pass
+                try:
+                    rev = int(getattr(provider, "revision", 0))
+                except Exception:
+                    rev = None
+                if changed or (rev is not None and rev != getattr(self, "_mgl_proc_rev", None)):
+                    img = self._mgl_provider_image(provider)
+                    if img is not None and not img.isNull():
+                        try:
+                            label = getattr(self, "_mgl_proc_label", "") or "procedural"
+                            self._mgl_upload_texture(img, label)
+                            self._mgl_texture_override = True
+                            self._mgl_texture_paths = [label]
+                            if rev is not None:
+                                self._mgl_proc_rev = rev
+                        except Exception:
+                            pass
 
         proc_map = getattr(self, "_mgl_scene_proc_textures_by_owner", None)
         if not isinstance(proc_map, dict):
@@ -1624,6 +1759,14 @@ class MGLRendererMixin:
             provider = entry.get("provider")
             if provider is None:
                 continue
+            gpu_state = self._mgl_proc_state(provider)
+            if gpu_state:
+                entry["gpu_state"] = gpu_state
+                entry["gpu"] = True
+                self._mgl_ensure_proc_glyph(gpu_state)
+                continue
+            entry.pop("gpu", None)
+            entry.pop("gpu_state", None)
             changed = _advance(provider)
             rev = None
             try:
@@ -3193,6 +3336,12 @@ class MGLRendererMixin:
                 self._mgl_prog["UseTexture"].value = 0
                 self._mgl_prog["LightIntensity"].value = float(self._mgl_light_intensity)
                 self._mgl_prog["UseLighting"].value = 1
+                self._mgl_prog["UseProcedural"].value = 0
+                self._mgl_prog["ProceduralMode"].value = 0
+                self._mgl_prog["ProcParams"].value = (1.0, 1.0, 1.0, 0.0)
+                self._mgl_prog["ProcTime"].value = 0.0
+                self._mgl_prog["ProcGlyph"].value = 1
+                self._mgl_prog["ProcGlyphGrid"].value = (1.0, 1.0)
             except Exception:
                 pass
             self._mgl_grid_prog["Color"].value = (0.8, 0.8, 0.8, self._mgl_grid_alpha)
@@ -4201,27 +4350,41 @@ class MGLRendererMixin:
                 texture_override = None
                 proc_provider = asset.get("texture_provider")
                 if proc_provider is not None:
-                    qimg = self._mgl_provider_image(proc_provider)
-                    if qimg is not None and not qimg.isNull():
-                        if hasattr(QtGui.QImage, "Format_RGBA8888"):
-                            qimg = qimg.convertToFormat(QtGui.QImage.Format_RGBA8888)
-                        else:
-                            qimg = qimg.convertToFormat(QtGui.QImage.Format_ARGB32)
-                        qimg = qimg.mirrored(False, True)
+                    gpu_state = self._mgl_proc_state(proc_provider)
+                    if gpu_state:
                         try:
-                            texture_override = self._mgl_make_texture(qimg)
+                            self._mgl_scene_proc_textures_by_owner[owner] = {
+                                "provider": proc_provider,
+                                "texture": None,
+                                "rev": int(getattr(proc_provider, "revision", 0)),
+                                "subs": None,
+                                "gpu": True,
+                                "gpu_state": gpu_state,
+                            }
                         except Exception:
-                            texture_override = None
-                        if texture_override is not None:
+                            pass
+                    else:
+                        qimg = self._mgl_provider_image(proc_provider)
+                        if qimg is not None and not qimg.isNull():
+                            if hasattr(QtGui.QImage, "Format_RGBA8888"):
+                                qimg = qimg.convertToFormat(QtGui.QImage.Format_RGBA8888)
+                            else:
+                                qimg = qimg.convertToFormat(QtGui.QImage.Format_ARGB32)
+                            qimg = qimg.mirrored(False, True)
                             try:
-                                self._mgl_scene_proc_textures_by_owner[owner] = {
-                                    "provider": proc_provider,
-                                    "texture": texture_override,
-                                    "rev": int(getattr(proc_provider, "revision", 0)),
-                                    "subs": None,
-                                }
+                                texture_override = self._mgl_make_texture(qimg)
                             except Exception:
-                                pass
+                                texture_override = None
+                            if texture_override is not None:
+                                try:
+                                    self._mgl_scene_proc_textures_by_owner[owner] = {
+                                        "provider": proc_provider,
+                                        "texture": texture_override,
+                                        "rev": int(getattr(proc_provider, "revision", 0)),
+                                        "subs": None,
+                                    }
+                                except Exception:
+                                    pass
                 if texture_override is None:
                     texture_path = str(asset.get("texture", "") or "").strip()
                     if texture_path and not self._mgl_texture_override:
