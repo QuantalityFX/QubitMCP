@@ -69,12 +69,15 @@ def _primitive_path(node_item, node_name: str, shape: str) -> Path:
     return _primitive_dir(node_item) / f"{safe}_{shape_key}.obj"
 
 
-def _write_obj(path: Path, verts: list[tuple[float, float, float]], faces: list[tuple[int, int, int]]) -> None:
+def _write_obj(path: Path, verts: list[tuple[float, float, float]], faces: list[list[int]]) -> None:
     lines = ["# EchoGraph primitive"]
     for x, y, z in verts:
         lines.append(f"v {x:.6f} {y:.6f} {z:.6f}")
-    for a, b, c in faces:
-        lines.append(f"f {a + 1} {b + 1} {c + 1}")
+    for face in faces:
+        if not face or len(face) < 3:
+            continue
+        idxs = " ".join(str(i + 1) for i in face)
+        lines.append(f"f {idxs}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -91,12 +94,12 @@ def _cube(size: float = 1.0):
         (-s, s, s),
     ]
     faces = [
-        (0, 1, 2), (0, 2, 3),  # back
-        (4, 7, 6), (4, 6, 5),  # front
-        (0, 4, 5), (0, 5, 1),  # bottom
-        (3, 2, 6), (3, 6, 7),  # top
-        (1, 5, 6), (1, 6, 2),  # right
-        (0, 3, 7), (0, 7, 4),  # left
+        [0, 3, 2, 1],  # back (-Z)
+        [4, 5, 6, 7],  # front (+Z)
+        [0, 4, 5, 1],  # bottom (-Y)
+        [3, 2, 6, 7],  # top (+Y)
+        [1, 2, 6, 5],  # right (+X)
+        [0, 4, 7, 3],  # left (-X)
     ]
     return verts, faces
 
@@ -109,7 +112,7 @@ def _plane(size: float = 1.0):
         (s, 0.0, s),
         (-s, 0.0, s),
     ]
-    faces = [(0, 1, 2), (0, 2, 3)]
+    faces = [[0, 1, 2, 3]]
     return verts, faces
 
 
@@ -120,18 +123,16 @@ def _cone(radius: float = 0.5, height: float = 1.0, segments: int = 24):
     for i in range(segments):
         ang = 2.0 * math.pi * i / segments
         verts.append((radius * math.cos(ang), base_y, radius * math.sin(ang)))
-    base_center_idx = len(verts)
-    verts.append((0.0, base_y, 0.0))
 
     faces = []
     for i in range(segments):
         a = 1 + i
         b = 1 + ((i + 1) % segments)
-        faces.append((0, a, b))
-    for i in range(segments):
-        a = 1 + i
-        b = 1 + ((i + 1) % segments)
-        faces.append((base_center_idx, b, a))
+        faces.append([0, a, b])
+
+    # base polygon (reverse order for outward -Y normal)
+    base_face = [1 + ((segments - 1 - i) % segments) for i in range(segments)]
+    faces.append(base_face)
     return verts, faces
 
 
@@ -149,10 +150,6 @@ def _tube(radius: float = 0.5, height: float = 1.0, segments: int = 24):
         x = radius * math.cos(ang)
         z = radius * math.sin(ang)
         verts.append((x, bot_y, z))
-    top_center_idx = len(verts)
-    verts.append((0.0, top_y, 0.0))
-    bot_center_idx = len(verts)
-    verts.append((0.0, bot_y, 0.0))
 
     faces = []
     for i in range(segments):
@@ -160,16 +157,13 @@ def _tube(radius: float = 0.5, height: float = 1.0, segments: int = 24):
         b = (i + 1) % segments
         c = segments + (i + 1) % segments
         d = segments + i
-        faces.append((a, d, c))
-        faces.append((a, c, b))
-    for i in range(segments):
-        a = i
-        b = (i + 1) % segments
-        faces.append((top_center_idx, a, b))
-    for i in range(segments):
-        a = segments + i
-        b = segments + (i + 1) % segments
-        faces.append((bot_center_idx, b, a))
+        faces.append([a, b, c, d])
+
+    # caps as polygons (no triangulation)
+    top_face = [i for i in range(segments)]
+    bot_face = [segments + (segments - 1 - i) for i in range(segments)]
+    faces.append(top_face)
+    faces.append(bot_face)
     return verts, faces
 
 
@@ -184,12 +178,12 @@ def _sphere(radius: float = 0.5, segments: int = 24, rings: int = 12):
             verts.append((r * math.cos(phi), y, r * math.sin(phi)))
     verts.append((0.0, -radius, 0.0))  # bottom
 
-    faces = []
+    faces: list[list[int]] = []
     for j in range(segments):
         a = 0
         b = 1 + j
         c = 1 + (j + 1) % segments
-        faces.append((a, b, c))
+        faces.append([a, b, c])
 
     for i in range(1, rings - 1):
         ring_start = 1 + (i - 1) * segments
@@ -199,15 +193,14 @@ def _sphere(radius: float = 0.5, segments: int = 24, rings: int = 12):
             b = ring_start + (j + 1) % segments
             c = next_start + (j + 1) % segments
             d = next_start + j
-            faces.append((a, b, c))
-            faces.append((a, c, d))
+            faces.append([a, b, c, d])
 
     bottom = len(verts) - 1
     last_ring = 1 + (rings - 2) * segments
     for j in range(segments):
         a = last_ring + j
         b = last_ring + (j + 1) % segments
-        faces.append((a, b, bottom))
+        faces.append([a, b, bottom])
 
     return verts, faces
 
@@ -227,15 +220,14 @@ def _torus(major: float = 0.6, minor: float = 0.25, segments: int = 24, tube: in
             z = (major + minor * cp) * st
             verts.append((x, y, z))
 
-    faces = []
+    faces: list[list[int]] = []
     for i in range(segments):
         for j in range(tube):
             a = i * tube + j
             b = ((i + 1) % segments) * tube + j
             c = ((i + 1) % segments) * tube + (j + 1) % tube
             d = i * tube + (j + 1) % tube
-            faces.append((a, b, c))
-            faces.append((a, c, d))
+            faces.append([a, b, c, d])
     return verts, faces
 
 
@@ -353,9 +345,8 @@ class PrimitiveWidget(QtWidgets.QWidget):
 
         path = _primitive_path(self._node_item, getattr(self._node_item.model, "name", "primitive"), shape)
         try:
-            if not path.exists():
-                verts, faces = _build_primitive_mesh(shape)
-                _write_obj(path, verts, faces)
+            verts, faces = _build_primitive_mesh(shape)
+            _write_obj(path, verts, faces)
         except Exception:
             pass
 
