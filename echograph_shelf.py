@@ -1743,6 +1743,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
                         pass
                     self._cancel_temp_wire()
                 # If no valid target, keep the temp wire attached to cursor.
+                super().mouseReleaseEvent(e)
                 e.accept()
                 return
         super().mouseReleaseEvent(e)
