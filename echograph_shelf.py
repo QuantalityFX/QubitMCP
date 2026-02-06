@@ -2949,16 +2949,18 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             visible = True if raw_visible is None else bool(raw_visible)
             if node_name:
                 visibility_map[node_name] = visible
-            clean.append(
-                {
-                    "path": path,
-                    "texture": entry.get("texture") or None,
-                    "node": node_name,
-                    "ext": entry.get("ext"),
-                    "visible": visible,
-                    "xform": entry.get("xform"),
-                }
-            )
+            clean_entry = {
+                "path": path,
+                "texture": entry.get("texture") or None,
+                "node": node_name,
+                "ext": entry.get("ext"),
+                "visible": visible,
+                "xform": entry.get("xform"),
+            }
+            tex_provider = entry.get("texture_provider")
+            if tex_provider is not None:
+                clean_entry["texture_provider"] = tex_provider
+            clean.append(clean_entry)
 
         if not clean:
             print("[open_scene_assets] no valid asset paths", flush=True)

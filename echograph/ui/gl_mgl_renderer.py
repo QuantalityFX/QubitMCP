@@ -1529,6 +1529,32 @@ class MGLRendererMixin:
             return qimg.copy()
         return None
 
+    def _mgl_provider_image(self, provider: object) -> Optional[QtGui.QImage]:
+        if provider is None:
+            return None
+        img = None
+        try:
+            img = getattr(provider, "image", None)
+            if callable(img):
+                img = img()
+        except Exception:
+            img = None
+        if img is None:
+            try:
+                getter = getattr(provider, "get_image", None)
+                if callable(getter):
+                    img = getter()
+            except Exception:
+                img = None
+        if img is None:
+            return None
+        if isinstance(img, QtGui.QImage):
+            return img
+        try:
+            return self._mgl_qimage_from_texture(img)
+        except Exception:
+            return None
+
     def _mgl_upload_texture(self, image: QtGui.QImage, source_path: str = "") -> None:
         if image.isNull():
             raise RuntimeError("Texture load failed")
@@ -1547,6 +1573,109 @@ class MGLRendererMixin:
         if self._mgl_prog is not None:
             try:
                 self._mgl_prog["UseTexture"].value = 1
+            except Exception:
+                pass
+
+    def _mgl_update_procedural_textures(self, step: float, frame_id: int) -> None:
+        if self._mgl_ctx is None or step <= 0.0:
+            return
+
+        def _advance(provider) -> bool:
+            if provider is None:
+                return False
+            fn = getattr(provider, "advance", None)
+            if callable(fn):
+                try:
+                    return bool(fn(step, frame_id))
+                except TypeError:
+                    try:
+                        return bool(fn(step))
+                    except Exception:
+                        return False
+                except Exception:
+                    return False
+            return False
+
+        provider = getattr(self, "_mgl_proc_provider", None)
+        if provider is not None:
+            changed = _advance(provider)
+            rev = None
+            try:
+                rev = int(getattr(provider, "revision", 0))
+            except Exception:
+                rev = None
+            if changed or (rev is not None and rev != getattr(self, "_mgl_proc_rev", None)):
+                img = self._mgl_provider_image(provider)
+                if img is not None and not img.isNull():
+                    try:
+                        label = getattr(self, "_mgl_proc_label", "") or "procedural"
+                        self._mgl_upload_texture(img, label)
+                        self._mgl_texture_override = True
+                        self._mgl_texture_paths = [label]
+                        if rev is not None:
+                            self._mgl_proc_rev = rev
+                    except Exception:
+                        pass
+
+        proc_map = getattr(self, "_mgl_scene_proc_textures_by_owner", None)
+        if not isinstance(proc_map, dict):
+            return
+        for entry in proc_map.values():
+            provider = entry.get("provider")
+            if provider is None:
+                continue
+            changed = _advance(provider)
+            rev = None
+            try:
+                rev = int(getattr(provider, "revision", 0))
+            except Exception:
+                rev = None
+            if not changed and (rev is None or rev == entry.get("rev")):
+                continue
+            img = self._mgl_provider_image(provider)
+            if img is None or img.isNull():
+                continue
+            if hasattr(QtGui.QImage, "Format_RGBA8888"):
+                img = img.convertToFormat(QtGui.QImage.Format_RGBA8888)
+            else:
+                img = img.convertToFormat(QtGui.QImage.Format_ARGB32)
+            img = img.mirrored(False, True)
+            try:
+                ptr = img.bits()
+                ptr.setsize(img.sizeInBytes())
+                data = bytes(ptr)
+            except Exception:
+                data = img.bits().tobytes()
+            tex = entry.get("texture")
+            w = int(img.width())
+            h = int(img.height())
+            try:
+                if tex is None or getattr(tex, "size", None) != (w, h):
+                    if tex is not None:
+                        try:
+                            tex.release()
+                        except Exception:
+                            pass
+                    tex = self._mgl_ctx.texture((w, h), 4, data)
+                    tex.build_mipmaps()
+                    tex.filter = (moderngl.LINEAR_MIPMAP_LINEAR, moderngl.LINEAR)
+                    tex.repeat_x = True
+                    tex.repeat_y = True
+                    entry["texture"] = tex
+                    subs = entry.get("subs") or []
+                    for sub in subs:
+                        try:
+                            sub["texture"] = tex
+                        except Exception:
+                            pass
+                else:
+                    tex.write(data)
+                    try:
+                        tex.build_mipmaps()
+                    except Exception:
+                        pass
+                if rev is not None:
+                    entry["rev"] = rev
             except Exception:
                 pass
 
@@ -1624,6 +1753,14 @@ class MGLRendererMixin:
             else:
                 self._fps_ema = self._fps_ema * 0.9 + dt * 0.1
             self._fps = 1.0 / max(self._fps_ema, 1e-6)
+
+        frame_id = int(getattr(self, "_mgl_frame_id", 0) or 0) + 1
+        self._mgl_frame_id = frame_id
+        step = 1.0 / max(self._fps, 1.0)
+        try:
+            self._mgl_update_procedural_textures(step, frame_id)
+        except Exception:
+            pass
 
         dbg = bool(getattr(self, "_mgl_debug", False))
         self._dbgprint(dbg, "[MGL] ENTER _paint_mgl", flush=True)
@@ -3938,6 +4075,10 @@ class MGLRendererMixin:
         self._mgl_set_uv_overlay(None)
         self._mgl_scene_uvs_by_owner = {}
         self._mgl_scene_tex_by_owner = {}
+        self._mgl_scene_proc_textures_by_owner = {}
+        self._mgl_proc_provider = None
+        self._mgl_proc_label = ""
+        self._mgl_proc_rev = -1
         # prevent texture leaking from previous "Texture..." or textured Import views
         self._mgl_texture_override = False
         self._mgl_texture = None
@@ -4058,28 +4199,52 @@ class MGLRendererMixin:
                     continue
 
                 texture_override = None
-                texture_path = str(asset.get("texture", "") or "").strip()
-                if texture_path and not self._mgl_texture_override:
-                    try:
-                        tex_path = Path(texture_path)
-                    except Exception:
-                        tex_path = None
-                    if tex_path is not None and tex_path.exists():
+                proc_provider = asset.get("texture_provider")
+                if proc_provider is not None:
+                    qimg = self._mgl_provider_image(proc_provider)
+                    if qimg is not None and not qimg.isNull():
+                        if hasattr(QtGui.QImage, "Format_RGBA8888"):
+                            qimg = qimg.convertToFormat(QtGui.QImage.Format_RGBA8888)
+                        else:
+                            qimg = qimg.convertToFormat(QtGui.QImage.Format_ARGB32)
+                        qimg = qimg.mirrored(False, True)
                         try:
-                            self._mgl_scene_tex_by_owner[owner] = str(tex_path)
+                            texture_override = self._mgl_make_texture(qimg)
                         except Exception:
-                            pass
-                        qimg = QtGui.QImage(str(tex_path))
-                        if not qimg.isNull():
-                            if hasattr(QtGui.QImage, "Format_RGBA8888"):
-                                qimg = qimg.convertToFormat(QtGui.QImage.Format_RGBA8888)
-                            else:
-                                qimg = qimg.convertToFormat(QtGui.QImage.Format_ARGB32)
-                            qimg = qimg.mirrored(False, True)
+                            texture_override = None
+                        if texture_override is not None:
                             try:
-                                texture_override = self._mgl_make_texture(qimg)
+                                self._mgl_scene_proc_textures_by_owner[owner] = {
+                                    "provider": proc_provider,
+                                    "texture": texture_override,
+                                    "rev": int(getattr(proc_provider, "revision", 0)),
+                                    "subs": None,
+                                }
                             except Exception:
-                                texture_override = None
+                                pass
+                if texture_override is None:
+                    texture_path = str(asset.get("texture", "") or "").strip()
+                    if texture_path and not self._mgl_texture_override:
+                        try:
+                            tex_path = Path(texture_path)
+                        except Exception:
+                            tex_path = None
+                        if tex_path is not None and tex_path.exists():
+                            try:
+                                self._mgl_scene_tex_by_owner[owner] = str(tex_path)
+                            except Exception:
+                                pass
+                            qimg = QtGui.QImage(str(tex_path))
+                            if not qimg.isNull():
+                                if hasattr(QtGui.QImage, "Format_RGBA8888"):
+                                    qimg = qimg.convertToFormat(QtGui.QImage.Format_RGBA8888)
+                                else:
+                                    qimg = qimg.convertToFormat(QtGui.QImage.Format_ARGB32)
+                                qimg = qimg.mirrored(False, True)
+                                try:
+                                    texture_override = self._mgl_make_texture(qimg)
+                                except Exception:
+                                    texture_override = None
 
                 mesh = None
                 mesh_arrays = None
@@ -4183,6 +4348,13 @@ class MGLRendererMixin:
                         if texture_override is not None:
                             for sub in entries:
                                 sub["texture"] = texture_override
+                        proc_entry = None
+                        try:
+                            proc_entry = self._mgl_scene_proc_textures_by_owner.get(owner)
+                        except Exception:
+                            proc_entry = None
+                        if proc_entry is not None:
+                            proc_entry["subs"] = entries
                         resources = []
                         seen = set()
                         for sub in entries:
@@ -4258,6 +4430,13 @@ class MGLRendererMixin:
                         ]
                         if texture_override is not None:
                             resources.append(texture_override)
+                        proc_entry = None
+                        try:
+                            proc_entry = self._mgl_scene_proc_textures_by_owner.get(owner)
+                        except Exception:
+                            proc_entry = None
+                        if proc_entry is not None:
+                            proc_entry["subs"] = [entry]
                         model_item = MGLSceneItem(
                             name=path.name,
                             draw_fn=MGLRendererMixin._mgl_draw_scene_mesh,

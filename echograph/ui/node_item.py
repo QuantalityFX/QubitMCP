@@ -290,6 +290,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     _texture.register()
             except Exception:
                 pass
+        # Ensure Texture Pro spec is registered even if the loader was skipped.
+        if (self.model.kind or "").strip().lower() == "texture_pro":
+            try:
+                from nodes import texture_pro as _texture_pro  # type: ignore
+                if hasattr(_texture_pro, "register"):
+                    _texture_pro.register()
+            except Exception:
+                pass
 
         self.setFlag(QtWidgets.QGraphicsItem.ItemIsMovable, True)
         self.setFlag(QtWidgets.QGraphicsItem.ItemSendsGeometryChanges, True)
@@ -436,6 +444,30 @@ class NodeItem(QtWidgets.QGraphicsObject):
             hidden.update({"texture", "source", "path"})
             hidden_entry["value"] = ",".join(sorted(hidden))
             self.model.params = params
+        elif kind_lower == "texture_pro":
+            params = list(self.model.params or [])
+            names = {(p.get("name") or "").strip().lower() for p in params}
+            if "pattern" not in names:
+                params.append({"name": "pattern", "value": "checkerboard"})
+            if "source" not in names:
+                params.append({"name": "source", "value": ""})
+            if "path" not in names:
+                params.append({"name": "path", "value": ""})
+            # Hide internal params on the node surface.
+            store_key = "__ui_hidden_params"
+            hidden_entry = None
+            for p in params:
+                if (p.get("name") or "").strip().lower() == store_key:
+                    hidden_entry = p
+                    break
+            if hidden_entry is None:
+                hidden_entry = {"name": store_key, "value": ""}
+                params.append(hidden_entry)
+            raw = hidden_entry.get("value", "")
+            hidden = {t.strip().lower() for t in str(raw).split(",") if t.strip()}
+            hidden.update({"pattern", "source", "path"})
+            hidden_entry["value"] = ",".join(sorted(hidden))
+            self.model.params = params
         elif kind_lower == "note":
             # Ensure notes always start with at least one parameter for convenience
             if not (self.model.params or []):
@@ -545,6 +577,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
             hidden.update({"source", "path"})
         elif kind == "texture":
             hidden.update({"texture", "source", "path"})
+        elif kind == "texture_pro":
+            hidden.update({"pattern", "source", "path"})
 
         return hidden
 
@@ -1067,6 +1101,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
             node_w = self._BASE_W
         elif kind == "texture":
             body_h = 32
+            node_w = self._BASE_W
+        elif kind == "texture_pro":
+            body_h = 84
             node_w = self._BASE_W
         else:
             body_h = 0
@@ -2185,8 +2222,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 continue
             seen.add(path)
             texture = ""
+            texture_provider = None
             kind = (getattr(model, "kind", "") or "").strip().lower()
-            if kind == "texture":
+            if kind == "texture_pro":
+                try:
+                    texture_provider = getattr(model, "_texture_pro_provider", None)
+                except Exception:
+                    texture_provider = None
+            if kind in ("texture", "texture_pro"):
                 for p in (model.params or []):
                     if (p.get("name") or "").strip().lower() == "texture":
                         texture = (p.get("value") or "").strip()
@@ -2208,16 +2251,17 @@ class NodeItem(QtWidgets.QGraphicsObject):
                             break
             except Exception:
                 xf = None
-            assets.append(
-                {
-                    "path": path,
-                    "texture": texture,
-                    "ext": ext,
-                    "node": model_name,
-                    "visible": model_name not in hidden,
-                    "xform": xf if isinstance(xf, dict) else None,
-                }
-            )
+            asset = {
+                "path": path,
+                "texture": texture,
+                "ext": ext,
+                "node": model_name,
+                "visible": model_name not in hidden,
+                "xform": xf if isinstance(xf, dict) else None,
+            }
+            if texture_provider is not None:
+                asset["texture_provider"] = texture_provider
+            assets.append(asset)
         return assets
 
     def _open_scene_assets(self) -> None:

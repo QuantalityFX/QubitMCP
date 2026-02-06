@@ -502,6 +502,11 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._mgl_texture_path = ""
         self._mgl_texture_paths: List[str] = []
         self._mgl_texture_override = False
+        self._mgl_proc_provider = None
+        self._mgl_proc_label = ""
+        self._mgl_proc_rev = -1
+        self._mgl_scene_proc_textures_by_owner: Dict[str, Dict[str, object]] = {}
+        self._mgl_frame_id = 0
         self._mgl_submeshes: List[Dict[str, object]] = []
         self._mgl_error = ""
         self._mgl_wireframe = False
@@ -1875,6 +1880,11 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 self._clear_scene_asset_state()
             except Exception:
                 pass
+            try:
+                if hasattr(self, "clear_procedural_texture_provider"):
+                    self.clear_procedural_texture_provider()
+            except Exception:
+                pass
 
             # Keep scale fixed to 1.0 for model preview loads.
             try:
@@ -1939,6 +1949,68 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
         #QtCore.QTimer.singleShot(0, self._apply_manual_model)
         #QtCore.QTimer.singleShot(0, lambda: self.gl_view.debug_points())
+
+    def set_procedural_texture_provider(self, provider, label: str = "Procedural") -> None:
+        if not self._use_moderngl:
+            return
+        if provider is None:
+            self.clear_procedural_texture_provider()
+            return
+        self._mgl_proc_provider = provider
+        self._mgl_proc_label = (label or "procedural").strip() or "procedural"
+        self._mgl_proc_rev = -1
+        img = None
+        try:
+            img = getattr(provider, "image", None)
+            if callable(img):
+                img = img()
+        except Exception:
+            img = None
+        if img is None:
+            try:
+                getter = getattr(provider, "get_image", None)
+                if callable(getter):
+                    img = getter()
+            except Exception:
+                img = None
+        if img is not None and not isinstance(img, QtGui.QImage):
+            try:
+                img = self._mgl_qimage_from_texture(img)
+            except Exception:
+                img = None
+        if img is not None and not img.isNull():
+            try:
+                self.makeCurrent()
+                self._mgl_upload_texture(img, self._mgl_proc_label)
+                self._mgl_texture_override = True
+                self._mgl_texture_paths = [self._mgl_proc_label]
+                self._mgl_uv_bg_path = ""
+                self._mgl_uv_cache = None
+            except Exception:
+                pass
+            finally:
+                try:
+                    self.doneCurrent()
+                except Exception:
+                    pass
+        self.update()
+
+    def clear_procedural_texture_provider(self) -> None:
+        try:
+            if getattr(self, "_mgl_texture", None) is not None:
+                try:
+                    self._mgl_texture.release()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        self._mgl_texture = None
+        self._mgl_texture_path = ""
+        self._mgl_texture_paths = []
+        self._mgl_texture_override = False
+        self._mgl_proc_provider = None
+        self._mgl_proc_label = ""
+        self._mgl_proc_rev = -1
 
     def _clear_scene_asset_state(self) -> None:
         if not self._use_moderngl:
@@ -2016,6 +2088,11 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     )
                 except Exception:
                     pass
+            except Exception:
+                pass
+            try:
+                if hasattr(self, "clear_procedural_texture_provider"):
+                    self.clear_procedural_texture_provider()
             except Exception:
                 pass
             # Seed xforms from saved workflow data (if present on assets)

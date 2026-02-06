@@ -102,7 +102,13 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             continue
         seen.add(key)
         kind = (getattr(model, "kind", "") or "").strip().lower()
-        if kind == "texture":
+        texture_provider = None
+        if kind == "texture_pro":
+            try:
+                texture_provider = getattr(model, "_texture_pro_provider", None)
+            except Exception:
+                texture_provider = None
+        if kind in ("texture", "texture_pro"):
             texture = _param_value(model, "texture")
         else:
             texture = _param_value(model, "texture") if ext == ".obj" else ""
@@ -120,16 +126,17 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                         break
         except Exception:
             xf = None
-        assets.append(
-            {
-                "path": path,
-                "texture": texture,
-                "node": node_name,
-                "ext": ext,
-                "visible": node_name not in hidden,
-                "xform": xf if isinstance(xf, dict) else None,
-            }
-        )
+        entry = {
+            "path": path,
+            "texture": texture,
+            "node": node_name,
+            "ext": ext,
+            "visible": node_name not in hidden,
+            "xform": xf if isinstance(xf, dict) else None,
+        }
+        if texture_provider is not None:
+            entry["texture_provider"] = texture_provider
+        assets.append(entry)
     return assets
 
 
@@ -225,7 +232,7 @@ class SceneAssemblyWidget(QtWidgets.QWidget):
             QtWidgets.QMessageBox.information(
                 self,
                 "Scene",
-                "Connect one or more 3D import, primitive, UV unwrap, or texture nodes first.",
+                "Connect one or more 3D import, primitive, UV unwrap, texture, or texture pro nodes first.",
             )
             return
         # Ensure splats start visible on open (avoid auto-hidden splats)
@@ -922,7 +929,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 if model is None:
                     continue
                 kind = (getattr(model, "kind", "") or "").strip().lower()
-                if kind not in ("import", "primitive", "uv_unwrap", "texture"):
+                if kind not in ("import", "primitive", "uv_unwrap", "texture", "texture_pro"):
                     continue
                 path = _param_value(model, "path")
                 if not path:
@@ -937,7 +944,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 rows.append({"name": name, "path": path})
 
             if not rows:
-                empty = QtWidgets.QListWidgetItem("(no connected imports, primitives, UV unwraps, or textures)")
+                empty = QtWidgets.QListWidgetItem("(no connected imports, primitives, UV unwraps, textures, or texture pros)")
                 empty.setFlags(QtCore.Qt.NoItemFlags)
                 outliner.addItem(empty)
                 try:

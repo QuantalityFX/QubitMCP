@@ -142,6 +142,17 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Texture plugin import failed:", e)
 
+    # 8.8) Texture Pro
+    try:
+        from nodes import texture_pro
+        if hasattr(texture_pro, "register"):
+            texture_pro.register()
+            _safe_probe("texture_pro")
+        else:
+            print("[EchoGraph] Texture Pro module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Texture Pro plugin import failed:", e)
+
     # 9) GPT Prompt
     try:
         from nodes import gpt_prompt
