@@ -2098,6 +2098,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         key = str(owner or "").strip()
         renderer = getattr(self, "_mgl_renderer", None) or self
         uvs = None
+        uvs_map = None
         try:
             uvs_map = getattr(renderer, "_mgl_scene_uvs_by_owner", None)
             if isinstance(uvs_map, dict) and key:
@@ -2110,6 +2111,72 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                             break
         except Exception:
             uvs = None
+        if uvs is None and key:
+            try:
+                scene = getattr(renderer, "_mgl_scene", None)
+                path = None
+                if scene is not None:
+                    for item in scene.items():
+                        payload = getattr(item, "payload", {}) or {}
+                        owner_key = payload.get("owner") or payload.get("node")
+                        if owner_key and str(owner_key).strip().lower() == key.lower():
+                            path = payload.get("path")
+                            if path:
+                                break
+                if path:
+                    p = Path(str(path))
+                    if p.exists():
+                        ext = p.suffix.lower()
+                        try:
+                            from echograph.ui.gl_loaders import (
+                                load_obj_mesh_arrays,
+                                load_gltf_mesh_arrays,
+                                load_fbx_mesh_arrays_pyassimp,
+                            )
+                            import numpy as _np
+                        except Exception:
+                            load_obj_mesh_arrays = None
+                            load_gltf_mesh_arrays = None
+                            load_fbx_mesh_arrays_pyassimp = None
+                            _np = None
+
+                        if ext == ".obj" and load_obj_mesh_arrays is not None:
+                            try:
+                                _pts, _nrm, uvs = load_obj_mesh_arrays(p)
+                            except Exception:
+                                uvs = None
+                        elif ext in (".gltf", ".glb") and load_gltf_mesh_arrays is not None:
+                            try:
+                                mesh_arrays = load_gltf_mesh_arrays(p)
+                                if mesh_arrays is not None and mesh_arrays.submeshes:
+                                    if _np is not None:
+                                        uvs = _np.concatenate([s.uvs for s in mesh_arrays.submeshes], axis=0)
+                                elif mesh_arrays is not None:
+                                    uvs = mesh_arrays.uvs
+                            except Exception:
+                                uvs = None
+                        elif ext == ".fbx" and load_fbx_mesh_arrays_pyassimp is not None:
+                            try:
+                                mesh_arrays = load_fbx_mesh_arrays_pyassimp(p)
+                                if mesh_arrays is not None and mesh_arrays.submeshes:
+                                    if _np is not None:
+                                        uvs = _np.concatenate([s.uvs for s in mesh_arrays.submeshes], axis=0)
+                                elif mesh_arrays is not None:
+                                    uvs = mesh_arrays.uvs
+                            except Exception:
+                                uvs = None
+
+                        if uvs is not None:
+                            try:
+                                if not isinstance(uvs_map, dict):
+                                    uvs_map = {}
+                                    renderer._mgl_scene_uvs_by_owner = uvs_map
+                                uvs_map[key] = uvs.astype("f4").reshape(-1, 2)
+                                uvs = uvs_map[key]
+                            except Exception:
+                                pass
+            except Exception:
+                pass
         try:
             renderer._mgl_set_uv_overlay(uvs)
         except Exception:
