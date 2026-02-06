@@ -2270,10 +2270,23 @@ class NodeItem(QtWidgets.QGraphicsObject):
             kind = (getattr(model, "kind", "") or "").strip().lower()
             owner_model = model
             if kind in ("texture", "texture_pro"):
+                upstream_item, upstream_kind, upstream_path = _resolve_input_item(src_item)
+                if upstream_item is not None and getattr(upstream_item, "model", None) is not None:
+                    if upstream_kind == "uv_unwrap":
+                        if upstream_path:
+                            path = upstream_path
+                        upstream2_item, _up2_kind, _up2_path = _resolve_input_item(upstream_item)
+                        if upstream2_item is not None and getattr(upstream2_item, "model", None) is not None:
+                            owner_model = getattr(upstream2_item, "model", owner_model)
+                    else:
+                        owner_model = getattr(upstream_item, "model", owner_model)
+                        if upstream_path:
+                            path = upstream_path
+            elif kind == "uv_unwrap":
                 upstream_item, _up_kind, upstream_path = _resolve_input_item(src_item)
                 if upstream_item is not None and getattr(upstream_item, "model", None) is not None:
                     owner_model = getattr(upstream_item, "model", owner_model)
-                    if upstream_path:
+                    if not path and upstream_path:
                         path = upstream_path
 
             model_name = (getattr(owner_model, "name", "") or "").strip()

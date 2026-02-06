@@ -233,6 +233,8 @@ def _torus(major: float = 0.6, minor: float = 0.25, segments: int = 24, tube: in
 
 def _build_primitive_mesh(shape: str):
     key = (shape or "").strip().lower()
+    if key == "sphere":
+        return _sphere()
     if key == "plane":
         return _plane()
     if key == "cube":
@@ -397,6 +399,6 @@ def render_node_body(node_item, y_cursor: int) -> int:
 
 
 PRIMITIVE_SPEC = Spec(
-    stripe_color="#f97316",
+    stripe_color="#14b8a6",
     render_node_body=render_node_body,
 )

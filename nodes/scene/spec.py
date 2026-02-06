@@ -151,9 +151,24 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
         if kind in ("texture", "texture_pro"):
             upstream_item, upstream_kind, upstream_path = _resolve_input_item(scene, src_item)
             if upstream_item is not None and getattr(upstream_item, "model", None) is not None:
+                if upstream_kind == "uv_unwrap":
+                    if upstream_path:
+                        path = upstream_path
+                    upstream2_item, upstream2_kind, _ = _resolve_input_item(scene, upstream_item)
+                    if upstream2_item is not None and getattr(upstream2_item, "model", None) is not None:
+                        owner_model = getattr(upstream2_item, "model", owner_model)
+                        owner_kind = upstream2_kind or owner_kind
+                else:
+                    owner_model = getattr(upstream_item, "model", owner_model)
+                    owner_kind = upstream_kind or owner_kind
+                    if upstream_path:
+                        path = upstream_path
+        elif kind == "uv_unwrap":
+            upstream_item, upstream_kind, upstream_path = _resolve_input_item(scene, src_item)
+            if upstream_item is not None and getattr(upstream_item, "model", None) is not None:
                 owner_model = getattr(upstream_item, "model", owner_model)
                 owner_kind = upstream_kind or owner_kind
-                if upstream_path:
+                if not path and upstream_path:
                     path = upstream_path
         if not path:
             continue
@@ -994,12 +1009,32 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 if kind not in ("import", "primitive", "uv_unwrap", "texture", "texture_pro"):
                     continue
                 path = _param_value(model, "path")
+                owner_model = model
+                if kind in ("texture", "texture_pro"):
+                    upstream_item, upstream_kind, upstream_path = _resolve_input_item(scene, src_item)
+                    if upstream_item is not None and getattr(upstream_item, "model", None) is not None:
+                        if upstream_kind == "uv_unwrap":
+                            if upstream_path:
+                                path = upstream_path
+                            upstream2_item, _up2_kind, _up2_path = _resolve_input_item(scene, upstream_item)
+                            if upstream2_item is not None and getattr(upstream2_item, "model", None) is not None:
+                                owner_model = getattr(upstream2_item, "model", owner_model)
+                        else:
+                            owner_model = getattr(upstream_item, "model", owner_model)
+                            if upstream_path:
+                                path = upstream_path
+                elif kind == "uv_unwrap":
+                    upstream_item, _up_kind, upstream_path = _resolve_input_item(scene, src_item)
+                    if upstream_item is not None and getattr(upstream_item, "model", None) is not None:
+                        owner_model = getattr(upstream_item, "model", owner_model)
+                        if not path and upstream_path:
+                            path = upstream_path
                 if not path:
                     continue
                 ext = Path(path).suffix.lower()
                 if ext not in SUPPORTED_EXTS:
                     continue
-                name = (getattr(model, "name", "") or "").strip()
+                name = (getattr(owner_model, "name", "") or "").strip()
                 if not name or name in seen:
                     continue
                 seen.add(name)
