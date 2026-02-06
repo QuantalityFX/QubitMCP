@@ -120,6 +120,17 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Primitive plugin import failed:", e)
 
+    # 8.6) UV Unwrap
+    try:
+        from nodes import uv_unwrap
+        if hasattr(uv_unwrap, "register"):
+            uv_unwrap.register()
+            _safe_probe("uv_unwrap")
+        else:
+            print("[EchoGraph] UV Unwrap module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] UV Unwrap plugin import failed:", e)
+
     # 9) GPT Prompt
     try:
         from nodes import gpt_prompt

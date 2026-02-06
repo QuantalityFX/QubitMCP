@@ -274,6 +274,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     _primitive.register()
             except Exception:
                 pass
+        # Ensure UV Unwrap spec is registered even if the loader was skipped.
+        if (self.model.kind or "").strip().lower() == "uv_unwrap":
+            try:
+                from nodes import uv_unwrap as _uv_unwrap  # type: ignore
+                if hasattr(_uv_unwrap, "register"):
+                    _uv_unwrap.register()
+            except Exception:
+                pass
 
         self.setFlag(QtWidgets.QGraphicsItem.ItemIsMovable, True)
         self.setFlag(QtWidgets.QGraphicsItem.ItemSendsGeometryChanges, True)
@@ -372,6 +380,28 @@ class NodeItem(QtWidgets.QGraphicsObject):
             raw = hidden_entry.get("value", "")
             hidden = {t.strip().lower() for t in str(raw).split(",") if t.strip()}
             hidden.update({"primitive", "path"})
+            hidden_entry["value"] = ",".join(sorted(hidden))
+            self.model.params = params
+        elif kind_lower == "uv_unwrap":
+            params = list(self.model.params or [])
+            names = {(p.get("name") or "").strip().lower() for p in params}
+            if "source" not in names:
+                params.append({"name": "source", "value": ""})
+            if "path" not in names:
+                params.append({"name": "path", "value": ""})
+            # Hide internal params on the node surface.
+            store_key = "__ui_hidden_params"
+            hidden_entry = None
+            for p in params:
+                if (p.get("name") or "").strip().lower() == store_key:
+                    hidden_entry = p
+                    break
+            if hidden_entry is None:
+                hidden_entry = {"name": store_key, "value": ""}
+                params.append(hidden_entry)
+            raw = hidden_entry.get("value", "")
+            hidden = {t.strip().lower() for t in str(raw).split(",") if t.strip()}
+            hidden.update({"source", "path"})
             hidden_entry["value"] = ",".join(sorted(hidden))
             self.model.params = params
         elif kind_lower == "note":
@@ -479,6 +509,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
             hidden.update({"thumbnail", "thumbnail_rev", "thumbnail_choice", "splat_depth_test"})
         elif kind == "primitive":
             hidden.update({"primitive", "path"})
+        elif kind == "uv_unwrap":
+            hidden.update({"source", "path"})
 
         return hidden
 
@@ -994,6 +1026,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
             body_h = self._CHATBOT_BODY_H
             node_w = max(self._BASE_W, self._CHATBOT_BODY_W)
         elif kind == "primitive":
+            body_h = 32
+            node_w = self._BASE_W
+        elif kind == "uv_unwrap":
             body_h = 32
             node_w = self._BASE_W
         else:

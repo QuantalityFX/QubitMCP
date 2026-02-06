@@ -3935,7 +3935,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 return
         for it in items:
             kind = (getattr(getattr(it, "model", None), "kind", "") or "").lower()
-            if kind in {"import", "primitive"}:
+            if kind in {"import", "primitive", "uv_unwrap"}:
                 try:
                     path = (it._param_value("path") or "").strip()
                 except Exception:
