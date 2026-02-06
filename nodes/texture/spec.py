@@ -61,6 +61,32 @@ def build_ports(node_item) -> None:
 def _resolve_input_path(node_item) -> str:
     model = getattr(node_item, "model", None)
     sc = node_item.scene()
+
+    def _path_from_item(item, depth=0, visited=None) -> str:
+        if item is None or depth > 8:
+            return ""
+        if visited is None:
+            visited = set()
+        if item in visited:
+            return ""
+        visited.add(item)
+
+        m = getattr(item, "model", None)
+        if m is None:
+            return ""
+        kind = (getattr(m, "kind", "") or "").strip().lower()
+        if kind == "switch" and sc is not None:
+            try:
+                edges = list(sc._ordered_in_edges(item))
+            except Exception:
+                try:
+                    edges = list(sc._in_edges(item))
+                except Exception:
+                    edges = []
+            if edges:
+                return _path_from_item(getattr(edges[0], "src", None), depth + 1, visited)
+        return _param_value(m, "path")
+
     if sc is not None:
         try:
             in_edges = list(sc._ordered_in_edges(node_item))
@@ -78,11 +104,11 @@ def _resolve_input_path(node_item) -> str:
         if chosen is None and in_edges:
             chosen = in_edges[0]
         if chosen is not None:
-            src_model = getattr(getattr(chosen, "src", None), "model", None)
-            if src_model is not None:
-                path = _param_value(src_model, "path")
-                if path:
-                    return path
+            src_item = getattr(chosen, "src", None)
+            path = _path_from_item(src_item, 0, set())
+            if path:
+                return path
+
     if model is not None:
         return _param_value(model, "source") or _param_value(model, "path")
     return ""
