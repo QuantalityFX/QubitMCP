@@ -710,6 +710,11 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 glv = getattr(win, "gl_view", None) if win is not None else None
                 if glv is not None:
                     glv._xform_gizmo_owner = owner
+                    try:
+                        if hasattr(glv, "set_scene_asset_uv_overlay"):
+                            glv.set_scene_asset_uv_overlay(owner)
+                    except Exception:
+                        pass
 
                     # compute a stable gizmo position:
                     # 1) use stored xform pos if it's non-zero
@@ -1072,6 +1077,11 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                         if glv is not None:
                             glv._xform_gizmo_owner = None
                             glv._xform_gizmo_owner_kind = None
+                            try:
+                                if hasattr(glv, "set_scene_asset_uv_overlay"):
+                                    glv.set_scene_asset_uv_overlay(None)
+                            except Exception:
+                                pass
                             glv._xform_gizmo_pos_locked = False
                             # When nothing is selected, park the gizmo at world origin.
                             glv._xform_gizmo_pos = (0.0, 0.0, 0.0)

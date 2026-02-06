@@ -3086,6 +3086,11 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 gl_view._xform_gizmo_pos_locked = False
                 gl_view._xform_gizmo_pos = (0.0, 0.0, 0.0)
                 try:
+                    if hasattr(gl_view, "set_scene_asset_uv_overlay"):
+                        gl_view.set_scene_asset_uv_overlay(None)
+                except Exception:
+                    pass
+                try:
                     gl_view.update()
                 except Exception:
                     pass

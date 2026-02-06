@@ -490,6 +490,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._mgl_scene_splats_bounds_local: Dict[str, NDArray] = {}
         self._mgl_scene_splat_bounds_by_owner: Dict[str, NDArray] = {}
         self._mgl_scene_mesh_bounds_by_owner: Dict[str, NDArray] = {}
+        self._mgl_scene_uvs_by_owner: Dict[str, NDArray] = {}
         self._mgl_scene_splat_xforms_by_owner: Dict[str, Dict[str, Tuple[float, float, float]]] = {}
         self._mgl_splat_bbox_vao = None
         self._mgl_splat_bbox_vbo = None
@@ -2090,6 +2091,33 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             except Exception:
                 pass
             return
+
+    def set_scene_asset_uv_overlay(self, owner: str | None) -> None:
+        if not self._use_moderngl:
+            return
+        key = str(owner or "").strip()
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        uvs = None
+        try:
+            uvs_map = getattr(renderer, "_mgl_scene_uvs_by_owner", None)
+            if isinstance(uvs_map, dict) and key:
+                uvs = uvs_map.get(key)
+                if uvs is None:
+                    key_lower = key.lower()
+                    for k, v in uvs_map.items():
+                        if str(k).strip().lower() == key_lower:
+                            uvs = v
+                            break
+        except Exception:
+            uvs = None
+        try:
+            renderer._mgl_set_uv_overlay(uvs)
+        except Exception:
+            pass
+        try:
+            self.update()
+        except Exception:
+            pass
 
     def rename_scene_asset_owner(self, old_name: str, new_name: str) -> None:
         old_key = str(old_name or "").strip()

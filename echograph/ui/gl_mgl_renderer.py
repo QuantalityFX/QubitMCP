@@ -3936,6 +3936,7 @@ class MGLRendererMixin:
         self._mgl_mesh_vertex_count = 0
         self._mgl_mesh_path = ""
         self._mgl_set_uv_overlay(None)
+        self._mgl_scene_uvs_by_owner = {}
         # prevent texture leaking from previous "Texture..." or textured Import views
         self._mgl_texture_override = False
         self._mgl_texture = None
@@ -4164,11 +4165,16 @@ class MGLRendererMixin:
                         if texture_override is not None and not original_override:
                             self._mgl_texture_override = True
                         try:
-                            entries, _combined_uvs, _tex_paths, sub_count = self._mgl_build_submesh_entries(
+                            entries, combined_uvs, _tex_paths, sub_count = self._mgl_build_submesh_entries(
                                 mesh_arrays.submeshes
                             )
                         finally:
                             self._mgl_texture_override = original_override
+                        if combined_uvs:
+                            try:
+                                self._mgl_scene_uvs_by_owner[owner] = np.concatenate(combined_uvs, axis=0)
+                            except Exception:
+                                pass
                         if texture_override is not None:
                             for sub in entries:
                                 sub["texture"] = texture_override
@@ -4228,6 +4234,11 @@ class MGLRendererMixin:
                         entry = self._mgl_build_mesh_entry(points, normals, uvs)
                         if entry is None:
                             continue
+                        if uvs is not None and getattr(uvs, "size", 0):
+                            try:
+                                self._mgl_scene_uvs_by_owner[owner] = uvs.astype("f4").reshape(-1, 2)
+                            except Exception:
+                                pass
                         color = (
                             mesh_arrays.base_color
                             if mesh_arrays is not None and mesh_arrays.base_color is not None
