@@ -224,8 +224,9 @@ class TextureWidget(QtWidgets.QWidget):
         current = (self._edit.text() or "").strip()
         if current:
             start = current
+        parent = _resolve_window(self._node_item) or self
         file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self,
+            parent,
             "Select Texture",
             start,
             "Images (*.png *.jpg *.jpeg *.bmp *.tga *.tif *.tiff);;All Files (*.*)",
