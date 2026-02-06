@@ -491,6 +491,7 @@ class EdgeItem(QtWidgets.QGraphicsPathItem):
         self._click_highlight = False
         self._pins = []
         self._polyline_points = []
+        self._hit_tol = 7.0
         self._apply_pen_state()
         self.setBrush(QtCore.Qt.NoBrush)
         self.updatePath()
@@ -605,6 +606,40 @@ class EdgeItem(QtWidgets.QGraphicsPathItem):
                 best_dist = dist2
                 best_axis = axis
         return best_axis
+
+    def _dist2_to_polyline(self, scene_pos: QtCore.QPointF) -> float:
+        pts = list(getattr(self, "_polyline_points", []) or [])
+        if len(pts) < 2:
+            return float("inf")
+        px = float(scene_pos.x())
+        py = float(scene_pos.y())
+
+        def _dist2_point_to_segment(p0, p1):
+            x1 = float(p0.x())
+            y1 = float(p0.y())
+            x2 = float(p1.x())
+            y2 = float(p1.y())
+            vx = x2 - x1
+            vy = y2 - y1
+            denom = vx * vx + vy * vy
+            if denom <= 1e-6:
+                dx = px - x1
+                dy = py - y1
+                return dx * dx + dy * dy
+            t = ((px - x1) * vx + (py - y1) * vy) / denom
+            t = max(0.0, min(1.0, t))
+            proj_x = x1 + t * vx
+            proj_y = y1 + t * vy
+            dx = px - proj_x
+            dy = py - proj_y
+            return dx * dx + dy * dy
+
+        best = None
+        for i in range(len(pts) - 1):
+            d2 = _dist2_point_to_segment(pts[i], pts[i + 1])
+            if best is None or d2 < best:
+                best = d2
+        return float(best if best is not None else float("inf"))
 
     def add_pin(self, scene_pos: QtCore.QPointF) -> None:
         sc = self.scene()
@@ -877,6 +912,39 @@ class EdgeItem(QtWidgets.QGraphicsPathItem):
         super().hoverLeaveEvent(e)
 
     def mousePressEvent(self, e: QtWidgets.QGraphicsSceneMouseEvent):
+        # Pick the closest edge under the cursor to avoid nearby wires stealing clicks.
+        if e.button() == QtCore.Qt.LeftButton:
+            pos = e.scenePos()
+            tol = float(self._hit_tol)
+            sc = self.scene()
+            try:
+                if sc is not None and sc.views():
+                    scale = float(sc.views()[0].transform().m11())
+                    if scale > 1e-6:
+                        tol = tol / scale
+            except Exception:
+                pass
+            if self._dist2_to_polyline(pos) > (tol * tol):
+                e.ignore()
+                return
+            if sc and hasattr(sc, "_edges"):
+                best_edge = None
+                best_dist = None
+                for edge in list(getattr(sc, "_edges", [])):
+                    if edge is None:
+                        continue
+                    try:
+                        d2 = edge._dist2_to_polyline(pos)
+                    except Exception:
+                        continue
+                    if d2 == float("inf"):
+                        continue
+                    if best_dist is None or d2 < best_dist:
+                        best_dist = d2
+                        best_edge = edge
+                if best_edge is not None and best_edge is not self:
+                    e.ignore()
+                    return
         if e.button() == QtCore.Qt.LeftButton:
             if not (e.modifiers() & QtCore.Qt.ShiftModifier):
                 _deselect_node_items(self.scene())
