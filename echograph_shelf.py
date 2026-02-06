@@ -1730,17 +1730,21 @@ class GraphScene(QtWidgets.QGraphicsScene):
 
     def mouseReleaseEvent(self, e: QtWidgets.QGraphicsSceneMouseEvent):
         if self._temp_wire is not None and self._drag_src_item is not None:
-            target, dst_port = self._node_at_left_socket(e.scenePos())
-            if target and (target is not self._drag_src_item):
-                try:
-                    self._add_edge_and_update_switch(
-                        self._drag_src_item.model.name,
-                        target.model.name,
-                        dst_port_name=dst_port,
-                    )
-                except Exception:
-                    pass
-            self._cancel_temp_wire(); e.accept(); return
+            if e.button() == QtCore.Qt.LeftButton:
+                target, dst_port = self._node_at_left_socket(e.scenePos())
+                if target and (target is not self._drag_src_item):
+                    try:
+                        self._add_edge_and_update_switch(
+                            self._drag_src_item.model.name,
+                            target.model.name,
+                            dst_port_name=dst_port,
+                        )
+                    except Exception:
+                        pass
+                    self._cancel_temp_wire()
+                # If no valid target, keep the temp wire attached to cursor.
+                e.accept()
+                return
         super().mouseReleaseEvent(e)
 
     def _node_at_left_socket(self, scene_pos: QtCore.QPointF):

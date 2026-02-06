@@ -33,6 +33,7 @@ class GraphView(QtWidgets.QGraphicsView):
             pass
         self.setAttribute(QtCore.Qt.WA_OpaquePaintEvent, True)
         self.setFocusPolicy(QtCore.Qt.StrongFocus)
+        self.setMouseTracking(True)
 
         try:
             self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
@@ -76,6 +77,18 @@ class GraphView(QtWidgets.QGraphicsView):
         self._orbit_sensitivity = 0.005
         self._drag_mode_prev = None
         self._pre_3d_transform = None
+
+    def _update_temp_wire_from_view(self, viewport_pos):
+        sc = self.scene()
+        if sc is None:
+            return
+        tw = getattr(sc, "_temp_wire", None)
+        if tw is None:
+            return
+        try:
+            tw.updateTo(self.mapToScene(viewport_pos))
+        except Exception:
+            pass
 
     def _zoom_at(self, viewport_pos: QtCore.QPoint, factor: float):
         before = self.mapToScene(viewport_pos)
@@ -585,6 +598,35 @@ class GraphView(QtWidgets.QGraphicsView):
                 return
         if (not self._mode_3d) and e.button() == QtCore.Qt.LeftButton:
             sc = self.scene()
+            if sc is not None and getattr(sc, "_temp_wire", None) is not None:
+                sp = self.mapToScene(e.pos())
+                try:
+                    target, dst_port = sc._node_at_left_socket(sp)
+                except Exception:
+                    target, dst_port = (None, None)
+                drag_src = getattr(sc, "_drag_src_item", None)
+                if target and (drag_src is not None) and (target is not drag_src):
+                    try:
+                        sc._add_edge_and_update_switch(
+                            drag_src.model.name,
+                            target.model.name,
+                            dst_port_name=dst_port,
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        sc._cancel_temp_wire()
+                    except Exception:
+                        pass
+                    e.accept()
+                    return
+                # Any left-click cancels the temp wire (even on top of items).
+                try:
+                    sc._cancel_temp_wire()
+                except Exception:
+                    pass
+                e.accept()
+                return
             if sc is not None:
                 if e.modifiers() & QtCore.Qt.ShiftModifier:
                     try:
@@ -629,6 +671,7 @@ class GraphView(QtWidgets.QGraphicsView):
                     self._orbit_dragging = False
                     self._orbit_last_pos = None
                     self.viewport().setCursor(QtCore.Qt.ArrowCursor)
+                    self._update_temp_wire_from_view(e.pos())
                     e.accept()
                     return
                 delta = e.pos() - self._orbit_last_pos
@@ -637,6 +680,7 @@ class GraphView(QtWidgets.QGraphicsView):
                 self._cam_pitch -= float(delta.y()) * self._orbit_sensitivity
                 self._cam_pitch = max(-1.45, min(1.45, self._cam_pitch))
                 self._apply_3d_projection()
+                self._update_temp_wire_from_view(e.pos())
                 e.accept()
                 return
             if self._pan_dragging and self._pan_last_pos is not None:
@@ -644,12 +688,14 @@ class GraphView(QtWidgets.QGraphicsView):
                     self._pan_dragging = False
                     self._pan_last_pos = None
                     self.viewport().setCursor(QtCore.Qt.ArrowCursor)
+                    self._update_temp_wire_from_view(e.pos())
                     e.accept()
                     return
                 delta = self.mapToScene(e.pos()) - self.mapToScene(self._pan_last_pos)
                 self._pan_last_pos = e.pos()
                 self._cam_pan = QtCore.QPointF(self._cam_pan.x() + delta.x(), self._cam_pan.y() + delta.y())
                 self._apply_3d_projection()
+                self._update_temp_wire_from_view(e.pos())
                 e.accept()
                 return
             if self._dolly_dragging and self._dolly_press_pos is not None:
@@ -658,6 +704,7 @@ class GraphView(QtWidgets.QGraphicsView):
                     self._dolly_press_pos = None
                     self._dolly_start_dist = None
                     self.viewport().setCursor(QtCore.Qt.ArrowCursor)
+                    self._update_temp_wire_from_view(e.pos())
                     e.accept()
                     return
                 if self._dolly_press_pos is not None and self._dolly_start_dist is not None:
@@ -670,8 +717,10 @@ class GraphView(QtWidgets.QGraphicsView):
                     target = self._dolly_start_dist / factor
                     self._cam_dist = max(self._min_cam_dist, min(self._max_cam_dist, target))
                 self._apply_3d_projection()
+                self._update_temp_wire_from_view(e.pos())
                 e.accept()
                 return
+            self._update_temp_wire_from_view(e.pos())
             e.accept()
             return
         if self._mm_dragging and self._mm_last_pos is not None:
@@ -686,6 +735,7 @@ class GraphView(QtWidgets.QGraphicsView):
                 self._mm_last_pos = e.pos()
                 self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta.x())
                 self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
+                self._update_temp_wire_from_view(e.pos())
                 e.accept()
                 return
 
@@ -714,9 +764,11 @@ class GraphView(QtWidgets.QGraphicsView):
             self.setTransform(T)
             if abs(factor - 1.0) > 1e-3:
                 self._rc_did_zoom = True
+            self._update_temp_wire_from_view(e.pos())
             e.accept()
             return
 
+        self._update_temp_wire_from_view(e.pos())
         super().mouseMoveEvent(e)
 
 
@@ -784,6 +836,11 @@ class GraphView(QtWidgets.QGraphicsView):
             factor = 1.15 if delta > 0 else 1 / 1.15
             self._cam_dist = max(self._min_cam_dist, min(self._max_cam_dist, self._cam_dist / factor))
             self._apply_3d_projection()
+            try:
+                vp = e.position()
+            except AttributeError:
+                vp = e.pos()
+            self._update_temp_wire_from_view(vp)
             e.accept()
             return
         factor = 1.15 if e.angleDelta().y() > 0 else 1/1.15
@@ -795,3 +852,4 @@ class GraphView(QtWidgets.QGraphicsView):
         start_sx = self._current_scale_x()
         factor = self._clamp_factor_from(start_sx, factor)
         self._zoom_at(vp, factor)
+        self._update_temp_wire_from_view(vp)
