@@ -282,6 +282,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     _uv_unwrap.register()
             except Exception:
                 pass
+        # Ensure Texture spec is registered even if the loader was skipped.
+        if (self.model.kind or "").strip().lower() == "texture":
+            try:
+                from nodes import texture as _texture  # type: ignore
+                if hasattr(_texture, "register"):
+                    _texture.register()
+            except Exception:
+                pass
 
         self.setFlag(QtWidgets.QGraphicsItem.ItemIsMovable, True)
         self.setFlag(QtWidgets.QGraphicsItem.ItemSendsGeometryChanges, True)
@@ -404,6 +412,30 @@ class NodeItem(QtWidgets.QGraphicsObject):
             hidden.update({"source", "path"})
             hidden_entry["value"] = ",".join(sorted(hidden))
             self.model.params = params
+        elif kind_lower == "texture":
+            params = list(self.model.params or [])
+            names = {(p.get("name") or "").strip().lower() for p in params}
+            if "texture" not in names:
+                params.append({"name": "texture", "value": ""})
+            if "source" not in names:
+                params.append({"name": "source", "value": ""})
+            if "path" not in names:
+                params.append({"name": "path", "value": ""})
+            # Hide internal params on the node surface.
+            store_key = "__ui_hidden_params"
+            hidden_entry = None
+            for p in params:
+                if (p.get("name") or "").strip().lower() == store_key:
+                    hidden_entry = p
+                    break
+            if hidden_entry is None:
+                hidden_entry = {"name": store_key, "value": ""}
+                params.append(hidden_entry)
+            raw = hidden_entry.get("value", "")
+            hidden = {t.strip().lower() for t in str(raw).split(",") if t.strip()}
+            hidden.update({"texture", "source", "path"})
+            hidden_entry["value"] = ",".join(sorted(hidden))
+            self.model.params = params
         elif kind_lower == "note":
             # Ensure notes always start with at least one parameter for convenience
             if not (self.model.params or []):
@@ -511,6 +543,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
             hidden.update({"primitive", "path"})
         elif kind == "uv_unwrap":
             hidden.update({"source", "path"})
+        elif kind == "texture":
+            hidden.update({"texture", "source", "path"})
 
         return hidden
 
@@ -1029,6 +1063,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
             body_h = 32
             node_w = self._BASE_W
         elif kind == "uv_unwrap":
+            body_h = 32
+            node_w = self._BASE_W
+        elif kind == "texture":
             body_h = 32
             node_w = self._BASE_W
         else:
@@ -2148,7 +2185,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 continue
             seen.add(path)
             texture = ""
-            if ext == ".obj":
+            kind = (getattr(model, "kind", "") or "").strip().lower()
+            if kind == "texture":
+                for p in (model.params or []):
+                    if (p.get("name") or "").strip().lower() == "texture":
+                        texture = (p.get("value") or "").strip()
+                        break
+            elif ext == ".obj":
                 for p in (model.params or []):
                     if (p.get("name") or "").strip().lower() == "texture":
                         texture = (p.get("value") or "").strip()

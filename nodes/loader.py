@@ -131,6 +131,17 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] UV Unwrap plugin import failed:", e)
 
+    # 8.7) Texture
+    try:
+        from nodes import texture
+        if hasattr(texture, "register"):
+            texture.register()
+            _safe_probe("texture")
+        else:
+            print("[EchoGraph] Texture module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Texture plugin import failed:", e)
+
     # 9) GPT Prompt
     try:
         from nodes import gpt_prompt
