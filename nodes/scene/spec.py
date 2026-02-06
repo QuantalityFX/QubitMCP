@@ -221,7 +221,7 @@ class SceneAssemblyWidget(QtWidgets.QWidget):
             QtWidgets.QMessageBox.information(
                 self,
                 "Scene",
-                "Connect one or more 3D import or primitive nodes first.",
+                "Connect one or more 3D import, primitive, or UV unwrap nodes first.",
             )
             return
         # Ensure splats start visible on open (avoid auto-hidden splats)
@@ -913,7 +913,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 if model is None:
                     continue
                 kind = (getattr(model, "kind", "") or "").strip().lower()
-                if kind not in ("import", "primitive"):
+                if kind not in ("import", "primitive", "uv_unwrap"):
                     continue
                 path = _param_value(model, "path")
                 if not path:
@@ -928,7 +928,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 rows.append({"name": name, "path": path})
 
             if not rows:
-                empty = QtWidgets.QListWidgetItem("(no connected imports or primitives)")
+                empty = QtWidgets.QListWidgetItem("(no connected imports, primitives, or UV unwraps)")
                 empty.setFlags(QtCore.Qt.NoItemFlags)
                 outliner.addItem(empty)
                 try:

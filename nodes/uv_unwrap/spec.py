@@ -354,15 +354,11 @@ class UVUnwrapWidget(QtWidgets.QWidget):
 
         layout = QtWidgets.QHBoxLayout(self)
         layout.setContentsMargins(6, 4, 6, 4)
-        layout.setSpacing(6)
-
-        label = QtWidgets.QLabel("UV Unwrap")
-        label.setStyleSheet("color:#cbd5e1;")
-        layout.addWidget(label, 0)
+        layout.setSpacing(4)
 
         self._status = QtWidgets.QLabel("")
         self._status.setStyleSheet("color:#94a3b8;font-size:11px;")
-        self._status.setMinimumWidth(80)
+        self._status.setMinimumWidth(0)
         self._status.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         layout.addWidget(self._status, 1)
 
