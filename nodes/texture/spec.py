@@ -200,6 +200,7 @@ class TextureWidget(QtWidgets.QWidget):
 
     def _update_inputs(self):
         self._pending = False
+        self._ensure_scene()
         try:
             current_tex = _param_value(self._node_item.model, "texture")
             if current_tex != (self._edit.text() or ""):
@@ -207,6 +208,11 @@ class TextureWidget(QtWidgets.QWidget):
         except Exception:
             pass
         src_path = (_resolve_input_path(self._node_item) or "").strip()
+        if not src_path:
+            try:
+                src_path = _param_value(self._node_item.model, "path").strip()
+            except Exception:
+                src_path = ""
         if src_path:
             self._set_param("source", src_path, notify_scene=False)
             self._set_param("path", src_path, notify_scene=True)
@@ -217,7 +223,29 @@ class TextureWidget(QtWidgets.QWidget):
         tex_path = (self._edit.text() or "").strip()
         valid_tex = bool(tex_path) and os.path.exists(tex_path) and Path(tex_path).suffix.lower() in SUPPORTED_TEX_EXTS
         valid_mesh = bool(src_path) and os.path.exists(src_path) and Path(src_path).suffix.lower() in SUPPORTED_MESH_EXTS
-        self._view_btn.setEnabled(bool(valid_tex and valid_mesh))
+        has_link = False
+        try:
+            sc = self._node_item.scene()
+            if sc is not None:
+                try:
+                    in_edges = list(sc._ordered_in_edges(self._node_item))
+                except Exception:
+                    in_edges = list(sc._in_edges(self._node_item))
+                has_link = bool(in_edges)
+        except Exception:
+            has_link = False
+
+        enabled = bool(valid_tex and (valid_mesh or has_link))
+        self._view_btn.setEnabled(enabled)
+        if not enabled:
+            if not valid_tex:
+                self._view_btn.setToolTip("Select a texture image.")
+            elif not (valid_mesh or has_link):
+                self._view_btn.setToolTip("Connect a mesh node.")
+            else:
+                self._view_btn.setToolTip("Waiting for mesh path.")
+        else:
+            self._view_btn.setToolTip("View textured model")
 
     def _browse_texture(self):
         start = os.path.expanduser("~")
@@ -244,9 +272,19 @@ class TextureWidget(QtWidgets.QWidget):
     def _on_view_clicked(self):
         src_path = (_resolve_input_path(self._node_item) or "").strip()
         if not src_path or not os.path.exists(src_path):
+            QtWidgets.QMessageBox.warning(
+                _resolve_window(self._node_item) or self,
+                "Texture",
+                "No valid input mesh connected.",
+            )
             return
         tex_path = (self._edit.text() or "").strip()
         if not tex_path or not os.path.exists(tex_path):
+            QtWidgets.QMessageBox.warning(
+                _resolve_window(self._node_item) or self,
+                "Texture",
+                "Texture file not found.",
+            )
             return
         win = _resolve_window(self._node_item)
         handler = getattr(win, "open_3d_model", None) if win is not None else None
