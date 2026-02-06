@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 from pathlib import Path
 import struct
 import tempfile
@@ -523,6 +524,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._mgl_uv_vertex_count = 0
         self._mgl_uv_cache = None
         self._mgl_uv_cache_rect = QtCore.QRectF()
+        self._mgl_uv_bg_path = ""
+        self._mgl_uv_cache_bg_key = ""
         self._mgl_grid_alpha = 0.90
         self._mgl_grid_size = 20.0
         self._mgl_grid_cells = 50
@@ -1892,6 +1895,22 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             self._mgl_load_mesh(model_path)
             if texture_str:
                 self._apply_texture_path(texture_str)
+                try:
+                    self._mgl_uv_bg_path = texture_str
+                    self._mgl_uv_cache = None
+                except Exception:
+                    pass
+            else:
+                try:
+                    tex_list = getattr(self, "_mgl_texture_paths", None)
+                    if isinstance(tex_list, list) and tex_list:
+                        self._mgl_uv_bg_path = str(tex_list[0])
+                        self._mgl_uv_cache = None
+                    else:
+                        self._mgl_uv_bg_path = ""
+                        self._mgl_uv_cache = None
+                except Exception:
+                    pass
 
             # auto-frame after loading (prevents zoom=10000 keeping the model offscreen)
             if self._manual_model_frame:
@@ -2099,6 +2118,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         renderer = getattr(self, "_mgl_renderer", None) or self
         uvs = None
         uvs_map = None
+        bg_path = ""
         try:
             uvs_map = getattr(renderer, "_mgl_scene_uvs_by_owner", None)
             if isinstance(uvs_map, dict) and key:
@@ -2111,6 +2131,18 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                             break
         except Exception:
             uvs = None
+        try:
+            tex_map = getattr(renderer, "_mgl_scene_tex_by_owner", None)
+            if isinstance(tex_map, dict) and key:
+                bg_path = tex_map.get(key, "") or ""
+                if not bg_path:
+                    key_lower = key.lower()
+                    for k, v in tex_map.items():
+                        if str(k).strip().lower() == key_lower:
+                            bg_path = str(v or "")
+                            break
+        except Exception:
+            bg_path = ""
         if uvs is None and key:
             try:
                 scene = getattr(renderer, "_mgl_scene", None)
@@ -2177,6 +2209,19 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                 pass
             except Exception:
                 pass
+        if not bg_path:
+            try:
+                if bool(getattr(renderer, "_mgl_texture_override", False)):
+                    bg_path = str(getattr(renderer, "_mgl_texture_path", "") or "")
+                if not bg_path:
+                    tex_list = getattr(renderer, "_mgl_texture_paths", None)
+                    if isinstance(tex_list, list) and tex_list:
+                        bg_path = str(tex_list[0])
+            except Exception:
+                bg_path = ""
+        if bg_path != getattr(self, "_mgl_uv_bg_path", ""):
+            self._mgl_uv_bg_path = bg_path
+            self._mgl_uv_cache = None
         try:
             renderer._mgl_set_uv_overlay(uvs)
         except Exception:
@@ -3650,12 +3695,15 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             panel.moveTop(10.0)
         if panel.left() < 10.0:
             panel.moveLeft(10.0)
+        bg_key = self._mgl_uv_bg_path or ""
         if (
             self._mgl_uv_cache is None
             or not self._mgl_uv_cache_rect.isValid()
             or self._mgl_uv_cache_rect != panel
+            or self._mgl_uv_cache_bg_key != bg_key
         ):
             self._mgl_uv_cache_rect = QtCore.QRectF(panel)
+            self._mgl_uv_cache_bg_key = bg_key
             cache = QtGui.QPixmap(int(panel.width()), int(panel.height()))
             cache.fill(QtCore.Qt.transparent)
             uv_painter = QtGui.QPainter(cache)
@@ -3663,21 +3711,38 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             uv_painter.setPen(QtCore.Qt.NoPen)
             uv_painter.setBrush(QtGui.QColor(12, 14, 16, 235))
             uv_painter.drawRoundedRect(QtCore.QRectF(0, 0, panel.width(), panel.height()), 6, 6)
+            bounds = self._mgl_uv_bounds or (0.0, 1.0, 0.0, 1.0)
+            u_min, u_max, v_min, v_max = bounds
+            du = max(u_max - u_min, 1e-6)
+            dv = max(v_max - v_min, 1e-6)
+            pad = 8.0
+            inner = QtCore.QRectF(
+                pad,
+                pad,
+                panel.width() - pad * 2,
+                panel.height() - pad * 2,
+            )
+
+            if bg_key and os.path.exists(bg_key):
+                bg = QtGui.QPixmap(bg_key)
+                if not bg.isNull():
+                    uv_painter.save()
+                    uv_painter.setOpacity(0.9)
+                    scaled = bg.scaled(
+                        int(inner.width()),
+                        int(inner.height()),
+                        QtCore.Qt.KeepAspectRatio,
+                        QtCore.Qt.SmoothTransformation,
+                    )
+                    x0 = inner.left() + (inner.width() - scaled.width()) * 0.5
+                    y0 = inner.top() + (inner.height() - scaled.height()) * 0.5
+                    uv_painter.drawPixmap(int(x0), int(y0), scaled)
+                    uv_painter.restore()
+
             if not self._mgl_uv_segments:
                 uv_painter.setPen(QtGui.QColor("#e2e8f0"))
                 uv_painter.drawText(QtCore.QRectF(0, 0, panel.width(), panel.height()), QtCore.Qt.AlignCenter, "No UVs")
             else:
-                bounds = self._mgl_uv_bounds or (0.0, 1.0, 0.0, 1.0)
-                u_min, u_max, v_min, v_max = bounds
-                du = max(u_max - u_min, 1e-6)
-                dv = max(v_max - v_min, 1e-6)
-                pad = 8.0
-                inner = QtCore.QRectF(
-                    pad,
-                    pad,
-                    panel.width() - pad * 2,
-                    panel.height() - pad * 2,
-                )
                 uv_painter.setPen(QtGui.QPen(QtGui.QColor("#d1d5db"), 1.0))
                 for u0, v0, u1, v1 in self._mgl_uv_segments:
                     x0 = inner.left() + (u0 - u_min) / du * inner.width()

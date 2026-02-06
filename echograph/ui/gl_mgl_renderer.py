@@ -3937,6 +3937,7 @@ class MGLRendererMixin:
         self._mgl_mesh_path = ""
         self._mgl_set_uv_overlay(None)
         self._mgl_scene_uvs_by_owner = {}
+        self._mgl_scene_tex_by_owner = {}
         # prevent texture leaking from previous "Texture..." or textured Import views
         self._mgl_texture_override = False
         self._mgl_texture = None
@@ -4064,6 +4065,10 @@ class MGLRendererMixin:
                     except Exception:
                         tex_path = None
                     if tex_path is not None and tex_path.exists():
+                        try:
+                            self._mgl_scene_tex_by_owner[owner] = str(tex_path)
+                        except Exception:
+                            pass
                         qimg = QtGui.QImage(str(tex_path))
                         if not qimg.isNull():
                             if hasattr(QtGui.QImage, "Format_RGBA8888"):
