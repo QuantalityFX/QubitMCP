@@ -139,6 +139,61 @@ def _resolve_input_path(node_item) -> str:
     return ""
 
 
+def _resolve_input_item(node_item):
+    model = getattr(node_item, "model", None)
+    sc = node_item.scene()
+
+    def _trace(item, depth=0, visited=None):
+        if item is None or depth > 8:
+            return None, "", ""
+        if visited is None:
+            visited = set()
+        if item in visited:
+            return None, "", ""
+        visited.add(item)
+
+        m = getattr(item, "model", None)
+        if m is None:
+            return None, "", ""
+        kind = (getattr(m, "kind", "") or "").strip().lower()
+        if kind == "switch" and sc is not None:
+            try:
+                edges = list(sc._ordered_in_edges(item))
+            except Exception:
+                try:
+                    edges = list(sc._in_edges(item))
+                except Exception:
+                    edges = []
+            if edges:
+                return _trace(getattr(edges[0], "src", None), depth + 1, visited)
+        path = _param_value(m, "path")
+        return item, kind, path
+
+    if sc is not None:
+        try:
+            in_edges = list(sc._ordered_in_edges(node_item))
+        except Exception:
+            try:
+                in_edges = list(sc._in_edges(node_item))
+            except Exception:
+                in_edges = []
+        chosen = None
+        for edge in in_edges:
+            name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
+            if (name or "").strip().lower() in {"mesh", "path"}:
+                chosen = edge
+                break
+        if chosen is None and in_edges:
+            chosen = in_edges[0]
+        if chosen is not None:
+            src_item = getattr(chosen, "src", None)
+            return _trace(src_item, 0, set())
+
+    if model is not None:
+        return None, "", _param_value(model, "source") or _param_value(model, "path")
+    return None, "", ""
+
+
 def _resolve_window(node_item):
     scene = node_item.scene()
     if scene is not None:
@@ -399,6 +454,9 @@ class TextureProWidget(QtWidgets.QWidget):
         self._last_rev = -1
         self._frame_hooked = False
         self._last_frame_ts = 0.0
+        self._input_item = None
+        self._input_kind = ""
+        self._scene_input = False
 
         layout = QtWidgets.QHBoxLayout(self)
         layout.setContentsMargins(6, 4, 6, 4)
@@ -553,7 +611,11 @@ class TextureProWidget(QtWidgets.QWidget):
             self._set_param("pattern", pattern, notify_scene=False)
         self._apply_pattern(pattern, notify_scene=False)
 
-        src_path = (_resolve_input_path(self._node_item) or "").strip()
+        src_item, src_kind, src_path = _resolve_input_item(self._node_item)
+        self._input_item = src_item
+        self._input_kind = (src_kind or "").strip().lower()
+        self._scene_input = self._input_kind in {"scene", "scene_assembly", "scene_outliner"}
+        src_path = (src_path or "").strip()
         if not src_path:
             try:
                 src_path = _param_value(self._node_item.model, "path").strip()
@@ -586,7 +648,10 @@ class TextureProWidget(QtWidgets.QWidget):
         elif not valid_mesh:
             self._view_btn.setToolTip("Waiting for mesh path.")
         else:
-            self._view_btn.setToolTip("View textured model")
+            if self._scene_input:
+                self._view_btn.setToolTip("View textured scene")
+            else:
+                self._view_btn.setToolTip("View textured model")
 
     def _get_gl_view(self):
         win = _resolve_window(self._node_item)
@@ -692,6 +757,34 @@ class TextureProWidget(QtWidgets.QWidget):
             self._last_rev = rev
 
     def _on_view_clicked(self):
+        if self._scene_input and self._input_item is not None:
+            assets = []
+            try:
+                if hasattr(self._input_item, "_collect_scene_assets"):
+                    assets = list(self._input_item._collect_scene_assets())
+            except Exception:
+                assets = []
+            if not assets:
+                QtWidgets.QMessageBox.warning(
+                    _resolve_window(self._node_item) or self,
+                    "Texture Pro",
+                    "No valid scene assets connected.",
+                )
+                return
+            for entry in assets:
+                if not isinstance(entry, dict):
+                    continue
+                entry["texture_provider"] = self._provider
+                entry["texture"] = ""
+            win = _resolve_window(self._node_item)
+            handler = getattr(win, "open_scene_assets", None) if win is not None else None
+            if callable(handler):
+                try:
+                    handler(assets)
+                except Exception:
+                    pass
+            return
+
         src_path = (_resolve_input_path(self._node_item) or "").strip()
         if not src_path or not os.path.exists(src_path):
             QtWidgets.QMessageBox.warning(
