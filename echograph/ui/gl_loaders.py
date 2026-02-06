@@ -201,6 +201,34 @@ def _fbx_extract_array(block: str, key: str, as_int: bool) -> List[float] | List
     return [float(v) for v in re.findall(r"[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?", data)]
 
 
+def _fbx_extract_uv_layer(block: str) -> Optional[Tuple[str, str, List[float], List[int]]]:
+    start = 0
+    while True:
+        match = re.search(r"LayerElementUV\s*:\s*\d+\s*\{", block[start:], re.I)
+        if not match:
+            return None
+        brace_start = block.find("{", start + match.end() - 1)
+        if brace_start < 0:
+            return None
+        brace_end = _find_matching_brace(block, brace_start)
+        if brace_end < 0:
+            return None
+        uv_block = block[brace_start + 1 : brace_end]
+        uv = _fbx_extract_array(uv_block, "UV", as_int=False)
+        if uv:
+            mapping = "bypolygonvertex"
+            reference = "direct"
+            m_map = re.search(r'MappingInformationType\s*:\s*"([^"]+)"', uv_block, re.I)
+            if m_map:
+                mapping = (m_map.group(1) or mapping).strip().lower()
+            m_ref = re.search(r'ReferenceInformationType\s*:\s*"([^"]+)"', uv_block, re.I)
+            if m_ref:
+                reference = (m_ref.group(1) or reference).strip().lower()
+            uv_index = _fbx_extract_array(uv_block, "UVIndex", as_int=True)
+            return mapping, reference, uv, uv_index
+        start = brace_end + 1
+
+
 def _load_fbx_ascii_mesh_arrays(path: Path) -> MeshArrays:
     if np is None:
         raise RuntimeError("numpy unavailable")
@@ -231,25 +259,70 @@ def _load_fbx_ascii_mesh_arrays(path: Path) -> MeshArrays:
             continue
         max_idx = vertices.shape[0] - 1
 
+        uv_layer = _fbx_extract_uv_layer(block)
+        mapping = ""
+        reference = ""
+        uv_direct: Optional["np.ndarray"] = None
+        uv_index: List[int] = []
+        if uv_layer is not None:
+            mapping, reference, uv_list, uv_index = uv_layer
+            if mapping == "byvertice":
+                mapping = "byvertex"
+            if len(uv_list) % 2 != 0:
+                uv_list = uv_list[: (len(uv_list) // 2) * 2]
+            if uv_list:
+                uv_direct = np.asarray(uv_list, dtype="f4").reshape(-1, 2)
+
         tri_indices: List[int] = []
+        tri_uv_indices: List[Optional[int]] = []
         polygon: List[int] = []
+        polygon_uv: List[Optional[int]] = []
+        poly_vert_cursor = 0
+        poly_index = 0
         for idx in poly_idx:
             end_poly = False
             if idx < 0:
                 idx = -idx - 1
                 end_poly = True
+            uv_idx = None
+            if uv_direct is not None:
+                if mapping == "bypolygonvertex":
+                    if reference == "indextodirect":
+                        if poly_vert_cursor < len(uv_index):
+                            uv_idx = uv_index[poly_vert_cursor]
+                    else:
+                        uv_idx = poly_vert_cursor
+                elif mapping == "byvertex":
+                    if reference == "indextodirect":
+                        if idx < len(uv_index):
+                            uv_idx = uv_index[int(idx)]
+                    else:
+                        uv_idx = int(idx)
+                elif mapping == "bypolygon":
+                    if reference == "indextodirect":
+                        if poly_index < len(uv_index):
+                            uv_idx = uv_index[poly_index]
+                    else:
+                        uv_idx = poly_index
+                elif mapping == "allsame":
+                    uv_idx = 0
             if idx < 0 or idx > max_idx:
                 polygon = []
-                if end_poly:
-                    continue
+                polygon_uv = []
             else:
                 polygon.append(int(idx))
+                polygon_uv.append(uv_idx)
+            poly_vert_cursor += 1
             if end_poly:
                 if len(polygon) >= 3:
                     root = polygon[0]
                     for i in range(1, len(polygon) - 1):
                         tri_indices.extend([root, polygon[i], polygon[i + 1]])
+                        if polygon_uv:
+                            tri_uv_indices.extend([polygon_uv[0], polygon_uv[i], polygon_uv[i + 1]])
                 polygon = []
+                polygon_uv = []
+                poly_index += 1
 
         if not tri_indices:
             continue
@@ -262,7 +335,20 @@ def _load_fbx_ascii_mesh_arrays(path: Path) -> MeshArrays:
         lengths[lengths < 1e-6] = 1.0
         n = (n.T / lengths).T
         tri_normals = np.repeat(n[:, None, :], 3, axis=1).reshape(-1, 3)
-        tri_uvs = np.zeros((tri_vertices.shape[0], 2), dtype="f4")
+        if uv_direct is not None and tri_uv_indices and len(tri_uv_indices) == tri_vertices.shape[0]:
+            tri_uvs = np.zeros((tri_vertices.shape[0], 2), dtype="f4")
+            max_uv = uv_direct.shape[0]
+            for i, uv_idx in enumerate(tri_uv_indices):
+                if uv_idx is None:
+                    continue
+                try:
+                    uv_i = int(uv_idx)
+                except Exception:
+                    continue
+                if 0 <= uv_i < max_uv:
+                    tri_uvs[i] = uv_direct[uv_i]
+        else:
+            tri_uvs = np.zeros((tri_vertices.shape[0], 2), dtype="f4")
 
         points_all.append(tri_vertices.astype("f4"))
         normals_all.append(tri_normals.astype("f4"))
@@ -405,6 +491,8 @@ def load_fbx_mesh_arrays_pyassimp(path: Path) -> MeshArrays:
 
     if np is None:
         raise RuntimeError("numpy unavailable")
+    if _is_ascii_fbx(path):
+        return _load_fbx_ascii_mesh_arrays(path)
     ensure_assimp_dll()
     try:
         import pyassimp
@@ -788,6 +876,8 @@ def _extract_trimesh_material(
 def _load_fbx_mesh_arrays(path: Path) -> MeshArrays:
     if np is None:
         raise RuntimeError("numpy unavailable")
+    if _is_ascii_fbx(path):
+        return _load_fbx_ascii_mesh_arrays(path)
     ensure_assimp_dll()
     use_trimesh = trimesh is not None
     if use_trimesh:
