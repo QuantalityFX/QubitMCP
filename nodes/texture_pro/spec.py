@@ -659,6 +659,22 @@ class TextureProWidget(QtWidgets.QWidget):
     def sizeHint(self):
         return QtCore.QSize(220, PREVIEW_SIZE + 12)
 
+    def _is_selected(self) -> bool:
+        sc = None
+        try:
+            sc = self._node_item.scene()
+        except Exception:
+            sc = None
+        if sc is not None and hasattr(sc, "_active_node_item"):
+            try:
+                return getattr(sc, "_active_node_item", None) is self._node_item
+            except Exception:
+                return False
+        try:
+            return bool(self._node_item.isSelected())
+        except Exception:
+            return False
+
     def _ensure_scene(self):
         if self._scene is None:
             self._scene = self._node_item.scene()
@@ -930,7 +946,8 @@ class TextureProWidget(QtWidgets.QWidget):
         glv = self._get_gl_view()
         fps = self._view_fps(glv)
         dt = 1.0 / max(fps, 1.0)
-        if not self._provider_driven_by_view(glv):
+        selected = self._is_selected()
+        if selected and not self._provider_driven_by_view(glv):
             try:
                 frame_id = getattr(glv, "_mgl_frame_id", None) if from_view and glv is not None else None
                 self._provider.advance(dt, frame_id=frame_id)
@@ -941,15 +958,19 @@ class TextureProWidget(QtWidgets.QWidget):
                     pass
             except Exception:
                 pass
-        self._refresh_preview()
+        if selected:
+            self._refresh_preview()
+        else:
+            if self._preview.pixmap() is None:
+                self._refresh_preview(force=True)
 
-    def _refresh_preview(self):
+    def _refresh_preview(self, force: bool = False):
         rev = None
         try:
             rev = int(getattr(self._provider, "revision", 0))
         except Exception:
             rev = None
-        if rev is not None and rev == self._last_rev:
+        if not force and rev is not None and rev == self._last_rev:
             return
         try:
             img = self._provider.image()

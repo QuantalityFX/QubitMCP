@@ -4527,6 +4527,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
         if e.button() == QtCore.Qt.LeftButton:
             self._bring_to_front()
             scene = self.scene()
+            if scene is not None:
+                try:
+                    scene._active_node_item = self
+                except Exception:
+                    pass
             mods = e.modifiers()
             shift = bool(mods & QtCore.Qt.ShiftModifier)
             ctrl = bool(mods & QtCore.Qt.ControlModifier)

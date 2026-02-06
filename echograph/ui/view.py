@@ -639,6 +639,11 @@ class GraphView(QtWidgets.QGraphicsView):
                     except Exception:
                         pass
             if self.itemAt(e.pos()) is None:
+                if sc is not None:
+                    try:
+                        sc._active_node_item = None
+                    except Exception:
+                        pass
                 if sc is not None and hasattr(sc, "_clear_edge_click_highlight"):
                     try:
                         sc._clear_edge_click_highlight()

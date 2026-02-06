@@ -449,6 +449,10 @@ def _deselect_node_items(scene) -> None:
     if scene is None:
         return
     try:
+        scene._active_node_item = None
+    except Exception:
+        pass
+    try:
         items = list(scene.selectedItems())
     except Exception:
         return
