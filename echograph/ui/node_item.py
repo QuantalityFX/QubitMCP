@@ -356,7 +356,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             params = list(self.model.params or [])
             names = {(p.get("name") or "").strip().lower() for p in params}
             if "primitive" not in names:
-                params.append({"name": "primitive", "value": "sphere"})
+                params.append({"name": "primitive", "value": "cube"})
             if "path" not in names:
                 params.append({"name": "path", "value": ""})
             # Hide internal params on the node surface.
@@ -994,7 +994,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             body_h = self._CHATBOT_BODY_H
             node_w = max(self._BASE_W, self._CHATBOT_BODY_W)
         elif kind == "primitive":
-            body_h = 40
+            body_h = 32
             node_w = self._BASE_W
         else:
             body_h = 0

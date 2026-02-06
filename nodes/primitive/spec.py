@@ -27,16 +27,46 @@ def _sanitize_name(name: str) -> str:
     return safe.strip("_") or "primitive"
 
 
-def _primitive_dir() -> Path:
-    base = Path(tempfile.gettempdir()) / "EchoGraph" / "primitives"
-    base.mkdir(parents=True, exist_ok=True)
-    return base
+def _workflow_dir_for_node(node_item) -> Path | None:
+    scene = None
+    try:
+        scene = node_item.scene()
+    except Exception:
+        scene = None
+
+    scene_path = getattr(scene, "_filename", None) if scene is not None else None
+    workflow_path = None
+    if scene is not None:
+        try:
+            views = scene.views()
+            if views:
+                win = views[0].window()
+                workflow_path = getattr(win, "_current_path", None)
+        except Exception:
+            pass
+
+    workflow_path = workflow_path or scene_path
+    if not workflow_path:
+        return None
+    try:
+        return Path(workflow_path).parent
+    except Exception:
+        return None
 
 
-def _primitive_path(node_name: str, shape: str) -> Path:
+def _primitive_dir(node_item=None) -> Path:
+    base = _workflow_dir_for_node(node_item) if node_item is not None else None
+    if base is None:
+        base = Path(tempfile.gettempdir()) / "EchoGraph"
+    prim_dir = base / "primitives"
+    prim_dir.mkdir(parents=True, exist_ok=True)
+    return prim_dir
+
+
+def _primitive_path(node_item, node_name: str, shape: str) -> Path:
     safe = _sanitize_name(node_name)
     shape_key = _sanitize_name(shape)
-    return _primitive_dir() / f"{safe}_{shape_key}.obj"
+    return _primitive_dir(node_item) / f"{safe}_{shape_key}.obj"
 
 
 def _write_obj(path: Path, verts: list[tuple[float, float, float]], faces: list[tuple[int, int, int]]) -> None:
@@ -221,7 +251,7 @@ def _build_primitive_mesh(shape: str):
         return _tube()
     if key == "torus":
         return _torus()
-    return _sphere()
+    return _cube()
 
 
 def _ensure_hidden_params(model, names: list[str]) -> None:
@@ -256,15 +286,12 @@ class PrimitiveWidget(QtWidgets.QWidget):
         self._shape = None
 
         layout = QtWidgets.QHBoxLayout(self)
-        layout.setContentsMargins(6, 6, 6, 6)
-        layout.setSpacing(6)
-
-        label = QtWidgets.QLabel("Primitive")
-        label.setStyleSheet("color:#cbd5e1;")
-        layout.addWidget(label, 0)
+        layout.setContentsMargins(6, 4, 6, 4)
+        layout.setSpacing(4)
 
         self._combo = QtWidgets.QComboBox()
-        self._combo.setMinimumWidth(120)
+        self._combo.setMinimumWidth(0)
+        self._combo.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         try:
             lv = QtWidgets.QListView()
             lv.setMouseTracking(True)
@@ -308,7 +335,7 @@ class PrimitiveWidget(QtWidgets.QWidget):
                     current = (entry.get("value") or "").strip().lower()
                     break
         if not current:
-            current = "sphere"
+            current = "cube"
 
         idx = max(0, self._combo.findData(current))
         self._combo.setCurrentIndex(idx)
@@ -316,15 +343,15 @@ class PrimitiveWidget(QtWidgets.QWidget):
         self._apply_shape(current, notify_scene=False)
 
     def sizeHint(self):
-        return QtCore.QSize(220, 40)
+        return QtCore.QSize(220, 32)
 
     def _apply_shape(self, shape: str, *, notify_scene: bool) -> None:
-        shape = (shape or "").strip().lower() or "sphere"
+        shape = (shape or "").strip().lower() or "cube"
         if self._shape == shape and notify_scene:
             return
         self._shape = shape
 
-        path = _primitive_path(getattr(self._node_item.model, "name", "primitive"), shape)
+        path = _primitive_path(self._node_item, getattr(self._node_item.model, "name", "primitive"), shape)
         try:
             if not path.exists():
                 verts, faces = _build_primitive_mesh(shape)
