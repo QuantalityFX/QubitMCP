@@ -23,6 +23,9 @@ PATTERN_OPTIONS = [
     ("Matrix Rain", "matrix_rain"),
 ]
 PATTERN_LABELS = {key: label for label, key in PATTERN_OPTIONS}
+TILING_MIN = 1
+TILING_MAX = 8
+RESOLUTION_OPTIONS = [256, 512, 1024]
 
 MATRIX_GLYPHS = (
     "ｦｧｨｩｪｫｬｭｮｯｰ"
@@ -77,6 +80,8 @@ def _ensure_param(node_item, name: str, default: str = "") -> None:
 
 def build_ports(node_item) -> None:
     _ensure_param(node_item, "pattern", DEFAULT_PATTERN)
+    _ensure_param(node_item, "tiling", "1")
+    _ensure_param(node_item, "resolution", str(TEXTURE_SIZE))
     _ensure_param(node_item, "source", "")
     _ensure_param(node_item, "path", "")
     if hasattr(node_item, "ensure_input"):
@@ -221,7 +226,8 @@ def _resolve_window(node_item):
 class CheckerboardGenerator:
     def __init__(self, size: int = TEXTURE_SIZE, cells: int = CHECKER_CELLS):
         self.size = int(size)
-        self.cells = int(cells) if cells else 8
+        self.base_cells = max(2, int(cells) if cells else 8)
+        self.cells = int(self.base_cells)
         self._time = 0.0
         self._phase = -1
         self._image: Optional[QtGui.QImage] = None
@@ -258,6 +264,27 @@ class CheckerboardGenerator:
     def image(self) -> QtGui.QImage:
         return self.ensure_image()
 
+    def set_density(self, density: int) -> None:
+        density = max(1, int(density))
+        new_cells = max(2, int(self.base_cells * density))
+        if new_cells == self.cells:
+            return
+        self.cells = new_cells
+        self._rebuild()
+
+    def set_size(self, size: int) -> None:
+        size = max(16, int(size))
+        if size == self.size:
+            return
+        self.size = size
+        self._rebuild()
+
+    def _rebuild(self) -> None:
+        phase = self._phase if self._phase >= 0 else 0
+        self._phase = phase
+        self._image = self._build_image(phase)
+        self._revision += 1
+
     def _build_image(self, phase: int) -> QtGui.QImage:
         size = max(16, int(self.size))
         cells = max(2, int(self.cells))
@@ -284,7 +311,8 @@ class CheckerboardGenerator:
 class MatrixRainGenerator:
     def __init__(self, size: int = TEXTURE_SIZE, cell: int = 12):
         self.size = int(size)
-        self.cell = max(8, int(cell))
+        self.base_cell = max(6, int(cell))
+        self.cell = int(self.base_cell)
         self._image: Optional[QtGui.QImage] = None
         self._revision = 0
         self._last_frame_id: Optional[int] = None
@@ -343,6 +371,27 @@ class MatrixRainGenerator:
             self._revision += 1
         return self._image
 
+    def set_density(self, density: int) -> None:
+        density = max(1, int(density))
+        new_cell = max(2, int(self.base_cell / density))
+        if new_cell == self.cell:
+            return
+        self.cell = new_cell
+        self._init_columns()
+        self._mark_dirty()
+
+    def set_size(self, size: int) -> None:
+        size = max(16, int(size))
+        if size == self.size:
+            return
+        self.size = size
+        self._init_columns()
+        self._mark_dirty()
+
+    def _mark_dirty(self) -> None:
+        self._image = None
+        self._revision += 1
+
     def _build_image(self) -> QtGui.QImage:
         size = max(16, int(self.size))
         cell = max(6, int(self.cell))
@@ -390,13 +439,17 @@ class MatrixRainGenerator:
 
 
 class TextureProProvider:
-    def __init__(self, size: int = TEXTURE_SIZE):
+    def __init__(self, size: int = TEXTURE_SIZE, density: int = 1):
+        self._size = max(16, int(size))
+        self._density = max(1, int(density))
         self._generators = {
-            "checkerboard": CheckerboardGenerator(size=size),
-            "matrix_rain": MatrixRainGenerator(size=size),
+            "checkerboard": CheckerboardGenerator(size=self._size),
+            "matrix_rain": MatrixRainGenerator(size=self._size),
         }
         self._mode = DEFAULT_PATTERN
         self._revision = 0
+        self._apply_size(self._size)
+        self._apply_density(self._density)
         self._last_gen_rev = self._generators[self._mode].revision
 
     def set_mode(self, mode: str) -> None:
@@ -412,6 +465,24 @@ class TextureProProvider:
     def mode(self) -> str:
         return self._mode
 
+    def set_density(self, density: int) -> None:
+        density = max(1, int(density))
+        if density == self._density:
+            return
+        self._density = density
+        self._apply_density(density)
+        self._revision += 1
+        self._last_gen_rev = self._generators[self._mode].revision
+
+    def set_resolution(self, size: int) -> None:
+        size = max(16, int(size))
+        if size == self._size:
+            return
+        self._size = size
+        self._apply_size(size)
+        self._revision += 1
+        self._last_gen_rev = self._generators[self._mode].revision
+
     def advance(self, dt: float, frame_id: Optional[int] = None) -> bool:
         gen = self._generators[self._mode]
         changed = gen.advance(dt, frame_id)
@@ -424,6 +495,24 @@ class TextureProProvider:
 
     def image(self) -> QtGui.QImage:
         return self._generators[self._mode].image()
+
+    def _apply_density(self, density: int) -> None:
+        for gen in self._generators.values():
+            fn = getattr(gen, "set_density", None)
+            if callable(fn):
+                try:
+                    fn(density)
+                except Exception:
+                    pass
+
+    def _apply_size(self, size: int) -> None:
+        for gen in self._generators.values():
+            fn = getattr(gen, "set_size", None)
+            if callable(fn):
+                try:
+                    fn(size)
+                except Exception:
+                    pass
 
     @property
     def revision(self) -> int:
@@ -499,6 +588,49 @@ class TextureProWidget(QtWidgets.QWidget):
             self._combo.addItem(label_text, key)
         self._combo.currentIndexChanged.connect(self._on_pattern_changed)
         right.addWidget(self._combo, 0)
+
+        settings_row = QtWidgets.QHBoxLayout()
+        settings_row.setContentsMargins(0, 0, 0, 0)
+        settings_row.setSpacing(6)
+
+        self._tiling = QtWidgets.QSpinBox()
+        self._tiling.setRange(TILING_MIN, TILING_MAX)
+        self._tiling.setSingleStep(1)
+        self._tiling.setFixedWidth(48)
+        self._tiling.setAlignment(QtCore.Qt.AlignRight)
+        self._tiling.setSuffix("x")
+        self._tiling.setToolTip("Tile density")
+        self._tiling.setStyleSheet(
+            "QSpinBox{background:#0f1216;color:#e6edf3;border:1px solid #3c4450;"
+            "border-radius:6px;padding:1px 4px;}"
+            "QSpinBox::up-button{width:10px;border:none;}"
+            "QSpinBox::down-button{width:10px;border:none;}"
+        )
+        self._tiling.valueChanged.connect(self._on_tiling_changed)
+        settings_row.addWidget(self._tiling, 0)
+
+        settings_row.addStretch(1)
+
+        self._res_combo = QtWidgets.QComboBox()
+        self._res_combo.setFixedWidth(70)
+        self._res_combo.setToolTip("Texture resolution")
+        self._res_combo.setStyleSheet(
+            "QComboBox{background:#0f1216;color:#e6edf3;border:1px solid #3c4450;"
+            "border-radius:6px;padding:1px 6px;}"
+            "QComboBox::drop-down{border:none;}"
+            "QComboBox QAbstractItemView{"
+            "  background:#0f1216;color:#e6edf3;border:1px solid #3c4450;"
+            "  outline:0px;}"
+            "QComboBox QAbstractItemView::item{padding:6px 10px;}"
+            "QComboBox QAbstractItemView::item:hover{background:#1f2937;}"
+            "QComboBox QAbstractItemView::item:selected{background:#22c55e;color:#0f1216;}"
+        )
+        for size in RESOLUTION_OPTIONS:
+            self._res_combo.addItem(str(size), int(size))
+        self._res_combo.currentIndexChanged.connect(self._on_resolution_changed)
+        settings_row.addWidget(self._res_combo, 0)
+
+        right.addLayout(settings_row, 0)
         right.addStretch(1)
 
         self._view_btn = QtWidgets.QPushButton("View")
@@ -594,6 +726,69 @@ class TextureProWidget(QtWidgets.QWidget):
         except Exception:
             pass
 
+    def _set_tiling_value(self, value: int) -> None:
+        value = max(TILING_MIN, min(TILING_MAX, int(value)))
+        if self._tiling.value() == value:
+            return
+        try:
+            self._tiling.blockSignals(True)
+            self._tiling.setValue(value)
+        finally:
+            self._tiling.blockSignals(False)
+
+    def _apply_tiling(self, value: int, notify_scene: bool = False) -> None:
+        value = max(TILING_MIN, min(TILING_MAX, int(value)))
+        try:
+            if hasattr(self._provider, "set_density"):
+                self._provider.set_density(value)
+        except Exception:
+            pass
+        self._set_param("tiling", str(value), notify_scene=notify_scene)
+        self._set_tiling_value(value)
+        try:
+            self._refresh_preview()
+        except Exception:
+            pass
+
+    def _on_tiling_changed(self):
+        value = int(self._tiling.value())
+        self._apply_tiling(value, notify_scene=True)
+
+    def _set_resolution_value(self, value: int) -> None:
+        try:
+            idx = self._res_combo.findData(int(value))
+        except Exception:
+            idx = -1
+        if idx >= 0 and self._res_combo.currentIndex() != idx:
+            try:
+                self._res_combo.blockSignals(True)
+                self._res_combo.setCurrentIndex(idx)
+            finally:
+                self._res_combo.blockSignals(False)
+
+    def _apply_resolution(self, value: int, notify_scene: bool = False) -> None:
+        try:
+            value = int(value)
+        except Exception:
+            value = TEXTURE_SIZE
+        if value not in RESOLUTION_OPTIONS:
+            value = RESOLUTION_OPTIONS[0]
+        try:
+            if hasattr(self._provider, "set_resolution"):
+                self._provider.set_resolution(value)
+        except Exception:
+            pass
+        self._set_param("resolution", str(value), notify_scene=notify_scene)
+        self._set_resolution_value(value)
+        try:
+            self._refresh_preview()
+        except Exception:
+            pass
+
+    def _on_resolution_changed(self):
+        value = self._res_combo.currentData() or self._res_combo.currentText()
+        self._apply_resolution(value, notify_scene=True)
+
     def _on_pattern_changed(self):
         key = self._combo.currentData() or self._combo.currentText()
         self._apply_pattern(str(key), notify_scene=True)
@@ -610,6 +805,23 @@ class TextureProWidget(QtWidgets.QWidget):
             pattern = DEFAULT_PATTERN
             self._set_param("pattern", pattern, notify_scene=False)
         self._apply_pattern(pattern, notify_scene=False)
+
+        tiling = 1
+        try:
+            tiling = int(_param_value(self._node_item.model, "tiling") or 1)
+        except Exception:
+            tiling = 1
+        tiling = max(TILING_MIN, min(TILING_MAX, int(tiling)))
+        self._apply_tiling(tiling, notify_scene=False)
+
+        resolution = TEXTURE_SIZE
+        try:
+            resolution = int(_param_value(self._node_item.model, "resolution") or TEXTURE_SIZE)
+        except Exception:
+            resolution = TEXTURE_SIZE
+        if resolution not in RESOLUTION_OPTIONS:
+            resolution = RESOLUTION_OPTIONS[0]
+        self._apply_resolution(resolution, notify_scene=False)
 
         src_item, src_kind, src_path = _resolve_input_item(self._node_item)
         self._input_item = src_item
