@@ -2831,7 +2831,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         btns.rejected.connect(dlg.reject)
         dlg.exec()
 
-    def open_3d_model(self, path: str, texture_path: str | None = None) -> None:
+    def open_3d_model(self, path: str, texture_path: str | None = None, frame: bool = True) -> None:
         import traceback
 
         path = (path or "").strip()
@@ -2902,20 +2902,21 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             return
 
         try:
-            loader(path, texture_path)
+            loader(path, texture_path, frame=frame)
             print("[open_3d_model] loader finished", flush=True)
 
-            # frame after loading so zoom/center are sane
-            try:
-                if hasattr(gl_view, "_on_frame_clicked"):
-                    gl_view._on_frame_clicked()
-            except Exception:
-                pass
+            if frame:
+                # frame after loading so zoom/center are sane
+                try:
+                    if hasattr(gl_view, "_on_frame_clicked"):
+                        gl_view._on_frame_clicked()
+                except Exception:
+                    pass
 
         except Exception:
             print("[open_3d_model] loader error:\n" + traceback.format_exc(), flush=True)
 
-    def open_scene_assets(self, assets) -> None:
+    def open_scene_assets(self, assets, frame: bool = True) -> None:
         import traceback
         import time
 
@@ -3026,7 +3027,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         loader = getattr(gl_view, "load_scene_assets", None)
         if callable(loader):
             try:
-                loader(clean, frame=True)
+                loader(clean, frame=frame)
                 return
             except Exception:
                 print("[open_scene_assets] loader error:\n" + traceback.format_exc(), flush=True)
@@ -3034,8 +3035,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         # fallback: load first asset only
         first = clean[0]
         try:
-            gl_view.load_model_path(first["path"], first.get("texture"))
-            if hasattr(gl_view, "_on_frame_clicked"):
+            gl_view.load_model_path(first["path"], first.get("texture"), frame=frame)
+            if frame and hasattr(gl_view, "_on_frame_clicked"):
                 gl_view._on_frame_clicked()
         except Exception:
             print("[open_scene_assets] fallback failed:\n" + traceback.format_exc(), flush=True)

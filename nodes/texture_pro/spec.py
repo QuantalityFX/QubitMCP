@@ -1013,7 +1013,12 @@ class TextureProWidget(QtWidgets.QWidget):
             handler = getattr(win, "open_scene_assets", None) if win is not None else None
             if callable(handler):
                 try:
-                    handler(assets)
+                    handler(assets, frame=False)
+                except TypeError:
+                    try:
+                        handler(assets)
+                    except Exception:
+                        pass
                 except Exception:
                     pass
             return
@@ -1030,7 +1035,12 @@ class TextureProWidget(QtWidgets.QWidget):
         handler = getattr(win, "open_3d_model", None) if win is not None else None
         if callable(handler):
             try:
-                handler(src_path, None)
+                handler(src_path, None, frame=False)
+            except TypeError:
+                try:
+                    handler(src_path, None)
+                except Exception:
+                    pass
             except Exception:
                 pass
         glv = getattr(win, "gl_view", None) if win is not None else None
