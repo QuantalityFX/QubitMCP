@@ -56,6 +56,56 @@ def _param_value(model, name: str) -> str:
     return ""
 
 
+def _resolve_input_item(scene, node_item):
+    if scene is None or node_item is None:
+        return None, "", ""
+
+    def _trace(item, depth=0, visited=None):
+        if item is None or depth > 8:
+            return None, "", ""
+        if visited is None:
+            visited = set()
+        if item in visited:
+            return None, "", ""
+        visited.add(item)
+        m = getattr(item, "model", None)
+        if m is None:
+            return None, "", ""
+        kind = (getattr(m, "kind", "") or "").strip().lower()
+        if kind == "switch":
+            try:
+                edges = list(scene._ordered_in_edges(item))
+            except Exception:
+                try:
+                    edges = list(scene._in_edges(item))
+                except Exception:
+                    edges = []
+            if edges:
+                return _trace(getattr(edges[0], "src", None), depth + 1, visited)
+        path = _param_value(m, "path")
+        return item, kind, path
+
+    try:
+        in_edges = list(scene._ordered_in_edges(node_item))
+    except Exception:
+        try:
+            in_edges = list(scene._in_edges(node_item))
+        except Exception:
+            in_edges = []
+    chosen = None
+    for edge in in_edges:
+        name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
+        if (name or "").strip().lower() in {"mesh", "path"}:
+            chosen = edge
+            break
+    if chosen is None and in_edges:
+        chosen = in_edges[0]
+    if chosen is not None:
+        src_item = getattr(chosen, "src", None)
+        return _trace(src_item, 0, set())
+    return None, "", ""
+
+
 def _collect_assets(node_item) -> List[Dict[str, str]]:
     scene = node_item.scene()
     if scene is None:
@@ -91,7 +141,20 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
         model = getattr(src_item, "model", None)
         if model is None:
             continue
+        kind = (getattr(model, "kind", "") or "").strip().lower()
         path = _param_value(model, "path")
+        owner_model = model
+        owner_kind = kind
+
+        # If a texture node is in between, use the upstream model for owner/xform,
+        # but keep the texture override from the texture node.
+        if kind in ("texture", "texture_pro"):
+            upstream_item, upstream_kind, upstream_path = _resolve_input_item(scene, src_item)
+            if upstream_item is not None and getattr(upstream_item, "model", None) is not None:
+                owner_model = getattr(upstream_item, "model", owner_model)
+                owner_kind = upstream_kind or owner_kind
+                if upstream_path:
+                    path = upstream_path
         if not path:
             continue
         ext = Path(path).suffix.lower()
@@ -101,7 +164,6 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
         if key in seen:
             continue
         seen.add(key)
-        kind = (getattr(model, "kind", "") or "").strip().lower()
         texture_provider = None
         if kind == "texture_pro":
             try:
@@ -112,7 +174,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             texture = _param_value(model, "texture")
         else:
             texture = _param_value(model, "texture") if ext == ".obj" else ""
-        node_name = getattr(model, "name", "") or ""
+        node_name = getattr(owner_model, "name", "") or ""
         xf = None
         try:
             if node_name and node_name in xforms:

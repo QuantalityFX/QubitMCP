@@ -2181,6 +2181,56 @@ class NodeItem(QtWidgets.QGraphicsObject):
         sc = self.scene()
         if sc is None:
             return []
+
+        def _resolve_input_item(node_item):
+            def _trace(item, depth=0, visited=None):
+                if item is None or depth > 8:
+                    return None, "", ""
+                if visited is None:
+                    visited = set()
+                if item in visited:
+                    return None, "", ""
+                visited.add(item)
+                m = getattr(item, "model", None)
+                if m is None:
+                    return None, "", ""
+                kind = (getattr(m, "kind", "") or "").strip().lower()
+                if kind == "switch":
+                    try:
+                        edges = list(sc._ordered_in_edges(item))
+                    except Exception:
+                        try:
+                            edges = list(sc._in_edges(item))
+                        except Exception:
+                            edges = []
+                    if edges:
+                        return _trace(getattr(edges[0], "src", None), depth + 1, visited)
+                path = ""
+                for p in (m.params or []):
+                    if (p.get("name") or "").strip().lower() == "path":
+                        path = (p.get("value") or "").strip()
+                        break
+                return item, kind, path
+
+            try:
+                in_edges = list(sc._ordered_in_edges(node_item))
+            except Exception:
+                try:
+                    in_edges = list(sc._in_edges(node_item))
+                except Exception:
+                    in_edges = []
+            chosen = None
+            for edge in in_edges:
+                name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
+                if (name or "").strip().lower() in {"mesh", "path"}:
+                    chosen = edge
+                    break
+            if chosen is None and in_edges:
+                chosen = in_edges[0]
+            if chosen is not None:
+                src_item = getattr(chosen, "src", None)
+                return _trace(src_item, 0, set())
+            return None, "", ""
         try:
             in_edges = list(sc._ordered_in_edges(self))
         except Exception:
@@ -2211,12 +2261,22 @@ class NodeItem(QtWidgets.QGraphicsObject):
             model = getattr(src_item, "model", None)
             if model is None:
                 continue
-            model_name = (getattr(model, "name", "") or "").strip()
             path = ""
             for p in (model.params or []):
                 if (p.get("name") or "").strip().lower() == "path":
                     path = (p.get("value") or "").strip()
                     break
+
+            kind = (getattr(model, "kind", "") or "").strip().lower()
+            owner_model = model
+            if kind in ("texture", "texture_pro"):
+                upstream_item, _up_kind, upstream_path = _resolve_input_item(src_item)
+                if upstream_item is not None and getattr(upstream_item, "model", None) is not None:
+                    owner_model = getattr(upstream_item, "model", owner_model)
+                    if upstream_path:
+                        path = upstream_path
+
+            model_name = (getattr(owner_model, "name", "") or "").strip()
             if not path:
                 continue
             ext = os.path.splitext(path)[1].lower()
@@ -2227,7 +2287,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
             seen.add(path)
             texture = ""
             texture_provider = None
-            kind = (getattr(model, "kind", "") or "").strip().lower()
             if kind == "texture_pro":
                 try:
                     texture_provider = getattr(model, "_texture_pro_provider", None)
