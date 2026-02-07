@@ -77,7 +77,8 @@ vec4 proc_matrix(vec2 uv) {
     float pack_x = max(1.0, ProcParams.y);
     float pack_y = max(1.0, ProcParams.z);
     float seed = fract(ProcSeed * 0.000244140625);
-    float anim_t = ProcTime * max(0.0, ProcAnimSpeed);
+    float raw_t = ProcTime;
+    float anim_t = raw_t * max(0.0, ProcAnimSpeed);
     float cols = max(1.0, tiling * pack_x * base);
     float rows = max(1.0, tiling * pack_y * base);
     vec2 p = fract(uv) * vec2(cols, rows);
@@ -85,7 +86,26 @@ vec4 proc_matrix(vec2 uv) {
     float speed = mix(0.6, 1.8, hash11(col * 0.73 + seed * 91.7));
     float trail = mix(8.0, 16.0, hash11(col * 1.31 + seed * 57.3));
     float col_phase = hash11(col * 1.19 + seed * 53.1) * rows;
-    float scroll = anim_t * speed + col_phase;
+    float life = mix(3.0, 9.0, hash11(col * 1.61 + seed * 9.7));
+    float fade = mix(1.1025, 2.646, hash11(col * 2.11 + seed * 7.3));
+    float dead = mix(0.8, 2.2, hash11(col * 2.71 + seed * 5.1));
+    float cycle = life + fade + dead;
+    float offset = hash11(col * 3.17 + seed * 17.1) * cycle;
+    float tcol = raw_t + offset;
+    float base_cycle = floor(tcol / cycle) * cycle;
+    float t_in = tcol - base_cycle;
+    if (t_in >= life + fade) {
+        vec3 bg = vec3(0.01, 0.03, 0.01);
+        return vec4(bg, 1.0);
+    }
+    float t_alive = min(t_in, life);
+    float fade_out = 1.0;
+    if (t_in >= life) {
+        float fade_t = (t_in - life) / max(0.0001, fade);
+        fade_out = 1.0 - clamp(fade_t, 0.0, 1.0);
+    }
+    float motion_t = (base_cycle + t_alive - offset) * max(0.0, ProcAnimSpeed);
+    float scroll = motion_t * speed + col_phase;
     float stream_y = p.y - scroll;
     float row = floor(stream_y);
     vec2 f = vec2(fract(p.x), fract(stream_y));
@@ -99,7 +119,7 @@ vec4 proc_matrix(vec2 uv) {
     }
     vec2 pg = max(ProcGlyphGrid, vec2(1.0));
     float glyph_count = max(1.0, min(pg.x * pg.y, ProcGlyphCount));
-    float glyph_anim = floor(anim_t * 9.0);
+    float glyph_anim = floor(motion_t * 9.0);
     vec2 gh = vec2(
         col + row * 0.11 + glyph_anim * 0.07 + seed * 37.0,
         row + col * 0.19 + glyph_anim * 0.13 + seed * 61.0
@@ -117,7 +137,8 @@ vec4 proc_matrix(vec2 uv) {
     vec3 head_col = vec3(0.97, 0.99, 0.97);
     vec3 tail_col = vec3(0.11, 0.78, 0.14);
     vec3 color = mix(tail_col, head_col, smoothstep(0.6, 1.0, t));
-    vec3 rgb = mix(bg, color, glyph * t);
+    float t_fade = t * fade_out;
+    vec3 rgb = mix(bg, color, glyph * t_fade);
     return vec4(rgb, 1.0);
 }
 
