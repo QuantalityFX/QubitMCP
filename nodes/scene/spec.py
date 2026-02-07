@@ -148,7 +148,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
 
         # If a texture node is in between, use the upstream model for owner/xform,
         # but keep the texture override from the texture node.
-        if kind in ("texture", "texture_pro"):
+        if kind in ("texture", "texture_pro", "texture_layer"):
             upstream_item, upstream_kind, upstream_path = _resolve_input_item(scene, src_item)
             if upstream_item is not None and getattr(upstream_item, "model", None) is not None:
                 if upstream_kind == "uv_unwrap":
@@ -183,6 +183,11 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
         if kind == "texture_pro":
             try:
                 texture_provider = getattr(model, "_texture_pro_provider", None)
+            except Exception:
+                texture_provider = None
+        elif kind == "texture_layer":
+            try:
+                texture_provider = getattr(model, "_texture_layer_provider", None)
             except Exception:
                 texture_provider = None
         if kind in ("texture", "texture_pro"):
@@ -309,7 +314,7 @@ class SceneAssemblyWidget(QtWidgets.QWidget):
             QtWidgets.QMessageBox.information(
                 self,
                 "Scene",
-                "Connect one or more 3D import, primitive, UV unwrap, texture, or texture pro nodes first.",
+            "Connect one or more 3D import, primitive, UV unwrap, texture, texture layer, or texture pro nodes first.",
             )
             return
         # Ensure splats start visible on open (avoid auto-hidden splats)
@@ -1006,11 +1011,11 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 if model is None:
                     continue
                 kind = (getattr(model, "kind", "") or "").strip().lower()
-                if kind not in ("import", "primitive", "uv_unwrap", "texture", "texture_pro"):
+                if kind not in ("import", "primitive", "uv_unwrap", "texture", "texture_pro", "texture_layer"):
                     continue
                 path = _param_value(model, "path")
                 owner_model = model
-                if kind in ("texture", "texture_pro"):
+                if kind in ("texture", "texture_pro", "texture_layer"):
                     upstream_item, upstream_kind, upstream_path = _resolve_input_item(scene, src_item)
                     if upstream_item is not None and getattr(upstream_item, "model", None) is not None:
                         if upstream_kind == "uv_unwrap":
@@ -1041,7 +1046,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 rows.append({"name": name, "path": path})
 
             if not rows:
-                empty = QtWidgets.QListWidgetItem("(no connected imports, primitives, UV unwraps, textures, or texture pros)")
+                empty = QtWidgets.QListWidgetItem("(no connected imports, primitives, UV unwraps, textures, texture layers, or texture pros)")
                 empty.setFlags(QtCore.Qt.NoItemFlags)
                 outliner.addItem(empty)
                 try:

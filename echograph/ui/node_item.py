@@ -298,6 +298,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     _texture_pro.register()
             except Exception:
                 pass
+        # Ensure Texture Layer spec is registered even if the loader was skipped.
+        if (self.model.kind or "").strip().lower() == "texture_layer":
+            try:
+                from nodes import texture_layer as _texture_layer  # type: ignore
+                if hasattr(_texture_layer, "register"):
+                    _texture_layer.register()
+            except Exception:
+                pass
 
         self.setFlag(QtWidgets.QGraphicsItem.ItemIsMovable, True)
         self.setFlag(QtWidgets.QGraphicsItem.ItemSendsGeometryChanges, True)
@@ -459,6 +467,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 params.append({"name": "speed", "value": "1.00"})
             if "emissive" not in names:
                 params.append({"name": "emissive", "value": "0.60"})
+            if "lighting" not in names:
+                params.append({"name": "lighting", "value": "1.00"})
+            if "bg_color" not in names:
+                params.append({"name": "bg_color", "value": ""})
+            if "bg_alpha" not in names:
+                params.append({"name": "bg_alpha", "value": "1.0"})
             if "resolution" not in names:
                 params.append({"name": "resolution", "value": "256"})
             if "source" not in names:
@@ -477,9 +491,45 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 params.append(hidden_entry)
             raw = hidden_entry.get("value", "")
             hidden = {t.strip().lower() for t in str(raw).split(",") if t.strip()}
-            hidden.update({"pattern", "tiling", "pack_x", "pack_y", "speed", "invert", "emissive", "resolution", "source", "path"})
+            hidden.update({"pattern", "tiling", "pack_x", "pack_y", "speed", "invert", "emissive", "lighting", "bg_color", "bg_alpha", "resolution", "source", "path"})
             hidden_entry["value"] = ",".join(sorted(hidden))
             self.model.params = params
+        elif kind_lower == "texture_layer":
+            params = list(self.model.params or [])
+            names = {(p.get("name") or "").strip().lower() for p in params}
+            if "mesh" not in names:
+                params.append({"name": "mesh", "value": ""})
+            if "base" not in names:
+                params.append({"name": "base", "value": ""})
+            if "overlay" not in names:
+                params.append({"name": "overlay", "value": ""})
+            if "source" not in names:
+                params.append({"name": "source", "value": ""})
+            if "path" not in names:
+                params.append({"name": "path", "value": ""})
+            store_key = "__ui_hidden_params"
+            hidden_entry = None
+            for p in params:
+                if (p.get("name") or "").strip().lower() == store_key:
+                    hidden_entry = p
+                    break
+            if hidden_entry is None:
+                hidden_entry = {"name": store_key, "value": ""}
+                params.append(hidden_entry)
+            raw = hidden_entry.get("value", "")
+            hidden = {t.strip().lower() for t in str(raw).split(",") if t.strip()}
+            hidden.update({"source", "path"})
+            hidden.discard("mesh")
+            hidden.discard("base")
+            hidden.discard("overlay")
+            hidden_entry["value"] = ",".join(sorted(hidden))
+            self.model.params = params
+            try:
+                self.ensure_input("mesh")
+                self.ensure_input("base")
+                self.ensure_input("overlay")
+            except Exception:
+                pass
         elif kind_lower == "note":
             # Ensure notes always start with at least one parameter for convenience
             if not (self.model.params or []):
@@ -590,7 +640,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
         elif kind == "texture":
             hidden.update({"texture", "source", "path"})
         elif kind == "texture_pro":
-            hidden.update({"pattern", "tiling", "pack_x", "pack_y", "speed", "emissive", "resolution", "source", "path"})
+            hidden.update({"pattern", "tiling", "pack_x", "pack_y", "speed", "emissive", "lighting", "bg_color", "bg_alpha", "resolution", "source", "path"})
+        elif kind == "texture_layer":
+            hidden.update({"source", "path"})
 
         return hidden
 
@@ -1117,6 +1169,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
         elif kind == "texture_pro":
             # Match embedded TextureProWidget height (avoid clipping bottom corners).
             body_h = max(self._PARAM_ROW_H * 9, 238)
+            node_w = self._BASE_W
+        elif kind == "texture_layer":
+            # Match embedded TextureLayerWidget height so params/pins don't clip.
+            body_h = 112
+            try:
+                from nodes.texture_layer import spec as _tl_spec  # type: ignore
+                body_h = max(body_h, int(getattr(_tl_spec, "PREVIEW_SIZE", 72)) + 40)
+            except Exception:
+                pass
             node_w = self._BASE_W
         else:
             body_h = 0
@@ -2278,7 +2339,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
             kind = (getattr(model, "kind", "") or "").strip().lower()
             owner_model = model
-            if kind in ("texture", "texture_pro"):
+            if kind in ("texture", "texture_pro", "texture_layer"):
                 upstream_item, upstream_kind, upstream_path = _resolve_input_item(src_item)
                 if upstream_item is not None and getattr(upstream_item, "model", None) is not None:
                     if upstream_kind == "uv_unwrap":
@@ -2312,6 +2373,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
             if kind == "texture_pro":
                 try:
                     texture_provider = getattr(model, "_texture_pro_provider", None)
+                except Exception:
+                    texture_provider = None
+            elif kind == "texture_layer":
+                try:
+                    texture_provider = getattr(model, "_texture_layer_provider", None)
                 except Exception:
                     texture_provider = None
             if kind in ("texture", "texture_pro"):
