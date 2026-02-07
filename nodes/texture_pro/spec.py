@@ -35,6 +35,19 @@ EMISSIVE_MIN = 0.0
 EMISSIVE_MAX = 2.0
 EMISSIVE_DEFAULT = 0.6
 RESOLUTION_OPTIONS = [256, 512, 1024]
+HIDDEN_PARAMS = (
+    "pattern",
+    "tiling",
+    "pack_x",
+    "pack_y",
+    "speed",
+    "emissive",
+    "resolution",
+    "source",
+    "path",
+    "bg_color",
+    "bg_alpha",
+)
 
 MATRIX_GLYPHS = (
     "ｦｧｨｩｪｫｬｭｮｯｰ"
@@ -116,6 +129,33 @@ def _ensure_param(node_item, name: str, default: str = "") -> None:
     params.append({"name": name, "value": default})
 
 
+def _ensure_hidden_params(model, names) -> None:
+    if model is None:
+        return
+    params = list(getattr(model, "params", None) or [])
+    store_key = "__ui_hidden_params"
+    existing = None
+    for entry in params:
+        if (entry.get("name") or "").strip().lower() == store_key:
+            existing = entry
+            break
+    if existing is None:
+        existing = {"name": store_key, "value": ""}
+        params.append(existing)
+
+    raw = existing.get("value", "")
+    cur = set()
+    for part in str(raw).split(","):
+        t = part.strip().lower()
+        if t:
+            cur.add(t)
+    for name in names or []:
+        if name:
+            cur.add(str(name).strip().lower())
+    existing["value"] = ",".join(sorted(cur))
+    model.params = params
+
+
 def _build_glyph_atlas():
     glyphs = list(MATRIX_GLYPHS)
     cols = GLYPH_ATLAS_COLS
@@ -169,6 +209,7 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, "resolution", str(TEXTURE_SIZE))
     _ensure_param(node_item, "source", "")
     _ensure_param(node_item, "path", "")
+    _ensure_hidden_params(getattr(node_item, "model", None), HIDDEN_PARAMS)
     if hasattr(node_item, "ensure_input"):
         node_item.ensure_input("mesh")
 
@@ -854,12 +895,34 @@ class TextureProWidget(QtWidgets.QWidget):
         )
         left.addWidget(self._preview, 0, QtCore.Qt.AlignLeft)
 
-        self._bg_btn = QtWidgets.QPushButton("Background")
+        self._bg_btn = QtWidgets.QPushButton("BG Color")
         self._bg_btn.setFixedWidth(PREVIEW_SIZE)
-        self._bg_btn.setToolTip("Background color (use alpha for transparency)")
+        self._bg_btn.setToolTip("Background color")
         self._bg_btn.clicked.connect(self._on_bg_clicked)
         self._set_bg_button(None)
         left.addWidget(self._bg_btn, 0, QtCore.Qt.AlignLeft)
+
+        self._bg_alpha_label = QtWidgets.QLabel("BG Alpha")
+        self._bg_alpha_label.setStyleSheet("color:#94a3b8;font-size:10px;")
+        self._bg_alpha_label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        self._bg_alpha_label.setFixedWidth(PREVIEW_SIZE)
+        left.addWidget(self._bg_alpha_label, 0, QtCore.Qt.AlignLeft)
+
+        self._bg_alpha = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self._bg_alpha.setRange(0, 100)
+        self._bg_alpha.setSingleStep(1)
+        self._bg_alpha.setPageStep(10)
+        self._bg_alpha.setFixedWidth(PREVIEW_SIZE)
+        self._bg_alpha.setToolTip("Background alpha")
+        self._bg_alpha.setStyleSheet(
+            "QSlider::groove:horizontal{height:4px;background:#1f2937;border-radius:2px;}"
+            "QSlider::sub-page:horizontal{background:#22c55e;border-radius:2px;}"
+            "QSlider::handle:horizontal{background:#e2e8f0;border:1px solid #0f172a;"
+            "width:10px;margin:-4px 0;border-radius:5px;}"
+        )
+        self._bg_alpha.valueChanged.connect(self._on_bg_alpha_changed)
+        self._set_bg_alpha_value(1.0)
+        left.addWidget(self._bg_alpha, 0, QtCore.Qt.AlignLeft)
 
         self._view_btn = QtWidgets.QPushButton("View")
         self._view_btn.setFixedWidth(PREVIEW_SIZE)
@@ -1187,20 +1250,12 @@ class TextureProWidget(QtWidgets.QWidget):
         except Exception:
             pass
 
-    def _bg_rgba_from_params(self) -> Optional[tuple]:
-        raw_color = ""
+    def _bg_alpha_from_params(self) -> float:
         raw_alpha = ""
         try:
-            raw_color = str(_param_value(self._node_item.model, "bg_color") or "").strip()
             raw_alpha = str(_param_value(self._node_item.model, "bg_alpha") or "").strip()
         except Exception:
-            raw_color = ""
             raw_alpha = ""
-        if not raw_color:
-            return None
-        color = QtGui.QColor(raw_color)
-        if not color.isValid():
-            return None
         alpha = 1.0
         if raw_alpha:
             try:
@@ -1209,7 +1264,20 @@ class TextureProWidget(QtWidgets.QWidget):
                 alpha = 1.0
         if alpha > 1.0:
             alpha = min(alpha, 255.0) / 255.0
-        alpha = max(0.0, min(1.0, alpha))
+        return max(0.0, min(1.0, alpha))
+
+    def _bg_rgba_from_params(self) -> Optional[tuple]:
+        raw_color = ""
+        try:
+            raw_color = str(_param_value(self._node_item.model, "bg_color") or "").strip()
+        except Exception:
+            raw_color = ""
+        if not raw_color:
+            return None
+        color = QtGui.QColor(raw_color)
+        if not color.isValid():
+            return None
+        alpha = self._bg_alpha_from_params()
         color.setAlpha(int(round(alpha * 255)))
         return (color.red(), color.green(), color.blue(), color.alpha())
 
@@ -1258,6 +1326,20 @@ class TextureProWidget(QtWidgets.QWidget):
         )
         self._bg_btn.setStyleSheet(style)
 
+    def _set_bg_alpha_value(self, alpha: float) -> None:
+        alpha = max(0.0, min(1.0, float(alpha)))
+        value = int(round(alpha * 100.0))
+        try:
+            if self._bg_alpha.value() != value:
+                self._bg_alpha.blockSignals(True)
+                self._bg_alpha.setValue(value)
+        finally:
+            try:
+                self._bg_alpha.blockSignals(False)
+            except Exception:
+                pass
+        self._bg_alpha_label.setText(f"BG Alpha {value}%")
+
     def _apply_background(self, rgba: Optional[tuple], notify_scene: bool = False) -> None:
         try:
             if hasattr(self._provider, "set_background"):
@@ -1267,6 +1349,7 @@ class TextureProWidget(QtWidgets.QWidget):
         if rgba is None:
             self._set_param("bg_color", "", notify_scene=notify_scene)
             self._set_param("bg_alpha", "1.0", notify_scene=notify_scene)
+            self._set_bg_alpha_value(1.0)
         else:
             try:
                 r, g, b, a = rgba
@@ -1274,6 +1357,7 @@ class TextureProWidget(QtWidgets.QWidget):
                 r, g, b, a = 15, 18, 22, 255
             self._set_param("bg_color", f"#{int(r):02x}{int(g):02x}{int(b):02x}", notify_scene=notify_scene)
             self._set_param("bg_alpha", f"{float(a) / 255.0:.2f}", notify_scene=notify_scene)
+            self._set_bg_alpha_value(float(a) / 255.0)
         self._set_bg_button(rgba)
         try:
             self._refresh_preview()
@@ -1521,12 +1605,24 @@ class TextureProWidget(QtWidgets.QWidget):
         picked = QtWidgets.QColorDialog.getColor(
             init_color,
             parent,
-            "Background Color",
-            QtWidgets.QColorDialog.ShowAlphaChannel,
+            "BG Color",
         )
         if not picked.isValid():
             return
-        rgba = (picked.red(), picked.green(), picked.blue(), picked.alpha())
+        alpha = self._bg_alpha_from_params()
+        rgba = (picked.red(), picked.green(), picked.blue(), int(round(alpha * 255)))
+        self._apply_background(rgba, notify_scene=True)
+
+    def _on_bg_alpha_changed(self, value: int):
+        alpha = max(0.0, min(1.0, float(value) / 100.0))
+        rgba = self._bg_rgba_from_params()
+        if rgba is None:
+            rgba = self._default_bg_rgba()
+        try:
+            r, g, b, _ = rgba
+        except Exception:
+            r, g, b = 15, 18, 22
+        rgba = (int(r), int(g), int(b), int(round(alpha * 255)))
         self._apply_background(rgba, notify_scene=True)
 
     def _on_pattern_changed(self):
