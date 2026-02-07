@@ -1667,7 +1667,10 @@ class MGLRendererMixin:
         except Exception:
             pass
         try:
-            self._mgl_prog["ProcAnimSpeed"].value = float(state.get("speed", 1.0) or 1.0)
+            speed_val = state.get("speed", 1.0)
+            if speed_val is None:
+                speed_val = 1.0
+            self._mgl_prog["ProcAnimSpeed"].value = float(speed_val)
         except Exception:
             pass
         try:

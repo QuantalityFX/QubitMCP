@@ -29,9 +29,8 @@ TILING_MAX = 100
 PACK_MIN = 1
 PACK_MAX = 100
 SPEED_MIN = 0.0
-SPEED_MAX = 4.0
+SPEED_MAX = 10.0
 SPEED_DEFAULT = 1.0
-SPEED_RATE = 0.25
 RESOLUTION_OPTIONS = [256, 512, 1024]
 
 MATRIX_GLYPHS = (
@@ -436,7 +435,7 @@ class MatrixRainGenerator:
         return {
             "x": idx * self.cell_x,
             "y": self._rng.uniform(-self.size, self.size),
-            "speed": self._rng.uniform(6.0, 18.0),
+            "speed": self._rng.uniform(0.6, 1.8),
             "trail": self._rng.randint(8, 16),
             "glyphs": [self._random_glyph() for _ in range(20)],
         }
@@ -636,7 +635,7 @@ class TextureProProvider:
 
     def advance(self, dt: float, frame_id: Optional[int] = None) -> bool:
         gen = self._generators[self._mode]
-        changed = gen.advance(float(dt) * float(self._speed) * float(SPEED_RATE), frame_id)
+        changed = gen.advance(float(dt) * float(self._speed), frame_id)
         gen_rev = gen.revision
         if changed or gen_rev != self._last_gen_rev:
             self._last_gen_rev = gen_rev
@@ -654,7 +653,7 @@ class TextureProProvider:
             "tiling": int(self._density),
             "pack_x": int(self._pack_x),
             "pack_y": int(self._pack_y),
-            "speed": float(self._speed) * float(SPEED_RATE),
+            "speed": float(self._speed),
             "seed": float(self._gpu_seed),
             "glyph_atlas": atlas,
             "glyph_grid": grid,
@@ -914,7 +913,18 @@ class TextureProWidget(QtWidgets.QWidget):
         QtCore.QTimer.singleShot(0, self._update_inputs)
 
     def sizeHint(self):
-        return QtCore.QSize(250, PREVIEW_SIZE + 66)
+        w = 250
+        h = PREVIEW_SIZE + 66
+        try:
+            lay = self.layout()
+            if lay is not None:
+                hint = lay.sizeHint()
+                if hint is not None:
+                    w = max(w, int(hint.width()) + 12)
+                    h = max(h, int(hint.height()) + 8)
+        except Exception:
+            pass
+        return QtCore.QSize(w, h)
 
     def _is_selected(self) -> bool:
         sc = None
@@ -1413,7 +1423,11 @@ def render_node_body(node_item, y_cursor: int) -> int:
     proxy.setWidget(body)
     proxy.setZValue(node_item.zValue() + 0.1)
     proxy.setPos(0, y_cursor)
-    h = body.sizeHint().height()
+    h = max(
+        int(body.sizeHint().height()),
+        int(body.minimumSizeHint().height()),
+        int(body.minimumHeight() or 0),
+    )
     proxy.resize(node_item.width, h)
     try:
         node_item._plugin_proxies.append(proxy)

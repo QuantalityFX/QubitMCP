@@ -81,7 +81,7 @@ vec4 proc_matrix(vec2 uv) {
     float rows = max(1.0, tiling * pack_y * base);
     vec2 p = fract(uv) * vec2(cols, rows);
     float col = floor(p.x);
-    float speed = mix(6.0, 18.0, hash11(col * 0.73 + seed * 91.7));
+    float speed = mix(0.6, 1.8, hash11(col * 0.73 + seed * 91.7));
     float trail = mix(8.0, 16.0, hash11(col * 1.31 + seed * 57.3));
     float col_phase = hash11(col * 1.19 + seed * 53.1) * rows;
     float scroll = anim_t * speed + col_phase;
@@ -113,8 +113,8 @@ vec4 proc_matrix(vec2 uv) {
     vec2 glyph_uv = (gcell + mix(pad, vec2(1.0) - pad, f)) / pg;
     float glyph = texture(ProcGlyph, glyph_uv).r;
     glyph = smoothstep(0.20, 0.86, glyph);
-    vec3 head_col = vec3(0.97, 0.99, 0.98);
-    vec3 tail_col = vec3(0.13, 0.77, 0.37);
+    vec3 head_col = vec3(0.97, 0.99, 0.97);
+    vec3 tail_col = vec3(0.11, 0.78, 0.14);
     vec3 color = mix(tail_col, head_col, smoothstep(0.6, 1.0, t));
     vec3 rgb = mix(bg, color, glyph * t);
     return vec4(rgb, 1.0);
