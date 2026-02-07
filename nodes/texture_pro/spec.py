@@ -164,6 +164,8 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, "speed", f"{SPEED_DEFAULT:.2f}")
     _ensure_param(node_item, "invert", "0")
     _ensure_param(node_item, "emissive", f"{EMISSIVE_DEFAULT:.2f}")
+    _ensure_param(node_item, "bg_color", "")
+    _ensure_param(node_item, "bg_alpha", "1.0")
     _ensure_param(node_item, "resolution", str(TEXTURE_SIZE))
     _ensure_param(node_item, "source", "")
     _ensure_param(node_item, "path", "")
@@ -320,6 +322,7 @@ class CheckerboardGenerator:
         self._image: Optional[QtGui.QImage] = None
         self._revision = 0
         self._last_frame_id: Optional[int] = None
+        self._bg_rgba = None
 
     def ensure_image(self) -> QtGui.QImage:
         if self._image is None:
@@ -367,6 +370,12 @@ class CheckerboardGenerator:
         self._pack_y = pack_y
         self._recompute_cells()
 
+    def set_background(self, rgba: Optional[tuple]) -> None:
+        if rgba == self._bg_rgba:
+            return
+        self._bg_rgba = rgba
+        self._rebuild()
+
     def set_size(self, size: int) -> None:
         size = max(16, int(size))
         if size == self.size:
@@ -397,11 +406,15 @@ class CheckerboardGenerator:
         cell_h = max(1, size // cells_y)
 
         if phase % 2 == 0:
-            c0 = QtGui.QColor("#0f172a")
+            c0_default = "#0f172a"
             c1 = QtGui.QColor("#e2e8f0")
         else:
-            c0 = QtGui.QColor("#1d4ed8")
+            c0_default = "#1d4ed8"
             c1 = QtGui.QColor("#f59e0b")
+        if self._bg_rgba is not None:
+            c0 = QtGui.QColor(*self._bg_rgba)
+        else:
+            c0 = QtGui.QColor(c0_default)
 
         fmt = QtGui.QImage.Format_RGBA8888 if hasattr(QtGui.QImage, "Format_RGBA8888") else QtGui.QImage.Format_ARGB32
         img = QtGui.QImage(size, size, fmt)
@@ -428,6 +441,7 @@ class MatrixRainGenerator:
         self._last_frame_id: Optional[int] = None
         self._rng = random.Random()
         self._invert = False
+        self._bg_rgba = None
         self._cols = []
         self._init_columns()
 
@@ -511,6 +525,12 @@ class MatrixRainGenerator:
         self._invert = invert
         self._mark_dirty()
 
+    def set_background(self, rgba: Optional[tuple]) -> None:
+        if rgba == self._bg_rgba:
+            return
+        self._bg_rgba = rgba
+        self._mark_dirty()
+
     def set_size(self, size: int) -> None:
         size = max(16, int(size))
         if size == self.size:
@@ -539,7 +559,11 @@ class MatrixRainGenerator:
         cell_y = max(1, int(self.cell_y))
         fmt = QtGui.QImage.Format_RGBA8888 if hasattr(QtGui.QImage, "Format_RGBA8888") else QtGui.QImage.Format_ARGB32
         img = QtGui.QImage(size, size, fmt)
-        img.fill(QtGui.QColor("#050b07"))
+        if self._bg_rgba is not None:
+            bg_color = QtGui.QColor(*self._bg_rgba)
+        else:
+            bg_color = QtGui.QColor("#050b07")
+        img.fill(bg_color)
         painter = QtGui.QPainter(img)
         painter.setRenderHint(QtGui.QPainter.TextAntialiasing, True)
         font = QtGui.QFont("Consolas")
@@ -592,6 +616,7 @@ class TextureProProvider:
         self._speed = float(SPEED_DEFAULT)
         self._invert = False
         self._emissive = float(EMISSIVE_DEFAULT)
+        self._bg_rgba = None
         self._gpu_seed = random.Random().random() * 4096.0
         self._generators = {
             "checkerboard": CheckerboardGenerator(size=self._size),
@@ -682,6 +707,24 @@ class TextureProProvider:
         self._emissive = emissive
         self._revision += 1
 
+    def set_background(self, rgba: Optional[tuple]) -> None:
+        if rgba is not None:
+            try:
+                r, g, b, a = rgba
+                rgba = (
+                    max(0, min(255, int(r))),
+                    max(0, min(255, int(g))),
+                    max(0, min(255, int(b))),
+                    max(0, min(255, int(a))),
+                )
+            except Exception:
+                rgba = None
+        if rgba == self._bg_rgba:
+            return
+        self._bg_rgba = rgba
+        self._revision += 1
+        self._apply_background(rgba)
+
     def advance(self, dt: float, frame_id: Optional[int] = None) -> bool:
         gen = self._generators[self._mode]
         changed = gen.advance(float(dt) * float(self._speed), frame_id)
@@ -697,6 +740,12 @@ class TextureProProvider:
 
     def gpu_state(self) -> dict:
         atlas, grid = _get_glyph_atlas()
+        bg_enabled = 0.0
+        bg_color = (0.0, 0.0, 0.0, 1.0)
+        if self._bg_rgba is not None:
+            r, g, b, a = self._bg_rgba
+            bg_color = (float(r) / 255.0, float(g) / 255.0, float(b) / 255.0, float(a) / 255.0)
+            bg_enabled = 1.0
         return {
             "mode": self._mode,
             "tiling": int(self._density),
@@ -709,6 +758,8 @@ class TextureProProvider:
             "glyph_atlas": atlas,
             "glyph_grid": grid,
             "glyph_count": int(len(MATRIX_GLYPHS)),
+            "bg_color": bg_color,
+            "bg_enabled": float(bg_enabled),
         }
 
     def _apply_density(self, density: int) -> None:
@@ -744,6 +795,15 @@ class TextureProProvider:
                 fn(self._invert)
         except Exception:
             pass
+
+    def _apply_background(self, rgba: Optional[tuple]) -> None:
+        for gen in self._generators.values():
+            fn = getattr(gen, "set_background", None)
+            if callable(fn):
+                try:
+                    fn(rgba)
+                except Exception:
+                    pass
 
     @property
     def revision(self) -> int:
@@ -793,6 +853,13 @@ class TextureProWidget(QtWidgets.QWidget):
             "QLabel{background:#0f172a;border:1px solid #334155;border-radius:4px;}"
         )
         left.addWidget(self._preview, 0, QtCore.Qt.AlignLeft)
+
+        self._bg_btn = QtWidgets.QPushButton("Background")
+        self._bg_btn.setFixedWidth(PREVIEW_SIZE)
+        self._bg_btn.setToolTip("Background color (use alpha for transparency)")
+        self._bg_btn.clicked.connect(self._on_bg_clicked)
+        self._set_bg_button(None)
+        left.addWidget(self._bg_btn, 0, QtCore.Qt.AlignLeft)
 
         self._view_btn = QtWidgets.QPushButton("View")
         self._view_btn.setFixedWidth(PREVIEW_SIZE)
@@ -1120,6 +1187,99 @@ class TextureProWidget(QtWidgets.QWidget):
         except Exception:
             pass
 
+    def _bg_rgba_from_params(self) -> Optional[tuple]:
+        raw_color = ""
+        raw_alpha = ""
+        try:
+            raw_color = str(_param_value(self._node_item.model, "bg_color") or "").strip()
+            raw_alpha = str(_param_value(self._node_item.model, "bg_alpha") or "").strip()
+        except Exception:
+            raw_color = ""
+            raw_alpha = ""
+        if not raw_color:
+            return None
+        color = QtGui.QColor(raw_color)
+        if not color.isValid():
+            return None
+        alpha = 1.0
+        if raw_alpha:
+            try:
+                alpha = float(raw_alpha)
+            except Exception:
+                alpha = 1.0
+        if alpha > 1.0:
+            alpha = min(alpha, 255.0) / 255.0
+        alpha = max(0.0, min(1.0, alpha))
+        color.setAlpha(int(round(alpha * 255)))
+        return (color.red(), color.green(), color.blue(), color.alpha())
+
+    def _default_bg_rgba(self) -> tuple:
+        pattern = ""
+        try:
+            pattern = (self._combo.currentData() or self._combo.currentText() or "").strip().lower()
+        except Exception:
+            pattern = ""
+        if not pattern:
+            try:
+                if hasattr(self._provider, "mode"):
+                    pattern = str(self._provider.mode() or "").strip().lower()
+            except Exception:
+                pattern = ""
+        if pattern == "matrix_rain":
+            color = QtGui.QColor("#050b07")
+        else:
+            color = QtGui.QColor("#0f172a")
+        color.setAlpha(255)
+        return (color.red(), color.green(), color.blue(), color.alpha())
+
+    def _set_bg_button(self, rgba: Optional[tuple]) -> None:
+        if rgba is None:
+            style = (
+                "QPushButton{background:#0f1216;color:#e6edf3;border:1px solid #3c4450;"
+                "border-radius:4px;padding:2px 6px;}"
+                "QPushButton:hover{border:1px solid #64748b;}"
+            )
+            self._bg_btn.setStyleSheet(style)
+            return
+        try:
+            r, g, b, a = rgba
+        except Exception:
+            r, g, b, a = 15, 18, 22, 255
+        alpha = max(0.0, min(1.0, float(a) / 255.0))
+        lum = 0.2126 * float(r) + 0.7152 * float(g) + 0.0722 * float(b)
+        text_color = "#0f172a" if lum > 140.0 else "#f8fafc"
+        style = (
+            "QPushButton{background-color: rgba("
+            f"{int(r)},{int(g)},{int(b)},{alpha:.3f}"
+            ");color:"
+            f"{text_color}"
+            ";border:1px solid #3c4450;border-radius:4px;padding:2px 6px;}"
+            "QPushButton:hover{border:1px solid #64748b;}"
+        )
+        self._bg_btn.setStyleSheet(style)
+
+    def _apply_background(self, rgba: Optional[tuple], notify_scene: bool = False) -> None:
+        try:
+            if hasattr(self._provider, "set_background"):
+                self._provider.set_background(rgba)
+        except Exception:
+            pass
+        if rgba is None:
+            self._set_param("bg_color", "", notify_scene=notify_scene)
+            self._set_param("bg_alpha", "1.0", notify_scene=notify_scene)
+        else:
+            try:
+                r, g, b, a = rgba
+            except Exception:
+                r, g, b, a = 15, 18, 22, 255
+            self._set_param("bg_color", f"#{int(r):02x}{int(g):02x}{int(b):02x}", notify_scene=notify_scene)
+            self._set_param("bg_alpha", f"{float(a) / 255.0:.2f}", notify_scene=notify_scene)
+        self._set_bg_button(rgba)
+        try:
+            self._refresh_preview()
+        except Exception:
+            pass
+
     def _set_combo_value(self, pattern: str) -> None:
         try:
             idx = self._combo.findData(pattern)
@@ -1349,6 +1509,26 @@ class TextureProWidget(QtWidgets.QWidget):
         value = self._res_combo.currentData() or self._res_combo.currentText()
         self._apply_resolution(value, notify_scene=True)
 
+    def _on_bg_clicked(self):
+        rgba = self._bg_rgba_from_params()
+        if rgba is None:
+            rgba = self._default_bg_rgba()
+        try:
+            init_color = QtGui.QColor(*rgba)
+        except Exception:
+            init_color = QtGui.QColor("#0f172a")
+        parent = _resolve_window(self._node_item) or self
+        picked = QtWidgets.QColorDialog.getColor(
+            init_color,
+            parent,
+            "Background Color",
+            QtWidgets.QColorDialog.ShowAlphaChannel,
+        )
+        if not picked.isValid():
+            return
+        rgba = (picked.red(), picked.green(), picked.blue(), picked.alpha())
+        self._apply_background(rgba, notify_scene=True)
+
     def _on_pattern_changed(self):
         key = self._combo.currentData() or self._combo.currentText()
         self._apply_pattern(str(key), notify_scene=True)
@@ -1411,6 +1591,9 @@ class TextureProWidget(QtWidgets.QWidget):
             emissive = float(EMISSIVE_DEFAULT)
         emissive = max(EMISSIVE_MIN, min(EMISSIVE_MAX, float(emissive)))
         self._apply_emissive(emissive, notify_scene=False)
+
+        bg_rgba = self._bg_rgba_from_params()
+        self._apply_background(bg_rgba, notify_scene=False)
 
         resolution = TEXTURE_SIZE
         try:

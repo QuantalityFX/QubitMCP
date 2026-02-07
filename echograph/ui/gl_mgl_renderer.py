@@ -1756,6 +1756,19 @@ class MGLRendererMixin:
         except Exception:
             pass
         try:
+            bg_enabled = 1 if float(state.get("bg_enabled", 0.0) or 0.0) > 0.5 else 0
+            self._mgl_prog["ProcBgEnabled"].value = int(bg_enabled)
+        except Exception:
+            pass
+        try:
+            bg = state.get("bg_color")
+            if isinstance(bg, (list, tuple)) and len(bg) >= 4:
+                self._mgl_prog["ProcBg"].value = (float(bg[0]), float(bg[1]), float(bg[2]), float(bg[3]))
+            else:
+                self._mgl_prog["ProcBg"].value = (0.0, 0.0, 0.0, 1.0)
+        except Exception:
+            pass
+        try:
             self._mgl_prog["ProcTime"].value = float(getattr(self, "_mgl_proc_time", 0.0) or 0.0)
         except Exception:
             pass
@@ -3452,6 +3465,8 @@ class MGLRendererMixin:
                 self._mgl_prog["ProcAnimSpeed"].value = 1.0
                 self._mgl_prog["ProcEmissive"].value = 0.0
                 self._mgl_prog["ProcTime"].value = 0.0
+                self._mgl_prog["ProcBgEnabled"].value = 0
+                self._mgl_prog["ProcBg"].value = (0.0, 0.0, 0.0, 1.0)
                 self._mgl_prog["ProcGlyph"].value = 1
                 self._mgl_prog["ProcGlyphGrid"].value = (1.0, 1.0)
                 self._mgl_prog["ProcGlyphCount"].value = 1.0

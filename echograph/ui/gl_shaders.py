@@ -34,6 +34,8 @@ uniform float ProcSeed;
 uniform float ProcAnimSpeed;
 uniform float ProcEmissive;
 uniform float ProcTime;
+uniform vec4 ProcBg;
+uniform int ProcBgEnabled;
 uniform sampler2D ProcGlyph;
 uniform vec2 ProcGlyphGrid;
 uniform float ProcGlyphCount;
@@ -66,9 +68,15 @@ vec4 proc_checker(vec2 uv) {
     vec3 c1b = vec3(0.961, 0.620, 0.043);
     vec3 c0 = mix(c0a, c0b, phase);
     vec3 c1 = mix(c1a, c1b, phase);
+    float a0 = 1.0;
+    if (ProcBgEnabled == 1) {
+        c0 = ProcBg.rgb;
+        a0 = ProcBg.a;
+    }
     float checker = mod(cell.x + cell.y, 2.0);
     vec3 col = mix(c0, c1, checker);
-    return vec4(col, 1.0);
+    float alpha = mix(a0, 1.0, checker);
+    return vec4(col, alpha);
 }
 
 vec4 proc_matrix(vec2 uv) {
@@ -96,9 +104,12 @@ vec4 proc_matrix(vec2 uv) {
     float tcol = raw_t + offset;
     float base_cycle = floor(tcol / cycle) * cycle;
     float t_in = tcol - base_cycle;
+    vec4 bg = vec4(0.01, 0.03, 0.01, 1.0);
+    if (ProcBgEnabled == 1) {
+        bg = ProcBg;
+    }
     if (t_in >= life + fade) {
-        vec3 bg = vec3(0.01, 0.03, 0.01);
-        return vec4(bg, 1.0);
+        return bg;
     }
     float t_alive = min(t_in, life);
     float fade_out = 1.0;
@@ -115,9 +126,8 @@ vec4 proc_matrix(vec2 uv) {
     float dy = (dir > 0.0) ? (head - p.y) : (p.y - head);
     if (dy < 0.0) dy += rows;
     float t = 1.0 - dy / max(trail, 1.0);
-    vec3 bg = vec3(0.01, 0.03, 0.01);
     if (t <= 0.0) {
-        return vec4(bg, 1.0);
+        return bg;
     }
     vec2 pg = max(ProcGlyphGrid, vec2(1.0));
     float glyph_count = max(1.0, min(pg.x * pg.y, ProcGlyphCount));
@@ -140,8 +150,9 @@ vec4 proc_matrix(vec2 uv) {
     vec3 tail_col = vec3(0.11, 0.78, 0.14);
     vec3 color = mix(tail_col, head_col, smoothstep(0.6, 1.0, t));
     float t_fade = t * fade_out;
-    vec3 rgb = mix(bg, color, glyph * t_fade);
-    return vec4(rgb, 1.0);
+    vec3 rgb = mix(bg.rgb, color, glyph * t_fade);
+    float alpha = mix(bg.a, 1.0, glyph * t_fade);
+    return vec4(rgb, alpha);
 }
 
 void main() {
