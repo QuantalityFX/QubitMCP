@@ -511,7 +511,82 @@ class MGLRendererMixin:
                                 model = None
 
                         if model is None:
-                            return bounds
+                            # Fallback to owner xform when no scene item model exists.
+                            try:
+                                xf = None
+                                try:
+                                    xf = self._mgl_get_scene_asset_xform(xf_owner)
+                                except Exception:
+                                    xf = None
+                                if isinstance(xf, dict):
+                                    px, py, pz = xf.get("pos", (0.0, 0.0, 0.0))
+                                    rx, ry, rz = xf.get("rot", (0.0, 0.0, 0.0))
+                                    sx, sy, sz = xf.get("scl", (1.0, 1.0, 1.0))
+                                    c = (bmin + bmax) * 0.5
+                                    cx, cy, cz = float(c[0]), float(c[1]), float(c[2])
+
+                                    # Match _mgl_set_scene_asset_xform rotation convention for scene meshes.
+                                    try:
+                                        rot_rx = -float(rx)
+                                        rot_ry = -float(ry)
+                                        rot_rz = -float(rz)
+                                    except Exception:
+                                        rot_rx, rot_ry, rot_rz = rx, ry, rz
+
+                                    def T(tx, ty, tz):
+                                        m = np.eye(4, dtype=np.float32)
+                                        m[3, 0] = tx
+                                        m[3, 1] = ty
+                                        m[3, 2] = tz
+                                        return m
+
+                                    def S(sx, sy, sz):
+                                        m = np.eye(4, dtype=np.float32)
+                                        m[0, 0] = sx
+                                        m[1, 1] = sy
+                                        m[2, 2] = sz
+                                        return m
+
+                                    def Rx(a):
+                                        a = math.radians(a)
+                                        c, s = math.cos(a), math.sin(a)
+                                        m = np.eye(4, dtype=np.float32)
+                                        m[1, 1] = c
+                                        m[1, 2] = s
+                                        m[2, 1] = -s
+                                        m[2, 2] = c
+                                        return m
+
+                                    def Ry(a):
+                                        a = math.radians(a)
+                                        c, s = math.cos(a), math.sin(a)
+                                        m = np.eye(4, dtype=np.float32)
+                                        m[0, 0] = c
+                                        m[0, 2] = -s
+                                        m[2, 0] = s
+                                        m[2, 2] = c
+                                        return m
+
+                                    def Rz(a):
+                                        a = math.radians(a)
+                                        c, s = math.cos(a), math.sin(a)
+                                        m = np.eye(4, dtype=np.float32)
+                                        m[0, 0] = c
+                                        m[0, 1] = s
+                                        m[1, 0] = -s
+                                        m[1, 1] = c
+                                        return m
+
+                                    R = (Rx(rot_rx) @ Ry(rot_ry) @ Rz(rot_rz))
+                                    xform_space = str(getattr(self, "_mgl_xform_space", "world") or "world").lower()
+                                    if xform_space == "local":
+                                        model = T(-cx, -cy, -cz) @ S(sx, sy, sz) @ R @ T(px, py, pz)
+                                    else:
+                                        model = T(-cx, -cy, -cz) @ R @ S(sx, sy, sz) @ T(px, py, pz)
+                            except Exception:
+                                model = None
+                            if model is None:
+                                return bounds
 
                         try:
                             if Matrix44 is not None and isinstance(model, Matrix44):

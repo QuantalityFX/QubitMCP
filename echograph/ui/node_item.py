@@ -1116,7 +1116,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             node_w = self._BASE_W
         elif kind == "texture_pro":
             # Match embedded TextureProWidget height (avoid clipping bottom corners).
-            body_h = max(self._PARAM_ROW_H * 7, 168)
+            body_h = max(self._PARAM_ROW_H * 6, 160)
             node_w = self._BASE_W
         else:
             body_h = 0
