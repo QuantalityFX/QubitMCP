@@ -36,12 +36,15 @@ EMISSIVE_MAX = 2.0
 EMISSIVE_DEFAULT = 0.6
 RESOLUTION_OPTIONS = [256, 512, 1024]
 LIGHTING_DEFAULT = 1.0
+PAN_DEFAULT = False
 HIDDEN_PARAMS = (
     "pattern",
     "tiling",
     "pack_x",
     "pack_y",
     "speed",
+    "invert",
+    "pan",
     "emissive",
     "resolution",
     "lighting",
@@ -205,6 +208,7 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, "pack_y", "1")
     _ensure_param(node_item, "speed", f"{SPEED_DEFAULT:.2f}")
     _ensure_param(node_item, "invert", "0")
+    _ensure_param(node_item, "pan", "1" if PAN_DEFAULT else "0")
     _ensure_param(node_item, "emissive", f"{EMISSIVE_DEFAULT:.2f}")
     _ensure_param(node_item, "lighting", f"{LIGHTING_DEFAULT:.2f}")
     _ensure_param(node_item, "bg_color", "")
@@ -485,6 +489,7 @@ class MatrixRainGenerator:
         self._last_frame_id: Optional[int] = None
         self._rng = random.Random()
         self._invert = False
+        self._pan = True
         self._bg_rgba = None
         self._cols = []
         self._init_columns()
@@ -496,11 +501,15 @@ class MatrixRainGenerator:
             self._cols.append(self._new_column(i))
 
     def _new_column(self, idx: int) -> dict:
+        life = self._rng.uniform(3.0, 10.0)
+        trail = int(round(self._rng.uniform(6.0, 12.0) + life * self._rng.uniform(1.2, 2.0)))
+        trail = max(6, min(28, trail))
         return {
             "x": idx * self.cell_x,
             "y": self._rng.uniform(-self.size, self.size),
             "speed": self._rng.uniform(0.6, 1.8),
-            "trail": self._rng.randint(8, 16),
+            "life": life,
+            "trail": trail,
             "glyphs": [self._random_glyph() for _ in range(20)],
         }
 
@@ -569,6 +578,13 @@ class MatrixRainGenerator:
         self._invert = invert
         self._mark_dirty()
 
+    def set_pan(self, pan: bool) -> None:
+        pan = bool(pan)
+        if pan == self._pan:
+            return
+        self._pan = pan
+        self._mark_dirty()
+
     def set_background(self, rgba: Optional[tuple]) -> None:
         if rgba == self._bg_rgba:
             return
@@ -618,6 +634,8 @@ class MatrixRainGenerator:
         for col in self._cols:
             x = int(col.get("x", 0))
             head_y = float(col.get("y", 0.0))
+            if not self._pan:
+                head_y = round(head_y / max(1.0, float(cell_y))) * float(cell_y)
             trail = int(col.get("trail", 12))
             glyphs = col.get("glyphs") or []
             for t in range(trail):
@@ -659,6 +677,7 @@ class TextureProProvider:
         self._pack_y = 1
         self._speed = float(SPEED_DEFAULT)
         self._invert = False
+        self._pan = bool(PAN_DEFAULT)
         self._emissive = float(EMISSIVE_DEFAULT)
         self._lighting = float(LIGHTING_DEFAULT)
         self._bg_rgba = None
@@ -672,6 +691,7 @@ class TextureProProvider:
         self._apply_size(self._size)
         self._apply_density(self._density)
         self._apply_pack(self._pack_x, self._pack_y)
+        self._apply_pan(self._pan)
         self._last_gen_rev = self._generators[self._mode].revision
 
     def set_mode(self, mode: str) -> None:
@@ -741,6 +761,14 @@ class TextureProProvider:
         except Exception:
             pass
 
+    def set_pan(self, pan: bool) -> None:
+        pan = bool(pan)
+        if pan == self._pan:
+            return
+        self._pan = pan
+        self._revision += 1
+        self._apply_pan(pan)
+
     def set_emissive(self, emissive: float) -> None:
         try:
             emissive = float(emissive)
@@ -809,6 +837,7 @@ class TextureProProvider:
             "pack_y": int(self._pack_y),
             "speed": float(self._speed),
             "invert": 1.0 if self._invert else 0.0,
+            "pan": 1.0 if self._pan else 0.0,
             "emissive": float(self._emissive),
             "light_mix": float(self._lighting),
             "seed": float(self._gpu_seed),
@@ -845,6 +874,15 @@ class TextureProProvider:
                     fn(pack_x, pack_y)
                 except Exception:
                     pass
+
+    def _apply_pan(self, pan: bool) -> None:
+        try:
+            gen = self._generators.get("matrix_rain")
+            fn = getattr(gen, "set_pan", None)
+            if callable(fn):
+                fn(bool(pan))
+        except Exception:
+            pass
         try:
             gen = self._generators.get("matrix_rain")
             fn = getattr(gen, "set_invert", None)
@@ -1197,6 +1235,18 @@ class TextureProWidget(QtWidgets.QWidget):
         self._invert.setStyleSheet("QCheckBox{color:#e6edf3;}")
         self._invert.stateChanged.connect(self._on_invert_changed)
         invert_row.addWidget(self._invert, 0)
+        invert_row.addSpacing(12)
+
+        pan_label = QtWidgets.QLabel("Pan")
+        pan_label.setStyleSheet("color:#94a3b8;font-size:10px;")
+        pan_label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        invert_row.addWidget(pan_label, 0)
+
+        self._pan = QtWidgets.QCheckBox()
+        self._pan.setToolTip("Slide cells smoothly (off = step by cell)")
+        self._pan.setStyleSheet("QCheckBox{color:#e6edf3;}")
+        self._pan.stateChanged.connect(self._on_pan_changed)
+        invert_row.addWidget(self._pan, 0)
         invert_row.addStretch(1)
 
         right.addLayout(invert_row, 0)
@@ -1604,6 +1654,37 @@ class TextureProWidget(QtWidgets.QWidget):
         checked = bool(self._invert.isChecked())
         self._apply_invert(checked, notify_scene=True)
 
+    def _set_pan_value(self, value: bool) -> None:
+        checked = bool(value)
+        try:
+            if self._pan.isChecked() == checked:
+                return
+            self._pan.blockSignals(True)
+            self._pan.setChecked(checked)
+        finally:
+            try:
+                self._pan.blockSignals(False)
+            except Exception:
+                pass
+
+    def _apply_pan(self, value: bool, notify_scene: bool = False) -> None:
+        checked = bool(value)
+        try:
+            if hasattr(self._provider, "set_pan"):
+                self._provider.set_pan(checked)
+        except Exception:
+            pass
+        self._set_param("pan", "1" if checked else "0", notify_scene=notify_scene)
+        self._set_pan_value(checked)
+        try:
+            self._refresh_preview()
+        except Exception:
+            pass
+
+    def _on_pan_changed(self):
+        checked = bool(self._pan.isChecked())
+        self._apply_pan(checked, notify_scene=True)
+
     def _set_emissive_value(self, value: float) -> None:
         try:
             value = float(value)
@@ -1765,6 +1846,15 @@ class TextureProWidget(QtWidgets.QWidget):
         except Exception:
             invert_flag = False
         self._apply_invert(invert_flag, notify_scene=False)
+
+        pan_flag = bool(PAN_DEFAULT)
+        try:
+            raw = str(_param_value(self._node_item.model, "pan") or "").strip().lower()
+            if raw:
+                pan_flag = raw in {"1", "true", "yes", "on"}
+        except Exception:
+            pan_flag = bool(PAN_DEFAULT)
+        self._apply_pan(pan_flag, notify_scene=False)
 
         emissive = float(EMISSIVE_DEFAULT)
         try:

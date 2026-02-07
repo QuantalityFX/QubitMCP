@@ -1754,6 +1754,10 @@ class MGLRendererMixin:
             if light_mix is None:
                 light_mix = 1.0
             _set_uniform(f"ProcLightMix{suffix}", float(light_mix))
+            pan_val = proc_state.get("pan", 1.0)
+            if pan_val is None:
+                pan_val = 1.0
+            _set_uniform(f"ProcPan{suffix}", float(pan_val))
             bg_enabled = 1 if float(proc_state.get("bg_enabled", 0.0) or 0.0) > 0.5 else 0
             _set_uniform(f"ProcBgEnabled{suffix}", int(bg_enabled))
             bg = proc_state.get("bg_color")
@@ -3482,12 +3486,14 @@ class MGLRendererMixin:
                 self._mgl_prog["ProcAnimSpeed"].value = 1.0
                 self._mgl_prog["ProcEmissive"].value = 0.0
                 self._mgl_prog["ProcLightMix"].value = 1.0
+                self._mgl_prog["ProcPan"].value = 1.0
                 self._mgl_prog["ProceduralMode2"].value = 0
                 self._mgl_prog["ProcParams2"].value = (1.0, 1.0, 1.0, 0.0)
                 self._mgl_prog["ProcSeed2"].value = 0.0
                 self._mgl_prog["ProcAnimSpeed2"].value = 1.0
                 self._mgl_prog["ProcEmissive2"].value = 0.0
                 self._mgl_prog["ProcLightMix2"].value = 1.0
+                self._mgl_prog["ProcPan2"].value = 1.0
                 self._mgl_prog["ProcTime"].value = 0.0
                 self._mgl_prog["ProcBgEnabled"].value = 0
                 self._mgl_prog["ProcBg"].value = (0.0, 0.0, 0.0, 1.0)
