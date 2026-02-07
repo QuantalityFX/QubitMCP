@@ -504,13 +504,20 @@ class MatrixRainGenerator:
         life = self._rng.uniform(3.0, 10.0)
         trail = int(round(self._rng.uniform(6.0, 12.0) + life * self._rng.uniform(1.2, 2.0)))
         trail = max(6, min(28, trail))
+        hold_base = self._rng.uniform(0.2, 0.8)
+        hold_var = self._rng.uniform(0.6, 2.4)
+        glyphs = [self._random_glyph() for _ in range(20)]
+        holds = [hold_base + self._rng.random() * hold_var for _ in glyphs]
         return {
             "x": idx * self.cell_x,
             "y": self._rng.uniform(-self.size, self.size),
             "speed": self._rng.uniform(0.6, 1.8),
             "life": life,
             "trail": trail,
-            "glyphs": [self._random_glyph() for _ in range(20)],
+            "glyphs": glyphs,
+            "glyph_hold": holds,
+            "hold_base": hold_base,
+            "hold_var": hold_var,
         }
 
     def _random_glyph(self) -> str:
@@ -537,10 +544,24 @@ class MatrixRainGenerator:
                 if col["y"] - (trail * cell_y) > height + cell_y:
                     self._cols[idx] = self._new_column(idx)
                     continue
-            if self._rng.random() < 0.45:
-                glyphs = col.get("glyphs") or []
-                if glyphs:
-                    glyphs[self._rng.randrange(len(glyphs))] = self._random_glyph()
+            glyphs = col.get("glyphs") or []
+            if glyphs:
+                holds = col.get("glyph_hold") or []
+                if len(holds) != len(glyphs):
+                    hold_base = float(col.get("hold_base", 0.2))
+                    hold_var = float(col.get("hold_var", 1.0))
+                    holds = [hold_base + self._rng.random() * hold_var for _ in glyphs]
+                    col["glyph_hold"] = holds
+                hold_base = float(col.get("hold_base", 0.2))
+                hold_var = float(col.get("hold_var", 1.0))
+                for gi in range(len(glyphs)):
+                    try:
+                        holds[gi] = float(holds[gi]) - float(dt)
+                    except Exception:
+                        holds[gi] = 0.0
+                    if holds[gi] <= 0.0:
+                        glyphs[gi] = self._random_glyph()
+                        holds[gi] = hold_base + self._rng.random() * hold_var
         self._image = self._build_image()
         self._revision += 1
         return True

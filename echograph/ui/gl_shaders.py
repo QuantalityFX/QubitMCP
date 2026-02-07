@@ -148,7 +148,8 @@ vec4 proc_matrix_params(vec2 uv, vec4 params, float seed_in, float anim_speed, v
     }
     vec2 pg = max(ProcGlyphGrid, vec2(1.0));
     float glyph_count = max(1.0, min(pg.x * pg.y, ProcGlyphCount));
-    float glyph_anim = floor(motion_t * 9.0);
+    float hold = mix(0.3, 3.0, hash11(col * 1.91 + row * 0.73 + seed * 11.0));
+    float glyph_anim = floor(motion_t / max(0.05, hold));
     vec2 gh = vec2(
         col + row * 0.11 + glyph_anim * 0.07 + seed * 37.0,
         row + col * 0.19 + glyph_anim * 0.13 + seed * 61.0
