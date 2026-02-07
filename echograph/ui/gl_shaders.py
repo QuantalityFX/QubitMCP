@@ -36,6 +36,8 @@ uniform float ProcAnimSpeed;
 uniform float ProcEmissive;
 uniform float ProcLightMix;
 uniform float ProcPan;
+uniform float ProcLifeMin;
+uniform float ProcLifeMax;
 uniform int ProceduralMode2;
 uniform vec4 ProcParams2;
 uniform float ProcSeed2;
@@ -43,6 +45,8 @@ uniform float ProcAnimSpeed2;
 uniform float ProcEmissive2;
 uniform float ProcLightMix2;
 uniform float ProcPan2;
+uniform float ProcLifeMin2;
+uniform float ProcLifeMax2;
 uniform float ProcTime;
 uniform vec4 ProcBg;
 uniform int ProcBgEnabled;
@@ -91,7 +95,17 @@ vec4 proc_checker_params(vec2 uv, vec4 params, float anim_speed, vec4 bg, int bg
     return vec4(col, alpha);
 }
 
-vec4 proc_matrix_params(vec2 uv, vec4 params, float seed_in, float anim_speed, vec4 bg_in, int bg_enabled, float pan_enabled) {
+vec4 proc_matrix_params(
+    vec2 uv,
+    vec4 params,
+    float seed_in,
+    float anim_speed,
+    vec4 bg_in,
+    int bg_enabled,
+    float pan_enabled,
+    float life_min,
+    float life_max
+) {
     float base = 20.0;
     float tiling = max(1.0, params.x);
     float pack_x = max(1.0, params.y);
@@ -108,7 +122,9 @@ vec4 proc_matrix_params(vec2 uv, vec4 params, float seed_in, float anim_speed, v
     float speed = mix(0.6, 1.8, hash11(col * 0.73 + seed * 91.7));
     float trail = mix(6.0, 18.0, hash11(col * 1.31 + seed * 57.3));
     float col_phase = hash11(col * 1.19 + seed * 53.1) * rows;
-    float life = mix(3.0, 10.0, hash11(col * 1.61 + seed * 9.7));
+    float life_lo = max(0.1, life_min);
+    float life_hi = max(life_lo, life_max);
+    float life = mix(life_lo, life_hi, hash11(col * 1.61 + seed * 9.7));
     trail *= mix(0.8, 1.6, life / 10.0);
     trail = clamp(trail, 6.0, 26.0);
     float fade = mix(1.1025, 2.646, hash11(col * 2.11 + seed * 7.3));
@@ -122,33 +138,47 @@ vec4 proc_matrix_params(vec2 uv, vec4 params, float seed_in, float anim_speed, v
     if (bg_enabled == 1) {
         bg = bg_in;
     }
-    if (t_in >= life + fade) {
-        return bg;
-    }
     float t_alive = min(t_in, life);
+    float travel = t_alive * max(0.0, anim_speed) * max(0.0, speed);
+    float grow = clamp(travel / max(trail, 1.0), 0.0, 1.0);
+    float trail_len = min(trail, max(1.0, travel + 1.0));
     float fade_out = 1.0;
     if (t_in >= life) {
         float fade_t = (t_in - life) / max(0.0001, fade);
         fade_out = 1.0 - clamp(fade_t, 0.0, 1.0);
     }
+    float row_seed = floor(p.y);
+    float stick_seed = hash21(vec2(col * 0.37 + seed * 17.0, row_seed * 0.73 + seed * 3.0));
+    float stick = step(stick_seed, 0.18);
+    float stick_rand = hash11(col * 7.13 + row_seed * 2.13 + seed * 3.7);
+    float stick_len = trail * mix(0.4, 1.5, stick_rand);
+    trail_len = min(trail_len + stick * stick_len * grow, rows * 0.9);
+    float after_fade = 0.0;
+    if (t_in > life + fade && stick > 0.5) {
+        float after_t = (t_in - (life + fade)) / max(0.0001, dead);
+        after_fade = 1.0 - clamp(after_t, 0.0, 1.0);
+    }
+    float live = max(fade_out, after_fade * stick);
     float motion_t = (base_cycle + t_alive - offset) * max(0.0, anim_speed);
     float scroll = motion_t * speed * dir + col_phase;
     if (pan_enabled < 0.5) {
         scroll = floor(scroll + 0.0001);
     }
     float stream_y = p.y - scroll;
+    stream_y = mix(stream_y, p.y, stick);
     float row = floor(stream_y);
     vec2 f = vec2(fract(p.x), fract(stream_y));
     float head = mod(scroll, rows);
     float dy = (dir > 0.0) ? (head - p.y) : (p.y - head);
     if (dy < 0.0) dy += rows;
-    float t = 1.0 - dy / max(trail, 1.0);
+    float t = 1.0 - dy / max(trail_len, 1.0);
     if (t <= 0.0) {
         return bg;
     }
     vec2 pg = max(ProcGlyphGrid, vec2(1.0));
     float glyph_count = max(1.0, min(pg.x * pg.y, ProcGlyphCount));
     float hold = mix(0.3, 3.0, hash11(col * 1.91 + row * 0.73 + seed * 11.0));
+    hold *= mix(1.0, 2.8, stick);
     float glyph_anim = floor(motion_t / max(0.05, hold));
     vec2 gh = vec2(
         col + row * 0.11 + glyph_anim * 0.07 + seed * 37.0,
@@ -167,7 +197,7 @@ vec4 proc_matrix_params(vec2 uv, vec4 params, float seed_in, float anim_speed, v
     vec3 head_col = vec3(0.97, 0.99, 0.97);
     vec3 tail_col = vec3(0.11, 0.78, 0.14);
     vec3 color = mix(tail_col, head_col, smoothstep(0.6, 1.0, t));
-    float t_fade = t * fade_out;
+    float t_fade = t * live;
     vec3 rgb = mix(bg.rgb, color, glyph * t_fade);
     float alpha = mix(bg.a, 1.0, glyph * t_fade);
     return vec4(rgb, alpha);
@@ -205,13 +235,13 @@ void main() {
     }
     if (UseProcedural == 1) {
         vec4 p0 = (ProceduralMode == 1)
-            ? proc_matrix_params(v_uv, ProcParams, ProcSeed, ProcAnimSpeed, ProcBg, ProcBgEnabled, ProcPan)
+            ? proc_matrix_params(v_uv, ProcParams, ProcSeed, ProcAnimSpeed, ProcBg, ProcBgEnabled, ProcPan, ProcLifeMin, ProcLifeMax)
             : proc_checker_params(v_uv, ProcParams, ProcAnimSpeed, ProcBg, ProcBgEnabled);
         vec3 rgb0 = apply_lighting(p0.rgb, lum, ProcLightMix, ProcEmissive);
         vec4 c0 = vec4(rgb0, p0.a);
         if (UseProceduralLayer == 1) {
             vec4 p1 = (ProceduralMode2 == 1)
-                ? proc_matrix_params(v_uv, ProcParams2, ProcSeed2, ProcAnimSpeed2, ProcBg2, ProcBgEnabled2, ProcPan2)
+                ? proc_matrix_params(v_uv, ProcParams2, ProcSeed2, ProcAnimSpeed2, ProcBg2, ProcBgEnabled2, ProcPan2, ProcLifeMin2, ProcLifeMax2)
                 : proc_checker_params(v_uv, ProcParams2, ProcAnimSpeed2, ProcBg2, ProcBgEnabled2);
             vec3 rgb1 = apply_lighting(p1.rgb, lum, ProcLightMix2, ProcEmissive2);
             vec4 c1 = vec4(rgb1, p1.a);

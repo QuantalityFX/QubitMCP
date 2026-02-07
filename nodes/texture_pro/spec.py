@@ -37,6 +37,10 @@ EMISSIVE_DEFAULT = 0.6
 RESOLUTION_OPTIONS = [256, 512, 1024]
 LIGHTING_DEFAULT = 1.0
 PAN_DEFAULT = False
+LIFE_MIN_LIMIT = 1.0
+LIFE_MAX_LIMIT = 30.0
+LIFE_MIN_DEFAULT = 3.0
+LIFE_MAX_DEFAULT = 14.0
 HIDDEN_PARAMS = (
     "pattern",
     "tiling",
@@ -45,6 +49,8 @@ HIDDEN_PARAMS = (
     "speed",
     "invert",
     "pan",
+    "life_min",
+    "life_max",
     "emissive",
     "resolution",
     "lighting",
@@ -209,6 +215,8 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, "speed", f"{SPEED_DEFAULT:.2f}")
     _ensure_param(node_item, "invert", "0")
     _ensure_param(node_item, "pan", "1" if PAN_DEFAULT else "0")
+    _ensure_param(node_item, "life_min", f"{LIFE_MIN_DEFAULT:.2f}")
+    _ensure_param(node_item, "life_max", f"{LIFE_MAX_DEFAULT:.2f}")
     _ensure_param(node_item, "emissive", f"{EMISSIVE_DEFAULT:.2f}")
     _ensure_param(node_item, "lighting", f"{LIGHTING_DEFAULT:.2f}")
     _ensure_param(node_item, "bg_color", "")
@@ -490,8 +498,11 @@ class MatrixRainGenerator:
         self._rng = random.Random()
         self._invert = False
         self._pan = True
+        self._life_min = float(LIFE_MIN_DEFAULT)
+        self._life_max = float(LIFE_MAX_DEFAULT)
         self._bg_rgba = None
         self._cols = []
+        self._sticky = []
         self._init_columns()
 
     def _init_columns(self) -> None:
@@ -501,13 +512,18 @@ class MatrixRainGenerator:
             self._cols.append(self._new_column(i))
 
     def _new_column(self, idx: int) -> dict:
-        life = self._rng.uniform(3.0, 10.0)
+        life_low = max(LIFE_MIN_LIMIT, min(LIFE_MAX_LIMIT, float(self._life_min)))
+        life_high = max(life_low, min(LIFE_MAX_LIMIT, float(self._life_max)))
+        life = self._rng.uniform(life_low, life_high)
         trail = int(round(self._rng.uniform(6.0, 12.0) + life * self._rng.uniform(1.2, 2.0)))
         trail = max(6, min(28, trail))
         hold_base = self._rng.uniform(0.2, 0.8)
         hold_var = self._rng.uniform(0.6, 2.4)
         glyphs = [self._random_glyph() for _ in range(20)]
         holds = [hold_base + self._rng.random() * hold_var for _ in glyphs]
+        static_rate = self._rng.uniform(0.25, 0.6)
+        static_hold_base = self._rng.uniform(0.8, 1.6)
+        static_hold_var = self._rng.uniform(1.2, 3.0)
         return {
             "x": idx * self.cell_x,
             "y": self._rng.uniform(-self.size, self.size),
@@ -518,6 +534,10 @@ class MatrixRainGenerator:
             "glyph_hold": holds,
             "hold_base": hold_base,
             "hold_var": hold_var,
+            "static_rate": static_rate,
+            "static_hold_base": static_hold_base,
+            "static_hold_var": static_hold_var,
+            "age": 0.0,
         }
 
     def _random_glyph(self) -> str:
@@ -533,8 +553,33 @@ class MatrixRainGenerator:
         height = self.size
         cell_y = self.cell_y
         direction = -1.0 if self._invert else 1.0
+        sticky = self._sticky
+        if sticky:
+            for entry in list(sticky):
+                try:
+                    entry["life"] = float(entry.get("life", 0.0)) - float(dt)
+                except Exception:
+                    entry["life"] = 0.0
+                try:
+                    entry["hold"] = float(entry.get("hold", 0.0)) - float(dt)
+                except Exception:
+                    entry["hold"] = 0.0
+                if entry.get("hold", 0.0) <= 0.0:
+                    entry["glyph"] = self._random_glyph()
+                    hold_base = float(entry.get("hold_base", 0.8))
+                    hold_var = float(entry.get("hold_var", 1.5))
+                    entry["hold"] = hold_base + self._rng.random() * hold_var
+                if float(entry.get("life", 0.0)) <= 0.0:
+                    try:
+                        sticky.remove(entry)
+                    except Exception:
+                        pass
         for idx, col in enumerate(self._cols):
             col["y"] = float(col.get("y", 0.0)) + direction * float(col.get("speed", 10.0)) * cell_y * dt
+            try:
+                col["age"] = float(col.get("age", 0.0)) + abs(float(col.get("speed", 1.0))) * float(dt)
+            except Exception:
+                col["age"] = 0.0
             trail = int(col.get("trail", 12))
             if self._invert:
                 if col["y"] + (trail * cell_y) < -cell_y:
@@ -562,6 +607,32 @@ class MatrixRainGenerator:
                     if holds[gi] <= 0.0:
                         glyphs[gi] = self._random_glyph()
                         holds[gi] = hold_base + self._rng.random() * hold_var
+            rate = float(col.get("static_rate", 0.35))
+            try:
+                spawn_prob = max(0.0, min(1.0, rate * float(dt)))
+            except Exception:
+                spawn_prob = 0.0
+            if spawn_prob > 0.0 and self._rng.random() < spawn_prob:
+                head_y = float(col.get("y", 0.0))
+                back_dir = -direction
+                step = self._rng.uniform(1.0, max(2.0, float(trail)))
+                y = head_y + back_dir * step * float(cell_y)
+                y = round(y / max(1.0, float(cell_y))) * float(cell_y)
+                if -cell_y <= y <= height + cell_y:
+                    hold_base = float(col.get("static_hold_base", 1.0))
+                    hold_var = float(col.get("static_hold_var", 1.5))
+                    life_span = self._rng.uniform(self._life_min * 0.6, self._life_max * 1.2)
+                    sticky.append({
+                        "x": float(col.get("x", 0.0)),
+                        "y": y,
+                        "glyph": self._random_glyph(),
+                        "life": max(0.4, life_span),
+                        "hold": hold_base + self._rng.random() * hold_var,
+                        "hold_base": hold_base,
+                        "hold_var": hold_var,
+                    })
+                    if len(sticky) > 140:
+                        del sticky[:20]
         self._image = self._build_image()
         self._revision += 1
         return True
@@ -604,6 +675,24 @@ class MatrixRainGenerator:
         if pan == self._pan:
             return
         self._pan = pan
+        self._mark_dirty()
+
+    def set_life_range(self, life_min: float, life_max: float) -> None:
+        try:
+            life_min = float(life_min)
+        except Exception:
+            life_min = float(LIFE_MIN_DEFAULT)
+        try:
+            life_max = float(life_max)
+        except Exception:
+            life_max = float(LIFE_MAX_DEFAULT)
+        life_min = max(LIFE_MIN_LIMIT, min(LIFE_MAX_LIMIT, life_min))
+        life_max = max(life_min, min(LIFE_MAX_LIMIT, life_max))
+        if abs(life_min - self._life_min) < 1e-6 and abs(life_max - self._life_max) < 1e-6:
+            return
+        self._life_min = life_min
+        self._life_max = life_max
+        self._init_columns()
         self._mark_dirty()
 
     def set_background(self, rgba: Optional[tuple]) -> None:
@@ -658,8 +747,10 @@ class MatrixRainGenerator:
             if not self._pan:
                 head_y = round(head_y / max(1.0, float(cell_y))) * float(cell_y)
             trail = int(col.get("trail", 12))
+            age_cells = float(col.get("age", 0.0))
+            eff_trail = max(1, min(trail, int(age_cells) + 1))
             glyphs = col.get("glyphs") or []
-            for t in range(trail):
+            for t in range(eff_trail):
                 if self._invert:
                     y = head_y + t * cell_y
                 else:
@@ -685,7 +776,22 @@ class MatrixRainGenerator:
                     painter.restore()
                 else:
                     rect = QtCore.QRectF(x, y, cell_x, cell_y)
-                    painter.drawText(rect, QtCore.Qt.AlignCenter, ch)
+                painter.drawText(rect, QtCore.Qt.AlignCenter, ch)
+        if self._sticky:
+            stick_color = QtGui.QColor("#16a34a")
+            stick_color.setAlpha(180)
+            painter.setPen(stick_color)
+            for entry in list(self._sticky):
+                try:
+                    x = float(entry.get("x", 0.0))
+                    y = float(entry.get("y", 0.0))
+                except Exception:
+                    continue
+                if y < -cell_y or y > size:
+                    continue
+                ch = entry.get("glyph") or self._random_glyph()
+                rect = QtCore.QRectF(x, y, cell_x, cell_y)
+                painter.drawText(rect, QtCore.Qt.AlignCenter, ch)
         painter.end()
         return img
 
@@ -699,6 +805,8 @@ class TextureProProvider:
         self._speed = float(SPEED_DEFAULT)
         self._invert = False
         self._pan = bool(PAN_DEFAULT)
+        self._life_min = float(LIFE_MIN_DEFAULT)
+        self._life_max = float(LIFE_MAX_DEFAULT)
         self._emissive = float(EMISSIVE_DEFAULT)
         self._lighting = float(LIGHTING_DEFAULT)
         self._bg_rgba = None
@@ -713,6 +821,7 @@ class TextureProProvider:
         self._apply_density(self._density)
         self._apply_pack(self._pack_x, self._pack_y)
         self._apply_pan(self._pan)
+        self._apply_life_range(self._life_min, self._life_max)
         self._last_gen_rev = self._generators[self._mode].revision
 
     def set_mode(self, mode: str) -> None:
@@ -790,6 +899,24 @@ class TextureProProvider:
         self._revision += 1
         self._apply_pan(pan)
 
+    def set_life_range(self, life_min: float, life_max: float) -> None:
+        try:
+            life_min = float(life_min)
+        except Exception:
+            life_min = float(LIFE_MIN_DEFAULT)
+        try:
+            life_max = float(life_max)
+        except Exception:
+            life_max = float(LIFE_MAX_DEFAULT)
+        life_min = max(LIFE_MIN_LIMIT, min(LIFE_MAX_LIMIT, life_min))
+        life_max = max(life_min, min(LIFE_MAX_LIMIT, life_max))
+        if abs(life_min - self._life_min) < 1e-6 and abs(life_max - self._life_max) < 1e-6:
+            return
+        self._life_min = life_min
+        self._life_max = life_max
+        self._revision += 1
+        self._apply_life_range(life_min, life_max)
+
     def set_emissive(self, emissive: float) -> None:
         try:
             emissive = float(emissive)
@@ -859,6 +986,8 @@ class TextureProProvider:
             "speed": float(self._speed),
             "invert": 1.0 if self._invert else 0.0,
             "pan": 1.0 if self._pan else 0.0,
+            "life_min": float(self._life_min),
+            "life_max": float(self._life_max),
             "emissive": float(self._emissive),
             "light_mix": float(self._lighting),
             "seed": float(self._gpu_seed),
@@ -902,6 +1031,15 @@ class TextureProProvider:
             fn = getattr(gen, "set_pan", None)
             if callable(fn):
                 fn(bool(pan))
+        except Exception:
+            pass
+
+    def _apply_life_range(self, life_min: float, life_max: float) -> None:
+        try:
+            gen = self._generators.get("matrix_rain")
+            fn = getattr(gen, "set_life_range", None)
+            if callable(fn):
+                fn(float(life_min), float(life_max))
         except Exception:
             pass
         try:
@@ -1020,6 +1158,28 @@ class TextureProWidget(QtWidgets.QWidget):
         self._light_slider.valueChanged.connect(self._on_lighting_changed)
         self._set_lighting_value(LIGHTING_DEFAULT)
         left.addWidget(self._light_slider, 0, QtCore.Qt.AlignLeft)
+
+        self._emissive_label = QtWidgets.QLabel("Emissive")
+        self._emissive_label.setStyleSheet("color:#94a3b8;font-size:10px;")
+        self._emissive_label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        self._emissive_label.setFixedWidth(PREVIEW_SIZE)
+        left.addWidget(self._emissive_label, 0, QtCore.Qt.AlignLeft)
+
+        self._emissive = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self._emissive.setRange(int(EMISSIVE_MIN * 100.0), int(EMISSIVE_MAX * 100.0))
+        self._emissive.setSingleStep(1)
+        self._emissive.setPageStep(10)
+        self._emissive.setFixedWidth(PREVIEW_SIZE)
+        self._emissive.setToolTip("Glow intensity for procedural text")
+        self._emissive.setStyleSheet(
+            "QSlider::groove:horizontal{height:4px;background:#1f2937;border-radius:2px;}"
+            "QSlider::sub-page:horizontal{background:#f59e0b;border-radius:2px;}"
+            "QSlider::handle:horizontal{background:#e2e8f0;border:1px solid #0f172a;"
+            "width:10px;margin:-4px 0;border-radius:5px;}"
+        )
+        self._emissive.valueChanged.connect(self._on_emissive_changed)
+        self._set_emissive_value(EMISSIVE_DEFAULT)
+        left.addWidget(self._emissive, 0, QtCore.Qt.AlignLeft)
 
         self._view_btn = QtWidgets.QPushButton("View")
         self._view_btn.setFixedWidth(PREVIEW_SIZE)
@@ -1212,34 +1372,63 @@ class TextureProWidget(QtWidgets.QWidget):
 
         right.addLayout(speed_row, 0)
 
-        emissive_row = QtWidgets.QHBoxLayout()
-        emissive_row.setContentsMargins(0, 0, 0, 0)
-        emissive_row.setSpacing(6)
+        life_min_row = QtWidgets.QHBoxLayout()
+        life_min_row.setContentsMargins(0, 0, 0, 0)
+        life_min_row.setSpacing(6)
 
-        emissive_label = QtWidgets.QLabel("Emissive")
-        emissive_label.setStyleSheet("color:#94a3b8;font-size:10px;")
-        emissive_label.setFixedWidth(label_w)
-        emissive_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
-        emissive_row.addWidget(emissive_label, 0)
+        life_min_label = QtWidgets.QLabel("Life Min")
+        life_min_label.setStyleSheet("color:#94a3b8;font-size:10px;")
+        life_min_label.setFixedWidth(label_w)
+        life_min_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        life_min_row.addWidget(life_min_label, 0)
 
-        self._emissive = QtWidgets.QDoubleSpinBox()
-        self._emissive.setRange(EMISSIVE_MIN, EMISSIVE_MAX)
-        self._emissive.setSingleStep(0.05)
-        self._emissive.setDecimals(2)
-        self._emissive.setFixedWidth(70)
-        self._emissive.setAlignment(QtCore.Qt.AlignRight)
-        self._emissive.setToolTip("Glow intensity for procedural text")
-        self._emissive.setStyleSheet(
+        self._life_min = QtWidgets.QDoubleSpinBox()
+        self._life_min.setRange(LIFE_MIN_LIMIT, LIFE_MAX_LIMIT)
+        self._life_min.setSingleStep(0.5)
+        self._life_min.setDecimals(2)
+        self._life_min.setFixedWidth(70)
+        self._life_min.setAlignment(QtCore.Qt.AlignRight)
+        self._life_min.setToolTip("Minimum chain life (seconds)")
+        self._life_min.setStyleSheet(
             "QDoubleSpinBox{background:#0f1216;color:#e6edf3;border:1px solid #3c4450;"
             "border-radius:6px;padding:1px 4px;}"
             "QDoubleSpinBox::up-button{width:10px;border:none;}"
             "QDoubleSpinBox::down-button{width:10px;border:none;}"
         )
-        self._emissive.valueChanged.connect(self._on_emissive_changed)
-        emissive_row.addWidget(self._emissive, 0)
-        emissive_row.addStretch(1)
+        self._life_min.valueChanged.connect(self._on_life_min_changed)
+        life_min_row.addWidget(self._life_min, 0)
+        life_min_row.addStretch(1)
 
-        right.addLayout(emissive_row, 0)
+        right.addLayout(life_min_row, 0)
+
+        life_max_row = QtWidgets.QHBoxLayout()
+        life_max_row.setContentsMargins(0, 0, 0, 0)
+        life_max_row.setSpacing(6)
+
+        life_max_label = QtWidgets.QLabel("Life Max")
+        life_max_label.setStyleSheet("color:#94a3b8;font-size:10px;")
+        life_max_label.setFixedWidth(label_w)
+        life_max_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        life_max_row.addWidget(life_max_label, 0)
+
+        self._life_max = QtWidgets.QDoubleSpinBox()
+        self._life_max.setRange(LIFE_MIN_LIMIT, LIFE_MAX_LIMIT)
+        self._life_max.setSingleStep(0.5)
+        self._life_max.setDecimals(2)
+        self._life_max.setFixedWidth(70)
+        self._life_max.setAlignment(QtCore.Qt.AlignRight)
+        self._life_max.setToolTip("Maximum chain life (seconds)")
+        self._life_max.setStyleSheet(
+            "QDoubleSpinBox{background:#0f1216;color:#e6edf3;border:1px solid #3c4450;"
+            "border-radius:6px;padding:1px 4px;}"
+            "QDoubleSpinBox::up-button{width:10px;border:none;}"
+            "QDoubleSpinBox::down-button{width:10px;border:none;}"
+        )
+        self._life_max.valueChanged.connect(self._on_life_max_changed)
+        life_max_row.addWidget(self._life_max, 0)
+        life_max_row.addStretch(1)
+
+        right.addLayout(life_max_row, 0)
 
         invert_row = QtWidgets.QHBoxLayout()
         invert_row.setContentsMargins(0, 0, 0, 0)
@@ -1706,19 +1895,92 @@ class TextureProWidget(QtWidgets.QWidget):
         checked = bool(self._pan.isChecked())
         self._apply_pan(checked, notify_scene=True)
 
+    def _set_life_values(self, life_min: float, life_max: float) -> None:
+        try:
+            life_min = float(life_min)
+        except Exception:
+            life_min = float(LIFE_MIN_DEFAULT)
+        try:
+            life_max = float(life_max)
+        except Exception:
+            life_max = float(LIFE_MAX_DEFAULT)
+        life_min = max(LIFE_MIN_LIMIT, min(LIFE_MAX_LIMIT, life_min))
+        life_max = max(life_min, min(LIFE_MAX_LIMIT, life_max))
+        try:
+            if abs(float(self._life_min.value()) - life_min) > 1e-6:
+                self._life_min.blockSignals(True)
+                self._life_min.setValue(life_min)
+        finally:
+            try:
+                self._life_min.blockSignals(False)
+            except Exception:
+                pass
+        try:
+            if abs(float(self._life_max.value()) - life_max) > 1e-6:
+                self._life_max.blockSignals(True)
+                self._life_max.setValue(life_max)
+        finally:
+            try:
+                self._life_max.blockSignals(False)
+            except Exception:
+                pass
+
+    def _apply_life_range(self, life_min: float, life_max: float, notify_scene: bool = False) -> None:
+        try:
+            life_min = float(life_min)
+        except Exception:
+            life_min = float(LIFE_MIN_DEFAULT)
+        try:
+            life_max = float(life_max)
+        except Exception:
+            life_max = float(LIFE_MAX_DEFAULT)
+        life_min = max(LIFE_MIN_LIMIT, min(LIFE_MAX_LIMIT, life_min))
+        life_max = max(life_min, min(LIFE_MAX_LIMIT, life_max))
+        try:
+            if hasattr(self._provider, "set_life_range"):
+                self._provider.set_life_range(life_min, life_max)
+        except Exception:
+            pass
+        self._set_param("life_min", f"{life_min:.2f}", notify_scene=notify_scene)
+        self._set_param("life_max", f"{life_max:.2f}", notify_scene=notify_scene)
+        self._set_life_values(life_min, life_max)
+        try:
+            self._refresh_preview()
+        except Exception:
+            pass
+
+    def _on_life_min_changed(self):
+        life_min = float(self._life_min.value())
+        life_max = float(self._life_max.value())
+        self._apply_life_range(life_min, life_max, notify_scene=True)
+
+    def _on_life_max_changed(self):
+        life_min = float(self._life_min.value())
+        life_max = float(self._life_max.value())
+        self._apply_life_range(life_min, life_max, notify_scene=True)
+
     def _set_emissive_value(self, value: float) -> None:
         try:
             value = float(value)
         except Exception:
             value = float(EMISSIVE_DEFAULT)
         value = max(EMISSIVE_MIN, min(EMISSIVE_MAX, value))
-        if abs(float(self._emissive.value()) - value) < 1e-6:
-            return
+        slider_value = int(round(value * 100.0))
         try:
-            self._emissive.blockSignals(True)
-            self._emissive.setValue(value)
+            if int(self._emissive.value()) == slider_value:
+                pass
+            else:
+                self._emissive.blockSignals(True)
+                self._emissive.setValue(slider_value)
         finally:
-            self._emissive.blockSignals(False)
+            try:
+                self._emissive.blockSignals(False)
+            except Exception:
+                pass
+        try:
+            self._emissive_label.setText(f"Emissive {value:.2f}")
+        except Exception:
+            pass
 
     def _apply_emissive(self, value: float, notify_scene: bool = False) -> None:
         try:
@@ -1739,7 +2001,7 @@ class TextureProWidget(QtWidgets.QWidget):
             pass
 
     def _on_emissive_changed(self):
-        value = float(self._emissive.value())
+        value = float(self._emissive.value()) / 100.0
         self._apply_emissive(value, notify_scene=True)
 
     def _set_resolution_value(self, value: int) -> None:
@@ -1876,6 +2138,18 @@ class TextureProWidget(QtWidgets.QWidget):
         except Exception:
             pan_flag = bool(PAN_DEFAULT)
         self._apply_pan(pan_flag, notify_scene=False)
+
+        life_min = float(LIFE_MIN_DEFAULT)
+        try:
+            life_min = float(_param_value(self._node_item.model, "life_min") or LIFE_MIN_DEFAULT)
+        except Exception:
+            life_min = float(LIFE_MIN_DEFAULT)
+        life_max = float(LIFE_MAX_DEFAULT)
+        try:
+            life_max = float(_param_value(self._node_item.model, "life_max") or LIFE_MAX_DEFAULT)
+        except Exception:
+            life_max = float(LIFE_MAX_DEFAULT)
+        self._apply_life_range(life_min, life_max, notify_scene=False)
 
         emissive = float(EMISSIVE_DEFAULT)
         try:

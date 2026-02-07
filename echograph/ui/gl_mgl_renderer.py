@@ -1758,6 +1758,14 @@ class MGLRendererMixin:
             if pan_val is None:
                 pan_val = 1.0
             _set_uniform(f"ProcPan{suffix}", float(pan_val))
+            life_min = proc_state.get("life_min", 3.0)
+            life_max = proc_state.get("life_max", 14.0)
+            if life_min is None:
+                life_min = 3.0
+            if life_max is None:
+                life_max = 14.0
+            _set_uniform(f"ProcLifeMin{suffix}", float(life_min))
+            _set_uniform(f"ProcLifeMax{suffix}", float(max(float(life_min), float(life_max))))
             bg_enabled = 1 if float(proc_state.get("bg_enabled", 0.0) or 0.0) > 0.5 else 0
             _set_uniform(f"ProcBgEnabled{suffix}", int(bg_enabled))
             bg = proc_state.get("bg_color")
@@ -3487,6 +3495,8 @@ class MGLRendererMixin:
                 self._mgl_prog["ProcEmissive"].value = 0.0
                 self._mgl_prog["ProcLightMix"].value = 1.0
                 self._mgl_prog["ProcPan"].value = 1.0
+                self._mgl_prog["ProcLifeMin"].value = 3.0
+                self._mgl_prog["ProcLifeMax"].value = 14.0
                 self._mgl_prog["ProceduralMode2"].value = 0
                 self._mgl_prog["ProcParams2"].value = (1.0, 1.0, 1.0, 0.0)
                 self._mgl_prog["ProcSeed2"].value = 0.0
@@ -3494,6 +3504,8 @@ class MGLRendererMixin:
                 self._mgl_prog["ProcEmissive2"].value = 0.0
                 self._mgl_prog["ProcLightMix2"].value = 1.0
                 self._mgl_prog["ProcPan2"].value = 1.0
+                self._mgl_prog["ProcLifeMin2"].value = 3.0
+                self._mgl_prog["ProcLifeMax2"].value = 14.0
                 self._mgl_prog["ProcTime"].value = 0.0
                 self._mgl_prog["ProcBgEnabled"].value = 0
                 self._mgl_prog["ProcBg"].value = (0.0, 0.0, 0.0, 1.0)
