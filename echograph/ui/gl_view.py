@@ -1699,23 +1699,41 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         if np is None:
             return False
         b = get_bounds(owner)
-        if not isinstance(b, (list, tuple)) or len(b) < 2:
+        mins = None
+        maxs = None
+        if isinstance(b, (list, tuple)) and len(b) >= 2:
+            bmin, bmax = b
+            if bmin is not None and bmax is not None:
+                try:
+                    mins = np.array(bmin, dtype=np.float32)
+                    maxs = np.array(bmax, dtype=np.float32)
+                    if mins.shape[0] < 3 or maxs.shape[0] < 3:
+                        mins = None
+                        maxs = None
+                except Exception:
+                    mins = None
+                    maxs = None
+
+        if mins is None or maxs is None:
+            try:
+                is_splat = str(getattr(self, "_xform_gizmo_owner_kind", "")).lower() == "splat"
+                get_xf = getattr(renderer, "_mgl_get_scene_splat_xform", None) if is_splat else getattr(renderer, "_mgl_get_scene_asset_xform", None)
+                if callable(get_xf):
+                    xf = get_xf(owner) or {}
+                    pos = xf.get("pos", (0.0, 0.0, 0.0))
+                    mins = np.array(pos, dtype=np.float32)
+                    maxs = np.array(pos, dtype=np.float32)
+            except Exception:
+                mins = None
+                maxs = None
+        if mins is None or maxs is None:
             return False
-        bmin, bmax = b
-        if bmin is None or bmax is None:
-            return False
-        try:
-            mins = np.array(bmin, dtype=np.float32)
-            maxs = np.array(bmax, dtype=np.float32)
-            if mins.shape[0] < 3 or maxs.shape[0] < 3:
-                return False
-        except Exception:
-            return False
+
         center = (mins + maxs) * 0.5
         extent = (maxs - mins) * 0.5
         radius = float(max(extent[0], extent[1], extent[2]))
         if radius <= 1e-6:
-            return False
+            radius = 0.5
         inv_scale = 1.0
         try:
             arc = getattr(renderer, "_mgl_arcball", None)

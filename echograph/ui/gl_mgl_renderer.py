@@ -2055,7 +2055,7 @@ class MGLRendererMixin:
             zoom = float(getattr(self, "_mgl_camera_zoom", 1.0))
         except Exception:
             zoom = 1.0
-        near = max(0.0005, min(0.05, zoom * 0.01))
+        near = max(0.0001, min(0.02, zoom * 0.002))
         try:
             far = float(getattr(self, "_mgl_clip_far", 1000.0))
         except Exception:
