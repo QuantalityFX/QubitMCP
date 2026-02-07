@@ -32,6 +32,7 @@ uniform int ProceduralMode;
 uniform vec4 ProcParams;
 uniform float ProcSeed;
 uniform float ProcAnimSpeed;
+uniform float ProcEmissive;
 uniform float ProcTime;
 uniform sampler2D ProcGlyph;
 uniform vec2 ProcGlyphGrid;
@@ -121,6 +122,7 @@ vec4 proc_matrix(vec2 uv) {
 }
 
 void main() {
+    vec4 base = Color;
     float lum = 1.0;
     if (UseLighting == 1) {
         lum = -dot(normalize(v_norm), normalize(v_vert + Light));
@@ -133,7 +135,6 @@ void main() {
         lum = 0.2 + lum * max(LightIntensity, 0.0);
         lum = clamp(lum, 0.0, 10.0);
     }
-    vec4 base = Color;
     if (UseProcedural == 1) {
         if (ProceduralMode == 1) {
             base = proc_matrix(v_uv);
@@ -143,7 +144,11 @@ void main() {
     } else {
         base = (UseTexture == 1) ? texture(Texture, v_uv) : Color;
     }
-    f_color = vec4(base.rgb * lum, base.a);
+    vec3 lit_rgb = base.rgb * lum;
+    if (UseProcedural == 1) {
+        lit_rgb += base.rgb * max(0.0, ProcEmissive);
+    }
+    f_color = vec4(clamp(lit_rgb, 0.0, 1.0), base.a);
 }
 """,
 

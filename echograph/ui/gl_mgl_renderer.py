@@ -1674,6 +1674,13 @@ class MGLRendererMixin:
         except Exception:
             pass
         try:
+            emissive_val = state.get("emissive", 0.0)
+            if emissive_val is None:
+                emissive_val = 0.0
+            self._mgl_prog["ProcEmissive"].value = float(emissive_val)
+        except Exception:
+            pass
+        try:
             self._mgl_prog["ProcTime"].value = float(getattr(self, "_mgl_proc_time", 0.0) or 0.0)
         except Exception:
             pass
@@ -3368,6 +3375,7 @@ class MGLRendererMixin:
                 self._mgl_prog["ProcParams"].value = (1.0, 1.0, 1.0, 0.0)
                 self._mgl_prog["ProcSeed"].value = 0.0
                 self._mgl_prog["ProcAnimSpeed"].value = 1.0
+                self._mgl_prog["ProcEmissive"].value = 0.0
                 self._mgl_prog["ProcTime"].value = 0.0
                 self._mgl_prog["ProcGlyph"].value = 1
                 self._mgl_prog["ProcGlyphGrid"].value = (1.0, 1.0)

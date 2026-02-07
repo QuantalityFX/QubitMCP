@@ -31,6 +31,9 @@ PACK_MAX = 100
 SPEED_MIN = 0.0
 SPEED_MAX = 10.0
 SPEED_DEFAULT = 1.0
+EMISSIVE_MIN = 0.0
+EMISSIVE_MAX = 2.0
+EMISSIVE_DEFAULT = 0.6
 RESOLUTION_OPTIONS = [256, 512, 1024]
 
 MATRIX_GLYPHS = (
@@ -159,6 +162,7 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, "pack_x", "1")
     _ensure_param(node_item, "pack_y", "1")
     _ensure_param(node_item, "speed", f"{SPEED_DEFAULT:.2f}")
+    _ensure_param(node_item, "emissive", f"{EMISSIVE_DEFAULT:.2f}")
     _ensure_param(node_item, "resolution", str(TEXTURE_SIZE))
     _ensure_param(node_item, "source", "")
     _ensure_param(node_item, "path", "")
@@ -568,6 +572,7 @@ class TextureProProvider:
         self._pack_x = 1
         self._pack_y = 1
         self._speed = float(SPEED_DEFAULT)
+        self._emissive = float(EMISSIVE_DEFAULT)
         self._gpu_seed = random.Random().random() * 4096.0
         self._generators = {
             "checkerboard": CheckerboardGenerator(size=self._size),
@@ -633,6 +638,17 @@ class TextureProProvider:
         self._speed = speed
         self._revision += 1
 
+    def set_emissive(self, emissive: float) -> None:
+        try:
+            emissive = float(emissive)
+        except Exception:
+            emissive = float(EMISSIVE_DEFAULT)
+        emissive = max(EMISSIVE_MIN, min(EMISSIVE_MAX, emissive))
+        if abs(emissive - self._emissive) < 1e-6:
+            return
+        self._emissive = emissive
+        self._revision += 1
+
     def advance(self, dt: float, frame_id: Optional[int] = None) -> bool:
         gen = self._generators[self._mode]
         changed = gen.advance(float(dt) * float(self._speed), frame_id)
@@ -654,6 +670,7 @@ class TextureProProvider:
             "pack_x": int(self._pack_x),
             "pack_y": int(self._pack_y),
             "speed": float(self._speed),
+            "emissive": float(self._emissive),
             "seed": float(self._gpu_seed),
             "glyph_atlas": atlas,
             "glyph_grid": grid,
@@ -893,6 +910,33 @@ class TextureProWidget(QtWidgets.QWidget):
         speed_row.addStretch(1)
 
         right.addLayout(speed_row, 0)
+
+        emissive_row = QtWidgets.QHBoxLayout()
+        emissive_row.setContentsMargins(0, 0, 0, 0)
+        emissive_row.setSpacing(6)
+
+        emissive_label = QtWidgets.QLabel("Emissive")
+        emissive_label.setStyleSheet("color:#94a3b8;font-size:10px;")
+        emissive_row.addWidget(emissive_label, 0)
+
+        self._emissive = QtWidgets.QDoubleSpinBox()
+        self._emissive.setRange(EMISSIVE_MIN, EMISSIVE_MAX)
+        self._emissive.setSingleStep(0.05)
+        self._emissive.setDecimals(2)
+        self._emissive.setFixedWidth(70)
+        self._emissive.setAlignment(QtCore.Qt.AlignRight)
+        self._emissive.setToolTip("Glow intensity for procedural text")
+        self._emissive.setStyleSheet(
+            "QDoubleSpinBox{background:#0f1216;color:#e6edf3;border:1px solid #3c4450;"
+            "border-radius:6px;padding:1px 4px;}"
+            "QDoubleSpinBox::up-button{width:10px;border:none;}"
+            "QDoubleSpinBox::down-button{width:10px;border:none;}"
+        )
+        self._emissive.valueChanged.connect(self._on_emissive_changed)
+        emissive_row.addWidget(self._emissive, 0)
+        emissive_row.addStretch(1)
+
+        right.addLayout(emissive_row, 0)
         right.addStretch(1)
 
         layout.addLayout(right, 1)
@@ -1108,6 +1152,42 @@ class TextureProWidget(QtWidgets.QWidget):
         value = float(self._speed.value())
         self._apply_speed(value, notify_scene=True)
 
+    def _set_emissive_value(self, value: float) -> None:
+        try:
+            value = float(value)
+        except Exception:
+            value = float(EMISSIVE_DEFAULT)
+        value = max(EMISSIVE_MIN, min(EMISSIVE_MAX, value))
+        if abs(float(self._emissive.value()) - value) < 1e-6:
+            return
+        try:
+            self._emissive.blockSignals(True)
+            self._emissive.setValue(value)
+        finally:
+            self._emissive.blockSignals(False)
+
+    def _apply_emissive(self, value: float, notify_scene: bool = False) -> None:
+        try:
+            value = float(value)
+        except Exception:
+            value = float(EMISSIVE_DEFAULT)
+        value = max(EMISSIVE_MIN, min(EMISSIVE_MAX, value))
+        try:
+            if hasattr(self._provider, "set_emissive"):
+                self._provider.set_emissive(value)
+        except Exception:
+            pass
+        self._set_param("emissive", f"{value:.2f}", notify_scene=notify_scene)
+        self._set_emissive_value(value)
+        try:
+            self._refresh_preview()
+        except Exception:
+            pass
+
+    def _on_emissive_changed(self):
+        value = float(self._emissive.value())
+        self._apply_emissive(value, notify_scene=True)
+
     def _set_resolution_value(self, value: int) -> None:
         try:
             idx = self._res_combo.findData(int(value))
@@ -1189,6 +1269,14 @@ class TextureProWidget(QtWidgets.QWidget):
             speed = float(SPEED_DEFAULT)
         speed = max(SPEED_MIN, min(SPEED_MAX, float(speed)))
         self._apply_speed(speed, notify_scene=False)
+
+        emissive = float(EMISSIVE_DEFAULT)
+        try:
+            emissive = float(_param_value(self._node_item.model, "emissive") or EMISSIVE_DEFAULT)
+        except Exception:
+            emissive = float(EMISSIVE_DEFAULT)
+        emissive = max(EMISSIVE_MIN, min(EMISSIVE_MAX, float(emissive)))
+        self._apply_emissive(emissive, notify_scene=False)
 
         resolution = TEXTURE_SIZE
         try:
