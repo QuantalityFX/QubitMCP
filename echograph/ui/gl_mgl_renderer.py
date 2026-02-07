@@ -1754,6 +1754,10 @@ class MGLRendererMixin:
             if light_mix is None:
                 light_mix = 1.0
             _set_uniform(f"ProcLightMix{suffix}", float(light_mix))
+            softness_val = proc_state.get("softness", 0.35)
+            if softness_val is None:
+                softness_val = 0.35
+            _set_uniform(f"ProcSoftness{suffix}", float(softness_val))
             pan_val = proc_state.get("pan", 1.0)
             if pan_val is None:
                 pan_val = 1.0
@@ -3390,9 +3394,39 @@ class MGLRendererMixin:
             intensity = min(10.0, max(0.0, float(value) / 100.0))
         except Exception:
             intensity = 1.0
+        self._apply_mgl_light_intensity(intensity, sync_ui=True, sync_scene=True)
+
+    def _apply_mgl_light_intensity(self, intensity: float, *, sync_ui: bool = True, sync_scene: bool = True) -> None:
+        if not self._use_moderngl:
+            return
+        try:
+            intensity = min(10.0, max(0.0, float(intensity)))
+        except Exception:
+            intensity = 1.0
         self._mgl_light_intensity = intensity
-        if getattr(self, "_mgl_light_label", None) is not None:
-            self._mgl_light_label.setText(f"Light {intensity:.2f}x")
+        if sync_ui:
+            label = getattr(self, "_mgl_light_label", None)
+            if label is not None:
+                label.setText(f"Light {intensity:.2f}x")
+            slider = getattr(self, "_mgl_light_slider", None)
+            if slider is not None:
+                try:
+                    slider.blockSignals(True)
+                    slider.setValue(int(round(intensity * 100.0)))
+                finally:
+                    slider.blockSignals(False)
+        if sync_scene:
+            scene = getattr(self, "_scene", None)
+            if scene is not None:
+                try:
+                    settings = getattr(scene, "_view_settings", None)
+                    if not isinstance(settings, dict):
+                        settings = {}
+                    settings = dict(settings)
+                    settings["light_intensity"] = float(intensity)
+                    scene._view_settings = settings
+                except Exception:
+                    pass
         self.update()
 
     def _on_mgl_clip_changed(self, value: int | None = None) -> None:

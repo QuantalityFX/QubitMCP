@@ -467,6 +467,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 params.append({"name": "speed", "value": "1.00"})
             if "emissive" not in names:
                 params.append({"name": "emissive", "value": "0.60"})
+            if "softness" not in names:
+                params.append({"name": "softness", "value": "0.35"})
             if "lighting" not in names:
                 params.append({"name": "lighting", "value": "1.00"})
             if "bg_color" not in names:
@@ -491,7 +493,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 params.append(hidden_entry)
             raw = hidden_entry.get("value", "")
             hidden = {t.strip().lower() for t in str(raw).split(",") if t.strip()}
-            hidden.update({"pattern", "tiling", "pack_x", "pack_y", "speed", "invert", "pan", "life_min", "life_max", "emissive", "lighting", "bg_color", "bg_alpha", "resolution", "source", "path"})
+            hidden.update({"pattern", "tiling", "pack_x", "pack_y", "speed", "invert", "pan", "life_min", "life_max", "emissive", "softness", "lighting", "bg_color", "bg_alpha", "resolution", "source", "path"})
             hidden_entry["value"] = ",".join(sorted(hidden))
             self.model.params = params
         elif kind_lower == "texture_layer":
@@ -640,7 +642,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         elif kind == "texture":
             hidden.update({"texture", "source", "path"})
         elif kind == "texture_pro":
-            hidden.update({"pattern", "tiling", "pack_x", "pack_y", "speed", "invert", "pan", "life_min", "life_max", "emissive", "lighting", "bg_color", "bg_alpha", "resolution", "source", "path"})
+            hidden.update({"pattern", "tiling", "pack_x", "pack_y", "speed", "invert", "pan", "life_min", "life_max", "emissive", "softness", "lighting", "bg_color", "bg_alpha", "resolution", "source", "path"})
         elif kind == "texture_layer":
             hidden.update({"source", "path"})
 
@@ -1168,7 +1170,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             node_w = self._BASE_W
         elif kind == "texture_pro":
             # Match embedded TextureProWidget height (avoid clipping bottom corners).
-            body_h = max(self._PARAM_ROW_H * 11, 282)
+            body_h = max(self._PARAM_ROW_H * 12, 304)
             node_w = self._BASE_W
         elif kind == "texture_layer":
             # Match embedded TextureLayerWidget height so params/pins don't clip.

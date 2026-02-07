@@ -35,6 +35,7 @@ uniform float ProcSeed;
 uniform float ProcAnimSpeed;
 uniform float ProcEmissive;
 uniform float ProcLightMix;
+uniform float ProcSoftness;
 uniform float ProcPan;
 uniform float ProcLifeMin;
 uniform float ProcLifeMax;
@@ -44,6 +45,7 @@ uniform float ProcSeed2;
 uniform float ProcAnimSpeed2;
 uniform float ProcEmissive2;
 uniform float ProcLightMix2;
+uniform float ProcSoftness2;
 uniform float ProcPan2;
 uniform float ProcLifeMin2;
 uniform float ProcLifeMax2;
@@ -102,6 +104,7 @@ vec4 proc_matrix_params(
     float anim_speed,
     vec4 bg_in,
     int bg_enabled,
+    float softness,
     float pan_enabled,
     float life_min,
     float life_max
@@ -193,7 +196,9 @@ vec4 proc_matrix_params(
     vec2 pad = vec2(0.08, 0.08);
     vec2 glyph_uv = (gcell + mix(pad, vec2(1.0) - pad, f)) / pg;
     float glyph = texture(ProcGlyph, glyph_uv).r;
-    glyph = smoothstep(0.20, 0.86, glyph);
+    float soft = clamp(softness, 0.0, 1.0);
+    float edge = fwidth(glyph) * mix(0.8, 3.0, soft);
+    glyph = smoothstep(0.20 - edge, 0.86 + edge, glyph);
     vec3 head_col = vec3(0.97, 0.99, 0.97);
     vec3 tail_col = vec3(0.11, 0.78, 0.14);
     vec3 color = mix(tail_col, head_col, smoothstep(0.6, 1.0, t));
@@ -235,13 +240,13 @@ void main() {
     }
     if (UseProcedural == 1) {
         vec4 p0 = (ProceduralMode == 1)
-            ? proc_matrix_params(v_uv, ProcParams, ProcSeed, ProcAnimSpeed, ProcBg, ProcBgEnabled, ProcPan, ProcLifeMin, ProcLifeMax)
+            ? proc_matrix_params(v_uv, ProcParams, ProcSeed, ProcAnimSpeed, ProcBg, ProcBgEnabled, ProcSoftness, ProcPan, ProcLifeMin, ProcLifeMax)
             : proc_checker_params(v_uv, ProcParams, ProcAnimSpeed, ProcBg, ProcBgEnabled);
         vec3 rgb0 = apply_lighting(p0.rgb, lum, ProcLightMix, ProcEmissive);
         vec4 c0 = vec4(rgb0, p0.a);
         if (UseProceduralLayer == 1) {
             vec4 p1 = (ProceduralMode2 == 1)
-                ? proc_matrix_params(v_uv, ProcParams2, ProcSeed2, ProcAnimSpeed2, ProcBg2, ProcBgEnabled2, ProcPan2, ProcLifeMin2, ProcLifeMax2)
+                ? proc_matrix_params(v_uv, ProcParams2, ProcSeed2, ProcAnimSpeed2, ProcBg2, ProcBgEnabled2, ProcSoftness2, ProcPan2, ProcLifeMin2, ProcLifeMax2)
                 : proc_checker_params(v_uv, ProcParams2, ProcAnimSpeed2, ProcBg2, ProcBgEnabled2);
             vec3 rgb1 = apply_lighting(p1.rgb, lum, ProcLightMix2, ProcEmissive2);
             vec4 c1 = vec4(rgb1, p1.a);

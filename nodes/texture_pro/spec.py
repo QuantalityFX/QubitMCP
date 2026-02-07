@@ -34,6 +34,9 @@ SPEED_DEFAULT = 1.0
 EMISSIVE_MIN = 0.0
 EMISSIVE_MAX = 2.0
 EMISSIVE_DEFAULT = 0.6
+SOFTNESS_MIN = 0.0
+SOFTNESS_MAX = 1.0
+SOFTNESS_DEFAULT = 0.35
 RESOLUTION_OPTIONS = [256, 512, 1024]
 LIGHTING_DEFAULT = 1.0
 PAN_DEFAULT = False
@@ -52,6 +55,7 @@ HIDDEN_PARAMS = (
     "life_min",
     "life_max",
     "emissive",
+    "softness",
     "resolution",
     "lighting",
     "source",
@@ -218,6 +222,7 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, "life_min", f"{LIFE_MIN_DEFAULT:.2f}")
     _ensure_param(node_item, "life_max", f"{LIFE_MAX_DEFAULT:.2f}")
     _ensure_param(node_item, "emissive", f"{EMISSIVE_DEFAULT:.2f}")
+    _ensure_param(node_item, "softness", f"{SOFTNESS_DEFAULT:.2f}")
     _ensure_param(node_item, "lighting", f"{LIGHTING_DEFAULT:.2f}")
     _ensure_param(node_item, "bg_color", "")
     _ensure_param(node_item, "bg_alpha", "1.0")
@@ -808,6 +813,7 @@ class TextureProProvider:
         self._life_min = float(LIFE_MIN_DEFAULT)
         self._life_max = float(LIFE_MAX_DEFAULT)
         self._emissive = float(EMISSIVE_DEFAULT)
+        self._softness = float(SOFTNESS_DEFAULT)
         self._lighting = float(LIGHTING_DEFAULT)
         self._bg_rgba = None
         self._gpu_seed = random.Random().random() * 4096.0
@@ -928,6 +934,17 @@ class TextureProProvider:
         self._emissive = emissive
         self._revision += 1
 
+    def set_softness(self, softness: float) -> None:
+        try:
+            softness = float(softness)
+        except Exception:
+            softness = float(SOFTNESS_DEFAULT)
+        softness = max(SOFTNESS_MIN, min(SOFTNESS_MAX, softness))
+        if abs(softness - self._softness) < 1e-6:
+            return
+        self._softness = softness
+        self._revision += 1
+
     def set_lighting(self, value: float) -> None:
         try:
             value = float(value)
@@ -989,6 +1006,7 @@ class TextureProProvider:
             "life_min": float(self._life_min),
             "life_max": float(self._life_max),
             "emissive": float(self._emissive),
+            "softness": float(self._softness),
             "light_mix": float(self._lighting),
             "seed": float(self._gpu_seed),
             "glyph_atlas": atlas,
@@ -1180,6 +1198,28 @@ class TextureProWidget(QtWidgets.QWidget):
         self._emissive.valueChanged.connect(self._on_emissive_changed)
         self._set_emissive_value(EMISSIVE_DEFAULT)
         left.addWidget(self._emissive, 0, QtCore.Qt.AlignLeft)
+
+        self._softness_label = QtWidgets.QLabel("Softness")
+        self._softness_label.setStyleSheet("color:#94a3b8;font-size:10px;")
+        self._softness_label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        self._softness_label.setFixedWidth(PREVIEW_SIZE)
+        left.addWidget(self._softness_label, 0, QtCore.Qt.AlignLeft)
+
+        self._softness = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self._softness.setRange(int(SOFTNESS_MIN * 100.0), int(SOFTNESS_MAX * 100.0))
+        self._softness.setSingleStep(1)
+        self._softness.setPageStep(10)
+        self._softness.setFixedWidth(PREVIEW_SIZE)
+        self._softness.setToolTip("Glyph edge softness")
+        self._softness.setStyleSheet(
+            "QSlider::groove:horizontal{height:4px;background:#1f2937;border-radius:2px;}"
+            "QSlider::sub-page:horizontal{background:#38bdf8;border-radius:2px;}"
+            "QSlider::handle:horizontal{background:#e2e8f0;border:1px solid #0f172a;"
+            "width:10px;margin:-4px 0;border-radius:5px;}"
+        )
+        self._softness.valueChanged.connect(self._on_softness_changed)
+        self._set_softness_value(SOFTNESS_DEFAULT)
+        left.addWidget(self._softness, 0, QtCore.Qt.AlignLeft)
 
         self._view_btn = QtWidgets.QPushButton("View")
         self._view_btn.setFixedWidth(PREVIEW_SIZE)
@@ -2004,6 +2044,51 @@ class TextureProWidget(QtWidgets.QWidget):
         value = float(self._emissive.value()) / 100.0
         self._apply_emissive(value, notify_scene=True)
 
+    def _set_softness_value(self, value: float) -> None:
+        try:
+            value = float(value)
+        except Exception:
+            value = float(SOFTNESS_DEFAULT)
+        value = max(SOFTNESS_MIN, min(SOFTNESS_MAX, value))
+        slider_value = int(round(value * 100.0))
+        try:
+            if int(self._softness.value()) == slider_value:
+                pass
+            else:
+                self._softness.blockSignals(True)
+                self._softness.setValue(slider_value)
+        finally:
+            try:
+                self._softness.blockSignals(False)
+            except Exception:
+                pass
+        try:
+            self._softness_label.setText(f"Softness {value:.2f}")
+        except Exception:
+            pass
+
+    def _apply_softness(self, value: float, notify_scene: bool = False) -> None:
+        try:
+            value = float(value)
+        except Exception:
+            value = float(SOFTNESS_DEFAULT)
+        value = max(SOFTNESS_MIN, min(SOFTNESS_MAX, value))
+        try:
+            if hasattr(self._provider, "set_softness"):
+                self._provider.set_softness(value)
+        except Exception:
+            pass
+        self._set_param("softness", f"{value:.2f}", notify_scene=notify_scene)
+        self._set_softness_value(value)
+        try:
+            self._refresh_preview()
+        except Exception:
+            pass
+
+    def _on_softness_changed(self):
+        value = float(self._softness.value()) / 100.0
+        self._apply_softness(value, notify_scene=True)
+
     def _set_resolution_value(self, value: int) -> None:
         try:
             idx = self._res_combo.findData(int(value))
@@ -2158,6 +2243,14 @@ class TextureProWidget(QtWidgets.QWidget):
             emissive = float(EMISSIVE_DEFAULT)
         emissive = max(EMISSIVE_MIN, min(EMISSIVE_MAX, float(emissive)))
         self._apply_emissive(emissive, notify_scene=False)
+
+        softness = float(SOFTNESS_DEFAULT)
+        try:
+            softness = float(_param_value(self._node_item.model, "softness") or SOFTNESS_DEFAULT)
+        except Exception:
+            softness = float(SOFTNESS_DEFAULT)
+        softness = max(SOFTNESS_MIN, min(SOFTNESS_MAX, float(softness)))
+        self._apply_softness(softness, notify_scene=False)
 
         lighting = self._lighting_from_params()
         self._apply_lighting(lighting, notify_scene=False)

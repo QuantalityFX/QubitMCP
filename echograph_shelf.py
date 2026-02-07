@@ -4083,6 +4083,19 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             self._apply_pan_settings_to_gl_view()
         except Exception:
             pass
+        try:
+            light_intensity = settings.get("light_intensity", None)
+            if light_intensity is not None:
+                light_intensity = float(light_intensity)
+        except Exception:
+            light_intensity = None
+        if light_intensity is not None:
+            try:
+                gv = getattr(self, "gl_view", None)
+                if gv is not None and hasattr(gv, "_apply_mgl_light_intensity"):
+                    gv._apply_mgl_light_intensity(light_intensity, sync_ui=True, sync_scene=False)
+            except Exception:
+                pass
 
         self._current_path = path
         self._remember_recent(path)
