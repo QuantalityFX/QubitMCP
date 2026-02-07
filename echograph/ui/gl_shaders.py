@@ -33,6 +33,7 @@ uniform vec4 ProcParams;
 uniform float ProcSeed;
 uniform float ProcAnimSpeed;
 uniform float ProcEmissive;
+uniform float ProcLightMix;
 uniform float ProcTime;
 uniform vec4 ProcBg;
 uniform int ProcBgEnabled;
@@ -178,7 +179,12 @@ void main() {
     } else {
         base = (UseTexture == 1) ? texture(Texture, v_uv) : Color;
     }
+    if (base.a <= 0.001) {
+        discard;
+    }
+    float light_mix = clamp(ProcLightMix, 0.0, 1.0);
     vec3 lit_rgb = base.rgb * lum;
+    lit_rgb = mix(base.rgb, lit_rgb, light_mix);
     if (UseProcedural == 1) {
         lit_rgb += base.rgb * max(0.0, ProcEmissive);
     }

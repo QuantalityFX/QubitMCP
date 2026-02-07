@@ -35,6 +35,7 @@ EMISSIVE_MIN = 0.0
 EMISSIVE_MAX = 2.0
 EMISSIVE_DEFAULT = 0.6
 RESOLUTION_OPTIONS = [256, 512, 1024]
+LIGHTING_DEFAULT = 1.0
 HIDDEN_PARAMS = (
     "pattern",
     "tiling",
@@ -43,6 +44,7 @@ HIDDEN_PARAMS = (
     "speed",
     "emissive",
     "resolution",
+    "lighting",
     "source",
     "path",
     "bg_color",
@@ -204,6 +206,7 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, "speed", f"{SPEED_DEFAULT:.2f}")
     _ensure_param(node_item, "invert", "0")
     _ensure_param(node_item, "emissive", f"{EMISSIVE_DEFAULT:.2f}")
+    _ensure_param(node_item, "lighting", f"{LIGHTING_DEFAULT:.2f}")
     _ensure_param(node_item, "bg_color", "")
     _ensure_param(node_item, "bg_alpha", "1.0")
     _ensure_param(node_item, "resolution", str(TEXTURE_SIZE))
@@ -657,6 +660,7 @@ class TextureProProvider:
         self._speed = float(SPEED_DEFAULT)
         self._invert = False
         self._emissive = float(EMISSIVE_DEFAULT)
+        self._lighting = float(LIGHTING_DEFAULT)
         self._bg_rgba = None
         self._gpu_seed = random.Random().random() * 4096.0
         self._generators = {
@@ -748,6 +752,17 @@ class TextureProProvider:
         self._emissive = emissive
         self._revision += 1
 
+    def set_lighting(self, value: float) -> None:
+        try:
+            value = float(value)
+        except Exception:
+            value = float(LIGHTING_DEFAULT)
+        value = max(0.0, min(1.0, value))
+        if abs(value - self._lighting) < 1e-6:
+            return
+        self._lighting = value
+        self._revision += 1
+
     def set_background(self, rgba: Optional[tuple]) -> None:
         if rgba is not None:
             try:
@@ -795,6 +810,7 @@ class TextureProProvider:
             "speed": float(self._speed),
             "invert": 1.0 if self._invert else 0.0,
             "emissive": float(self._emissive),
+            "light_mix": float(self._lighting),
             "seed": float(self._gpu_seed),
             "glyph_atlas": atlas,
             "glyph_grid": grid,
@@ -923,6 +939,28 @@ class TextureProWidget(QtWidgets.QWidget):
         self._bg_alpha.valueChanged.connect(self._on_bg_alpha_changed)
         self._set_bg_alpha_value(1.0)
         left.addWidget(self._bg_alpha, 0, QtCore.Qt.AlignLeft)
+
+        self._light_label = QtWidgets.QLabel("Lighting")
+        self._light_label.setStyleSheet("color:#94a3b8;font-size:10px;")
+        self._light_label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        self._light_label.setFixedWidth(PREVIEW_SIZE)
+        left.addWidget(self._light_label, 0, QtCore.Qt.AlignLeft)
+
+        self._light_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self._light_slider.setRange(0, 100)
+        self._light_slider.setSingleStep(1)
+        self._light_slider.setPageStep(10)
+        self._light_slider.setFixedWidth(PREVIEW_SIZE)
+        self._light_slider.setToolTip("Lighting strength")
+        self._light_slider.setStyleSheet(
+            "QSlider::groove:horizontal{height:4px;background:#1f2937;border-radius:2px;}"
+            "QSlider::sub-page:horizontal{background:#60a5fa;border-radius:2px;}"
+            "QSlider::handle:horizontal{background:#e2e8f0;border:1px solid #0f172a;"
+            "width:10px;margin:-4px 0;border-radius:5px;}"
+        )
+        self._light_slider.valueChanged.connect(self._on_lighting_changed)
+        self._set_lighting_value(LIGHTING_DEFAULT)
+        left.addWidget(self._light_slider, 0, QtCore.Qt.AlignLeft)
 
         self._view_btn = QtWidgets.QPushButton("View")
         self._view_btn.setFixedWidth(PREVIEW_SIZE)
@@ -1340,6 +1378,50 @@ class TextureProWidget(QtWidgets.QWidget):
                 pass
         self._bg_alpha_label.setText(f"BG Alpha {value}%")
 
+    def _lighting_from_params(self) -> float:
+        raw = ""
+        try:
+            raw = str(_param_value(self._node_item.model, "lighting") or "").strip()
+        except Exception:
+            raw = ""
+        value = float(LIGHTING_DEFAULT)
+        if raw:
+            try:
+                value = float(raw)
+            except Exception:
+                value = float(LIGHTING_DEFAULT)
+        if value > 1.0:
+            value = min(value, 100.0) / 100.0
+        return max(0.0, min(1.0, value))
+
+    def _set_lighting_value(self, value: float) -> None:
+        value = max(0.0, min(1.0, float(value)))
+        pct = int(round(value * 100.0))
+        try:
+            if self._light_slider.value() != pct:
+                self._light_slider.blockSignals(True)
+                self._light_slider.setValue(pct)
+        finally:
+            try:
+                self._light_slider.blockSignals(False)
+            except Exception:
+                pass
+        self._light_label.setText(f"Lighting {pct}%")
+
+    def _apply_lighting(self, value: float, notify_scene: bool = False) -> None:
+        value = max(0.0, min(1.0, float(value)))
+        try:
+            if hasattr(self._provider, "set_lighting"):
+                self._provider.set_lighting(value)
+        except Exception:
+            pass
+        self._set_param("lighting", f"{value:.2f}", notify_scene=notify_scene)
+        self._set_lighting_value(value)
+        try:
+            self._refresh_preview()
+        except Exception:
+            pass
+
     def _apply_background(self, rgba: Optional[tuple], notify_scene: bool = False) -> None:
         try:
             if hasattr(self._provider, "set_background"):
@@ -1625,6 +1707,10 @@ class TextureProWidget(QtWidgets.QWidget):
         rgba = (int(r), int(g), int(b), int(round(alpha * 255)))
         self._apply_background(rgba, notify_scene=True)
 
+    def _on_lighting_changed(self, value: int):
+        lighting = max(0.0, min(1.0, float(value) / 100.0))
+        self._apply_lighting(lighting, notify_scene=True)
+
     def _on_pattern_changed(self):
         key = self._combo.currentData() or self._combo.currentText()
         self._apply_pattern(str(key), notify_scene=True)
@@ -1687,6 +1773,9 @@ class TextureProWidget(QtWidgets.QWidget):
             emissive = float(EMISSIVE_DEFAULT)
         emissive = max(EMISSIVE_MIN, min(EMISSIVE_MAX, float(emissive)))
         self._apply_emissive(emissive, notify_scene=False)
+
+        lighting = self._lighting_from_params()
+        self._apply_lighting(lighting, notify_scene=False)
 
         bg_rgba = self._bg_rgba_from_params()
         self._apply_background(bg_rgba, notify_scene=False)

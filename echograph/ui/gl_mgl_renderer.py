@@ -1716,6 +1716,10 @@ class MGLRendererMixin:
                 self._mgl_prog["UseProcedural"].value = 0
             except Exception:
                 pass
+            try:
+                self._mgl_prog["ProcLightMix"].value = 1.0
+            except Exception:
+                pass
             return
         try:
             self._mgl_prog["UseProcedural"].value = 1
@@ -1753,6 +1757,13 @@ class MGLRendererMixin:
             if emissive_val is None:
                 emissive_val = 0.0
             self._mgl_prog["ProcEmissive"].value = float(emissive_val)
+        except Exception:
+            pass
+        try:
+            light_mix = state.get("light_mix", 1.0)
+            if light_mix is None:
+                light_mix = 1.0
+            self._mgl_prog["ProcLightMix"].value = float(light_mix)
         except Exception:
             pass
         try:
@@ -3464,6 +3475,7 @@ class MGLRendererMixin:
                 self._mgl_prog["ProcSeed"].value = 0.0
                 self._mgl_prog["ProcAnimSpeed"].value = 1.0
                 self._mgl_prog["ProcEmissive"].value = 0.0
+                self._mgl_prog["ProcLightMix"].value = 1.0
                 self._mgl_prog["ProcTime"].value = 0.0
                 self._mgl_prog["ProcBgEnabled"].value = 0
                 self._mgl_prog["ProcBg"].value = (0.0, 0.0, 0.0, 1.0)
