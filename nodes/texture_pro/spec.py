@@ -162,6 +162,7 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, "pack_x", "1")
     _ensure_param(node_item, "pack_y", "1")
     _ensure_param(node_item, "speed", f"{SPEED_DEFAULT:.2f}")
+    _ensure_param(node_item, "invert", "0")
     _ensure_param(node_item, "emissive", f"{EMISSIVE_DEFAULT:.2f}")
     _ensure_param(node_item, "resolution", str(TEXTURE_SIZE))
     _ensure_param(node_item, "source", "")
@@ -426,6 +427,7 @@ class MatrixRainGenerator:
         self._revision = 0
         self._last_frame_id: Optional[int] = None
         self._rng = random.Random()
+        self._invert = False
         self._cols = []
         self._init_columns()
 
@@ -456,12 +458,18 @@ class MatrixRainGenerator:
             return False
         height = self.size
         cell_y = self.cell_y
+        direction = -1.0 if self._invert else 1.0
         for idx, col in enumerate(self._cols):
-            col["y"] = float(col.get("y", 0.0)) + float(col.get("speed", 10.0)) * cell_y * dt
+            col["y"] = float(col.get("y", 0.0)) + direction * float(col.get("speed", 10.0)) * cell_y * dt
             trail = int(col.get("trail", 12))
-            if col["y"] - (trail * cell_y) > height + cell_y:
-                self._cols[idx] = self._new_column(idx)
-                continue
+            if self._invert:
+                if col["y"] + (trail * cell_y) < -cell_y:
+                    self._cols[idx] = self._new_column(idx)
+                    continue
+            else:
+                if col["y"] - (trail * cell_y) > height + cell_y:
+                    self._cols[idx] = self._new_column(idx)
+                    continue
             if self._rng.random() < 0.45:
                 glyphs = col.get("glyphs") or []
                 if glyphs:
@@ -495,6 +503,13 @@ class MatrixRainGenerator:
         self._pack_x = pack_x
         self._pack_y = pack_y
         self._recompute_cells()
+
+    def set_invert(self, invert: bool) -> None:
+        invert = bool(invert)
+        if invert == self._invert:
+            return
+        self._invert = invert
+        self._mark_dirty()
 
     def set_size(self, size: int) -> None:
         size = max(16, int(size))
@@ -538,7 +553,10 @@ class MatrixRainGenerator:
             trail = int(col.get("trail", 12))
             glyphs = col.get("glyphs") or []
             for t in range(trail):
-                y = head_y - t * cell_y
+                if self._invert:
+                    y = head_y + t * cell_y
+                else:
+                    y = head_y - t * cell_y
                 if y < -cell_y or y > size:
                     continue
                 if t == 0:
@@ -572,6 +590,7 @@ class TextureProProvider:
         self._pack_x = 1
         self._pack_y = 1
         self._speed = float(SPEED_DEFAULT)
+        self._invert = False
         self._emissive = float(EMISSIVE_DEFAULT)
         self._gpu_seed = random.Random().random() * 4096.0
         self._generators = {
@@ -638,6 +657,20 @@ class TextureProProvider:
         self._speed = speed
         self._revision += 1
 
+    def set_invert(self, invert: bool) -> None:
+        invert = bool(invert)
+        if invert == self._invert:
+            return
+        self._invert = invert
+        self._revision += 1
+        try:
+            gen = self._generators.get("matrix_rain")
+            fn = getattr(gen, "set_invert", None)
+            if callable(fn):
+                fn(invert)
+        except Exception:
+            pass
+
     def set_emissive(self, emissive: float) -> None:
         try:
             emissive = float(emissive)
@@ -670,6 +703,7 @@ class TextureProProvider:
             "pack_x": int(self._pack_x),
             "pack_y": int(self._pack_y),
             "speed": float(self._speed),
+            "invert": 1.0 if self._invert else 0.0,
             "emissive": float(self._emissive),
             "seed": float(self._gpu_seed),
             "glyph_atlas": atlas,
@@ -703,6 +737,13 @@ class TextureProProvider:
                     fn(pack_x, pack_y)
                 except Exception:
                     pass
+        try:
+            gen = self._generators.get("matrix_rain")
+            fn = getattr(gen, "set_invert", None)
+            if callable(fn):
+                fn(self._invert)
+        except Exception:
+            pass
 
     @property
     def revision(self) -> int:
@@ -796,25 +837,7 @@ class TextureProWidget(QtWidgets.QWidget):
         self._combo.currentIndexChanged.connect(self._on_pattern_changed)
         right.addWidget(self._combo, 0)
 
-        settings_row = QtWidgets.QHBoxLayout()
-        settings_row.setContentsMargins(0, 0, 0, 0)
-        settings_row.setSpacing(6)
-
-        self._tiling = QtWidgets.QSpinBox()
-        self._tiling.setRange(TILING_MIN, TILING_MAX)
-        self._tiling.setSingleStep(1)
-        self._tiling.setFixedWidth(48)
-        self._tiling.setAlignment(QtCore.Qt.AlignRight)
-        self._tiling.setSuffix("x")
-        self._tiling.setToolTip("Tile density")
-        self._tiling.setStyleSheet(
-            "QSpinBox{background:#0f1216;color:#e6edf3;border:1px solid #3c4450;"
-            "border-radius:6px;padding:1px 4px;}"
-            "QSpinBox::up-button{width:10px;border:none;}"
-            "QSpinBox::down-button{width:10px;border:none;}"
-        )
-        self._tiling.valueChanged.connect(self._on_tiling_changed)
-        settings_row.addWidget(self._tiling, 0)
+        label_w = 52
 
         self._res_combo = QtWidgets.QComboBox()
         self._res_combo.setFixedWidth(70)
@@ -833,18 +856,58 @@ class TextureProWidget(QtWidgets.QWidget):
         for size in RESOLUTION_OPTIONS:
             self._res_combo.addItem(str(size), int(size))
         self._res_combo.currentIndexChanged.connect(self._on_resolution_changed)
-        settings_row.addWidget(self._res_combo, 0)
+        res_row = QtWidgets.QHBoxLayout()
+        res_row.setContentsMargins(0, 0, 0, 0)
+        res_row.setSpacing(6)
+
+        res_label = QtWidgets.QLabel("Resolution")
+        res_label.setStyleSheet("color:#94a3b8;font-size:10px;")
+        res_label.setFixedWidth(label_w)
+        res_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        res_row.addWidget(res_label, 0)
+        res_row.addWidget(self._res_combo, 0)
+        res_row.addStretch(1)
+
+        right.addLayout(res_row, 0)
+
+        settings_row = QtWidgets.QHBoxLayout()
+        settings_row.setContentsMargins(0, 0, 0, 0)
+        settings_row.setSpacing(6)
+
+        tiling_label = QtWidgets.QLabel("Tile")
+        tiling_label.setStyleSheet("color:#94a3b8;font-size:10px;")
+        tiling_label.setFixedWidth(label_w)
+        tiling_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        settings_row.addWidget(tiling_label, 0)
+
+        self._tiling = QtWidgets.QSpinBox()
+        self._tiling.setRange(TILING_MIN, TILING_MAX)
+        self._tiling.setSingleStep(1)
+        self._tiling.setFixedWidth(48)
+        self._tiling.setAlignment(QtCore.Qt.AlignRight)
+        self._tiling.setSuffix("x")
+        self._tiling.setToolTip("Tile density")
+        self._tiling.setStyleSheet(
+            "QSpinBox{background:#0f1216;color:#e6edf3;border:1px solid #3c4450;"
+            "border-radius:6px;padding:1px 4px;}"
+            "QSpinBox::up-button{width:10px;border:none;}"
+            "QSpinBox::down-button{width:10px;border:none;}"
+        )
+        self._tiling.valueChanged.connect(self._on_tiling_changed)
+        settings_row.addWidget(self._tiling, 0)
         settings_row.addStretch(1)
 
         right.addLayout(settings_row, 0)
 
-        pack_row = QtWidgets.QHBoxLayout()
-        pack_row.setContentsMargins(0, 0, 0, 0)
-        pack_row.setSpacing(6)
+        pack_x_row = QtWidgets.QHBoxLayout()
+        pack_x_row.setContentsMargins(0, 0, 0, 0)
+        pack_x_row.setSpacing(6)
 
         pack_x_label = QtWidgets.QLabel("X")
         pack_x_label.setStyleSheet("color:#94a3b8;font-size:10px;")
-        pack_row.addWidget(pack_x_label, 0)
+        pack_x_label.setFixedWidth(label_w)
+        pack_x_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        pack_x_row.addWidget(pack_x_label, 0)
 
         self._pack_x = QtWidgets.QSpinBox()
         self._pack_x.setRange(PACK_MIN, PACK_MAX)
@@ -859,11 +922,20 @@ class TextureProWidget(QtWidgets.QWidget):
             "QSpinBox::down-button{width:10px;border:none;}"
         )
         self._pack_x.valueChanged.connect(self._on_pack_changed)
-        pack_row.addWidget(self._pack_x, 0)
+        pack_x_row.addWidget(self._pack_x, 0)
+        pack_x_row.addStretch(1)
+
+        right.addLayout(pack_x_row, 0)
+
+        pack_y_row = QtWidgets.QHBoxLayout()
+        pack_y_row.setContentsMargins(0, 0, 0, 0)
+        pack_y_row.setSpacing(6)
 
         pack_y_label = QtWidgets.QLabel("Y")
         pack_y_label.setStyleSheet("color:#94a3b8;font-size:10px;")
-        pack_row.addWidget(pack_y_label, 0)
+        pack_y_label.setFixedWidth(label_w)
+        pack_y_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        pack_y_row.addWidget(pack_y_label, 0)
 
         self._pack_y = QtWidgets.QSpinBox()
         self._pack_y.setRange(PACK_MIN, PACK_MAX)
@@ -878,10 +950,10 @@ class TextureProWidget(QtWidgets.QWidget):
             "QSpinBox::down-button{width:10px;border:none;}"
         )
         self._pack_y.valueChanged.connect(self._on_pack_changed)
-        pack_row.addWidget(self._pack_y, 0)
-        pack_row.addStretch(1)
+        pack_y_row.addWidget(self._pack_y, 0)
+        pack_y_row.addStretch(1)
 
-        right.addLayout(pack_row, 0)
+        right.addLayout(pack_y_row, 0)
 
         speed_row = QtWidgets.QHBoxLayout()
         speed_row.setContentsMargins(0, 0, 0, 0)
@@ -889,6 +961,8 @@ class TextureProWidget(QtWidgets.QWidget):
 
         speed_label = QtWidgets.QLabel("Speed")
         speed_label.setStyleSheet("color:#94a3b8;font-size:10px;")
+        speed_label.setFixedWidth(label_w)
+        speed_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
         speed_row.addWidget(speed_label, 0)
 
         self._speed = QtWidgets.QDoubleSpinBox()
@@ -917,6 +991,8 @@ class TextureProWidget(QtWidgets.QWidget):
 
         emissive_label = QtWidgets.QLabel("Emissive")
         emissive_label.setStyleSheet("color:#94a3b8;font-size:10px;")
+        emissive_label.setFixedWidth(label_w)
+        emissive_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
         emissive_row.addWidget(emissive_label, 0)
 
         self._emissive = QtWidgets.QDoubleSpinBox()
@@ -937,6 +1013,25 @@ class TextureProWidget(QtWidgets.QWidget):
         emissive_row.addStretch(1)
 
         right.addLayout(emissive_row, 0)
+
+        invert_row = QtWidgets.QHBoxLayout()
+        invert_row.setContentsMargins(0, 0, 0, 0)
+        invert_row.setSpacing(6)
+
+        invert_label = QtWidgets.QLabel("Invert")
+        invert_label.setStyleSheet("color:#94a3b8;font-size:10px;")
+        invert_label.setFixedWidth(label_w)
+        invert_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        invert_row.addWidget(invert_label, 0)
+
+        self._invert = QtWidgets.QCheckBox()
+        self._invert.setToolTip("Invert rain direction (upwards)")
+        self._invert.setStyleSheet("QCheckBox{color:#e6edf3;}")
+        self._invert.stateChanged.connect(self._on_invert_changed)
+        invert_row.addWidget(self._invert, 0)
+        invert_row.addStretch(1)
+
+        right.addLayout(invert_row, 0)
         right.addStretch(1)
 
         layout.addLayout(right, 1)
@@ -1152,6 +1247,37 @@ class TextureProWidget(QtWidgets.QWidget):
         value = float(self._speed.value())
         self._apply_speed(value, notify_scene=True)
 
+    def _set_invert_value(self, value: bool) -> None:
+        checked = bool(value)
+        try:
+            if self._invert.isChecked() == checked:
+                return
+            self._invert.blockSignals(True)
+            self._invert.setChecked(checked)
+        finally:
+            try:
+                self._invert.blockSignals(False)
+            except Exception:
+                pass
+
+    def _apply_invert(self, value: bool, notify_scene: bool = False) -> None:
+        checked = bool(value)
+        try:
+            if hasattr(self._provider, "set_invert"):
+                self._provider.set_invert(checked)
+        except Exception:
+            pass
+        self._set_param("invert", "1" if checked else "0", notify_scene=notify_scene)
+        self._set_invert_value(checked)
+        try:
+            self._refresh_preview()
+        except Exception:
+            pass
+
+    def _on_invert_changed(self):
+        checked = bool(self._invert.isChecked())
+        self._apply_invert(checked, notify_scene=True)
+
     def _set_emissive_value(self, value: float) -> None:
         try:
             value = float(value)
@@ -1269,6 +1395,14 @@ class TextureProWidget(QtWidgets.QWidget):
             speed = float(SPEED_DEFAULT)
         speed = max(SPEED_MIN, min(SPEED_MAX, float(speed)))
         self._apply_speed(speed, notify_scene=False)
+
+        invert_flag = False
+        try:
+            raw = str(_param_value(self._node_item.model, "invert") or "").strip().lower()
+            invert_flag = raw in {"1", "true", "yes", "on"}
+        except Exception:
+            invert_flag = False
+        self._apply_invert(invert_flag, notify_scene=False)
 
         emissive = float(EMISSIVE_DEFAULT)
         try:

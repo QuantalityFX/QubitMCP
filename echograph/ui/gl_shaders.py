@@ -83,6 +83,8 @@ vec4 proc_matrix(vec2 uv) {
     float rows = max(1.0, tiling * pack_y * base);
     vec2 p = fract(uv) * vec2(cols, rows);
     float col = floor(p.x);
+    float invert = step(0.5, ProcParams.w);
+    float dir = mix(1.0, -1.0, invert);
     float speed = mix(0.6, 1.8, hash11(col * 0.73 + seed * 91.7));
     float trail = mix(8.0, 16.0, hash11(col * 1.31 + seed * 57.3));
     float col_phase = hash11(col * 1.19 + seed * 53.1) * rows;
@@ -105,12 +107,12 @@ vec4 proc_matrix(vec2 uv) {
         fade_out = 1.0 - clamp(fade_t, 0.0, 1.0);
     }
     float motion_t = (base_cycle + t_alive - offset) * max(0.0, ProcAnimSpeed);
-    float scroll = motion_t * speed + col_phase;
+    float scroll = motion_t * speed * dir + col_phase;
     float stream_y = p.y - scroll;
     float row = floor(stream_y);
     vec2 f = vec2(fract(p.x), fract(stream_y));
     float head = mod(scroll, rows);
-    float dy = head - p.y;
+    float dy = (dir > 0.0) ? (head - p.y) : (p.y - head);
     if (dy < 0.0) dy += rows;
     float t = 1.0 - dy / max(trail, 1.0);
     vec3 bg = vec3(0.01, 0.03, 0.01);

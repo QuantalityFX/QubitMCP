@@ -1732,7 +1732,7 @@ class MGLRendererMixin:
                 float(state.get("tiling", 1) or 1),
                 float(state.get("pack_x", 1) or 1),
                 float(state.get("pack_y", 1) or 1),
-                0.0,
+                float(state.get("invert", 0.0) or 0.0),
             )
             self._mgl_prog["ProcParams"].value = params
         except Exception:
