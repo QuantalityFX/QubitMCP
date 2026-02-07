@@ -28,6 +28,10 @@ TILING_MIN = 1
 TILING_MAX = 100
 PACK_MIN = 1
 PACK_MAX = 100
+SPEED_MIN = 0.0
+SPEED_MAX = 4.0
+SPEED_DEFAULT = 1.0
+SPEED_RATE = 0.25
 RESOLUTION_OPTIONS = [256, 512, 1024]
 
 MATRIX_GLYPHS = (
@@ -46,10 +50,34 @@ MATRIX_GLYPHS = (
     "0123456789"
 )
 
+MATRIX_KATAKANA_GLYPHS = (
+    "\uff66", "\uff67", "\uff68", "\uff69", "\uff6a", "\uff6b", "\uff6c", "\uff6d", "\uff6e", "\uff6f", "\uff70",
+    "\uff71", "\uff72", "\uff73", "\uff74", "\uff75",
+    "\uff76", "\uff77", "\uff78", "\uff79", "\uff7a",
+    "\uff7b", "\uff7c", "\uff7d", "\uff7e", "\uff7f",
+    "\uff80", "\uff81", "\uff82", "\uff83", "\uff84",
+    "\uff85", "\uff86", "\uff87", "\uff88", "\uff89",
+    "\uff8a", "\uff8b", "\uff8c", "\uff8d", "\uff8e",
+    "\uff8f", "\uff90", "\uff91", "\uff92", "\uff93",
+    "\uff94", "\uff95", "\uff96",
+    "\uff97", "\uff98", "\uff99", "\uff9a", "\uff9b",
+    "\uff9c", "\uff9d",
+)
+MATRIX_LATIN_GLYPHS = tuple("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+MATRIX_GLYPHS = MATRIX_KATAKANA_GLYPHS + MATRIX_LATIN_GLYPHS
+MATRIX_FONT_FAMILIES = (
+    "MS Gothic",
+    "Meiryo UI",
+    "Yu Gothic UI",
+    "Noto Sans Mono CJK JP",
+    "Consolas",
+)
+
 GLYPH_ATLAS_COLS = 16
-GLYPH_ATLAS_CELL = 32
+GLYPH_ATLAS_CELL = 48
 _GLYPH_ATLAS = None
 _GLYPH_ATLAS_GRID = None
+_GLYPH_ATLAS_SIG = None
 
 
 def _param_value(model, name: str) -> str:
@@ -95,10 +123,17 @@ def _build_glyph_atlas():
     img = QtGui.QImage(cols * cell, rows * cell, fmt)
     img.fill(QtGui.QColor(0, 0, 0, 255))
     painter = QtGui.QPainter(img)
-    painter.setRenderHint(QtGui.QPainter.TextAntialiasing, True)
-    font = QtGui.QFont("Consolas")
-    font.setStyleHint(QtGui.QFont.Monospace)
-    font.setPixelSize(int(cell * 0.78))
+    painter.setRenderHint(QtGui.QPainter.TextAntialiasing, False)
+    families = set()
+    try:
+        families = {str(name) for name in QtGui.QFontDatabase().families()}
+    except Exception:
+        families = set()
+    family = next((name for name in MATRIX_FONT_FAMILIES if name in families), "Consolas")
+    font = QtGui.QFont(family)
+    if family == "Consolas":
+        font.setStyleHint(QtGui.QFont.Monospace)
+    font.setPixelSize(int(cell * 0.84))
     painter.setFont(font)
     painter.setPen(QtGui.QColor("#f1f5f9"))
     for idx, ch in enumerate(glyphs):
@@ -111,9 +146,11 @@ def _build_glyph_atlas():
 
 
 def _get_glyph_atlas():
-    global _GLYPH_ATLAS, _GLYPH_ATLAS_GRID
-    if _GLYPH_ATLAS is None or _GLYPH_ATLAS_GRID is None:
+    global _GLYPH_ATLAS, _GLYPH_ATLAS_GRID, _GLYPH_ATLAS_SIG
+    sig = (MATRIX_GLYPHS, GLYPH_ATLAS_COLS, GLYPH_ATLAS_CELL)
+    if _GLYPH_ATLAS is None or _GLYPH_ATLAS_GRID is None or _GLYPH_ATLAS_SIG != sig:
         _GLYPH_ATLAS, _GLYPH_ATLAS_GRID = _build_glyph_atlas()
+        _GLYPH_ATLAS_SIG = sig
     return _GLYPH_ATLAS, _GLYPH_ATLAS_GRID
 
 
@@ -122,6 +159,7 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, "tiling", "1")
     _ensure_param(node_item, "pack_x", "1")
     _ensure_param(node_item, "pack_y", "1")
+    _ensure_param(node_item, "speed", f"{SPEED_DEFAULT:.2f}")
     _ensure_param(node_item, "resolution", str(TEXTURE_SIZE))
     _ensure_param(node_item, "source", "")
     _ensure_param(node_item, "path", "")
@@ -501,7 +539,7 @@ class MatrixRainGenerator:
                 if y < -cell_y or y > size:
                     continue
                 if t == 0:
-                    color = QtGui.QColor("#bbf7d0")
+                    color = QtGui.QColor("#f8fafc")
                     color.setAlpha(230)
                 else:
                     alpha = max(0.05, 1.0 - (t / max(trail, 1)))
@@ -530,7 +568,8 @@ class TextureProProvider:
         self._density = max(1, int(density))
         self._pack_x = 1
         self._pack_y = 1
-        self._gpu_seed = random.Random().randint(1, 1_000_000)
+        self._speed = float(SPEED_DEFAULT)
+        self._gpu_seed = random.Random().random() * 4096.0
         self._generators = {
             "checkerboard": CheckerboardGenerator(size=self._size),
             "matrix_rain": MatrixRainGenerator(size=self._size),
@@ -584,9 +623,20 @@ class TextureProProvider:
         self._revision += 1
         self._last_gen_rev = self._generators[self._mode].revision
 
+    def set_speed(self, speed: float) -> None:
+        try:
+            speed = float(speed)
+        except Exception:
+            speed = float(SPEED_DEFAULT)
+        speed = max(SPEED_MIN, min(SPEED_MAX, speed))
+        if abs(speed - self._speed) < 1e-6:
+            return
+        self._speed = speed
+        self._revision += 1
+
     def advance(self, dt: float, frame_id: Optional[int] = None) -> bool:
         gen = self._generators[self._mode]
-        changed = gen.advance(dt, frame_id)
+        changed = gen.advance(float(dt) * float(self._speed) * float(SPEED_RATE), frame_id)
         gen_rev = gen.revision
         if changed or gen_rev != self._last_gen_rev:
             self._last_gen_rev = gen_rev
@@ -604,9 +654,11 @@ class TextureProProvider:
             "tiling": int(self._density),
             "pack_x": int(self._pack_x),
             "pack_y": int(self._pack_y),
+            "speed": float(self._speed) * float(SPEED_RATE),
             "seed": float(self._gpu_seed),
             "glyph_atlas": atlas,
             "glyph_grid": grid,
+            "glyph_count": int(len(MATRIX_GLYPHS)),
         }
 
     def _apply_density(self, density: int) -> None:
@@ -673,13 +725,30 @@ class TextureProWidget(QtWidgets.QWidget):
         layout.setContentsMargins(6, 4, 6, 4)
         layout.setSpacing(6)
 
+        left = QtWidgets.QVBoxLayout()
+        left.setContentsMargins(0, 0, 0, 0)
+        left.setSpacing(4)
+
         self._preview = QtWidgets.QLabel()
         self._preview.setFixedSize(PREVIEW_SIZE, PREVIEW_SIZE)
         self._preview.setAlignment(QtCore.Qt.AlignCenter)
         self._preview.setStyleSheet(
             "QLabel{background:#0f172a;border:1px solid #334155;border-radius:4px;}"
         )
-        layout.addWidget(self._preview, 0)
+        left.addWidget(self._preview, 0, QtCore.Qt.AlignLeft)
+
+        self._view_btn = QtWidgets.QPushButton("View")
+        self._view_btn.setFixedWidth(PREVIEW_SIZE)
+        self._view_btn.setStyleSheet(
+            "QPushButton{background:#2563eb;color:#f8fafc;border-radius:4px;padding:2px 8px;}"
+            "QPushButton:hover{background:#1d4ed8;}"
+            "QPushButton:disabled{background:#334155;color:#94a3b8;}"
+        )
+        self._view_btn.clicked.connect(self._on_view_clicked)
+        left.addWidget(self._view_btn, 0, QtCore.Qt.AlignLeft)
+        left.addStretch(1)
+
+        layout.addLayout(left, 0)
 
         right = QtWidgets.QVBoxLayout()
         right.setContentsMargins(0, 0, 0, 0)
@@ -731,8 +800,6 @@ class TextureProWidget(QtWidgets.QWidget):
         self._tiling.valueChanged.connect(self._on_tiling_changed)
         settings_row.addWidget(self._tiling, 0)
 
-        settings_row.addStretch(1)
-
         self._res_combo = QtWidgets.QComboBox()
         self._res_combo.setFixedWidth(70)
         self._res_combo.setToolTip("Texture resolution")
@@ -751,14 +818,13 @@ class TextureProWidget(QtWidgets.QWidget):
             self._res_combo.addItem(str(size), int(size))
         self._res_combo.currentIndexChanged.connect(self._on_resolution_changed)
         settings_row.addWidget(self._res_combo, 0)
+        settings_row.addStretch(1)
 
         right.addLayout(settings_row, 0)
 
         pack_row = QtWidgets.QHBoxLayout()
         pack_row.setContentsMargins(0, 0, 0, 0)
         pack_row.setSpacing(6)
-
-        pack_row.addStretch(1)
 
         pack_x_label = QtWidgets.QLabel("X")
         pack_x_label.setStyleSheet("color:#94a3b8;font-size:10px;")
@@ -797,21 +863,44 @@ class TextureProWidget(QtWidgets.QWidget):
         )
         self._pack_y.valueChanged.connect(self._on_pack_changed)
         pack_row.addWidget(self._pack_y, 0)
+        pack_row.addStretch(1)
 
         right.addLayout(pack_row, 0)
+
+        speed_row = QtWidgets.QHBoxLayout()
+        speed_row.setContentsMargins(0, 0, 0, 0)
+        speed_row.setSpacing(6)
+
+        speed_label = QtWidgets.QLabel("Speed")
+        speed_label.setStyleSheet("color:#94a3b8;font-size:10px;")
+        speed_row.addWidget(speed_label, 0)
+
+        self._speed = QtWidgets.QDoubleSpinBox()
+        self._speed.setRange(SPEED_MIN, SPEED_MAX)
+        self._speed.setSingleStep(0.1)
+        self._speed.setDecimals(2)
+        self._speed.setFixedWidth(70)
+        self._speed.setAlignment(QtCore.Qt.AlignRight)
+        self._speed.setSuffix("x")
+        self._speed.setToolTip("Animation speed")
+        self._speed.setStyleSheet(
+            "QDoubleSpinBox{background:#0f1216;color:#e6edf3;border:1px solid #3c4450;"
+            "border-radius:6px;padding:1px 4px;}"
+            "QDoubleSpinBox::up-button{width:10px;border:none;}"
+            "QDoubleSpinBox::down-button{width:10px;border:none;}"
+        )
+        self._speed.valueChanged.connect(self._on_speed_changed)
+        speed_row.addWidget(self._speed, 0)
+        speed_row.addStretch(1)
+
+        right.addLayout(speed_row, 0)
         right.addStretch(1)
 
-        self._view_btn = QtWidgets.QPushButton("View")
-        self._view_btn.setFixedWidth(64)
-        self._view_btn.setStyleSheet(
-            "QPushButton{background:#2563eb;color:#f8fafc;border-radius:4px;padding:2px 8px;}"
-            "QPushButton:hover{background:#1d4ed8;}"
-            "QPushButton:disabled{background:#334155;color:#94a3b8;}"
-        )
-        self._view_btn.clicked.connect(self._on_view_clicked)
-        right.addWidget(self._view_btn, 0)
-
         layout.addLayout(right, 1)
+        try:
+            self.setMinimumHeight(self.sizeHint().height())
+        except Exception:
+            pass
 
         self._ensure_scene()
         self._refresh_preview()
@@ -825,7 +914,7 @@ class TextureProWidget(QtWidgets.QWidget):
         QtCore.QTimer.singleShot(0, self._update_inputs)
 
     def sizeHint(self):
-        return QtCore.QSize(220, PREVIEW_SIZE + 30)
+        return QtCore.QSize(250, PREVIEW_SIZE + 66)
 
     def _is_selected(self) -> bool:
         sc = None
@@ -973,6 +1062,42 @@ class TextureProWidget(QtWidgets.QWidget):
         pack_y = int(self._pack_y.value())
         self._apply_pack(pack_x, pack_y, notify_scene=True)
 
+    def _set_speed_value(self, value: float) -> None:
+        try:
+            value = float(value)
+        except Exception:
+            value = float(SPEED_DEFAULT)
+        value = max(SPEED_MIN, min(SPEED_MAX, value))
+        if abs(float(self._speed.value()) - value) < 1e-6:
+            return
+        try:
+            self._speed.blockSignals(True)
+            self._speed.setValue(value)
+        finally:
+            self._speed.blockSignals(False)
+
+    def _apply_speed(self, value: float, notify_scene: bool = False) -> None:
+        try:
+            value = float(value)
+        except Exception:
+            value = float(SPEED_DEFAULT)
+        value = max(SPEED_MIN, min(SPEED_MAX, value))
+        try:
+            if hasattr(self._provider, "set_speed"):
+                self._provider.set_speed(value)
+        except Exception:
+            pass
+        self._set_param("speed", f"{value:.2f}", notify_scene=notify_scene)
+        self._set_speed_value(value)
+        try:
+            self._refresh_preview()
+        except Exception:
+            pass
+
+    def _on_speed_changed(self):
+        value = float(self._speed.value())
+        self._apply_speed(value, notify_scene=True)
+
     def _set_resolution_value(self, value: int) -> None:
         try:
             idx = self._res_combo.findData(int(value))
@@ -1046,6 +1171,14 @@ class TextureProWidget(QtWidgets.QWidget):
         pack_x = max(PACK_MIN, min(PACK_MAX, int(pack_x)))
         pack_y = max(PACK_MIN, min(PACK_MAX, int(pack_y)))
         self._apply_pack(pack_x, pack_y, notify_scene=False)
+
+        speed = float(SPEED_DEFAULT)
+        try:
+            speed = float(_param_value(self._node_item.model, "speed") or SPEED_DEFAULT)
+        except Exception:
+            speed = float(SPEED_DEFAULT)
+        speed = max(SPEED_MIN, min(SPEED_MAX, float(speed)))
+        self._apply_speed(speed, notify_scene=False)
 
         resolution = TEXTURE_SIZE
         try:

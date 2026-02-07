@@ -455,6 +455,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 params.append({"name": "pack_x", "value": "1"})
             if "pack_y" not in names:
                 params.append({"name": "pack_y", "value": "1"})
+            if "speed" not in names:
+                params.append({"name": "speed", "value": "1.00"})
             if "resolution" not in names:
                 params.append({"name": "resolution", "value": "256"})
             if "source" not in names:
@@ -473,7 +475,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 params.append(hidden_entry)
             raw = hidden_entry.get("value", "")
             hidden = {t.strip().lower() for t in str(raw).split(",") if t.strip()}
-            hidden.update({"pattern", "tiling", "pack_x", "pack_y", "resolution", "source", "path"})
+            hidden.update({"pattern", "tiling", "pack_x", "pack_y", "speed", "resolution", "source", "path"})
             hidden_entry["value"] = ",".join(sorted(hidden))
             self.model.params = params
         elif kind_lower == "note":
@@ -586,7 +588,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         elif kind == "texture":
             hidden.update({"texture", "source", "path"})
         elif kind == "texture_pro":
-            hidden.update({"pattern", "tiling", "pack_x", "pack_y", "resolution", "source", "path"})
+            hidden.update({"pattern", "tiling", "pack_x", "pack_y", "speed", "resolution", "source", "path"})
 
         return hidden
 

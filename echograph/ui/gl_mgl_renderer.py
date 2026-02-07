@@ -1611,6 +1611,12 @@ class MGLRendererMixin:
                     qimg = qimg.convertToFormat(QtGui.QImage.Format_ARGB32)
                 qimg = qimg.mirrored(False, True)
                 tex = self._mgl_make_texture(qimg)
+                try:
+                    tex.filter = (moderngl.NEAREST, moderngl.NEAREST)
+                    tex.repeat_x = False
+                    tex.repeat_y = False
+                except Exception:
+                    pass
             except Exception:
                 return None
             try:
@@ -1651,9 +1657,17 @@ class MGLRendererMixin:
                 float(state.get("tiling", 1) or 1),
                 float(state.get("pack_x", 1) or 1),
                 float(state.get("pack_y", 1) or 1),
-                float(state.get("seed", 0.0) or 0.0),
+                0.0,
             )
             self._mgl_prog["ProcParams"].value = params
+        except Exception:
+            pass
+        try:
+            self._mgl_prog["ProcSeed"].value = float(state.get("seed", 0.0) or 0.0)
+        except Exception:
+            pass
+        try:
+            self._mgl_prog["ProcAnimSpeed"].value = float(state.get("speed", 1.0) or 1.0)
         except Exception:
             pass
         try:
@@ -1674,6 +1688,16 @@ class MGLRendererMixin:
             grid = state.get("glyph_grid") or getattr(self, "_mgl_proc_glyph_grid", (1, 1))
             try:
                 self._mgl_prog["ProcGlyphGrid"].value = (float(grid[0]), float(grid[1]))
+            except Exception:
+                pass
+            count = state.get("glyph_count")
+            if count is None:
+                try:
+                    count = int(grid[0]) * int(grid[1])
+                except Exception:
+                    count = 1
+            try:
+                self._mgl_prog["ProcGlyphCount"].value = float(max(1, int(count)))
             except Exception:
                 pass
 
@@ -3339,9 +3363,12 @@ class MGLRendererMixin:
                 self._mgl_prog["UseProcedural"].value = 0
                 self._mgl_prog["ProceduralMode"].value = 0
                 self._mgl_prog["ProcParams"].value = (1.0, 1.0, 1.0, 0.0)
+                self._mgl_prog["ProcSeed"].value = 0.0
+                self._mgl_prog["ProcAnimSpeed"].value = 1.0
                 self._mgl_prog["ProcTime"].value = 0.0
                 self._mgl_prog["ProcGlyph"].value = 1
                 self._mgl_prog["ProcGlyphGrid"].value = (1.0, 1.0)
+                self._mgl_prog["ProcGlyphCount"].value = 1.0
             except Exception:
                 pass
             self._mgl_grid_prog["Color"].value = (0.8, 0.8, 0.8, self._mgl_grid_alpha)

@@ -30,9 +30,12 @@ uniform int UseLighting;
 uniform int UseProcedural;
 uniform int ProceduralMode;
 uniform vec4 ProcParams;
+uniform float ProcSeed;
+uniform float ProcAnimSpeed;
 uniform float ProcTime;
 uniform sampler2D ProcGlyph;
 uniform vec2 ProcGlyphGrid;
+uniform float ProcGlyphCount;
 in vec3 v_norm;
 in vec3 v_vert;
 in vec2 v_uv;
@@ -51,10 +54,11 @@ vec4 proc_checker(vec2 uv) {
     float tiling = max(1.0, ProcParams.x);
     float pack_x = max(1.0, ProcParams.y);
     float pack_y = max(1.0, ProcParams.z);
+    float anim_t = ProcTime * max(0.0, ProcAnimSpeed);
     vec2 scale = vec2(tiling * pack_x * base, tiling * pack_y * base);
     vec2 uvw = fract(uv) * scale;
     vec2 cell = floor(uvw);
-    float phase = mod(floor(ProcTime), 2.0);
+    float phase = mod(floor(anim_t), 2.0);
     vec3 c0a = vec3(0.058, 0.090, 0.165);
     vec3 c1a = vec3(0.886, 0.910, 0.941);
     vec3 c0b = vec3(0.114, 0.306, 0.847);
@@ -71,36 +75,45 @@ vec4 proc_matrix(vec2 uv) {
     float tiling = max(1.0, ProcParams.x);
     float pack_x = max(1.0, ProcParams.y);
     float pack_y = max(1.0, ProcParams.z);
-    float seed = ProcParams.w;
+    float seed = fract(ProcSeed * 0.000244140625);
+    float anim_t = ProcTime * max(0.0, ProcAnimSpeed);
     float cols = max(1.0, tiling * pack_x * base);
     float rows = max(1.0, tiling * pack_y * base);
-    vec2 grid = vec2(cols, rows);
-    vec2 uvw = fract(uv) * grid;
-    vec2 cell = floor(uvw);
-    vec2 f = fract(uvw);
-    float col = cell.x;
-    float row = cell.y;
-    float speed = mix(0.6, 1.8, hash11(col + seed));
-    float trail = mix(8.0, 16.0, hash11(col + seed * 2.31));
-    float head = mod(ProcTime * speed * rows + hash11(col + seed * 5.7) * rows, rows);
-    float dy = head - row;
+    vec2 p = fract(uv) * vec2(cols, rows);
+    float col = floor(p.x);
+    float speed = mix(6.0, 18.0, hash11(col * 0.73 + seed * 91.7));
+    float trail = mix(8.0, 16.0, hash11(col * 1.31 + seed * 57.3));
+    float col_phase = hash11(col * 1.19 + seed * 53.1) * rows;
+    float scroll = anim_t * speed + col_phase;
+    float stream_y = p.y - scroll;
+    float row = floor(stream_y);
+    vec2 f = vec2(fract(p.x), fract(stream_y));
+    float head = mod(scroll, rows);
+    float dy = head - p.y;
     if (dy < 0.0) dy += rows;
     float t = 1.0 - dy / max(trail, 1.0);
-    vec3 bg = vec3(0.02, 0.04, 0.03);
+    vec3 bg = vec3(0.01, 0.03, 0.01);
     if (t <= 0.0) {
         return vec4(bg, 1.0);
     }
     vec2 pg = max(ProcGlyphGrid, vec2(1.0));
-    float glyph_count = pg.x * pg.y;
-    float glyph_idx = floor(hash21(vec2(col, row + floor(ProcTime * 4.0))) * glyph_count);
+    float glyph_count = max(1.0, min(pg.x * pg.y, ProcGlyphCount));
+    float glyph_anim = floor(anim_t * 9.0);
+    vec2 gh = vec2(
+        col + row * 0.11 + glyph_anim * 0.07 + seed * 37.0,
+        row + col * 0.19 + glyph_anim * 0.13 + seed * 61.0
+    );
+    float glyph_idx = floor(hash21(gh) * glyph_count);
     vec2 gcell = vec2(mod(glyph_idx, pg.x), floor(glyph_idx / pg.x));
-    float mirror = step(hash21(vec2(col + seed, row)), 0.22);
+    float mirror = step(hash21(vec2(col * 0.71 + seed * 19.0, row * 1.37 + seed * 3.0)), 0.22);
     if (mirror > 0.5) {
         f.x = 1.0 - f.x;
     }
-    vec2 glyph_uv = (gcell + f) / pg;
+    vec2 pad = vec2(0.08, 0.08);
+    vec2 glyph_uv = (gcell + mix(pad, vec2(1.0) - pad, f)) / pg;
     float glyph = texture(ProcGlyph, glyph_uv).r;
-    vec3 head_col = vec3(0.73, 0.97, 0.82);
+    glyph = smoothstep(0.20, 0.86, glyph);
+    vec3 head_col = vec3(0.97, 0.99, 0.98);
     vec3 tail_col = vec3(0.13, 0.77, 0.37);
     vec3 color = mix(tail_col, head_col, smoothstep(0.6, 1.0, t));
     vec3 rgb = mix(bg, color, glyph * t);
