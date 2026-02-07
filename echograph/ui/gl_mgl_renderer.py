@@ -1669,6 +1669,14 @@ class MGLRendererMixin:
             return None
         atlas = state.get("glyph_atlas")
         grid = state.get("glyph_grid") or (1, 1)
+        if atlas is None and state.get("layer"):
+            for key in ("overlay", "base"):
+                sub = state.get(key)
+                if isinstance(sub, dict):
+                    atlas = sub.get("glyph_atlas")
+                    if atlas is not None:
+                        grid = sub.get("glyph_grid") or grid
+                        break
         if atlas is None:
             return None
         key = id(atlas)
@@ -1711,104 +1719,101 @@ class MGLRendererMixin:
     def _mgl_apply_procedural_uniforms(self, state: Optional[dict]) -> None:
         if self._mgl_prog is None:
             return
-        if not state:
+        def _set_uniform(name: str, value) -> None:
             try:
-                self._mgl_prog["UseProcedural"].value = 0
+                self._mgl_prog[name].value = value
             except Exception:
                 pass
+
+        def _apply_state(proc_state: Optional[dict], suffix: str = "") -> int:
+            if not isinstance(proc_state, dict):
+                proc_state = {}
+            mode = str(proc_state.get("mode") or "").strip().lower()
+            proc_mode = 1 if mode == "matrix_rain" else 0
+            _set_uniform(f"ProceduralMode{suffix}", int(proc_mode))
             try:
-                self._mgl_prog["ProcLightMix"].value = 1.0
+                params = (
+                    float(proc_state.get("tiling", 1) or 1),
+                    float(proc_state.get("pack_x", 1) or 1),
+                    float(proc_state.get("pack_y", 1) or 1),
+                    float(proc_state.get("invert", 0.0) or 0.0),
+                )
+                _set_uniform(f"ProcParams{suffix}", params)
             except Exception:
                 pass
-            return
-        try:
-            self._mgl_prog["UseProcedural"].value = 1
-        except Exception:
-            pass
-        mode = str(state.get("mode") or "").strip().lower()
-        proc_mode = 1 if mode == "matrix_rain" else 0
-        try:
-            self._mgl_prog["ProceduralMode"].value = int(proc_mode)
-        except Exception:
-            pass
-        try:
-            params = (
-                float(state.get("tiling", 1) or 1),
-                float(state.get("pack_x", 1) or 1),
-                float(state.get("pack_y", 1) or 1),
-                float(state.get("invert", 0.0) or 0.0),
-            )
-            self._mgl_prog["ProcParams"].value = params
-        except Exception:
-            pass
-        try:
-            self._mgl_prog["ProcSeed"].value = float(state.get("seed", 0.0) or 0.0)
-        except Exception:
-            pass
-        try:
-            speed_val = state.get("speed", 1.0)
+            _set_uniform(f"ProcSeed{suffix}", float(proc_state.get("seed", 0.0) or 0.0))
+            speed_val = proc_state.get("speed", 1.0)
             if speed_val is None:
                 speed_val = 1.0
-            self._mgl_prog["ProcAnimSpeed"].value = float(speed_val)
-        except Exception:
-            pass
-        try:
-            emissive_val = state.get("emissive", 0.0)
+            _set_uniform(f"ProcAnimSpeed{suffix}", float(speed_val))
+            emissive_val = proc_state.get("emissive", 0.0)
             if emissive_val is None:
                 emissive_val = 0.0
-            self._mgl_prog["ProcEmissive"].value = float(emissive_val)
-        except Exception:
-            pass
-        try:
-            light_mix = state.get("light_mix", 1.0)
+            _set_uniform(f"ProcEmissive{suffix}", float(emissive_val))
+            light_mix = proc_state.get("light_mix", 1.0)
             if light_mix is None:
                 light_mix = 1.0
-            self._mgl_prog["ProcLightMix"].value = float(light_mix)
-        except Exception:
-            pass
-        try:
-            bg_enabled = 1 if float(state.get("bg_enabled", 0.0) or 0.0) > 0.5 else 0
-            self._mgl_prog["ProcBgEnabled"].value = int(bg_enabled)
-        except Exception:
-            pass
-        try:
-            bg = state.get("bg_color")
+            _set_uniform(f"ProcLightMix{suffix}", float(light_mix))
+            bg_enabled = 1 if float(proc_state.get("bg_enabled", 0.0) or 0.0) > 0.5 else 0
+            _set_uniform(f"ProcBgEnabled{suffix}", int(bg_enabled))
+            bg = proc_state.get("bg_color")
             if isinstance(bg, (list, tuple)) and len(bg) >= 4:
-                self._mgl_prog["ProcBg"].value = (float(bg[0]), float(bg[1]), float(bg[2]), float(bg[3]))
+                _set_uniform(f"ProcBg{suffix}", (float(bg[0]), float(bg[1]), float(bg[2]), float(bg[3])))
             else:
-                self._mgl_prog["ProcBg"].value = (0.0, 0.0, 0.0, 1.0)
-        except Exception:
-            pass
-        try:
-            self._mgl_prog["ProcTime"].value = float(getattr(self, "_mgl_proc_time", 0.0) or 0.0)
-        except Exception:
-            pass
-        if proc_mode == 1:
-            tex = self._mgl_ensure_proc_glyph(state)
+                _set_uniform(f"ProcBg{suffix}", (0.0, 0.0, 0.0, 1.0))
+            return proc_mode
+
+        if not state:
+            _set_uniform("UseProcedural", 0)
+            _set_uniform("UseProceduralLayer", 0)
+            _set_uniform("ProcLightMix", 1.0)
+            _apply_state({}, "2")
+            return
+
+        is_layer = bool(isinstance(state, dict) and state.get("layer"))
+        _set_uniform("UseProcedural", 1)
+        _set_uniform("UseProceduralLayer", 1 if is_layer else 0)
+
+        base_state = state
+        overlay_state = {}
+        if is_layer:
+            base_state = state.get("base") if isinstance(state.get("base"), dict) else {}
+            overlay_state = state.get("overlay") if isinstance(state.get("overlay"), dict) else {}
+
+        proc_mode = _apply_state(base_state, "")
+        proc_mode2 = _apply_state(overlay_state, "2") if is_layer else _apply_state({}, "2")
+
+        _set_uniform("ProcTime", float(getattr(self, "_mgl_proc_time", 0.0) or 0.0))
+
+        glyph_state = None
+        if is_layer:
+            if proc_mode2 == 1:
+                glyph_state = overlay_state
+            elif proc_mode == 1:
+                glyph_state = base_state
+        else:
+            if proc_mode == 1:
+                glyph_state = base_state
+        if glyph_state is not None:
+            tex = self._mgl_ensure_proc_glyph(glyph_state)
             if tex is not None:
                 try:
                     tex.use(location=1)
                 except Exception:
                     pass
+            _set_uniform("ProcGlyph", 1)
+            grid = glyph_state.get("glyph_grid") or getattr(self, "_mgl_proc_glyph_grid", (1, 1))
             try:
-                self._mgl_prog["ProcGlyph"].value = 1
+                _set_uniform("ProcGlyphGrid", (float(grid[0]), float(grid[1])))
             except Exception:
                 pass
-            grid = state.get("glyph_grid") or getattr(self, "_mgl_proc_glyph_grid", (1, 1))
-            try:
-                self._mgl_prog["ProcGlyphGrid"].value = (float(grid[0]), float(grid[1]))
-            except Exception:
-                pass
-            count = state.get("glyph_count")
+            count = glyph_state.get("glyph_count")
             if count is None:
                 try:
                     count = int(grid[0]) * int(grid[1])
                 except Exception:
                     count = 1
-            try:
-                self._mgl_prog["ProcGlyphCount"].value = float(max(1, int(count)))
-            except Exception:
-                pass
+            _set_uniform("ProcGlyphCount", float(max(1, int(count))))
 
     def _mgl_upload_texture(self, image: QtGui.QImage, source_path: str = "") -> None:
         if image.isNull():
@@ -3470,15 +3475,24 @@ class MGLRendererMixin:
                 self._mgl_prog["LightIntensity"].value = float(self._mgl_light_intensity)
                 self._mgl_prog["UseLighting"].value = 1
                 self._mgl_prog["UseProcedural"].value = 0
+                self._mgl_prog["UseProceduralLayer"].value = 0
                 self._mgl_prog["ProceduralMode"].value = 0
                 self._mgl_prog["ProcParams"].value = (1.0, 1.0, 1.0, 0.0)
                 self._mgl_prog["ProcSeed"].value = 0.0
                 self._mgl_prog["ProcAnimSpeed"].value = 1.0
                 self._mgl_prog["ProcEmissive"].value = 0.0
                 self._mgl_prog["ProcLightMix"].value = 1.0
+                self._mgl_prog["ProceduralMode2"].value = 0
+                self._mgl_prog["ProcParams2"].value = (1.0, 1.0, 1.0, 0.0)
+                self._mgl_prog["ProcSeed2"].value = 0.0
+                self._mgl_prog["ProcAnimSpeed2"].value = 1.0
+                self._mgl_prog["ProcEmissive2"].value = 0.0
+                self._mgl_prog["ProcLightMix2"].value = 1.0
                 self._mgl_prog["ProcTime"].value = 0.0
                 self._mgl_prog["ProcBgEnabled"].value = 0
                 self._mgl_prog["ProcBg"].value = (0.0, 0.0, 0.0, 1.0)
+                self._mgl_prog["ProcBgEnabled2"].value = 0
+                self._mgl_prog["ProcBg2"].value = (0.0, 0.0, 0.0, 1.0)
                 self._mgl_prog["ProcGlyph"].value = 1
                 self._mgl_prog["ProcGlyphGrid"].value = (1.0, 1.0)
                 self._mgl_prog["ProcGlyphCount"].value = 1.0

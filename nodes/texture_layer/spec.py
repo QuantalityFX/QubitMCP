@@ -470,6 +470,77 @@ class TextureLayerProvider:
                 self._revision += 1
         return self._image
 
+    def _source_gpu_state(self, item, tag: str):
+        has_source = False
+        model = getattr(self._node_item, "model", None)
+        if item is None:
+            if model is not None:
+                try:
+                    path = (_param_value(model, tag) or "").strip()
+                except Exception:
+                    path = ""
+                if path:
+                    has_source = True
+            return None, has_source
+
+        has_source = True
+        m = getattr(item, "model", None)
+        if m is None:
+            return None, has_source
+        kind = (getattr(m, "kind", "") or "").strip().lower()
+        provider = None
+        if kind == "texture_pro":
+            provider = getattr(m, "_texture_pro_provider", None)
+            if provider is None:
+                try:
+                    from nodes.texture_pro.spec import _get_provider as _get_texture_pro_provider  # type: ignore
+                    provider = _get_texture_pro_provider(item)
+                except Exception:
+                    provider = None
+        elif kind == "texture_layer":
+            provider = getattr(m, "_texture_layer_provider", None)
+            if provider is None:
+                try:
+                    provider = _get_provider(item)
+                except Exception:
+                    provider = None
+        if provider is None:
+            return None, has_source
+        fn = getattr(provider, "gpu_state", None)
+        if not callable(fn):
+            return None, has_source
+        try:
+            state = fn()
+        except Exception:
+            state = None
+        if not isinstance(state, dict) or not state:
+            return None, has_source
+        if state.get("layer"):
+            return None, has_source
+        return state, has_source
+
+    def gpu_state(self) -> Optional[dict]:
+        base_state, base_has = self._source_gpu_state(self._base_item, "base")
+        overlay_state, overlay_has = self._source_gpu_state(self._overlay_item, "overlay")
+
+        if base_has and base_state is None:
+            return None
+        if overlay_has and overlay_state is None:
+            return None
+
+        if base_state is None and overlay_state is None:
+            return None
+        if overlay_state is None:
+            return base_state
+        if base_state is None:
+            return overlay_state
+
+        return {
+            "layer": True,
+            "base": base_state,
+            "overlay": overlay_state,
+        }
+
     @property
     def revision(self) -> int:
         return int(self._revision)

@@ -28,15 +28,24 @@ uniform sampler2D Texture;
 uniform int UseTexture;
 uniform int UseLighting;
 uniform int UseProcedural;
+uniform int UseProceduralLayer;
 uniform int ProceduralMode;
 uniform vec4 ProcParams;
 uniform float ProcSeed;
 uniform float ProcAnimSpeed;
 uniform float ProcEmissive;
 uniform float ProcLightMix;
+uniform int ProceduralMode2;
+uniform vec4 ProcParams2;
+uniform float ProcSeed2;
+uniform float ProcAnimSpeed2;
+uniform float ProcEmissive2;
+uniform float ProcLightMix2;
 uniform float ProcTime;
 uniform vec4 ProcBg;
 uniform int ProcBgEnabled;
+uniform vec4 ProcBg2;
+uniform int ProcBgEnabled2;
 uniform sampler2D ProcGlyph;
 uniform vec2 ProcGlyphGrid;
 uniform float ProcGlyphCount;
@@ -53,12 +62,12 @@ float hash21(vec2 p) {
     return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
 }
 
-vec4 proc_checker(vec2 uv) {
+vec4 proc_checker_params(vec2 uv, vec4 params, float anim_speed, vec4 bg, int bg_enabled) {
     float base = 8.0;
-    float tiling = max(1.0, ProcParams.x);
-    float pack_x = max(1.0, ProcParams.y);
-    float pack_y = max(1.0, ProcParams.z);
-    float anim_t = ProcTime * max(0.0, ProcAnimSpeed);
+    float tiling = max(1.0, params.x);
+    float pack_x = max(1.0, params.y);
+    float pack_y = max(1.0, params.z);
+    float anim_t = ProcTime * max(0.0, anim_speed);
     vec2 scale = vec2(tiling * pack_x * base, tiling * pack_y * base);
     vec2 uvw = fract(uv) * scale;
     vec2 cell = floor(uvw);
@@ -70,9 +79,9 @@ vec4 proc_checker(vec2 uv) {
     vec3 c0 = mix(c0a, c0b, phase);
     vec3 c1 = mix(c1a, c1b, phase);
     float a0 = 1.0;
-    if (ProcBgEnabled == 1) {
-        c0 = ProcBg.rgb;
-        a0 = ProcBg.a;
+    if (bg_enabled == 1) {
+        c0 = bg.rgb;
+        a0 = bg.a;
     }
     float checker = mod(cell.x + cell.y, 2.0);
     vec3 col = mix(c0, c1, checker);
@@ -80,19 +89,19 @@ vec4 proc_checker(vec2 uv) {
     return vec4(col, alpha);
 }
 
-vec4 proc_matrix(vec2 uv) {
+vec4 proc_matrix_params(vec2 uv, vec4 params, float seed_in, float anim_speed, vec4 bg_in, int bg_enabled) {
     float base = 20.0;
-    float tiling = max(1.0, ProcParams.x);
-    float pack_x = max(1.0, ProcParams.y);
-    float pack_y = max(1.0, ProcParams.z);
-    float seed = fract(ProcSeed * 0.000244140625);
+    float tiling = max(1.0, params.x);
+    float pack_x = max(1.0, params.y);
+    float pack_y = max(1.0, params.z);
+    float seed = fract(seed_in * 0.000244140625);
     float raw_t = ProcTime;
-    float anim_t = raw_t * max(0.0, ProcAnimSpeed);
+    float anim_t = raw_t * max(0.0, anim_speed);
     float cols = max(1.0, tiling * pack_x * base);
     float rows = max(1.0, tiling * pack_y * base);
     vec2 p = fract(uv) * vec2(cols, rows);
     float col = floor(p.x);
-    float invert = step(0.5, ProcParams.w);
+    float invert = step(0.5, params.w);
     float dir = mix(1.0, -1.0, invert);
     float speed = mix(0.6, 1.8, hash11(col * 0.73 + seed * 91.7));
     float trail = mix(8.0, 16.0, hash11(col * 1.31 + seed * 57.3));
@@ -106,8 +115,8 @@ vec4 proc_matrix(vec2 uv) {
     float base_cycle = floor(tcol / cycle) * cycle;
     float t_in = tcol - base_cycle;
     vec4 bg = vec4(0.01, 0.03, 0.01, 1.0);
-    if (ProcBgEnabled == 1) {
-        bg = ProcBg;
+    if (bg_enabled == 1) {
+        bg = bg_in;
     }
     if (t_in >= life + fade) {
         return bg;
@@ -118,7 +127,7 @@ vec4 proc_matrix(vec2 uv) {
         float fade_t = (t_in - life) / max(0.0001, fade);
         fade_out = 1.0 - clamp(fade_t, 0.0, 1.0);
     }
-    float motion_t = (base_cycle + t_alive - offset) * max(0.0, ProcAnimSpeed);
+    float motion_t = (base_cycle + t_alive - offset) * max(0.0, anim_speed);
     float scroll = motion_t * speed * dir + col_phase;
     float stream_y = p.y - scroll;
     float row = floor(stream_y);
@@ -156,6 +165,22 @@ vec4 proc_matrix(vec2 uv) {
     return vec4(rgb, alpha);
 }
 
+vec3 apply_lighting(vec3 rgb, float lum, float light_mix, float emissive) {
+    float mixv = clamp(light_mix, 0.0, 1.0);
+    vec3 lit = mix(rgb, rgb * lum, mixv);
+    lit += rgb * max(0.0, emissive);
+    return lit;
+}
+
+vec4 composite_over(vec4 base, vec4 over) {
+    float oa = clamp(over.a, 0.0, 1.0);
+    float ba = clamp(base.a, 0.0, 1.0);
+    float out_a = oa + ba * (1.0 - oa);
+    vec3 out_rgb_p = over.rgb * oa + base.rgb * ba * (1.0 - oa);
+    vec3 out_rgb = (out_a > 1e-6) ? (out_rgb_p / out_a) : vec3(0.0);
+    return vec4(out_rgb, out_a);
+}
+
 void main() {
     vec4 base = Color;
     float lum = 1.0;
@@ -171,24 +196,31 @@ void main() {
         lum = clamp(lum, 0.0, 10.0);
     }
     if (UseProcedural == 1) {
-        if (ProceduralMode == 1) {
-            base = proc_matrix(v_uv);
+        vec4 p0 = (ProceduralMode == 1)
+            ? proc_matrix_params(v_uv, ProcParams, ProcSeed, ProcAnimSpeed, ProcBg, ProcBgEnabled)
+            : proc_checker_params(v_uv, ProcParams, ProcAnimSpeed, ProcBg, ProcBgEnabled);
+        vec3 rgb0 = apply_lighting(p0.rgb, lum, ProcLightMix, ProcEmissive);
+        vec4 c0 = vec4(rgb0, p0.a);
+        if (UseProceduralLayer == 1) {
+            vec4 p1 = (ProceduralMode2 == 1)
+                ? proc_matrix_params(v_uv, ProcParams2, ProcSeed2, ProcAnimSpeed2, ProcBg2, ProcBgEnabled2)
+                : proc_checker_params(v_uv, ProcParams2, ProcAnimSpeed2, ProcBg2, ProcBgEnabled2);
+            vec3 rgb1 = apply_lighting(p1.rgb, lum, ProcLightMix2, ProcEmissive2);
+            vec4 c1 = vec4(rgb1, p1.a);
+            base = composite_over(c0, c1);
         } else {
-            base = proc_checker(v_uv);
+            base = c0;
         }
     } else {
         base = (UseTexture == 1) ? texture(Texture, v_uv) : Color;
+        float light_mix = clamp(ProcLightMix, 0.0, 1.0);
+        vec3 lit_rgb = mix(base.rgb, base.rgb * lum, light_mix);
+        base = vec4(clamp(lit_rgb, 0.0, 1.0), base.a);
     }
     if (base.a <= 0.001) {
         discard;
     }
-    float light_mix = clamp(ProcLightMix, 0.0, 1.0);
-    vec3 lit_rgb = base.rgb * lum;
-    lit_rgb = mix(base.rgb, lit_rgb, light_mix);
-    if (UseProcedural == 1) {
-        lit_rgb += base.rgb * max(0.0, ProcEmissive);
-    }
-    f_color = vec4(clamp(lit_rgb, 0.0, 1.0), base.a);
+    f_color = vec4(clamp(base.rgb, 0.0, 1.0), base.a);
 }
 """,
 
