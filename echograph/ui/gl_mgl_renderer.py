@@ -1741,6 +1741,15 @@ class MGLRendererMixin:
                 _set_uniform(f"ProcParams{suffix}", params)
             except Exception:
                 pass
+            try:
+                off_x = float(proc_state.get("offset_x", 0.0) or 0.0)
+            except Exception:
+                off_x = 0.0
+            try:
+                off_y = float(proc_state.get("offset_y", 0.0) or 0.0)
+            except Exception:
+                off_y = 0.0
+            _set_uniform(f"ProcOffset{suffix}", (float(off_x), float(off_y)))
             _set_uniform(f"ProcSeed{suffix}", float(proc_state.get("seed", 0.0) or 0.0))
             speed_val = proc_state.get("speed", 1.0)
             if speed_val is None:
@@ -3528,6 +3537,7 @@ class MGLRendererMixin:
                 self._mgl_prog["ProcAnimSpeed"].value = 1.0
                 self._mgl_prog["ProcEmissive"].value = 0.0
                 self._mgl_prog["ProcLightMix"].value = 1.0
+                self._mgl_prog["ProcOffset"].value = (0.0, 0.0)
                 self._mgl_prog["ProcPan"].value = 1.0
                 self._mgl_prog["ProcLifeMin"].value = 3.0
                 self._mgl_prog["ProcLifeMax"].value = 14.0
@@ -3537,6 +3547,7 @@ class MGLRendererMixin:
                 self._mgl_prog["ProcAnimSpeed2"].value = 1.0
                 self._mgl_prog["ProcEmissive2"].value = 0.0
                 self._mgl_prog["ProcLightMix2"].value = 1.0
+                self._mgl_prog["ProcOffset2"].value = (0.0, 0.0)
                 self._mgl_prog["ProcPan2"].value = 1.0
                 self._mgl_prog["ProcLifeMin2"].value = 3.0
                 self._mgl_prog["ProcLifeMax2"].value = 14.0

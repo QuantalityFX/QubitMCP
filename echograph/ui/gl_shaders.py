@@ -36,6 +36,7 @@ uniform float ProcAnimSpeed;
 uniform float ProcEmissive;
 uniform float ProcLightMix;
 uniform float ProcSoftness;
+uniform vec2 ProcOffset;
 uniform float ProcPan;
 uniform float ProcLifeMin;
 uniform float ProcLifeMax;
@@ -46,6 +47,7 @@ uniform float ProcAnimSpeed2;
 uniform float ProcEmissive2;
 uniform float ProcLightMix2;
 uniform float ProcSoftness2;
+uniform vec2 ProcOffset2;
 uniform float ProcPan2;
 uniform float ProcLifeMin2;
 uniform float ProcLifeMax2;
@@ -70,14 +72,15 @@ float hash21(vec2 p) {
     return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
 }
 
-vec4 proc_checker_params(vec2 uv, vec4 params, float anim_speed, vec4 bg, int bg_enabled) {
+vec4 proc_checker_params(vec2 uv, vec4 params, float anim_speed, vec2 cell_offset, vec4 bg, int bg_enabled) {
     float base = 8.0;
     float tiling = max(1.0, params.x);
     float pack_x = max(1.0, params.y);
     float pack_y = max(1.0, params.z);
     float anim_t = ProcTime * max(0.0, anim_speed);
     vec2 scale = vec2(tiling * pack_x * base, tiling * pack_y * base);
-    vec2 uvw = fract(uv) * scale;
+    vec2 shift = cell_offset / max(scale, vec2(1.0));
+    vec2 uvw = fract(uv + shift) * scale;
     vec2 cell = floor(uvw);
     float phase = mod(floor(anim_t), 2.0);
     vec3 c0a = vec3(0.058, 0.090, 0.165);
@@ -105,6 +108,7 @@ vec4 proc_matrix_params(
     vec4 bg_in,
     int bg_enabled,
     float softness,
+    vec2 cell_offset,
     float pan_enabled,
     float life_min,
     float life_max
@@ -118,7 +122,8 @@ vec4 proc_matrix_params(
     float anim_t = raw_t * max(0.0, anim_speed);
     float cols = max(1.0, tiling * pack_x * base);
     float rows = max(1.0, tiling * pack_y * base);
-    vec2 p = fract(uv) * vec2(cols, rows);
+    vec2 shift = cell_offset / max(vec2(cols, rows), vec2(1.0));
+    vec2 p = fract(uv + shift) * vec2(cols, rows);
     float col = floor(p.x);
     float invert = step(0.5, params.w);
     float dir = mix(1.0, -1.0, invert);
@@ -199,9 +204,9 @@ vec4 proc_matrix_params(
     float soft = clamp(softness, 0.0, 1.0);
     float edge = fwidth(glyph) * mix(0.8, 3.0, soft);
     glyph = smoothstep(0.20 - edge, 0.86 + edge, glyph);
-    vec3 head_col = vec3(0.97, 0.99, 0.97);
+    vec3 head_col = vec3(0.78, 0.96, 0.82);
     vec3 tail_col = vec3(0.11, 0.78, 0.14);
-    vec3 color = mix(tail_col, head_col, smoothstep(0.6, 1.0, t));
+    vec3 color = mix(tail_col, head_col, smoothstep(0.85, 0.98, t));
     float t_fade = t * live;
     vec3 rgb = mix(bg.rgb, color, glyph * t_fade);
     float alpha = mix(bg.a, 1.0, glyph * t_fade);
@@ -240,14 +245,14 @@ void main() {
     }
     if (UseProcedural == 1) {
         vec4 p0 = (ProceduralMode == 1)
-            ? proc_matrix_params(v_uv, ProcParams, ProcSeed, ProcAnimSpeed, ProcBg, ProcBgEnabled, ProcSoftness, ProcPan, ProcLifeMin, ProcLifeMax)
-            : proc_checker_params(v_uv, ProcParams, ProcAnimSpeed, ProcBg, ProcBgEnabled);
+            ? proc_matrix_params(v_uv, ProcParams, ProcSeed, ProcAnimSpeed, ProcBg, ProcBgEnabled, ProcSoftness, ProcOffset, ProcPan, ProcLifeMin, ProcLifeMax)
+            : proc_checker_params(v_uv, ProcParams, ProcAnimSpeed, ProcOffset, ProcBg, ProcBgEnabled);
         vec3 rgb0 = apply_lighting(p0.rgb, lum, ProcLightMix, ProcEmissive);
         vec4 c0 = vec4(rgb0, p0.a);
         if (UseProceduralLayer == 1) {
             vec4 p1 = (ProceduralMode2 == 1)
-                ? proc_matrix_params(v_uv, ProcParams2, ProcSeed2, ProcAnimSpeed2, ProcBg2, ProcBgEnabled2, ProcSoftness2, ProcPan2, ProcLifeMin2, ProcLifeMax2)
-                : proc_checker_params(v_uv, ProcParams2, ProcAnimSpeed2, ProcBg2, ProcBgEnabled2);
+                ? proc_matrix_params(v_uv, ProcParams2, ProcSeed2, ProcAnimSpeed2, ProcBg2, ProcBgEnabled2, ProcSoftness2, ProcOffset2, ProcPan2, ProcLifeMin2, ProcLifeMax2)
+                : proc_checker_params(v_uv, ProcParams2, ProcAnimSpeed2, ProcOffset2, ProcBg2, ProcBgEnabled2);
             vec3 rgb1 = apply_lighting(p1.rgb, lum, ProcLightMix2, ProcEmissive2);
             vec4 c1 = vec4(rgb1, p1.a);
             base = composite_over(c0, c1);

@@ -37,6 +37,9 @@ EMISSIVE_DEFAULT = 0.6
 SOFTNESS_MIN = 0.0
 SOFTNESS_MAX = 1.0
 SOFTNESS_DEFAULT = 0.35
+OFFSET_MIN = -50.0
+OFFSET_MAX = 50.0
+OFFSET_DEFAULT = 0.0
 RESOLUTION_OPTIONS = [256, 512, 1024]
 LIGHTING_DEFAULT = 1.0
 PAN_DEFAULT = False
@@ -56,6 +59,8 @@ HIDDEN_PARAMS = (
     "life_max",
     "emissive",
     "softness",
+    "offset_x",
+    "offset_y",
     "resolution",
     "lighting",
     "source",
@@ -93,7 +98,7 @@ MATRIX_KATAKANA_GLYPHS = (
     "\uff97", "\uff98", "\uff99", "\uff9a", "\uff9b",
     "\uff9c", "\uff9d",
 )
-MATRIX_LATIN_GLYPHS = tuple("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+MATRIX_LATIN_GLYPHS = tuple("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<>:,")
 MATRIX_GLYPHS = MATRIX_KATAKANA_GLYPHS + MATRIX_LATIN_GLYPHS
 MATRIX_FONT_FAMILIES = (
     "MS Gothic",
@@ -223,6 +228,8 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, "life_max", f"{LIFE_MAX_DEFAULT:.2f}")
     _ensure_param(node_item, "emissive", f"{EMISSIVE_DEFAULT:.2f}")
     _ensure_param(node_item, "softness", f"{SOFTNESS_DEFAULT:.2f}")
+    _ensure_param(node_item, "offset_x", f"{OFFSET_DEFAULT:.2f}")
+    _ensure_param(node_item, "offset_y", f"{OFFSET_DEFAULT:.2f}")
     _ensure_param(node_item, "lighting", f"{LIGHTING_DEFAULT:.2f}")
     _ensure_param(node_item, "bg_color", "")
     _ensure_param(node_item, "bg_alpha", "1.0")
@@ -378,6 +385,8 @@ class CheckerboardGenerator:
         self._density = 1
         self._pack_x = 1
         self._pack_y = 1
+        self._offset_x = 0.0
+        self._offset_y = 0.0
         self._time = 0.0
         self._phase = -1
         self._image: Optional[QtGui.QImage] = None
@@ -431,6 +440,23 @@ class CheckerboardGenerator:
         self._pack_y = pack_y
         self._recompute_cells()
 
+    def set_offset(self, offset_x: float, offset_y: float) -> None:
+        try:
+            offset_x = float(offset_x)
+        except Exception:
+            offset_x = 0.0
+        try:
+            offset_y = float(offset_y)
+        except Exception:
+            offset_y = 0.0
+        offset_x = max(OFFSET_MIN, min(OFFSET_MAX, offset_x))
+        offset_y = max(OFFSET_MIN, min(OFFSET_MAX, offset_y))
+        if abs(offset_x - self._offset_x) < 1e-6 and abs(offset_y - self._offset_y) < 1e-6:
+            return
+        self._offset_x = offset_x
+        self._offset_y = offset_y
+        self._rebuild()
+
     def set_background(self, rgba: Optional[tuple]) -> None:
         if rgba == self._bg_rgba:
             return
@@ -465,6 +491,8 @@ class CheckerboardGenerator:
         cells_y = max(2, int(self.cells_y))
         cell_w = max(1, size // cells_x)
         cell_h = max(1, size // cells_y)
+        offset_x = float(self._offset_x)
+        offset_y = float(self._offset_y)
 
         if phase % 2 == 0:
             c0_default = "#0f172a"
@@ -482,7 +510,9 @@ class CheckerboardGenerator:
         painter = QtGui.QPainter(img)
         for y in range(0, size, cell_h):
             for x in range(0, size, cell_w):
-                color = c0 if ((x // cell_w) + (y // cell_h)) % 2 == 0 else c1
+                cx = (float(x) / float(cell_w)) + offset_x
+                cy = (float(y) / float(cell_h)) + offset_y
+                color = c0 if (int(math.floor(cx) + math.floor(cy)) % 2) == 0 else c1
                 painter.fillRect(x, y, cell_w, cell_h, color)
         painter.end()
         return img
@@ -497,6 +527,8 @@ class MatrixRainGenerator:
         self._density = 1
         self._pack_x = 1
         self._pack_y = 1
+        self._offset_x = 0.0
+        self._offset_y = 0.0
         self._image: Optional[QtGui.QImage] = None
         self._revision = 0
         self._last_frame_id: Optional[int] = None
@@ -668,6 +700,23 @@ class MatrixRainGenerator:
         self._pack_y = pack_y
         self._recompute_cells()
 
+    def set_offset(self, offset_x: float, offset_y: float) -> None:
+        try:
+            offset_x = float(offset_x)
+        except Exception:
+            offset_x = 0.0
+        try:
+            offset_y = float(offset_y)
+        except Exception:
+            offset_y = 0.0
+        offset_x = max(OFFSET_MIN, min(OFFSET_MAX, offset_x))
+        offset_y = max(OFFSET_MIN, min(OFFSET_MAX, offset_y))
+        if abs(offset_x - self._offset_x) < 1e-6 and abs(offset_y - self._offset_y) < 1e-6:
+            return
+        self._offset_x = offset_x
+        self._offset_y = offset_y
+        self._mark_dirty()
+
     def set_invert(self, invert: bool) -> None:
         invert = bool(invert)
         if invert == self._invert:
@@ -732,6 +781,12 @@ class MatrixRainGenerator:
         size = max(16, int(self.size))
         cell_x = max(1, int(self.cell_x))
         cell_y = max(1, int(self.cell_y))
+        off_x = float(self._offset_x) * float(cell_x)
+        off_y = float(self._offset_y) * float(cell_y)
+        if not math.isfinite(off_x):
+            off_x = 0.0
+        if not math.isfinite(off_y):
+            off_y = 0.0
         fmt = QtGui.QImage.Format_RGBA8888 if hasattr(QtGui.QImage, "Format_RGBA8888") else QtGui.QImage.Format_ARGB32
         img = QtGui.QImage(size, size, fmt)
         if self._bg_rgba is not None:
@@ -747,7 +802,14 @@ class MatrixRainGenerator:
         painter.setFont(font)
 
         for col in self._cols:
-            x = int(col.get("x", 0))
+            x = float(col.get("x", 0.0)) + off_x
+            if not math.isfinite(x):
+                continue
+            if size > 0:
+                x = x % float(size)
+                if x < 0.0:
+                    x += float(size)
+            x = int(x)
             head_y = float(col.get("y", 0.0))
             if not self._pan:
                 head_y = round(head_y / max(1.0, float(cell_y))) * float(cell_y)
@@ -760,8 +822,13 @@ class MatrixRainGenerator:
                     y = head_y + t * cell_y
                 else:
                     y = head_y - t * cell_y
-                if y < -cell_y or y > size:
+                y = y + off_y
+                if not math.isfinite(y):
                     continue
+                if size > 0:
+                    y = y % float(size)
+                    if y < 0.0:
+                        y += float(size)
                 if t == 0:
                     color = QtGui.QColor("#f8fafc")
                     color.setAlpha(230)
@@ -788,12 +855,19 @@ class MatrixRainGenerator:
             painter.setPen(stick_color)
             for entry in list(self._sticky):
                 try:
-                    x = float(entry.get("x", 0.0))
-                    y = float(entry.get("y", 0.0))
+                    x = float(entry.get("x", 0.0)) + off_x
+                    y = float(entry.get("y", 0.0)) + off_y
                 except Exception:
                     continue
-                if y < -cell_y or y > size:
+                if not math.isfinite(x) or not math.isfinite(y):
                     continue
+                if size > 0:
+                    x = x % float(size)
+                    y = y % float(size)
+                    if x < 0.0:
+                        x += float(size)
+                    if y < 0.0:
+                        y += float(size)
                 ch = entry.get("glyph") or self._random_glyph()
                 rect = QtCore.QRectF(x, y, cell_x, cell_y)
                 painter.drawText(rect, QtCore.Qt.AlignCenter, ch)
@@ -814,6 +888,8 @@ class TextureProProvider:
         self._life_max = float(LIFE_MAX_DEFAULT)
         self._emissive = float(EMISSIVE_DEFAULT)
         self._softness = float(SOFTNESS_DEFAULT)
+        self._offset_x = float(OFFSET_DEFAULT)
+        self._offset_y = float(OFFSET_DEFAULT)
         self._lighting = float(LIGHTING_DEFAULT)
         self._bg_rgba = None
         self._gpu_seed = random.Random().random() * 4096.0
@@ -826,6 +902,7 @@ class TextureProProvider:
         self._apply_size(self._size)
         self._apply_density(self._density)
         self._apply_pack(self._pack_x, self._pack_y)
+        self._apply_offset(self._offset_x, self._offset_y)
         self._apply_pan(self._pan)
         self._apply_life_range(self._life_min, self._life_max)
         self._last_gen_rev = self._generators[self._mode].revision
@@ -869,6 +946,25 @@ class TextureProProvider:
         self._pack_x = pack_x
         self._pack_y = pack_y
         self._apply_pack(pack_x, pack_y)
+        self._revision += 1
+        self._last_gen_rev = self._generators[self._mode].revision
+
+    def set_offset(self, offset_x: float, offset_y: float) -> None:
+        try:
+            offset_x = float(offset_x)
+        except Exception:
+            offset_x = float(OFFSET_DEFAULT)
+        try:
+            offset_y = float(offset_y)
+        except Exception:
+            offset_y = float(OFFSET_DEFAULT)
+        offset_x = max(OFFSET_MIN, min(OFFSET_MAX, offset_x))
+        offset_y = max(OFFSET_MIN, min(OFFSET_MAX, offset_y))
+        if abs(offset_x - self._offset_x) < 1e-6 and abs(offset_y - self._offset_y) < 1e-6:
+            return
+        self._offset_x = offset_x
+        self._offset_y = offset_y
+        self._apply_offset(offset_x, offset_y)
         self._revision += 1
         self._last_gen_rev = self._generators[self._mode].revision
 
@@ -1000,6 +1096,8 @@ class TextureProProvider:
             "tiling": int(self._density),
             "pack_x": int(self._pack_x),
             "pack_y": int(self._pack_y),
+            "offset_x": float(self._offset_x),
+            "offset_y": float(self._offset_y),
             "speed": float(self._speed),
             "invert": 1.0 if self._invert else 0.0,
             "pan": 1.0 if self._pan else 0.0,
@@ -1040,6 +1138,15 @@ class TextureProProvider:
             if callable(fn):
                 try:
                     fn(pack_x, pack_y)
+                except Exception:
+                    pass
+
+    def _apply_offset(self, offset_x: float, offset_y: float) -> None:
+        for gen in self._generators.values():
+            fn = getattr(gen, "set_offset", None)
+            if callable(fn):
+                try:
+                    fn(float(offset_x), float(offset_y))
                 except Exception:
                     pass
 
@@ -1381,6 +1488,64 @@ class TextureProWidget(QtWidgets.QWidget):
         pack_y_row.addStretch(1)
 
         right.addLayout(pack_y_row, 0)
+
+        offset_x_row = QtWidgets.QHBoxLayout()
+        offset_x_row.setContentsMargins(0, 0, 0, 0)
+        offset_x_row.setSpacing(6)
+
+        offset_x_label = QtWidgets.QLabel("Off X")
+        offset_x_label.setStyleSheet("color:#94a3b8;font-size:10px;")
+        offset_x_label.setFixedWidth(label_w)
+        offset_x_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        offset_x_row.addWidget(offset_x_label, 0)
+
+        self._offset_x = QtWidgets.QDoubleSpinBox()
+        self._offset_x.setRange(OFFSET_MIN, OFFSET_MAX)
+        self._offset_x.setSingleStep(0.25)
+        self._offset_x.setDecimals(2)
+        self._offset_x.setFixedWidth(70)
+        self._offset_x.setAlignment(QtCore.Qt.AlignRight)
+        self._offset_x.setToolTip("Checker offset in cells (X)")
+        self._offset_x.setStyleSheet(
+            "QDoubleSpinBox{background:#0f1216;color:#e6edf3;border:1px solid #3c4450;"
+            "border-radius:6px;padding:1px 4px;}"
+            "QDoubleSpinBox::up-button{width:10px;border:none;}"
+            "QDoubleSpinBox::down-button{width:10px;border:none;}"
+        )
+        self._offset_x.valueChanged.connect(self._on_offset_changed)
+        offset_x_row.addWidget(self._offset_x, 0)
+        offset_x_row.addStretch(1)
+
+        right.addLayout(offset_x_row, 0)
+
+        offset_y_row = QtWidgets.QHBoxLayout()
+        offset_y_row.setContentsMargins(0, 0, 0, 0)
+        offset_y_row.setSpacing(6)
+
+        offset_y_label = QtWidgets.QLabel("Off Y")
+        offset_y_label.setStyleSheet("color:#94a3b8;font-size:10px;")
+        offset_y_label.setFixedWidth(label_w)
+        offset_y_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        offset_y_row.addWidget(offset_y_label, 0)
+
+        self._offset_y = QtWidgets.QDoubleSpinBox()
+        self._offset_y.setRange(OFFSET_MIN, OFFSET_MAX)
+        self._offset_y.setSingleStep(0.25)
+        self._offset_y.setDecimals(2)
+        self._offset_y.setFixedWidth(70)
+        self._offset_y.setAlignment(QtCore.Qt.AlignRight)
+        self._offset_y.setToolTip("Checker offset in cells (Y)")
+        self._offset_y.setStyleSheet(
+            "QDoubleSpinBox{background:#0f1216;color:#e6edf3;border:1px solid #3c4450;"
+            "border-radius:6px;padding:1px 4px;}"
+            "QDoubleSpinBox::up-button{width:10px;border:none;}"
+            "QDoubleSpinBox::down-button{width:10px;border:none;}"
+        )
+        self._offset_y.valueChanged.connect(self._on_offset_changed)
+        offset_y_row.addWidget(self._offset_y, 0)
+        offset_y_row.addStretch(1)
+
+        right.addLayout(offset_y_row, 0)
 
         speed_row = QtWidgets.QHBoxLayout()
         speed_row.setContentsMargins(0, 0, 0, 0)
@@ -1837,6 +2002,57 @@ class TextureProWidget(QtWidgets.QWidget):
         pack_y = int(self._pack_y.value())
         self._apply_pack(pack_x, pack_y, notify_scene=True)
 
+    def _set_offset_values(self, offset_x: float, offset_y: float) -> None:
+        try:
+            offset_x = float(offset_x)
+        except Exception:
+            offset_x = float(OFFSET_DEFAULT)
+        try:
+            offset_y = float(offset_y)
+        except Exception:
+            offset_y = float(OFFSET_DEFAULT)
+        offset_x = max(OFFSET_MIN, min(OFFSET_MAX, offset_x))
+        offset_y = max(OFFSET_MIN, min(OFFSET_MAX, offset_y))
+        try:
+            self._offset_x.blockSignals(True)
+            self._offset_x.setValue(offset_x)
+        finally:
+            self._offset_x.blockSignals(False)
+        try:
+            self._offset_y.blockSignals(True)
+            self._offset_y.setValue(offset_y)
+        finally:
+            self._offset_y.blockSignals(False)
+
+    def _apply_offset(self, offset_x: float, offset_y: float, notify_scene: bool = False) -> None:
+        try:
+            offset_x = float(offset_x)
+        except Exception:
+            offset_x = float(OFFSET_DEFAULT)
+        try:
+            offset_y = float(offset_y)
+        except Exception:
+            offset_y = float(OFFSET_DEFAULT)
+        offset_x = max(OFFSET_MIN, min(OFFSET_MAX, offset_x))
+        offset_y = max(OFFSET_MIN, min(OFFSET_MAX, offset_y))
+        try:
+            if hasattr(self._provider, "set_offset"):
+                self._provider.set_offset(offset_x, offset_y)
+        except Exception:
+            pass
+        self._set_param("offset_x", f"{offset_x:.2f}", notify_scene=notify_scene)
+        self._set_param("offset_y", f"{offset_y:.2f}", notify_scene=notify_scene)
+        self._set_offset_values(offset_x, offset_y)
+        try:
+            self._refresh_preview()
+        except Exception:
+            pass
+
+    def _on_offset_changed(self):
+        offset_x = float(self._offset_x.value())
+        offset_y = float(self._offset_y.value())
+        self._apply_offset(offset_x, offset_y, notify_scene=True)
+
     def _set_speed_value(self, value: float) -> None:
         try:
             value = float(value)
@@ -2198,6 +2414,18 @@ class TextureProWidget(QtWidgets.QWidget):
         pack_x = max(PACK_MIN, min(PACK_MAX, int(pack_x)))
         pack_y = max(PACK_MIN, min(PACK_MAX, int(pack_y)))
         self._apply_pack(pack_x, pack_y, notify_scene=False)
+
+        offset_x = float(OFFSET_DEFAULT)
+        offset_y = float(OFFSET_DEFAULT)
+        try:
+            offset_x = float(_param_value(self._node_item.model, "offset_x") or OFFSET_DEFAULT)
+        except Exception:
+            offset_x = float(OFFSET_DEFAULT)
+        try:
+            offset_y = float(_param_value(self._node_item.model, "offset_y") or OFFSET_DEFAULT)
+        except Exception:
+            offset_y = float(OFFSET_DEFAULT)
+        self._apply_offset(offset_x, offset_y, notify_scene=False)
 
         speed = float(SPEED_DEFAULT)
         try:
