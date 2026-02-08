@@ -24,6 +24,20 @@ PATTERN_OPTIONS = [
     ("Matrix Rain", "matrix_rain"),
 ]
 PATTERN_LABELS = {key: label for label, key in PATTERN_OPTIONS}
+DIRECTION_OPTIONS = [
+    ("Down", "down"),
+    ("Up", "up"),
+    ("Right", "right"),
+    ("Left", "left"),
+]
+DIRECTION_LABELS = {key: label for label, key in DIRECTION_OPTIONS}
+DIRECTION_DEFAULT = "down"
+DIRECTION_INDEX = {
+    "down": 0,
+    "up": 1,
+    "right": 2,
+    "left": 3,
+}
 TILING_MIN = 1
 TILING_MAX = 100
 PACK_MIN = 1
@@ -53,6 +67,7 @@ HIDDEN_PARAMS = (
     "pack_x",
     "pack_y",
     "speed",
+    "direction",
     "invert",
     "pan",
     "life_min",
@@ -121,6 +136,33 @@ def _param_value(model, name: str) -> str:
         if (p.get("name") or "").strip().lower() == key:
             return p.get("value", "") or ""
     return ""
+
+
+def _normalize_direction(value: str) -> str:
+    v = str(value or "").strip().lower()
+    if v in DIRECTION_INDEX:
+        return v
+    if v.isdigit():
+        try:
+            idx = int(v)
+        except Exception:
+            idx = -1
+        for key, val in DIRECTION_INDEX.items():
+            if val == idx:
+                return key
+    return DIRECTION_DEFAULT
+
+
+def _direction_index(value: str) -> int:
+    return int(DIRECTION_INDEX.get(_normalize_direction(value), 0))
+
+
+def _direction_is_horizontal(value: str) -> bool:
+    return _normalize_direction(value) in ("left", "right")
+
+
+def _direction_sign(value: str) -> float:
+    return -1.0 if _normalize_direction(value) in ("up", "left") else 1.0
 
 
 def _ensure_param(node_item, name: str, default: str = "") -> None:
@@ -222,7 +264,7 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, "pack_x", "1")
     _ensure_param(node_item, "pack_y", "1")
     _ensure_param(node_item, "speed", f"{SPEED_DEFAULT:.2f}")
-    _ensure_param(node_item, "invert", "0")
+    _ensure_param(node_item, "direction", DIRECTION_DEFAULT)
     _ensure_param(node_item, "pan", "1" if PAN_DEFAULT else "0")
     _ensure_param(node_item, "life_min", f"{LIFE_MIN_DEFAULT:.2f}")
     _ensure_param(node_item, "life_max", f"{LIFE_MAX_DEFAULT:.2f}")
@@ -533,7 +575,7 @@ class MatrixRainGenerator:
         self._revision = 0
         self._last_frame_id: Optional[int] = None
         self._rng = random.Random()
-        self._invert = False
+        self._direction = DIRECTION_DEFAULT
         self._pan = True
         self._life_min = float(LIFE_MIN_DEFAULT)
         self._life_max = float(LIFE_MAX_DEFAULT)
@@ -544,7 +586,8 @@ class MatrixRainGenerator:
 
     def _init_columns(self) -> None:
         self._cols = []
-        count = max(6, int(self.size // max(1, self.cell_x)))
+        cross_cell = self.cell_y if _direction_is_horizontal(self._direction) else self.cell_x
+        count = max(6, int(self.size // max(1, int(cross_cell))))
         for i in range(count):
             self._cols.append(self._new_column(i))
 
@@ -561,9 +604,15 @@ class MatrixRainGenerator:
         static_rate = self._rng.uniform(0.25, 0.6)
         static_hold_base = self._rng.uniform(0.8, 1.6)
         static_hold_var = self._rng.uniform(1.2, 3.0)
+        if _direction_is_horizontal(self._direction):
+            x = self._rng.uniform(-self.size, self.size)
+            y = idx * self.cell_y
+        else:
+            x = idx * self.cell_x
+            y = self._rng.uniform(-self.size, self.size)
         return {
-            "x": idx * self.cell_x,
-            "y": self._rng.uniform(-self.size, self.size),
+            "x": x,
+            "y": y,
             "speed": self._rng.uniform(0.6, 1.8),
             "life": life,
             "trail": trail,
@@ -587,9 +636,10 @@ class MatrixRainGenerator:
             self._last_frame_id = frame_id
         if dt <= 0.0:
             return False
-        height = self.size
-        cell_y = self.cell_y
-        direction = -1.0 if self._invert else 1.0
+        size = self.size
+        is_horizontal = _direction_is_horizontal(self._direction)
+        direction = _direction_sign(self._direction)
+        cell_along = self.cell_x if is_horizontal else self.cell_y
         sticky = self._sticky
         if sticky:
             for entry in list(sticky):
@@ -612,18 +662,23 @@ class MatrixRainGenerator:
                     except Exception:
                         pass
         for idx, col in enumerate(self._cols):
-            col["y"] = float(col.get("y", 0.0)) + direction * float(col.get("speed", 10.0)) * cell_y * dt
+            speed = float(col.get("speed", 10.0))
+            if is_horizontal:
+                col["x"] = float(col.get("x", 0.0)) + direction * speed * cell_along * dt
+            else:
+                col["y"] = float(col.get("y", 0.0)) + direction * speed * cell_along * dt
             try:
                 col["age"] = float(col.get("age", 0.0)) + abs(float(col.get("speed", 1.0))) * float(dt)
             except Exception:
                 col["age"] = 0.0
             trail = int(col.get("trail", 12))
-            if self._invert:
-                if col["y"] + (trail * cell_y) < -cell_y:
+            head = float(col.get("x" if is_horizontal else "y", 0.0))
+            if direction < 0.0:
+                if head + (trail * cell_along) < -cell_along:
                     self._cols[idx] = self._new_column(idx)
                     continue
             else:
-                if col["y"] - (trail * cell_y) > height + cell_y:
+                if head - (trail * cell_along) > size + cell_along:
                     self._cols[idx] = self._new_column(idx)
                     continue
             glyphs = col.get("glyphs") or []
@@ -650,17 +705,23 @@ class MatrixRainGenerator:
             except Exception:
                 spawn_prob = 0.0
             if spawn_prob > 0.0 and self._rng.random() < spawn_prob:
-                head_y = float(col.get("y", 0.0))
+                head = float(col.get("x" if is_horizontal else "y", 0.0))
                 back_dir = -direction
                 step = self._rng.uniform(1.0, max(2.0, float(trail)))
-                y = head_y + back_dir * step * float(cell_y)
-                y = round(y / max(1.0, float(cell_y))) * float(cell_y)
-                if -cell_y <= y <= height + cell_y:
+                along = head + back_dir * step * float(cell_along)
+                along = round(along / max(1.0, float(cell_along))) * float(cell_along)
+                if -cell_along <= along <= size + cell_along:
                     hold_base = float(col.get("static_hold_base", 1.0))
                     hold_var = float(col.get("static_hold_var", 1.5))
                     life_span = self._rng.uniform(self._life_min * 0.6, self._life_max * 1.2)
+                    if is_horizontal:
+                        x = along
+                        y = float(col.get("y", 0.0))
+                    else:
+                        x = float(col.get("x", 0.0))
+                        y = along
                     sticky.append({
-                        "x": float(col.get("x", 0.0)),
+                        "x": x,
                         "y": y,
                         "glyph": self._random_glyph(),
                         "life": max(0.4, life_span),
@@ -717,12 +778,16 @@ class MatrixRainGenerator:
         self._offset_y = offset_y
         self._mark_dirty()
 
-    def set_invert(self, invert: bool) -> None:
-        invert = bool(invert)
-        if invert == self._invert:
+    def set_direction(self, direction: str) -> None:
+        direction = _normalize_direction(direction)
+        if direction == self._direction:
             return
-        self._invert = invert
+        self._direction = direction
+        self._init_columns()
         self._mark_dirty()
+
+    def set_invert(self, invert: bool) -> None:
+        self.set_direction("up" if bool(invert) else "down")
 
     def set_pan(self, pan: bool) -> None:
         pan = bool(pan)
@@ -801,54 +866,101 @@ class MatrixRainGenerator:
         font.setPixelSize(int(min(cell_x, cell_y) * 0.9))
         painter.setFont(font)
 
+        is_horizontal = _direction_is_horizontal(self._direction)
+        direction = _direction_sign(self._direction)
+        cell_along = cell_x if is_horizontal else cell_y
+
         for col in self._cols:
-            x = float(col.get("x", 0.0)) + off_x
-            if not math.isfinite(x):
-                continue
-            if size > 0:
-                x = x % float(size)
-                if x < 0.0:
-                    x += float(size)
-            x = int(x)
-            head_y = float(col.get("y", 0.0))
-            if not self._pan:
-                head_y = round(head_y / max(1.0, float(cell_y))) * float(cell_y)
-            trail = int(col.get("trail", 12))
-            age_cells = float(col.get("age", 0.0))
-            eff_trail = max(1, min(trail, int(age_cells) + 1))
-            glyphs = col.get("glyphs") or []
-            for t in range(eff_trail):
-                if self._invert:
-                    y = head_y + t * cell_y
-                else:
-                    y = head_y - t * cell_y
-                y = y + off_y
-                if not math.isfinite(y):
+            if is_horizontal:
+                base_y = float(col.get("y", 0.0)) + off_y
+                if not math.isfinite(base_y):
                     continue
                 if size > 0:
-                    y = y % float(size)
-                    if y < 0.0:
-                        y += float(size)
-                if t == 0:
-                    color = QtGui.QColor("#f8fafc")
-                    color.setAlpha(230)
-                else:
-                    alpha = max(0.05, 1.0 - (t / max(trail, 1)))
-                    color = QtGui.QColor("#22c55e")
-                    color.setAlpha(int(200 * alpha))
-                painter.setPen(color)
-                ch = glyphs[t % len(glyphs)] if glyphs else self._random_glyph()
-                mirror = self._rng.random() < 0.22
-                if mirror:
-                    painter.save()
-                    painter.translate(x + cell_x, y)
-                    painter.scale(-1.0, 1.0)
-                    rect = QtCore.QRectF(0, 0, cell_x, cell_y)
+                    base_y = base_y % float(size)
+                    if base_y < 0.0:
+                        base_y += float(size)
+                base_y = int(base_y)
+                head = float(col.get("x", 0.0))
+                if not self._pan:
+                    head = round(head / max(1.0, float(cell_along))) * float(cell_along)
+                trail = int(col.get("trail", 12))
+                age_cells = float(col.get("age", 0.0))
+                eff_trail = max(1, min(trail, int(age_cells) + 1))
+                glyphs = col.get("glyphs") or []
+                for t in range(eff_trail):
+                    x = head - direction * t * cell_along + off_x
+                    if not math.isfinite(x):
+                        continue
+                    if size > 0:
+                        x = x % float(size)
+                        if x < 0.0:
+                            x += float(size)
+                    y = float(base_y)
+                    if t == 0:
+                        color = QtGui.QColor("#f8fafc")
+                        color.setAlpha(230)
+                    else:
+                        alpha = max(0.05, 1.0 - (t / max(trail, 1)))
+                        color = QtGui.QColor("#22c55e")
+                        color.setAlpha(int(200 * alpha))
+                    painter.setPen(color)
+                    ch = glyphs[t % len(glyphs)] if glyphs else self._random_glyph()
+                    mirror = self._rng.random() < 0.22
+                    if mirror:
+                        painter.save()
+                        painter.translate(x + cell_x, y)
+                        painter.scale(-1.0, 1.0)
+                        rect = QtCore.QRectF(0, 0, cell_x, cell_y)
+                        painter.drawText(rect, QtCore.Qt.AlignCenter, ch)
+                        painter.restore()
+                    else:
+                        rect = QtCore.QRectF(x, y, cell_x, cell_y)
                     painter.drawText(rect, QtCore.Qt.AlignCenter, ch)
-                    painter.restore()
-                else:
-                    rect = QtCore.QRectF(x, y, cell_x, cell_y)
-                painter.drawText(rect, QtCore.Qt.AlignCenter, ch)
+            else:
+                base_x = float(col.get("x", 0.0)) + off_x
+                if not math.isfinite(base_x):
+                    continue
+                if size > 0:
+                    base_x = base_x % float(size)
+                    if base_x < 0.0:
+                        base_x += float(size)
+                base_x = int(base_x)
+                head = float(col.get("y", 0.0))
+                if not self._pan:
+                    head = round(head / max(1.0, float(cell_along))) * float(cell_along)
+                trail = int(col.get("trail", 12))
+                age_cells = float(col.get("age", 0.0))
+                eff_trail = max(1, min(trail, int(age_cells) + 1))
+                glyphs = col.get("glyphs") or []
+                for t in range(eff_trail):
+                    y = head - direction * t * cell_along + off_y
+                    if not math.isfinite(y):
+                        continue
+                    if size > 0:
+                        y = y % float(size)
+                        if y < 0.0:
+                            y += float(size)
+                    x = float(base_x)
+                    if t == 0:
+                        color = QtGui.QColor("#f8fafc")
+                        color.setAlpha(230)
+                    else:
+                        alpha = max(0.05, 1.0 - (t / max(trail, 1)))
+                        color = QtGui.QColor("#22c55e")
+                        color.setAlpha(int(200 * alpha))
+                    painter.setPen(color)
+                    ch = glyphs[t % len(glyphs)] if glyphs else self._random_glyph()
+                    mirror = self._rng.random() < 0.22
+                    if mirror:
+                        painter.save()
+                        painter.translate(x + cell_x, y)
+                        painter.scale(-1.0, 1.0)
+                        rect = QtCore.QRectF(0, 0, cell_x, cell_y)
+                        painter.drawText(rect, QtCore.Qt.AlignCenter, ch)
+                        painter.restore()
+                    else:
+                        rect = QtCore.QRectF(x, y, cell_x, cell_y)
+                    painter.drawText(rect, QtCore.Qt.AlignCenter, ch)
         if self._sticky:
             stick_color = QtGui.QColor("#16a34a")
             stick_color.setAlpha(180)
@@ -882,7 +994,7 @@ class TextureProProvider:
         self._pack_x = 1
         self._pack_y = 1
         self._speed = float(SPEED_DEFAULT)
-        self._invert = False
+        self._direction = DIRECTION_DEFAULT
         self._pan = bool(PAN_DEFAULT)
         self._life_min = float(LIFE_MIN_DEFAULT)
         self._life_max = float(LIFE_MAX_DEFAULT)
@@ -903,6 +1015,7 @@ class TextureProProvider:
         self._apply_density(self._density)
         self._apply_pack(self._pack_x, self._pack_y)
         self._apply_offset(self._offset_x, self._offset_y)
+        self._apply_direction(self._direction)
         self._apply_pan(self._pan)
         self._apply_life_range(self._life_min, self._life_max)
         self._last_gen_rev = self._generators[self._mode].revision
@@ -979,19 +1092,22 @@ class TextureProProvider:
         self._speed = speed
         self._revision += 1
 
-    def set_invert(self, invert: bool) -> None:
-        invert = bool(invert)
-        if invert == self._invert:
+    def set_direction(self, direction: str) -> None:
+        direction = _normalize_direction(direction)
+        if direction == self._direction:
             return
-        self._invert = invert
+        self._direction = direction
         self._revision += 1
         try:
             gen = self._generators.get("matrix_rain")
-            fn = getattr(gen, "set_invert", None)
+            fn = getattr(gen, "set_direction", None)
             if callable(fn):
-                fn(invert)
+                fn(direction)
         except Exception:
             pass
+
+    def set_invert(self, invert: bool) -> None:
+        self.set_direction("up" if bool(invert) else "down")
 
     def set_pan(self, pan: bool) -> None:
         pan = bool(pan)
@@ -1091,6 +1207,7 @@ class TextureProProvider:
             r, g, b, a = self._bg_rgba
             bg_color = (float(r) / 255.0, float(g) / 255.0, float(b) / 255.0, float(a) / 255.0)
             bg_enabled = 1.0
+        invert_flag = 1.0 if _direction_sign(self._direction) < 0.0 else 0.0
         return {
             "mode": self._mode,
             "tiling": int(self._density),
@@ -1099,7 +1216,8 @@ class TextureProProvider:
             "offset_x": float(self._offset_x),
             "offset_y": float(self._offset_y),
             "speed": float(self._speed),
-            "invert": 1.0 if self._invert else 0.0,
+            "direction": float(_direction_index(self._direction)),
+            "invert": float(invert_flag),
             "pan": 1.0 if self._pan else 0.0,
             "life_min": float(self._life_min),
             "life_max": float(self._life_max),
@@ -1150,6 +1268,15 @@ class TextureProProvider:
                 except Exception:
                     pass
 
+    def _apply_direction(self, direction: str) -> None:
+        try:
+            gen = self._generators.get("matrix_rain")
+            fn = getattr(gen, "set_direction", None)
+            if callable(fn):
+                fn(direction)
+        except Exception:
+            pass
+
     def _apply_pan(self, pan: bool) -> None:
         try:
             gen = self._generators.get("matrix_rain")
@@ -1169,9 +1296,9 @@ class TextureProProvider:
             pass
         try:
             gen = self._generators.get("matrix_rain")
-            fn = getattr(gen, "set_invert", None)
+            fn = getattr(gen, "set_direction", None)
             if callable(fn):
-                fn(self._invert)
+                fn(self._direction)
         except Exception:
             pass
 
@@ -1635,36 +1762,49 @@ class TextureProWidget(QtWidgets.QWidget):
 
         right.addLayout(life_max_row, 0)
 
-        invert_row = QtWidgets.QHBoxLayout()
-        invert_row.setContentsMargins(0, 0, 0, 0)
-        invert_row.setSpacing(6)
+        direction_row = QtWidgets.QHBoxLayout()
+        direction_row.setContentsMargins(0, 0, 0, 0)
+        direction_row.setSpacing(6)
 
-        invert_label = QtWidgets.QLabel("Invert")
-        invert_label.setStyleSheet("color:#94a3b8;font-size:10px;")
-        invert_label.setFixedWidth(label_w)
-        invert_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
-        invert_row.addWidget(invert_label, 0)
+        direction_label = QtWidgets.QLabel("Dir")
+        direction_label.setStyleSheet("color:#94a3b8;font-size:10px;")
+        direction_label.setFixedWidth(label_w)
+        direction_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        direction_row.addWidget(direction_label, 0)
 
-        self._invert = QtWidgets.QCheckBox()
-        self._invert.setToolTip("Invert rain direction (upwards)")
-        self._invert.setStyleSheet("QCheckBox{color:#e6edf3;}")
-        self._invert.stateChanged.connect(self._on_invert_changed)
-        invert_row.addWidget(self._invert, 0)
-        invert_row.addSpacing(12)
+        self._direction = QtWidgets.QComboBox()
+        self._direction.setFixedWidth(84)
+        self._direction.setToolTip("Rain direction")
+        self._direction.setStyleSheet(
+            "QComboBox{background:#0f1216;color:#e6edf3;border:1px solid #3c4450;"
+            "border-radius:6px;padding:1px 6px;}"
+            "QComboBox::drop-down{border:none;}"
+            "QComboBox QAbstractItemView{"
+            "  background:#0f1216;color:#e6edf3;border:1px solid #3c4450;"
+            "  outline:0px;}"
+            "QComboBox QAbstractItemView::item{padding:6px 10px;}"
+            "QComboBox QAbstractItemView::item:hover{background:#1f2937;}"
+            "QComboBox QAbstractItemView::item:selected{background:#22c55e;color:#0f1216;}"
+        )
+        for label_text, key in DIRECTION_OPTIONS:
+            self._direction.addItem(label_text, key)
+        self._direction.currentIndexChanged.connect(self._on_direction_changed)
+        direction_row.addWidget(self._direction, 0)
+        direction_row.addSpacing(12)
 
         pan_label = QtWidgets.QLabel("Pan")
         pan_label.setStyleSheet("color:#94a3b8;font-size:10px;")
         pan_label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
-        invert_row.addWidget(pan_label, 0)
+        direction_row.addWidget(pan_label, 0)
 
         self._pan = QtWidgets.QCheckBox()
         self._pan.setToolTip("Slide cells smoothly (off = step by cell)")
         self._pan.setStyleSheet("QCheckBox{color:#e6edf3;}")
         self._pan.stateChanged.connect(self._on_pan_changed)
-        invert_row.addWidget(self._pan, 0)
-        invert_row.addStretch(1)
+        direction_row.addWidget(self._pan, 0)
+        direction_row.addStretch(1)
 
-        right.addLayout(invert_row, 0)
+        right.addLayout(direction_row, 0)
         right.addStretch(1)
 
         layout.addLayout(right, 1)
@@ -2089,36 +2229,51 @@ class TextureProWidget(QtWidgets.QWidget):
         value = float(self._speed.value())
         self._apply_speed(value, notify_scene=True)
 
-    def _set_invert_value(self, value: bool) -> None:
-        checked = bool(value)
+    def _set_direction_value(self, value: str) -> None:
+        direction = _normalize_direction(value)
+        target = None
+        for i in range(self._direction.count()):
+            if str(self._direction.itemData(i)) == direction:
+                target = i
+                break
+        if target is None:
+            direction = DIRECTION_DEFAULT
+            for i in range(self._direction.count()):
+                if str(self._direction.itemData(i)) == direction:
+                    target = i
+                    break
+        if target is None:
+            return
         try:
-            if self._invert.isChecked() == checked:
+            if self._direction.currentIndex() == target:
                 return
-            self._invert.blockSignals(True)
-            self._invert.setChecked(checked)
+            self._direction.blockSignals(True)
+            self._direction.setCurrentIndex(target)
         finally:
             try:
-                self._invert.blockSignals(False)
+                self._direction.blockSignals(False)
             except Exception:
                 pass
 
-    def _apply_invert(self, value: bool, notify_scene: bool = False) -> None:
-        checked = bool(value)
+    def _apply_direction(self, value: str, notify_scene: bool = False) -> None:
+        direction = _normalize_direction(value)
         try:
-            if hasattr(self._provider, "set_invert"):
-                self._provider.set_invert(checked)
+            if hasattr(self._provider, "set_direction"):
+                self._provider.set_direction(direction)
         except Exception:
             pass
-        self._set_param("invert", "1" if checked else "0", notify_scene=notify_scene)
-        self._set_invert_value(checked)
+        self._set_param("direction", direction, notify_scene=notify_scene)
+        self._set_direction_value(direction)
         try:
             self._refresh_preview()
         except Exception:
             pass
 
-    def _on_invert_changed(self):
-        checked = bool(self._invert.isChecked())
-        self._apply_invert(checked, notify_scene=True)
+    def _on_direction_changed(self):
+        data = self._direction.currentData()
+        if data is None:
+            data = DIRECTION_DEFAULT
+        self._apply_direction(str(data), notify_scene=True)
 
     def _set_pan_value(self, value: bool) -> None:
         checked = bool(value)
@@ -2435,13 +2590,20 @@ class TextureProWidget(QtWidgets.QWidget):
         speed = max(SPEED_MIN, min(SPEED_MAX, float(speed)))
         self._apply_speed(speed, notify_scene=False)
 
-        invert_flag = False
+        direction = ""
         try:
-            raw = str(_param_value(self._node_item.model, "invert") or "").strip().lower()
-            invert_flag = raw in {"1", "true", "yes", "on"}
+            direction = str(_param_value(self._node_item.model, "direction") or "").strip()
         except Exception:
+            direction = ""
+        if not direction:
             invert_flag = False
-        self._apply_invert(invert_flag, notify_scene=False)
+            try:
+                raw = str(_param_value(self._node_item.model, "invert") or "").strip().lower()
+                invert_flag = raw in {"1", "true", "yes", "on"}
+            except Exception:
+                invert_flag = False
+            direction = "up" if invert_flag else DIRECTION_DEFAULT
+        self._apply_direction(direction, notify_scene=False)
 
         pan_flag = bool(PAN_DEFAULT)
         try:

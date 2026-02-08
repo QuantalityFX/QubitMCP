@@ -2223,11 +2223,27 @@ class MGLRendererMixin:
             proc_mode = 1 if mode == "matrix_rain" else 0
             _set_uniform(f"ProceduralMode{suffix}", int(proc_mode))
             try:
+                direction = proc_state.get("direction", None)
+                if direction is None or direction == "":
+                    invert_val = float(proc_state.get("invert", 0.0) or 0.0)
+                    direction = 1.0 if invert_val >= 0.5 else 0.0
+                elif isinstance(direction, str):
+                    key = direction.strip().lower()
+                    direction = {
+                        "down": 0.0,
+                        "up": 1.0,
+                        "right": 2.0,
+                        "left": 3.0,
+                    }.get(key, 0.0)
+                try:
+                    direction = float(direction)
+                except Exception:
+                    direction = 0.0
                 params = (
                     float(proc_state.get("tiling", 1) or 1),
                     float(proc_state.get("pack_x", 1) or 1),
                     float(proc_state.get("pack_y", 1) or 1),
-                    float(proc_state.get("invert", 0.0) or 0.0),
+                    float(direction),
                 )
                 _set_uniform(f"ProcParams{suffix}", params)
             except Exception:

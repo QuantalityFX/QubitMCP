@@ -139,21 +139,25 @@ vec4 proc_matrix_params(
     float rows = max(1.0, tiling * pack_y * base);
     vec2 shift = cell_offset / max(vec2(cols, rows), vec2(1.0));
     vec2 p = fract(uv + shift) * vec2(cols, rows);
-    float col = floor(p.x);
-    float invert = step(0.5, params.w);
-    float dir = mix(1.0, -1.0, invert);
-    float speed = mix(0.6, 1.8, hash11(col * 0.73 + seed * 91.7));
-    float trail = mix(6.0, 18.0, hash11(col * 1.31 + seed * 57.3));
-    float col_phase = hash11(col * 1.19 + seed * 53.1) * rows;
+    float dir_id = params.w;
+    float horiz = step(1.5, dir_id);
+    float neg = step(0.5, mod(dir_id, 2.0));
+    float dir = mix(1.0, -1.0, neg);
+    float stream_id = mix(floor(p.x), floor(p.y), horiz);
+    float along = mix(p.y, p.x, horiz);
+    float along_cells = mix(rows, cols, horiz);
+    float speed = mix(0.6, 1.8, hash11(stream_id * 0.73 + seed * 91.7));
+    float trail = mix(6.0, 18.0, hash11(stream_id * 1.31 + seed * 57.3));
+    float col_phase = hash11(stream_id * 1.19 + seed * 53.1) * along_cells;
     float life_lo = max(0.1, life_min);
     float life_hi = max(life_lo, life_max);
-    float life = mix(life_lo, life_hi, hash11(col * 1.61 + seed * 9.7));
+    float life = mix(life_lo, life_hi, hash11(stream_id * 1.61 + seed * 9.7));
     trail *= mix(0.8, 1.6, life / 10.0);
     trail = clamp(trail, 6.0, 26.0);
-    float fade = mix(1.1025, 2.646, hash11(col * 2.11 + seed * 7.3));
-    float dead = mix(0.8, 2.2, hash11(col * 2.71 + seed * 5.1));
+    float fade = mix(1.1025, 2.646, hash11(stream_id * 2.11 + seed * 7.3));
+    float dead = mix(0.8, 2.2, hash11(stream_id * 2.71 + seed * 5.1));
     float cycle = life + fade + dead;
-    float offset = hash11(col * 3.17 + seed * 17.1) * cycle;
+    float offset = hash11(stream_id * 3.17 + seed * 17.1) * cycle;
     float tcol = raw_t + offset;
     float base_cycle = floor(tcol / cycle) * cycle;
     float t_in = tcol - base_cycle;
@@ -170,12 +174,12 @@ vec4 proc_matrix_params(
         float fade_t = (t_in - life) / max(0.0001, fade);
         fade_out = 1.0 - clamp(fade_t, 0.0, 1.0);
     }
-    float row_seed = floor(p.y);
-    float stick_seed = hash21(vec2(col * 0.37 + seed * 17.0, row_seed * 0.73 + seed * 3.0));
+    float row_seed = floor(along);
+    float stick_seed = hash21(vec2(stream_id * 0.37 + seed * 17.0, row_seed * 0.73 + seed * 3.0));
     float stick = step(stick_seed, 0.18);
-    float stick_rand = hash11(col * 7.13 + row_seed * 2.13 + seed * 3.7);
+    float stick_rand = hash11(stream_id * 7.13 + row_seed * 2.13 + seed * 3.7);
     float stick_len = trail * mix(0.4, 1.5, stick_rand);
-    trail_len = min(trail_len + stick * stick_len * grow, rows * 0.9);
+    trail_len = min(trail_len + stick * stick_len * grow, along_cells * 0.9);
     float after_fade = 0.0;
     if (t_in > life + fade && stick > 0.5) {
         float after_t = (t_in - (life + fade)) / max(0.0001, dead);
@@ -187,29 +191,31 @@ vec4 proc_matrix_params(
     if (pan_enabled < 0.5) {
         scroll = floor(scroll + 0.0001);
     }
-    float stream_y = p.y - scroll;
-    stream_y = mix(stream_y, p.y, stick);
-    float row = floor(stream_y);
-    vec2 f = vec2(fract(p.x), fract(stream_y));
-    float head = mod(scroll, rows);
-    float dy = (dir > 0.0) ? (head - p.y) : (p.y - head);
-    if (dy < 0.0) dy += rows;
+    float stream_pos = along - scroll;
+    stream_pos = mix(stream_pos, along, stick);
+    float row = floor(stream_pos);
+    float fx = mix(fract(p.x), fract(stream_pos), horiz);
+    float fy = mix(fract(stream_pos), fract(p.y), horiz);
+    vec2 f = vec2(fx, fy);
+    float head = mod(scroll, along_cells);
+    float dy = (dir > 0.0) ? (head - along) : (along - head);
+    if (dy < 0.0) dy += along_cells;
     float t = 1.0 - dy / max(trail_len, 1.0);
     if (t <= 0.0) {
         return bg;
     }
     vec2 pg = max(ProcGlyphGrid, vec2(1.0));
     float glyph_count = max(1.0, min(pg.x * pg.y, ProcGlyphCount));
-    float hold = mix(0.3, 3.0, hash11(col * 1.91 + row * 0.73 + seed * 11.0));
+    float hold = mix(0.3, 3.0, hash11(stream_id * 1.91 + row * 0.73 + seed * 11.0));
     hold *= mix(1.0, 2.8, stick);
     float glyph_anim = floor(motion_t / max(0.05, hold));
     vec2 gh = vec2(
-        col + row * 0.11 + glyph_anim * 0.07 + seed * 37.0,
-        row + col * 0.19 + glyph_anim * 0.13 + seed * 61.0
+        stream_id + row * 0.11 + glyph_anim * 0.07 + seed * 37.0,
+        row + stream_id * 0.19 + glyph_anim * 0.13 + seed * 61.0
     );
     float glyph_idx = floor(hash21(gh) * glyph_count);
     vec2 gcell = vec2(mod(glyph_idx, pg.x), floor(glyph_idx / pg.x));
-    float mirror = step(hash21(vec2(col * 0.71 + seed * 19.0, row * 1.37 + seed * 3.0)), 0.22);
+    float mirror = step(hash21(vec2(stream_id * 0.71 + seed * 19.0, row * 1.37 + seed * 3.0)), 0.22);
     if (mirror > 0.5) {
         f.x = 1.0 - f.x;
     }
