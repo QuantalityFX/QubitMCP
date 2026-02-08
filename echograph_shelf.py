@@ -2958,6 +2958,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 "visible": visible,
                 "xform": entry.get("xform"),
             }
+            if "wire_only" in entry:
+                clean_entry["wire_only"] = bool(entry.get("wire_only"))
+            if "volume" in entry:
+                clean_entry["volume"] = bool(entry.get("volume"))
             tex_provider = entry.get("texture_provider")
             if tex_provider is not None:
                 clean_entry["texture_provider"] = tex_provider

@@ -144,6 +144,49 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
 
     assets: List[Dict[str, str]] = []
     seen = set()
+    seen_wire = set()
+    scene_owner_names = set()
+    for edge in in_edges:
+        src_item = getattr(edge, "src", None)
+        model = getattr(src_item, "model", None)
+        if model is None:
+            continue
+        name = (getattr(model, "name", "") or "").strip()
+        if name:
+            scene_owner_names.add(name)
+
+    volume_inputs: Dict[str, str] = {}
+    for edge in in_edges:
+        src_item = getattr(edge, "src", None)
+        model = getattr(src_item, "model", None)
+        if model is None:
+            continue
+        kind = (getattr(model, "kind", "") or "").strip().lower()
+        if kind != "volume_selector":
+            continue
+        vol_item, vol_kind, vol_path = _resolve_input_item(scene, src_item, {"volume", "mask"})
+        if not vol_path:
+            continue
+        vol_model = getattr(vol_item, "model", None) if vol_item is not None else None
+        owner_name = (getattr(vol_model, "name", "") or "").strip() or Path(vol_path).name
+        if not owner_name:
+            continue
+        volume_inputs[owner_name] = vol_path
+        if owner_name not in scene_owner_names:
+            ext = Path(vol_path).suffix.lower()
+            if ext in SUPPORTED_EXTS:
+                wire_key = (owner_name, vol_path.strip())
+                if wire_key not in seen_wire:
+                    seen_wire.add(wire_key)
+                    assets.append({
+                        "path": vol_path,
+                        "texture": "",
+                        "node": owner_name,
+                        "ext": ext,
+                        "wire_only": True,
+                        "volume": True,
+                    })
+
     for edge in in_edges:
         src_item = getattr(edge, "src", None)
         model = getattr(src_item, "model", None)
@@ -179,8 +222,13 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                 owner_kind = upstream_kind or owner_kind
                 if not path and upstream_path:
                     path = upstream_path
+
         if not path:
             continue
+        node_name = getattr(owner_model, "name", "") or ""
+        vol_path = volume_inputs.get(node_name)
+        if vol_path:
+            path = vol_path
         ext = Path(path).suffix.lower()
         if ext not in SUPPORTED_EXTS:
             continue
@@ -203,7 +251,13 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             texture = _param_value(model, "texture")
         else:
             texture = _param_value(model, "texture") if ext == ".obj" else ""
-        node_name = getattr(owner_model, "name", "") or ""
+        wire_only = False
+        is_volume = False
+        if vol_path:
+            wire_only = True
+            is_volume = True
+            texture_provider = None
+            texture = ""
         xf = None
         try:
             if node_name and node_name in xforms:
@@ -225,6 +279,9 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             "visible": node_name not in hidden,
             "xform": xf if isinstance(xf, dict) else None,
         }
+        if wire_only:
+            entry["wire_only"] = True
+            entry["volume"] = is_volume
         if texture_provider is not None:
             entry["texture_provider"] = texture_provider
         assets.append(entry)

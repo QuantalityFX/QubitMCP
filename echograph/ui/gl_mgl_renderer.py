@@ -1684,10 +1684,20 @@ class MGLRendererMixin:
     def _mgl_draw_scene_wire(self, item: MGLSceneItem, mvp) -> None:
         if self._mgl_wire_prog is None:
             return
+        prev_depth_test = None
         payload = item.payload or {}
         vao = payload.get("vao")
         if vao is None:
             return
+        if getattr(item, "tag", "") == "scene-volume":
+            try:
+                prev_depth_test = bool(getattr(self._mgl_ctx, "depth_test", True))
+            except Exception:
+                prev_depth_test = True
+            try:
+                self._mgl_ctx.disable(moderngl.DEPTH_TEST)
+            except Exception:
+                pass
         color = payload.get("color") or self._mgl_wire_color
         try:
             mvp_to_use = mvp
@@ -1716,6 +1726,15 @@ class MGLRendererMixin:
                 vao.render(mode)
         except Exception as exc:
             self._mgl_error = f"Scene wire draw failed: {exc}"
+        finally:
+            if prev_depth_test is not None:
+                try:
+                    if prev_depth_test:
+                        self._mgl_ctx.enable(moderngl.DEPTH_TEST)
+                    else:
+                        self._mgl_ctx.disable(moderngl.DEPTH_TEST)
+                except Exception:
+                    pass
 
     def _mgl_build_mesh_entry(
         self,

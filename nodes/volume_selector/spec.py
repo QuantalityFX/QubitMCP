@@ -57,6 +57,34 @@ def _split_dir(node_item) -> Path:
     return out
 
 
+def _resolve_window(node_item):
+    scene = None
+    try:
+        scene = node_item.scene()
+    except Exception:
+        scene = None
+    if scene is not None:
+        try:
+            views = scene.views()
+            if views:
+                return views[0].window()
+        except Exception:
+            pass
+    try:
+        win = node_item.window()
+        if win is not None:
+            return win
+    except Exception:
+        pass
+    try:
+        aw = QtWidgets.QApplication.activeWindow()
+        if aw is not None and aw.isWindow():
+            return aw
+    except Exception:
+        pass
+    return None
+
+
 def _param_value(model, name: str) -> str:
     key = (name or "").strip().lower()
     for p in (getattr(model, "params", None) or []):
@@ -156,7 +184,13 @@ def build_ports(node_item) -> None:
         node_item.ensure_input("volume")
 
 
-def _resolve_input_path(node_item, port_names=None, fallback_index: Optional[int] = None) -> str:
+def _resolve_input_path(
+    node_item,
+    port_names=None,
+    fallback_index: Optional[int] = None,
+    allow_any: bool = True,
+    allow_model_fallback: bool = True,
+) -> str:
     model = getattr(node_item, "model", None)
     sc = node_item.scene()
 
@@ -202,7 +236,7 @@ def _resolve_input_path(node_item, port_names=None, fallback_index: Optional[int
                     break
         if chosen is None and fallback_index is not None and len(in_edges) > fallback_index:
             chosen = in_edges[fallback_index]
-        if chosen is None and in_edges:
+        if chosen is None and in_edges and allow_any:
             chosen = in_edges[0]
         if chosen is not None:
             src_item = getattr(chosen, "src", None)
@@ -210,7 +244,7 @@ def _resolve_input_path(node_item, port_names=None, fallback_index: Optional[int
             if path:
                 return path
 
-    if model is not None:
+    if model is not None and allow_model_fallback:
         return _param_value(model, "mesh") or _param_value(model, "source") or _param_value(model, "path")
     return ""
 
@@ -462,15 +496,69 @@ class VolumeSplitWidget(QtWidgets.QWidget):
 
     def _update_split(self, force: bool = False):
         self._pending = False
-        mesh_path = (_resolve_input_path(self._node_item, {"mesh", "source", "path"}, fallback_index=0) or "").strip()
-        volume_path = (_resolve_input_path(self._node_item, {"volume", "mask"}, fallback_index=1) or "").strip()
-
-        if not mesh_path:
-            self._status.setText("No mesh input.")
+        mesh_path = (_resolve_input_path(
+            self._node_item,
+            {"mesh", "source", "path"},
+            allow_any=False,
+            allow_model_fallback=False,
+        ) or "").strip()
+        volume_path = (_resolve_input_path(
+            self._node_item,
+            {"volume", "mask"},
+            allow_any=False,
+            allow_model_fallback=False,
+        ) or "").strip()
+        edges = []
+        try:
+            sc = self._node_item.scene()
+            if sc is not None:
+                try:
+                    edges = list(sc._ordered_in_edges(self._node_item))
+                except Exception:
+                    try:
+                        edges = list(sc._in_edges(self._node_item))
+                    except Exception:
+                        edges = []
+        except Exception:
+            edges = []
+        if not edges:
+            self._status.setText("No inputs connected.")
             self._view_btn.setEnabled(False)
             self._set_param("mesh", "", notify_scene=False)
             self._set_param("source", "", notify_scene=False)
+            self._set_param("volume", "", notify_scene=False)
             self._set_param("path", "", notify_scene=True)
+            return
+        if not mesh_path and not volume_path and edges:
+            mesh_path = (_resolve_input_path(
+                self._node_item,
+                {"mesh", "source", "path"},
+                fallback_index=0,
+                allow_model_fallback=False,
+            ) or "").strip()
+            if len(edges) > 1:
+                volume_path = (_resolve_input_path(
+                    self._node_item,
+                    {"volume", "mask"},
+                    fallback_index=1,
+                    allow_model_fallback=False,
+                ) or "").strip()
+
+        if not mesh_path:
+            if volume_path:
+                self._status.setText("Volume only.")
+                self._view_btn.setEnabled(True)
+                self._set_param("mesh", "", notify_scene=False)
+                self._set_param("source", "", notify_scene=False)
+                self._set_param("volume", volume_path, notify_scene=False)
+                self._set_param("path", volume_path, notify_scene=True)
+            else:
+                self._status.setText("No mesh input.")
+                self._view_btn.setEnabled(False)
+                self._set_param("mesh", "", notify_scene=False)
+                self._set_param("source", "", notify_scene=False)
+                self._set_param("volume", "", notify_scene=False)
+                self._set_param("path", "", notify_scene=True)
             return
         if not volume_path:
             self._status.setText("No volume input.")
@@ -558,10 +646,37 @@ class VolumeSplitWidget(QtWidgets.QWidget):
     def _on_view_clicked(self):
         try:
             path = ""
+            mesh_val = ""
+            volume_val = ""
             for entry in (getattr(self._node_item.model, "params", None) or []):
-                if (entry.get("name") or "").strip().lower() == "path":
+                key = (entry.get("name") or "").strip().lower()
+                if key == "path":
                     path = (entry.get("value") or "").strip()
-                    break
+                elif key == "mesh":
+                    mesh_val = (entry.get("value") or "").strip()
+                elif key == "volume":
+                    volume_val = (entry.get("value") or "").strip()
+            if volume_val and not mesh_val:
+                win = _resolve_window(self._node_item)
+                handler = getattr(win, "open_scene_assets", None) if win is not None else None
+                assets = [{
+                    "path": volume_val,
+                    "node": (getattr(self._node_item.model, "name", "") or "").strip(),
+                    "wire_only": True,
+                    "volume": True,
+                }]
+                if callable(handler):
+                    try:
+                        handler(assets, frame=False)
+                        return
+                    except TypeError:
+                        try:
+                            handler(assets)
+                            return
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
             if not path:
                 return
             self._node_item._open_import_preview(path)
