@@ -194,9 +194,15 @@ vec4 proc_matrix_params(
     float stream_pos = along - scroll;
     stream_pos = mix(stream_pos, along, stick);
     float row = floor(stream_pos);
-    float fx = mix(fract(p.x), fract(stream_pos), horiz);
-    float fy = mix(fract(stream_pos), fract(p.y), horiz);
-    vec2 f = vec2(fx, fy);
+    vec2 f = vec2(fract(p.x), fract(p.y));
+    if (horiz > 0.5) {
+        // Rotate glyphs 90 degrees when travelling left/right.
+        if (dir > 0.0) {
+            f = vec2(f.y, 1.0 - f.x);
+        } else {
+            f = vec2(1.0 - f.y, f.x);
+        }
+    }
     float head = mod(scroll, along_cells);
     float dy = (dir > 0.0) ? (head - along) : (along - head);
     if (dy < 0.0) dy += along_cells;

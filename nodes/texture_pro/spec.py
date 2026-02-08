@@ -1773,7 +1773,7 @@ class TextureProWidget(QtWidgets.QWidget):
         direction_row.addWidget(direction_label, 0)
 
         self._direction = QtWidgets.QComboBox()
-        self._direction.setFixedWidth(84)
+        self._direction.setFixedWidth(70)
         self._direction.setToolTip("Rain direction")
         self._direction.setStyleSheet(
             "QComboBox{background:#0f1216;color:#e6edf3;border:1px solid #3c4450;"
@@ -1790,21 +1790,28 @@ class TextureProWidget(QtWidgets.QWidget):
             self._direction.addItem(label_text, key)
         self._direction.currentIndexChanged.connect(self._on_direction_changed)
         direction_row.addWidget(self._direction, 0)
-        direction_row.addSpacing(12)
+        direction_row.addStretch(1)
+
+        right.addLayout(direction_row, 0)
+
+        pan_row = QtWidgets.QHBoxLayout()
+        pan_row.setContentsMargins(0, 0, 0, 0)
+        pan_row.setSpacing(6)
 
         pan_label = QtWidgets.QLabel("Pan")
         pan_label.setStyleSheet("color:#94a3b8;font-size:10px;")
-        pan_label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
-        direction_row.addWidget(pan_label, 0)
+        pan_label.setFixedWidth(label_w)
+        pan_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        pan_row.addWidget(pan_label, 0)
 
         self._pan = QtWidgets.QCheckBox()
         self._pan.setToolTip("Slide cells smoothly (off = step by cell)")
         self._pan.setStyleSheet("QCheckBox{color:#e6edf3;}")
         self._pan.stateChanged.connect(self._on_pan_changed)
-        direction_row.addWidget(self._pan, 0)
-        direction_row.addStretch(1)
+        pan_row.addWidget(self._pan, 0)
+        pan_row.addStretch(1)
 
-        right.addLayout(direction_row, 0)
+        right.addLayout(pan_row, 0)
         right.addStretch(1)
 
         layout.addLayout(right, 1)
