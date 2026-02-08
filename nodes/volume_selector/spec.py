@@ -656,6 +656,34 @@ class VolumeSplitWidget(QtWidgets.QWidget):
                     mesh_val = (entry.get("value") or "").strip()
                 elif key == "volume":
                     volume_val = (entry.get("value") or "").strip()
+            win = _resolve_window(self._node_item)
+            handler = getattr(win, "open_scene_assets", None) if win is not None else None
+            node_name = (getattr(self._node_item.model, "name", "") or "").strip()
+            if volume_val and mesh_val:
+                assets = []
+                if path:
+                    assets.append({
+                        "path": path,
+                        "node": node_name or Path(path).name,
+                    })
+                assets.append({
+                    "path": volume_val,
+                    "node": (node_name + " Volume").strip() or Path(volume_val).name,
+                    "wire_only": True,
+                    "volume": True,
+                })
+                if callable(handler) and assets:
+                    try:
+                        handler(assets, frame=False)
+                        return
+                    except TypeError:
+                        try:
+                            handler(assets)
+                            return
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
             if volume_val and not mesh_val:
                 win = _resolve_window(self._node_item)
                 handler = getattr(win, "open_scene_assets", None) if win is not None else None
