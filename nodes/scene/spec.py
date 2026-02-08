@@ -222,6 +222,10 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                 owner_kind = upstream_kind or owner_kind
                 if not path and upstream_path:
                     path = upstream_path
+        elif kind == "transforms":
+            upstream_item, upstream_kind, upstream_path = _resolve_input_item(scene, src_item)
+            if upstream_path:
+                path = upstream_path
 
         if not path:
             continue
@@ -1077,7 +1081,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 if model is None:
                     continue
                 kind = (getattr(model, "kind", "") or "").strip().lower()
-                if kind not in ("import", "primitive", "uv_unwrap", "texture", "texture_pro", "texture_layer", "volume_selector", "split_volume"):
+                if kind not in ("import", "primitive", "uv_unwrap", "texture", "texture_pro", "texture_layer", "volume_selector", "split_volume", "transforms"):
                     continue
                 path = _param_value(model, "path")
                 owner_model = model

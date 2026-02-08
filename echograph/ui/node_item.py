@@ -446,6 +446,33 @@ class NodeItem(QtWidgets.QGraphicsObject):
             hidden.update({"source", "path", "invert"})
             hidden_entry["value"] = ",".join(sorted(hidden))
             self.model.params = params
+        elif kind_lower == "transforms":
+            params = list(self.model.params or [])
+            names = {(p.get("name") or "").strip().lower() for p in params}
+            if "source" not in names:
+                params.append({"name": "source", "value": ""})
+            if "path" not in names:
+                params.append({"name": "path", "value": ""})
+            if "pos" not in names:
+                params.append({"name": "pos", "value": "0,0,0"})
+            if "rot" not in names:
+                params.append({"name": "rot", "value": "0,0,0"})
+            if "scl" not in names:
+                params.append({"name": "scl", "value": "1,1,1"})
+            store_key = "__ui_hidden_params"
+            hidden_entry = None
+            for p in params:
+                if (p.get("name") or "").strip().lower() == store_key:
+                    hidden_entry = p
+                    break
+            if hidden_entry is None:
+                hidden_entry = {"name": store_key, "value": ""}
+                params.append(hidden_entry)
+            raw = hidden_entry.get("value", "")
+            hidden = {t.strip().lower() for t in str(raw).split(",") if t.strip()}
+            hidden.update({"source", "path", "pos", "rot", "scl"})
+            hidden_entry["value"] = ",".join(sorted(hidden))
+            self.model.params = params
         elif kind_lower == "uv_unwrap":
             params = list(self.model.params or [])
             names = {(p.get("name") or "").strip().lower() for p in params}
@@ -647,6 +674,77 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 return p.get("value", "") or ""
         return ""
 
+    def _sync_transforms_gizmo(self, selected: bool) -> None:
+        owner = (getattr(self.model, "name", "") or "").strip()
+        if not owner:
+            return
+        win = None
+        try:
+            sc = self.scene()
+            if sc is not None:
+                views = sc.views()
+                if views:
+                    win = views[0].window()
+        except Exception:
+            win = None
+        if win is None:
+            try:
+                win = self.window()
+            except Exception:
+                win = None
+        glv = getattr(win, "gl_view", None) if win is not None else None
+        if glv is None:
+            return
+        if not selected:
+            try:
+                if getattr(glv, "_xform_gizmo_owner", None) == owner:
+                    glv._xform_gizmo_owner = None
+                    glv._xform_gizmo_owner_kind = None
+            except Exception:
+                pass
+            try:
+                glv.update()
+            except Exception:
+                pass
+            return
+        try:
+            glv._xform_gizmo_owner = owner
+            glv._xform_gizmo_owner_kind = "mesh"
+        except Exception:
+            pass
+        try:
+            renderer = getattr(glv, "_mgl_renderer", None) or glv
+            get_xf = getattr(renderer, "_mgl_get_scene_asset_xform", None)
+            xf = get_xf(owner) if callable(get_xf) else {}
+            pos = tuple((xf or {}).get("pos", (0.0, 0.0, 0.0)))
+            if all(abs(float(v)) < 1e-6 for v in pos):
+                bounds = None
+                try:
+                    bounds = (
+                        getattr(renderer, "_mgl_scene_mesh_bounds_by_owner", None)
+                        or getattr(renderer, "_mgl_scene_bounds_by_owner", None)
+                    )
+                except Exception:
+                    bounds = None
+                if isinstance(bounds, dict) and owner in bounds:
+                    try:
+                        bmin, bmax = bounds.get(owner) or (None, None)
+                        if bmin is not None and bmax is not None:
+                            cx = (float(bmin[0]) + float(bmax[0])) * 0.5
+                            cy = (float(bmin[1]) + float(bmax[1])) * 0.5
+                            cz = (float(bmin[2]) + float(bmax[2])) * 0.5
+                            pos = (cx, cy, cz)
+                    except Exception:
+                        pass
+            glv._xform_gizmo_pos_locked = False
+            glv._xform_gizmo_pos = pos
+        except Exception:
+            pass
+        try:
+            glv.update()
+        except Exception:
+            pass
+
     def _ui_hidden_params_set(self) -> set:
         """
         Returns the set of param names hidden on the node surface.
@@ -691,6 +789,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
             hidden.update({"source", "path"})
         elif kind in ("volume_selector", "split_volume"):
             hidden.update({"source", "path", "invert"})
+        elif kind == "transforms":
+            hidden.update({"source", "path", "pos", "rot", "scl"})
 
         return hidden
 
@@ -1210,6 +1310,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
             node_w = self._BASE_W
         elif kind in ("volume_selector", "split_volume"):
             body_h = 54
+            node_w = self._BASE_W
+        elif kind == "transforms":
+            body_h = 32
             node_w = self._BASE_W
         elif kind == "uv_unwrap":
             body_h = 32
@@ -4646,6 +4749,16 @@ class NodeItem(QtWidgets.QGraphicsObject):
         super().hoverMoveEvent(e)
 
     def itemChange(self, change, value):
+        if change == QtWidgets.QGraphicsItem.ItemSelectedHasChanged:
+            try:
+                kind = (self.model.kind or "").lower()
+            except Exception:
+                kind = ""
+            if kind == "transforms":
+                try:
+                    self._sync_transforms_gizmo(bool(value))
+                except Exception:
+                    pass
         if change == QtWidgets.QGraphicsItem.ItemPositionChange:
             if getattr(self, "_note_resizing", False):
                 return super().itemChange(change, value)

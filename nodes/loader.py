@@ -175,6 +175,17 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Volume Selector plugin import failed:", e)
 
+    # 8.96) Transforms
+    try:
+        from nodes import transforms
+        if hasattr(transforms, "register"):
+            transforms.register()
+            _safe_probe("transforms")
+        else:
+            print("[EchoGraph] Transforms module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Transforms plugin import failed:", e)
+
     # 9) GPT Prompt
     try:
         from nodes import gpt_prompt
