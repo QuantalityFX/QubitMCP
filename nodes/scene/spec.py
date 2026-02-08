@@ -162,7 +162,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
         if model is None:
             continue
         kind = (getattr(model, "kind", "") or "").strip().lower()
-        if kind != "volume_selector":
+        if kind not in ("volume_selector", "split_volume"):
             continue
         vol_item, vol_kind, vol_path = _resolve_input_item(scene, src_item, {"volume", "mask"})
         if not vol_path:
@@ -1077,7 +1077,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 if model is None:
                     continue
                 kind = (getattr(model, "kind", "") or "").strip().lower()
-                if kind not in ("import", "primitive", "uv_unwrap", "texture", "texture_pro", "texture_layer", "volume_selector"):
+                if kind not in ("import", "primitive", "uv_unwrap", "texture", "texture_pro", "texture_layer", "volume_selector", "split_volume"):
                     continue
                 path = _param_value(model, "path")
                 owner_model = model

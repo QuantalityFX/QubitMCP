@@ -406,7 +406,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             hidden.update({"primitive", "path"})
             hidden_entry["value"] = ",".join(sorted(hidden))
             self.model.params = params
-        elif kind_lower == "volume_selector":
+        elif kind_lower in ("volume_selector", "split_volume"):
             params = list(self.model.params or [])
             names = {(p.get("name") or "").strip().lower() for p in params}
             if "mesh" not in names:
@@ -415,6 +415,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 params.append({"name": "source", "value": ""})
             if "volume" not in names:
                 params.append({"name": "volume", "value": ""})
+            if "invert" not in names:
+                params.append({"name": "invert", "value": "0"})
             if "path" not in names:
                 params.append({"name": "path", "value": ""})
             mesh_entry = None
@@ -441,7 +443,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             hidden = {t.strip().lower() for t in str(raw).split(",") if t.strip()}
             hidden.discard("mesh")
             hidden.discard("volume")
-            hidden.update({"source", "path"})
+            hidden.update({"source", "path", "invert"})
             hidden_entry["value"] = ",".join(sorted(hidden))
             self.model.params = params
         elif kind_lower == "uv_unwrap":
@@ -687,8 +689,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
             hidden.update({"pattern", "tiling", "pack_x", "pack_y", "offset_x", "offset_y", "speed", "invert", "pan", "life_min", "life_max", "emissive", "softness", "lighting", "bg_color", "bg_alpha", "resolution", "source", "path"})
         elif kind == "texture_layer":
             hidden.update({"source", "path"})
-        elif kind == "volume_selector":
-            hidden.update({"source", "path"})
+        elif kind in ("volume_selector", "split_volume"):
+            hidden.update({"source", "path", "invert"})
 
         return hidden
 
@@ -1206,8 +1208,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
         elif kind == "primitive":
             body_h = 32
             node_w = self._BASE_W
-        elif kind == "volume_selector":
-            body_h = 32
+        elif kind in ("volume_selector", "split_volume"):
+            body_h = 54
             node_w = self._BASE_W
         elif kind == "uv_unwrap":
             body_h = 32

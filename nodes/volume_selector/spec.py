@@ -93,6 +93,13 @@ def _param_value(model, name: str) -> str:
     return ""
 
 
+def _param_bool(model, name: str, default: bool = False) -> bool:
+    raw = _param_value(model, name).strip().lower()
+    if not raw:
+        return default
+    return raw in ("1", "true", "yes", "on", "y")
+
+
 def _ensure_param(node_item, name: str, default: str = "") -> None:
     model = getattr(node_item, "model", None)
     if model is None:
@@ -175,9 +182,10 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, "mesh", "")
     _ensure_param(node_item, "source", "")
     _ensure_param(node_item, "volume", "")
+    _ensure_param(node_item, "invert", "0")
     _ensure_param(node_item, "path", "")
     model = getattr(node_item, "model", None)
-    _ensure_hidden_params(model, ["source", "path"])
+    _ensure_hidden_params(model, ["source", "path", "invert"])
     _ensure_visible_params(model, ["mesh", "volume"])
     if hasattr(node_item, "ensure_input"):
         node_item.ensure_input("mesh")
@@ -349,7 +357,7 @@ def _ensure_uvs(points, uvs):
     return uvs
 
 
-def _split_mesh(mesh_path: Path, volume_path: Path):
+def _split_mesh(mesh_path: Path, volume_path: Path, invert: bool = False):
     try:
         import numpy as np
     except Exception:
@@ -384,7 +392,8 @@ def _split_mesh(mesh_path: Path, volume_path: Path):
             if (v < (bmin - eps)).any() or (v > (bmax + eps)).any():
                 inside = False
                 break
-        if not inside:
+        keep = inside if not invert else not inside
+        if not keep:
             continue
         kept_pts.extend(tri.tolist())
         kept_norms.extend(norms[i:i + 3].tolist())
@@ -429,15 +438,19 @@ class VolumeSplitWidget(QtWidgets.QWidget):
         self._pending = False
         self._last_stamp = None
 
-        layout = QtWidgets.QHBoxLayout(self)
+        layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(6, 4, 6, 4)
         layout.setSpacing(4)
+
+        top_row = QtWidgets.QHBoxLayout()
+        top_row.setContentsMargins(0, 0, 0, 0)
+        top_row.setSpacing(4)
 
         self._status = QtWidgets.QLabel("")
         self._status.setStyleSheet("color:#94a3b8;font-size:11px;")
         self._status.setMinimumWidth(0)
         self._status.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        layout.addWidget(self._status, 1)
+        top_row.addWidget(self._status, 1)
 
         self._view_btn = QtWidgets.QPushButton("View")
         self._view_btn.setFixedWidth(64)
@@ -447,13 +460,37 @@ class VolumeSplitWidget(QtWidgets.QWidget):
             "QPushButton:disabled{background:#334155;color:#94a3b8;}"
         )
         self._view_btn.clicked.connect(self._on_view_clicked)
-        layout.addWidget(self._view_btn, 0)
+        top_row.addWidget(self._view_btn, 0)
+
+        layout.addLayout(top_row, 0)
+
+        invert_row = QtWidgets.QHBoxLayout()
+        invert_row.setContentsMargins(0, 0, 0, 0)
+        invert_row.setSpacing(6)
+
+        invert_label = QtWidgets.QLabel("Invert")
+        invert_label.setStyleSheet("color:#94a3b8;font-size:10px;")
+        invert_label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        invert_row.addWidget(invert_label, 0)
+
+        self._invert = QtWidgets.QCheckBox()
+        self._invert.setStyleSheet("QCheckBox{color:#e6edf3;}")
+        self._invert.stateChanged.connect(self._on_invert_changed)
+        invert_row.addWidget(self._invert, 0)
+        invert_row.addStretch(1)
+
+        layout.addLayout(invert_row, 0)
 
         self._ensure_scene()
+        try:
+            self._invert.setChecked(_param_bool(getattr(self._node_item, "model", None), "invert", False))
+        except Exception:
+            pass
+
         QtCore.QTimer.singleShot(0, self._update_split)
 
     def sizeHint(self):
-        return QtCore.QSize(220, 32)
+        return QtCore.QSize(220, 54)
 
     def _ensure_scene(self):
         if self._scene is None:
@@ -478,6 +515,11 @@ class VolumeSplitWidget(QtWidgets.QWidget):
         self._pending = True
         QtCore.QTimer.singleShot(80, self._update_split)
 
+    def _on_invert_changed(self, state: int):
+        val = "1" if bool(state) else "0"
+        self._set_param("invert", val, notify_scene=True)
+        self._schedule_update()
+
     def _set_param(self, name: str, value: str, notify_scene: bool = True):
         try:
             current = ""
@@ -496,6 +538,11 @@ class VolumeSplitWidget(QtWidgets.QWidget):
 
     def _update_split(self, force: bool = False):
         self._pending = False
+        invert = False
+        try:
+            invert = _param_bool(getattr(self._node_item, "model", None), "invert", False)
+        except Exception:
+            invert = False
         mesh_path = (_resolve_input_path(
             self._node_item,
             {"mesh", "source", "path"},
@@ -603,10 +650,17 @@ class VolumeSplitWidget(QtWidgets.QWidget):
         try:
             st_mesh = os.stat(mesh_path)
             st_vol = os.stat(volume_path)
-            stamp = (mesh_path, int(st_mesh.st_mtime), int(st_mesh.st_size),
-                     volume_path, int(st_vol.st_mtime), int(st_vol.st_size))
+            stamp = (
+                mesh_path,
+                int(st_mesh.st_mtime),
+                int(st_mesh.st_size),
+                volume_path,
+                int(st_vol.st_mtime),
+                int(st_vol.st_size),
+                int(bool(invert)),
+            )
         except Exception:
-            stamp = (mesh_path, None, None, volume_path, None, None)
+            stamp = (mesh_path, None, None, volume_path, None, None, int(bool(invert)))
 
         out_path = _output_path(self._node_item, mesh_path, volume_path)
         if not force and self._last_stamp == stamp and out_path.exists():
@@ -618,7 +672,7 @@ class VolumeSplitWidget(QtWidgets.QWidget):
             self._set_param("path", str(out_path), notify_scene=True)
             return
 
-        pts, norms, uvs, err = _split_mesh(Path(mesh_path), Path(volume_path))
+        pts, norms, uvs, err = _split_mesh(Path(mesh_path), Path(volume_path), invert=invert)
         if err:
             self._status.setText(err)
             self._view_btn.setEnabled(False)
@@ -742,3 +796,4 @@ def register(core=None):
     else:
         _core = core
     _core.register_spec("volume_selector", VOLUME_SPLIT_SPEC)
+    _core.register_spec("split_volume", VOLUME_SPLIT_SPEC)
