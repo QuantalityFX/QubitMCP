@@ -435,6 +435,37 @@ def _output_path(node_item, mesh_path: str, volume_path: str) -> Path:
     return _split_dir(node_item) / f"{node_name}_{mesh_stem}_in_{vol_stem}.obj"
 
 
+def _xform_input_path(node_item, mesh_path: str) -> Path:
+    node_name = _sanitize_name(getattr(getattr(node_item, "model", None), "name", "") or "volume_split")
+    mesh_stem = _sanitize_name(Path(mesh_path).stem) if mesh_path else "mesh"
+    return _split_dir(node_item) / f"{node_name}_{mesh_stem}_xform_input.obj"
+
+
+def _mtime_ns_from_stat(st) -> int:
+    try:
+        return int(getattr(st, "st_mtime_ns"))
+    except Exception:
+        try:
+            return int(float(getattr(st, "st_mtime", 0.0)) * 1_000_000_000)
+        except Exception:
+            return 0
+
+
+def _materialize_transformed_input(mesh_path: Path, out_path: Path, mesh_xform: dict) -> Optional[str]:
+    pts, norms, uvs = _load_mesh_arrays(mesh_path)
+    if pts is None or not getattr(pts, "size", 0):
+        return "Mesh load failed."
+    if pts.shape[0] % 3 != 0:
+        return "Mesh is not triangulated."
+    norms = _ensure_normals(pts, norms)
+    uvs = _ensure_uvs(pts, uvs)
+    pos = mesh_xform.get("pos", (0.0, 0.0, 0.0))
+    rot = mesh_xform.get("rot", (0.0, 0.0, 0.0))
+    scl = mesh_xform.get("scl", (1.0, 1.0, 1.0))
+    pts_t, norms_t = _apply_transform(pts, norms, pos, rot, scl)
+    return _write_obj(out_path, pts_t, norms_t, uvs)
+
+
 def _load_mesh_arrays(path: Path):
     try:
         import numpy as np
@@ -615,6 +646,7 @@ class VolumeSplitWidget(QtWidgets.QWidget):
         self._scene_connected = False
         self._pending = False
         self._last_stamp = None
+        self._last_input_xform_stamp = None
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(6, 4, 6, 4)
@@ -781,6 +813,7 @@ class VolumeSplitWidget(QtWidgets.QWidget):
                     allow_model_fallback=False,
                 ) or "").strip()
         mesh_xform = None
+        mesh_preview_path = mesh_path
         mesh_edge = _pick_input_edge(self._node_item, {"mesh", "source", "path"}, fallback_index=0, allow_any=True)
         mesh_src_item = getattr(mesh_edge, "src", None) if mesh_edge is not None else None
         if mesh_src_item is not None:
@@ -791,6 +824,7 @@ class VolumeSplitWidget(QtWidgets.QWidget):
                 mesh_out = (_param_value(mesh_model, "path") or "").strip()
                 if mesh_source:
                     mesh_path = mesh_source
+                    mesh_preview_path = mesh_out or mesh_source
                     mesh_xform = {
                         "pos": _param_vec3(mesh_model, "pos", (0.0, 0.0, 0.0)),
                         "rot": _param_vec3(mesh_model, "rot", (0.0, 0.0, 0.0)),
@@ -799,6 +833,7 @@ class VolumeSplitWidget(QtWidgets.QWidget):
                 elif mesh_out:
                     # Fallback to baked output when source is unavailable.
                     mesh_path = mesh_out
+                    mesh_preview_path = mesh_out
         if not mesh_path:
             if volume_path:
                 self._status.setText(volume_label or "Volume only.")
@@ -816,12 +851,23 @@ class VolumeSplitWidget(QtWidgets.QWidget):
                 self._set_param("path", "", notify_scene=True)
             return
         if not volume_path:
-            self._status.setText("No volume input.")
-            self._view_btn.setEnabled(False)
+            preview_path = (mesh_preview_path or mesh_path or "").strip()
+            if (not preview_path) or (not os.path.exists(preview_path)):
+                preview_path = (mesh_path or "").strip()
+            if (not preview_path) or (not os.path.exists(preview_path)):
+                self._status.setText("Mesh not found.")
+                self._view_btn.setEnabled(False)
+                self._set_param("mesh", mesh_path, notify_scene=False)
+                self._set_param("source", mesh_path, notify_scene=False)
+                self._set_param("volume", "", notify_scene=False)
+                self._set_param("path", "", notify_scene=True)
+                return
+            self._status.setText(mesh_label or Path(preview_path).name)
+            self._view_btn.setEnabled(True)
             self._set_param("mesh", mesh_path, notify_scene=False)
             self._set_param("source", mesh_path, notify_scene=False)
             self._set_param("volume", "", notify_scene=False)
-            self._set_param("path", "", notify_scene=True)
+            self._set_param("path", preview_path, notify_scene=True)
             return
         if not os.path.exists(mesh_path):
             self._status.setText("Mesh not found.")
@@ -855,28 +901,56 @@ class VolumeSplitWidget(QtWidgets.QWidget):
             self._set_param("path", "", notify_scene=True)
             return
 
-        try:
-            st_mesh = os.stat(mesh_path)
-            st_vol = os.stat(volume_path)
-            stamp = (
-                mesh_path,
-                int(st_mesh.st_mtime),
-                int(st_mesh.st_size),
-                volume_path,
-                int(st_vol.st_mtime),
-                int(st_vol.st_size),
-                int(bool(invert)),
-            )
-            if mesh_xform:
-                stamp = stamp + (
+        split_mesh_path = mesh_path
+        view_mesh_path = mesh_path
+        if mesh_xform:
+            xform_path = _xform_input_path(self._node_item, mesh_path)
+            try:
+                st_src = os.stat(mesh_path)
+                xstamp = (
+                    mesh_path,
+                    _mtime_ns_from_stat(st_src),
+                    int(st_src.st_size),
                     float(mesh_xform["pos"][0]), float(mesh_xform["pos"][1]), float(mesh_xform["pos"][2]),
                     float(mesh_xform["rot"][0]), float(mesh_xform["rot"][1]), float(mesh_xform["rot"][2]),
                     float(mesh_xform["scl"][0]), float(mesh_xform["scl"][1]), float(mesh_xform["scl"][2]),
                 )
+            except Exception:
+                xstamp = (
+                    mesh_path,
+                    None,
+                    mesh_xform.get("pos"),
+                    mesh_xform.get("rot"),
+                    mesh_xform.get("scl"),
+                )
+            if force or self._last_input_xform_stamp != xstamp or (not xform_path.exists()):
+                err = _materialize_transformed_input(Path(mesh_path), xform_path, mesh_xform)
+                if err:
+                    self._status.setText(err)
+                    self._view_btn.setEnabled(False)
+                    self._set_param("mesh", mesh_path, notify_scene=False)
+                    self._set_param("source", mesh_path, notify_scene=False)
+                    self._set_param("volume", volume_path, notify_scene=False)
+                    self._set_param("path", "", notify_scene=True)
+                    return
+                self._last_input_xform_stamp = xstamp
+            split_mesh_path = str(xform_path)
+            view_mesh_path = str(xform_path)
+
+        try:
+            st_mesh = os.stat(split_mesh_path)
+            st_vol = os.stat(volume_path)
+            stamp = (
+                split_mesh_path,
+                _mtime_ns_from_stat(st_mesh),
+                int(st_mesh.st_size),
+                volume_path,
+                _mtime_ns_from_stat(st_vol),
+                int(st_vol.st_size),
+                int(bool(invert)),
+            )
         except Exception:
-            stamp = (mesh_path, None, None, volume_path, None, None, int(bool(invert)))
-            if mesh_xform:
-                stamp = stamp + (mesh_xform.get("pos"), mesh_xform.get("rot"), mesh_xform.get("scl"))
+            stamp = (split_mesh_path, None, None, volume_path, None, None, int(bool(invert)))
 
         out_path = _output_path(self._node_item, mesh_path, volume_path)
         if not force and self._last_stamp == stamp and out_path.exists():
@@ -888,7 +962,7 @@ class VolumeSplitWidget(QtWidgets.QWidget):
             self._set_param("path", str(out_path), notify_scene=True)
             return
 
-        pts, norms, uvs, err = _split_mesh(Path(mesh_path), Path(volume_path), invert=invert, mesh_xform=mesh_xform)
+        pts, norms, uvs, err = _split_mesh(Path(split_mesh_path), Path(volume_path), invert=invert, mesh_xform=None)
         if err:
             self._status.setText(err)
             # Allow viewing inputs even when no faces are inside/outside the volume.
@@ -897,8 +971,8 @@ class VolumeSplitWidget(QtWidgets.QWidget):
                 self._set_param("mesh", mesh_path, notify_scene=False)
                 self._set_param("source", mesh_path, notify_scene=False)
                 self._set_param("volume", volume_path, notify_scene=False)
-                # Point path at the original mesh so View shows both meshes.
-                self._set_param("path", mesh_path, notify_scene=True)
+                # Point path at the evaluated mesh so View shows the same transform state.
+                self._set_param("path", view_mesh_path, notify_scene=True)
             else:
                 self._view_btn.setEnabled(False)
                 self._set_param("mesh", mesh_path, notify_scene=False)
@@ -1022,4 +1096,8 @@ def register(core=None):
         _core = core
     _core.register_spec("volume_selector", VOLUME_SPLIT_SPEC)
     _core.register_spec("split_volume", VOLUME_SPLIT_SPEC)
+
+
+
+
 

@@ -669,6 +669,24 @@ class TransformWidget(QtWidgets.QWidget):
         except Exception:
             return False
 
+    def _emit_param_changed(self):
+        try:
+            emit_later = getattr(self._node_item, "_schedule_param_emit", None)
+            if callable(emit_later):
+                emit_later()
+                return
+        except Exception:
+            pass
+        try:
+            sc = self._node_item.scene()
+            if sc is not None and hasattr(sc, "paramChanged"):
+                model = getattr(self._node_item, "model", None)
+                name = getattr(model, "name", "") if model is not None else ""
+                params = list(getattr(model, "params", None) or []) if model is not None else []
+                sc.paramChanged.emit(name, params)
+        except Exception:
+            pass
+
     def _poll_view_xform(self):
         if self._syncing_view:
             return
@@ -722,10 +740,13 @@ class TransformWidget(QtWidgets.QWidget):
             return
         self._syncing_view = True
         try:
-            self._set_param("pos", _format_vec3(pos), notify_scene=False)
-            self._set_param("rot", _format_vec3(rot), notify_scene=False)
-            self._set_param("scl", _format_vec3(scl), notify_scene=False)
+            changed = False
+            changed = self._set_param("pos", _format_vec3(pos), notify_scene=False) or changed
+            changed = self._set_param("rot", _format_vec3(rot), notify_scene=False) or changed
+            changed = self._set_param("scl", _format_vec3(scl), notify_scene=False) or changed
             self._set_xform_controls(pos, rot, scl)
+            if changed:
+                self._emit_param_changed()
             if self._should_auto_bake():
                 self._schedule_update()
         finally:
@@ -951,6 +972,7 @@ class TransformWidget(QtWidgets.QWidget):
             changed = self._set_param("scl", _format_vec3(scl), notify_scene=False) or changed
         if changed:
             self._push_view_xform(pos, rot, scl)
+            self._emit_param_changed()
             if self._should_auto_bake():
                 self._schedule_update()
 
@@ -985,4 +1007,5 @@ def register(core=None):
     else:
         _core = core
     _core.register_spec("transforms", TRANSFORM_SPEC)
+
 
