@@ -12,6 +12,7 @@ except Exception:
     from PySide2 import QtWidgets, QtCore  # type: ignore
 
 from nodes.core import Spec
+from nodes.util_graph import param_change_relevant as _param_change_relevant
 
 SUPPORTED_MESH_EXTS = {".obj", ".fbx", ".gltf", ".glb", ".stl", ".ply", ".off", ".om"}
 
@@ -572,10 +573,14 @@ class VolumeSplitWidget(QtWidgets.QWidget):
                 pass
         if hasattr(self._scene, "paramChanged"):
             try:
-                self._scene.paramChanged.connect(lambda *_: self._schedule_update())
+                self._scene.paramChanged.connect(self._on_scene_param_changed)
             except Exception:
                 pass
         self._scene_connected = True
+
+    def _on_scene_param_changed(self, name=None, _params=None):
+        if _param_change_relevant(self._node_item, name):
+            self._schedule_update()
 
     def _schedule_update(self):
         if self._pending:
@@ -751,11 +756,20 @@ class VolumeSplitWidget(QtWidgets.QWidget):
         pts, norms, uvs, err = _split_mesh(Path(mesh_path), Path(volume_path), invert=invert)
         if err:
             self._status.setText(err)
-            self._view_btn.setEnabled(False)
-            self._set_param("mesh", mesh_path, notify_scene=False)
-            self._set_param("source", mesh_path, notify_scene=False)
-            self._set_param("volume", volume_path, notify_scene=False)
-            self._set_param("path", "", notify_scene=True)
+            # Allow viewing inputs even when no faces are inside/outside the volume.
+            if "no faces" in str(err).lower():
+                self._view_btn.setEnabled(True)
+                self._set_param("mesh", mesh_path, notify_scene=False)
+                self._set_param("source", mesh_path, notify_scene=False)
+                self._set_param("volume", volume_path, notify_scene=False)
+                # Point path at the original mesh so View shows both meshes.
+                self._set_param("path", mesh_path, notify_scene=True)
+            else:
+                self._view_btn.setEnabled(False)
+                self._set_param("mesh", mesh_path, notify_scene=False)
+                self._set_param("source", mesh_path, notify_scene=False)
+                self._set_param("volume", volume_path, notify_scene=False)
+                self._set_param("path", "", notify_scene=True)
             return
 
         err = _write_obj(out_path, pts, norms, uvs)

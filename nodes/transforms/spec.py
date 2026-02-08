@@ -13,6 +13,7 @@ except Exception:
     from PySide2 import QtWidgets, QtCore  # type: ignore
 
 from nodes.core import Spec
+from nodes.util_graph import param_change_relevant as _param_change_relevant
 
 SUPPORTED_MESH_EXTS = {".obj", ".fbx", ".gltf", ".glb", ".stl", ".ply", ".off", ".om"}
 
@@ -435,6 +436,7 @@ class TransformWidget(QtWidgets.QWidget):
         self._syncing_view = False
         self._defer_bake = False
         self._drag_pending_xform = None
+        self._auto_bake = False
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(6, 4, 6, 4)
@@ -519,6 +521,10 @@ class TransformWidget(QtWidgets.QWidget):
 
         layout.addWidget(self._xform_panel, 0)
 
+        btn_row = QtWidgets.QHBoxLayout()
+        btn_row.setContentsMargins(0, 0, 0, 0)
+        btn_row.setSpacing(6)
+
         self._view_btn = QtWidgets.QPushButton("View")
         self._view_btn.setFixedWidth(64)
         self._view_btn.setStyleSheet(
@@ -527,7 +533,21 @@ class TransformWidget(QtWidgets.QWidget):
             "QPushButton:disabled{background:#334155;color:#94a3b8;}"
         )
         self._view_btn.clicked.connect(self._on_view_clicked)
-        layout.addWidget(self._view_btn, 0, QtCore.Qt.AlignLeft)
+        btn_row.addWidget(self._view_btn, 0, QtCore.Qt.AlignLeft)
+
+        self._bake_btn = QtWidgets.QPushButton("Bake")
+        self._bake_btn.setFixedWidth(64)
+        self._bake_btn.setStyleSheet(
+            "QPushButton{background:#0f172a;color:#e2e8f0;border-radius:4px;padding:2px 8px;"
+            "border:1px solid #334155;}"
+            "QPushButton:hover{background:#1f2937;}"
+            "QPushButton:disabled{background:#0b1220;color:#475569;border:1px solid #1f2937;}"
+        )
+        self._bake_btn.clicked.connect(self._on_bake_clicked)
+        btn_row.addWidget(self._bake_btn, 0, QtCore.Qt.AlignLeft)
+        btn_row.addStretch(1)
+
+        layout.addLayout(btn_row)
 
         self._ensure_scene()
         QtCore.QTimer.singleShot(0, self._update_transform)
@@ -560,10 +580,14 @@ class TransformWidget(QtWidgets.QWidget):
                 pass
         if hasattr(self._scene, "paramChanged"):
             try:
-                self._scene.paramChanged.connect(lambda *_: self._schedule_update())
+                self._scene.paramChanged.connect(self._on_scene_param_changed)
             except Exception:
                 pass
         self._scene_connected = True
+
+    def _on_scene_param_changed(self, name=None, _params=None):
+        if _param_change_relevant(self._node_item, name):
+            self._schedule_update()
 
     def _is_dragging(self) -> bool:
         try:
@@ -581,6 +605,22 @@ class TransformWidget(QtWidgets.QWidget):
             return True
         except Exception:
             return False
+
+    def _has_downstream(self) -> bool:
+        sc = None
+        try:
+            sc = self._node_item.scene()
+        except Exception:
+            sc = None
+        if sc is None:
+            return False
+        try:
+            for edge in list(getattr(sc, "_edges", []) or []):
+                if getattr(edge, "src", None) is self._node_item:
+                    return True
+        except Exception:
+            return False
+        return False
 
     def _owner_in_scene(self, renderer, owner: str) -> bool:
         if not owner or renderer is None:
@@ -673,15 +713,17 @@ class TransformWidget(QtWidgets.QWidget):
         if not (_diff(pos, cur_pos) or _diff(rot, cur_rot) or _diff(scl, cur_scl)):
             if self._defer_bake:
                 self._defer_bake = False
-                self._schedule_update()
+                if self._auto_bake:
+                    self._schedule_update()
             return
         self._syncing_view = True
         try:
-            self._set_param("pos", _format_vec3(pos), notify_scene=True)
-            self._set_param("rot", _format_vec3(rot), notify_scene=True)
-            self._set_param("scl", _format_vec3(scl), notify_scene=True)
+            self._set_param("pos", _format_vec3(pos), notify_scene=False)
+            self._set_param("rot", _format_vec3(rot), notify_scene=False)
+            self._set_param("scl", _format_vec3(scl), notify_scene=False)
             self._set_xform_controls(pos, rot, scl)
-            self._schedule_update()
+            if self._auto_bake:
+                self._schedule_update()
         finally:
             self._syncing_view = False
 
@@ -722,6 +764,12 @@ class TransformWidget(QtWidgets.QWidget):
             self._view_btn.setEnabled(False)
             self._set_param("source", src_path, notify_scene=False)
             self._set_param("path", "", notify_scene=True)
+            return
+        if (not force) and (not self._auto_bake):
+            self._status.setText(label)
+            self._view_btn.setEnabled(True)
+            self._set_param("source", src_path, notify_scene=False)
+            self._set_param("path", src_path, notify_scene=False)
             return
 
         if identity:
@@ -824,6 +872,12 @@ class TransformWidget(QtWidgets.QWidget):
         except Exception:
             pass
 
+    def _on_bake_clicked(self):
+        try:
+            self._update_transform(force=True)
+        except Exception:
+            pass
+
     def _set_xform_controls(self, pos, rot, scl):
         if self._xform_updating:
             return
@@ -882,18 +936,19 @@ class TransformWidget(QtWidgets.QWidget):
         scl = tuple(sb.value() for sb in self._scl_spins)
         changed = False
         if kind == "pos":
-            changed = self._set_param("pos", _format_vec3(pos), notify_scene=True) or changed
+            changed = self._set_param("pos", _format_vec3(pos), notify_scene=False) or changed
         elif kind == "rot":
-            changed = self._set_param("rot", _format_vec3(rot), notify_scene=True) or changed
+            changed = self._set_param("rot", _format_vec3(rot), notify_scene=False) or changed
         elif kind == "scl":
-            changed = self._set_param("scl", _format_vec3(scl), notify_scene=True) or changed
+            changed = self._set_param("scl", _format_vec3(scl), notify_scene=False) or changed
         else:
-            changed = self._set_param("pos", _format_vec3(pos), notify_scene=True) or changed
-            changed = self._set_param("rot", _format_vec3(rot), notify_scene=True) or changed
-            changed = self._set_param("scl", _format_vec3(scl), notify_scene=True) or changed
+            changed = self._set_param("pos", _format_vec3(pos), notify_scene=False) or changed
+            changed = self._set_param("rot", _format_vec3(rot), notify_scene=False) or changed
+            changed = self._set_param("scl", _format_vec3(scl), notify_scene=False) or changed
         if changed:
             self._push_view_xform(pos, rot, scl)
-            self._schedule_update()
+            if self._auto_bake:
+                self._schedule_update()
 
 
 def render_node_body(node_item, y_cursor: int) -> int:
@@ -926,3 +981,4 @@ def register(core=None):
     else:
         _core = core
     _core.register_spec("transforms", TRANSFORM_SPEC)
+

@@ -10,6 +10,7 @@ except Exception:
     from PySide2 import QtWidgets, QtCore  # type: ignore
 
 from nodes.core import Spec
+from nodes.util_graph import param_change_relevant as _param_change_relevant
 
 
 SUPPORTED_TEX_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tga", ".tif", ".tiff"}
@@ -255,10 +256,14 @@ class TextureWidget(QtWidgets.QWidget):
                 pass
         if hasattr(self._scene, "paramChanged"):
             try:
-                self._scene.paramChanged.connect(lambda *_: self._schedule_update())
+                self._scene.paramChanged.connect(self._on_scene_param_changed)
             except Exception:
                 pass
         self._scene_connected = True
+
+    def _on_scene_param_changed(self, name=None, _params=None):
+        if _param_change_relevant(self._node_item, name):
+            self._schedule_update()
 
     def _schedule_update(self):
         if self._pending:
