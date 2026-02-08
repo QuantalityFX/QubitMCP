@@ -501,6 +501,26 @@ class TransformWidget(QtWidgets.QWidget):
         except Exception:
             return False
 
+    def _owner_in_scene(self, renderer, owner: str) -> bool:
+        if not owner or renderer is None:
+            return False
+        try:
+            splats = getattr(renderer, "_mgl_scene_splats", None)
+            if isinstance(splats, dict) and owner in splats:
+                return True
+        except Exception:
+            pass
+        try:
+            bounds = (
+                getattr(renderer, "_mgl_scene_mesh_bounds_by_owner", None)
+                or getattr(renderer, "_mgl_scene_bounds_by_owner", None)
+            )
+            if isinstance(bounds, dict) and owner in bounds:
+                return True
+        except Exception:
+            pass
+        return False
+
     def _schedule_update(self):
         if self._pending:
             return
@@ -535,6 +555,8 @@ class TransformWidget(QtWidgets.QWidget):
         if glv is None:
             return
         renderer = getattr(glv, "_mgl_renderer", None) or glv
+        if not self._owner_in_scene(renderer, owner):
+            return
         get_xf = getattr(renderer, "_mgl_get_scene_asset_xform", None)
         if not callable(get_xf):
             return
