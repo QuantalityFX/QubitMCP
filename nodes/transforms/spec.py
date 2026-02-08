@@ -436,15 +436,19 @@ class TransformWidget(QtWidgets.QWidget):
         self._defer_bake = False
         self._drag_pending_xform = None
 
-        layout = QtWidgets.QHBoxLayout(self)
+        layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(6, 4, 6, 4)
         layout.setSpacing(4)
+
+        header = QtWidgets.QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(4)
 
         self._status = QtWidgets.QLabel("")
         self._status.setStyleSheet("color:#94a3b8;font-size:11px;")
         self._status.setMinimumWidth(0)
         self._status.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        layout.addWidget(self._status, 1)
+        header.addWidget(self._status, 1)
 
         self._view_btn = QtWidgets.QPushButton("View")
         self._view_btn.setFixedWidth(64)
@@ -454,7 +458,82 @@ class TransformWidget(QtWidgets.QWidget):
             "QPushButton:disabled{background:#334155;color:#94a3b8;}"
         )
         self._view_btn.clicked.connect(self._on_view_clicked)
-        layout.addWidget(self._view_btn, 0)
+        header.addWidget(self._view_btn, 0)
+
+        layout.addLayout(header, 0)
+
+        def _mk_spin():
+            sb = QtWidgets.QDoubleSpinBox()
+            sb.setDecimals(3)
+            sb.setRange(-1e9, 1e9)
+            sb.setSingleStep(0.01)
+            sb.setKeyboardTracking(False)
+            sb.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
+            sb.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+            sb.setMinimumHeight(20)
+            sb.setFixedWidth(54)
+            sb.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+            sb.setStyleSheet(
+                "QDoubleSpinBox{background:#0f1216;color:#e6edf3;border:1px solid #3c4450;"
+                "border-radius:4px;padding:1px 4px;}"
+            )
+            return sb
+
+        def _xyz_row(default=(0.0, 0.0, 0.0)):
+            w = QtWidgets.QWidget()
+            w.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+            l = QtWidgets.QHBoxLayout(w)
+            l.setContentsMargins(0, 0, 0, 0)
+            l.setSpacing(4)
+            a = _mk_spin()
+            b = _mk_spin()
+            c = _mk_spin()
+            a.setValue(float(default[0]))
+            b.setValue(float(default[1]))
+            c.setValue(float(default[2]))
+            l.addWidget(a)
+            l.addWidget(b)
+            l.addWidget(c)
+            l.addStretch(1)
+            return w, (a, b, c)
+
+        self._xform_panel = QtWidgets.QWidget()
+        form = QtWidgets.QFormLayout(self._xform_panel)
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setVerticalSpacing(4)
+        form.setHorizontalSpacing(6)
+        form.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldsStayAtSizeHint)
+        form.setRowWrapPolicy(QtWidgets.QFormLayout.DontWrapRows)
+
+        pos_w, pos_xyz = _xyz_row((0.0, 0.0, 0.0))
+        rot_w, rot_xyz = _xyz_row((0.0, 0.0, 0.0))
+        scl_w, scl_xyz = _xyz_row((1.0, 1.0, 1.0))
+
+        label_pos = QtWidgets.QLabel("Pos")
+        label_rot = QtWidgets.QLabel("Rot")
+        label_scl = QtWidgets.QLabel("Scale")
+        for lb in (label_pos, label_rot, label_scl):
+            lb.setStyleSheet("color:#94a3b8;font-size:10px;")
+            lb.setFixedWidth(44)
+            lb.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+
+        form.addRow(label_pos, pos_w)
+        form.addRow(label_rot, rot_w)
+        form.addRow(label_scl, scl_w)
+
+        self._pos_spins = pos_xyz
+        self._rot_spins = rot_xyz
+        self._scl_spins = scl_xyz
+        self._xform_updating = False
+
+        for sb in self._pos_spins:
+            sb.editingFinished.connect(lambda k="pos": self._on_xform_edit(k))
+        for sb in self._rot_spins:
+            sb.editingFinished.connect(lambda k="rot": self._on_xform_edit(k))
+        for sb in self._scl_spins:
+            sb.editingFinished.connect(lambda k="scl": self._on_xform_edit(k))
+
+        layout.addWidget(self._xform_panel, 0)
 
         self._ensure_scene()
         QtCore.QTimer.singleShot(0, self._update_transform)
@@ -465,7 +544,7 @@ class TransformWidget(QtWidgets.QWidget):
         self._poll_timer.start()
 
     def sizeHint(self):
-        return QtCore.QSize(220, 32)
+        return QtCore.QSize(220, 108)
 
     def _ensure_scene(self):
         if self._scene is None:
@@ -599,6 +678,7 @@ class TransformWidget(QtWidgets.QWidget):
             self._set_param("pos", _format_vec3(pos), notify_scene=True)
             self._set_param("rot", _format_vec3(rot), notify_scene=True)
             self._set_param("scl", _format_vec3(scl), notify_scene=True)
+            self._set_xform_controls(pos, rot, scl)
             self._schedule_update()
         finally:
             self._syncing_view = False
@@ -626,6 +706,7 @@ class TransformWidget(QtWidgets.QWidget):
         pos = _param_vec3(model, "pos", (0.0, 0.0, 0.0))
         rot = _param_vec3(model, "rot", (0.0, 0.0, 0.0))
         scl = _param_vec3(model, "scl", (1.0, 1.0, 1.0))
+        self._set_xform_controls(pos, rot, scl)
 
         identity = (
             all(abs(v) < 1e-6 for v in pos)
@@ -740,6 +821,77 @@ class TransformWidget(QtWidgets.QWidget):
                 pass
         except Exception:
             pass
+
+    def _set_xform_controls(self, pos, rot, scl):
+        if self._xform_updating:
+            return
+        try:
+            self._xform_updating = True
+            for sb, v in zip(self._pos_spins, pos):
+                sb.blockSignals(True)
+                sb.setValue(float(v))
+                sb.blockSignals(False)
+            for sb, v in zip(self._rot_spins, rot):
+                sb.blockSignals(True)
+                sb.setValue(float(v))
+                sb.blockSignals(False)
+            for sb, v in zip(self._scl_spins, scl):
+                sb.blockSignals(True)
+                sb.setValue(float(v))
+                sb.blockSignals(False)
+        finally:
+            self._xform_updating = False
+
+    def _push_view_xform(self, pos, rot, scl):
+        try:
+            model = getattr(self._node_item, "model", None)
+            owner = (getattr(model, "name", "") or "").strip()
+            if not owner:
+                return
+            win = _resolve_window(self._node_item)
+            glv = getattr(win, "gl_view", None) if win is not None else None
+            if glv is None:
+                return
+            renderer = getattr(glv, "_mgl_renderer", None) or glv
+            if not self._owner_in_scene(renderer, owner):
+                return
+            set_xf = getattr(renderer, "_mgl_set_scene_asset_xform", None)
+            if callable(set_xf):
+                set_xf(owner, pos=pos, rot=rot, scl=scl, apply_to_scene_models=True, use_splat_xform=False)
+            if hasattr(win, "update_scene_asset_xform"):
+                try:
+                    win.update_scene_asset_xform(owner)
+                except Exception:
+                    pass
+            try:
+                glv._xform_gizmo_owner = owner
+                glv._xform_gizmo_owner_kind = "mesh"
+                glv._xform_gizmo_pos = tuple(pos)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _on_xform_edit(self, kind: str):
+        if self._xform_updating:
+            return
+        pos = tuple(sb.value() for sb in self._pos_spins)
+        rot = tuple(sb.value() for sb in self._rot_spins)
+        scl = tuple(sb.value() for sb in self._scl_spins)
+        changed = False
+        if kind == "pos":
+            changed = self._set_param("pos", _format_vec3(pos), notify_scene=True) or changed
+        elif kind == "rot":
+            changed = self._set_param("rot", _format_vec3(rot), notify_scene=True) or changed
+        elif kind == "scl":
+            changed = self._set_param("scl", _format_vec3(scl), notify_scene=True) or changed
+        else:
+            changed = self._set_param("pos", _format_vec3(pos), notify_scene=True) or changed
+            changed = self._set_param("rot", _format_vec3(rot), notify_scene=True) or changed
+            changed = self._set_param("scl", _format_vec3(scl), notify_scene=True) or changed
+        if changed:
+            self._push_view_xform(pos, rot, scl)
+            self._schedule_update()
 
 
 def render_node_body(node_item, y_cursor: int) -> int:
