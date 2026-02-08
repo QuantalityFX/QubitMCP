@@ -1335,7 +1335,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             node_w = self._BASE_W
         elif kind == "transforms":
             # Match embedded TransformWidget height so inputs stay inside the frame.
-            body_h = 120
+            body_h = 200
             node_w = self._BASE_W
         else:
             body_h = 0

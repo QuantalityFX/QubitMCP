@@ -440,27 +440,11 @@ class TransformWidget(QtWidgets.QWidget):
         layout.setContentsMargins(6, 4, 6, 4)
         layout.setSpacing(4)
 
-        header = QtWidgets.QHBoxLayout()
-        header.setContentsMargins(0, 0, 0, 0)
-        header.setSpacing(4)
-
         self._status = QtWidgets.QLabel("")
         self._status.setStyleSheet("color:#94a3b8;font-size:11px;")
         self._status.setMinimumWidth(0)
         self._status.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        header.addWidget(self._status, 1)
-
-        self._view_btn = QtWidgets.QPushButton("View")
-        self._view_btn.setFixedWidth(64)
-        self._view_btn.setStyleSheet(
-            "QPushButton{background:#2563eb;color:#f8fafc;border-radius:4px;padding:2px 8px;}"
-            "QPushButton:hover{background:#1d4ed8;}"
-            "QPushButton:disabled{background:#334155;color:#94a3b8;}"
-        )
-        self._view_btn.clicked.connect(self._on_view_clicked)
-        header.addWidget(self._view_btn, 0)
-
-        layout.addLayout(header, 0)
+        layout.addWidget(self._status, 0)
 
         def _mk_spin():
             sb = QtWidgets.QDoubleSpinBox()
@@ -471,7 +455,7 @@ class TransformWidget(QtWidgets.QWidget):
             sb.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
             sb.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
             sb.setMinimumHeight(20)
-            sb.setFixedWidth(54)
+            sb.setFixedWidth(48)
             sb.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
             sb.setStyleSheet(
                 "QDoubleSpinBox{background:#0f1216;color:#e6edf3;border:1px solid #3c4450;"
@@ -501,7 +485,7 @@ class TransformWidget(QtWidgets.QWidget):
         form = QtWidgets.QFormLayout(self._xform_panel)
         form.setContentsMargins(0, 0, 0, 0)
         form.setVerticalSpacing(4)
-        form.setHorizontalSpacing(6)
+        form.setHorizontalSpacing(4)
         form.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldsStayAtSizeHint)
         form.setRowWrapPolicy(QtWidgets.QFormLayout.DontWrapRows)
 
@@ -514,7 +498,7 @@ class TransformWidget(QtWidgets.QWidget):
         label_scl = QtWidgets.QLabel("Scale")
         for lb in (label_pos, label_rot, label_scl):
             lb.setStyleSheet("color:#94a3b8;font-size:10px;")
-            lb.setFixedWidth(44)
+            lb.setFixedWidth(52)
             lb.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
 
         form.addRow(label_pos, pos_w)
@@ -535,6 +519,16 @@ class TransformWidget(QtWidgets.QWidget):
 
         layout.addWidget(self._xform_panel, 0)
 
+        self._view_btn = QtWidgets.QPushButton("View")
+        self._view_btn.setFixedWidth(64)
+        self._view_btn.setStyleSheet(
+            "QPushButton{background:#2563eb;color:#f8fafc;border-radius:4px;padding:2px 8px;}"
+            "QPushButton:hover{background:#1d4ed8;}"
+            "QPushButton:disabled{background:#334155;color:#94a3b8;}"
+        )
+        self._view_btn.clicked.connect(self._on_view_clicked)
+        layout.addWidget(self._view_btn, 0, QtCore.Qt.AlignLeft)
+
         self._ensure_scene()
         QtCore.QTimer.singleShot(0, self._update_transform)
 
@@ -544,7 +538,15 @@ class TransformWidget(QtWidgets.QWidget):
         self._poll_timer.start()
 
     def sizeHint(self):
-        return QtCore.QSize(220, 108)
+        try:
+            lay = self.layout()
+            if lay is not None:
+                hint = lay.sizeHint()
+                if hint is not None:
+                    return QtCore.QSize(220, max(96, int(hint.height())))
+        except Exception:
+            pass
+        return QtCore.QSize(220, 120)
 
     def _ensure_scene(self):
         if self._scene is None:
