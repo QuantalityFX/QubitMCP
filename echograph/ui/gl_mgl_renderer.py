@@ -1684,49 +1684,116 @@ class MGLRendererMixin:
     def _mgl_draw_scene_wire(self, item: MGLSceneItem, mvp) -> None:
         if self._mgl_wire_prog is None:
             return
-        prev_depth_test = None
         payload = item.payload or {}
         vao = payload.get("vao")
         if vao is None:
             return
-        if getattr(item, "tag", "") == "scene-volume":
+        tag = getattr(item, "tag", "")
+        is_volume = tag == "scene-volume"
+
+        def _as_rgba(col):
             try:
-                prev_depth_test = bool(getattr(self._mgl_ctx, "depth_test", True))
-            except Exception:
-                prev_depth_test = True
-            try:
-                self._mgl_ctx.disable(moderngl.DEPTH_TEST)
+                if len(col) == 4:
+                    return tuple(float(c) for c in col)
+                if len(col) == 3:
+                    return (float(col[0]), float(col[1]), float(col[2]), 1.0)
             except Exception:
                 pass
-        color = payload.get("color") or self._mgl_wire_color
-        try:
-            mvp_to_use = mvp
-            model = payload.get("model")
-            if model is not None and Matrix44 is not None:
-                try:
-                    if isinstance(model, Matrix44):
-                        mvp_to_use = mvp * model
-                    else:
-                        mvp_to_use = mvp * Matrix44(model, dtype="f4")
-                except Exception:
-                    mvp_to_use = mvp
-            self._mgl_wire_prog["Mvp"].write(mvp_to_use.astype("f4").tobytes())
-            self._mgl_wire_prog["Color"].value = color
-            self._mgl_wire_prog["Viewport"].value = (float(max(1, self.width())), float(max(1, self.height())))
-            self._mgl_wire_prog["LineWidth"].value = float(
-                getattr(self, "_mgl_wire_edge_width", getattr(self, "_mgl_wire_line_width", 1.0))
-            )
-        except Exception:
-            pass
-        try:
+            return (0.25, 0.25, 0.25, 1.0)
+
+        def _apply_uniforms(color_rgba):
+            try:
+                mvp_to_use = mvp
+                model = payload.get("model")
+                if model is not None and Matrix44 is not None:
+                    try:
+                        if isinstance(model, Matrix44):
+                            mvp_to_use = mvp * model
+                        else:
+                            mvp_to_use = mvp * Matrix44(model, dtype="f4")
+                    except Exception:
+                        mvp_to_use = mvp
+                self._mgl_wire_prog["Mvp"].write(mvp_to_use.astype("f4").tobytes())
+                self._mgl_wire_prog["Color"].value = color_rgba
+                self._mgl_wire_prog["Viewport"].value = (float(max(1, self.width())), float(max(1, self.height())))
+                self._mgl_wire_prog["LineWidth"].value = float(
+                    getattr(self, "_mgl_wire_edge_width", getattr(self, "_mgl_wire_line_width", 1.0))
+                )
+            except Exception:
+                pass
+
+        def _render():
             mode = payload.get("mode")
             if mode is None:
                 vao.render()
             else:
                 vao.render(mode)
+
+        if not is_volume:
+            color = _as_rgba(payload.get("color") or self._mgl_wire_color)
+            _apply_uniforms(color)
+            try:
+                _render()
+            except Exception as exc:
+                self._mgl_error = f"Scene wire draw failed: {exc}"
+            return
+
+        prev_depth_test = None
+        prev_depth_func = None
+        prev_depth_mask = None
+        try:
+            prev_depth_test = bool(getattr(self._mgl_ctx, "depth_test", True))
+        except Exception:
+            prev_depth_test = True
+        try:
+            prev_depth_func = getattr(self._mgl_ctx, "depth_func", None)
+        except Exception:
+            prev_depth_func = None
+        try:
+            prev_depth_mask = getattr(self._mgl_ctx, "depth_mask", None)
+        except Exception:
+            prev_depth_mask = None
+
+        try:
+            self._mgl_ctx.enable(moderngl.DEPTH_TEST)
+        except Exception:
+            pass
+        try:
+            self._mgl_ctx.depth_mask = False
+        except Exception:
+            pass
+
+        base_color = _as_rgba(payload.get("color") or self._mgl_wire_color)
+        front_color = base_color
+        back_color = (base_color[0], base_color[1], base_color[2], base_color[3] * 0.25)
+
+        try:
+            try:
+                self._mgl_ctx.depth_func = "<="
+            except Exception:
+                pass
+            _apply_uniforms(front_color)
+            _render()
+
+            try:
+                self._mgl_ctx.depth_func = ">"
+            except Exception:
+                pass
+            _apply_uniforms(back_color)
+            _render()
         except Exception as exc:
             self._mgl_error = f"Scene wire draw failed: {exc}"
         finally:
+            if prev_depth_mask is not None:
+                try:
+                    self._mgl_ctx.depth_mask = prev_depth_mask
+                except Exception:
+                    pass
+            if prev_depth_func is not None:
+                try:
+                    self._mgl_ctx.depth_func = prev_depth_func
+                except Exception:
+                    pass
             if prev_depth_test is not None:
                 try:
                     if prev_depth_test:
