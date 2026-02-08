@@ -188,6 +188,68 @@ def _resolve_input_path(node_item) -> str:
     return ""
 
 
+def _resolve_input_label(node_item) -> str:
+    sc = node_item.scene()
+    pass_kinds = {"switch", "uv_unwrap", "texture", "texture_pro", "texture_layer"}
+
+    def _trace(item, depth=0, visited=None):
+        if item is None or depth > 10:
+            return None
+        if visited is None:
+            visited = set()
+        if item in visited:
+            return None
+        visited.add(item)
+        m = getattr(item, "model", None)
+        if m is None:
+            return None
+        kind = (getattr(m, "kind", "") or "").strip().lower()
+        if kind in pass_kinds and sc is not None:
+            try:
+                edges = list(sc._ordered_in_edges(item))
+            except Exception:
+                try:
+                    edges = list(sc._in_edges(item))
+                except Exception:
+                    edges = []
+            if edges:
+                return _trace(getattr(edges[0], "src", None), depth + 1, visited)
+        return item
+
+    if sc is not None:
+        try:
+            in_edges = list(sc._ordered_in_edges(node_item))
+        except Exception:
+            try:
+                in_edges = list(sc._in_edges(node_item))
+            except Exception:
+                in_edges = []
+        chosen = None
+        for edge in in_edges:
+            name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
+            if (name or "").strip().lower() in {"mesh", "path"}:
+                chosen = edge
+                break
+        if chosen is None and in_edges:
+            chosen = in_edges[0]
+        if chosen is not None:
+            src_item = getattr(chosen, "src", None)
+            item = _trace(src_item, 0, set())
+            if item is not None:
+                model = getattr(item, "model", None)
+                if model is not None:
+                    name = (getattr(model, "name", "") or "").strip()
+                    if name:
+                        return name
+                try:
+                    path = _param_value(model, "path") or _param_value(model, "source")
+                    if path:
+                        return Path(path).name
+                except Exception:
+                    pass
+    return ""
+
+
 def _output_path(node_item, src_path: str) -> Path:
     node_name = _sanitize_name(getattr(getattr(node_item, "model", None), "name", "") or "transforms")
     src_stem = _sanitize_name(Path(src_path).stem) if src_path else "mesh"
@@ -536,6 +598,8 @@ class TransformWidget(QtWidgets.QWidget):
             self._set_param("path", "", notify_scene=True)
             return
 
+        label = _resolve_input_label(self._node_item) or Path(src_path).name
+
         model = getattr(self._node_item, "model", None)
         pos = _param_vec3(model, "pos", (0.0, 0.0, 0.0))
         rot = _param_vec3(model, "rot", (0.0, 0.0, 0.0))
@@ -556,7 +620,7 @@ class TransformWidget(QtWidgets.QWidget):
             return
 
         if identity:
-            self._status.setText(Path(src_path).name)
+            self._status.setText(label)
             self._view_btn.setEnabled(True)
             self._set_param("source", src_path, notify_scene=False)
             self._set_param("path", src_path, notify_scene=True)
@@ -564,7 +628,7 @@ class TransformWidget(QtWidgets.QWidget):
 
         if (not force) and self._is_dragging():
             self._defer_bake = True
-            self._status.setText(Path(src_path).name)
+            self._status.setText(label)
             self._view_btn.setEnabled(True)
             self._set_param("source", src_path, notify_scene=False)
             cur_path = _param_value(model, "path")
@@ -587,7 +651,7 @@ class TransformWidget(QtWidgets.QWidget):
 
         out_path = _output_path(self._node_item, src_path)
         if not force and self._last_stamp == stamp and out_path.exists():
-            self._status.setText(Path(src_path).name)
+            self._status.setText(label)
             self._view_btn.setEnabled(True)
             self._set_param("source", src_path, notify_scene=False)
             self._set_param("path", str(out_path), notify_scene=True)
@@ -613,7 +677,7 @@ class TransformWidget(QtWidgets.QWidget):
             return
 
         self._last_stamp = stamp
-        self._status.setText(Path(src_path).name)
+        self._status.setText(label)
         self._view_btn.setEnabled(True)
         self._set_param("source", src_path, notify_scene=False)
         self._set_param("path", str(out_path), notify_scene=True)

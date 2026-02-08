@@ -202,6 +202,8 @@ def _resolve_input_path(
     model = getattr(node_item, "model", None)
     sc = node_item.scene()
 
+    pass_kinds = {"switch", "uv_unwrap", "texture", "texture_pro", "texture_layer"}
+
     def _trace(item, depth=0, visited=None) -> str:
         if item is None or depth > 8:
             return ""
@@ -214,7 +216,7 @@ def _resolve_input_path(
         if m is None:
             return ""
         kind = (getattr(m, "kind", "") or "").strip().lower()
-        if kind == "switch" and sc is not None:
+        if kind in pass_kinds and sc is not None:
             try:
                 edges = list(sc._ordered_in_edges(item))
             except Exception:
@@ -254,6 +256,72 @@ def _resolve_input_path(
 
     if model is not None and allow_model_fallback:
         return _param_value(model, "mesh") or _param_value(model, "source") or _param_value(model, "path")
+    return ""
+
+
+def _resolve_input_label(node_item, port_names=None, fallback_index: Optional[int] = None) -> str:
+    sc = node_item.scene()
+    pass_kinds = {"switch", "uv_unwrap", "texture", "texture_pro", "texture_layer", "transforms"}
+
+    def _trace(item, depth=0, visited=None):
+        if item is None or depth > 10:
+            return None
+        if visited is None:
+            visited = set()
+        if item in visited:
+            return None
+        visited.add(item)
+        m = getattr(item, "model", None)
+        if m is None:
+            return None
+        kind = (getattr(m, "kind", "") or "").strip().lower()
+        if kind in pass_kinds and sc is not None:
+            try:
+                edges = list(sc._ordered_in_edges(item))
+            except Exception:
+                try:
+                    edges = list(sc._in_edges(item))
+                except Exception:
+                    edges = []
+            if edges:
+                return _trace(getattr(edges[0], "src", None), depth + 1, visited)
+        return item
+
+    if sc is not None:
+        try:
+            in_edges = list(sc._ordered_in_edges(node_item))
+        except Exception:
+            try:
+                in_edges = list(sc._in_edges(node_item))
+            except Exception:
+                in_edges = []
+        chosen = None
+        if port_names:
+            wanted = {str(n).strip().lower() for n in (port_names or []) if str(n).strip()}
+            for edge in in_edges:
+                name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
+                if (name or "").strip().lower() in wanted:
+                    chosen = edge
+                    break
+        if chosen is None and fallback_index is not None and len(in_edges) > fallback_index:
+            chosen = in_edges[fallback_index]
+        if chosen is None and in_edges:
+            chosen = in_edges[0]
+        if chosen is not None:
+            src_item = getattr(chosen, "src", None)
+            item = _trace(src_item, 0, set())
+            if item is not None:
+                model = getattr(item, "model", None)
+                if model is not None:
+                    name = (getattr(model, "name", "") or "").strip()
+                    if name:
+                        return name
+                try:
+                    path = _param_value(model, "path") or _param_value(model, "mesh") or _param_value(model, "source")
+                    if path:
+                        return Path(path).name
+                except Exception:
+                    pass
     return ""
 
 
@@ -549,12 +617,20 @@ class VolumeSplitWidget(QtWidgets.QWidget):
             allow_any=False,
             allow_model_fallback=False,
         ) or "").strip()
+        mesh_label = _resolve_input_label(
+            self._node_item,
+            {"mesh", "source", "path"},
+        )
         volume_path = (_resolve_input_path(
             self._node_item,
             {"volume", "mask"},
             allow_any=False,
             allow_model_fallback=False,
         ) or "").strip()
+        volume_label = _resolve_input_label(
+            self._node_item,
+            {"volume", "mask"},
+        )
         edges = []
         try:
             sc = self._node_item.scene()
@@ -593,7 +669,7 @@ class VolumeSplitWidget(QtWidgets.QWidget):
 
         if not mesh_path:
             if volume_path:
-                self._status.setText("Volume only.")
+                self._status.setText(volume_label or "Volume only.")
                 self._view_btn.setEnabled(True)
                 self._set_param("mesh", "", notify_scene=False)
                 self._set_param("source", "", notify_scene=False)
@@ -664,7 +740,7 @@ class VolumeSplitWidget(QtWidgets.QWidget):
 
         out_path = _output_path(self._node_item, mesh_path, volume_path)
         if not force and self._last_stamp == stamp and out_path.exists():
-            self._status.setText(Path(mesh_path).name)
+            self._status.setText(mesh_label or Path(mesh_path).name)
             self._view_btn.setEnabled(True)
             self._set_param("mesh", mesh_path, notify_scene=False)
             self._set_param("source", mesh_path, notify_scene=False)
@@ -690,7 +766,7 @@ class VolumeSplitWidget(QtWidgets.QWidget):
             return
 
         self._last_stamp = stamp
-        self._status.setText(Path(mesh_path).name)
+        self._status.setText(mesh_label or Path(mesh_path).name)
         self._view_btn.setEnabled(True)
         self._set_param("mesh", mesh_path, notify_scene=False)
         self._set_param("source", mesh_path, notify_scene=False)
