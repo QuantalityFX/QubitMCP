@@ -253,6 +253,157 @@ class MGLRendererMixin:
             return np.zeros((0, 3), dtype="f4")
         return np.array(line_pos, dtype="f4").reshape(-1, 3)
 
+    @staticmethod
+    def _mgl_load_obj_outline_vertices(path: Path, coplanar_eps: float = 0.9995, weld_eps: float = 1.0e-5) -> NDArray:
+        if np is None:
+            raise RuntimeError("numpy unavailable")
+        positions: List[Tuple[float, float, float]] = []
+        faces: List[List[int]] = []
+        try:
+            raw = path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            raw = path.read_text(errors="ignore")
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split()
+            if not parts:
+                continue
+            head = parts[0].lower()
+            if head == "v" and len(parts) >= 4:
+                try:
+                    positions.append((float(parts[1]), float(parts[2]), float(parts[3])))
+                except Exception:
+                    continue
+                continue
+            if head == "f" and len(parts) >= 3:
+                face: List[int] = []
+                for token in parts[1:]:
+                    idx_str = token.split("/")[0] if token else ""
+                    if not idx_str:
+                        continue
+                    try:
+                        idx = int(idx_str)
+                    except Exception:
+                        continue
+                    if idx < 0:
+                        idx = len(positions) + idx + 1
+                    if idx <= 0 or idx > len(positions):
+                        continue
+                    face.append(idx - 1)
+                if len(face) >= 3:
+                    faces.append(face)
+                continue
+
+        if not faces:
+            return np.zeros((0, 3), dtype="f4")
+
+        # Weld identical (or near-identical) positions so triangulated faces
+        # don't leave internal diagonals when a mesh has duplicated vertices.
+        key_to_idx = {}
+        index_map: List[int] = [0] * len(positions)
+        canon_positions: List[Tuple[float, float, float]] = []
+        inv = 1.0 / float(weld_eps) if float(weld_eps) > 0.0 else 1.0e5
+        for i, p in enumerate(positions):
+            try:
+                k = (int(round(p[0] * inv)), int(round(p[1] * inv)), int(round(p[2] * inv)))
+            except Exception:
+                k = (i, i, i)
+            existing = key_to_idx.get(k)
+            if existing is None:
+                existing = len(canon_positions)
+                key_to_idx[k] = existing
+                canon_positions.append(p)
+            index_map[i] = existing
+
+        try:
+            pos_np = np.array(canon_positions, dtype="f4")
+        except Exception:
+            return np.zeros((0, 3), dtype="f4")
+
+        normals: List[np.ndarray] = []
+        for face in faces:
+            if len(face) < 3:
+                normals.append(None)
+                continue
+            try:
+                canon = [index_map[idx] for idx in face if idx is not None]
+            except Exception:
+                canon = []
+            if len(canon) < 3:
+                normals.append(None)
+                continue
+            # Find first 3 non-collinear vertices
+            n = None
+            try:
+                base = pos_np[canon[0]]
+                for j in range(1, len(canon) - 1):
+                    a = pos_np[canon[j]]
+                    b = pos_np[canon[j + 1]]
+                    v1 = a - base
+                    v2 = b - base
+                    cand = np.cross(v1, v2)
+                    ln = float(np.linalg.norm(cand))
+                    if ln > 1e-8:
+                        n = cand / ln
+                        break
+            except Exception:
+                n = None
+            if n is None:
+                normals.append(None)
+            else:
+                normals.append(n.astype("f4"))
+
+        edge_normals = {}
+        for fi, face in enumerate(faces):
+            n = normals[fi]
+            if len(face) < 2:
+                continue
+            try:
+                canon_face = [index_map[idx] for idx in face]
+            except Exception:
+                canon_face = []
+            if len(canon_face) < 2:
+                continue
+            for i in range(len(canon_face)):
+                a = canon_face[i]
+                b = canon_face[(i + 1) % len(canon_face)]
+                if a == b:
+                    continue
+                key = (a, b) if a < b else (b, a)
+                entry = edge_normals.get(key)
+                if entry is None:
+                    edge_normals[key] = [n]
+                else:
+                    entry.append(n)
+
+        line_pos: List[float] = []
+        for (a, b), norms in edge_normals.items():
+            keep = True
+            if isinstance(norms, list) and len(norms) >= 2:
+                n0 = norms[0]
+                n1 = norms[1]
+                if n0 is not None and n1 is not None:
+                    try:
+                        dot = float(np.dot(n0, n1))
+                        if dot >= float(coplanar_eps):
+                            keep = False
+                    except Exception:
+                        keep = True
+            if not keep:
+                continue
+            try:
+                ax, ay, az = pos_np[a]
+                bx, by, bz = pos_np[b]
+            except Exception:
+                continue
+            line_pos.extend([float(ax), float(ay), float(az), float(bx), float(by), float(bz)])
+
+        if not line_pos:
+            return np.zeros((0, 3), dtype="f4")
+        return np.array(line_pos, dtype="f4").reshape(-1, 3)
+
     def _mgl_add_obj_wire_item(
         self,
         path: Path,
@@ -260,9 +411,13 @@ class MGLRendererMixin:
         tag: str = "model-wire",
         owner: Optional[str] = None,
         path_key: Optional[str] = None,
+        outline_only: bool = False,
     ) -> Optional[MGLSceneItem]:
         try:
-            line_points = self._mgl_load_obj_edge_vertices(path)
+            if outline_only:
+                line_points = self._mgl_load_obj_outline_vertices(path)
+            else:
+                line_points = self._mgl_load_obj_edge_vertices(path)
         except Exception:
             return None
         return self._mgl_add_wire_item_from_points(
@@ -5024,6 +5179,7 @@ class MGLRendererMixin:
                             tag="scene-volume" if is_volume else "scene-wire",
                             owner=owner,
                             path_key=path_key,
+                            outline_only=bool(is_volume),
                         )
                     elif ext == ".fbx":
                         wire_item = self._mgl_add_fbx_wire_item(
