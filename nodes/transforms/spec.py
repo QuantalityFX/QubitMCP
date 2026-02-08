@@ -371,6 +371,8 @@ class TransformWidget(QtWidgets.QWidget):
         self._pending = False
         self._last_stamp = None
         self._syncing_view = False
+        self._defer_bake = False
+        self._drag_pending_xform = None
 
         layout = QtWidgets.QHBoxLayout(self)
         layout.setContentsMargins(6, 4, 6, 4)
@@ -419,6 +421,23 @@ class TransformWidget(QtWidgets.QWidget):
             except Exception:
                 pass
         self._scene_connected = True
+
+    def _is_dragging(self) -> bool:
+        try:
+            win = _resolve_window(self._node_item)
+            glv = getattr(win, "gl_view", None) if win is not None else None
+            if glv is None:
+                return False
+            if not bool(getattr(glv, "_xform_dragging", False)):
+                return False
+            owner = getattr(glv, "_xform_drag_owner", None) or getattr(glv, "_xform_gizmo_owner", None)
+            if owner:
+                node_name = (getattr(getattr(self._node_item, "model", None), "name", "") or "").strip()
+                if node_name and str(owner) != str(node_name):
+                    return False
+            return True
+        except Exception:
+            return False
 
     def _schedule_update(self):
         if self._pending:
@@ -472,7 +491,24 @@ class TransformWidget(QtWidgets.QWidget):
         def _diff(a, b):
             return any(abs(float(a[i]) - float(b[i])) > 1e-4 for i in range(3))
 
+        dragging = self._is_dragging()
+        if dragging:
+            if _diff(pos, cur_pos) or _diff(rot, cur_rot) or _diff(scl, cur_scl):
+                self._drag_pending_xform = (pos, rot, scl)
+                self._defer_bake = True
+            return
+
+        if self._drag_pending_xform is not None:
+            try:
+                pos, rot, scl = self._drag_pending_xform
+            except Exception:
+                pass
+            self._drag_pending_xform = None
+
         if not (_diff(pos, cur_pos) or _diff(rot, cur_rot) or _diff(scl, cur_scl)):
+            if self._defer_bake:
+                self._defer_bake = False
+                self._schedule_update()
             return
         self._syncing_view = True
         try:
@@ -524,6 +560,16 @@ class TransformWidget(QtWidgets.QWidget):
             self._view_btn.setEnabled(True)
             self._set_param("source", src_path, notify_scene=False)
             self._set_param("path", src_path, notify_scene=True)
+            return
+
+        if (not force) and self._is_dragging():
+            self._defer_bake = True
+            self._status.setText(Path(src_path).name)
+            self._view_btn.setEnabled(True)
+            self._set_param("source", src_path, notify_scene=False)
+            cur_path = _param_value(model, "path")
+            if not cur_path:
+                self._set_param("path", src_path, notify_scene=True)
             return
 
         try:
