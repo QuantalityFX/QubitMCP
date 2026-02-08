@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import os
 import re
+import math
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 try:
     from PySide6 import QtWidgets, QtCore
@@ -99,6 +100,80 @@ def _param_bool(model, name: str, default: bool = False) -> bool:
     if not raw:
         return default
     return raw in ("1", "true", "yes", "on", "y")
+
+def _parse_vec3(value: str, default: Tuple[float, float, float]) -> Tuple[float, float, float]:
+    try:
+        parts = [p.strip() for p in str(value or "").split(",")]
+        if len(parts) >= 3:
+            return (float(parts[0]), float(parts[1]), float(parts[2]))
+    except Exception:
+        pass
+    return default
+
+def _param_vec3(model, name: str, default: Tuple[float, float, float]) -> Tuple[float, float, float]:
+    return _parse_vec3(_param_value(model, name), default)
+
+def _apply_transform(points, normals, pos, rot, scl):
+    try:
+        import numpy as np
+    except Exception:
+        return points, normals
+    if points is None or not getattr(points, "size", 0):
+        return points, normals
+    pts = points.astype("f4").reshape(-1, 3)
+    norms = normals.astype("f4").reshape(-1, 3)
+
+    try:
+        c = (pts.min(axis=0) + pts.max(axis=0)) * 0.5
+    except Exception:
+        c = np.zeros(3, dtype="f4")
+
+    sx, sy, sz = scl
+    rx, ry, rz = rot
+    rx = -float(rx)
+    ry = -float(ry)
+    rz = -float(rz)
+
+    def Rx(a):
+        a = math.radians(a)
+        c, s = math.cos(a), math.sin(a)
+        return np.array([[1.0, 0.0, 0.0], [0.0, c, s], [0.0, -s, c]], dtype="f4")
+
+    def Ry(a):
+        a = math.radians(a)
+        c, s = math.cos(a), math.sin(a)
+        return np.array([[c, 0.0, -s], [0.0, 1.0, 0.0], [s, 0.0, c]], dtype="f4")
+
+    def Rz(a):
+        a = math.radians(a)
+        c, s = math.cos(a), math.sin(a)
+        return np.array([[c, s, 0.0], [-s, c, 0.0], [0.0, 0.0, 1.0]], dtype="f4")
+
+    R = Rx(rx) @ Ry(ry) @ Rz(rz)
+    svec = np.array([sx, sy, sz], dtype="f4")
+
+    centered = pts - c
+    centered = centered * svec
+    rotated = (R @ centered.T).T
+    transformed = rotated + c + np.array(pos, dtype="f4")
+
+    inv = np.array(
+        [
+            1.0 / sx if abs(sx) > 1e-8 else 0.0,
+            1.0 / sy if abs(sy) > 1e-8 else 0.0,
+            1.0 / sz if abs(sz) > 1e-8 else 0.0,
+        ],
+        dtype="f4",
+    )
+    n = norms * inv
+    n = (R @ n.T).T
+    try:
+        lengths = np.linalg.norm(n, axis=1)
+        lengths[lengths < 1e-8] = 1.0
+        n = n / lengths.reshape(-1, 1)
+    except Exception:
+        pass
+    return transformed.astype("f4"), n.astype("f4")
 
 
 def _ensure_param(node_item, name: str, default: str = "") -> None:
@@ -258,6 +333,33 @@ def _resolve_input_path(
     if model is not None and allow_model_fallback:
         return _param_value(model, "mesh") or _param_value(model, "source") or _param_value(model, "path")
     return ""
+
+def _pick_input_edge(node_item, port_names=None, fallback_index: Optional[int] = None, allow_any: bool = True):
+    sc = node_item.scene()
+    if sc is None:
+        return None
+    try:
+        in_edges = list(sc._ordered_in_edges(node_item))
+    except Exception:
+        try:
+            in_edges = list(sc._in_edges(node_item))
+        except Exception:
+            in_edges = []
+    if not in_edges:
+        return None
+    chosen = None
+    if port_names:
+        wanted = {str(n).strip().lower() for n in (port_names or []) if str(n).strip()}
+        for edge in in_edges:
+            name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
+            if (name or "").strip().lower() in wanted:
+                chosen = edge
+                break
+    if chosen is None and fallback_index is not None and len(in_edges) > fallback_index:
+        chosen = in_edges[fallback_index]
+    if chosen is None and allow_any:
+        chosen = in_edges[0]
+    return chosen
 
 
 def _resolve_input_label(node_item, port_names=None, fallback_index: Optional[int] = None) -> str:
@@ -426,7 +528,7 @@ def _ensure_uvs(points, uvs):
     return uvs
 
 
-def _split_mesh(mesh_path: Path, volume_path: Path, invert: bool = False):
+def _split_mesh(mesh_path: Path, volume_path: Path, invert: bool = False, mesh_xform: Optional[dict] = None):
     try:
         import numpy as np
     except Exception:
@@ -447,6 +549,14 @@ def _split_mesh(mesh_path: Path, volume_path: Path, invert: bool = False):
 
     norms = _ensure_normals(pts, norms)
     uvs = _ensure_uvs(pts, uvs)
+    if mesh_xform:
+        try:
+            pos = mesh_xform.get("pos", (0.0, 0.0, 0.0))
+            rot = mesh_xform.get("rot", (0.0, 0.0, 0.0))
+            scl = mesh_xform.get("scl", (1.0, 1.0, 1.0))
+            pts, norms = _apply_transform(pts, norms, pos, rot, scl)
+        except Exception:
+            pass
     kept_pts = []
     kept_norms = []
     kept_uvs = []
@@ -670,6 +780,25 @@ class VolumeSplitWidget(QtWidgets.QWidget):
                     fallback_index=1,
                     allow_model_fallback=False,
                 ) or "").strip()
+        mesh_xform = None
+        mesh_edge = _pick_input_edge(self._node_item, {"mesh", "source", "path"}, fallback_index=0, allow_any=True)
+        mesh_src_item = getattr(mesh_edge, "src", None) if mesh_edge is not None else None
+        if mesh_src_item is not None:
+            mesh_model = getattr(mesh_src_item, "model", None)
+            mesh_kind = (getattr(mesh_model, "kind", "") or "").strip().lower() if mesh_model is not None else ""
+            if mesh_kind == "transforms" and mesh_model is not None:
+                mesh_source = (_param_value(mesh_model, "source") or "").strip()
+                mesh_out = (_param_value(mesh_model, "path") or "").strip()
+                if mesh_source:
+                    mesh_path = mesh_source
+                    mesh_xform = {
+                        "pos": _param_vec3(mesh_model, "pos", (0.0, 0.0, 0.0)),
+                        "rot": _param_vec3(mesh_model, "rot", (0.0, 0.0, 0.0)),
+                        "scl": _param_vec3(mesh_model, "scl", (1.0, 1.0, 1.0)),
+                    }
+                elif mesh_out:
+                    # Fallback to baked output when source is unavailable.
+                    mesh_path = mesh_out
         if not mesh_path:
             if volume_path:
                 self._status.setText(volume_label or "Volume only.")
@@ -738,8 +867,16 @@ class VolumeSplitWidget(QtWidgets.QWidget):
                 int(st_vol.st_size),
                 int(bool(invert)),
             )
+            if mesh_xform:
+                stamp = stamp + (
+                    float(mesh_xform["pos"][0]), float(mesh_xform["pos"][1]), float(mesh_xform["pos"][2]),
+                    float(mesh_xform["rot"][0]), float(mesh_xform["rot"][1]), float(mesh_xform["rot"][2]),
+                    float(mesh_xform["scl"][0]), float(mesh_xform["scl"][1]), float(mesh_xform["scl"][2]),
+                )
         except Exception:
             stamp = (mesh_path, None, None, volume_path, None, None, int(bool(invert)))
+            if mesh_xform:
+                stamp = stamp + (mesh_xform.get("pos"), mesh_xform.get("rot"), mesh_xform.get("scl"))
 
         out_path = _output_path(self._node_item, mesh_path, volume_path)
         if not force and self._last_stamp == stamp and out_path.exists():
@@ -751,7 +888,7 @@ class VolumeSplitWidget(QtWidgets.QWidget):
             self._set_param("path", str(out_path), notify_scene=True)
             return
 
-        pts, norms, uvs, err = _split_mesh(Path(mesh_path), Path(volume_path), invert=invert)
+        pts, norms, uvs, err = _split_mesh(Path(mesh_path), Path(volume_path), invert=invert, mesh_xform=mesh_xform)
         if err:
             self._status.setText(err)
             # Allow viewing inputs even when no faces are inside/outside the volume.
@@ -885,3 +1022,4 @@ def register(core=None):
         _core = core
     _core.register_spec("volume_selector", VOLUME_SPLIT_SPEC)
     _core.register_spec("split_volume", VOLUME_SPLIT_SPEC)
+
