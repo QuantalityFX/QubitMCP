@@ -242,7 +242,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
         self.kind_edit = QtWidgets.QComboBox()
         self.kind_edit.setEditable(True)
         kinds = [
-            "node","import","primitive","uv_unwrap","texture","texture_pro","texture_layer","scene","html_preview","python","switch","output","llm",
+            "node","import","primitive","uv_unwrap","texture","texture_pro","texture_layer","volume_selector","scene","html_preview","python","switch","output","llm",
             "llm_prompt","chatbot","librarian","note","append","image_collection","database"
         ]
         try:

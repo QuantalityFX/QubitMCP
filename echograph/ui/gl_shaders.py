@@ -5,6 +5,7 @@ SHADERS = {
     "mesh_vertex": """
 #version 330
 uniform mat4 Mvp;
+uniform mat4 Model;
 in vec3 in_position;
 in vec3 in_normal;
 in vec2 in_uv;
@@ -29,6 +30,9 @@ uniform int UseTexture;
 uniform int UseLighting;
 uniform int UseProcedural;
 uniform int UseProceduralLayer;
+uniform int UseVolumeMask;
+uniform mat4 VolumeInv;
+uniform mat4 Model;
 uniform int ProceduralMode;
 uniform vec4 ProcParams;
 uniform float ProcSeed;
@@ -70,6 +74,17 @@ float hash11(float n) {
 
 float hash21(vec2 p) {
     return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+}
+
+float volume_mask() {
+    if (UseVolumeMask == 0) {
+        return 1.0;
+    }
+    vec4 world = Model * vec4(v_vert, 1.0);
+    vec4 local = VolumeInv * world;
+    vec3 q = abs(local.xyz);
+    float m = max(q.x, max(q.y, q.z));
+    return step(m, 0.5);
 }
 
 vec4 proc_checker_params(vec2 uv, vec4 params, float anim_speed, vec2 cell_offset, vec4 bg, int bg_enabled) {
@@ -230,6 +245,11 @@ vec4 composite_over(vec4 base, vec4 over) {
 }
 
 void main() {
+    if (UseVolumeMask == 1) {
+        if (volume_mask() < 0.5) {
+            discard;
+        }
+    }
     vec4 base = Color;
     float lum = 1.0;
     if (UseLighting == 1) {

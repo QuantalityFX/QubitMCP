@@ -164,6 +164,17 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Texture Layer plugin import failed:", e)
 
+    # 8.95) Volume Selector
+    try:
+        from nodes import volume_selector
+        if hasattr(volume_selector, "register"):
+            volume_selector.register()
+            _safe_probe("volume_selector")
+        else:
+            print("[EchoGraph] Volume Selector module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Volume Selector plugin import failed:", e)
+
     # 9) GPT Prompt
     try:
         from nodes import gpt_prompt

@@ -392,7 +392,7 @@ class MGLRendererMixin:
         scene = getattr(self, "_mgl_scene", None)
         if scene is None:
             return
-        for tag in ("model", "model-wire", "scene-model", "scene-wire"):
+        for tag in ("model", "model-wire", "scene-model", "scene-wire", "scene-volume"):
             scene.remove_by_tag(tag)
 
     def _mgl_disable_splats(self) -> None:
@@ -808,7 +808,7 @@ class MGLRendererMixin:
         # apply to matching scene items (solid + wire)
         if apply_to_scene_models:
             try:
-                for tag in ("scene-model", "scene-wire"):
+                for tag in ("scene-model", "scene-wire", "scene-volume"):
                     for item in scene.iter_by_tag(tag):
                         payload = getattr(item, "payload", None) or {}
                         if payload.get("owner") != owner:
@@ -1233,22 +1233,40 @@ class MGLRendererMixin:
         if not submeshes and vao is None:
             return
         edge_wire = bool(payload.get("edge_wire"))
+        model_np = None
         try:
             payload = item.payload or {}
 
             mvp_to_use = mvp
             model = payload.get("model")
-            if model is not None and Matrix44 is not None:
+            if model is not None:
                 try:
-                    if isinstance(model, Matrix44):
+                    if Matrix44 is not None and isinstance(model, Matrix44):
                         mvp_to_use = mvp * model
-                    else:
+                        if np is not None:
+                            model_np = np.array(model, dtype="f4")
+                    elif Matrix44 is not None:
                         # model may be a numpy 4x4; Matrix44 can build from it
                         mvp_to_use = mvp * Matrix44(model, dtype="f4")
+                        if np is not None:
+                            model_np = np.array(model, dtype="f4")
+                    elif np is not None:
+                        model_np = np.array(model, dtype="f4")
                 except Exception:
                     mvp_to_use = mvp
 
             self._mgl_prog["Mvp"].write(mvp_to_use.astype("f4").tobytes())
+            if np is not None:
+                if model_np is None:
+                    model_np = np.eye(4, dtype="f4")
+                try:
+                    self._mgl_prog["Model"].write(model_np.tobytes())
+                except Exception:
+                    pass
+            try:
+                self._mgl_prog["UseVolumeMask"].value = 0
+            except Exception:
+                pass
 
         except Exception:
             pass
@@ -1364,6 +1382,231 @@ class MGLRendererMixin:
                 self._mgl_ctx.wireframe = False
                 try:
                     self._mgl_ctx.line_width = 1.0
+                except Exception:
+                    pass
+
+        overrides = None
+        if owner:
+            try:
+                overrides = getattr(self, "_mgl_scene_volume_overrides_by_owner", {}).get(owner)
+            except Exception:
+                overrides = None
+        if overrides:
+
+            def _draw_override(tex_override):
+                if submeshes:
+                    for sub in submeshes:
+                        color = sub.get("color") or self._mgl_mesh_color
+                        tex = tex_override
+                        use_texture = tex is not None
+                        try:
+                            self._mgl_prog["UseTexture"].value = 1 if use_texture else 0
+                            self._mgl_prog["UseLighting"].value = 1
+                            self._mgl_prog["LightIntensity"].value = float(self._mgl_light_intensity)
+                            self._mgl_prog["Color"].value = color
+                        except Exception:
+                            pass
+                        if use_texture:
+                            try:
+                                tex.use(location=0)
+                            except Exception:
+                                pass
+                        sub_vao = sub.get("vao")
+                        if sub_vao is not None:
+                            sub_vao.render()
+                else:
+                    color = payload.get("color") or self._mgl_mesh_color
+                    tex = tex_override
+                    use_texture = tex is not None
+                    try:
+                        self._mgl_prog["UseTexture"].value = 1 if use_texture else 0
+                        self._mgl_prog["UseLighting"].value = 1
+                        self._mgl_prog["LightIntensity"].value = float(self._mgl_light_intensity)
+                        self._mgl_prog["Color"].value = color
+                    except Exception:
+                        pass
+                    if use_texture:
+                        try:
+                            tex.use(location=0)
+                        except Exception:
+                            pass
+                    if vao is not None:
+                        vao.render()
+
+            def _volume_inv_matrix(vol_owner: str):
+                if np is None or not vol_owner:
+                    return None
+                bounds_map = getattr(self, "_mgl_scene_mesh_bounds_by_owner", None) or getattr(
+                    self, "_mgl_scene_bounds_by_owner", None
+                )
+                b = None
+                if isinstance(bounds_map, dict):
+                    b = bounds_map.get(vol_owner)
+                    if b is None:
+                        lk = vol_owner.lower()
+                        for k, v in bounds_map.items():
+                            try:
+                                if str(k).strip().lower() == lk:
+                                    b = v
+                                    break
+                            except Exception:
+                                continue
+
+                found = False
+                model = None
+                scene = getattr(self, "_mgl_scene", None)
+                if scene is not None:
+                    try:
+                        for item in scene.iter_by_tag("scene-volume"):
+                            payload_i = getattr(item, "payload", None) or {}
+                            if payload_i.get("owner") == vol_owner:
+                                found = True
+                                model = payload_i.get("model")
+                                break
+                    except Exception:
+                        pass
+                if b is not None:
+                    found = True
+                if not found:
+                    return None
+
+                if model is None:
+                    if b is None:
+                        return np.eye(4, dtype="f4")
+                    try:
+                        bmin, bmax = b
+                        bmin = np.array(bmin, dtype=np.float32)
+                        bmax = np.array(bmax, dtype=np.float32)
+                        x = self._mgl_get_scene_asset_xform(vol_owner)
+                        px, py, pz = x.get("pos", (0.0, 0.0, 0.0))
+                        rx, ry, rz = x.get("rot", (0.0, 0.0, 0.0))
+                        sx, sy, sz = x.get("scl", (1.0, 1.0, 1.0))
+                        c = (bmin + bmax) * 0.5
+                        cx, cy, cz = float(c[0]), float(c[1]), float(c[2])
+
+                        def T(tx, ty, tz):
+                            m = np.eye(4, dtype=np.float32)
+                            m[3, 0] = tx
+                            m[3, 1] = ty
+                            m[3, 2] = tz
+                            return m
+
+                        def S(sxv, syv, szv):
+                            m = np.eye(4, dtype=np.float32)
+                            m[0, 0] = sxv
+                            m[1, 1] = syv
+                            m[2, 2] = szv
+                            return m
+
+                        def Rx(a):
+                            a = math.radians(a)
+                            c_, s_ = math.cos(a), math.sin(a)
+                            m = np.eye(4, dtype=np.float32)
+                            m[1, 1] = c_
+                            m[1, 2] = s_
+                            m[2, 1] = -s_
+                            m[2, 2] = c_
+                            return m
+
+                        def Ry(a):
+                            a = math.radians(a)
+                            c_, s_ = math.cos(a), math.sin(a)
+                            m = np.eye(4, dtype=np.float32)
+                            m[0, 0] = c_
+                            m[0, 2] = -s_
+                            m[2, 0] = s_
+                            m[2, 2] = c_
+                            return m
+
+                        def Rz(a):
+                            a = math.radians(a)
+                            c_, s_ = math.cos(a), math.sin(a)
+                            m = np.eye(4, dtype=np.float32)
+                            m[0, 0] = c_
+                            m[0, 1] = s_
+                            m[1, 0] = -s_
+                            m[1, 1] = c_
+                            return m
+
+                        rot_rx, rot_ry, rot_rz = -float(rx), -float(ry), -float(rz)
+                        xform_space = str(getattr(self, "_mgl_xform_space", "world") or "world").lower()
+                        if xform_space == "local":
+                            model = T(-cx, -cy, -cz) @ S(sx, sy, sz) @ (Rx(rot_rx) @ Ry(rot_ry) @ Rz(rot_rz)) @ T(
+                                px, py, pz
+                            )
+                        else:
+                            model = T(-cx, -cy, -cz) @ (Rx(rot_rx) @ Ry(rot_ry) @ Rz(rot_rz)) @ S(
+                                sx, sy, sz
+                            ) @ T(px, py, pz)
+                    except Exception:
+                        model = None
+
+                if model is None:
+                    return None
+                try:
+                    if Matrix44 is not None and isinstance(model, Matrix44):
+                        model_np_local = np.array(model, dtype="f4")
+                    else:
+                        model_np_local = np.array(model, dtype="f4")
+                except Exception:
+                    return None
+                try:
+                    return np.linalg.inv(model_np_local)
+                except Exception:
+                    return None
+
+            prev_offset = None
+            try:
+                prev_offset = self._mgl_ctx.polygon_offset
+            except Exception:
+                prev_offset = None
+            try:
+                self._mgl_ctx.polygon_offset = (-1.0, -1.0)
+            except Exception:
+                pass
+            prev_wire = None
+            try:
+                prev_wire = bool(getattr(self._mgl_ctx, "wireframe", False))
+                if prev_wire:
+                    self._mgl_ctx.wireframe = False
+            except Exception:
+                prev_wire = None
+
+            for override in overrides:
+                vol_owner = str(override.get("volume_owner") or "").strip()
+                inv = _volume_inv_matrix(vol_owner)
+                if inv is None:
+                    continue
+                try:
+                    self._mgl_prog["UseVolumeMask"].value = 1
+                    self._mgl_prog["VolumeInv"].write(inv.astype("f4").tobytes())
+                except Exception:
+                    pass
+                if override.get("gpu"):
+                    self._mgl_apply_procedural_uniforms(override.get("gpu_state"))
+                    tex_override = None
+                else:
+                    tex_override = override.get("texture")
+                    self._mgl_apply_procedural_uniforms(None)
+                _draw_override(tex_override)
+
+            try:
+                self._mgl_prog["UseVolumeMask"].value = 0
+            except Exception:
+                pass
+            if prev_offset is not None:
+                try:
+                    self._mgl_ctx.polygon_offset = prev_offset
+                except Exception:
+                    pass
+            else:
+                try:
+                    self._mgl_ctx.polygon_offset = (0.0, 0.0)
+                except Exception:
+                    pass
+            if prev_wire is not None:
+                try:
+                    self._mgl_ctx.wireframe = prev_wire
                 except Exception:
                     pass
 
@@ -1984,6 +2227,73 @@ class MGLRendererMixin:
                     entry["rev"] = rev
             except Exception:
                 pass
+
+        volume_map = getattr(self, "_mgl_scene_volume_overrides_by_owner", None)
+        if not isinstance(volume_map, dict):
+            return
+        for overrides in volume_map.values():
+            if not isinstance(overrides, (list, tuple)):
+                continue
+            for entry in overrides:
+                provider = entry.get("provider")
+                if provider is None:
+                    continue
+                gpu_state = self._mgl_proc_state(provider)
+                if gpu_state:
+                    entry["gpu_state"] = gpu_state
+                    entry["gpu"] = True
+                    self._mgl_ensure_proc_glyph(gpu_state)
+                    continue
+                entry.pop("gpu", None)
+                entry.pop("gpu_state", None)
+                changed = _advance(provider)
+                rev = None
+                try:
+                    rev = int(getattr(provider, "revision", 0))
+                except Exception:
+                    rev = None
+                if not changed and (rev is None or rev == entry.get("rev")):
+                    continue
+                img = self._mgl_provider_image(provider)
+                if img is None or img.isNull():
+                    continue
+                if hasattr(QtGui.QImage, "Format_RGBA8888"):
+                    img = img.convertToFormat(QtGui.QImage.Format_RGBA8888)
+                else:
+                    img = img.convertToFormat(QtGui.QImage.Format_ARGB32)
+                img = img.mirrored(False, True)
+                try:
+                    ptr = img.bits()
+                    ptr.setsize(img.sizeInBytes())
+                    data = bytes(ptr)
+                except Exception:
+                    data = img.bits().tobytes()
+                tex = entry.get("texture")
+                w = int(img.width())
+                h = int(img.height())
+                try:
+                    if tex is None or getattr(tex, "size", None) != (w, h):
+                        if tex is not None:
+                            try:
+                                tex.release()
+                            except Exception:
+                                pass
+                        tex = self._mgl_ctx.texture((w, h), 4, data)
+                        tex.build_mipmaps()
+                        tex.filter = (moderngl.LINEAR_MIPMAP_LINEAR, moderngl.LINEAR)
+                        tex.repeat_x = True
+                        tex.repeat_y = True
+                        entry["texture"] = tex
+                    else:
+                        tex.write(data)
+                        try:
+                            tex.build_mipmaps()
+                        except Exception:
+                            pass
+                    if rev is not None:
+                        entry["rev"] = rev
+                except Exception:
+                    pass
 
     def _mgl_make_texture(self, image: QtGui.QImage):
         if image.isNull():
@@ -3531,6 +3841,7 @@ class MGLRendererMixin:
                 self._mgl_prog["UseLighting"].value = 1
                 self._mgl_prog["UseProcedural"].value = 0
                 self._mgl_prog["UseProceduralLayer"].value = 0
+                self._mgl_prog["UseVolumeMask"].value = 0
                 self._mgl_prog["ProceduralMode"].value = 0
                 self._mgl_prog["ProcParams"].value = (1.0, 1.0, 1.0, 0.0)
                 self._mgl_prog["ProcSeed"].value = 0.0
@@ -3559,6 +3870,13 @@ class MGLRendererMixin:
                 self._mgl_prog["ProcGlyph"].value = 1
                 self._mgl_prog["ProcGlyphGrid"].value = (1.0, 1.0)
                 self._mgl_prog["ProcGlyphCount"].value = 1.0
+                if np is not None:
+                    ident = np.eye(4, dtype="f4")
+                    try:
+                        self._mgl_prog["Model"].write(ident.tobytes())
+                        self._mgl_prog["VolumeInv"].write(ident.tobytes())
+                    except Exception:
+                        pass
             except Exception:
                 pass
             self._mgl_grid_prog["Color"].value = (0.8, 0.8, 0.8, self._mgl_grid_alpha)
@@ -4442,6 +4760,7 @@ class MGLRendererMixin:
         self._mgl_scene_uvs_by_owner = {}
         self._mgl_scene_tex_by_owner = {}
         self._mgl_scene_proc_textures_by_owner = {}
+        self._mgl_scene_volume_overrides_by_owner = {}
         self._mgl_proc_provider = None
         self._mgl_proc_label = ""
         self._mgl_proc_rev = -1
@@ -4503,7 +4822,72 @@ class MGLRendererMixin:
             did_make_current = True
 
             for asset in assets or []:
-                
+                if asset.get("volume_override"):
+                    target_owner = str(asset.get("target_owner") or "").strip()
+                    volume_owner = str(asset.get("volume_owner") or "").strip()
+                    if not target_owner or not volume_owner:
+                        continue
+                    override_entry: dict = {"volume_owner": volume_owner}
+                    provider = asset.get("texture_provider")
+                    tex_override = None
+                    if provider is not None:
+                        gpu_state = self._mgl_proc_state(provider)
+                        if gpu_state:
+                            override_entry["provider"] = provider
+                            override_entry["gpu"] = True
+                            override_entry["gpu_state"] = gpu_state
+                            try:
+                                self._mgl_ensure_proc_glyph(gpu_state)
+                            except Exception:
+                                pass
+                        else:
+                            qimg = self._mgl_provider_image(provider)
+                            if qimg is not None and not qimg.isNull():
+                                if hasattr(QtGui.QImage, "Format_RGBA8888"):
+                                    qimg = qimg.convertToFormat(QtGui.QImage.Format_RGBA8888)
+                                else:
+                                    qimg = qimg.convertToFormat(QtGui.QImage.Format_ARGB32)
+                                qimg = qimg.mirrored(False, True)
+                                try:
+                                    tex_override = self._mgl_make_texture(qimg)
+                                except Exception:
+                                    tex_override = None
+                                if tex_override is not None:
+                                    override_entry["provider"] = provider
+                                    override_entry["texture"] = tex_override
+                                    try:
+                                        override_entry["rev"] = int(getattr(provider, "revision", 0))
+                                    except Exception:
+                                        pass
+                    if tex_override is None and not override_entry.get("gpu"):
+                        texture_path = str(asset.get("texture", "") or "").strip()
+                        if texture_path:
+                            try:
+                                tex_path = Path(texture_path)
+                            except Exception:
+                                tex_path = None
+                            if tex_path is not None and tex_path.exists():
+                                qimg = QtGui.QImage(str(tex_path))
+                                if not qimg.isNull():
+                                    if hasattr(QtGui.QImage, "Format_RGBA8888"):
+                                        qimg = qimg.convertToFormat(QtGui.QImage.Format_RGBA8888)
+                                    else:
+                                        qimg = qimg.convertToFormat(QtGui.QImage.Format_ARGB32)
+                                    qimg = qimg.mirrored(False, True)
+                                    try:
+                                        tex_override = self._mgl_make_texture(qimg)
+                                    except Exception:
+                                        tex_override = None
+                                    if tex_override is not None:
+                                        override_entry["texture"] = tex_override
+                    if override_entry.get("gpu") or override_entry.get("texture") is not None:
+                        try:
+                            store = self._mgl_scene_volume_overrides_by_owner.setdefault(target_owner, [])
+                            store.append(override_entry)
+                        except Exception:
+                            pass
+                    continue
+
                 path_str = str(asset.get("path", "") or "").strip()
                 if not path_str:
                     continue
@@ -4517,6 +4901,57 @@ class MGLRendererMixin:
                 path_key = str(path)
                 visibility_map = getattr(self, "_mgl_scene_visibility", {}) or {}
                 visible = bool(visibility_map.get(owner, True))
+                wire_only = bool(asset.get("wire_only"))
+                is_volume = bool(asset.get("volume"))
+
+                if wire_only:
+                    bmin = bmax = None
+                    if is_volume:
+                        try:
+                            bmin = np.array([-0.5, -0.5, -0.5], dtype=np.float32)
+                            bmax = np.array([0.5, 0.5, 0.5], dtype=np.float32)
+                        except Exception:
+                            bmin = bmax = None
+                    if bmin is None or bmax is None:
+                        try:
+                            model_data = load_model(path)
+                            if model_data is not None and model_data.vertices:
+                                points = np.array(model_data.vertices, dtype="f4").reshape(-1, 3)
+                                bmin = points.min(axis=0)
+                                bmax = points.max(axis=0)
+                        except Exception:
+                            bmin = bmax = None
+                    if bmin is not None and bmax is not None:
+                        try:
+                            self._mgl_scene_bounds_by_owner[owner] = (bmin.astype("f4"), bmax.astype("f4"))
+                            self._mgl_scene_mesh_bounds_by_owner[owner] = (bmin.astype("f4"), bmax.astype("f4"))
+                        except Exception:
+                            pass
+                        bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, bmin, bmax)
+                        has_mesh_bounds = True
+
+                    wire_item = None
+                    if ext == ".obj":
+                        wire_item = self._mgl_add_obj_wire_item(
+                            path,
+                            visible,
+                            tag="scene-volume" if is_volume else "scene-wire",
+                            owner=owner,
+                            path_key=path_key,
+                        )
+                    elif ext == ".fbx":
+                        wire_item = self._mgl_add_fbx_wire_item(
+                            path,
+                            visible,
+                            tag="scene-volume" if is_volume else "scene-wire",
+                            owner=owner,
+                            path_key=path_key,
+                        )
+                    if wire_item is not None:
+                        scene.add(wire_item)
+                        if not first_mesh_path:
+                            first_mesh_path = str(path)
+                    continue
 
                 if ext == ".ply":
                     try:
