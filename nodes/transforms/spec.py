@@ -622,6 +622,10 @@ class TransformWidget(QtWidgets.QWidget):
             return False
         return False
 
+    def _should_auto_bake(self) -> bool:
+        # Auto-bake only when explicitly enabled or when there is a downstream consumer.
+        return bool(self._auto_bake or self._has_downstream())
+
     def _owner_in_scene(self, renderer, owner: str) -> bool:
         if not owner or renderer is None:
             return False
@@ -713,7 +717,7 @@ class TransformWidget(QtWidgets.QWidget):
         if not (_diff(pos, cur_pos) or _diff(rot, cur_rot) or _diff(scl, cur_scl)):
             if self._defer_bake:
                 self._defer_bake = False
-                if self._auto_bake:
+                if self._should_auto_bake():
                     self._schedule_update()
             return
         self._syncing_view = True
@@ -722,7 +726,7 @@ class TransformWidget(QtWidgets.QWidget):
             self._set_param("rot", _format_vec3(rot), notify_scene=False)
             self._set_param("scl", _format_vec3(scl), notify_scene=False)
             self._set_xform_controls(pos, rot, scl)
-            if self._auto_bake:
+            if self._should_auto_bake():
                 self._schedule_update()
         finally:
             self._syncing_view = False
@@ -765,7 +769,7 @@ class TransformWidget(QtWidgets.QWidget):
             self._set_param("source", src_path, notify_scene=False)
             self._set_param("path", "", notify_scene=True)
             return
-        if (not force) and (not self._auto_bake):
+        if (not force) and (not self._should_auto_bake()):
             self._status.setText(label)
             self._view_btn.setEnabled(True)
             self._set_param("source", src_path, notify_scene=False)
@@ -947,7 +951,7 @@ class TransformWidget(QtWidgets.QWidget):
             changed = self._set_param("scl", _format_vec3(scl), notify_scene=False) or changed
         if changed:
             self._push_view_xform(pos, rot, scl)
-            if self._auto_bake:
+            if self._should_auto_bake():
                 self._schedule_update()
 
 
