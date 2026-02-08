@@ -1957,6 +1957,13 @@ class MGLRendererMixin:
                         self._mgl_ctx.disable(moderngl.DEPTH_TEST)
                 except Exception:
                     pass
+                try:
+                    if _prev_depth_func is not None:
+                        self._mgl_ctx.depth_func = _prev_depth_func
+                    else:
+                        self._mgl_ctx.depth_func = "<="
+                except Exception:
+                    pass
 
     def _mgl_build_mesh_entry(
         self,
@@ -2715,6 +2722,11 @@ class MGLRendererMixin:
         self._dbgprint(dbg, "[MGL] after mgl enable", flush=True)
 
         self._mgl_ctx.wireframe = False
+        try:
+            # Ensure depth writes are on before drawing the scene.
+            self._mgl_ctx.depth_mask = True
+        except Exception:
+            pass
 
         self._dbgprint(dbg, "[MGL] after wireframe", flush=True)
         if self._mgl_prog is None or self._mgl_grid_prog is None:
@@ -2936,6 +2948,10 @@ class MGLRendererMixin:
                     _prev_lw = float(getattr(self._mgl_ctx, "line_width", 1.0))
                 except Exception:
                     _prev_lw = 1.0
+                try:
+                    _prev_depth_func = getattr(self._mgl_ctx, "depth_func", None)
+                except Exception:
+                    _prev_depth_func = None
 
                 # Draw grid with depth test so it stays behind meshes/splats.
                 prev_depth_test = True
@@ -2945,6 +2961,11 @@ class MGLRendererMixin:
                     prev_depth_test = True
                 try:
                     self._mgl_ctx.enable(moderngl.DEPTH_TEST)
+                except Exception:
+                    pass
+                try:
+                    # Ensure grid tests against scene depth (default <=)
+                    self._mgl_ctx.depth_func = "<="
                 except Exception:
                     pass
                 try:
