@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 import re
 import tempfile
 from pathlib import Path
+from typing import Optional, Tuple
 
 try:
     from PySide6 import QtWidgets, QtCore
@@ -11,10 +13,12 @@ except Exception:
 
 from nodes.core import Spec
 
+SUPPORTED_MESH_EXTS = {".obj", ".fbx", ".gltf", ".glb", ".stl", ".ply", ".off", ".om"}
+
 
 def _sanitize_name(name: str) -> str:
     safe = re.sub(r"[^a-zA-Z0-9_-]+", "_", (name or "").strip())
-    return safe.strip("_") or "volume"
+    return safe.strip("_") or "volume_split"
 
 
 def _workflow_dir_for_node(node_item) -> Path | None:
@@ -44,63 +48,21 @@ def _workflow_dir_for_node(node_item) -> Path | None:
         return None
 
 
-def _volume_dir(node_item=None) -> Path:
-    base = _workflow_dir_for_node(node_item) if node_item is not None else None
+def _split_dir(node_item) -> Path:
+    base = _workflow_dir_for_node(node_item)
     if base is None:
         base = Path(tempfile.gettempdir()) / "EchoGraph"
-    vol_dir = base / "volumes"
-    vol_dir.mkdir(parents=True, exist_ok=True)
-    return vol_dir
+    out = base / "volume_split"
+    out.mkdir(parents=True, exist_ok=True)
+    return out
 
 
-def _volume_path(node_item, node_name: str) -> Path:
-    safe = _sanitize_name(node_name)
-    return _volume_dir(node_item) / f"{safe}_volume_cube.obj"
-
-
-def _write_obj(
-    path: Path,
-    verts: list[tuple[float, float, float]],
-    faces: list[list[int]],
-    uvs: list[tuple[float, float]] | None = None,
-) -> None:
-    lines = ["# EchoGraph volume cube"]
-    for x, y, z in verts:
-        lines.append(f"v {x:.6f} {y:.6f} {z:.6f}")
-    if uvs:
-        for u, v in uvs:
-            lines.append(f"vt {u:.6f} {v:.6f}")
-    for face in faces:
-        if not face or len(face) < 3:
-            continue
-        if uvs:
-            idxs = " ".join(f"{i + 1}/{i + 1}" for i in face)
-        else:
-            idxs = " ".join(str(i + 1) for i in face)
-        lines.append(f"f {idxs}")
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
-def _cube(size: float = 1.0):
-    s = size * 0.5
-    face_verts = [
-        [(-s, -s, -s), (s, -s, -s), (s, s, -s), (-s, s, -s)],  # back (-Z)
-        [(-s, -s, s), (s, -s, s), (s, s, s), (-s, s, s)],      # front (+Z)
-        [(-s, -s, -s), (s, -s, -s), (s, -s, s), (-s, -s, s)],  # bottom (-Y)
-        [(-s, s, -s), (s, s, -s), (s, s, s), (-s, s, s)],      # top (+Y)
-        [(s, -s, -s), (s, s, -s), (s, s, s), (s, -s, s)],      # right (+X)
-        [(-s, -s, -s), (-s, s, -s), (-s, s, s), (-s, -s, s)],  # left (-X)
-    ]
-    uv_face = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
-    verts: list[tuple[float, float, float]] = []
-    uvs: list[tuple[float, float]] = []
-    faces: list[list[int]] = []
-    for face in face_verts:
-        base = len(verts)
-        verts.extend(face)
-        uvs.extend(uv_face)
-        faces.append([base, base + 1, base + 2, base + 3])
-    return verts, faces, uvs
+def _param_value(model, name: str) -> str:
+    key = (name or "").strip().lower()
+    for p in (getattr(model, "params", None) or []):
+        if (p.get("name") or "").strip().lower() == key:
+            return p.get("value", "") or ""
+    return ""
 
 
 def _ensure_param(node_item, name: str, default: str = "") -> None:
@@ -129,7 +91,7 @@ def _ensure_param(node_item, name: str, default: str = "") -> None:
     params.append({"name": name, "value": default})
 
 
-def _ensure_hidden_params(model, names: list[str]) -> None:
+def _ensure_hidden_params(model, names) -> None:
     if model is None:
         return
     params = list(getattr(model, "params", None) or [])
@@ -149,35 +111,299 @@ def _ensure_hidden_params(model, names: list[str]) -> None:
         t = part.strip().lower()
         if t:
             cur.add(t)
-    for name in names:
+    for name in names or []:
         if name:
             cur.add(str(name).strip().lower())
     existing["value"] = ",".join(sorted(cur))
     model.params = params
 
 
+def _ensure_visible_params(model, names) -> None:
+    if model is None:
+        return
+    params = list(getattr(model, "params", None) or [])
+    store_key = "__ui_hidden_params"
+    existing = None
+    for entry in params:
+        if (entry.get("name") or "").strip().lower() == store_key:
+            existing = entry
+            break
+    if existing is None:
+        return
+    raw = existing.get("value", "")
+    cur = set()
+    for part in str(raw).split(","):
+        t = part.strip().lower()
+        if t:
+            cur.add(t)
+    for name in names or []:
+        if name:
+            cur.discard(str(name).strip().lower())
+    existing["value"] = ",".join(sorted(cur))
+    model.params = params
+
+
 def build_ports(node_item) -> None:
     _ensure_param(node_item, "mesh", "")
-    _ensure_param(node_item, "texture", "")
+    _ensure_param(node_item, "source", "")
+    _ensure_param(node_item, "volume", "")
     _ensure_param(node_item, "path", "")
-    _ensure_param(node_item, "volume", "1")
+    model = getattr(node_item, "model", None)
+    _ensure_hidden_params(model, ["source", "path"])
+    _ensure_visible_params(model, ["mesh", "volume"])
     if hasattr(node_item, "ensure_input"):
         node_item.ensure_input("mesh")
-        node_item.ensure_input("texture")
+        node_item.ensure_input("volume")
 
 
-class VolumeSelectorWidget(QtWidgets.QWidget):
+def _resolve_input_path(node_item, port_names=None, fallback_index: Optional[int] = None) -> str:
+    model = getattr(node_item, "model", None)
+    sc = node_item.scene()
+
+    def _trace(item, depth=0, visited=None) -> str:
+        if item is None or depth > 8:
+            return ""
+        if visited is None:
+            visited = set()
+        if item in visited:
+            return ""
+        visited.add(item)
+        m = getattr(item, "model", None)
+        if m is None:
+            return ""
+        kind = (getattr(m, "kind", "") or "").strip().lower()
+        if kind == "switch" and sc is not None:
+            try:
+                edges = list(sc._ordered_in_edges(item))
+            except Exception:
+                try:
+                    edges = list(sc._in_edges(item))
+                except Exception:
+                    edges = []
+            if edges:
+                return _trace(getattr(edges[0], "src", None), depth + 1, visited)
+        return _param_value(m, "path") or _param_value(m, "mesh") or _param_value(m, "source")
+
+    if sc is not None:
+        try:
+            in_edges = list(sc._ordered_in_edges(node_item))
+        except Exception:
+            try:
+                in_edges = list(sc._in_edges(node_item))
+            except Exception:
+                in_edges = []
+        chosen = None
+        if port_names:
+            wanted = {str(n).strip().lower() for n in (port_names or []) if str(n).strip()}
+            for edge in in_edges:
+                name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
+                if (name or "").strip().lower() in wanted:
+                    chosen = edge
+                    break
+        if chosen is None and fallback_index is not None and len(in_edges) > fallback_index:
+            chosen = in_edges[fallback_index]
+        if chosen is None and in_edges:
+            chosen = in_edges[0]
+        if chosen is not None:
+            src_item = getattr(chosen, "src", None)
+            path = _trace(src_item, 0, set())
+            if path:
+                return path
+
+    if model is not None:
+        return _param_value(model, "mesh") or _param_value(model, "source") or _param_value(model, "path")
+    return ""
+
+
+def _output_path(node_item, mesh_path: str, volume_path: str) -> Path:
+    node_name = _sanitize_name(getattr(getattr(node_item, "model", None), "name", "") or "volume_split")
+    mesh_stem = _sanitize_name(Path(mesh_path).stem) if mesh_path else "mesh"
+    vol_stem = _sanitize_name(Path(volume_path).stem) if volume_path else "volume"
+    return _split_dir(node_item) / f"{node_name}_{mesh_stem}_in_{vol_stem}.obj"
+
+
+def _load_mesh_arrays(path: Path):
+    try:
+        import numpy as np
+    except Exception:
+        return None, None, None
+    try:
+        from echograph.ui import gl_loaders
+    except Exception:
+        return None, None, None
+    ext = path.suffix.lower()
+    try:
+        if ext == ".obj":
+            pts, norms, uvs = gl_loaders.load_obj_mesh_arrays(path)
+            return pts, norms, uvs
+        if ext == ".fbx":
+            mesh_arrays = gl_loaders.load_fbx_mesh_arrays_pyassimp(path)
+            return mesh_arrays.points, mesh_arrays.normals, mesh_arrays.uvs
+        if ext in (".gltf", ".glb"):
+            mesh_arrays = gl_loaders.load_gltf_mesh_arrays(path)
+            return mesh_arrays.points, mesh_arrays.normals, mesh_arrays.uvs
+    except Exception:
+        return None, None, None
+
+    try:
+        model = gl_loaders.load_model(path)
+    except Exception:
+        model = None
+    if model is None or not model.vertices:
+        return None, None, None
+    pts = np.array(model.vertices, dtype="f4").reshape(-1, 3)
+    norms = np.zeros_like(pts)
+    uvs = np.zeros((pts.shape[0], 2), dtype="f4")
+    return pts, norms, uvs
+
+
+def _volume_bounds(path: Path) -> Optional[Tuple[Tuple[float, float, float], Tuple[float, float, float]]]:
+    try:
+        import numpy as np
+    except Exception:
+        return None
+    pts, _, _ = _load_mesh_arrays(path)
+    if pts is None or not getattr(pts, "size", 0):
+        return None
+    try:
+        bmin = pts.min(axis=0)
+        bmax = pts.max(axis=0)
+    except Exception:
+        return None
+    return (float(bmin[0]), float(bmin[1]), float(bmin[2])), (float(bmax[0]), float(bmax[1]), float(bmax[2]))
+
+
+def _ensure_normals(points, normals):
+    try:
+        import numpy as np
+    except Exception:
+        return normals
+    if normals is not None and getattr(normals, "size", 0):
+        return normals
+    normals = np.zeros_like(points)
+    for i in range(0, points.shape[0], 3):
+        tri = points[i:i + 3]
+        if tri.shape[0] != 3:
+            continue
+        a, b, c = tri
+        n = np.cross(b - a, c - a)
+        length = float(np.linalg.norm(n))
+        if length > 1e-6:
+            n = n / length
+        normals[i:i + 3] = n
+    return normals
+
+
+def _ensure_uvs(points, uvs):
+    try:
+        import numpy as np
+    except Exception:
+        return uvs
+    if uvs is not None and getattr(uvs, "size", 0):
+        return uvs
+    try:
+        bmin = points.min(axis=0)
+        bmax = points.max(axis=0)
+    except Exception:
+        bmin = (0.0, 0.0, 0.0)
+        bmax = (1.0, 1.0, 1.0)
+    dx = float(bmax[0] - bmin[0]) if float(bmax[0] - bmin[0]) != 0.0 else 1.0
+    dz = float(bmax[2] - bmin[2]) if float(bmax[2] - bmin[2]) != 0.0 else 1.0
+    u = (points[:, 0] - float(bmin[0])) / dx
+    v = (points[:, 2] - float(bmin[2])) / dz
+    uvs = np.stack([u, v], axis=1).astype("f4")
+    return uvs
+
+
+def _split_mesh(mesh_path: Path, volume_path: Path):
+    try:
+        import numpy as np
+    except Exception:
+        return None, None, None, "numpy unavailable"
+
+    pts, norms, uvs = _load_mesh_arrays(mesh_path)
+    if pts is None or not getattr(pts, "size", 0):
+        return None, None, None, "Mesh load failed."
+    if pts.shape[0] % 3 != 0:
+        return None, None, None, "Mesh is not triangulated."
+
+    bounds = _volume_bounds(volume_path)
+    if bounds is None:
+        return None, None, None, "Volume mesh missing or invalid."
+    (minx, miny, minz), (maxx, maxy, maxz) = bounds
+    bmin = np.array([minx, miny, minz], dtype="f4")
+    bmax = np.array([maxx, maxy, maxz], dtype="f4")
+
+    norms = _ensure_normals(pts, norms)
+    uvs = _ensure_uvs(pts, uvs)
+
+    kept_pts = []
+    kept_norms = []
+    kept_uvs = []
+    eps = 1e-6
+    for i in range(0, pts.shape[0], 3):
+        tri = pts[i:i + 3]
+        if tri.shape[0] != 3:
+            continue
+        inside = True
+        for v in tri:
+            if (v < (bmin - eps)).any() or (v > (bmax + eps)).any():
+                inside = False
+                break
+        if not inside:
+            continue
+        kept_pts.extend(tri.tolist())
+        kept_norms.extend(norms[i:i + 3].tolist())
+        kept_uvs.extend(uvs[i:i + 3].tolist())
+
+    if not kept_pts:
+        return None, None, None, "No faces inside volume."
+
+    pts_out = np.array(kept_pts, dtype="f4").reshape(-1, 3)
+    norms_out = np.array(kept_norms, dtype="f4").reshape(-1, 3)
+    uvs_out = np.array(kept_uvs, dtype="f4").reshape(-1, 2)
+    return pts_out, norms_out, uvs_out, None
+
+
+def _write_obj(path: Path, points, normals, uvs) -> Optional[str]:
+    if points is None or not getattr(points, "size", 0):
+        return "No output mesh."
+    lines = ["# EchoGraph Volume Split"]
+    for x, y, z in points:
+        lines.append(f"v {float(x):.6f} {float(y):.6f} {float(z):.6f}")
+    for u, v in uvs:
+        lines.append(f"vt {float(u):.6f} {float(v):.6f}")
+    for nx, ny, nz in normals:
+        lines.append(f"vn {float(nx):.6f} {float(ny):.6f} {float(nz):.6f}")
+    tri_count = int(points.shape[0] // 3)
+    for i in range(tri_count):
+        a = i * 3 + 1
+        b = a + 1
+        c = a + 2
+        lines.append(f"f {a}/{a}/{a} {b}/{b}/{b} {c}/{c}/{c}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return None
+
+
+class VolumeSplitWidget(QtWidgets.QWidget):
     def __init__(self, node_item, parent=None):
         super().__init__(parent)
         self._node_item = node_item
+        self._scene = None
+        self._scene_connected = False
+        self._pending = False
+        self._last_stamp = None
 
         layout = QtWidgets.QHBoxLayout(self)
         layout.setContentsMargins(6, 4, 6, 4)
-        layout.setSpacing(6)
+        layout.setSpacing(4)
 
-        label = QtWidgets.QLabel("Volume Selector")
-        label.setStyleSheet("color:#e2e8f0;")
-        layout.addWidget(label, 1)
+        self._status = QtWidgets.QLabel("")
+        self._status.setStyleSheet("color:#94a3b8;font-size:11px;")
+        self._status.setMinimumWidth(0)
+        self._status.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        layout.addWidget(self._status, 1)
 
         self._view_btn = QtWidgets.QPushButton("View")
         self._view_btn.setFixedWidth(64)
@@ -189,34 +415,145 @@ class VolumeSelectorWidget(QtWidgets.QWidget):
         self._view_btn.clicked.connect(self._on_view_clicked)
         layout.addWidget(self._view_btn, 0)
 
-        self._ensure_volume_path(notify_scene=False)
+        self._ensure_scene()
+        QtCore.QTimer.singleShot(0, self._update_split)
 
     def sizeHint(self):
         return QtCore.QSize(220, 32)
 
-    def _ensure_volume_path(self, notify_scene: bool = False) -> None:
-        model = getattr(self._node_item, "model", None)
-        if model is None:
+    def _ensure_scene(self):
+        if self._scene is None:
+            self._scene = self._node_item.scene()
+        if self._scene is None or self._scene_connected:
             return
-        path = _volume_path(self._node_item, getattr(model, "name", "volume"))
+        if hasattr(self._scene, "linksChanged"):
+            try:
+                self._scene.linksChanged.connect(self._schedule_update)
+            except Exception:
+                pass
+        if hasattr(self._scene, "paramChanged"):
+            try:
+                self._scene.paramChanged.connect(lambda *_: self._schedule_update())
+            except Exception:
+                pass
+        self._scene_connected = True
+
+    def _schedule_update(self):
+        if self._pending:
+            return
+        self._pending = True
+        QtCore.QTimer.singleShot(80, self._update_split)
+
+    def _set_param(self, name: str, value: str, notify_scene: bool = True):
         try:
-            verts, faces, uvs = _cube()
-            _write_obj(path, verts, faces, uvs=uvs)
+            current = ""
+            for p in (getattr(self._node_item.model, "params", None) or []):
+                if (p.get("name") or "").strip().lower() == (name or "").strip().lower():
+                    current = p.get("value", "") or ""
+                    break
+            if current == value:
+                return
         except Exception:
             pass
         try:
-            self._node_item._set_param_value("path", str(path), rebuild=False, notify_scene=notify_scene)
-            self._node_item._set_param_value("volume", "1", rebuild=False, notify_scene=notify_scene)
+            self._node_item._set_param_value(name, value, rebuild=False, notify_scene=notify_scene)
         except Exception:
             pass
+
+    def _update_split(self, force: bool = False):
+        self._pending = False
+        mesh_path = (_resolve_input_path(self._node_item, {"mesh", "source", "path"}, fallback_index=0) or "").strip()
+        volume_path = (_resolve_input_path(self._node_item, {"volume", "mask"}, fallback_index=1) or "").strip()
+
+        if not mesh_path:
+            self._status.setText("No mesh input.")
+            self._view_btn.setEnabled(False)
+            self._set_param("mesh", "", notify_scene=False)
+            self._set_param("source", "", notify_scene=False)
+            self._set_param("path", "", notify_scene=True)
+            return
+        if not volume_path:
+            self._status.setText("No volume input.")
+            self._view_btn.setEnabled(False)
+            self._set_param("mesh", mesh_path, notify_scene=False)
+            self._set_param("source", mesh_path, notify_scene=False)
+            self._set_param("volume", "", notify_scene=False)
+            self._set_param("path", "", notify_scene=True)
+            return
+        if not os.path.exists(mesh_path):
+            self._status.setText("Mesh not found.")
+            self._view_btn.setEnabled(False)
+            self._set_param("mesh", mesh_path, notify_scene=False)
+            self._set_param("source", mesh_path, notify_scene=False)
+            self._set_param("path", "", notify_scene=True)
+            return
+        if not os.path.exists(volume_path):
+            self._status.setText("Volume not found.")
+            self._view_btn.setEnabled(False)
+            self._set_param("mesh", mesh_path, notify_scene=False)
+            self._set_param("source", mesh_path, notify_scene=False)
+            self._set_param("volume", volume_path, notify_scene=False)
+            self._set_param("path", "", notify_scene=True)
+            return
+
+        mesh_ext = Path(mesh_path).suffix.lower()
+        vol_ext = Path(volume_path).suffix.lower()
+        if mesh_ext not in SUPPORTED_MESH_EXTS:
+            self._status.setText("Unsupported mesh.")
+            self._view_btn.setEnabled(False)
+            self._set_param("mesh", mesh_path, notify_scene=False)
+            self._set_param("source", mesh_path, notify_scene=False)
+            self._set_param("path", "", notify_scene=True)
+            return
+        if vol_ext not in SUPPORTED_MESH_EXTS:
+            self._status.setText("Unsupported volume.")
+            self._view_btn.setEnabled(False)
+            self._set_param("volume", volume_path, notify_scene=False)
+            self._set_param("path", "", notify_scene=True)
+            return
+
         try:
-            self._view_btn.setEnabled(path.exists())
+            st_mesh = os.stat(mesh_path)
+            st_vol = os.stat(volume_path)
+            stamp = (mesh_path, int(st_mesh.st_mtime), int(st_mesh.st_size),
+                     volume_path, int(st_vol.st_mtime), int(st_vol.st_size))
         except Exception:
-            pass
-        try:
-            _ensure_hidden_params(model, ["path", "volume"])
-        except Exception:
-            pass
+            stamp = (mesh_path, None, None, volume_path, None, None)
+
+        out_path = _output_path(self._node_item, mesh_path, volume_path)
+        if not force and self._last_stamp == stamp and out_path.exists():
+            self._status.setText(Path(mesh_path).name)
+            self._view_btn.setEnabled(True)
+            self._set_param("mesh", mesh_path, notify_scene=False)
+            self._set_param("source", mesh_path, notify_scene=False)
+            self._set_param("volume", volume_path, notify_scene=False)
+            self._set_param("path", str(out_path), notify_scene=True)
+            return
+
+        pts, norms, uvs, err = _split_mesh(Path(mesh_path), Path(volume_path))
+        if err:
+            self._status.setText(err)
+            self._view_btn.setEnabled(False)
+            self._set_param("mesh", mesh_path, notify_scene=False)
+            self._set_param("source", mesh_path, notify_scene=False)
+            self._set_param("volume", volume_path, notify_scene=False)
+            self._set_param("path", "", notify_scene=True)
+            return
+
+        err = _write_obj(out_path, pts, norms, uvs)
+        if err:
+            self._status.setText(err)
+            self._view_btn.setEnabled(False)
+            self._set_param("path", "", notify_scene=True)
+            return
+
+        self._last_stamp = stamp
+        self._status.setText(Path(mesh_path).name)
+        self._view_btn.setEnabled(True)
+        self._set_param("mesh", mesh_path, notify_scene=False)
+        self._set_param("source", mesh_path, notify_scene=False)
+        self._set_param("volume", volume_path, notify_scene=False)
+        self._set_param("path", str(out_path), notify_scene=True)
 
     def _on_view_clicked(self):
         try:
@@ -233,7 +570,7 @@ class VolumeSelectorWidget(QtWidgets.QWidget):
 
 
 def render_node_body(node_item, y_cursor: int) -> int:
-    body = VolumeSelectorWidget(node_item)
+    body = VolumeSplitWidget(node_item)
     proxy = QtWidgets.QGraphicsProxyWidget(node_item)
     proxy.setWidget(body)
     proxy.setZValue(node_item.zValue() + 0.1)
@@ -249,7 +586,7 @@ def render_node_body(node_item, y_cursor: int) -> int:
     return y_cursor + h
 
 
-VOLUME_SPEC = Spec(
+VOLUME_SPLIT_SPEC = Spec(
     stripe_color="#38bdf8",
     render_node_body=render_node_body,
     build_ports=build_ports,
@@ -261,4 +598,4 @@ def register(core=None):
         from nodes import core as _core
     else:
         _core = core
-    _core.register_spec("volume_selector", VOLUME_SPEC)
+    _core.register_spec("volume_selector", VOLUME_SPLIT_SPEC)

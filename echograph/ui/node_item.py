@@ -409,10 +409,25 @@ class NodeItem(QtWidgets.QGraphicsObject):
         elif kind_lower == "volume_selector":
             params = list(self.model.params or [])
             names = {(p.get("name") or "").strip().lower() for p in params}
+            if "mesh" not in names:
+                params.append({"name": "mesh", "value": ""})
+            if "source" not in names:
+                params.append({"name": "source", "value": ""})
+            if "volume" not in names:
+                params.append({"name": "volume", "value": ""})
             if "path" not in names:
                 params.append({"name": "path", "value": ""})
-            if "volume" not in names:
-                params.append({"name": "volume", "value": "1"})
+            mesh_entry = None
+            source_entry = None
+            for p in params:
+                nm = (p.get("name") or "").strip().lower()
+                if nm == "mesh":
+                    mesh_entry = p
+                elif nm == "source":
+                    source_entry = p
+            if mesh_entry is not None and source_entry is not None:
+                if not (mesh_entry.get("value") or "").strip() and (source_entry.get("value") or "").strip():
+                    mesh_entry["value"] = source_entry.get("value", "")
             store_key = "__ui_hidden_params"
             hidden_entry = None
             for p in params:
@@ -424,7 +439,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 params.append(hidden_entry)
             raw = hidden_entry.get("value", "")
             hidden = {t.strip().lower() for t in str(raw).split(",") if t.strip()}
-            hidden.update({"path", "volume"})
+            hidden.discard("mesh")
+            hidden.discard("volume")
+            hidden.update({"source", "path"})
             hidden_entry["value"] = ",".join(sorted(hidden))
             self.model.params = params
         elif kind_lower == "uv_unwrap":
@@ -671,7 +688,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         elif kind == "texture_layer":
             hidden.update({"source", "path"})
         elif kind == "volume_selector":
-            hidden.update({"path", "volume"})
+            hidden.update({"source", "path"})
 
         return hidden
 
