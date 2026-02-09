@@ -7,7 +7,7 @@ import math
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 try:
     from PySide6 import QtWidgets, QtCore
@@ -391,6 +391,105 @@ def _pick_input_edge(node_item, port_names=None, fallback_index: Optional[int] =
     if chosen is None and allow_any:
         chosen = in_edges[0]
     return chosen
+
+
+def _ordered_in_edges(item) -> list:
+    sc = None
+    try:
+        sc = item.scene()
+    except Exception:
+        sc = None
+    if sc is None:
+        return []
+    try:
+        return list(sc._ordered_in_edges(item))
+    except Exception:
+        try:
+            return list(sc._in_edges(item))
+        except Exception:
+            return []
+
+
+def _resolve_input_asset(
+    node_item,
+    port_names=None,
+    fallback_index: Optional[int] = None,
+    allow_any: bool = True,
+) -> Dict[str, object]:
+    edge = _pick_input_edge(
+        node_item,
+        port_names=port_names,
+        fallback_index=fallback_index,
+        allow_any=allow_any,
+    )
+    src_item = getattr(edge, "src", None) if edge is not None else None
+    pass_kinds = {"switch", "uv_unwrap", "texture", "texture_pro", "texture_layer"}
+
+    item = src_item
+    visited = set()
+    transform_model = None
+    while item is not None and item not in visited:
+        visited.add(item)
+        model = getattr(item, "model", None)
+        if model is None:
+            break
+        kind = (getattr(model, "kind", "") or "").strip().lower()
+        if kind == "transforms":
+            transform_model = model
+            up_edges = _ordered_in_edges(item)
+            item = getattr(up_edges[0], "src", None) if up_edges else None
+            if item is None:
+                break
+            continue
+        if kind in pass_kinds:
+            up_edges = _ordered_in_edges(item)
+            item = getattr(up_edges[0], "src", None) if up_edges else None
+            if item is None:
+                break
+            continue
+        break
+
+    asset_path = ""
+    owner = ""
+    xform = None
+
+    if transform_model is not None:
+        owner = (getattr(transform_model, "name", "") or "").strip()
+        src_path = (_param_value(transform_model, "source") or "").strip()
+        out_path = (_param_value(transform_model, "path") or "").strip()
+        asset_path = src_path or out_path
+        xform = {
+            "pos": list(_param_vec3(transform_model, "pos", (0.0, 0.0, 0.0))),
+            "rot": list(_param_vec3(transform_model, "rot", (0.0, 0.0, 0.0))),
+            "scl": list(_param_vec3(transform_model, "scl", (1.0, 1.0, 1.0))),
+        }
+
+    if not asset_path:
+        asset_path = (
+            _resolve_input_path(
+                node_item,
+                port_names=port_names,
+                fallback_index=fallback_index,
+                allow_any=allow_any,
+                allow_model_fallback=False,
+            )
+            or ""
+        ).strip()
+
+    if not owner:
+        owner_item = item if item is not None else src_item
+        owner_model = getattr(owner_item, "model", None) if owner_item is not None else None
+        owner = (getattr(owner_model, "name", "") or "").strip()
+
+    if not owner and asset_path:
+        owner = Path(asset_path).name
+
+    return {
+        "path": asset_path,
+        "owner": owner,
+        "xform": xform,
+        "has_transform": bool(transform_model is not None),
+    }
 
 
 def _resolve_input_label(node_item, port_names=None, fallback_index: Optional[int] = None) -> str:
@@ -1245,29 +1344,60 @@ class VolumeSplitWidget(QtWidgets.QWidget):
                     mesh_val = (entry.get("value") or "").strip()
                 elif key == "volume":
                     volume_val = (entry.get("value") or "").strip()
+            mesh_asset = _resolve_input_asset(
+                self._node_item,
+                {"mesh", "source", "path"},
+                fallback_index=0,
+                allow_any=True,
+            )
+            volume_asset = _resolve_input_asset(
+                self._node_item,
+                {"volume", "mask"},
+                fallback_index=1,
+                allow_any=False,
+            )
+            mesh_view_path = (str(mesh_asset.get("path") or "") or mesh_val or path).strip()
+            volume_view_path = (str(volume_asset.get("path") or "") or volume_val).strip()
+            node_name = (getattr(self._node_item.model, "name", "") or "").strip()
+            mesh_owner = (str(mesh_asset.get("owner") or "") or node_name or Path(mesh_view_path).name).strip() if mesh_view_path else ""
+            volume_owner = (
+                str(volume_asset.get("owner") or "")
+                or ((node_name + " Volume").strip() if node_name else "")
+                or (Path(volume_view_path).name if volume_view_path else "")
+            ).strip()
             _debug_log(
                 "view_clicked",
-                node=(getattr(self._node_item.model, "name", "") or "").strip(),
+                node=node_name,
                 path=path,
                 mesh=mesh_val,
                 volume=volume_val,
+                mesh_view_path=mesh_view_path,
+                volume_view_path=volume_view_path,
+                mesh_owner=mesh_owner,
+                volume_owner=volume_owner,
+                mesh_has_transform=bool(mesh_asset.get("has_transform")),
+                volume_has_transform=bool(volume_asset.get("has_transform")),
             )
             win = _resolve_window(self._node_item)
             handler = getattr(win, "open_scene_assets", None) if win is not None else None
-            node_name = (getattr(self._node_item.model, "name", "") or "").strip()
-            if volume_val and mesh_val:
+            if volume_view_path and mesh_view_path:
                 assets = []
-                if path:
-                    assets.append({
-                        "path": path,
-                        "node": node_name or Path(path).name,
-                    })
-                assets.append({
-                    "path": volume_val,
-                    "node": (node_name + " Volume").strip() or Path(volume_val).name,
+                mesh_entry = {
+                    "path": mesh_view_path,
+                    "node": mesh_owner,
+                }
+                if isinstance(mesh_asset.get("xform"), dict):
+                    mesh_entry["xform"] = dict(mesh_asset.get("xform") or {})
+                assets.append(mesh_entry)
+                volume_entry = {
+                    "path": volume_view_path,
+                    "node": volume_owner,
                     "wire_only": True,
                     "volume": True,
-                })
+                }
+                if isinstance(volume_asset.get("xform"), dict):
+                    volume_entry["xform"] = dict(volume_asset.get("xform") or {})
+                assets.append(volume_entry)
                 if callable(handler) and assets:
                     try:
                         handler(assets, frame=False)
@@ -1280,15 +1410,34 @@ class VolumeSplitWidget(QtWidgets.QWidget):
                             pass
                     except Exception:
                         pass
-            if volume_val and not mesh_val:
-                win = _resolve_window(self._node_item)
-                handler = getattr(win, "open_scene_assets", None) if win is not None else None
+            if volume_view_path and not mesh_view_path:
                 assets = [{
-                    "path": volume_val,
-                    "node": (getattr(self._node_item.model, "name", "") or "").strip(),
+                    "path": volume_view_path,
+                    "node": volume_owner,
                     "wire_only": True,
                     "volume": True,
                 }]
+                if isinstance(volume_asset.get("xform"), dict):
+                    assets[0]["xform"] = dict(volume_asset.get("xform") or {})
+                if callable(handler):
+                    try:
+                        handler(assets, frame=False)
+                        return
+                    except TypeError:
+                        try:
+                            handler(assets)
+                            return
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+            if mesh_view_path and not volume_view_path:
+                assets = [{
+                    "path": mesh_view_path,
+                    "node": mesh_owner or Path(mesh_view_path).name,
+                }]
+                if isinstance(mesh_asset.get("xform"), dict):
+                    assets[0]["xform"] = dict(mesh_asset.get("xform") or {})
                 if callable(handler):
                     try:
                         handler(assets, frame=False)
