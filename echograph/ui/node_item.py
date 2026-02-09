@@ -1309,10 +1309,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
             body_h = 32
             node_w = self._BASE_W
         elif kind in ("volume_selector", "split_volume"):
-            body_h = 54
+            # Match embedded VolumeSplitWidget height so buttons fit inside the frame.
+            body_h = 120
             node_w = self._BASE_W
         elif kind == "transforms":
-            body_h = 32
+            # Match embedded TransformWidget height so inputs stay inside the frame.
+            body_h = 160
             node_w = self._BASE_W
         elif kind == "uv_unwrap":
             body_h = 32
@@ -1332,10 +1334,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 body_h = max(body_h, int(getattr(_tl_spec, "PREVIEW_SIZE", 72)) + 40)
             except Exception:
                 pass
-            node_w = self._BASE_W
-        elif kind == "transforms":
-            # Match embedded TransformWidget height so inputs stay inside the frame.
-            body_h = 200
             node_w = self._BASE_W
         else:
             body_h = 0
@@ -1831,7 +1829,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
             y_cursor = 38 + 16 + self._PADDING
 
             kind_lower = (self.model.kind or "").strip().lower()
-            defer_plugin = kind_lower in ("chatbot", "chat bot", "chat_bot")
+            defer_plugin = kind_lower in (
+                "chatbot",
+                "chat bot",
+                "chat_bot",
+                "volume_selector",
+                "split_volume",
+            )
             deferred_render = None
             if kind_lower in ("chatbot", "chat bot", "chat_bot"):
                 try:
@@ -2245,8 +2249,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     self._param_proxies.append(add_proxy)
                     y_cursor += self._PARAM_ROW_H
 
-            # --- Deferred plugin body (Chatbot needs inputs at top) ---
-            if defer_plugin and kind_lower in ("chatbot", "chat bot", "chat_bot"):
+            # --- Deferred plugin body (after standard params) ---
+            if defer_plugin:
                 try:
                     pre_plugin_count = len(getattr(self, "_plugin_proxies", []) or [])
                     if callable(deferred_render):
@@ -2254,7 +2258,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         if isinstance(new_y, (int, float)):
                             y_cursor = int(new_y)
                     post_plugin_count = len(getattr(self, "_plugin_proxies", []) or [])
-                    if post_plugin_count == pre_plugin_count:
+                    if (
+                        post_plugin_count == pre_plugin_count
+                        and kind_lower in ("chatbot", "chat bot", "chat_bot")
+                    ):
                         from nodes.chatbot import spec as _chatbot_spec  # type: ignore
                         new_y = _chatbot_spec.render_node_body(self, y_cursor)
                         if isinstance(new_y, (int, float)):

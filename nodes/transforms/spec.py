@@ -74,7 +74,16 @@ def _repo_logs_dir() -> Path:
     return out
 
 
-def _debug_log(event: str, **fields) -> None:
+def _debug_log(event: str, *, node_item=None, model=None, enabled: Optional[bool] = None, **fields) -> None:
+    if enabled is None:
+        if model is None and node_item is not None:
+            try:
+                model = getattr(node_item, "model", None)
+            except Exception:
+                model = None
+        enabled = _param_bool(model, "debug", False) if model is not None else False
+    if not bool(enabled):
+        return
     record = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "event": str(event or ""),
@@ -122,6 +131,13 @@ def _param_value(model, name: str) -> str:
         if (p.get("name") or "").strip().lower() == key:
             return p.get("value", "") or ""
     return ""
+
+
+def _param_bool(model, name: str, default: bool = False) -> bool:
+    raw = _param_value(model, name).strip().lower()
+    if not raw:
+        return default
+    return raw in ("1", "true", "yes", "on", "y")
 
 
 def _ensure_param(node_item, name: str, default: str = "") -> None:
@@ -183,7 +199,8 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, "pos", "0,0,0")
     _ensure_param(node_item, "rot", "0,0,0")
     _ensure_param(node_item, "scl", "1,1,1")
-    _ensure_hidden_params(getattr(node_item, "model", None), ["source", "path", "pos", "rot", "scl"])
+    _ensure_param(node_item, "debug", "0")
+    _ensure_hidden_params(getattr(node_item, "model", None), ["source", "path", "pos", "rot", "scl", "debug"])
     if hasattr(node_item, "ensure_input"):
         node_item.ensure_input("mesh")
 
@@ -580,7 +597,28 @@ class TransformWidget(QtWidgets.QWidget):
 
         layout.addLayout(btn_row)
 
+        debug_row = QtWidgets.QHBoxLayout()
+        debug_row.setContentsMargins(0, 0, 0, 0)
+        debug_row.setSpacing(6)
+
+        debug_label = QtWidgets.QLabel("Debug")
+        debug_label.setStyleSheet("color:#94a3b8;font-size:10px;")
+        debug_label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        debug_row.addWidget(debug_label, 0)
+
+        self._debug = QtWidgets.QCheckBox()
+        self._debug.setStyleSheet("QCheckBox{color:#e6edf3;}")
+        self._debug.stateChanged.connect(self._on_debug_changed)
+        debug_row.addWidget(self._debug, 0)
+        debug_row.addStretch(1)
+
+        layout.addLayout(debug_row)
+
         self._ensure_scene()
+        try:
+            self._debug.setChecked(_param_bool(getattr(self._node_item, "model", None), "debug", False))
+        except Exception:
+            pass
         QtCore.QTimer.singleShot(0, self._update_transform)
 
         self._poll_timer = QtCore.QTimer(self)
@@ -779,6 +817,7 @@ class TransformWidget(QtWidgets.QWidget):
             if changed:
                 _debug_log(
                     "viewport_xform_sync",
+                    model=model,
                     node=(getattr(model, "name", "") or "").strip() if model is not None else "",
                     pos=[float(pos[0]), float(pos[1]), float(pos[2])],
                     rot=[float(rot[0]), float(rot[1]), float(rot[2])],
@@ -819,6 +858,7 @@ class TransformWidget(QtWidgets.QWidget):
         self._set_xform_controls(pos, rot, scl)
         _debug_log(
             "xform_update_start",
+            model=model,
             node=(getattr(model, "name", "") or "").strip() if model is not None else "",
             source_path=src_path,
             pos=[float(pos[0]), float(pos[1]), float(pos[2])],
@@ -954,6 +994,10 @@ class TransformWidget(QtWidgets.QWidget):
         except Exception:
             pass
 
+    def _on_debug_changed(self, state: int):
+        val = "1" if bool(state) else "0"
+        self._set_param("debug", val, notify_scene=True)
+
     def _set_xform_controls(self, pos, rot, scl):
         if self._xform_updating:
             return
@@ -1029,6 +1073,7 @@ class TransformWidget(QtWidgets.QWidget):
                 model = None
             _debug_log(
                 "xform_edit_commit",
+                model=model,
                 node=(getattr(model, "name", "") or "").strip() if model is not None else "",
                 kind=str(kind or ""),
                 pos=[float(pos[0]), float(pos[1]), float(pos[2])],
