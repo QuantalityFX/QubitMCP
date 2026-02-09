@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import math
 import os
 import re
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -57,6 +59,33 @@ def _transform_dir(node_item) -> Path:
     out = base / "transforms"
     out.mkdir(parents=True, exist_ok=True)
     return out
+
+
+def _repo_logs_dir() -> Path:
+    try:
+        root = Path(__file__).resolve().parents[2]
+    except Exception:
+        root = Path.cwd()
+    out = root / "logs"
+    try:
+        out.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    return out
+
+
+def _debug_log(event: str, **fields) -> None:
+    record = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "event": str(event or ""),
+    }
+    record.update(fields or {})
+    try:
+        log_path = _repo_logs_dir() / "transforms_debug.jsonl"
+        with log_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+    except Exception:
+        pass
 
 
 def _resolve_window(node_item):
@@ -380,10 +409,12 @@ def _apply_transform(points, normals, pos, rot, scl):
     R = Rx(rx) @ Ry(ry) @ Rz(rz)
     svec = np.array([sx, sy, sz], dtype="f4")
 
+    # Match viewport transform semantics: move pivot to mesh center,
+    # apply scale/rotation there, then place by explicit position only.
     centered = pts - c
     centered = centered * svec
     rotated = (R @ centered.T).T
-    transformed = rotated + c + np.array(pos, dtype="f4")
+    transformed = rotated + np.array(pos, dtype="f4")
 
     inv = np.array(
         [
@@ -746,6 +777,16 @@ class TransformWidget(QtWidgets.QWidget):
             changed = self._set_param("scl", _format_vec3(scl), notify_scene=False) or changed
             self._set_xform_controls(pos, rot, scl)
             if changed:
+                _debug_log(
+                    "viewport_xform_sync",
+                    node=(getattr(model, "name", "") or "").strip() if model is not None else "",
+                    pos=[float(pos[0]), float(pos[1]), float(pos[2])],
+                    rot=[float(rot[0]), float(rot[1]), float(rot[2])],
+                    scl=[float(scl[0]), float(scl[1]), float(scl[2])],
+                    source=(_param_value(model, "source") if model is not None else ""),
+                    path=(_param_value(model, "path") if model is not None else ""),
+                    auto_bake=bool(self._should_auto_bake()),
+                )
                 self._emit_param_changed()
             if self._should_auto_bake():
                 self._schedule_update()
@@ -776,6 +817,16 @@ class TransformWidget(QtWidgets.QWidget):
         rot = _param_vec3(model, "rot", (0.0, 0.0, 0.0))
         scl = _param_vec3(model, "scl", (1.0, 1.0, 1.0))
         self._set_xform_controls(pos, rot, scl)
+        _debug_log(
+            "xform_update_start",
+            node=(getattr(model, "name", "") or "").strip() if model is not None else "",
+            source_path=src_path,
+            pos=[float(pos[0]), float(pos[1]), float(pos[2])],
+            rot=[float(rot[0]), float(rot[1]), float(rot[2])],
+            scl=[float(scl[0]), float(scl[1]), float(scl[2])],
+            force=bool(force),
+            auto_bake=bool(self._should_auto_bake()),
+        )
 
         identity = (
             all(abs(v) < 1e-6 for v in pos)
@@ -972,6 +1023,21 @@ class TransformWidget(QtWidgets.QWidget):
             changed = self._set_param("scl", _format_vec3(scl), notify_scene=False) or changed
         if changed:
             self._push_view_xform(pos, rot, scl)
+            try:
+                model = getattr(self._node_item, "model", None)
+            except Exception:
+                model = None
+            _debug_log(
+                "xform_edit_commit",
+                node=(getattr(model, "name", "") or "").strip() if model is not None else "",
+                kind=str(kind or ""),
+                pos=[float(pos[0]), float(pos[1]), float(pos[2])],
+                rot=[float(rot[0]), float(rot[1]), float(rot[2])],
+                scl=[float(scl[0]), float(scl[1]), float(scl[2])],
+                source=(_param_value(model, "source") if model is not None else ""),
+                path=(_param_value(model, "path") if model is not None else ""),
+                auto_bake=bool(self._should_auto_bake()),
+            )
             self._emit_param_changed()
             if self._should_auto_bake():
                 self._schedule_update()
