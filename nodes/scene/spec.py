@@ -693,6 +693,38 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             win = card.window()
             return getattr(win, "gl_view", None) if win is not None else None
 
+        def _scene_is_active() -> bool:
+            try:
+                win = card.window()
+                active = getattr(win, "_active_scene_node", None) if win is not None else None
+                node_ref = getattr(card, "_node_ref", None)
+                if active is None or node_ref is None:
+                    return True
+                return active is node_ref
+            except Exception:
+                return True
+
+        def _lookup_saved_xform(owner: str):
+            try:
+                node_ref = getattr(card, "_node_ref", None)
+                if node_ref is None:
+                    return None
+                xforms = getattr(node_ref, "_scene_xforms", None)
+                if not isinstance(xforms, dict):
+                    return None
+                if owner in xforms:
+                    return xforms.get(owner)
+                lo = str(owner).strip().lower()
+                for k, v in xforms.items():
+                    try:
+                        if str(k).strip().lower() == lo:
+                            return v
+                    except Exception:
+                        continue
+            except Exception:
+                return None
+            return None
+
         def _set_xyz(spins, xyz):
             try:
                 card._xform_updating = True
@@ -761,8 +793,20 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                     pass
 
         def _load_xform_from_view(owner: str):
+            if not _scene_is_active():
+                xf = _lookup_saved_xform(owner)
+                if isinstance(xf, dict):
+                    _set_xyz(card._xform_pos, xf.get("pos", (0.0, 0.0, 0.0)))
+                    _set_xyz(card._xform_rot, xf.get("rot", (0.0, 0.0, 0.0)))
+                    _set_xyz(card._xform_scl, xf.get("scl", (1.0, 1.0, 1.0)))
+                return
             glv = _get_glv()
             if glv is None:
+                xf = _lookup_saved_xform(owner)
+                if isinstance(xf, dict):
+                    _set_xyz(card._xform_pos, xf.get("pos", (0.0, 0.0, 0.0)))
+                    _set_xyz(card._xform_rot, xf.get("rot", (0.0, 0.0, 0.0)))
+                    _set_xyz(card._xform_scl, xf.get("scl", (1.0, 1.0, 1.0)))
                 return
             # Prefer splat xform when owner is a splat
             getf = getattr(glv, "_mgl_get_scene_asset_xform", None)
@@ -869,6 +913,10 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             card._scene_selected_owner = owner
             card._scene_outliner_user_selected = True
             xform_panel.setEnabled(True)
+            _load_xform_from_view(owner)
+
+            if not _scene_is_active():
+                return
 
             # tell viewport which owner is selected (for gizmo draw)
             try:

@@ -3607,6 +3607,24 @@ class MGLRendererMixin:
 
         # scene xforms (mesh + splat) for snapshot persistence
         try:
+            offset_keys = None
+            try:
+                offset_map = getattr(self, "_mgl_scene_xform_offset_by_owner", None)
+                if isinstance(offset_map, dict) and offset_map:
+                    offset_keys = {str(k).strip().lower() for k in offset_map.keys()}
+            except Exception:
+                offset_keys = None
+
+            def _xf_is_identity(pos, rot, scl) -> bool:
+                try:
+                    return (
+                        all(abs(float(v)) < 1e-6 for v in (pos or (0.0, 0.0, 0.0)))
+                        and all(abs(float(v)) < 1e-6 for v in (rot or (0.0, 0.0, 0.0)))
+                        and all(abs(float(v) - 1.0) < 1e-6 for v in (scl or (1.0, 1.0, 1.0)))
+                    )
+                except Exception:
+                    return False
+
             mesh_xf = {}
             raw_mesh = getattr(self, "_mgl_scene_xforms_by_owner", None)
             if isinstance(raw_mesh, dict):
@@ -3619,6 +3637,13 @@ class MGLRendererMixin:
                         scl = [float(v) for v in xf.get("scl", (1.0, 1.0, 1.0))]
                     except Exception:
                         continue
+                    try:
+                        if offset_keys:
+                            key = str(owner).strip().lower()
+                            if key in offset_keys and _xf_is_identity(pos, rot, scl):
+                                continue
+                    except Exception:
+                        pass
                     mesh_xf[str(owner)] = {"pos": pos, "rot": rot, "scl": scl}
 
             splat_xf = {}
@@ -3707,6 +3732,24 @@ class MGLRendererMixin:
                 except Exception:
                     pass
 
+                offset_keys = None
+                try:
+                    offset_map = getattr(self, "_mgl_scene_xform_offset_by_owner", None)
+                    if isinstance(offset_map, dict) and offset_map:
+                        offset_keys = {str(k).strip().lower() for k in offset_map.keys()}
+                except Exception:
+                    offset_keys = None
+
+                def _xf_is_identity(pos, rot, scl) -> bool:
+                    try:
+                        return (
+                            all(abs(float(v)) < 1e-6 for v in (pos or (0.0, 0.0, 0.0)))
+                            and all(abs(float(v)) < 1e-6 for v in (rot or (0.0, 0.0, 0.0)))
+                            and all(abs(float(v) - 1.0) < 1e-6 for v in (scl or (1.0, 1.0, 1.0)))
+                        )
+                    except Exception:
+                        return False
+
                 updated_owners = []
 
                 # Apply mesh transforms
@@ -3718,6 +3761,13 @@ class MGLRendererMixin:
                             pos = xf.get("pos")
                             rot = xf.get("rot")
                             scl = xf.get("scl")
+                            try:
+                                if offset_keys:
+                                    key = str(owner).strip().lower()
+                                    if key in offset_keys and _xf_is_identity(pos, rot, scl):
+                                        continue
+                            except Exception:
+                                pass
                             # update cache
                             d = getattr(self, "_mgl_scene_xforms_by_owner", None)
                             if not isinstance(d, dict):

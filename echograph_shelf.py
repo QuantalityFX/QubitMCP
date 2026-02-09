@@ -2958,6 +2958,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 "visible": visible,
                 "xform": entry.get("xform"),
             }
+            if "xform_offset" in entry:
+                clean_entry["xform_offset"] = bool(entry.get("xform_offset"))
             if "wire_only" in entry:
                 clean_entry["wire_only"] = bool(entry.get("wire_only"))
             if "volume" in entry:
@@ -2989,6 +2991,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                         _round3((xf or {}).get("pos"), (0.0, 0.0, 0.0)),
                         _round3((xf or {}).get("rot"), (0.0, 0.0, 0.0)),
                         _round3((xf or {}).get("scl"), (1.0, 1.0, 1.0)),
+                        bool(entry.get("xform_offset", False)),
                     )
                 )
             sig = tuple(sorted(sig))

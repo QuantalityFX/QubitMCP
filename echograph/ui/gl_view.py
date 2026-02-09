@@ -2186,6 +2186,19 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     xf = entry.get("xform")
                     if not isinstance(xf, dict):
                         continue
+                    if entry.get("xform_offset"):
+                        try:
+                            pos = xf.get("pos", (0.0, 0.0, 0.0))
+                            rot = xf.get("rot", (0.0, 0.0, 0.0))
+                            scl = xf.get("scl", (1.0, 1.0, 1.0))
+                            if (
+                                all(abs(float(v)) < 1e-6 for v in (pos or (0.0, 0.0, 0.0)))
+                                and all(abs(float(v)) < 1e-6 for v in (rot or (0.0, 0.0, 0.0)))
+                                and all(abs(float(v) - 1.0) < 1e-6 for v in (scl or (1.0, 1.0, 1.0)))
+                            ):
+                                continue
+                        except Exception:
+                            pass
                     ext = str(entry.get("ext") or "").lower()
                     if not ext:
                         ext = Path(str(entry.get("path", "") or "")).suffix.lower()
