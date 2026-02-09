@@ -275,6 +275,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                         break
         except Exception:
             xf = None
+        xform_offset = kind in ("split_volume", "volume_selector")
         entry = {
             "path": path,
             "texture": texture,
@@ -283,6 +284,8 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             "visible": node_name not in hidden,
             "xform": xf if isinstance(xf, dict) else None,
         }
+        if xform_offset:
+            entry["xform_offset"] = True
         if wire_only:
             entry["wire_only"] = True
             entry["volume"] = is_volume

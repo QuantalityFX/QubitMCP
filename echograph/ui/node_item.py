@@ -2620,6 +2620,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         texture = (p.get("value") or "").strip()
                         break
             xf = None
+            xform_offset = kind in ("split_volume", "volume_selector")
             try:
                 if model_name and model_name in xforms:
                     xf = xforms.get(model_name)
@@ -2631,19 +2632,22 @@ class NodeItem(QtWidgets.QGraphicsObject):
                             break
             except Exception:
                 xf = None
-            if xf is None:
-                try:
-                    transform_model = _find_upstream_transform(src_item)
-                except Exception:
-                    transform_model = None
-                if transform_model is not None and path:
-                    src_path = _param_val(transform_model, "source")
-                    out_path = _param_val(transform_model, "path")
-                    if _norm_path(path) == _norm_path(src_path) and _norm_path(path) != _norm_path(out_path):
+            try:
+                transform_model = _find_upstream_transform(src_item)
+            except Exception:
+                transform_model = None
+            if transform_model is not None and path:
+                src_path = _param_val(transform_model, "source")
+                out_path = _param_val(transform_model, "path")
+                norm_path = _norm_path(path)
+                if norm_path == _norm_path(src_path) and norm_path != _norm_path(out_path):
+                    if xf is None:
                         pos = _parse_vec3(_param_val(transform_model, "pos"), (0.0, 0.0, 0.0))
                         rot = _parse_vec3(_param_val(transform_model, "rot"), (0.0, 0.0, 0.0))
                         scl = _parse_vec3(_param_val(transform_model, "scl"), (1.0, 1.0, 1.0))
                         xf = {"pos": list(pos), "rot": list(rot), "scl": list(scl)}
+                else:
+                    xform_offset = True
             asset = {
                 "path": path,
                 "texture": texture,
@@ -2652,6 +2656,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "visible": model_name not in hidden,
                 "xform": xf if isinstance(xf, dict) else None,
             }
+            if xform_offset:
+                asset["xform_offset"] = True
             if texture_provider is not None:
                 asset["texture_provider"] = texture_provider
             assets.append(asset)

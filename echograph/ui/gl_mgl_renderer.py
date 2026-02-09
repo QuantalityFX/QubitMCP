@@ -862,6 +862,7 @@ class MGLRendererMixin:
 
         # pivot around asset bounds center if we have it
         cx = cy = cz = 0.0
+        offset_mode = False
         try:
             bounds_map = None
             if use_splat_xform:
@@ -884,10 +885,33 @@ class MGLRendererMixin:
                 cx, cy, cz = float(c[0]), float(c[1]), float(c[2])
         except Exception:
             pass
+        try:
+            offset_map = getattr(self, "_mgl_scene_xform_offset_by_owner", None)
+            if isinstance(offset_map, dict) and apply_to_scene_models and not use_splat_xform:
+                if owner in offset_map:
+                    offset_mode = True
+                else:
+                    lo = str(owner).strip().lower()
+                    for k in offset_map.keys():
+                        try:
+                            if str(k).strip().lower() == lo:
+                                offset_mode = True
+                                break
+                        except Exception:
+                            continue
+        except Exception:
+            offset_mode = False
 
         px, py, pz = x["pos"]
         rx, ry, rz = x["rot"]  # degrees
         sx, sy, sz = x["scl"]
+        if offset_mode:
+            try:
+                px = float(px) + cx
+                py = float(py) + cy
+                pz = float(pz) + cz
+            except Exception:
+                pass
 
         # IMPORTANT:
         # gl_view/gizmo stores rot_deg using its negated-angle convention.

@@ -2078,6 +2078,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             "_mgl_scene_splat_bounds_by_owner",
             "_mgl_scene_xforms_by_owner",
             "_mgl_scene_splat_xforms_by_owner",
+            "_mgl_scene_xform_offset_by_owner",
         ):
             try:
                 setattr(self, name, {})
@@ -2107,6 +2108,10 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 pass
             try:
                 self._mgl_scene_splat_xforms_by_owner = {}
+            except Exception:
+                pass
+            try:
+                self._mgl_scene_xform_offset_by_owner = {}
             except Exception:
                 pass
             # Reset visibility map from current assets (avoid persisting prior hides)
@@ -2142,6 +2147,32 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 pass
             # Seed xforms from saved workflow data (if present on assets)
             try:
+                # Track owners that should use offset-based xforms (keep baked coords stable)
+                offset_map = {}
+                for entry in assets or []:
+                    if not isinstance(entry, dict):
+                        continue
+                    if not entry.get("xform_offset"):
+                        continue
+                    name = (entry.get("node") or "").strip()
+                    if not name:
+                        path_str = str(entry.get("path", "") or "").strip()
+                        if path_str:
+                            name = Path(path_str).name
+                    if not name:
+                        continue
+                    offset_map[name] = True
+                if offset_map:
+                    self._mgl_scene_xform_offset_by_owner = offset_map
+                elif isinstance(getattr(self, "_mgl_scene_xform_offset_by_owner", None), dict):
+                    self._mgl_scene_xform_offset_by_owner = {}
+                try:
+                    renderer = getattr(self, "_mgl_renderer", None)
+                    if renderer is not None and renderer is not self:
+                        setattr(renderer, "_mgl_scene_xform_offset_by_owner", dict(self._mgl_scene_xform_offset_by_owner))
+                except Exception:
+                    pass
+
                 for entry in assets or []:
                     if not isinstance(entry, dict):
                         continue
