@@ -2417,6 +2417,70 @@ class NodeItem(QtWidgets.QGraphicsObject):
         if sc is None:
             return []
 
+        def _param_val(model, name: str) -> str:
+            key = (name or "").strip().lower()
+            for p in (getattr(model, "params", None) or []):
+                if (p.get("name") or "").strip().lower() == key:
+                    return (p.get("value") or "").strip()
+            return ""
+
+        def _parse_vec3(val, default):
+            try:
+                parts = [p.strip() for p in str(val or "").split(",")]
+                if len(parts) >= 3:
+                    return (float(parts[0]), float(parts[1]), float(parts[2]))
+            except Exception:
+                pass
+            return default
+
+        def _norm_path(p: str) -> str:
+            try:
+                return os.path.normcase(os.path.normpath(p))
+            except Exception:
+                return (p or "").strip()
+
+        def _ordered_in_edges(item):
+            try:
+                return list(sc._ordered_in_edges(item))
+            except Exception:
+                try:
+                    return list(sc._in_edges(item))
+                except Exception:
+                    return []
+
+        def _pick_input_edge(item, port_names=None):
+            edges = _ordered_in_edges(item)
+            if port_names:
+                wanted = {str(n).strip().lower() for n in port_names if str(n).strip()}
+                for edge in edges:
+                    name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
+                    if (name or "").strip().lower() in wanted:
+                        return edge
+            return edges[0] if edges else None
+
+        def _find_upstream_transform(start_item):
+            item = start_item
+            visited = set()
+            pass_kinds = {"switch", "uv_unwrap", "texture", "texture_pro", "texture_layer", "split_volume", "volume_selector"}
+            depth = 0
+            while item is not None and item not in visited and depth < 10:
+                visited.add(item)
+                depth += 1
+                model = getattr(item, "model", None)
+                if model is None:
+                    break
+                kind = (getattr(model, "kind", "") or "").strip().lower()
+                if kind == "transforms":
+                    return model
+                if kind not in pass_kinds:
+                    break
+                if kind in ("split_volume", "volume_selector"):
+                    edge = _pick_input_edge(item, {"mesh", "source", "path"})
+                else:
+                    edge = _pick_input_edge(item)
+                item = getattr(edge, "src", None) if edge is not None else None
+            return None
+
         def _resolve_input_item(node_item):
             def _trace(item, depth=0, visited=None):
                 if item is None or depth > 8:
@@ -2567,6 +2631,19 @@ class NodeItem(QtWidgets.QGraphicsObject):
                             break
             except Exception:
                 xf = None
+            if xf is None:
+                try:
+                    transform_model = _find_upstream_transform(src_item)
+                except Exception:
+                    transform_model = None
+                if transform_model is not None and path:
+                    src_path = _param_val(transform_model, "source")
+                    out_path = _param_val(transform_model, "path")
+                    if _norm_path(path) == _norm_path(src_path) and _norm_path(path) != _norm_path(out_path):
+                        pos = _parse_vec3(_param_val(transform_model, "pos"), (0.0, 0.0, 0.0))
+                        rot = _parse_vec3(_param_val(transform_model, "rot"), (0.0, 0.0, 0.0))
+                        scl = _parse_vec3(_param_val(transform_model, "scl"), (1.0, 1.0, 1.0))
+                        xf = {"pos": list(pos), "rot": list(rot), "scl": list(scl)}
             asset = {
                 "path": path,
                 "texture": texture,
