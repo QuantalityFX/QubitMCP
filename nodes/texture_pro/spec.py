@@ -1031,6 +1031,10 @@ class TextureProProvider:
         self._apply_pan(self._pan)
         self._apply_life_range(self._life_min, self._life_max)
         self._last_gen_rev = self._generators[self._mode].revision
+        self._preview_generators = None
+        self._preview_size = None
+        self._preview_revision = 0
+        self._preview_last_sig = None
 
     def set_mode(self, mode: str) -> None:
         mode = (mode or "").strip().lower()
@@ -1211,6 +1215,128 @@ class TextureProProvider:
     def image(self) -> QtGui.QImage:
         return self._generators[self._mode].image()
 
+    @property
+    def preview_revision(self) -> int:
+        return int(self._preview_revision)
+
+    def _ensure_preview_generators(self, size: int) -> dict:
+        size = max(16, int(size))
+        if self._preview_generators is None or self._preview_size != size:
+            self._preview_size = size
+            self._preview_generators = {
+                "checkerboard": CheckerboardGenerator(size=size),
+                "matrix_rain": MatrixRainGenerator(size=size),
+            }
+            self._preview_last_sig = None
+            self._preview_revision += 1
+        return self._preview_generators
+
+    def _sync_preview_state(self) -> None:
+        gens = self._preview_generators
+        if not gens:
+            return
+        for gen in gens.values():
+            fn = getattr(gen, "set_size", None)
+            if callable(fn):
+                try:
+                    fn(int(self._preview_size or self._size))
+                except Exception:
+                    pass
+            fn = getattr(gen, "set_density", None)
+            if callable(fn):
+                try:
+                    fn(int(self._density))
+                except Exception:
+                    pass
+            fn = getattr(gen, "set_pack", None)
+            if callable(fn):
+                try:
+                    fn(int(self._pack_x), int(self._pack_y))
+                except Exception:
+                    pass
+            fn = getattr(gen, "set_offset", None)
+            if callable(fn):
+                try:
+                    fn(float(self._offset_x), float(self._offset_y))
+                except Exception:
+                    pass
+            fn = getattr(gen, "set_background", None)
+            if callable(fn):
+                try:
+                    fn(self._bg_rgba)
+                except Exception:
+                    pass
+        gen = gens.get("matrix_rain")
+        if gen is None:
+            return
+        fn = getattr(gen, "set_direction", None)
+        if callable(fn):
+            try:
+                fn(self._direction)
+            except Exception:
+                pass
+        fn = getattr(gen, "set_pan", None)
+        if callable(fn):
+            try:
+                fn(bool(self._pan))
+            except Exception:
+                pass
+        fn = getattr(gen, "set_life_range", None)
+        if callable(fn):
+            try:
+                fn(float(self._life_min), float(self._life_max))
+            except Exception:
+                pass
+
+    def preview_image(self, size: int) -> Optional[QtGui.QImage]:
+        gens = self._ensure_preview_generators(size)
+        self._sync_preview_state()
+        gen = gens.get(self._mode)
+        if gen is None:
+            return None
+        try:
+            img = gen.image()
+        except Exception:
+            img = None
+        if img is None:
+            return None
+        try:
+            sig = (self._mode, int(gen.revision), int(self._preview_size or size))
+        except Exception:
+            sig = None
+        if sig is not None and sig != self._preview_last_sig:
+            self._preview_last_sig = sig
+            self._preview_revision += 1
+        return img
+
+    def advance_preview(self, dt: float, frame_id: Optional[int] = None, size: Optional[int] = None) -> bool:
+        size = self._preview_size if size is None else size
+        if size is None:
+            size = self._size
+        gens = self._ensure_preview_generators(size)
+        self._sync_preview_state()
+        gen = gens.get(self._mode)
+        if gen is None:
+            return False
+        try:
+            changed = gen.advance(float(dt) * float(self._speed), frame_id)
+        except TypeError:
+            try:
+                changed = gen.advance(float(dt) * float(self._speed))
+            except Exception:
+                changed = False
+        except Exception:
+            changed = False
+        try:
+            sig = (self._mode, int(gen.revision), int(self._preview_size or size))
+        except Exception:
+            sig = None
+        if sig is not None and (changed or sig != self._preview_last_sig):
+            self._preview_last_sig = sig
+            self._preview_revision += 1
+            return True
+        return bool(changed)
+
     def gpu_state(self) -> dict:
         atlas, grid = _get_glyph_atlas()
         bg_enabled = 0.0
@@ -1353,6 +1479,7 @@ class TextureProWidget(QtWidgets.QWidget):
         self._preview_last_ts = 0.0
         self._preview_min_interval = 0.12
         self._advance_last_ts = 0.0
+        self._preview_scale_bucket = 1.0
         self._frame_hooked = False
         self._last_frame_ts = 0.0
         self._input_item = None
@@ -2791,6 +2918,12 @@ class TextureProWidget(QtWidgets.QWidget):
         fps = self._view_fps(glv)
         selected = self._is_selected()
         if selected and not self._provider_driven_by_view(glv):
+            preview_target = None
+            try:
+                bucket = self._preview_scale_for_zoom(self._graph_view_scale())
+                preview_target = max(16, int(round(float(self._preview.width()) * float(bucket))))
+            except Exception:
+                preview_target = None
             now = time.perf_counter()
             try:
                 min_interval = float(getattr(self, "_preview_min_interval", 0.12) or 0.0)
@@ -2808,10 +2941,24 @@ class TextureProWidget(QtWidgets.QWidget):
                     dt = 1.0 / max(fps, 1.0)
                 try:
                     frame_id = getattr(glv, "_mgl_frame_id", None) if from_view and glv is not None else None
-                    self._provider.advance(dt, frame_id=frame_id)
+                    advance_preview = getattr(self._provider, "advance_preview", None)
+                    if callable(advance_preview):
+                        try:
+                            advance_preview(dt, frame_id=frame_id, size=preview_target)
+                        except TypeError:
+                            try:
+                                advance_preview(dt, frame_id=frame_id)
+                            except TypeError:
+                                advance_preview(dt)
+                    else:
+                        self._provider.advance(dt, frame_id=frame_id)
                 except TypeError:
                     try:
-                        self._provider.advance(dt)
+                        advance_preview = getattr(self._provider, "advance_preview", None)
+                        if callable(advance_preview):
+                            advance_preview(dt)
+                        else:
+                            self._provider.advance(dt)
                     except Exception:
                         pass
                 except Exception:
@@ -2875,6 +3022,50 @@ class TextureProWidget(QtWidgets.QWidget):
                 pass
         return False
 
+    def _graph_view_scale(self) -> float:
+        sc = getattr(self._node_item, "scene", None)
+        try:
+            sc = sc() if callable(sc) else sc
+        except Exception:
+            sc = None
+        if sc is None:
+            return 1.0
+        try:
+            views = sc.views()
+        except Exception:
+            return 1.0
+        scale = 1.0
+        for v in views or []:
+            try:
+                tr = v.transform()
+                cand = max(abs(float(tr.m11())), abs(float(tr.m22())))
+                if cand > scale:
+                    scale = cand
+            except Exception:
+                pass
+        if not math.isfinite(scale) or scale <= 0.0:
+            scale = 1.0
+        return scale
+
+    def _preview_scale_for_zoom(self, scale: float) -> float:
+        try:
+            scale = float(scale)
+        except Exception:
+            return 1.0
+        if not math.isfinite(scale) or scale <= 0.0:
+            return 1.0
+        if scale < 0.55:
+            return 0.5
+        if scale < 0.85:
+            return 0.75
+        if scale < 1.25:
+            return 1.0
+        if scale < 1.7:
+            return 1.5
+        if scale < 2.25:
+            return 2.0
+        return 2.5
+
     def _refresh_preview(self, force: bool = False):
         if not force:
             try:
@@ -2894,33 +3085,99 @@ class TextureProWidget(QtWidgets.QWidget):
                 last = float(getattr(self, "_preview_last_ts", 0.0) or 0.0)
                 if last > 0.0 and (now - last) < min_interval:
                     return
-        rev = None
+        desired_bucket = 1.0
         try:
-            rev = int(getattr(self._provider, "revision", 0))
+            desired_bucket = self._preview_scale_for_zoom(self._graph_view_scale())
         except Exception:
-            rev = None
-        if not force and rev is not None and rev == self._last_rev:
-            return
+            desired_bucket = 1.0
+        prev_bucket = float(getattr(self, "_preview_scale_bucket", 1.0) or 1.0)
+        bucket_changed = abs(desired_bucket - prev_bucket) > 1e-3
+        if not force:
+            try:
+                if self._preview.pixmap() is None:
+                    force = True
+            except Exception:
+                pass
+        rev_key = None
+        if not force:
+            try:
+                preview_rev = getattr(self._provider, "preview_revision", None)
+                if preview_rev is not None:
+                    rev_key = ("preview", int(preview_rev))
+            except Exception:
+                rev_key = None
+            if rev_key is None:
+                try:
+                    rev = int(getattr(self._provider, "revision", 0))
+                except Exception:
+                    rev = None
+                if rev is not None:
+                    rev_key = ("main", int(rev))
+            if rev_key is not None and rev_key == self._last_rev and not bucket_changed:
+                return
+        preview_w = max(1, int(self._preview.width()))
+        preview_h = max(1, int(self._preview.height()))
+        target_px = max(16, int(round(float(preview_w) * float(desired_bucket))))
         try:
-            img = self._provider.image()
+            preview_image = getattr(self._provider, "preview_image", None)
+            if callable(preview_image):
+                try:
+                    img = preview_image(target_px)
+                except TypeError:
+                    img = preview_image()
+            else:
+                img = self._provider.image()
         except Exception:
             img = None
         if img is None or img.isNull():
             return
+        bucket = max(0.5, min(2.5, float(desired_bucket)))
+        try:
+            max_bucket = min(float(img.width()) / float(preview_w), float(img.height()) / float(preview_h))
+        except Exception:
+            max_bucket = None
+        if max_bucket is not None and max_bucket > 0.0:
+            bucket = min(bucket, max(0.5, min(2.5, max_bucket)))
+        target_w = max(1, int(round(float(preview_w) * bucket)))
+        target_h = max(1, int(round(float(preview_h) * bucket)))
         pix = QtGui.QPixmap.fromImage(img)
-        pix = pix.scaled(
-            self._preview.width(),
-            self._preview.height(),
-            QtCore.Qt.KeepAspectRatio,
-            QtCore.Qt.SmoothTransformation,
-        )
+        transform_mode = QtCore.Qt.SmoothTransformation if bucket >= 1.0 else QtCore.Qt.FastTransformation
+        if pix.width() != target_w or pix.height() != target_h:
+            pix = pix.scaled(
+                target_w,
+                target_h,
+                QtCore.Qt.KeepAspectRatio,
+                transform_mode,
+            )
+        try:
+            pix.setDevicePixelRatio(max(0.5, float(bucket)))
+        except Exception:
+            pass
         self._preview.setPixmap(pix)
         try:
             self._preview_last_ts = time.perf_counter()
         except Exception:
             pass
-        if rev is not None:
-            self._last_rev = rev
+        try:
+            self._preview_scale_bucket = float(bucket)
+        except Exception:
+            pass
+        if rev_key is None:
+            try:
+                preview_rev = getattr(self._provider, "preview_revision", None)
+                if preview_rev is not None:
+                    rev_key = ("preview", int(preview_rev))
+            except Exception:
+                rev_key = None
+        if rev_key is None:
+            try:
+                rev = int(getattr(self._provider, "revision", 0))
+            except Exception:
+                rev = None
+            if rev is not None:
+                rev_key = ("main", int(rev))
+        if rev_key is not None:
+            self._last_rev = rev_key
 
     def _on_view_clicked(self):
         if self._scene_input and self._input_item is not None:

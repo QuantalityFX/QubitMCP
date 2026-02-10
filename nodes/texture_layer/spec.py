@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 import time
 from pathlib import Path
@@ -263,6 +264,9 @@ class TextureLayerProvider:
         self._last_overlay_sig = None
         self._last_base_rev = None
         self._last_overlay_rev = None
+        self._preview_image: Optional[QtGui.QImage] = None
+        self._preview_sig = None
+        self._preview_revision = 0
 
     def set_sources(self, base_item, overlay_item) -> None:
         if base_item is self._base_item and overlay_item is self._overlay_item:
@@ -280,7 +284,7 @@ class TextureLayerProvider:
         self._last_overlay_rev = None
         self._revision += 1
 
-    def _source_info(self, item, tag: str):
+    def _source_info(self, item, tag: str, preview_size: Optional[int] = None):
         if item is None:
             model = getattr(self._node_item, "model", None)
             if model is None:
@@ -333,15 +337,34 @@ class TextureLayerProvider:
             provider = getattr(model, "_texture_layer_provider", None)
         if provider is not None:
             rev = None
-            try:
-                rev = int(getattr(provider, "revision", 0))
-            except Exception:
-                rev = None
+            if preview_size is not None:
+                try:
+                    prev_rev = getattr(provider, "preview_revision", None)
+                    if prev_rev is not None:
+                        rev = int(prev_rev)
+                except Exception:
+                    rev = None
+            if rev is None:
+                try:
+                    rev = int(getattr(provider, "revision", 0))
+                except Exception:
+                    rev = None
             img = None
-            try:
-                img = provider.image()
-            except Exception:
-                img = None
+            if preview_size is not None:
+                try:
+                    preview_image = getattr(provider, "preview_image", None)
+                    if callable(preview_image):
+                        try:
+                            img = preview_image(preview_size)
+                        except TypeError:
+                            img = preview_image()
+                except Exception:
+                    img = None
+            if img is None:
+                try:
+                    img = provider.image()
+                except Exception:
+                    img = None
             if isinstance(img, QtGui.QImage) and not img.isNull():
                 try:
                     fmt = (
@@ -426,6 +449,61 @@ class TextureLayerProvider:
             self._revision += 1
         return changed
 
+    def advance_preview(
+        self, dt: float, frame_id: Optional[int] = None, size: Optional[int] = None
+    ) -> bool:
+        changed = False
+        for item in (self._base_item, self._overlay_item):
+            if item is None:
+                continue
+            model = getattr(item, "model", None)
+            if model is None:
+                continue
+            provider = None
+            kind = (getattr(model, "kind", "") or "").strip().lower()
+            if kind == "texture_pro":
+                provider = getattr(model, "_texture_pro_provider", None)
+            elif kind == "texture_layer":
+                provider = getattr(model, "_texture_layer_provider", None)
+            if provider is None:
+                continue
+            fn = getattr(provider, "advance_preview", None)
+            if callable(fn):
+                try:
+                    if fn(dt, frame_id=frame_id, size=size):
+                        changed = True
+                except TypeError:
+                    try:
+                        if fn(dt, frame_id=frame_id):
+                            changed = True
+                    except TypeError:
+                        try:
+                            if fn(dt):
+                                changed = True
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+            else:
+                fn = getattr(provider, "advance", None)
+                if callable(fn):
+                    try:
+                        if fn(dt, frame_id):
+                            changed = True
+                    except TypeError:
+                        try:
+                            if fn(dt):
+                                changed = True
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+        if changed:
+            self._preview_revision += 1
+        return changed
+
     def _composite(self, base_img: Optional[QtGui.QImage], overlay_img: Optional[QtGui.QImage]) -> Optional[QtGui.QImage]:
         if base_img is None or base_img.isNull():
             if overlay_img is None or overlay_img.isNull():
@@ -471,6 +549,34 @@ class TextureLayerProvider:
             if self._image is not None:
                 self._revision += 1
         return self._image
+
+    def _scale_preview(self, img: Optional[QtGui.QImage], size: int) -> Optional[QtGui.QImage]:
+        if img is None or img.isNull():
+            return img
+        try:
+            w = int(img.width())
+            h = int(img.height())
+        except Exception:
+            return img
+        if w <= 0 or h <= 0:
+            return img
+        if w <= size and h <= size:
+            return img
+        return img.scaled(size, size, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
+
+    def preview_image(self, size: int) -> Optional[QtGui.QImage]:
+        size = max(16, int(size))
+        base_img, base_sig, base_rev = self._source_info(self._base_item, "base", size)
+        overlay_img, overlay_sig, overlay_rev = self._source_info(self._overlay_item, "overlay", size)
+        sig = (base_sig, base_rev, overlay_sig, overlay_rev, size)
+        if sig == self._preview_sig and self._preview_image is not None:
+            return self._preview_image
+        base_img = self._scale_preview(base_img, size)
+        overlay_img = self._scale_preview(overlay_img, size)
+        self._preview_image = self._composite(base_img, overlay_img)
+        self._preview_sig = sig
+        self._preview_revision += 1
+        return self._preview_image
 
     def _source_gpu_state(self, item, tag: str):
         has_source = False
@@ -547,6 +653,10 @@ class TextureLayerProvider:
     def revision(self) -> int:
         return int(self._revision)
 
+    @property
+    def preview_revision(self) -> int:
+        return int(self._preview_revision)
+
 
 def _get_provider(node_item) -> TextureLayerProvider:
     model = getattr(node_item, "model", None)
@@ -573,6 +683,7 @@ class TextureLayerWidget(QtWidgets.QWidget):
         self._preview_last_ts = 0.0
         self._preview_min_interval = 0.12
         self._advance_last_ts = 0.0
+        self._preview_scale_bucket = 1.0
         self._input_item = None
         self._input_kind = ""
         self._scene_input = False
@@ -701,6 +812,50 @@ class TextureLayerWidget(QtWidgets.QWidget):
         self._pending = True
         QtCore.QTimer.singleShot(60, self._update_inputs)
 
+    def _graph_view_scale(self) -> float:
+        sc = getattr(self._node_item, "scene", None)
+        try:
+            sc = sc() if callable(sc) else sc
+        except Exception:
+            sc = None
+        if sc is None:
+            return 1.0
+        try:
+            views = sc.views()
+        except Exception:
+            return 1.0
+        scale = 1.0
+        for v in views or []:
+            try:
+                tr = v.transform()
+                cand = max(abs(float(tr.m11())), abs(float(tr.m22())))
+                if cand > scale:
+                    scale = cand
+            except Exception:
+                pass
+        if not math.isfinite(scale) or scale <= 0.0:
+            scale = 1.0
+        return scale
+
+    def _preview_scale_for_zoom(self, scale: float) -> float:
+        try:
+            scale = float(scale)
+        except Exception:
+            return 1.0
+        if not math.isfinite(scale) or scale <= 0.0:
+            return 1.0
+        if scale < 0.55:
+            return 0.5
+        if scale < 0.85:
+            return 0.75
+        if scale < 1.25:
+            return 1.0
+        if scale < 1.7:
+            return 1.5
+        if scale < 2.25:
+            return 2.0
+        return 2.5
+
     def _refresh_preview(self, force: bool = False):
         if not force:
             try:
@@ -714,38 +869,99 @@ class TextureLayerWidget(QtWidgets.QWidget):
                 last = float(getattr(self, "_preview_last_ts", 0.0) or 0.0)
                 if last > 0.0 and (now - last) < min_interval:
                     return
-        rev_before = None
+        desired_bucket = 1.0
         try:
-            rev_before = int(getattr(self._provider, "revision", 0))
+            desired_bucket = self._preview_scale_for_zoom(self._graph_view_scale())
         except Exception:
-            rev_before = None
-        if not force and rev_before is not None and rev_before == self._last_rev:
-            return
+            desired_bucket = 1.0
+        prev_bucket = float(getattr(self, "_preview_scale_bucket", 1.0) or 1.0)
+        bucket_changed = abs(desired_bucket - prev_bucket) > 1e-3
+        if not force:
+            try:
+                if self._preview.pixmap() is None:
+                    force = True
+            except Exception:
+                pass
+        rev_key = None
+        if not force:
+            try:
+                preview_rev = getattr(self._provider, "preview_revision", None)
+                if preview_rev is not None:
+                    rev_key = ("preview", int(preview_rev))
+            except Exception:
+                rev_key = None
+            if rev_key is None:
+                try:
+                    rev_before = int(getattr(self._provider, "revision", 0))
+                except Exception:
+                    rev_before = None
+                if rev_before is not None:
+                    rev_key = ("main", int(rev_before))
+            if rev_key is not None and rev_key == self._last_rev and not bucket_changed:
+                return
         try:
-            img = self._provider.image()
+            preview_w = max(1, int(self._preview.width()))
+            target_px = max(16, int(round(float(preview_w) * float(desired_bucket))))
+            preview_image = getattr(self._provider, "preview_image", None)
+            if callable(preview_image):
+                try:
+                    img = preview_image(target_px)
+                except TypeError:
+                    img = preview_image()
+            else:
+                img = self._provider.image()
         except Exception:
             img = None
         if img is None or img.isNull():
             return
+        preview_h = max(1, int(self._preview.height()))
+        bucket = max(0.5, min(2.5, float(desired_bucket)))
+        try:
+            max_bucket = min(float(img.width()) / float(preview_w), float(img.height()) / float(preview_h))
+        except Exception:
+            max_bucket = None
+        if max_bucket is not None and max_bucket > 0.0:
+            bucket = min(bucket, max(0.5, min(2.5, max_bucket)))
+        target_w = max(1, int(round(float(preview_w) * bucket)))
+        target_h = max(1, int(round(float(preview_h) * bucket)))
         pix = QtGui.QPixmap.fromImage(img)
-        pix = pix.scaled(
-            self._preview.width(),
-            self._preview.height(),
-            QtCore.Qt.KeepAspectRatio,
-            QtCore.Qt.SmoothTransformation,
-        )
+        transform_mode = QtCore.Qt.SmoothTransformation if bucket >= 1.0 else QtCore.Qt.FastTransformation
+        if pix.width() != target_w or pix.height() != target_h:
+            pix = pix.scaled(
+                target_w,
+                target_h,
+                QtCore.Qt.KeepAspectRatio,
+                transform_mode,
+            )
+        try:
+            pix.setDevicePixelRatio(max(0.5, float(bucket)))
+        except Exception:
+            pass
         self._preview.setPixmap(pix)
         try:
             self._preview_last_ts = time.perf_counter()
         except Exception:
             pass
-        rev_after = rev_before
         try:
-            rev_after = int(getattr(self._provider, "revision", rev_before or 0))
+            self._preview_scale_bucket = float(bucket)
         except Exception:
-            rev_after = rev_before
-        if rev_after is not None:
-            self._last_rev = rev_after
+            pass
+        if rev_key is None:
+            try:
+                preview_rev = getattr(self._provider, "preview_revision", None)
+                if preview_rev is not None:
+                    rev_key = ("preview", int(preview_rev))
+            except Exception:
+                rev_key = None
+        if rev_key is None:
+            try:
+                rev_after = int(getattr(self._provider, "revision", 0))
+            except Exception:
+                rev_after = None
+            if rev_after is not None:
+                rev_key = ("main", int(rev_after))
+        if rev_key is not None:
+            self._last_rev = rev_key
 
     def _graph_is_interacting(self) -> bool:
         sc = getattr(self._node_item, "scene", None)
@@ -863,6 +1079,12 @@ class TextureLayerWidget(QtWidgets.QWidget):
 
     def _on_timer_tick(self):
         if self._is_selected():
+            preview_target = None
+            try:
+                bucket = self._preview_scale_for_zoom(self._graph_view_scale())
+                preview_target = max(16, int(round(float(self._preview.width()) * float(bucket))))
+            except Exception:
+                preview_target = None
             now = time.perf_counter()
             try:
                 min_interval = float(getattr(self, "_preview_min_interval", 0.12) or 0.0)
@@ -876,7 +1098,14 @@ class TextureLayerWidget(QtWidgets.QWidget):
                     pass
                 dt = (now - last) if last > 0.0 else (1.0 / 60.0)
                 try:
-                    self._provider.advance(dt)
+                    advance_preview = getattr(self._provider, "advance_preview", None)
+                    if callable(advance_preview):
+                        try:
+                            advance_preview(dt, size=preview_target)
+                        except TypeError:
+                            advance_preview(dt)
+                    else:
+                        self._provider.advance(dt)
                 except Exception:
                     pass
         self._refresh_preview()
