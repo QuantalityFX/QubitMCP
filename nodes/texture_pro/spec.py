@@ -1339,6 +1339,9 @@ class TextureProWidget(QtWidgets.QWidget):
         self._pending = False
         self._provider = _get_provider(node_item)
         self._last_rev = -1
+        self._preview_last_ts = 0.0
+        self._preview_min_interval = 0.12
+        self._advance_last_ts = 0.0
         self._frame_hooked = False
         self._last_frame_ts = 0.0
         self._input_item = None
@@ -2775,26 +2778,76 @@ class TextureProWidget(QtWidgets.QWidget):
     def _tick(self, from_view: bool):
         glv = self._get_gl_view()
         fps = self._view_fps(glv)
-        dt = 1.0 / max(fps, 1.0)
         selected = self._is_selected()
         if selected and not self._provider_driven_by_view(glv):
+            now = time.perf_counter()
             try:
-                frame_id = getattr(glv, "_mgl_frame_id", None) if from_view and glv is not None else None
-                self._provider.advance(dt, frame_id=frame_id)
-            except TypeError:
+                min_interval = float(getattr(self, "_preview_min_interval", 0.12) or 0.0)
+            except Exception:
+                min_interval = 0.12
+            last = float(getattr(self, "_advance_last_ts", 0.0) or 0.0)
+            if min_interval <= 0.0 or (now - last) >= min_interval:
                 try:
-                    self._provider.advance(dt)
+                    self._advance_last_ts = now
                 except Exception:
                     pass
-            except Exception:
-                pass
+                if last > 0.0:
+                    dt = max(1.0 / max(fps, 1.0), min(0.5, now - last))
+                else:
+                    dt = 1.0 / max(fps, 1.0)
+                try:
+                    frame_id = getattr(glv, "_mgl_frame_id", None) if from_view and glv is not None else None
+                    self._provider.advance(dt, frame_id=frame_id)
+                except TypeError:
+                    try:
+                        self._provider.advance(dt)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
         if selected:
             self._refresh_preview()
         else:
             if self._preview.pixmap() is None:
                 self._refresh_preview(force=True)
 
+    def _view_is_interacting(self, glv) -> bool:
+        if glv is None:
+            return False
+        try:
+            if bool(getattr(glv, "_mgl_orbit_dragging", False)):
+                return True
+        except Exception:
+            pass
+        try:
+            if getattr(glv, "_mgl_zoom_press_pos", None) is not None:
+                return True
+        except Exception:
+            pass
+        try:
+            if bool(getattr(glv, "_xform_dragging", False)) or bool(getattr(glv, "_rot_shared_dragging", False)):
+                return True
+        except Exception:
+            pass
+        return False
+
     def _refresh_preview(self, force: bool = False):
+        if not force:
+            try:
+                glv = self._get_gl_view()
+                if self._view_is_interacting(glv):
+                    return
+            except Exception:
+                pass
+            try:
+                min_interval = float(getattr(self, "_preview_min_interval", 0.12) or 0.0)
+            except Exception:
+                min_interval = 0.12
+            if min_interval > 0.0:
+                now = time.perf_counter()
+                last = float(getattr(self, "_preview_last_ts", 0.0) or 0.0)
+                if last > 0.0 and (now - last) < min_interval:
+                    return
         rev = None
         try:
             rev = int(getattr(self._provider, "revision", 0))
@@ -2816,6 +2869,10 @@ class TextureProWidget(QtWidgets.QWidget):
             QtCore.Qt.SmoothTransformation,
         )
         self._preview.setPixmap(pix)
+        try:
+            self._preview_last_ts = time.perf_counter()
+        except Exception:
+            pass
         if rev is not None:
             self._last_rev = rev
 

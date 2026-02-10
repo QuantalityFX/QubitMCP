@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -569,6 +570,9 @@ class TextureLayerWidget(QtWidgets.QWidget):
         self._pending = False
         self._provider = _get_provider(node_item)
         self._last_rev = -1
+        self._preview_last_ts = 0.0
+        self._preview_min_interval = 0.12
+        self._advance_last_ts = 0.0
         self._input_item = None
         self._input_kind = ""
         self._scene_input = False
@@ -698,6 +702,16 @@ class TextureLayerWidget(QtWidgets.QWidget):
         QtCore.QTimer.singleShot(60, self._update_inputs)
 
     def _refresh_preview(self, force: bool = False):
+        if not force:
+            try:
+                min_interval = float(getattr(self, "_preview_min_interval", 0.12) or 0.0)
+            except Exception:
+                min_interval = 0.12
+            if min_interval > 0.0:
+                now = time.perf_counter()
+                last = float(getattr(self, "_preview_last_ts", 0.0) or 0.0)
+                if last > 0.0 and (now - last) < min_interval:
+                    return
         rev_before = None
         try:
             rev_before = int(getattr(self._provider, "revision", 0))
@@ -719,6 +733,10 @@ class TextureLayerWidget(QtWidgets.QWidget):
             QtCore.Qt.SmoothTransformation,
         )
         self._preview.setPixmap(pix)
+        try:
+            self._preview_last_ts = time.perf_counter()
+        except Exception:
+            pass
         rev_after = rev_before
         try:
             rev_after = int(getattr(self._provider, "revision", rev_before or 0))
@@ -810,10 +828,22 @@ class TextureLayerWidget(QtWidgets.QWidget):
 
     def _on_timer_tick(self):
         if self._is_selected():
+            now = time.perf_counter()
             try:
-                self._provider.advance(1.0 / 60.0)
+                min_interval = float(getattr(self, "_preview_min_interval", 0.12) or 0.0)
             except Exception:
-                pass
+                min_interval = 0.12
+            last = float(getattr(self, "_advance_last_ts", 0.0) or 0.0)
+            if min_interval <= 0.0 or (now - last) >= min_interval:
+                try:
+                    self._advance_last_ts = now
+                except Exception:
+                    pass
+                dt = (now - last) if last > 0.0 else (1.0 / 60.0)
+                try:
+                    self._provider.advance(dt)
+                except Exception:
+                    pass
         self._refresh_preview()
 
     def _on_view_clicked(self):
