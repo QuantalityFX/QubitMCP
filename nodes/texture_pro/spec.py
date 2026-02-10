@@ -129,15 +129,20 @@ GLYPH_ATLAS_CELL = 48
 _GLYPH_ATLAS = None
 _GLYPH_ATLAS_GRID = None
 _GLYPH_ATLAS_SIG = None
+_MATRIX_FONT_FAMILY = None
 
 
 def _choose_matrix_font_family() -> str:
+    global _MATRIX_FONT_FAMILY
+    if _MATRIX_FONT_FAMILY:
+        return _MATRIX_FONT_FAMILY
     families = set()
     try:
         families = {str(name) for name in QtGui.QFontDatabase().families()}
     except Exception:
         families = set()
-    return next((name for name in MATRIX_FONT_FAMILIES if name in families), "Consolas")
+    _MATRIX_FONT_FAMILY = next((name for name in MATRIX_FONT_FAMILIES if name in families), "Consolas")
+    return _MATRIX_FONT_FAMILY
 
 
 def _param_value(model, name: str) -> str:
@@ -2837,9 +2842,44 @@ class TextureProWidget(QtWidgets.QWidget):
             pass
         return False
 
+    def _graph_is_interacting(self) -> bool:
+        sc = getattr(self._node_item, "scene", None)
+        try:
+            sc = sc() if callable(sc) else sc
+        except Exception:
+            sc = None
+        if sc is None:
+            return False
+        try:
+            views = sc.views()
+        except Exception:
+            return False
+        now = time.perf_counter()
+        for v in views or []:
+            try:
+                ts = float(getattr(v, "_last_interaction_ts", 0.0) or 0.0)
+                if ts > 0.0 and (now - ts) < 0.15:
+                    return True
+            except Exception:
+                pass
+            try:
+                if (
+                    bool(getattr(v, "_mm_dragging", False))
+                    or bool(getattr(v, "_rc_dragging", False))
+                    or bool(getattr(v, "_orbit_dragging", False))
+                    or bool(getattr(v, "_pan_dragging", False))
+                    or bool(getattr(v, "_dolly_dragging", False))
+                ):
+                    return True
+            except Exception:
+                pass
+        return False
+
     def _refresh_preview(self, force: bool = False):
         if not force:
             try:
+                if self._graph_is_interacting():
+                    return
                 glv = self._get_gl_view()
                 if self._view_is_interacting(glv):
                     return

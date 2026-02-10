@@ -704,6 +704,8 @@ class TextureLayerWidget(QtWidgets.QWidget):
     def _refresh_preview(self, force: bool = False):
         if not force:
             try:
+                if self._graph_is_interacting():
+                    return
                 min_interval = float(getattr(self, "_preview_min_interval", 0.12) or 0.0)
             except Exception:
                 min_interval = 0.12
@@ -744,6 +746,39 @@ class TextureLayerWidget(QtWidgets.QWidget):
             rev_after = rev_before
         if rev_after is not None:
             self._last_rev = rev_after
+
+    def _graph_is_interacting(self) -> bool:
+        sc = getattr(self._node_item, "scene", None)
+        try:
+            sc = sc() if callable(sc) else sc
+        except Exception:
+            sc = None
+        if sc is None:
+            return False
+        try:
+            views = sc.views()
+        except Exception:
+            return False
+        now = time.perf_counter()
+        for v in views or []:
+            try:
+                ts = float(getattr(v, "_last_interaction_ts", 0.0) or 0.0)
+                if ts > 0.0 and (now - ts) < 0.15:
+                    return True
+            except Exception:
+                pass
+            try:
+                if (
+                    bool(getattr(v, "_mm_dragging", False))
+                    or bool(getattr(v, "_rc_dragging", False))
+                    or bool(getattr(v, "_orbit_dragging", False))
+                    or bool(getattr(v, "_pan_dragging", False))
+                    or bool(getattr(v, "_dolly_dragging", False))
+                ):
+                    return True
+            except Exception:
+                pass
+        return False
 
     def _update_inputs(self):
         self._pending = False

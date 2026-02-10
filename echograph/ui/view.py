@@ -2,6 +2,7 @@
 # Test: pan (MMB), zoom (wheel), right-click short-drag zoom still good; right-click tap opens Create Node;
 
 import math
+import time
 from echograph.qt_compat import QtCore, QtGui, QtWidgets
 
 class GraphView(QtWidgets.QGraphicsView):
@@ -77,6 +78,13 @@ class GraphView(QtWidgets.QGraphicsView):
         self._orbit_sensitivity = 0.005
         self._drag_mode_prev = None
         self._pre_3d_transform = None
+        self._last_interaction_ts = 0.0
+
+    def _mark_interaction(self) -> None:
+        try:
+            self._last_interaction_ts = time.perf_counter()
+        except Exception:
+            pass
 
     def _update_temp_wire_from_view(self, viewport_pos):
         sc = self.scene()
@@ -576,6 +584,7 @@ class GraphView(QtWidgets.QGraphicsView):
         super().keyPressEvent(e)
 
     def mousePressEvent(self, e):
+        self._mark_interaction()
         if self._mode_3d:
             if e.button() == QtCore.Qt.LeftButton:
                 self._orbit_dragging = True
@@ -670,6 +679,19 @@ class GraphView(QtWidgets.QGraphicsView):
         super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e):
+        try:
+            if e.buttons():
+                self._mark_interaction()
+            elif (
+                self._mm_dragging
+                or self._rc_dragging
+                or self._orbit_dragging
+                or self._pan_dragging
+                or self._dolly_dragging
+            ):
+                self._mark_interaction()
+        except Exception:
+            pass
         if self._mode_3d:
             if self._orbit_dragging and self._orbit_last_pos is not None:
                 if not (e.buttons() & QtCore.Qt.LeftButton):
@@ -778,6 +800,7 @@ class GraphView(QtWidgets.QGraphicsView):
 
 
     def mouseReleaseEvent(self, e):
+        self._mark_interaction()
         if self._mode_3d:
             if e.button() == QtCore.Qt.LeftButton:
                 self._orbit_dragging = False
@@ -836,6 +859,7 @@ class GraphView(QtWidgets.QGraphicsView):
 
 
     def wheelEvent(self, e: QtGui.QWheelEvent):
+        self._mark_interaction()
         if self._mode_3d:
             delta = e.angleDelta().y()
             factor = 1.15 if delta > 0 else 1 / 1.15
