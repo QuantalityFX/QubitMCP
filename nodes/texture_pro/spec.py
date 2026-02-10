@@ -131,6 +131,15 @@ _GLYPH_ATLAS_GRID = None
 _GLYPH_ATLAS_SIG = None
 
 
+def _choose_matrix_font_family() -> str:
+    families = set()
+    try:
+        families = {str(name) for name in QtGui.QFontDatabase().families()}
+    except Exception:
+        families = set()
+    return next((name for name in MATRIX_FONT_FAMILIES if name in families), "Consolas")
+
+
 def _param_value(model, name: str) -> str:
     key = (name or "").strip().lower()
     for p in (getattr(model, "params", None) or []):
@@ -219,7 +228,7 @@ def _ensure_hidden_params(model, names) -> None:
     model.params = params
 
 
-def _build_glyph_atlas():
+def _build_glyph_atlas(family: str):
     glyphs = list(MATRIX_GLYPHS)
     cols = GLYPH_ATLAS_COLS
     rows = max(1, int(math.ceil(len(glyphs) / float(cols))))
@@ -229,12 +238,6 @@ def _build_glyph_atlas():
     img.fill(QtGui.QColor(0, 0, 0, 255))
     painter = QtGui.QPainter(img)
     painter.setRenderHint(QtGui.QPainter.TextAntialiasing, False)
-    families = set()
-    try:
-        families = {str(name) for name in QtGui.QFontDatabase().families()}
-    except Exception:
-        families = set()
-    family = next((name for name in MATRIX_FONT_FAMILIES if name in families), "Consolas")
     font = QtGui.QFont(family)
     if family == "Consolas":
         font.setStyleHint(QtGui.QFont.Monospace)
@@ -252,9 +255,10 @@ def _build_glyph_atlas():
 
 def _get_glyph_atlas():
     global _GLYPH_ATLAS, _GLYPH_ATLAS_GRID, _GLYPH_ATLAS_SIG
-    sig = (MATRIX_GLYPHS, GLYPH_ATLAS_COLS, GLYPH_ATLAS_CELL)
+    family = _choose_matrix_font_family()
+    sig = (MATRIX_GLYPHS, GLYPH_ATLAS_COLS, GLYPH_ATLAS_CELL, family)
     if _GLYPH_ATLAS is None or _GLYPH_ATLAS_GRID is None or _GLYPH_ATLAS_SIG != sig:
-        _GLYPH_ATLAS, _GLYPH_ATLAS_GRID = _build_glyph_atlas()
+        _GLYPH_ATLAS, _GLYPH_ATLAS_GRID = _build_glyph_atlas(family)
         _GLYPH_ATLAS_SIG = sig
     return _GLYPH_ATLAS, _GLYPH_ATLAS_GRID
 
@@ -862,8 +866,10 @@ class MatrixRainGenerator:
         img.fill(bg_color)
         painter = QtGui.QPainter(img)
         painter.setRenderHint(QtGui.QPainter.TextAntialiasing, True)
-        font = QtGui.QFont("Consolas")
-        font.setStyleHint(QtGui.QFont.Monospace)
+        family = _choose_matrix_font_family()
+        font = QtGui.QFont(family)
+        if family == "Consolas":
+            font.setStyleHint(QtGui.QFont.Monospace)
         font.setPixelSize(int(min(cell_x, cell_y) * 0.9))
         painter.setFont(font)
 
