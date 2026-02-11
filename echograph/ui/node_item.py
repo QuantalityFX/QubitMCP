@@ -2481,6 +2481,38 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 item = getattr(edge, "src", None) if edge is not None else None
             return None
 
+        def _chain_has_kind(start_item, kinds):
+            item = start_item
+            visited = set()
+            pass_kinds = {
+                "switch",
+                "uv_unwrap",
+                "texture",
+                "texture_pro",
+                "texture_layer",
+                "split_volume",
+                "volume_selector",
+                "transforms",
+            }
+            depth = 0
+            while item is not None and item not in visited and depth < 12:
+                visited.add(item)
+                depth += 1
+                model = getattr(item, "model", None)
+                if model is None:
+                    break
+                kind = (getattr(model, "kind", "") or "").strip().lower()
+                if kind in kinds:
+                    return True
+                if kind not in pass_kinds:
+                    break
+                if kind in ("split_volume", "volume_selector"):
+                    edge = _pick_input_edge(item, {"mesh", "source", "path"})
+                else:
+                    edge = _pick_input_edge(item)
+                item = getattr(edge, "src", None) if edge is not None else None
+            return False
+
         def _resolve_input_item(node_item):
             def _trace(item, depth=0, visited=None):
                 if item is None or depth > 8:
@@ -2568,6 +2600,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
             kind = (getattr(model, "kind", "") or "").strip().lower()
             owner_model = model
+            owner_kind = kind
             if kind in ("texture", "texture_pro", "texture_layer"):
                 upstream_item, upstream_kind, upstream_path = _resolve_input_item(src_item)
                 if upstream_item is not None and getattr(upstream_item, "model", None) is not None:
@@ -2577,14 +2610,17 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         upstream2_item, _up2_kind, _up2_path = _resolve_input_item(upstream_item)
                         if upstream2_item is not None and getattr(upstream2_item, "model", None) is not None:
                             owner_model = getattr(upstream2_item, "model", owner_model)
+                            owner_kind = _up2_kind or owner_kind
                     else:
                         owner_model = getattr(upstream_item, "model", owner_model)
+                        owner_kind = upstream_kind or owner_kind
                         if upstream_path:
                             path = upstream_path
             elif kind == "uv_unwrap":
                 upstream_item, _up_kind, upstream_path = _resolve_input_item(src_item)
                 if upstream_item is not None and getattr(upstream_item, "model", None) is not None:
                     owner_model = getattr(upstream_item, "model", owner_model)
+                    owner_kind = _up_kind or owner_kind
                     if not path and upstream_path:
                         path = upstream_path
 
@@ -2620,7 +2656,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         texture = (p.get("value") or "").strip()
                         break
             xf = None
-            xform_offset = kind in ("split_volume", "volume_selector")
+            xform_offset = owner_kind in ("split_volume", "volume_selector")
+            if not xform_offset:
+                try:
+                    if _chain_has_kind(src_item, {"split_volume", "volume_selector"}):
+                        xform_offset = True
+                except Exception:
+                    pass
             try:
                 if model_name and model_name in xforms:
                     xf = xforms.get(model_name)

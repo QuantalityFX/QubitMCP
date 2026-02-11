@@ -5382,6 +5382,26 @@ class MGLRendererMixin:
         self._mgl_texture_path = ""
         self._mgl_texture_paths = []
 
+        # Ensure offset-mode owners are always registered for this scene load.
+        try:
+            offset_map = {}
+            for entry in assets or []:
+                if not isinstance(entry, dict):
+                    continue
+                if not entry.get("xform_offset"):
+                    continue
+                name = (entry.get("node") or "").strip()
+                if not name:
+                    path_str = str(entry.get("path", "") or "").strip()
+                    if path_str:
+                        name = Path(path_str).name
+                if not name:
+                    continue
+                offset_map[name] = True
+            self._mgl_scene_xform_offset_by_owner = offset_map
+        except Exception:
+            pass
+
         try:
             prev_mesh_xforms = (
                 getattr(self, "_mgl_scene_xforms_by_owner", None)

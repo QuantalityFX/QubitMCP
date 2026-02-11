@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Dict, List
 
@@ -118,6 +119,96 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
     scene = node_item.scene()
     if scene is None:
         return []
+
+    def _norm_path(p: str) -> str:
+        try:
+            return os.path.normcase(os.path.normpath(p))
+        except Exception:
+            return (p or "").strip()
+
+    def _ordered_in_edges(item):
+        try:
+            return list(scene._ordered_in_edges(item))
+        except Exception:
+            try:
+                return list(scene._in_edges(item))
+            except Exception:
+                return []
+
+    def _pick_input_edge(item, port_names=None):
+        edges = _ordered_in_edges(item)
+        if port_names:
+            wanted = {str(n).strip().lower() for n in port_names if str(n).strip()}
+            for edge in edges:
+                name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
+                if (name or "").strip().lower() in wanted:
+                    return edge
+        return edges[0] if edges else None
+
+    def _parse_vec3(value: str, default):
+        try:
+            parts = [p.strip() for p in str(value or "").split(",")]
+            if len(parts) >= 3:
+                return (float(parts[0]), float(parts[1]), float(parts[2]))
+        except Exception:
+            pass
+        return default
+
+    def _find_upstream_transform(start_item):
+        item = start_item
+        visited = set()
+        pass_kinds = {"switch", "uv_unwrap", "texture", "texture_pro", "texture_layer", "split_volume", "volume_selector"}
+        depth = 0
+        while item is not None and item not in visited and depth < 10:
+            visited.add(item)
+            depth += 1
+            model = getattr(item, "model", None)
+            if model is None:
+                break
+            kind = (getattr(model, "kind", "") or "").strip().lower()
+            if kind == "transforms":
+                return model
+            if kind not in pass_kinds:
+                break
+            if kind in ("split_volume", "volume_selector"):
+                edge = _pick_input_edge(item, {"mesh", "source", "path"})
+            else:
+                edge = _pick_input_edge(item)
+            item = getattr(edge, "src", None) if edge is not None else None
+        return None
+
+    def _chain_has_kind(start_item, kinds):
+        item = start_item
+        visited = set()
+        pass_kinds = {
+            "switch",
+            "uv_unwrap",
+            "texture",
+            "texture_pro",
+            "texture_layer",
+            "split_volume",
+            "volume_selector",
+            "transforms",
+        }
+        depth = 0
+        while item is not None and item not in visited and depth < 12:
+            visited.add(item)
+            depth += 1
+            model = getattr(item, "model", None)
+            if model is None:
+                break
+            kind = (getattr(model, "kind", "") or "").strip().lower()
+            if kind in kinds:
+                return True
+            if kind not in pass_kinds:
+                break
+            if kind in ("split_volume", "volume_selector"):
+                edge = _pick_input_edge(item, {"mesh", "source", "path"})
+            else:
+                edge = _pick_input_edge(item)
+            item = getattr(edge, "src", None) if edge is not None else None
+        return False
+
     hidden = set()
     xforms = {}
     try:
@@ -275,7 +366,26 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                         break
         except Exception:
             xf = None
-        xform_offset = kind in ("split_volume", "volume_selector")
+        xform_offset = owner_kind in ("split_volume", "volume_selector")
+        if not xform_offset:
+            try:
+                if _chain_has_kind(src_item, {"split_volume", "volume_selector"}):
+                    xform_offset = True
+            except Exception:
+                pass
+        transform_model = _find_upstream_transform(src_item)
+        if transform_model is not None and path:
+            src_path = _param_value(transform_model, "source")
+            out_path = _param_value(transform_model, "path")
+            norm_path = _norm_path(path)
+            if norm_path == _norm_path(src_path) and norm_path != _norm_path(out_path):
+                if xf is None:
+                    pos = _parse_vec3(_param_value(transform_model, "pos"), (0.0, 0.0, 0.0))
+                    rot = _parse_vec3(_param_value(transform_model, "rot"), (0.0, 0.0, 0.0))
+                    scl = _parse_vec3(_param_value(transform_model, "scl"), (1.0, 1.0, 1.0))
+                    xf = {"pos": list(pos), "rot": list(rot), "scl": list(scl)}
+            else:
+                xform_offset = True
         entry = {
             "path": path,
             "texture": texture,
