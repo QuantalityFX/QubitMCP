@@ -638,6 +638,11 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._fps_nav_keys = set()
         self._fps_nav_last_t = time.perf_counter()
         self._fps_nav_speed = 2.0
+        self._fps_nav_speed_min = 0.1
+        self._fps_nav_speed_max = 50.0
+        self._fps_nav_speed_step = 1.15
+        self._fps_nav_look_last_pos = None
+        self._fps_nav_look_sens = 0.005
         self._viewport_hotkey_filter = None
         try:
             app = QtWidgets.QApplication.instance()
@@ -756,6 +761,68 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             pass
         try:
             self.update()
+        except Exception:
+            pass
+
+    def _fps_apply_look(self, dx: float, dy: float) -> None:
+        if np is None:
+            return
+        arc = getattr(self, "_mgl_arcball", None)
+        if arc is None or not hasattr(arc, "Transform"):
+            return
+        try:
+            sens = float(getattr(self, "_fps_nav_look_sens", 0.005))
+        except Exception:
+            sens = 0.005
+        if abs(dx) < 1e-6 and abs(dy) < 1e-6:
+            return
+
+        try:
+            rot = np.array(arc.Transform[:3, :3], dtype=np.float32)
+            scale = np.linalg.norm(rot, axis=0)
+            denom = float(scale.mean()) if scale.size else 1.0
+            if denom > 1e-6:
+                rot = rot / denom
+        except Exception:
+            return
+
+        right = rot @ np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        up = rot @ np.array([0.0, 1.0, 0.0], dtype=np.float32)
+
+        yaw = -float(dx) * sens
+        pitch = -float(dy) * sens
+
+        def _axis_angle(axis, ang):
+            axis = np.array(axis, dtype=np.float32)
+            ln = float(np.linalg.norm(axis))
+            if ln < 1e-8:
+                return np.identity(3, dtype=np.float32)
+            axis = axis / ln
+            c = math.cos(ang)
+            s = math.sin(ang)
+            t = 1.0 - c
+            x, y, z = float(axis[0]), float(axis[1]), float(axis[2])
+            return np.array(
+                [
+                    [t * x * x + c,     t * x * y - s * z, t * x * z + s * y],
+                    [t * x * y + s * z, t * y * y + c,     t * y * z - s * x],
+                    [t * x * z - s * y, t * y * z + s * x, t * z * z + c],
+                ],
+                dtype=np.float32,
+            )
+
+        R_yaw = _axis_angle(up, yaw)
+        R_pitch = _axis_angle(right, pitch)
+        new_rot = (R_pitch @ R_yaw @ rot).astype(np.float32)
+        try:
+            arc.Transform = arc._set_rotation(arc.Transform, new_rot)
+        except Exception:
+            try:
+                arc.Transform[:3, :3] = new_rot
+            except Exception:
+                return
+        try:
+            self._mgl_arcball_sync_after_set_transform()
         except Exception:
             pass
 
@@ -5049,6 +5116,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     try:
                         self._fps_nav_active = True
                         self._fps_nav_last_t = time.perf_counter()
+                        self._fps_nav_look_last_pos = e.pos()
                     except Exception:
                         pass
                     try:
@@ -5264,6 +5332,24 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 self._xform_mouse_px = QtCore.QPointF(mp)
             except Exception:
                 mp = None
+
+            if bool(getattr(self, "_fps_nav_active", False)) and (e.buttons() & QtCore.Qt.RightButton):
+                try:
+                    last = getattr(self, "_fps_nav_look_last_pos", None)
+                    if last is None:
+                        last = e.pos()
+                    dx = float(e.pos().x() - last.x())
+                    dy = float(e.pos().y() - last.y())
+                    self._fps_nav_look_last_pos = e.pos()
+                    self._fps_apply_look(dx, dy)
+                except Exception:
+                    pass
+                try:
+                    self.update()
+                except Exception:
+                    pass
+                e.accept()
+                return
 
             # light state dump, throttled
             try:
@@ -6381,6 +6467,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 try:
                     self._fps_nav_active = False
                     self._fps_nav_keys = set()
+                    self._fps_nav_look_last_pos = None
                 except Exception:
                     pass
             # --- 1) If we were dragging the gizmo, ALWAYS end that first ---
@@ -6697,6 +6784,33 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         super().mouseReleaseEvent(e)
 
     def wheelEvent(self, e):
+        if bool(getattr(self, "_fps_nav_active", False)):
+            try:
+                delta = e.angleDelta().y() / 120.0
+            except Exception:
+                delta = 0.0
+            if delta:
+                try:
+                    step = float(getattr(self, "_fps_nav_speed_step", 1.15))
+                except Exception:
+                    step = 1.15
+                speed = float(getattr(self, "_fps_nav_speed", 2.0))
+                speed *= step ** float(delta)
+                try:
+                    speed = max(float(getattr(self, "_fps_nav_speed_min", 0.1)), speed)
+                    speed = min(float(getattr(self, "_fps_nav_speed_max", 50.0)), speed)
+                except Exception:
+                    pass
+                self._fps_nav_speed = speed
+                try:
+                    self.update()
+                except Exception:
+                    pass
+            try:
+                e.accept()
+            except Exception:
+                pass
+            return
         if self._use_moderngl:
             try:
                 if not (e.modifiers() & QtCore.Qt.AltModifier):
@@ -6736,6 +6850,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         except Exception:
             key = None
         if key is None:
+            return False
+        if bool(getattr(self, "_fps_nav_active", False)):
             return False
         if require_no_text_focus:
             try:
@@ -6937,6 +7053,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 pass
             self._fps_nav_active = False
             self._fps_nav_keys = set()
+            self._fps_nav_look_last_pos = None
             self.update()
         except Exception:
             pass
