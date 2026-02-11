@@ -59,9 +59,13 @@ RESOLUTION_OPTIONS = [256, 512, 1024]
 LIGHTING_DEFAULT = 1.0
 PAN_DEFAULT = False
 LIFE_MIN_LIMIT = 1.0
-LIFE_MAX_LIMIT = 30.0
+LIFE_MAX_LIMIT = 100.0
 LIFE_MIN_DEFAULT = 3.0
 LIFE_MAX_DEFAULT = 14.0
+CHAIN_GAP_MIN_LIMIT = 0.0
+CHAIN_GAP_MAX_LIMIT = 10.0
+CHAIN_GAP_MIN_DEFAULT = 0.8
+CHAIN_GAP_MAX_DEFAULT = 2.2
 HIDDEN_PARAMS = (
     "pattern",
     "tiling",
@@ -73,6 +77,8 @@ HIDDEN_PARAMS = (
     "pan",
     "life_min",
     "life_max",
+    "chain_gap_min",
+    "chain_gap_max",
     "emissive",
     "softness",
     "offset_x",
@@ -278,6 +284,8 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, "pan", "1" if PAN_DEFAULT else "0")
     _ensure_param(node_item, "life_min", f"{LIFE_MIN_DEFAULT:.2f}")
     _ensure_param(node_item, "life_max", f"{LIFE_MAX_DEFAULT:.2f}")
+    _ensure_param(node_item, "chain_gap_min", f"{CHAIN_GAP_MIN_DEFAULT:.2f}")
+    _ensure_param(node_item, "chain_gap_max", f"{CHAIN_GAP_MAX_DEFAULT:.2f}")
     _ensure_param(node_item, "emissive", f"{EMISSIVE_DEFAULT:.2f}")
     _ensure_param(node_item, "softness", f"{SOFTNESS_DEFAULT:.2f}")
     _ensure_param(node_item, "offset_x", f"{OFFSET_DEFAULT:.2f}")
@@ -589,6 +597,8 @@ class MatrixRainGenerator:
         self._pan = True
         self._life_min = float(LIFE_MIN_DEFAULT)
         self._life_max = float(LIFE_MAX_DEFAULT)
+        self._chain_gap_min = float(CHAIN_GAP_MIN_DEFAULT)
+        self._chain_gap_max = float(CHAIN_GAP_MAX_DEFAULT)
         self._bg_rgba = None
         self._cols = []
         self._sticky = []
@@ -611,7 +621,16 @@ class MatrixRainGenerator:
         hold_var = self._rng.uniform(0.6, 2.4)
         glyphs = [self._random_glyph() for _ in range(20)]
         holds = [hold_base + self._rng.random() * hold_var for _ in glyphs]
-        static_rate = self._rng.uniform(0.25, 0.6)
+        gap_min = max(CHAIN_GAP_MIN_LIMIT, min(CHAIN_GAP_MAX_LIMIT, float(self._chain_gap_min)))
+        gap_max = max(gap_min, min(CHAIN_GAP_MAX_LIMIT, float(self._chain_gap_max)))
+        try:
+            gap = self._rng.uniform(float(gap_min), float(gap_max))
+        except Exception:
+            gap = float(gap_max)
+        if gap <= 0.0:
+            static_rate = 2.5
+        else:
+            static_rate = max(0.05, min(3.0, 1.0 / max(0.05, gap)))
         static_hold_base = self._rng.uniform(0.8, 1.6)
         static_hold_var = self._rng.uniform(1.2, 3.0)
         if _direction_is_horizontal(self._direction):
@@ -824,6 +843,24 @@ class MatrixRainGenerator:
         self._init_columns()
         self._mark_dirty()
 
+    def set_chain_gap_range(self, gap_min: float, gap_max: float) -> None:
+        try:
+            gap_min = float(gap_min)
+        except Exception:
+            gap_min = float(CHAIN_GAP_MIN_DEFAULT)
+        try:
+            gap_max = float(gap_max)
+        except Exception:
+            gap_max = float(CHAIN_GAP_MAX_DEFAULT)
+        gap_min = max(CHAIN_GAP_MIN_LIMIT, min(CHAIN_GAP_MAX_LIMIT, gap_min))
+        gap_max = max(gap_min, min(CHAIN_GAP_MAX_LIMIT, gap_max))
+        if abs(gap_min - self._chain_gap_min) < 1e-6 and abs(gap_max - self._chain_gap_max) < 1e-6:
+            return
+        self._chain_gap_min = gap_min
+        self._chain_gap_max = gap_max
+        self._init_columns()
+        self._mark_dirty()
+
     def set_background(self, rgba: Optional[tuple]) -> None:
         if rgba == self._bg_rgba:
             return
@@ -1010,6 +1047,8 @@ class TextureProProvider:
         self._pan = bool(PAN_DEFAULT)
         self._life_min = float(LIFE_MIN_DEFAULT)
         self._life_max = float(LIFE_MAX_DEFAULT)
+        self._chain_gap_min = float(CHAIN_GAP_MIN_DEFAULT)
+        self._chain_gap_max = float(CHAIN_GAP_MAX_DEFAULT)
         self._emissive = float(EMISSIVE_DEFAULT)
         self._softness = float(SOFTNESS_DEFAULT)
         self._offset_x = float(OFFSET_DEFAULT)
@@ -1030,6 +1069,7 @@ class TextureProProvider:
         self._apply_direction(self._direction)
         self._apply_pan(self._pan)
         self._apply_life_range(self._life_min, self._life_max)
+        self._apply_chain_gap_range(self._chain_gap_min, self._chain_gap_max)
         self._last_gen_rev = self._generators[self._mode].revision
         self._preview_generators = None
         self._preview_size = None
@@ -1150,6 +1190,24 @@ class TextureProProvider:
         self._life_max = life_max
         self._revision += 1
         self._apply_life_range(life_min, life_max)
+
+    def set_chain_gap_range(self, gap_min: float, gap_max: float) -> None:
+        try:
+            gap_min = float(gap_min)
+        except Exception:
+            gap_min = float(CHAIN_GAP_MIN_DEFAULT)
+        try:
+            gap_max = float(gap_max)
+        except Exception:
+            gap_max = float(CHAIN_GAP_MAX_DEFAULT)
+        gap_min = max(CHAIN_GAP_MIN_LIMIT, min(CHAIN_GAP_MAX_LIMIT, gap_min))
+        gap_max = max(gap_min, min(CHAIN_GAP_MAX_LIMIT, gap_max))
+        if abs(gap_min - self._chain_gap_min) < 1e-6 and abs(gap_max - self._chain_gap_max) < 1e-6:
+            return
+        self._chain_gap_min = gap_min
+        self._chain_gap_max = gap_max
+        self._revision += 1
+        self._apply_chain_gap_range(gap_min, gap_max)
 
     def set_emissive(self, emissive: float) -> None:
         try:
@@ -1287,6 +1345,12 @@ class TextureProProvider:
                 fn(float(self._life_min), float(self._life_max))
             except Exception:
                 pass
+        fn = getattr(gen, "set_chain_gap_range", None)
+        if callable(fn):
+            try:
+                fn(float(self._chain_gap_min), float(self._chain_gap_max))
+            except Exception:
+                pass
 
     def preview_image(self, size: int) -> Optional[QtGui.QImage]:
         gens = self._ensure_preview_generators(size)
@@ -1359,6 +1423,8 @@ class TextureProProvider:
             "pan": 1.0 if self._pan else 0.0,
             "life_min": float(self._life_min),
             "life_max": float(self._life_max),
+            "chain_gap_min": float(self._chain_gap_min),
+            "chain_gap_max": float(self._chain_gap_max),
             "emissive": float(self._emissive),
             "softness": float(self._softness),
             "light_mix": float(self._lighting),
@@ -1437,6 +1503,15 @@ class TextureProProvider:
             fn = getattr(gen, "set_direction", None)
             if callable(fn):
                 fn(self._direction)
+        except Exception:
+            pass
+
+    def _apply_chain_gap_range(self, gap_min: float, gap_max: float) -> None:
+        try:
+            gen = self._generators.get("matrix_rain")
+            fn = getattr(gen, "set_chain_gap_range", None)
+            if callable(fn):
+                fn(float(gap_min), float(gap_max))
         except Exception:
             pass
 
@@ -1864,6 +1939,7 @@ class TextureProWidget(QtWidgets.QWidget):
         self._life_min.setDecimals(2)
         self._life_min.setFixedWidth(70)
         self._life_min.setAlignment(QtCore.Qt.AlignRight)
+        self._life_min.setKeyboardTracking(False)
         self._life_min.setToolTip("Minimum chain life (seconds)")
         self._life_min.setStyleSheet(
             "QDoubleSpinBox{background:#0f1216;color:#e6edf3;border:1px solid #3c4450;"
@@ -1893,6 +1969,7 @@ class TextureProWidget(QtWidgets.QWidget):
         self._life_max.setDecimals(2)
         self._life_max.setFixedWidth(70)
         self._life_max.setAlignment(QtCore.Qt.AlignRight)
+        self._life_max.setKeyboardTracking(False)
         self._life_max.setToolTip("Maximum chain life (seconds)")
         self._life_max.setStyleSheet(
             "QDoubleSpinBox{background:#0f1216;color:#e6edf3;border:1px solid #3c4450;"
@@ -1905,6 +1982,66 @@ class TextureProWidget(QtWidgets.QWidget):
         life_max_row.addStretch(1)
 
         right.addLayout(life_max_row, 0)
+
+        gap_min_row = QtWidgets.QHBoxLayout()
+        gap_min_row.setContentsMargins(0, 0, 0, 0)
+        gap_min_row.setSpacing(6)
+
+        gap_min_label = QtWidgets.QLabel("Gap Min")
+        gap_min_label.setStyleSheet("color:#94a3b8;font-size:10px;")
+        gap_min_label.setFixedWidth(label_w)
+        gap_min_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        gap_min_row.addWidget(gap_min_label, 0)
+
+        self._chain_gap_min = QtWidgets.QDoubleSpinBox()
+        self._chain_gap_min.setRange(CHAIN_GAP_MIN_LIMIT, CHAIN_GAP_MAX_LIMIT)
+        self._chain_gap_min.setSingleStep(0.1)
+        self._chain_gap_min.setDecimals(2)
+        self._chain_gap_min.setFixedWidth(70)
+        self._chain_gap_min.setAlignment(QtCore.Qt.AlignRight)
+        self._chain_gap_min.setKeyboardTracking(False)
+        self._chain_gap_min.setToolTip("Minimum gap between chain spawns (seconds)")
+        self._chain_gap_min.setStyleSheet(
+            "QDoubleSpinBox{background:#0f1216;color:#e6edf3;border:1px solid #3c4450;"
+            "border-radius:6px;padding:1px 4px;}"
+            "QDoubleSpinBox::up-button{width:10px;border:none;}"
+            "QDoubleSpinBox::down-button{width:10px;border:none;}"
+        )
+        self._chain_gap_min.valueChanged.connect(self._on_chain_gap_min_changed)
+        gap_min_row.addWidget(self._chain_gap_min, 0)
+        gap_min_row.addStretch(1)
+
+        right.addLayout(gap_min_row, 0)
+
+        gap_max_row = QtWidgets.QHBoxLayout()
+        gap_max_row.setContentsMargins(0, 0, 0, 0)
+        gap_max_row.setSpacing(6)
+
+        gap_max_label = QtWidgets.QLabel("Gap Max")
+        gap_max_label.setStyleSheet("color:#94a3b8;font-size:10px;")
+        gap_max_label.setFixedWidth(label_w)
+        gap_max_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        gap_max_row.addWidget(gap_max_label, 0)
+
+        self._chain_gap_max = QtWidgets.QDoubleSpinBox()
+        self._chain_gap_max.setRange(CHAIN_GAP_MIN_LIMIT, CHAIN_GAP_MAX_LIMIT)
+        self._chain_gap_max.setSingleStep(0.1)
+        self._chain_gap_max.setDecimals(2)
+        self._chain_gap_max.setFixedWidth(70)
+        self._chain_gap_max.setAlignment(QtCore.Qt.AlignRight)
+        self._chain_gap_max.setKeyboardTracking(False)
+        self._chain_gap_max.setToolTip("Maximum gap between chain spawns (seconds)")
+        self._chain_gap_max.setStyleSheet(
+            "QDoubleSpinBox{background:#0f1216;color:#e6edf3;border:1px solid #3c4450;"
+            "border-radius:6px;padding:1px 4px;}"
+            "QDoubleSpinBox::up-button{width:10px;border:none;}"
+            "QDoubleSpinBox::down-button{width:10px;border:none;}"
+        )
+        self._chain_gap_max.valueChanged.connect(self._on_chain_gap_max_changed)
+        gap_max_row.addWidget(self._chain_gap_max, 0)
+        gap_max_row.addStretch(1)
+
+        right.addLayout(gap_max_row, 0)
 
         direction_row = QtWidgets.QHBoxLayout()
         direction_row.setContentsMargins(0, 0, 0, 0)
@@ -2525,6 +2662,70 @@ class TextureProWidget(QtWidgets.QWidget):
         life_max = float(self._life_max.value())
         self._apply_life_range(life_min, life_max, notify_scene=True)
 
+    def _set_chain_gap_values(self, gap_min: float, gap_max: float) -> None:
+        try:
+            gap_min = float(gap_min)
+        except Exception:
+            gap_min = float(CHAIN_GAP_MIN_DEFAULT)
+        try:
+            gap_max = float(gap_max)
+        except Exception:
+            gap_max = float(CHAIN_GAP_MAX_DEFAULT)
+        gap_min = max(CHAIN_GAP_MIN_LIMIT, min(CHAIN_GAP_MAX_LIMIT, gap_min))
+        gap_max = max(gap_min, min(CHAIN_GAP_MAX_LIMIT, gap_max))
+        try:
+            if abs(float(self._chain_gap_min.value()) - gap_min) > 1e-6:
+                self._chain_gap_min.blockSignals(True)
+                self._chain_gap_min.setValue(gap_min)
+        finally:
+            try:
+                self._chain_gap_min.blockSignals(False)
+            except Exception:
+                pass
+        try:
+            if abs(float(self._chain_gap_max.value()) - gap_max) > 1e-6:
+                self._chain_gap_max.blockSignals(True)
+                self._chain_gap_max.setValue(gap_max)
+        finally:
+            try:
+                self._chain_gap_max.blockSignals(False)
+            except Exception:
+                pass
+
+    def _apply_chain_gap_range(self, gap_min: float, gap_max: float, notify_scene: bool = False) -> None:
+        try:
+            gap_min = float(gap_min)
+        except Exception:
+            gap_min = float(CHAIN_GAP_MIN_DEFAULT)
+        try:
+            gap_max = float(gap_max)
+        except Exception:
+            gap_max = float(CHAIN_GAP_MAX_DEFAULT)
+        gap_min = max(CHAIN_GAP_MIN_LIMIT, min(CHAIN_GAP_MAX_LIMIT, gap_min))
+        gap_max = max(gap_min, min(CHAIN_GAP_MAX_LIMIT, gap_max))
+        try:
+            if hasattr(self._provider, "set_chain_gap_range"):
+                self._provider.set_chain_gap_range(gap_min, gap_max)
+        except Exception:
+            pass
+        self._set_param("chain_gap_min", f"{gap_min:.2f}", notify_scene=notify_scene)
+        self._set_param("chain_gap_max", f"{gap_max:.2f}", notify_scene=notify_scene)
+        self._set_chain_gap_values(gap_min, gap_max)
+        try:
+            self._refresh_preview()
+        except Exception:
+            pass
+
+    def _on_chain_gap_min_changed(self):
+        gap_min = float(self._chain_gap_min.value())
+        gap_max = float(self._chain_gap_max.value())
+        self._apply_chain_gap_range(gap_min, gap_max, notify_scene=True)
+
+    def _on_chain_gap_max_changed(self):
+        gap_min = float(self._chain_gap_min.value())
+        gap_max = float(self._chain_gap_max.value())
+        self._apply_chain_gap_range(gap_min, gap_max, notify_scene=True)
+
     def _set_emissive_value(self, value: float) -> None:
         try:
             value = float(value)
@@ -2780,6 +2981,18 @@ class TextureProWidget(QtWidgets.QWidget):
         except Exception:
             life_max = float(LIFE_MAX_DEFAULT)
         self._apply_life_range(life_min, life_max, notify_scene=False)
+
+        gap_min = float(CHAIN_GAP_MIN_DEFAULT)
+        try:
+            gap_min = float(_param_value(self._node_item.model, "chain_gap_min") or CHAIN_GAP_MIN_DEFAULT)
+        except Exception:
+            gap_min = float(CHAIN_GAP_MIN_DEFAULT)
+        gap_max = float(CHAIN_GAP_MAX_DEFAULT)
+        try:
+            gap_max = float(_param_value(self._node_item.model, "chain_gap_max") or CHAIN_GAP_MAX_DEFAULT)
+        except Exception:
+            gap_max = float(CHAIN_GAP_MAX_DEFAULT)
+        self._apply_chain_gap_range(gap_min, gap_max, notify_scene=False)
 
         emissive = float(EMISSIVE_DEFAULT)
         try:

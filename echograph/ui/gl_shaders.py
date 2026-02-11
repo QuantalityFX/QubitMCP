@@ -44,6 +44,8 @@ uniform vec2 ProcOffset;
 uniform float ProcPan;
 uniform float ProcLifeMin;
 uniform float ProcLifeMax;
+uniform float ProcChainMin;
+uniform float ProcChainMax;
 uniform int ProceduralMode2;
 uniform vec4 ProcParams2;
 uniform float ProcSeed2;
@@ -55,6 +57,8 @@ uniform vec2 ProcOffset2;
 uniform float ProcPan2;
 uniform float ProcLifeMin2;
 uniform float ProcLifeMax2;
+uniform float ProcChainMin2;
+uniform float ProcChainMax2;
 uniform float ProcTime;
 uniform vec4 ProcBg;
 uniform int ProcBgEnabled;
@@ -126,7 +130,9 @@ vec4 proc_matrix_params(
     vec2 cell_offset,
     float pan_enabled,
     float life_min,
-    float life_max
+    float life_max,
+    float chain_min,
+    float chain_max
 ) {
     float base = 20.0;
     float tiling = max(1.0, params.x);
@@ -155,7 +161,9 @@ vec4 proc_matrix_params(
     trail *= mix(0.8, 1.6, life / 10.0);
     trail = clamp(trail, 6.0, 26.0);
     float fade = mix(1.1025, 2.646, hash11(stream_id * 2.11 + seed * 7.3));
-    float dead = mix(0.8, 2.2, hash11(stream_id * 2.71 + seed * 5.1));
+    float dmin = min(chain_min, chain_max);
+    float dmax = max(chain_min, chain_max);
+    float dead = mix(dmin, dmax, hash11(stream_id * 2.71 + seed * 5.1));
     float cycle = life + fade + dead;
     float offset = hash11(stream_id * 3.17 + seed * 17.1) * cycle;
     float tcol = raw_t + offset;
@@ -277,13 +285,41 @@ void main() {
     }
     if (UseProcedural == 1) {
         vec4 p0 = (ProceduralMode == 1)
-            ? proc_matrix_params(v_uv, ProcParams, ProcSeed, ProcAnimSpeed, ProcBg, ProcBgEnabled, ProcSoftness, ProcOffset, ProcPan, ProcLifeMin, ProcLifeMax)
+            ? proc_matrix_params(
+                v_uv,
+                ProcParams,
+                ProcSeed,
+                ProcAnimSpeed,
+                ProcBg,
+                ProcBgEnabled,
+                ProcSoftness,
+                ProcOffset,
+                ProcPan,
+                ProcLifeMin,
+                ProcLifeMax,
+                ProcChainMin,
+                ProcChainMax
+            )
             : proc_checker_params(v_uv, ProcParams, ProcAnimSpeed, ProcOffset, ProcBg, ProcBgEnabled);
         vec3 rgb0 = apply_lighting(p0.rgb, lum, ProcLightMix, ProcEmissive);
         vec4 c0 = vec4(rgb0, p0.a);
         if (UseProceduralLayer == 1) {
             vec4 p1 = (ProceduralMode2 == 1)
-                ? proc_matrix_params(v_uv, ProcParams2, ProcSeed2, ProcAnimSpeed2, ProcBg2, ProcBgEnabled2, ProcSoftness2, ProcOffset2, ProcPan2, ProcLifeMin2, ProcLifeMax2)
+                ? proc_matrix_params(
+                    v_uv,
+                    ProcParams2,
+                    ProcSeed2,
+                    ProcAnimSpeed2,
+                    ProcBg2,
+                    ProcBgEnabled2,
+                    ProcSoftness2,
+                    ProcOffset2,
+                    ProcPan2,
+                    ProcLifeMin2,
+                    ProcLifeMax2,
+                    ProcChainMin2,
+                    ProcChainMax2
+                )
                 : proc_checker_params(v_uv, ProcParams2, ProcAnimSpeed2, ProcOffset2, ProcBg2, ProcBgEnabled2);
             vec3 rgb1 = apply_lighting(p1.rgb, lum, ProcLightMix2, ProcEmissive2);
             vec4 c1 = vec4(rgb1, p1.a);

@@ -2326,6 +2326,22 @@ class MGLRendererMixin:
                 life_max = 14.0
             _set_uniform(f"ProcLifeMin{suffix}", float(life_min))
             _set_uniform(f"ProcLifeMax{suffix}", float(max(float(life_min), float(life_max))))
+            gap_min = proc_state.get("chain_gap_min", 0.8)
+            gap_max = proc_state.get("chain_gap_max", 2.2)
+            if gap_min is None:
+                gap_min = 0.8
+            if gap_max is None:
+                gap_max = 2.2
+            try:
+                gap_min = float(gap_min)
+            except Exception:
+                gap_min = 0.8
+            try:
+                gap_max = float(gap_max)
+            except Exception:
+                gap_max = 2.2
+            _set_uniform(f"ProcChainMin{suffix}", float(gap_min))
+            _set_uniform(f"ProcChainMax{suffix}", float(max(float(gap_min), float(gap_max))))
             bg_enabled = 1 if float(proc_state.get("bg_enabled", 0.0) or 0.0) > 0.5 else 0
             _set_uniform(f"ProcBgEnabled{suffix}", int(bg_enabled))
             bg = proc_state.get("bg_color")
@@ -2429,6 +2445,10 @@ class MGLRendererMixin:
             prog["ProcGlyph"].value = 1
             prog["ProcGlyphGrid"].value = (1.0, 1.0)
             prog["ProcGlyphCount"].value = 1.0
+            prog["ProcChainMin"].value = 0.8
+            prog["ProcChainMax"].value = 2.2
+            prog["ProcChainMin2"].value = 0.8
+            prog["ProcChainMax2"].value = 2.2
             if np is not None:
                 ident = np.eye(4, dtype="f4")
                 try:
@@ -4440,6 +4460,8 @@ class MGLRendererMixin:
                 self._mgl_prog["ProcPan"].value = 1.0
                 self._mgl_prog["ProcLifeMin"].value = 3.0
                 self._mgl_prog["ProcLifeMax"].value = 14.0
+                self._mgl_prog["ProcChainMin"].value = 0.8
+                self._mgl_prog["ProcChainMax"].value = 2.2
                 self._mgl_prog["ProceduralMode2"].value = 0
                 self._mgl_prog["ProcParams2"].value = (1.0, 1.0, 1.0, 0.0)
                 self._mgl_prog["ProcSeed2"].value = 0.0
@@ -4450,6 +4472,8 @@ class MGLRendererMixin:
                 self._mgl_prog["ProcPan2"].value = 1.0
                 self._mgl_prog["ProcLifeMin2"].value = 3.0
                 self._mgl_prog["ProcLifeMax2"].value = 14.0
+                self._mgl_prog["ProcChainMin2"].value = 0.8
+                self._mgl_prog["ProcChainMax2"].value = 2.2
                 self._mgl_prog["ProcTime"].value = 0.0
                 self._mgl_prog["ProcBgEnabled"].value = 0
                 self._mgl_prog["ProcBg"].value = (0.0, 0.0, 0.0, 1.0)
