@@ -59,6 +59,21 @@ GL_DEPTH_BUFFER_BIT = 0x00000100
 
 _HAS_MGL = moderngl is not None and np is not None and Matrix44 is not None
 
+_THUMB_VERT = """
+#version 330
+in vec2 in_pos;
+in vec2 in_uv;
+out vec3 v_norm;
+out vec3 v_vert;
+out vec2 v_uv;
+void main() {
+    gl_Position = vec4(in_pos.xy, 0.0, 1.0);
+    v_uv = in_uv;
+    v_norm = vec3(0.0, 0.0, 1.0);
+    v_vert = vec3(0.0, 0.0, 0.0);
+}
+"""
+
 
 def _mgl_grid(size: float, steps: int) -> NDArray:
     if np is None:
@@ -2231,12 +2246,13 @@ class MGLRendererMixin:
                 pass
         return getattr(self, "_mgl_proc_glyph_tex", None)
 
-    def _mgl_apply_procedural_uniforms(self, state: Optional[dict]) -> None:
-        if self._mgl_prog is None:
+    def _mgl_apply_procedural_uniforms_to(self, prog, state: Optional[dict]) -> None:
+        if prog is None:
             return
+
         def _set_uniform(name: str, value) -> None:
             try:
-                self._mgl_prog[name].value = value
+                prog[name].value = value
             except Exception:
                 pass
 
@@ -2371,6 +2387,11 @@ class MGLRendererMixin:
                     count = 1
             _set_uniform("ProcGlyphCount", float(max(1, int(count))))
 
+    def _mgl_apply_procedural_uniforms(self, state: Optional[dict]) -> None:
+        if self._mgl_prog is None:
+            return
+        self._mgl_apply_procedural_uniforms_to(self._mgl_prog, state)
+
     def _mgl_upload_texture(self, image: QtGui.QImage, source_path: str = "") -> None:
         if image.isNull():
             raise RuntimeError("Texture load failed")
@@ -2391,6 +2412,221 @@ class MGLRendererMixin:
                 self._mgl_prog["UseTexture"].value = 1
             except Exception:
                 pass
+
+    def _mgl_ensure_thumb_resources(self) -> bool:
+        if self._mgl_ctx is None or np is None:
+            return False
+        if getattr(self, "_mgl_thumb_prog", None) is not None and getattr(self, "_mgl_thumb_vao", None) is not None:
+            return True
+        try:
+            prog = self._mgl_ctx.program(vertex_shader=_THUMB_VERT, fragment_shader=SHADERS["mesh_fragment"])
+            prog["Texture"].value = 0
+            prog["UseTexture"].value = 0
+            prog["UseLighting"].value = 0
+            prog["UseProcedural"].value = 1
+            prog["UseProceduralLayer"].value = 0
+            prog["UseVolumeMask"].value = 0
+            prog["ProcGlyph"].value = 1
+            prog["ProcGlyphGrid"].value = (1.0, 1.0)
+            prog["ProcGlyphCount"].value = 1.0
+            if np is not None:
+                ident = np.eye(4, dtype="f4")
+                try:
+                    prog["Model"].write(ident.tobytes())
+                    prog["VolumeInv"].write(ident.tobytes())
+                except Exception:
+                    pass
+        except Exception:
+            return False
+        quad = np.array(
+            [
+                -1.0, -1.0, 0.0, 0.0,
+                1.0, -1.0, 1.0, 0.0,
+                -1.0, 1.0, 0.0, 1.0,
+                1.0, 1.0, 1.0, 1.0,
+            ],
+            dtype="f4",
+        )
+        try:
+            vbo = self._mgl_ctx.buffer(quad.tobytes())
+            vao = self._mgl_ctx.vertex_array(prog, [(vbo, "2f 2f", "in_pos", "in_uv")])
+        except Exception:
+            return False
+        self._mgl_thumb_prog = prog
+        self._mgl_thumb_vbo = vbo
+        self._mgl_thumb_vao = vao
+        return True
+
+    def _mgl_get_thumb_fbo(self, size: int):
+        if self._mgl_ctx is None:
+            return None
+        size = int(max(16, min(int(size), 512)))
+        cur_size = int(getattr(self, "_mgl_thumb_size", 0) or 0)
+        fbo = getattr(self, "_mgl_thumb_fbo", None)
+        tex = getattr(self, "_mgl_thumb_tex", None)
+        if fbo is not None and tex is not None and cur_size == size:
+            return fbo
+        try:
+            if fbo is not None:
+                fbo.release()
+        except Exception:
+            pass
+        try:
+            if tex is not None:
+                tex.release()
+        except Exception:
+            pass
+        try:
+            tex = self._mgl_ctx.texture((size, size), 4)
+            tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
+            tex.repeat_x = False
+            tex.repeat_y = False
+            fbo = self._mgl_ctx.framebuffer(color_attachments=[tex])
+        except Exception:
+            return None
+        self._mgl_thumb_size = size
+        self._mgl_thumb_tex = tex
+        self._mgl_thumb_fbo = fbo
+        return fbo
+
+    def _mgl_render_proc_thumbnail(self, provider: object, size: int, proc_time: Optional[float] = None) -> Optional[QtGui.QImage]:
+        if self._mgl_ctx is None:
+            return None
+        if not self._mgl_ensure_thumb_resources():
+            return None
+        state = self._mgl_proc_state(provider)
+        if not state:
+            return None
+        fbo = self._mgl_get_thumb_fbo(int(size))
+        if fbo is None:
+            return None
+        prog = getattr(self, "_mgl_thumb_prog", None)
+        vao = getattr(self, "_mgl_thumb_vao", None)
+        if prog is None or vao is None:
+            return None
+        if proc_time is None:
+            try:
+                proc_time = float(getattr(self, "_mgl_proc_time", 0.0) or 0.0)
+            except Exception:
+                proc_time = 0.0
+            if not proc_time:
+                proc_time = time.perf_counter()
+        restore_proc_time = None
+        restore_proc_time_set = False
+        try:
+            restore_proc_time_set = hasattr(self, "_mgl_proc_time")
+            restore_proc_time = getattr(self, "_mgl_proc_time", None)
+            try:
+                self._mgl_proc_time = float(proc_time)
+            except Exception:
+                pass
+        except Exception:
+            restore_proc_time_set = False
+            restore_proc_time = None
+        old_viewport = None
+        try:
+            old_viewport = self._mgl_ctx.viewport
+        except Exception:
+            old_viewport = None
+        size = int(getattr(self, "_mgl_thumb_size", size) or size)
+        try:
+            fbo.use()
+            try:
+                self._mgl_ctx.viewport = (0, 0, size, size)
+            except Exception:
+                pass
+            try:
+                self._mgl_ctx.enable(moderngl.BLEND)
+                self._mgl_ctx.disable(moderngl.DEPTH_TEST | moderngl.CULL_FACE)
+            except Exception:
+                pass
+            try:
+                self._mgl_ctx.clear(0.0, 0.0, 0.0, 0.0)
+            except Exception:
+                pass
+
+            try:
+                prog["Color"].value = (1.0, 1.0, 1.0, 1.0)
+                prog["UseTexture"].value = 0
+                prog["UseLighting"].value = 0
+                prog["UseVolumeMask"].value = 0
+                prog["Light"].value = (1.0, 1.0, 1.0)
+                prog["LightIntensity"].value = float(getattr(self, "_mgl_light_intensity", 1.0) or 1.0)
+                if np is not None:
+                    ident = np.eye(4, dtype="f4")
+                    try:
+                        prog["Model"].write(ident.tobytes())
+                        prog["VolumeInv"].write(ident.tobytes())
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            self._mgl_apply_procedural_uniforms_to(prog, state)
+            try:
+                vao.render(moderngl.TRIANGLE_STRIP)
+            except Exception:
+                return None
+
+            data = fbo.read(components=4, alignment=1)
+            fmt = (
+                QtGui.QImage.Format_RGBA8888
+                if hasattr(QtGui.QImage, "Format_RGBA8888")
+                else QtGui.QImage.Format_ARGB32
+            )
+            qimg = QtGui.QImage(data, size, size, size * 4, fmt)
+            qimg = qimg.mirrored(False, True)
+            return qimg.copy()
+        finally:
+            if old_viewport is not None:
+                try:
+                    self._mgl_ctx.viewport = old_viewport
+                except Exception:
+                    pass
+            if restore_proc_time_set:
+                try:
+                    self._mgl_proc_time = restore_proc_time
+                except Exception:
+                    pass
+            elif restore_proc_time is None:
+                try:
+                    if hasattr(self, "_mgl_proc_time"):
+                        delattr(self, "_mgl_proc_time")
+                except Exception:
+                    pass
+            try:
+                if hasattr(self._mgl_ctx, "screen"):
+                    self._mgl_ctx.screen.use()
+            except Exception:
+                pass
+            try:
+                self._mgl_bind_default_fbo()
+            except Exception:
+                pass
+
+    def render_proc_thumbnail(self, provider: object, size: int, proc_time: Optional[float] = None) -> Optional[QtGui.QImage]:
+        if not getattr(self, "_use_moderngl", False):
+            return None
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        if renderer is None or not hasattr(renderer, "_mgl_render_proc_thumbnail"):
+            return None
+        size = int(max(16, min(int(size), 512)))
+        try:
+            if hasattr(self, "makeCurrent"):
+                try:
+                    self.makeCurrent()
+                except Exception:
+                    return None
+                try:
+                    return renderer._mgl_render_proc_thumbnail(provider, size, proc_time)
+                finally:
+                    try:
+                        self.doneCurrent()
+                    except Exception:
+                        pass
+            return renderer._mgl_render_proc_thumbnail(provider, size, proc_time)
+        except Exception:
+            return None
 
     def _mgl_update_procedural_textures(self, step: float, frame_id: int) -> None:
         if self._mgl_ctx is None or step <= 0.0:

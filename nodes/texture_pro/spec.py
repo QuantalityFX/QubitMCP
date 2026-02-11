@@ -1480,6 +1480,8 @@ class TextureProWidget(QtWidgets.QWidget):
         self._preview_min_interval = 0.12
         self._advance_last_ts = 0.0
         self._preview_scale_bucket = 1.0
+        self._gpu_preview_last_rev = None
+        self._gpu_preview_last_ts = 0.0
         self._frame_hooked = False
         self._last_frame_ts = 0.0
         self._input_item = None
@@ -2917,7 +2919,8 @@ class TextureProWidget(QtWidgets.QWidget):
         glv = self._get_gl_view()
         fps = self._view_fps(glv)
         selected = self._is_selected()
-        if selected and not self._provider_driven_by_view(glv):
+        use_gpu = self._gpu_preview_available(glv)
+        if selected and not self._provider_driven_by_view(glv) and not use_gpu:
             preview_target = None
             try:
                 bucket = self._preview_scale_for_zoom(self._graph_view_scale())
@@ -3066,12 +3069,31 @@ class TextureProWidget(QtWidgets.QWidget):
             return 2.0
         return 2.5
 
+    def _gpu_preview_available(self, glv) -> bool:
+        if glv is None:
+            return False
+        try:
+            if not bool(getattr(glv, "_use_moderngl", False)):
+                return False
+        except Exception:
+            return False
+        render_fn = getattr(glv, "render_proc_thumbnail", None)
+        if not callable(render_fn):
+            return False
+        try:
+            state = self._provider.gpu_state()
+        except Exception:
+            return False
+        return bool(state)
+
     def _refresh_preview(self, force: bool = False):
+        glv = self._get_gl_view()
+        use_gpu = self._gpu_preview_available(glv)
+        selected = self._is_selected()
         if not force:
             try:
                 if self._graph_is_interacting():
                     return
-                glv = self._get_gl_view()
                 if self._view_is_interacting(glv):
                     return
             except Exception:
@@ -3080,6 +3102,8 @@ class TextureProWidget(QtWidgets.QWidget):
                 min_interval = float(getattr(self, "_preview_min_interval", 0.12) or 0.0)
             except Exception:
                 min_interval = 0.12
+            if use_gpu and selected:
+                min_interval = 1.0 / 60.0
             if min_interval > 0.0:
                 now = time.perf_counter()
                 last = float(getattr(self, "_preview_last_ts", 0.0) or 0.0)
@@ -3113,6 +3137,58 @@ class TextureProWidget(QtWidgets.QWidget):
                     rev = None
                 if rev is not None:
                     rev_key = ("main", int(rev))
+        if use_gpu:
+            if not force and not selected:
+                if rev_key is not None and rev_key == self._gpu_preview_last_rev and not bucket_changed:
+                    return
+            now = time.perf_counter()
+            try:
+                dpr = float(self._preview.devicePixelRatioF())
+            except Exception:
+                dpr = 1.0
+            preview_w = max(1, int(self._preview.width()))
+            preview_h = max(1, int(self._preview.height()))
+            max_ratio = 512.0 / float(max(preview_w, preview_h))
+            pixel_ratio = max(0.5, min(float(desired_bucket) * max(0.5, dpr), max_ratio))
+            target_px = max(16, int(round(float(max(preview_w, preview_h)) * pixel_ratio)))
+            img = None
+            try:
+                if glv is not None:
+                    img = glv.render_proc_thumbnail(self._provider, target_px, proc_time=now)
+            except Exception:
+                img = None
+            if img is not None and not img.isNull():
+                pix = QtGui.QPixmap.fromImage(img)
+                target_w = max(1, int(round(float(preview_w) * pixel_ratio)))
+                target_h = max(1, int(round(float(preview_h) * pixel_ratio)))
+                transform_mode = QtCore.Qt.SmoothTransformation if pixel_ratio >= 1.0 else QtCore.Qt.FastTransformation
+                if pix.width() != target_w or pix.height() != target_h:
+                    pix = pix.scaled(
+                        target_w,
+                        target_h,
+                        QtCore.Qt.KeepAspectRatio,
+                        transform_mode,
+                    )
+                try:
+                    pix.setDevicePixelRatio(max(0.5, float(pixel_ratio)))
+                except Exception:
+                    pass
+                self._preview.setPixmap(pix)
+                try:
+                    self._preview_last_ts = now
+                    self._gpu_preview_last_ts = now
+                except Exception:
+                    pass
+                try:
+                    self._preview_scale_bucket = float(desired_bucket)
+                except Exception:
+                    pass
+                if rev_key is not None:
+                    self._gpu_preview_last_rev = rev_key
+                return
+            if self._preview.pixmap() is None:
+                force = True
+        if not force:
             if rev_key is not None and rev_key == self._last_rev and not bucket_changed:
                 return
         preview_w = max(1, int(self._preview.width()))
