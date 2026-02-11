@@ -629,11 +629,15 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._fps_timer = QtCore.QTimer(self)
         self._fps_timer.setInterval(16)  # ~60hz
         #self._fps_timer.setInterval(100)  # 10hz idle refresh
-        self._fps_timer.timeout.connect(self.update)
+        self._fps_timer.timeout.connect(self._on_fps_tick)
         #self._fps_timer.start()
 
         self.setMouseTracking(True)
         self.setFocusPolicy(QtCore.Qt.StrongFocus)
+        self._fps_nav_active = False
+        self._fps_nav_keys = set()
+        self._fps_nav_last_t = time.perf_counter()
+        self._fps_nav_speed = 2.0
         self._viewport_hotkey_filter = None
         try:
             app = QtWidgets.QApplication.instance()
@@ -744,6 +748,74 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         super().hideEvent(e)
         if hasattr(self, "_fps_timer"):
             self._fps_timer.stop()
+
+    def _on_fps_tick(self) -> None:
+        try:
+            self._tick_fps_nav()
+        except Exception:
+            pass
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    def _tick_fps_nav(self) -> None:
+        now = time.perf_counter()
+        last = float(getattr(self, "_fps_nav_last_t", now))
+        dt = max(0.0, min(0.1, float(now - last)))
+        self._fps_nav_last_t = now
+
+        if not bool(getattr(self, "_fps_nav_active", False)):
+            return
+        if not bool(getattr(self, "_use_moderngl", False)):
+            return
+        keys = getattr(self, "_fps_nav_keys", None)
+        if not keys:
+            return
+        if np is None:
+            return
+
+        right = np.array([1.0, 0.0, 0.0], dtype="f4")
+        up = np.array([0.0, 1.0, 0.0], dtype="f4")
+        forward = np.array([0.0, 0.0, -1.0], dtype="f4")
+        if self._mgl_arcball is not None:
+            rot = np.array(self._mgl_arcball.Transform[:3, :3], dtype="f4")
+            scale = np.linalg.norm(rot, axis=0)
+            denom = float(scale.mean()) if scale.size else 1.0
+            if denom > 1e-6:
+                rot = rot / denom
+            right = rot @ right
+            up = rot @ up
+            forward = rot @ forward
+
+        move = np.zeros(3, dtype="f4")
+        if "w" in keys:
+            move += forward
+        if "s" in keys:
+            move -= forward
+        if "a" in keys:
+            move -= right
+        if "d" in keys:
+            move += right
+        ln = float(np.linalg.norm(move))
+        if ln < 1e-6:
+            return
+        move /= ln
+
+        speed = float(getattr(self, "_fps_nav_speed", 2.0))
+        try:
+            zoom = float(getattr(self, "_mgl_camera_zoom", 1.0))
+            speed *= max(0.2, min(4.0, zoom * 0.25))
+        except Exception:
+            pass
+
+        delta = move * float(speed) * float(dt)
+        center = getattr(self, "_mgl_center", None)
+        if center is None:
+            center = np.zeros(3, dtype="f4")
+        else:
+            center = np.array(center, dtype="f4")
+        self._mgl_center = center + delta
 
     def paintEvent(self, event):
         if QOpenGLWidget is None:
@@ -4974,7 +5046,24 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
             if e.button() == QtCore.Qt.RightButton:
                 if not alt_pressed:
-                    e.ignore()
+                    try:
+                        self._fps_nav_active = True
+                        self._fps_nav_last_t = time.perf_counter()
+                    except Exception:
+                        pass
+                    try:
+                        self._mgl_zoom_press_pos = None
+                    except Exception:
+                        pass
+                    try:
+                        self.setFocus(QtCore.Qt.MouseFocusReason)
+                    except Exception:
+                        pass
+                    try:
+                        self.setCursor(QtCore.Qt.ArrowCursor)
+                    except Exception:
+                        pass
+                    e.accept()
                     return
                 self._mgl_zoom_press_pos = e.pos()
                 self._mgl_zoom_start = float(self._mgl_camera_zoom)
@@ -6288,6 +6377,12 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
 
         if self._use_moderngl:
+            if e.button() == QtCore.Qt.RightButton:
+                try:
+                    self._fps_nav_active = False
+                    self._fps_nav_keys = set()
+                except Exception:
+                    pass
             # --- 1) If we were dragging the gizmo, ALWAYS end that first ---
             if getattr(self, "_xform_dragging", False):
                 self._commit_xform_history()
@@ -6706,7 +6801,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 return False
 
         try:
-            wire_seq = hotkeys_config.keyseq("gl_wireframe_toggle", "W")
+            wire_seq = hotkeys_config.keyseq("gl_wireframe_toggle", "Shift+W")
             grid_seq = hotkeys_config.keyseq("gl_grid_toggle", "G")
         except Exception:
             wire_seq = "W"
@@ -6750,6 +6845,28 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             key = e.key()
         except Exception:
             key = None
+        nav_key = None
+        try:
+            if key == QtCore.Qt.Key_W:
+                nav_key = "w"
+            elif key == QtCore.Qt.Key_A:
+                nav_key = "a"
+            elif key == QtCore.Qt.Key_S:
+                nav_key = "s"
+            elif key == QtCore.Qt.Key_D:
+                nav_key = "d"
+        except Exception:
+            nav_key = None
+        if nav_key is not None and bool(getattr(self, "_fps_nav_active", False)):
+            try:
+                self._fps_nav_keys.add(nav_key)
+            except Exception:
+                pass
+            try:
+                e.accept()
+            except Exception:
+                pass
+            return
         if self._handle_viewport_hotkeys(e, require_no_text_focus=True):
             return
         if getattr(self, "_gizmo_hotkeys_active", False):
@@ -6781,6 +6898,36 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             return
         super().keyPressEvent(e)
 
+    def keyReleaseEvent(self, e):
+        try:
+            key = e.key()
+        except Exception:
+            key = None
+        nav_key = None
+        try:
+            if key == QtCore.Qt.Key_W:
+                nav_key = "w"
+            elif key == QtCore.Qt.Key_A:
+                nav_key = "a"
+            elif key == QtCore.Qt.Key_S:
+                nav_key = "s"
+            elif key == QtCore.Qt.Key_D:
+                nav_key = "d"
+        except Exception:
+            nav_key = None
+        if nav_key is not None:
+            try:
+                self._fps_nav_keys.discard(nav_key)
+            except Exception:
+                pass
+            if bool(getattr(self, "_fps_nav_active", False)):
+                try:
+                    e.accept()
+                except Exception:
+                    pass
+                return
+        super().keyReleaseEvent(e)
+
     def focusOutEvent(self, e):
         # Keep gizmo when focus leaves the viewport (avoid hiding splats on UI click)
         try:
@@ -6788,6 +6935,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 self._mgl_log("scene: focus lost -> keep gizmo")
             except Exception:
                 pass
+            self._fps_nav_active = False
+            self._fps_nav_keys = set()
             self.update()
         except Exception:
             pass
