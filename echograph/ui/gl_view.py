@@ -826,6 +826,49 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         except Exception:
             pass
 
+    def _fps_log_camera_state(self, tag: str, throttle_key: str | None = None, interval: float = 0.25) -> None:
+        try:
+            if not bool(getattr(self, "_mgl_splat_log", True)):
+                return
+        except Exception:
+            return
+        try:
+            cam_world = getattr(self, "_mgl_cam_world", None)
+            center = getattr(self, "_mgl_center", None)
+            zoom = getattr(self, "_mgl_camera_zoom", None)
+            arc = getattr(self, "_mgl_arcball", None)
+            cam_calc = None
+            if np is not None and arc is not None and hasattr(arc, "Transform"):
+                try:
+                    rot = np.array(arc.Transform[:3, :3], dtype=np.float32)
+                    scale = np.linalg.norm(rot, axis=0)
+                    denom = float(scale.mean()) if scale.size else 1.0
+                    if denom > 1e-6:
+                        rot = rot / denom
+                    if center is None:
+                        center_vec = np.zeros(3, dtype="f4")
+                    else:
+                        center_vec = np.array(center, dtype="f4")
+                    z = float(zoom) if zoom is not None else 0.0
+                    cam_local = np.array([0.0, 0.0, z], dtype=np.float32)
+                    cam_calc = center_vec + (rot.T @ cam_local)
+                except Exception:
+                    cam_calc = None
+            msg = (
+                f"[FPS_CAM] {tag}"
+                f" cam_world={cam_world}"
+                f" cam_calc={tuple(cam_calc.tolist()) if cam_calc is not None else None}"
+                f" center={center}"
+                f" zoom={zoom}"
+                f" nav_active={bool(getattr(self, '_fps_nav_active', False))}"
+            )
+            if throttle_key:
+                self._mgl_log_throttled(throttle_key, msg, interval=interval)
+            else:
+                self._mgl_log(msg)
+        except Exception:
+            pass
+
     def _tick_fps_nav(self) -> None:
         now = time.perf_counter()
         last = float(getattr(self, "_fps_nav_last_t", now))
@@ -5120,6 +5163,10 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     except Exception:
                         pass
                     try:
+                        self._fps_log_camera_state("rmb_down")
+                    except Exception:
+                        pass
+                    try:
                         self._mgl_zoom_press_pos = None
                     except Exception:
                         pass
@@ -5342,6 +5389,10 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     dy = float(e.pos().y() - last.y())
                     self._fps_nav_look_last_pos = e.pos()
                     self._fps_apply_look(dx, dy)
+                except Exception:
+                    pass
+                try:
+                    self._fps_log_camera_state("rmb_move", throttle_key="_fps_nav_log_t", interval=0.25)
                 except Exception:
                     pass
                 try:
