@@ -1266,8 +1266,57 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         except Exception:
             pass
 
+
     def _on_camlog_clicked(self) -> None:
         self._write_camera_debug_snapshot()
+
+    def _calc_camera_world_orbit(self):
+        try:
+            if np is None:
+                return None
+            arc = getattr(self, "_mgl_arcball", None)
+            if arc is None or not hasattr(arc, "Transform"):
+                return None
+            try:
+                zoom = float(getattr(self, "_mgl_camera_zoom", 0.0))
+            except Exception:
+                zoom = 0.0
+            rot = np.array(arc.Transform[:3, :3], dtype=np.float32)
+            scale = float(np.linalg.norm(rot, ord="fro") / math.sqrt(3.0))
+            if scale > 1e-6:
+                rot = rot / scale
+            cam_local = np.array([0.0, 0.0, zoom], dtype=np.float32)
+            cam_rot = rot.T @ cam_local
+            center = getattr(self, "_mgl_center", None)
+            if center is not None:
+                cam_rot = cam_rot + np.array(center, dtype=np.float32)
+            return (float(cam_rot[0]), float(cam_rot[1]), float(cam_rot[2]))
+        except Exception:
+            return None
+
+    def _log_camera_world(self, tag: str = "rmb") -> None:
+        try:
+            cam_orbit = self._calc_camera_world_orbit()
+            center = getattr(self, "_mgl_center", None)
+            zoom = getattr(self, "_mgl_camera_zoom", None)
+            msg = (
+                f"[CAM] {tag} cam_world_orbit={cam_orbit} "
+                f"center={center} zoom={zoom}"
+            )
+            try:
+                root = Path(__file__).resolve().parents[2]
+                log_dir = root / "logs"
+                log_dir.mkdir(parents=True, exist_ok=True)
+                with (log_dir / "cam_debug.log").open("a", encoding="utf-8") as f:
+                    f.write(msg + "\n")
+            except Exception:
+                pass
+            try:
+                print(msg, flush=True)
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     def _write_camera_debug_snapshot(self) -> None:
         try:
@@ -1332,6 +1381,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 lines.append(str(transform))
             except Exception:
                 pass
+
+            vm = None
             try:
                 vm = (lookat * transform).astype("f4")
                 lines.append("view_model:")
@@ -1339,18 +1390,87 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             except Exception:
                 pass
 
+            # camera position in world (view-space origin transformed by view inverse)
+            cam_world_fixed = (0.0, 0.0, float(zoom))
+            lines.append(f"cam_world_fixed: {cam_world_fixed}")
+
+            scale_mult = None
+            try:
+                scale_mult = float(getattr(self, "_mgl_scale_multiplier", 1.0))
+                lines.append(f"scale_multiplier: {scale_mult}")
+            except Exception:
+                scale_mult = None
+
+            cam_view = None
+            try:
+                if np is not None and vm is not None:
+                    view_np = np.array(vm, dtype=np.float32)
+                    inv = np.linalg.inv(view_np)
+                    cam = inv @ np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+                    cam_view = (float(cam[0]), float(cam[1]), float(cam[2]))
+                lines.append(f"cam_world_view: {cam_view}")
+            except Exception as exc:
+                lines.append(f"cam_world_view_error: {exc}")
+
+            cam_orbit = None
+            try:
+                cam_orbit = self._calc_camera_world_orbit()
+                lines.append(f"cam_world_orbit: {cam_orbit}")
+            except Exception as exc:
+                lines.append(f"cam_world_orbit_error: {exc}")
+
+            # camera position expressed in object/model space (row- and column-vector conventions)
+            try:
+                if np is not None:
+                    t = np.array(transform, dtype=np.float32)
+                    inv_t = np.linalg.inv(t)
+                    v = np.array([cam_world_fixed[0], cam_world_fixed[1], cam_world_fixed[2], 1.0], dtype=np.float32)
+                    cam_obj_row = v @ inv_t
+                    cam_obj_col = inv_t @ v
+                    lines.append(
+                        f"cam_obj_row: ({float(cam_obj_row[0]):.6f}, {float(cam_obj_row[1]):.6f}, {float(cam_obj_row[2]):.6f})"
+                    )
+                    lines.append(
+                        f"cam_obj_col: ({float(cam_obj_col[0]):.6f}, {float(cam_obj_col[1]):.6f}, {float(cam_obj_col[2]):.6f})"
+                    )
+            except Exception as exc:
+                lines.append(f"cam_obj_error: {exc}")
+
+            try:
+                if cam_orbit is not None and scale_mult not in (None, 0.0):
+                    cam_orbit_scene = (
+                        float(cam_orbit[0]) / float(scale_mult),
+                        float(cam_orbit[1]) / float(scale_mult),
+                        float(cam_orbit[2]) / float(scale_mult),
+                    )
+                    lines.append(f"cam_world_orbit_scene: {cam_orbit_scene}")
+            except Exception as exc:
+                lines.append(f"cam_world_orbit_scene_error: {exc}")
+
+            try:
+                if vm is not None and Matrix44 is not None and scale_mult not in (None, 1.0):
+                    scale_mat = Matrix44.from_scale([float(scale_mult)] * 3, dtype="f4")
+                    vm_scaled = (lookat * transform * scale_mat).astype("f4")
+                    if np is not None:
+                        inv = np.linalg.inv(np.array(vm_scaled, dtype=np.float32))
+                        cam = inv @ np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+                        cam_scaled = (float(cam[0]), float(cam[1]), float(cam[2]))
+                        lines.append(f"cam_world_view_scaled: {cam_scaled}")
+            except Exception as exc:
+                lines.append(f"cam_world_view_scaled_error: {exc}")
+
             # --- splat visibility stats (CPU) ---
             try:
                 cpu = getattr(self, "_mgl_splats15_cpu", None)
                 if cpu is not None and np is not None and cpu.shape[0] > 0:
-                    view_model = np.array(vm, dtype=np.float32) if "vm" in locals() else None
+                    view_model = np.array(vm, dtype=np.float32) if vm is not None else None
                     if view_model is None:
                         raise RuntimeError("vm not available")
 
                     pos = cpu[:, 0:3].astype(np.float32, copy=False)
                     ones = np.ones((pos.shape[0], 1), dtype=np.float32)
                     pos4 = np.concatenate([pos, ones], axis=1)
-                    
+
                     viewp = pos4 @ view_model
                     z = viewp[:, 2]
                     wv = viewp[:, 3]
@@ -1374,6 +1494,15 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
             with open(path, "a", encoding="utf-8") as f:
                 f.write("\n".join(lines) + "\n")
+
+            try:
+                root = Path(__file__).resolve().parents[2]
+                log_dir = root / "logs"
+                log_dir.mkdir(parents=True, exist_ok=True)
+                with (log_dir / "cam_debug.log").open("a", encoding="utf-8") as f:
+                    f.write("\n".join(lines) + "\n")
+            except Exception:
+                pass
 
             print(f"[CAMLOG] wrote snapshot -> {path}", flush=True)
 
