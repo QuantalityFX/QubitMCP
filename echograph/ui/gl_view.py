@@ -573,6 +573,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._mgl_orbit_last_pos = None
         self._mgl_orbit_yaw = 0.0
         self._mgl_orbit_pitch = 0.0
+        # Debug toggle: when False, keep FPS camera active after RMB and skip orbit sync.
+        self._orbit_cam_enabled = False
         self._mgl_grid_vertex_count = 0
         self._mgl_mesh_vertex_count = 0
         self._mgl_prev_x = 0
@@ -5401,7 +5403,9 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                         pass
                     try:
                         self._fps_camera_active = True
-                        self._fps_cam_sync_from_orbit()
+                        orbit_enabled = bool(getattr(self, "_orbit_cam_enabled", True))
+                        if orbit_enabled or getattr(self, "_fps_camera", None) is None:
+                            self._fps_cam_sync_from_orbit()
                     except Exception:
                         pass
                     try:
@@ -6750,12 +6754,14 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         if self._use_moderngl:
             if e.button() == QtCore.Qt.RightButton:
                 try:
-                    if bool(getattr(self, "_fps_camera_active", False)):
+                    orbit_enabled = bool(getattr(self, "_orbit_cam_enabled", True))
+                    if orbit_enabled and bool(getattr(self, "_fps_camera_active", False)):
                         self._fps_cam_sync_orbit_from_camera()
                     self._fps_nav_active = False
                     self._fps_nav_keys = set()
                     self._fps_nav_look_last_pos = None
-                    self._fps_camera_active = False
+                    if orbit_enabled:
+                        self._fps_camera_active = False
                 except Exception:
                     pass
             # --- 1) If we were dragging the gizmo, ALWAYS end that first ---
