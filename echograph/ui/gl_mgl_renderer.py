@@ -3077,6 +3077,21 @@ class MGLRendererMixin:
                 transform = Matrix44.identity(dtype="f4")
         else:
             transform = Matrix44.identity(dtype="f4")
+
+        # If FPS camera is active, override view matrix and bypass arcball transform.
+        try:
+            use_fps_cam = bool(getattr(self, "_fps_camera_active", False)) and getattr(self, "_fps_camera", None) is not None
+        except Exception:
+            use_fps_cam = False
+        if use_fps_cam:
+            try:
+                cam = getattr(self, "_fps_camera", None)
+                roll_locked = bool(getattr(self, "_mgl_orbit_locked", True))
+                if cam is not None:
+                    lookat = cam.view_matrix(roll_locked=roll_locked)
+                    transform = Matrix44.identity(dtype="f4")
+            except Exception:
+                pass
         # cache matrices for picking (screen click -> ray)
         try:
             if np is not None:
@@ -3089,25 +3104,31 @@ class MGLRendererMixin:
         try:
             cam_world = None
             if np is not None:
-                arc = getattr(self, "_mgl_arcball", None)
-                center = getattr(self, "_mgl_center", None)
-                zoom = float(getattr(self, "_mgl_camera_zoom", 0.0))
-                if arc is not None and hasattr(arc, "Transform"):
-                    rot = np.array(arc.Transform[:3, :3], dtype=np.float32)
-                    # remove uniform scale so we only apply rotation
-                    scale = float(np.linalg.norm(rot, ord="fro") / math.sqrt(3.0))
-                    if scale > 1e-6:
-                        rot = rot / scale
-                    cam_local = np.array([0.0, 0.0, zoom], dtype=np.float32)
-                    cam_rot = rot.T @ cam_local
-                    if center is not None:
-                        cam_world = (
-                            float(cam_rot[0] + float(center[0])),
-                            float(cam_rot[1] + float(center[1])),
-                            float(cam_rot[2] + float(center[2])),
-                        )
-                    else:
-                        cam_world = (float(cam_rot[0]), float(cam_rot[1]), float(cam_rot[2]))
+                if use_fps_cam:
+                    cam = getattr(self, "_fps_camera", None)
+                    if cam is not None:
+                        pos = np.array(getattr(cam, "position", (0.0, 0.0, 0.0)), dtype=np.float32)
+                        cam_world = (float(pos[0]), float(pos[1]), float(pos[2]))
+                if cam_world is None:
+                    arc = getattr(self, "_mgl_arcball", None)
+                    center = getattr(self, "_mgl_center", None)
+                    zoom = float(getattr(self, "_mgl_camera_zoom", 0.0))
+                    if arc is not None and hasattr(arc, "Transform"):
+                        rot = np.array(arc.Transform[:3, :3], dtype=np.float32)
+                        # remove uniform scale so we only apply rotation
+                        scale = float(np.linalg.norm(rot, ord="fro") / math.sqrt(3.0))
+                        if scale > 1e-6:
+                            rot = rot / scale
+                        cam_local = np.array([0.0, 0.0, zoom], dtype=np.float32)
+                        cam_rot = rot.T @ cam_local
+                        if center is not None:
+                            cam_world = (
+                                float(cam_rot[0] + float(center[0])),
+                                float(cam_rot[1] + float(center[1])),
+                                float(cam_rot[2] + float(center[2])),
+                            )
+                        else:
+                            cam_world = (float(cam_rot[0]), float(cam_rot[1]), float(cam_rot[2]))
                 if cam_world is None:
                     view_mat = (lookat * transform).astype("f4")
                     view_np = np.array(view_mat, dtype=np.float32)

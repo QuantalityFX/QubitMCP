@@ -43,6 +43,7 @@ from echograph.ui import hotkeys_config
 from echograph.ui.gl_view_example import build_example_program as _ex_build_example_program
 from echograph.ui.gl_view_example import example_cube_data as _ex_cube_data
 from echograph.ui.gl_view_example import example_grid_data as _ex_grid_data
+from echograph.ui.fps_camera import FpsCamera
 from echograph.rigging.turntable import TurntableController
 from echograph.ui import actions
 
@@ -643,6 +644,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._fps_nav_speed_step = 1.15
         self._fps_nav_look_last_pos = None
         self._fps_nav_look_sens = 0.005
+        self._fps_camera = None
+        self._fps_camera_active = False
         self._viewport_hotkey_filter = None
         try:
             app = QtWidgets.QApplication.instance()
@@ -765,10 +768,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             pass
 
     def _fps_apply_look(self, dx: float, dy: float) -> None:
-        if np is None:
-            return
-        arc = getattr(self, "_mgl_arcball", None)
-        if arc is None or not hasattr(arc, "Transform"):
+        cam = getattr(self, "_fps_camera", None)
+        if cam is None:
             return
         try:
             sens = float(getattr(self, "_fps_nav_look_sens", 0.005))
@@ -776,53 +777,129 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             sens = 0.005
         if abs(dx) < 1e-6 and abs(dy) < 1e-6:
             return
-
+        roll_locked = bool(getattr(self, "_mgl_orbit_locked", True))
         try:
-            rot = np.array(arc.Transform[:3, :3], dtype=np.float32)
-            scale = np.linalg.norm(rot, axis=0)
-            denom = float(scale.mean()) if scale.size else 1.0
-            if denom > 1e-6:
-                rot = rot / denom
+            cam.apply_look(dx, dy, sens=sens, roll_locked=roll_locked)
         except Exception:
             return
 
-        right = rot @ np.array([1.0, 0.0, 0.0], dtype=np.float32)
-        up = rot @ np.array([0.0, 1.0, 0.0], dtype=np.float32)
-
-        yaw = -float(dx) * sens
-        pitch = -float(dy) * sens
-
-        def _axis_angle(axis, ang):
-            axis = np.array(axis, dtype=np.float32)
-            ln = float(np.linalg.norm(axis))
-            if ln < 1e-8:
-                return np.identity(3, dtype=np.float32)
-            axis = axis / ln
-            c = math.cos(ang)
-            s = math.sin(ang)
-            t = 1.0 - c
-            x, y, z = float(axis[0]), float(axis[1]), float(axis[2])
-            return np.array(
-                [
-                    [t * x * x + c,     t * x * y - s * z, t * x * z + s * y],
-                    [t * x * y + s * z, t * y * y + c,     t * y * z - s * x],
-                    [t * x * z - s * y, t * y * z + s * x, t * z * z + c],
-                ],
-                dtype=np.float32,
-            )
-
-        R_yaw = _axis_angle(up, yaw)
-        R_pitch = _axis_angle(right, pitch)
-        new_rot = (R_pitch @ R_yaw @ rot).astype(np.float32)
+    def _fps_cam_sync_from_orbit(self) -> None:
+        if np is None or Matrix44 is None:
+            return
+        arc = getattr(self, "_mgl_arcball", None)
+        if arc is None or not hasattr(arc, "Transform"):
+            return
         try:
-            arc.Transform = arc._set_rotation(arc.Transform, new_rot)
+            zoom = float(getattr(self, "_mgl_camera_zoom", 0.0))
         except Exception:
+            zoom = 0.0
+        cam = getattr(self, "_fps_camera", None)
+        if cam is None:
             try:
-                arc.Transform[:3, :3] = new_rot
+                cam = FpsCamera()
+                self._fps_camera = cam
             except Exception:
                 return
+        roll_locked = bool(getattr(self, "_mgl_orbit_locked", True))
+        try:
+            lookat = Matrix44.look_at(
+                (0.0, 0.0, float(zoom)),
+                (0.0, 0.0, 0.0),
+                (0.0, 1.0, 0.0),
+            )
+            center = getattr(self, "_mgl_center", None)
+            if center is not None and np is not None:
+                try:
+                    arc.Transform[3, :3] = -arc.Transform[:3, :3].T @ center
+                except Exception:
+                    pass
+            try:
+                src = arc.Transform
+                if hasattr(src, "tolist"):
+                    transform = Matrix44(src.tolist(), dtype="f4")
+                else:
+                    transform = Matrix44(src, dtype="f4")
+            except Exception:
+                transform = Matrix44.identity(dtype="f4")
+            view = (lookat * transform).astype("f4")
+            cam.set_from_view_matrix(np.array(view, dtype=np.float32), roll_locked=roll_locked)
+        except Exception:
+            return
+
+    def _fps_cam_sync_orbit_from_camera(self) -> None:
+        if np is None or Matrix44 is None:
+            return
+        cam = getattr(self, "_fps_camera", None)
+        if cam is None:
+            return
+        arc = getattr(self, "_mgl_arcball", None)
+        if arc is None or not hasattr(arc, "Transform"):
+            return
+        try:
+            zoom = float(getattr(self, "_mgl_camera_zoom", 0.0))
+        except Exception:
+            zoom = 0.0
+        try:
+            roll_locked = bool(getattr(self, "_mgl_orbit_locked", True))
+            lookat = Matrix44.look_at(
+                (0.0, 0.0, float(zoom)),
+                (0.0, 0.0, 0.0),
+                (0.0, 1.0, 0.0),
+            )
+            view = cam.view_matrix(roll_locked=roll_locked)
+            lmat = np.array(lookat, dtype=np.float32)
+            vmat = np.array(view, dtype=np.float32)
+            tmat = np.linalg.inv(lmat) @ vmat
+            rot = np.array(tmat[:3, :3], dtype=np.float32)
+            trow = np.array(tmat[3, :3], dtype=np.float32)
+            try:
+                center = -(np.linalg.inv(rot.T) @ trow)
+                self._mgl_center = center.astype("f4")
+            except Exception:
+                center = None
+            try:
+                arc.Transform = tmat.astype("f4")
+            except Exception:
+                try:
+                    arc.Transform[:3, :3] = rot
+                    arc.Transform[3, :3] = trow
+                except Exception:
+                    pass
+            try:
+                ts = time.strftime("%Y-%m-%d %H:%M:%S")
+                root = Path(__file__).resolve().parents[2]
+                log_dir = root / "logs"
+                log_dir.mkdir(parents=True, exist_ok=True)
+                with (log_dir / "cam_debug.log").open("a", encoding="utf-8") as f:
+                    f.write(f"\n=== RMB RELEASE {ts} ===\n")
+                    pos = getattr(cam, "position", (0.0, 0.0, 0.0))
+                    fwd = getattr(cam, "forward", (0.0, 0.0, -1.0))
+                    upv = getattr(cam, "up", (0.0, 1.0, 0.0))
+                    f.write(f"cam_pos: ({float(pos[0])}, {float(pos[1])}, {float(pos[2])})\n")
+                    f.write(f"cam_forward: ({float(fwd[0])}, {float(fwd[1])}, {float(fwd[2])})\n")
+                    f.write(f"cam_up: ({float(upv[0])}, {float(upv[1])}, {float(upv[2])})\n")
+                    f.write(f"zoom: {float(zoom)}\n")
+                    f.write(f"rot_rows:\n{rot}\n")
+                    f.write(f"trow: ({float(trow[0])}, {float(trow[1])}, {float(trow[2])})\n")
+                    if center is not None:
+                        f.write(f"center: ({float(center[0])}, {float(center[1])}, {float(center[2])})\n")
+                    try:
+                        view_orbit = lmat @ tmat
+                        diff = float(np.max(np.abs(view_orbit - vmat)))
+                        f.write(f"view_max_diff: {diff}\n")
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        except Exception:
+            return
         try:
             self._mgl_arcball_sync_after_set_transform()
+        except Exception:
+            pass
+        try:
+            if bool(getattr(self, "_mgl_orbit_locked", True)):
+                self._sync_locked_orbit_from_arcball()
         except Exception:
             pass
 
@@ -883,6 +960,37 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         if not keys:
             return
         if np is None:
+            return
+
+        cam = getattr(self, "_fps_camera", None)
+        if cam is not None and bool(getattr(self, "_fps_camera_active", False)):
+            forward_amt = 0.0
+            right_amt = 0.0
+            if "w" in keys:
+                forward_amt += 1.0
+            if "s" in keys:
+                forward_amt -= 1.0
+            if "a" in keys:
+                right_amt -= 1.0
+            if "d" in keys:
+                right_amt += 1.0
+            ln = math.sqrt((forward_amt * forward_amt) + (right_amt * right_amt))
+            if ln < 1e-6:
+                return
+            forward_amt /= ln
+            right_amt /= ln
+            speed = float(getattr(self, "_fps_nav_speed", 2.0))
+            try:
+                zoom = float(getattr(self, "_mgl_camera_zoom", 1.0))
+                speed *= max(0.2, min(4.0, zoom * 0.25))
+            except Exception:
+                pass
+            delta = float(speed) * float(dt)
+            roll_locked = bool(getattr(self, "_mgl_orbit_locked", True))
+            try:
+                cam.move(forward_amt * delta, right_amt * delta, 0.0, roll_locked=roll_locked)
+            except Exception:
+                pass
             return
 
         right = np.array([1.0, 0.0, 0.0], dtype="f4")
@@ -5292,7 +5400,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     except Exception:
                         pass
                     try:
-                        self._fps_log_camera_state("rmb_down")
+                        self._fps_camera_active = True
+                        self._fps_cam_sync_from_orbit()
                     except Exception:
                         pass
                     try:
@@ -5518,10 +5627,6 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     dy = float(e.pos().y() - last.y())
                     self._fps_nav_look_last_pos = e.pos()
                     self._fps_apply_look(dx, dy)
-                except Exception:
-                    pass
-                try:
-                    self._fps_log_camera_state("rmb_move", throttle_key="_fps_nav_log_t", interval=0.25)
                 except Exception:
                     pass
                 try:
@@ -6645,9 +6750,12 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         if self._use_moderngl:
             if e.button() == QtCore.Qt.RightButton:
                 try:
+                    if bool(getattr(self, "_fps_camera_active", False)):
+                        self._fps_cam_sync_orbit_from_camera()
                     self._fps_nav_active = False
                     self._fps_nav_keys = set()
                     self._fps_nav_look_last_pos = None
+                    self._fps_camera_active = False
                 except Exception:
                     pass
             # --- 1) If we were dragging the gizmo, ALWAYS end that first ---
