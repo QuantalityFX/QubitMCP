@@ -5520,7 +5520,10 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     except Exception:
                         pass
                     try:
-                        self.setCursor(QtCore.Qt.ArrowCursor)
+                        if bool(getattr(self, "_fly_mode_enabled", False)):
+                            self.setCursor(QtCore.Qt.BlankCursor)
+                        else:
+                            self.setCursor(QtCore.Qt.ArrowCursor)
                     except Exception:
                         pass
                     e.accept()
