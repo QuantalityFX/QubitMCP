@@ -573,8 +573,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._mgl_orbit_last_pos = None
         self._mgl_orbit_yaw = 0.0
         self._mgl_orbit_pitch = 0.0
-        # Debug toggle: when False, keep FPS camera active after RMB and skip orbit sync.
-        self._orbit_cam_enabled = False
+        self._fly_mode_enabled = False
+        self._orbit_cam_enabled = True
         self._mgl_grid_vertex_count = 0
         self._mgl_mesh_vertex_count = 0
         self._mgl_prev_x = 0
@@ -620,6 +620,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._grid_icon_off = None
         self._zoom_mode_icon_on = None
         self._zoom_mode_icon_off = None
+        self._fly_mode_icon_on = None
+        self._fly_mode_icon_off = None
         self._side_btn_size = 32
         self._side_btn_icon = 28
         self._side_btn_gap = 6
@@ -660,6 +662,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._build_debug_toggle_button()
         self._build_debug_copy_button()
         self._build_camera_orbit_button()
+        self._build_fly_mode_button()
         self._build_grid_button()
         self._build_zoom_mode_button()
         
@@ -731,6 +734,14 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             y += self._side_btn_size + self._side_btn_gap
         elif orbit_btn is not None:
             orbit_btn.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
+            y += self._side_btn_size + self._side_btn_gap
+        fly_frame = getattr(self, "_fly_mode_btn_frame", None)
+        fly_btn = getattr(self, "_fly_mode_btn", None)
+        if fly_frame is not None:
+            fly_frame.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
+            y += self._side_btn_size + self._side_btn_gap
+        elif fly_btn is not None:
+            fly_btn.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
             y += self._side_btn_size + self._side_btn_gap
         frame_frame = getattr(self, "_frame_btn_frame", None)
         frame_btn = getattr(self, "_frame_btn", None)
@@ -954,7 +965,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         dt = max(0.0, min(0.1, float(now - last)))
         self._fps_nav_last_t = now
 
-        if not bool(getattr(self, "_fps_nav_active", False)):
+        if not bool(getattr(self, "_fps_nav_active", False)) and not bool(getattr(self, "_fly_mode_enabled", False)):
             return
         if not bool(getattr(self, "_use_moderngl", False)):
             return
@@ -1848,6 +1859,95 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             except Exception:
                 pass
         self._update_camera_orbit_button()
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    def _build_fly_mode_button(self) -> None:
+        try:
+            btn = QtWidgets.QToolButton(self)
+            btn.setCursor(QtCore.Qt.PointingHandCursor)
+            btn.setCheckable(True)
+            btn.setIconSize(QtCore.QSize(self._side_btn_icon, self._side_btn_icon))
+            btn.setFixedSize(self._side_btn_size, self._side_btn_size)
+            btn.clicked.connect(self._on_fly_mode_toggled)
+            self._fly_mode_btn = btn
+            self._update_fly_mode_button()
+            self._fly_mode_btn_frame = self._wrap_side_button(self._fly_mode_btn, "_fly_mode_btn_frame")
+            btn.show()
+        except Exception:
+            self._fly_mode_btn = None
+
+    def _load_fly_mode_icons(self) -> None:
+        if self._fly_mode_icon_on is not None or self._fly_mode_icon_off is not None:
+            return
+        icon_on = None
+        icon_off = None
+        try:
+            root = Path(__file__).resolve().parents[2]
+            on_path = root / "icons" / "FlyModeJoystick_On_Icon.png"
+            off_path = root / "icons" / "FlyModeJoystick_Off_Icon.png"
+            if on_path.exists():
+                icon_on = QtGui.QIcon(str(on_path))
+            if off_path.exists():
+                icon_off = QtGui.QIcon(str(off_path))
+        except Exception:
+            icon_on = None
+            icon_off = None
+        self._fly_mode_icon_on = icon_on
+        self._fly_mode_icon_off = icon_off
+
+    def _update_fly_mode_button(self) -> None:
+        btn = getattr(self, "_fly_mode_btn", None)
+        if btn is None:
+            return
+        enabled = bool(getattr(self, "_fly_mode_enabled", False))
+        btn.setChecked(enabled)
+        self._load_fly_mode_icons()
+        if enabled:
+            btn.setToolTip("Fly Mode: On")
+            icon = self._fly_mode_icon_on
+            fallback = "Fly"
+        else:
+            btn.setToolTip("Fly Mode: Off")
+            icon = self._fly_mode_icon_off
+            fallback = "Fly"
+        if icon is not None:
+            btn.setIcon(icon)
+            btn.setText("")
+        else:
+            btn.setText(fallback)
+        self._apply_side_icon_style(btn, active=enabled)
+
+    def _on_fly_mode_toggled(self, checked=None) -> None:
+        if checked is None:
+            checked = bool(getattr(self, "_fly_mode_btn", None) and self._fly_mode_btn.isChecked())
+        enabled = bool(checked)
+        self._fly_mode_enabled = enabled
+        if enabled:
+            self._orbit_cam_enabled = False
+            self._fps_camera_active = True
+            self._fps_nav_active = True
+            self._fps_nav_last_t = time.perf_counter()
+            self._fps_nav_keys = set()
+            self._fps_nav_look_last_pos = None
+            try:
+                self._fps_cam_sync_from_orbit()
+            except Exception:
+                pass
+        else:
+            self._orbit_cam_enabled = True
+            try:
+                if bool(getattr(self, "_fps_camera_active", False)):
+                    self._fps_cam_sync_orbit_from_camera()
+            except Exception:
+                pass
+            self._fps_camera_active = False
+            self._fps_nav_active = False
+            self._fps_nav_keys = set()
+            self._fps_nav_look_last_pos = None
+        self._update_fly_mode_button()
         try:
             self.update()
         except Exception:
@@ -5395,6 +5495,9 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
             if e.button() == QtCore.Qt.RightButton:
                 if not alt_pressed:
+                    if not bool(getattr(self, "_fly_mode_enabled", False)):
+                        e.ignore()
+                        return
                     try:
                         self._fps_nav_active = True
                         self._fps_nav_last_t = time.perf_counter()
@@ -6755,11 +6858,15 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             if e.button() == QtCore.Qt.RightButton:
                 try:
                     orbit_enabled = bool(getattr(self, "_orbit_cam_enabled", True))
+                    fly_mode = bool(getattr(self, "_fly_mode_enabled", False))
                     if orbit_enabled and bool(getattr(self, "_fps_camera_active", False)):
                         self._fps_cam_sync_orbit_from_camera()
-                    self._fps_nav_active = False
-                    self._fps_nav_keys = set()
-                    self._fps_nav_look_last_pos = None
+                    if not fly_mode:
+                        self._fps_nav_active = False
+                        self._fps_nav_keys = set()
+                        self._fps_nav_look_last_pos = None
+                    else:
+                        self._fps_nav_look_last_pos = None
                     if orbit_enabled:
                         self._fps_camera_active = False
                 except Exception:
@@ -7267,16 +7374,20 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 nav_key = "d"
         except Exception:
             nav_key = None
-        if nav_key is not None and bool(getattr(self, "_fps_nav_active", False)):
-            try:
-                self._fps_nav_keys.add(nav_key)
-            except Exception:
-                pass
-            try:
-                e.accept()
-            except Exception:
-                pass
-            return
+        if nav_key is not None:
+            fly_mode = bool(getattr(self, "_fly_mode_enabled", False))
+            if bool(getattr(self, "_fps_nav_active", False)) or fly_mode:
+                try:
+                    if fly_mode:
+                        self._fps_nav_active = True
+                    self._fps_nav_keys.add(nav_key)
+                except Exception:
+                    pass
+                try:
+                    e.accept()
+                except Exception:
+                    pass
+                return
         if self._handle_viewport_hotkeys(e, require_no_text_focus=True):
             return
         if getattr(self, "_gizmo_hotkeys_active", False):
@@ -7330,7 +7441,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 self._fps_nav_keys.discard(nav_key)
             except Exception:
                 pass
-            if bool(getattr(self, "_fps_nav_active", False)):
+            if bool(getattr(self, "_fps_nav_active", False)) or bool(getattr(self, "_fly_mode_enabled", False)):
                 try:
                     e.accept()
                 except Exception:
