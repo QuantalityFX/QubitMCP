@@ -29,6 +29,7 @@ DEFAULT_KEYMAP = {
     "app_redo": "Ctrl+Y",
     "gl_wireframe_toggle": "W",
     "gl_grid_toggle": "G",
+    "app_fullscreen": "F11",
     "wire_add_pin": "Ctrl+LeftClick",
     "wire_remove": "Alt+LeftClick",
 }

@@ -2031,6 +2031,21 @@ class _BigEditEventFilter(QtCore.QObject):
             return False
 
 
+class _InfoDockCollapseFilter(QtCore.QObject):
+    def __init__(self, win):
+        super().__init__(win)
+        self.win = win
+
+    def eventFilter(self, obj, ev):
+        try:
+            if obj is getattr(self.win, "infoDock", None):
+                if ev.type() == QtCore.QEvent.Resize:
+                    self.win._on_info_dock_resize()
+        except Exception:
+            pass
+        return False
+
+
 # main window
 class EchoGraphWindow(QtWidgets.QMainWindow):
     def __init__(self, parent=None):
@@ -2059,6 +2074,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         v.setContentsMargins(0, 0, 0, 0); v.setSpacing(0)
 
         topbar = self._build_topbar()
+        self._topbar = topbar
         v.addWidget(topbar, 0)
 
         # Scene/View
@@ -2100,6 +2116,14 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._frame_margin_x = 400.0
         self._frame_margin_y = 125.0
         self._split_framed_once = False
+        self._fullscreen_enabled = False
+        self._fullscreen_prev_state = None
+        self._fullscreen_prev_geom = None
+        self._fullscreen_prev_view_mode = None
+        self._fullscreen_prev_split_sizes = None
+        self._fullscreen_prev_info_visible = None
+        self._fullscreen_prev_topbar_visible = None
+        self._fullscreen_target = None
         v.addWidget(self._view_splitter, 1)
 
         self.setCentralWidget(central)
@@ -2268,6 +2292,18 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             self._register_shortcut("gl_grid_toggle", self._shortcut_gl_grid)
         except Exception:
             self._shortcut_gl_grid = None
+
+        try:
+            self._shortcut_fullscreen = hotkeys.add_shortcut(
+                self,
+                "app_fullscreen",
+                "F11",
+                self._toggle_fullscreen,
+                context=QtCore.Qt.ApplicationShortcut,
+            )
+            self._register_shortcut("app_fullscreen", self._shortcut_fullscreen)
+        except Exception:
+            self._shortcut_fullscreen = None
 
         try:
             self._shortcut_gizmo_translate = hotkeys.add_shortcut(
@@ -4235,8 +4271,13 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self.infoDock.setAllowedAreas(QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea)
         self.infoDock.setFeatures(QtWidgets.QDockWidget.DockWidgetMovable)
         self.infoDock.setFloating(False)
-        self.infoDock.setMinimumWidth(10)
+        self.infoDock.setMinimumWidth(0)
         self.infoDock.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Expanding)
+        self._infoDock_collapsed = False
+        self._infoDock_last_width = 400
+        self._infoDock_collapse_threshold = 40
+        self._infoDock_collapsed_width = 24
+        self._infoDock_resizing = False
 
         self._cardsContainer = QtWidgets.QWidget()
         self._cardsLayout = QtWidgets.QVBoxLayout(self._cardsContainer)
@@ -4257,10 +4298,6 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             "QDockWidget{background:#1a1f24;color:#e6edf3;}"
             "QDockWidget::title{background:#20242b;color:#e6edf3;padding:4px 8px;}"
         )
-        try:
-            self.infoDock.setMinimumWidth(360)
-        except Exception:
-            pass
         scroll.setStyleSheet(
             "QScrollArea{background:#1a1f24;border:none;}"
             "QScrollArea>Viewport{background:#1a1f24;}"
@@ -4271,6 +4308,197 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             self.resizeDocks([self.infoDock], [400], QtCore.Qt.Horizontal)
         except Exception:
             pass
+        try:
+            self._infoDock_filter = _InfoDockCollapseFilter(self)
+            self.infoDock.installEventFilter(self._infoDock_filter)
+        except Exception:
+            self._infoDock_filter = None
+
+    def _on_info_dock_resize(self) -> None:
+        dock = getattr(self, "infoDock", None)
+        if dock is None:
+            return
+        if getattr(self, "_infoDock_resizing", False):
+            return
+        try:
+            width = int(dock.width())
+        except Exception:
+            return
+        threshold = int(getattr(self, "_infoDock_collapse_threshold", 40))
+        collapsed = bool(getattr(self, "_infoDock_collapsed", False))
+        if collapsed:
+            if width > threshold:
+                self._set_info_dock_collapsed(False)
+        else:
+            if width > threshold:
+                self._infoDock_last_width = width
+            else:
+                self._set_info_dock_collapsed(True)
+
+    def _set_info_dock_collapsed(self, collapsed: bool) -> None:
+        dock = getattr(self, "infoDock", None)
+        if dock is None:
+            return
+        collapsed = bool(collapsed)
+        if collapsed == bool(getattr(self, "_infoDock_collapsed", False)):
+            return
+        self._infoDock_collapsed = collapsed
+        scroll = getattr(self, "_info_scroll", None)
+        try:
+            self._infoDock_resizing = True
+            if collapsed:
+                if scroll:
+                    scroll.setVisible(False)
+                width = int(getattr(self, "_infoDock_collapsed_width", 24))
+            else:
+                if scroll:
+                    scroll.setVisible(True)
+                width = int(max(80, getattr(self, "_infoDock_last_width", 400)))
+            try:
+                self.resizeDocks([dock], [width], QtCore.Qt.Horizontal)
+            except Exception:
+                pass
+        finally:
+            self._infoDock_resizing = False
+
+    def _toggle_fullscreen(self) -> None:
+        try:
+            is_full = bool(self.isFullScreen())
+        except Exception:
+            is_full = bool(getattr(self, "_fullscreen_enabled", False))
+        self._set_fullscreen(not is_full)
+
+    def _set_fullscreen(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if enabled:
+            try:
+                if self.isFullScreen():
+                    self._fullscreen_enabled = True
+                    return
+            except Exception:
+                pass
+            try:
+                self._fullscreen_prev_state = self.windowState()
+            except Exception:
+                self._fullscreen_prev_state = None
+            try:
+                self._fullscreen_prev_geom = self.geometry()
+            except Exception:
+                self._fullscreen_prev_geom = None
+            self._fullscreen_prev_view_mode = getattr(self, "_view_mode", "2d")
+            splitter = getattr(self, "_view_splitter", None)
+            try:
+                self._fullscreen_prev_split_sizes = splitter.sizes() if splitter else None
+            except Exception:
+                self._fullscreen_prev_split_sizes = None
+            try:
+                self._fullscreen_prev_info_visible = bool(self.infoDock.isVisible())
+            except Exception:
+                self._fullscreen_prev_info_visible = None
+            try:
+                self._fullscreen_prev_topbar_visible = bool(self._topbar.isVisible())
+            except Exception:
+                self._fullscreen_prev_topbar_visible = None
+
+            target = None
+            try:
+                fw = QtWidgets.QApplication.instance().focusWidget()
+                if fw is not None and getattr(self, "gl_view", None) is not None:
+                    if fw is self.gl_view or self.gl_view.isAncestorOf(fw):
+                        target = "gl"
+                if fw is not None and target is None and getattr(self, "view", None) is not None:
+                    if fw is self.view or self.view.isAncestorOf(fw):
+                        target = "view"
+            except Exception:
+                target = None
+            if target is None:
+                mode = getattr(self, "_view_mode", "2d")
+                target = "gl" if mode in {"3d", "split"} else "view"
+            self._fullscreen_target = target
+
+            try:
+                if getattr(self, "_topbar", None) is not None:
+                    self._topbar.setVisible(False)
+            except Exception:
+                pass
+            try:
+                if getattr(self, "infoDock", None) is not None:
+                    self.infoDock.setVisible(False)
+            except Exception:
+                pass
+
+            if splitter:
+                try:
+                    if target == "gl":
+                        if getattr(self, "gl_view", None) is not None:
+                            self.gl_view.show()
+                        if getattr(self, "view", None) is not None:
+                            self.view.hide()
+                        splitter.setSizes([1, 0])
+                    else:
+                        if getattr(self, "view", None) is not None:
+                            self.view.show()
+                        if getattr(self, "gl_view", None) is not None:
+                            self.gl_view.hide()
+                        splitter.setSizes([0, 1])
+                except Exception:
+                    pass
+            try:
+                self.showFullScreen()
+            except Exception:
+                try:
+                    self.showMaximized()
+                except Exception:
+                    pass
+            self._fullscreen_enabled = True
+        else:
+            try:
+                if not self.isFullScreen() and not bool(getattr(self, "_fullscreen_enabled", False)):
+                    return
+            except Exception:
+                pass
+            try:
+                if getattr(self, "_topbar", None) is not None:
+                    self._topbar.setVisible(bool(self._fullscreen_prev_topbar_visible))
+            except Exception:
+                pass
+            try:
+                if getattr(self, "infoDock", None) is not None:
+                    self.infoDock.setVisible(bool(self._fullscreen_prev_info_visible))
+            except Exception:
+                pass
+
+            prev_mode = getattr(self, "_fullscreen_prev_view_mode", None)
+            if prev_mode:
+                try:
+                    self._set_view_mode(prev_mode)
+                except Exception:
+                    pass
+
+            splitter = getattr(self, "_view_splitter", None)
+            prev_sizes = getattr(self, "_fullscreen_prev_split_sizes", None)
+            if splitter and prev_sizes:
+                try:
+                    splitter.setSizes(prev_sizes)
+                except Exception:
+                    pass
+
+            try:
+                if self._fullscreen_prev_state is not None:
+                    self.setWindowState(self._fullscreen_prev_state)
+                else:
+                    self.showNormal()
+            except Exception:
+                try:
+                    self.showNormal()
+                except Exception:
+                    pass
+            try:
+                if self._fullscreen_prev_geom is not None:
+                    self.setGeometry(self._fullscreen_prev_geom)
+            except Exception:
+                pass
+            self._fullscreen_enabled = False
 
     def add_info_card(self, node: GraphNode):
         existing = self._card_by_node.get(node.name)
