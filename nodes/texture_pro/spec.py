@@ -1600,7 +1600,7 @@ class TextureProWidget(QtWidgets.QWidget):
         self._scene_input = False
 
         layout = QtWidgets.QHBoxLayout(self)
-        layout.setContentsMargins(6, 4, 6, 4)
+        layout.setContentsMargins(6, 4, 6, 10)
         layout.setSpacing(6)
 
         left = QtWidgets.QVBoxLayout()
@@ -1710,6 +1710,7 @@ class TextureProWidget(QtWidgets.QWidget):
         self._set_softness_value(SOFTNESS_DEFAULT)
         left.addWidget(self._softness, 0, QtCore.Qt.AlignLeft)
 
+        left.addStretch(1)
         self._view_btn = QtWidgets.QPushButton("View")
         self._view_btn.setFixedWidth(PREVIEW_SIZE)
         self._view_btn.setStyleSheet(
@@ -1719,7 +1720,7 @@ class TextureProWidget(QtWidgets.QWidget):
         )
         self._view_btn.clicked.connect(self._on_view_clicked)
         left.addWidget(self._view_btn, 0, QtCore.Qt.AlignLeft)
-        left.addStretch(1)
+        left.addSpacing(6)
 
         layout.addLayout(left, 0)
 

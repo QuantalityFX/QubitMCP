@@ -1324,7 +1324,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             node_w = self._BASE_W
         elif kind == "texture_pro":
             # Match embedded TextureProWidget height (avoid clipping bottom corners).
-            body_h = max(self._PARAM_ROW_H * 14, 350)
+            body_h = max(self._PARAM_ROW_H * 17, 410)
             node_w = self._BASE_W
         elif kind == "texture_layer":
             # Match embedded TextureLayerWidget height so params/pins don't clip.
