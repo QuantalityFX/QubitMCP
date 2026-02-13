@@ -647,6 +647,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._fps_nav_speed_max = 50.0
         self._fps_nav_speed_step = 1.15
         self._fps_nav_look_last_pos = None
+        self._fps_nav_cursor_anchor = None
+        self._fps_nav_warping = False
         self._fps_nav_look_sens = 0.005
         self._fps_camera = None
         self._fps_camera_active = False
@@ -1947,6 +1949,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             self._fps_nav_active = False
             self._fps_nav_keys = set()
             self._fps_nav_look_last_pos = None
+            self._fps_nav_cursor_anchor = None
+            self._fps_nav_warping = False
         self._update_fly_mode_button()
         try:
             self.update()
@@ -5502,6 +5506,17 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                         self._fps_nav_active = True
                         self._fps_nav_last_t = time.perf_counter()
                         self._fps_nav_look_last_pos = e.pos()
+                        try:
+                            if hasattr(e, "globalPosition"):
+                                anchor = e.globalPosition().toPoint()
+                            elif hasattr(e, "globalPos"):
+                                anchor = e.globalPos()
+                            else:
+                                anchor = QtGui.QCursor.pos()
+                        except Exception:
+                            anchor = QtGui.QCursor.pos()
+                        self._fps_nav_cursor_anchor = anchor
+                        self._fps_nav_warping = False
                     except Exception:
                         pass
                     try:
@@ -5730,13 +5745,43 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
             if bool(getattr(self, "_fps_nav_active", False)) and (e.buttons() & QtCore.Qt.RightButton):
                 try:
-                    last = getattr(self, "_fps_nav_look_last_pos", None)
-                    if last is None:
-                        last = e.pos()
-                    dx = float(e.pos().x() - last.x())
-                    dy = float(e.pos().y() - last.y())
-                    self._fps_nav_look_last_pos = e.pos()
-                    self._fps_apply_look(dx, dy)
+                    if bool(getattr(self, "_fly_mode_enabled", False)):
+                        if bool(getattr(self, "_fps_nav_warping", False)):
+                            self._fps_nav_warping = False
+                        anchor = getattr(self, "_fps_nav_cursor_anchor", None)
+                        if anchor is None:
+                            try:
+                                anchor = QtGui.QCursor.pos()
+                            except Exception:
+                                anchor = None
+                            self._fps_nav_cursor_anchor = anchor
+                        try:
+                            if hasattr(e, "globalPosition"):
+                                gpos = e.globalPosition().toPoint()
+                            elif hasattr(e, "globalPos"):
+                                gpos = e.globalPos()
+                            else:
+                                gpos = QtGui.QCursor.pos()
+                        except Exception:
+                            gpos = QtGui.QCursor.pos()
+                        if anchor is not None and gpos is not None:
+                            dx = float(gpos.x() - anchor.x())
+                            dy = float(gpos.y() - anchor.y())
+                            if abs(dx) > 0.0 or abs(dy) > 0.0:
+                                self._fps_apply_look(dx, dy)
+                                try:
+                                    self._fps_nav_warping = True
+                                    QtGui.QCursor.setPos(anchor)
+                                except Exception:
+                                    pass
+                    else:
+                        last = getattr(self, "_fps_nav_look_last_pos", None)
+                        if last is None:
+                            last = e.pos()
+                        dx = float(e.pos().x() - last.x())
+                        dy = float(e.pos().y() - last.y())
+                        self._fps_nav_look_last_pos = e.pos()
+                        self._fps_apply_look(dx, dy)
                 except Exception:
                     pass
                 try:
@@ -6870,6 +6915,14 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                         self._fps_nav_look_last_pos = None
                     else:
                         self._fps_nav_look_last_pos = None
+                        try:
+                            anchor = getattr(self, "_fps_nav_cursor_anchor", None)
+                            if anchor is not None:
+                                QtGui.QCursor.setPos(anchor)
+                        except Exception:
+                            pass
+                        self._fps_nav_cursor_anchor = None
+                        self._fps_nav_warping = False
                     if orbit_enabled:
                         self._fps_camera_active = False
                 except Exception:
