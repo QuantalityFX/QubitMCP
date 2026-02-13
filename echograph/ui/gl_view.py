@@ -650,6 +650,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._fps_nav_cursor_anchor = None
         self._fps_nav_warping = False
         self._fps_nav_look_sens = 0.005
+        self._fps_nav_boost = False
         self._fly_speed_mult = 1.0
         self._fps_camera = None
         self._fps_camera_active = False
@@ -1005,6 +1006,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             right_amt /= ln
             speed = float(getattr(self, "_fps_nav_speed", 2.0))
             speed *= float(getattr(self, "_fly_speed_mult", 1.0))
+            if bool(getattr(self, "_fps_nav_boost", False)):
+                speed *= 2.0
             try:
                 zoom = float(getattr(self, "_mgl_camera_zoom", 1.0))
                 speed *= max(0.2, min(4.0, zoom * 0.25))
@@ -1047,6 +1050,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
         speed = float(getattr(self, "_fps_nav_speed", 2.0))
         speed *= float(getattr(self, "_fly_speed_mult", 1.0))
+        if bool(getattr(self, "_fps_nav_boost", False)):
+            speed *= 2.0
         try:
             zoom = float(getattr(self, "_mgl_camera_zoom", 1.0))
             speed *= max(0.2, min(4.0, zoom * 0.25))
@@ -2015,6 +2020,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             self._fps_nav_look_last_pos = None
             self._fps_nav_cursor_anchor = None
             self._fps_nav_warping = False
+            self._fps_nav_boost = False
         self._update_fly_mode_button()
         try:
             self.update()
@@ -7508,6 +7514,17 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 except Exception:
                     pass
                 return
+        if key == QtCore.Qt.Key_Shift:
+            if bool(getattr(self, "_fly_mode_enabled", False)) or bool(getattr(self, "_fps_nav_active", False)):
+                try:
+                    self._fps_nav_boost = True
+                except Exception:
+                    pass
+                try:
+                    e.accept()
+                except Exception:
+                    pass
+                return
         if self._handle_viewport_hotkeys(e, require_no_text_focus=True):
             return
         if getattr(self, "_gizmo_hotkeys_active", False):
@@ -7567,6 +7584,17 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 except Exception:
                     pass
                 return
+        if key == QtCore.Qt.Key_Shift:
+            try:
+                self._fps_nav_boost = False
+            except Exception:
+                pass
+            if bool(getattr(self, "_fps_nav_active", False)) or bool(getattr(self, "_fly_mode_enabled", False)):
+                try:
+                    e.accept()
+                except Exception:
+                    pass
+                return
         super().keyReleaseEvent(e)
 
     def focusOutEvent(self, e):
@@ -7579,6 +7607,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             self._fps_nav_active = False
             self._fps_nav_keys = set()
             self._fps_nav_look_last_pos = None
+            self._fps_nav_boost = False
             self.update()
         except Exception:
             pass
