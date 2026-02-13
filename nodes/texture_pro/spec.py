@@ -136,6 +136,38 @@ _GLYPH_ATLAS = None
 _GLYPH_ATLAS_GRID = None
 _GLYPH_ATLAS_SIG = None
 _MATRIX_FONT_FAMILY = None
+_MATRIX_GLYPHS_CACHE = {}
+
+
+def _get_matrix_glyphs() -> tuple:
+    family = _choose_matrix_font_family()
+    cached = _MATRIX_GLYPHS_CACHE.get(family)
+    if cached:
+        return cached
+    glyphs = list(MATRIX_GLYPHS)
+    try:
+        font = QtGui.QFont(family)
+        if family == "Consolas":
+            font.setStyleHint(QtGui.QFont.Monospace)
+        metrics = QtGui.QFontMetrics(font)
+
+        def _supports(ch: str) -> bool:
+            try:
+                if hasattr(metrics, "inFontUcs4"):
+                    return bool(metrics.inFontUcs4(ord(ch)))
+                if hasattr(metrics, "inFont"):
+                    return bool(metrics.inFont(ch))
+            except Exception:
+                return True
+            return True
+
+        glyphs = [ch for ch in glyphs if _supports(ch)]
+    except Exception:
+        pass
+    if not glyphs:
+        glyphs = list(MATRIX_LATIN_GLYPHS) or list("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+    _MATRIX_GLYPHS_CACHE[family] = tuple(glyphs)
+    return _MATRIX_GLYPHS_CACHE[family]
 
 
 def _choose_matrix_font_family() -> str:
@@ -240,7 +272,7 @@ def _ensure_hidden_params(model, names) -> None:
 
 
 def _build_glyph_atlas(family: str):
-    glyphs = list(MATRIX_GLYPHS)
+    glyphs = list(_get_matrix_glyphs())
     cols = GLYPH_ATLAS_COLS
     rows = max(1, int(math.ceil(len(glyphs) / float(cols))))
     cell = GLYPH_ATLAS_CELL
@@ -267,7 +299,7 @@ def _build_glyph_atlas(family: str):
 def _get_glyph_atlas():
     global _GLYPH_ATLAS, _GLYPH_ATLAS_GRID, _GLYPH_ATLAS_SIG
     family = _choose_matrix_font_family()
-    sig = (MATRIX_GLYPHS, GLYPH_ATLAS_COLS, GLYPH_ATLAS_CELL, family)
+    sig = (_get_matrix_glyphs(), GLYPH_ATLAS_COLS, GLYPH_ATLAS_CELL, family)
     if _GLYPH_ATLAS is None or _GLYPH_ATLAS_GRID is None or _GLYPH_ATLAS_SIG != sig:
         _GLYPH_ATLAS, _GLYPH_ATLAS_GRID = _build_glyph_atlas(family)
         _GLYPH_ATLAS_SIG = sig
@@ -656,7 +688,11 @@ class MatrixRainGenerator:
         }
 
     def _random_glyph(self) -> str:
-        return self._rng.choice(MATRIX_GLYPHS)
+        glyphs = _get_matrix_glyphs()
+        try:
+            return self._rng.choice(glyphs)
+        except Exception:
+            return self._rng.choice(MATRIX_GLYPHS)
 
     def advance(self, dt: float, frame_id: Optional[int] = None) -> bool:
         if frame_id is not None and self._last_frame_id == frame_id:
@@ -1431,7 +1467,7 @@ class TextureProProvider:
             "seed": float(self._gpu_seed),
             "glyph_atlas": atlas,
             "glyph_grid": grid,
-            "glyph_count": int(len(MATRIX_GLYPHS)),
+            "glyph_count": int(len(_get_matrix_glyphs())),
             "bg_color": bg_color,
             "bg_enabled": float(bg_enabled),
         }
