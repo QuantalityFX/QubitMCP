@@ -2031,21 +2031,6 @@ class _BigEditEventFilter(QtCore.QObject):
             return False
 
 
-class _InfoDockCollapseFilter(QtCore.QObject):
-    def __init__(self, win):
-        super().__init__(win)
-        self.win = win
-
-    def eventFilter(self, obj, ev):
-        try:
-            if obj is getattr(self.win, "infoDock", None):
-                if ev.type() == QtCore.QEvent.Resize:
-                    self.win._on_info_dock_resize()
-        except Exception:
-            pass
-        return False
-
-
 # main window
 class EchoGraphWindow(QtWidgets.QMainWindow):
     def __init__(self, parent=None):
@@ -2124,6 +2109,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._fullscreen_prev_info_visible = None
         self._fullscreen_prev_topbar_visible = None
         self._fullscreen_target = None
+        self._fullscreen_exit_pending = False
+        self._fullscreen_prev_was_max = False
         v.addWidget(self._view_splitter, 1)
 
         self.setCentralWidget(central)
@@ -4271,13 +4258,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self.infoDock.setAllowedAreas(QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea)
         self.infoDock.setFeatures(QtWidgets.QDockWidget.DockWidgetMovable)
         self.infoDock.setFloating(False)
-        self.infoDock.setMinimumWidth(0)
+        self.infoDock.setMinimumWidth(10)
         self.infoDock.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Expanding)
-        self._infoDock_collapsed = False
-        self._infoDock_last_width = 400
-        self._infoDock_collapse_threshold = 40
-        self._infoDock_collapsed_width = 24
-        self._infoDock_resizing = False
 
         self._cardsContainer = QtWidgets.QWidget()
         self._cardsLayout = QtWidgets.QVBoxLayout(self._cardsContainer)
@@ -4303,63 +4285,15 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             "QScrollArea>Viewport{background:#1a1f24;}"
         )
         self._cardsContainer.setStyleSheet("QWidget{background:#1a1f24;color:#e6edf3;}")
+        try:
+            self.infoDock.setMinimumWidth(360)
+        except Exception:
+            pass
 
         try:
             self.resizeDocks([self.infoDock], [400], QtCore.Qt.Horizontal)
         except Exception:
             pass
-        try:
-            self._infoDock_filter = _InfoDockCollapseFilter(self)
-            self.infoDock.installEventFilter(self._infoDock_filter)
-        except Exception:
-            self._infoDock_filter = None
-
-    def _on_info_dock_resize(self) -> None:
-        dock = getattr(self, "infoDock", None)
-        if dock is None:
-            return
-        if getattr(self, "_infoDock_resizing", False):
-            return
-        try:
-            width = int(dock.width())
-        except Exception:
-            return
-        threshold = int(getattr(self, "_infoDock_collapse_threshold", 40))
-        collapsed = bool(getattr(self, "_infoDock_collapsed", False))
-        if collapsed:
-            if width > threshold:
-                self._set_info_dock_collapsed(False)
-        else:
-            if width > threshold:
-                self._infoDock_last_width = width
-            else:
-                self._set_info_dock_collapsed(True)
-
-    def _set_info_dock_collapsed(self, collapsed: bool) -> None:
-        dock = getattr(self, "infoDock", None)
-        if dock is None:
-            return
-        collapsed = bool(collapsed)
-        if collapsed == bool(getattr(self, "_infoDock_collapsed", False)):
-            return
-        self._infoDock_collapsed = collapsed
-        scroll = getattr(self, "_info_scroll", None)
-        try:
-            self._infoDock_resizing = True
-            if collapsed:
-                if scroll:
-                    scroll.setVisible(False)
-                width = int(getattr(self, "_infoDock_collapsed_width", 24))
-            else:
-                if scroll:
-                    scroll.setVisible(True)
-                width = int(max(80, getattr(self, "_infoDock_last_width", 400)))
-            try:
-                self.resizeDocks([dock], [width], QtCore.Qt.Horizontal)
-            except Exception:
-                pass
-        finally:
-            self._infoDock_resizing = False
 
     def _toggle_fullscreen(self) -> None:
         try:
@@ -4385,6 +4319,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 self._fullscreen_prev_geom = self.geometry()
             except Exception:
                 self._fullscreen_prev_geom = None
+            try:
+                self._fullscreen_prev_was_max = bool(self._fullscreen_prev_state & QtCore.Qt.WindowMaximized)
+            except Exception:
+                self._fullscreen_prev_was_max = False
             self._fullscreen_prev_view_mode = getattr(self, "_view_mode", "2d")
             splitter = getattr(self, "_view_splitter", None)
             try:
@@ -4457,48 +4395,76 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                     return
             except Exception:
                 pass
+            prev_state = getattr(self, "_fullscreen_prev_state", None)
+            was_max = bool(getattr(self, "_fullscreen_prev_was_max", False))
             try:
-                if getattr(self, "_topbar", None) is not None:
-                    self._topbar.setVisible(bool(self._fullscreen_prev_topbar_visible))
+                self.setUpdatesEnabled(False)
             except Exception:
                 pass
             try:
-                if getattr(self, "infoDock", None) is not None:
-                    self.infoDock.setVisible(bool(self._fullscreen_prev_info_visible))
+                if prev_state is not None:
+                    target_state = prev_state & ~QtCore.Qt.WindowFullScreen
+                    if was_max:
+                        target_state = target_state | QtCore.Qt.WindowMaximized
+                    self.setWindowState(target_state)
+            except Exception:
+                pass
+            try:
+                prev_geom = getattr(self, "_fullscreen_prev_geom", None)
+                if prev_geom is not None and not was_max:
+                    self.setGeometry(prev_geom)
+            except Exception:
+                pass
+            try:
+                # avoid showNormal/showMaximized to prevent transient shrink
+                self.show()
             except Exception:
                 pass
 
-            prev_mode = getattr(self, "_fullscreen_prev_view_mode", None)
-            if prev_mode:
-                try:
-                    self._set_view_mode(prev_mode)
-                except Exception:
-                    pass
+            # Defer layout restore one tick to avoid intermediate shrink flicker.
+            self._fullscreen_exit_pending = True
+            QtCore.QTimer.singleShot(0, self._finalize_fullscreen_exit)
 
-            splitter = getattr(self, "_view_splitter", None)
-            prev_sizes = getattr(self, "_fullscreen_prev_split_sizes", None)
-            if splitter and prev_sizes:
-                try:
-                    splitter.setSizes(prev_sizes)
-                except Exception:
-                    pass
-
+    def _finalize_fullscreen_exit(self) -> None:
+        if not bool(getattr(self, "_fullscreen_exit_pending", False)):
+            return
+        self._fullscreen_exit_pending = False
+        was_max = bool(getattr(self, "_fullscreen_prev_was_max", False))
+        try:
+            if getattr(self, "_topbar", None) is not None:
+                self._topbar.setVisible(bool(self._fullscreen_prev_topbar_visible))
+        except Exception:
+            pass
+        try:
+            if getattr(self, "infoDock", None) is not None:
+                self.infoDock.setVisible(bool(self._fullscreen_prev_info_visible))
+        except Exception:
+            pass
+        prev_mode = getattr(self, "_fullscreen_prev_view_mode", None)
+        if prev_mode:
             try:
-                if self._fullscreen_prev_state is not None:
-                    self.setWindowState(self._fullscreen_prev_state)
-                else:
-                    self.showNormal()
-            except Exception:
-                try:
-                    self.showNormal()
-                except Exception:
-                    pass
-            try:
-                if self._fullscreen_prev_geom is not None:
-                    self.setGeometry(self._fullscreen_prev_geom)
+                self._set_view_mode(prev_mode)
             except Exception:
                 pass
-            self._fullscreen_enabled = False
+        splitter = getattr(self, "_view_splitter", None)
+        prev_sizes = getattr(self, "_fullscreen_prev_split_sizes", None)
+        if splitter and prev_sizes:
+            try:
+                splitter.setSizes(prev_sizes)
+            except Exception:
+                pass
+        try:
+            prev_geom = getattr(self, "_fullscreen_prev_geom", None)
+            if prev_geom is not None and not was_max:
+                self.setGeometry(prev_geom)
+        except Exception:
+            pass
+        self._fullscreen_enabled = False
+        try:
+            self.setUpdatesEnabled(True)
+            self.update()
+        except Exception:
+            pass
 
     def add_info_card(self, node: GraphNode):
         existing = self._card_by_node.get(node.name)
