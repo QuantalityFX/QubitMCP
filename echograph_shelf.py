@@ -3502,6 +3502,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._pan_exp = float(getattr(self, "_pan_exp", 1.2))
         self._pan_boost = float(getattr(self, "_pan_boost", 10.0))
         self._gizmo_zoom_scale = float(getattr(self, "_gizmo_zoom_scale", 0.02))
+        self._fly_speed_mult = float(getattr(self, "_fly_speed_mult", 1.0))
 
         self._pan_base_value_lbl = QtWidgets.QLabel(f"{self._pan_base:.3f}")
         self._pan_base_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
@@ -3547,13 +3548,24 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         grid.addWidget(self._gizmo_zoom_slider, 4, 1)
         grid.addWidget(self._gizmo_zoom_value_lbl, 4, 2)
 
+        self._fly_speed_value_lbl = QtWidgets.QLabel(f"{self._fly_speed_mult:.2f}x")
+        self._fly_speed_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self._fly_speed_slider.setMinimum(10); self._fly_speed_slider.setMaximum(1000)
+        self._fly_speed_slider.setSingleStep(1); self._fly_speed_slider.setPageStep(10)
+        self._fly_speed_slider.setFixedWidth(160)
+        self._fly_speed_slider.setValue(int(round(self._fly_speed_mult * 100.0)))
+        self._fly_speed_slider.valueChanged.connect(self._on_fly_speed_mult_changed)
+        grid.addWidget(QtWidgets.QLabel("Fly Speed"), 5, 0)
+        grid.addWidget(self._fly_speed_slider, 5, 1)
+        grid.addWidget(self._fly_speed_value_lbl, 5, 2)
+
         self._splat_log_enabled = bool(getattr(self, "_splat_log_enabled", False))
         splat_log_label = QtWidgets.QLabel("Debug Log")
         self._splat_log_toggle = QtWidgets.QCheckBox()
         self._splat_log_toggle.setChecked(self._splat_log_enabled)
         self._splat_log_toggle.toggled.connect(self._on_splat_log_toggled)
-        grid.addWidget(splat_log_label, 5, 0, 1, 1, QtCore.Qt.AlignVCenter)
-        grid.addWidget(self._splat_log_toggle, 5, 1, 1, 1, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        grid.addWidget(splat_log_label, 6, 0, 1, 1, QtCore.Qt.AlignVCenter)
+        grid.addWidget(self._splat_log_toggle, 6, 1, 1, 1, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
 
         panel_action = QtWidgets.QWidgetAction(settings_menu)
         panel_action.setDefaultWidget(panel)
@@ -3715,6 +3727,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._pan_exp = 1.2
         self._pan_boost = 10.0
         self._gizmo_zoom_scale = 0.02
+        self._fly_speed_mult = 1.0
         self._splat_log_enabled = False
         if hasattr(self, "_pan_base_slider"):
             try:
@@ -3744,6 +3757,13 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 self._gizmo_zoom_slider.blockSignals(False)
             except Exception:
                 pass
+        if hasattr(self, "_fly_speed_slider"):
+            try:
+                self._fly_speed_slider.blockSignals(True)
+                self._fly_speed_slider.setValue(int(round(self._fly_speed_mult * 100.0)))
+                self._fly_speed_slider.blockSignals(False)
+            except Exception:
+                pass
         if hasattr(self, "_splat_log_toggle"):
             try:
                 self._splat_log_toggle.blockSignals(True)
@@ -3771,6 +3791,11 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 self._gizmo_zoom_value_lbl.setText(f"{self._gizmo_zoom_scale:.3f}")
             except Exception:
                 pass
+        if hasattr(self, "_fly_speed_value_lbl"):
+            try:
+                self._fly_speed_value_lbl.setText(f"{self._fly_speed_mult:.2f}x")
+            except Exception:
+                pass
         self._apply_pan_settings_to_gl_view()
 
     def _apply_pan_settings_to_gl_view(self) -> None:
@@ -3784,6 +3809,11 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             gv._mgl_zoom_pan_scale = float(getattr(self, "_gizmo_zoom_scale", 0.02))
             gv._mgl_pan_ref_zoom = None
             gv._mgl_splat_log = bool(getattr(self, "_splat_log_enabled", False))
+            fly_mult = float(getattr(self, "_fly_speed_mult", 1.0))
+            if hasattr(gv, "_apply_fly_speed_multiplier"):
+                gv._apply_fly_speed_multiplier(fly_mult, sync_ui=False, sync_scene=False)
+            else:
+                gv._fly_speed_mult = fly_mult
         except Exception:
             pass
         sc = getattr(self, "scene", None)
@@ -3798,6 +3828,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 settings["pan_boost"] = float(getattr(self, "_pan_boost", 10.0))
                 settings["gizmo_zoom_scale"] = float(getattr(self, "_gizmo_zoom_scale", 0.02))
                 settings["splat_log"] = bool(getattr(self, "_splat_log_enabled", False))
+                settings["fly_speed_mult"] = float(getattr(self, "_fly_speed_mult", 1.0))
                 sc._view_settings = settings
             except Exception:
                 pass
@@ -3844,6 +3875,17 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         lbl = getattr(self, "_gizmo_zoom_value_lbl", None)
         if lbl is not None:
             lbl.setText(f"{scale:.3f}")
+        self._apply_pan_settings_to_gl_view()
+
+    def _on_fly_speed_mult_changed(self, value: int) -> None:
+        try:
+            mult = max(0.1, float(value) / 100.0)
+        except Exception:
+            mult = 1.0
+        self._fly_speed_mult = mult
+        lbl = getattr(self, "_fly_speed_value_lbl", None)
+        if lbl is not None:
+            lbl.setText(f"{mult:.2f}x")
         self._apply_pan_settings_to_gl_view()
 
     def _on_splat_log_toggled(self, checked: bool) -> None:
@@ -4050,6 +4092,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         except Exception:
             gizmo_zoom = getattr(self, "_gizmo_zoom_scale", 0.02)
         try:
+            fly_speed = float(settings.get("fly_speed_mult", getattr(self, "_fly_speed_mult", 1.0)))
+        except Exception:
+            fly_speed = getattr(self, "_fly_speed_mult", 1.0)
+        try:
             splat_log = bool(settings.get("splat_log", getattr(self, "_splat_log_enabled", False)))
         except Exception:
             splat_log = getattr(self, "_splat_log_enabled", False)
@@ -4057,6 +4103,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._pan_exp = pan_exp
         self._pan_boost = pan_boost
         self._gizmo_zoom_scale = gizmo_zoom
+        self._fly_speed_mult = fly_speed
         self._splat_log_enabled = splat_log
         if hasattr(self, "_pan_base_slider"):
             self._pan_base_slider.blockSignals(True)
@@ -4074,6 +4121,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             self._gizmo_zoom_slider.blockSignals(True)
             self._gizmo_zoom_slider.setValue(int(round(gizmo_zoom * 1000.0)))
             self._gizmo_zoom_slider.blockSignals(False)
+        if hasattr(self, "_fly_speed_slider"):
+            self._fly_speed_slider.blockSignals(True)
+            self._fly_speed_slider.setValue(int(round(fly_speed * 100.0)))
+            self._fly_speed_slider.blockSignals(False)
         if hasattr(self, "_splat_log_toggle"):
             self._splat_log_toggle.blockSignals(True)
             self._splat_log_toggle.setChecked(bool(splat_log))
@@ -4086,6 +4137,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             self._pan_boost_value_lbl.setText(f"{pan_boost:.1f}")
         if hasattr(self, "_gizmo_zoom_value_lbl"):
             self._gizmo_zoom_value_lbl.setText(f"{gizmo_zoom:.3f}")
+        if hasattr(self, "_fly_speed_value_lbl"):
+            self._fly_speed_value_lbl.setText(f"{fly_speed:.2f}x")
         try:
             self._apply_pan_settings_to_gl_view()
         except Exception:

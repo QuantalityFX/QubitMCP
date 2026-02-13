@@ -650,6 +650,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._fps_nav_cursor_anchor = None
         self._fps_nav_warping = False
         self._fps_nav_look_sens = 0.005
+        self._fly_speed_mult = 1.0
         self._fps_camera = None
         self._fps_camera_active = False
         self._viewport_hotkey_filter = None
@@ -682,6 +683,14 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
     def set_scene(self, scene) -> None:
         self._scene = scene
+        try:
+            settings = getattr(scene, "_view_settings", None)
+            if isinstance(settings, dict):
+                speed_mult = settings.get("fly_speed_mult", None)
+                if speed_mult is not None:
+                    self._apply_fly_speed_multiplier(float(speed_mult), sync_ui=True, sync_scene=False)
+        except Exception:
+            pass
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -995,6 +1004,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             forward_amt /= ln
             right_amt /= ln
             speed = float(getattr(self, "_fps_nav_speed", 2.0))
+            speed *= float(getattr(self, "_fly_speed_mult", 1.0))
             try:
                 zoom = float(getattr(self, "_mgl_camera_zoom", 1.0))
                 speed *= max(0.2, min(4.0, zoom * 0.25))
@@ -1036,6 +1046,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         move /= ln
 
         speed = float(getattr(self, "_fps_nav_speed", 2.0))
+        speed *= float(getattr(self, "_fly_speed_mult", 1.0))
         try:
             zoom = float(getattr(self, "_mgl_camera_zoom", 1.0))
             speed *= max(0.2, min(4.0, zoom * 0.25))
@@ -1213,6 +1224,59 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         except Exception:
             self._controls = None
             self._controls_h = 0
+
+    def _on_fly_speed_mult_changed(self, value: int | None = None) -> None:
+        if value is None:
+            slider = getattr(self, "_fly_speed_slider", None)
+            if slider is not None:
+                try:
+                    value = int(slider.value())
+                except Exception:
+                    value = None
+        if value is None:
+            return
+        try:
+            mult = float(value) / 100.0
+        except Exception:
+            mult = 1.0
+        self._apply_fly_speed_multiplier(mult, sync_ui=True, sync_scene=True)
+
+    def _apply_fly_speed_multiplier(
+        self,
+        mult: float,
+        *,
+        sync_ui: bool = True,
+        sync_scene: bool = True,
+    ) -> None:
+        try:
+            mult = min(10.0, max(0.1, float(mult)))
+        except Exception:
+            mult = 1.0
+        self._fly_speed_mult = mult
+        if sync_ui:
+            label = getattr(self, "_fly_speed_label", None)
+            if label is not None:
+                label.setText(f"Fly {mult:.2f}x")
+            slider = getattr(self, "_fly_speed_slider", None)
+            if slider is not None:
+                try:
+                    slider.blockSignals(True)
+                    slider.setValue(int(round(mult * 100.0)))
+                finally:
+                    slider.blockSignals(False)
+        if sync_scene:
+            scene = getattr(self, "_scene", None)
+            if scene is not None:
+                try:
+                    settings = getattr(scene, "_view_settings", None)
+                    if not isinstance(settings, dict):
+                        settings = {}
+                    settings = dict(settings)
+                    settings["fly_speed_mult"] = float(mult)
+                    scene._view_settings = settings
+                except Exception:
+                    pass
+        self.update()
 
     def _load_xform_space_icons(self) -> None:
         if getattr(self, "_xform_space_icon_world", None) is not None:
