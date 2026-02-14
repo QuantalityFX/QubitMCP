@@ -2944,7 +2944,24 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         import time
 
         assets = list(assets or [])
+        def _scene_log(msg: str) -> None:
+            try:
+                root = Path(__file__).resolve().parent
+                log_dir = root / "logs"
+                log_dir.mkdir(parents=True, exist_ok=True)
+                ts = time.strftime("%Y-%m-%d %H:%M:%S")
+                with (log_dir / "scene_assets_debug.log").open("a", encoding="utf-8") as f:
+                    f.write(f"{ts} {msg}\n")
+            except Exception:
+                pass
+        try:
+            cur_path = getattr(self, "_current_path", None)
+        except Exception:
+            cur_path = None
+        _scene_log("")
+        _scene_log(f"=== open_scene_assets start raw_count={len(assets)} current_path={cur_path} ===")
         if not assets:
+            _scene_log("open_scene_assets: no assets")
             print("[open_scene_assets] no assets", flush=True)
             return
 
@@ -2957,16 +2974,42 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
         clean = []
         visibility_map = {}
-        for entry in assets:
+        base_dir = None
+        try:
+            if cur_path:
+                base_dir = Path(str(cur_path)).expanduser().resolve().parent
+        except Exception:
+            base_dir = None
+        _scene_log(f"open_scene_assets: base_dir={base_dir}")
+        for idx, entry in enumerate(assets):
             if not isinstance(entry, dict):
+                _scene_log(f"raw[{idx}] skip: not dict type={type(entry)}")
                 continue
+            node_name = (entry.get("node") or "").strip()
             path = (entry.get("path") or "").strip()
+            _scene_log(f"raw[{idx}] node={node_name!r} path={path!r} ext={entry.get('ext')!r} visible={entry.get('visible')!r}")
             if not path:
+                _scene_log(f"raw[{idx}] drop: missing path node={node_name!r}")
                 continue
             try:
                 if not os.path.exists(path):
-                    continue
-            except Exception:
+                    if base_dir is not None:
+                        try:
+                            alt = (base_dir / path).resolve()
+                            _scene_log(f"raw[{idx}] resolve: path={path!r} alt={str(alt)!r} exists={alt.exists()}")
+                            if alt.exists():
+                                path = str(alt)
+                            else:
+                                _scene_log(f"raw[{idx}] drop: path not found after resolve")
+                                continue
+                        except Exception as exc:
+                            _scene_log(f"raw[{idx}] drop: resolve exception={exc!r}")
+                            continue
+                    else:
+                        _scene_log(f"raw[{idx}] drop: path not found and no base_dir")
+                        continue
+            except Exception as exc:
+                _scene_log(f"raw[{idx}] drop: exists check failed err={exc!r}")
                 continue
             node_name = (entry.get("node") or "").strip()
             raw_visible = entry.get("visible")
@@ -2991,10 +3034,13 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             if tex_provider is not None:
                 clean_entry["texture_provider"] = tex_provider
             clean.append(clean_entry)
+            _scene_log(f"clean[{len(clean)-1}] node={node_name!r} path={path!r} visible={visible}")
 
         if not clean:
+            _scene_log("open_scene_assets: no valid asset paths")
             print("[open_scene_assets] no valid asset paths", flush=True)
             return
+        _scene_log(f"open_scene_assets: clean_count={len(clean)}")
 
         # Debounce duplicate loads (prevents repeated reload loops)
         try:
@@ -3057,6 +3103,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         loader = getattr(gl_view, "load_scene_assets", None)
         if callable(loader):
             try:
+                _scene_log(f"open_scene_assets: load_scene_assets count={len(clean)} frame={frame}")
                 loader(clean, frame=frame)
                 return
             except Exception:

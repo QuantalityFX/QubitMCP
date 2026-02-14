@@ -108,6 +108,8 @@ def _resolve_input_item(scene, node_item, port_names=None):
             if edges:
                 return _trace(getattr(edges[0], "src", None), depth + 1, visited)
         path = _param_value(m, "path")
+        if not path:
+            path = _param_value(m, "mesh") or _param_value(m, "source")
         return item, kind, path
 
     try:
@@ -340,6 +342,8 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             base_item, base_kind, base_path = _resolve_input_item(scene, src_item, {"mesh", "path", "source"})
             if not base_path:
                 continue
+            # stash resolved path on the instance node for compatibility/debugging
+            _set_param_value(model, "path", base_path)
             if not prefix:
                 base_name = ""
                 try:

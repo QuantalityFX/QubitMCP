@@ -56,6 +56,7 @@ def _remove_param(node_item, name: str) -> None:
 def build_ports(node_item) -> None:
     _ensure_param(node_item, "count", "3")
     _ensure_param(node_item, "prefix", "")
+    _ensure_param(node_item, "__ui_hidden_params", "path")
     _remove_param(node_item, "path")
     if hasattr(node_item, "ensure_input"):
         node_item.ensure_input("mesh")
