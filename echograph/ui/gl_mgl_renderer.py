@@ -2655,6 +2655,12 @@ class MGLRendererMixin:
             self._mgl_proc_time = float(getattr(self, "_mgl_proc_time", 0.0) or 0.0) + float(step)
         except Exception:
             self._mgl_proc_time = float(step)
+        # Prevent huge ProcTime values causing hash precision collapse in shaders.
+        try:
+            if self._mgl_proc_time > 10000.0:
+                self._mgl_proc_time = math.fmod(self._mgl_proc_time, 10000.0)
+        except Exception:
+            pass
 
         def _advance(provider) -> bool:
             if provider is None:
@@ -2916,7 +2922,13 @@ class MGLRendererMixin:
 
         frame_id = int(getattr(self, "_mgl_frame_id", 0) or 0) + 1
         self._mgl_frame_id = frame_id
-        step = 1.0 / max(self._fps, 1.0)
+        try:
+            if not math.isfinite(dt) or dt < 0.0:
+                dt = 0.0
+        except Exception:
+            dt = 0.0
+        # Clamp large gaps so procedural animations don't "jump" on first frame.
+        step = min(max(float(dt), 0.0), 0.1)
         try:
             self._mgl_update_procedural_textures(step, frame_id)
         except Exception:
