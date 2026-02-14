@@ -2414,6 +2414,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
     def _collect_scene_assets(self) -> list[dict]:
         supported = {".fbx", ".obj", ".gltf", ".glb", ".ply", ".stl", ".off", ".om"}
         def _scene_log(msg: str) -> None:
+            enabled = False
+            if not enabled:
+                return
             try:
                 root = Path(__file__).resolve().parents[2]
                 log_dir = root / "logs"
@@ -4028,7 +4031,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             except Exception:
                 return
 
-            key_parts = []
+            key_parts = set()
             for asset in assets:
                 path = (asset.get("path") or "").strip()
                 if not path:
@@ -4038,21 +4041,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     ap = str(Path(p).resolve())
                 except Exception:
                     ap = os.path.abspath(p)
-                try:
-                    st = os.stat(ap)
-                    stamp = f"{int(st.st_mtime)}|{int(st.st_size)}"
-                except Exception:
-                    stamp = "nostat"
-                tex = (asset.get("texture") or "").strip()
-                tex_key = ""
-                if tex:
-                    try:
-                        tex_key = str(Path(tex).expanduser().resolve())
-                    except Exception:
-                        tex_key = os.path.abspath(tex)
-                key_parts.append(f"{ap}|{stamp}|{tex_key}")
+                key_parts.add(ap)
 
-            key_parts.sort()
+            key_parts = sorted(key_parts)
             if key_parts:
                 key_src = "|".join(key_parts).encode("utf-8", errors="ignore")
                 key = hashlib.sha1(key_src).hexdigest()[:10]

@@ -2945,6 +2945,9 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
         assets = list(assets or [])
         def _scene_log(msg: str) -> None:
+            enabled = False
+            if not enabled:
+                return
             try:
                 root = Path(__file__).resolve().parent
                 log_dir = root / "logs"
