@@ -801,6 +801,10 @@ class GraphScene(QtWidgets.QGraphicsScene):
                 elif isinstance(hidden, list) and old_name in hidden:
                     hidden = [new_name if n == old_name else n for n in hidden]
                     setattr(model, "_scene_hidden", hidden)
+                xforms = getattr(model, "_scene_xforms", None)
+                if isinstance(xforms, dict) and old_name in xforms:
+                    xforms[new_name] = xforms.pop(old_name)
+                    setattr(model, "_scene_xforms", xforms)
         except Exception:
             pass
 

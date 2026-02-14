@@ -770,7 +770,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         outliner.setMaximumHeight(900)
         layout.addWidget(outliner)
         card._scene_outliner_widget = outliner
-        card._scene_outliner_log_enabled = True
+        card._scene_outliner_log_enabled = False
         def _outliner_log(msg: str) -> None:
             if not getattr(card, "_scene_outliner_log_enabled", False):
                 return

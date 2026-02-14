@@ -3011,6 +3011,19 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         if old_key in self._mgl_scene_visibility:
             self._mgl_scene_visibility[new_key] = self._mgl_scene_visibility.pop(old_key)
 
+        # preserve per-owner transforms when renaming
+        for attr in (
+            "_mgl_scene_xforms_by_owner",
+            "_mgl_scene_splat_xforms_by_owner",
+            "_mgl_scene_xform_offset_by_owner",
+        ):
+            try:
+                d = getattr(self, attr, None)
+                if isinstance(d, dict) and old_key in d:
+                    d[new_key] = d.pop(old_key)
+            except Exception:
+                pass
+
         # rename splat storage only if needed
         if had_splat:
             try:
