@@ -756,7 +756,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
 
         outliner = QtWidgets.QListWidget()
         outliner.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
-        outliner.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        outliner.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         outliner.setMinimumWidth(0)
         outliner.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         outliner.setStyleSheet(
@@ -764,8 +764,8 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             "QListWidget::item{padding:2px 6px;}"
             "QListWidget::item:selected{background:#334155;}"
         )
-        outliner.setMinimumHeight(70)
-        outliner.setMaximumHeight(140)
+        outliner.setMinimumHeight(220)
+        outliner.setMaximumHeight(900)
         layout.addWidget(outliner)
         card._scene_outliner_widget = outliner
 
