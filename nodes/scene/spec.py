@@ -1240,6 +1240,20 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             if it is None:
                 # Qt can briefly report None during list refresh; don’t clear selection
                 return
+            try:
+                prev = getattr(card, "_scene_outliner_editing", None)
+                if isinstance(prev, QtWidgets.QLineEdit) and not prev.isReadOnly():
+                    try:
+                        fn = getattr(prev, "_scene_finish_edit", None)
+                        if callable(fn):
+                            fn()
+                        else:
+                            prev.clearFocus()
+                    except Exception:
+                        prev.clearFocus()
+            except Exception:
+                pass
+
 
             owner = it.data(QtCore.Qt.UserRole)
             owner = str(owner) if owner else None
@@ -1630,6 +1644,23 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 name_edit.setProperty("scene_node_name", name)
 
                 def _start_edit(edit=name_edit):
+                    try:
+                        prev = getattr(card, "_scene_outliner_editing", None)
+                        if isinstance(prev, QtWidgets.QLineEdit) and prev is not edit and not prev.isReadOnly():
+                            try:
+                                fn = getattr(prev, "_scene_finish_edit", None)
+                                if callable(fn):
+                                    fn()
+                                else:
+                                    prev.clearFocus()
+                            except Exception:
+                                prev.clearFocus()
+                    except Exception:
+                        pass
+                    try:
+                        card._scene_outliner_editing = edit
+                    except Exception:
+                        pass
                     edit.setReadOnly(False)
                     edit.setFrame(True)
                     edit.setStyleSheet(
@@ -1651,6 +1682,11 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                     edit.setStyleSheet("QLineEdit{background:transparent;color:#e2e8f0;}")
                     edit.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
                     edit.setFocusPolicy(QtCore.Qt.NoFocus)
+                    try:
+                        if getattr(card, "_scene_outliner_editing", None) is edit:
+                            card._scene_outliner_editing = None
+                    except Exception:
+                        pass
                     if not new_name or new_name == old_name:
                         edit.setText(old_name)
                         return
@@ -1661,6 +1697,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                         edit.setText(old_name)
 
                 name_edit.editingFinished.connect(_finish_edit)
+                name_edit._scene_finish_edit = lambda e=name_edit: _finish_edit(e)
                 row_layout.addWidget(name_edit, 1)
 
                 row_item = QtWidgets.QListWidgetItem()
