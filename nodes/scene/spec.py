@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from typing import Dict, List
 
@@ -756,6 +757,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
 
         outliner = QtWidgets.QListWidget()
         outliner.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        outliner.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         outliner.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         outliner.setMinimumWidth(0)
         outliner.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
@@ -768,6 +770,66 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         outliner.setMaximumHeight(900)
         layout.addWidget(outliner)
         card._scene_outliner_widget = outliner
+        card._scene_outliner_log_enabled = True
+        def _outliner_log(msg: str) -> None:
+            if not getattr(card, "_scene_outliner_log_enabled", False):
+                return
+            try:
+                root = Path(__file__).resolve().parents[2]
+                log_dir = root / "logs"
+                log_dir.mkdir(parents=True, exist_ok=True)
+                ts = time.strftime("%Y-%m-%d %H:%M:%S")
+                with (log_dir / "outliner_debug.log").open("a", encoding="utf-8") as f:
+                    f.write(f"{ts} {msg}\n")
+            except Exception:
+                pass
+        def _update_row_highlight(current_item=None) -> None:
+            rows = getattr(card, "_scene_outliner_rows", None) or []
+            for item, widget in rows:
+                try:
+                    sel = (item is current_item)
+                    widget.setProperty("selected", sel)
+                    widget.style().unpolish(widget)
+                    widget.style().polish(widget)
+                    widget.update()
+                except Exception:
+                    pass
+        class _OutlinerViewportFilter(QtCore.QObject):
+            def eventFilter(self, obj, event):
+                try:
+                    et = event.type()
+                    if et in (QtCore.QEvent.MouseButtonPress, QtCore.QEvent.MouseButtonDblClick):
+                        pos = event.pos()
+                        item = outliner.itemAt(pos)
+                        if item is not None:
+                            try:
+                                outliner.setCurrentItem(item)
+                            except Exception:
+                                pass
+                            _outliner_log(
+                                f"viewport_click type={int(et)} row={outliner.row(item)} "
+                                f"name={item.data(QtCore.Qt.UserRole)} pos=({pos.x()},{pos.y()})"
+                            )
+                            if et == QtCore.QEvent.MouseButtonDblClick:
+                                try:
+                                    w = outliner.itemWidget(item)
+                                except Exception:
+                                    w = None
+                                if w is not None:
+                                    edit = w.findChild(QtWidgets.QLineEdit)
+                                    if edit is not None:
+                                        fn = getattr(edit, "_scene_start_edit", None)
+                                        if callable(fn):
+                                            fn()
+                except Exception as exc:
+                    _outliner_log(f"viewport_click err={exc!r}")
+                return False
+        try:
+            vp_filter = _OutlinerViewportFilter(outliner)
+            outliner.viewport().installEventFilter(vp_filter)
+            outliner._viewport_filter = vp_filter
+        except Exception:
+            pass
 
         # --- Render Settings ---
         render_title = QtWidgets.QLabel("Render Settings")
@@ -1188,6 +1250,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             card._scene_outliner_user_selected = True
             xform_panel.setEnabled(True)
             _load_xform_from_view(owner)
+            _update_row_highlight(it)
 
             if not _scene_is_active():
                 return
@@ -1277,6 +1340,14 @@ def augment_infocard_footer(card, footer_layout) -> bool:
 
 
         outliner.currentItemChanged.connect(lambda *_: _on_outliner_select())
+        def _on_item_clicked(item):
+            if item is None:
+                return
+            try:
+                _outliner_log(f"itemClicked name={item.data(QtCore.Qt.UserRole)}")
+            except Exception:
+                pass
+        outliner.itemClicked.connect(_on_item_clicked)
 
         for kind, lbl in (("pos", label_pos), ("rot", label_rot), ("scl", label_scl)):
             lbl.setCursor(QtCore.Qt.PointingHandCursor)
@@ -1488,11 +1559,21 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 return
 
             hidden = _hidden_set()
+            row_widgets = []
             for idx, entry in enumerate(rows, start=1):
                 name = entry["name"]
                 visible = name not in hidden
 
                 row_widget = QtWidgets.QWidget()
+                row_widget.setObjectName("SceneOutlinerRow")
+                row_widget.setStyleSheet(
+                    "QWidget#SceneOutlinerRow{background:rgba(15,23,42,0.35);}"
+                    "QWidget#SceneOutlinerRow[odd=\"true\"]{background:rgba(15,23,42,0.55);}"
+                    "QWidget#SceneOutlinerRow[selected=\"true\"]{background:#334155;border-radius:4px;}"
+                )
+                row_widget.setProperty("selected", False)
+                row_widget.setProperty("odd", bool(idx % 2))
+                row_widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
                 row_layout = QtWidgets.QHBoxLayout(row_widget)
                 row_layout.setContentsMargins(4, 0, 4, 0)
                 row_layout.setSpacing(6)
@@ -1534,8 +1615,8 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 eye_btn.clicked.connect(_on_eye_clicked)
                 row_layout.addWidget(eye_btn, 0)
 
-                idx_label = QtWidgets.QLabel(f"{idx}.")
-                idx_label.setStyleSheet("color:#64748b;")
+                idx_label = QtWidgets.QLabel(f"{idx}")
+                idx_label.setStyleSheet("color:#94a3b8;background:transparent;")
                 row_layout.addWidget(idx_label, 0)
 
                 name_edit = QtWidgets.QLineEdit(name)
@@ -1544,6 +1625,8 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 name_edit.setMinimumWidth(0)
                 name_edit.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
                 name_edit.setStyleSheet("QLineEdit{background:transparent;color:#e2e8f0;}")
+                name_edit.setFocusPolicy(QtCore.Qt.NoFocus)
+                name_edit.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
                 name_edit.setProperty("scene_node_name", name)
 
                 def _start_edit(edit=name_edit):
@@ -1553,8 +1636,12 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                         "QLineEdit{background:#12151a;color:#e2e8f0;border:1px solid #3c4450;"
                         "border-radius:4px;padding:2px 6px;}"
                     )
+                    edit.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, False)
+                    edit.setFocusPolicy(QtCore.Qt.StrongFocus)
                     edit.selectAll()
                     edit.setFocus(QtCore.Qt.MouseFocusReason)
+
+                name_edit._scene_start_edit = lambda e=name_edit: _start_edit(e)
 
                 def _finish_edit(edit=name_edit, scn=scene):
                     old_name = edit.property("scene_node_name") or ""
@@ -1562,6 +1649,8 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                     edit.setReadOnly(True)
                     edit.setFrame(False)
                     edit.setStyleSheet("QLineEdit{background:transparent;color:#e2e8f0;}")
+                    edit.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
+                    edit.setFocusPolicy(QtCore.Qt.NoFocus)
                     if not new_name or new_name == old_name:
                         edit.setText(old_name)
                         return
@@ -1571,14 +1660,6 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                     else:
                         edit.setText(old_name)
 
-                def _on_double_click(ev, edit=name_edit):
-                    _start_edit(edit)
-                    try:
-                        QtWidgets.QLineEdit.mouseDoubleClickEvent(edit, ev)
-                    except Exception:
-                        pass
-
-                name_edit.mouseDoubleClickEvent = _on_double_click  # type: ignore[assignment]
                 name_edit.editingFinished.connect(_finish_edit)
                 row_layout.addWidget(name_edit, 1)
 
@@ -1586,9 +1667,71 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 row_item.setData(QtCore.Qt.UserRole, name)
                 if entry.get("path"):
                     row_item.setToolTip(entry["path"])
-                row_item.setSizeHint(row_widget.sizeHint())
+                try:
+                    vw = int(outliner.viewport().width())
+                except Exception:
+                    vw = 0
+                if vw > 0:
+                    try:
+                        row_widget.setMinimumWidth(vw)
+                    except Exception:
+                        pass
+                try:
+                    hint = row_widget.sizeHint()
+                    if vw > 0:
+                        hint.setWidth(max(vw, hint.width()))
+                    row_item.setSizeHint(hint)
+                except Exception:
+                    row_item.setSizeHint(row_widget.sizeHint())
                 outliner.addItem(row_item)
                 outliner.setItemWidget(row_item, row_widget)
+                row_widgets.append((row_item, row_widget))
+                class _RowSelectFilter(QtCore.QObject):
+                    def __init__(self, item, label, row_idx, row_name, edit):
+                        super().__init__(outliner)
+                        self._item = item
+                        self._label = label
+                        self._idx = row_idx
+                        self._name = row_name
+                        self._edit = edit
+                    def eventFilter(self, obj, event):
+                        et = event.type()
+                        if et == QtCore.QEvent.MouseButtonPress:
+                            try:
+                                outliner.setCurrentItem(self._item)
+                            except Exception:
+                                pass
+                            try:
+                                _outliner_log(
+                                    f"click label={self._label} idx={self._idx} name={self._name} "
+                                    f"pos=({event.pos()})"
+                                )
+                            except Exception:
+                                pass
+                        if et == QtCore.QEvent.MouseButtonDblClick:
+                            try:
+                                outliner.setCurrentItem(self._item)
+                            except Exception:
+                                pass
+                            try:
+                                self._edit._scene_start_edit()
+                            except Exception:
+                                pass
+                        return False
+
+                for widget, label in (
+                    (row_widget, "row"),
+                    (idx_label, "idx"),
+                    (eye_btn, "eye"),
+                ):
+                    try:
+                        filt = _RowSelectFilter(row_item, label, idx, name, name_edit)
+                        widget.installEventFilter(filt)
+                        setattr(widget, "_row_select_filter", filt)
+                    except Exception:
+                        pass
+
+            card._scene_outliner_rows = row_widgets
 
             # Restore prior selection if possible; otherwise clear selection/gizmo.
             selected_row = None
@@ -1607,11 +1750,19 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             try:
                 if selected_row is not None:
                     outliner.setCurrentRow(selected_row)
+                    try:
+                        _update_row_highlight(outliner.currentItem())
+                    except Exception:
+                        pass
                 else:
                     outliner.setCurrentRow(-1)
                     outliner.clearSelection()
                     card._scene_selected_owner = None
                     card._scene_outliner_user_selected = False
+                    try:
+                        _update_row_highlight(None)
+                    except Exception:
+                        pass
                     try:
                         xform_panel.setEnabled(False)
                     except Exception:
