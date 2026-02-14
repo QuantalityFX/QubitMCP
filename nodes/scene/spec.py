@@ -358,6 +358,8 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
 
             owner_model = getattr(base_item, "model", None)
             owner_kind = (base_kind or getattr(owner_model, "kind", "") or "").strip().lower()
+            texture_model = owner_model
+            texture_kind = owner_kind
             path = base_path
 
             if owner_kind in ("texture", "texture_pro", "texture_layer"):
@@ -394,19 +396,21 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                 continue
 
             texture_provider = None
-            if owner_kind == "texture_pro":
+            if texture_kind == "texture_pro":
                 try:
-                    texture_provider = getattr(owner_model, "_texture_pro_provider", None)
+                    texture_provider = getattr(texture_model, "_texture_pro_provider", None)
                 except Exception:
                     texture_provider = None
-            elif owner_kind == "texture_layer":
+            elif texture_kind == "texture_layer":
                 try:
-                    texture_provider = getattr(owner_model, "_texture_layer_provider", None)
+                    texture_provider = getattr(texture_model, "_texture_layer_provider", None)
                 except Exception:
                     texture_provider = None
 
-            if owner_kind in ("texture", "texture_pro"):
-                texture = _param_value(owner_model, "texture")
+            if texture_kind in ("texture", "texture_pro"):
+                texture = _param_value(texture_model, "texture")
+            elif texture_kind == "texture_layer":
+                texture = _param_value(texture_model, "texture") if ext == ".obj" else ""
             else:
                 texture = _param_value(owner_model, "texture") if ext == ".obj" else ""
 
