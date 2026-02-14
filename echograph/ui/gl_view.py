@@ -715,6 +715,22 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 self._side_btn_size,
             )
         y = self._side_btn_margin + self._side_btn_size + self._side_btn_gap
+        frame_frame = getattr(self, "_frame_btn_frame", None)
+        frame_btn = getattr(self, "_frame_btn", None)
+        if frame_frame is not None:
+            frame_frame.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
+            y += self._side_btn_size + self._side_btn_gap
+        elif frame_btn is not None:
+            frame_btn.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
+            y += self._side_btn_size + self._side_btn_gap
+        snap_frame = getattr(self, "_snapgrab_btn_frame", None)
+        snap_btn = getattr(self, "_snapgrab_btn", None)
+        if snap_frame is not None:
+            snap_frame.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
+            y += self._side_btn_size + self._side_btn_gap
+        elif snap_btn is not None:
+            snap_btn.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
+            y += self._side_btn_size + self._side_btn_gap
         grid_frame = getattr(self, "_grid_btn_frame", None)
         grid_btn = getattr(self, "_grid_btn", None)
         if grid_frame is not None:
@@ -755,20 +771,6 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         elif fly_btn is not None:
             fly_btn.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
             y += self._side_btn_size + self._side_btn_gap
-        frame_frame = getattr(self, "_frame_btn_frame", None)
-        frame_btn = getattr(self, "_frame_btn", None)
-        if frame_frame is not None:
-            frame_frame.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
-            y += self._side_btn_size + self._side_btn_gap
-        elif frame_btn is not None:
-            frame_btn.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
-            y += self._side_btn_size + self._side_btn_gap
-        snap_frame = getattr(self, "_snapgrab_btn_frame", None)
-        snap_btn = getattr(self, "_snapgrab_btn", None)
-        if snap_frame is not None:
-            snap_frame.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
-        elif snap_btn is not None:
-            snap_btn.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
         if getattr(self, "_mgl_uv_cache", None) is not None:
             self._mgl_uv_cache = None
 
