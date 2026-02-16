@@ -251,3 +251,14 @@ def bootstrap_plugins():
             print("[EchoGraph] Scene module has no 'register' function.")
     except Exception as e:
         print("[EchoGraph] Scene plugin import failed:", e)
+
+    # 14) Export FBX
+    try:
+        from nodes import export_fbx
+        if hasattr(export_fbx, "register"):
+            export_fbx.register()
+            _safe_probe("export_fbx")
+        else:
+            print("[EchoGraph] Export FBX module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Export FBX plugin import failed:", e)

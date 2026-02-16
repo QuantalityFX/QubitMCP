@@ -266,6 +266,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     _scene.register()
             except Exception:
                 pass
+        # Ensure Export FBX spec is registered even if the loader was skipped.
+        if (self.model.kind or "").strip().lower() in ("export_fbx", "exportfbx", "export fbx"):
+            try:
+                from nodes import export_fbx as _export_fbx  # type: ignore
+                if hasattr(_export_fbx, "register"):
+                    _export_fbx.register()
+            except Exception:
+                pass
         # Ensure Primitive spec is registered even if the loader was skipped.
         if (self.model.kind or "").strip().lower() == "primitive":
             try:
@@ -777,6 +785,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
             hidden.update({"thumbnail", "thumbnail_rev", "thumbnail_choice"})
         elif kind in ("scene", "scene_assembly", "scene_outliner"):
             hidden.update({"thumbnail", "thumbnail_rev", "thumbnail_choice", "splat_depth_test"})
+        elif kind in ("export_fbx", "exportfbx", "export fbx"):
+            hidden.update({"output", "include_hidden"})
         elif kind == "primitive":
             hidden.update({"primitive", "path"})
         elif kind == "uv_unwrap":
@@ -1299,6 +1309,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
             if thumb and os.path.exists(thumb):
                 inner_w = max(40, int(node_w) - 12)
                 body_h += inner_w + self._PADDING
+        elif kind in ("export_fbx", "exportfbx", "export fbx"):
+            body_h = 96
+            node_w = self._BASE_W
         elif kind in ("image_collection", "imagecollection"):
             body_h = self._IMG_CTRL_H + self._IMG_CANVAS_H
             node_w = max(self._BASE_W, self._IMG_CANVAS_W)
@@ -4831,6 +4844,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "scene",
                 "scene_assembly",
                 "scene_outliner",
+                "export_fbx",
+                "exportfbx",
+                "export fbx",
             ):
                 # Allow space for floating icon above the bar
                 extra_top = 80.0
@@ -4949,6 +4965,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 icon_pm = node_icons._chatbot_icon()
             elif kind_lower in ("scene", "scene_assembly", "scene_outliner"):
                 icon_pm = node_icons._scene_icon()
+            elif kind_lower in ("export_fbx", "exportfbx", "export fbx"):
+                icon_pm = node_icons._fbx_icon() or node_icons._output_icon()
             elif kind_lower == "output":
                 icon_pm = node_icons._output_icon()
             elif kind_lower == "python":
