@@ -20,11 +20,11 @@ The plugin root should contain `MaterialGenerator.uplugin`.
 
 ## Usage
 
-1. In the Level Editor top toolbar, click **Material Generator**.
+1. In the Level Editor top toolbar (near the Play controls), click **Material Generator**.
 2. Fill in:
-   - Package Path (you can enter `Qubit/Materials`, `/Game/Qubit/Materials`, or a disk path under `.../Content/...`)
+   - Package Path (type it or use `Browse...` to pick a folder under `Content`; supports `Qubit/Materials`, `/Game/Qubit/Materials`, or disk paths under `.../Content/...`)
    - Master Material Name
-   - Optional Glyph Texture object path (e.g. `/Game/Textures/T_MatrixGlyphAtlas.T_MatrixGlyphAtlas`)
+   - Optional Glyph Texture using the picker (browse or drag/drop from Content Browser)
    - Optional Material Instance name
 3. Click **Generate Material**.
 

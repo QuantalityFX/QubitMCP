@@ -69,8 +69,9 @@ float tcol = raw_t + offset;
 float base_cycle = floor(tcol / cycle) * cycle;
 float t_in = tcol - base_cycle;
 
-float4 bg = float4(0.01, 0.03, 0.01, 1.0);
-if (BgEnabled > 0.5) bg = Bg;
+float3 bg_rgb = float3(0.01, 0.03, 0.01);
+float bg_alpha = 1.0;
+if (BgEnabled > 0.5) bg_rgb = Bg;
 
 float t_alive = min(t_in, life);
 float travel = t_alive * max(0.0, AnimSpeed) * max(0.0, speed);
@@ -120,7 +121,7 @@ float dy = (dir > 0.0) ? (head - along) : (along - head);
 if (dy < 0.0) dy += along_cells;
 
 float t = 1.0 - dy / max(trail_len, 1.0);
-if (t <= 0.0) return bg;
+if (t <= 0.0) return float4(bg_rgb, bg_alpha);
 
 float2 pg = max(GlyphGrid, float2(1.0, 1.0));
 float glyph_count = max(1.0, min(pg.x * pg.y, GlyphCount));
@@ -151,8 +152,8 @@ float3 tail_col = float3(0.11, 0.78, 0.14);
 float3 color = lerp(tail_col, head_col, SMOOTHH(0.85, 0.98, t));
 
 float t_fade = t * live;
-float3 rgb = lerp(bg.rgb, color, glyph * t_fade);
-float alpha = lerp(bg.a, 1.0, glyph * t_fade);
+float3 rgb = lerp(bg_rgb, color, glyph * t_fade);
+float alpha = lerp(bg_alpha, 1.0, glyph * t_fade);
 
 return float4(rgb, alpha);
 #undef HASH11

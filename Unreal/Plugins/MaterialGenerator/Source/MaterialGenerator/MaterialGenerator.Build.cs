@@ -21,10 +21,12 @@ public class MaterialGenerator : ModuleRules
             "AssetRegistry",
             "AssetTools",
             "ContentBrowser",
+            "DesktopPlatform",
             "EditorStyle",
             "InputCore",
             "LevelEditor",
             "MaterialEditor",
+            "PropertyEditor",
             "Projects",
             "ToolMenus",
             "UnrealEd"
