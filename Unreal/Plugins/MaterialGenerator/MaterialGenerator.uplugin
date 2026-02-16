@@ -1,0 +1,18 @@
+﻿{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "1.0.0",
+  "FriendlyName": "Material Generator",
+  "Description": "Creates a Matrix Rain master material and optional material instance from an editor toolbar window.",
+  "Category": "Editor",
+  "CreatedBy": "EchoMatrix",
+  "CanContainContent": false,
+  "Installed": false,
+  "Modules": [
+    {
+      "Name": "MaterialGenerator",
+      "Type": "Editor",
+      "LoadingPhase": "Default"
+    }
+  ]
+}

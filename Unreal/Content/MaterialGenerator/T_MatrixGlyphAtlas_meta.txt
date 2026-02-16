@@ -1,0 +1,5 @@
+name=T_MatrixGlyphAtlas
+size=768x288
+grid=16x6
+cell=48
+glyph_count=96
