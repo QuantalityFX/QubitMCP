@@ -275,6 +275,7 @@ def _collect_scene_assets_for_export(node_item, include_hidden: bool = False):
                 "name": name,
                 "path": resolved,
                 "texture_path": texture_path,
+                "xform_offset": bool(entry.get("xform_offset")),
                 "xform": xform if isinstance(xform, dict) else None,
             }
         )
@@ -352,7 +353,7 @@ def _load_mesh_as_trimesh(path: Path):
     return mesh
 
 
-def _scene_xform_matrix(mesh, xform):
+def _scene_xform_matrix(mesh, xform, xform_offset: bool = False, xform_space: str = "local"):
     import numpy as np
 
     if not isinstance(xform, dict):
@@ -367,32 +368,76 @@ def _scene_xform_matrix(mesh, xform):
     ry = -float(ry)
     rz = -float(rz)
 
+    def _t(tx, ty, tz):
+        m = np.eye(4, dtype="f8")
+        m[3, 0] = tx
+        m[3, 1] = ty
+        m[3, 2] = tz
+        return m
+
+    def _s(sx_v, sy_v, sz_v):
+        m = np.eye(4, dtype="f8")
+        m[0, 0] = sx_v
+        m[1, 1] = sy_v
+        m[2, 2] = sz_v
+        return m
+
     def _rx(a):
         a = math.radians(a)
         c, s = math.cos(a), math.sin(a)
-        return np.array([[1.0, 0.0, 0.0], [0.0, c, s], [0.0, -s, c]], dtype="f8")
+        m = np.eye(4, dtype="f8")
+        m[1, 1] = c
+        m[1, 2] = s
+        m[2, 1] = -s
+        m[2, 2] = c
+        return m
 
     def _ry(a):
         a = math.radians(a)
         c, s = math.cos(a), math.sin(a)
-        return np.array([[c, 0.0, -s], [0.0, 1.0, 0.0], [s, 0.0, c]], dtype="f8")
+        m = np.eye(4, dtype="f8")
+        m[0, 0] = c
+        m[0, 2] = -s
+        m[2, 0] = s
+        m[2, 2] = c
+        return m
 
     def _rz(a):
         a = math.radians(a)
         c, s = math.cos(a), math.sin(a)
-        return np.array([[c, s, 0.0], [-s, c, 0.0], [0.0, 0.0, 1.0]], dtype="f8")
+        m = np.eye(4, dtype="f8")
+        m[0, 0] = c
+        m[0, 1] = s
+        m[1, 0] = -s
+        m[1, 1] = c
+        return m
 
-    linear = (_rx(rx) @ _ry(ry) @ _rz(rz)) @ np.diag([float(sx), float(sy), float(sz)])
     try:
         bmin, bmax = mesh.bounds
         center = (np.asarray(bmin, dtype="f8") + np.asarray(bmax, dtype="f8")) * 0.5
     except Exception:
         center = np.zeros(3, dtype="f8")
+    if xform_offset:
+        try:
+            pos = (
+                float(pos[0]) + float(center[0]),
+                float(pos[1]) + float(center[1]),
+                float(pos[2]) + float(center[2]),
+            )
+        except Exception:
+            pass
 
-    matrix = np.eye(4, dtype="f8")
-    matrix[:3, :3] = linear
-    matrix[:3, 3] = np.asarray(pos, dtype="f8") - linear.dot(center)
-    return matrix
+    cx, cy, cz = float(center[0]), float(center[1]), float(center[2])
+    px, py, pz = float(pos[0]), float(pos[1]), float(pos[2])
+    rot_scale = _rx(rx) @ _ry(ry) @ _rz(rz)
+
+    # Match renderer row-vector matrix and transpose for trimesh (column-vector).
+    space = str(xform_space or "local").strip().lower()
+    if space == "world":
+        model_row = _t(-cx, -cy, -cz) @ rot_scale @ _s(float(sx), float(sy), float(sz)) @ _t(px, py, pz)
+    else:
+        model_row = _t(-cx, -cy, -cz) @ _s(float(sx), float(sy), float(sz)) @ rot_scale @ _t(px, py, pz)
+    return np.asarray(model_row, dtype="f8").T
 
 
 def _apply_texture_material(mesh, texture_path: Path | None, material_name: str) -> None:
@@ -421,7 +466,7 @@ def _apply_texture_material(mesh, texture_path: Path | None, material_name: str)
         return
 
 
-def _build_export_scene(asset_rows):
+def _build_export_scene(asset_rows, xform_space: str = "local"):
     try:
         import numpy as np
         import trimesh
@@ -441,9 +486,17 @@ def _build_export_scene(asset_rows):
             skipped.append(row)
             continue
         xform = row.get("xform")
+        xform_offset = bool(row.get("xform_offset"))
         if isinstance(xform, dict):
             try:
-                mesh.apply_transform(_scene_xform_matrix(mesh, xform))
+                mesh.apply_transform(
+                    _scene_xform_matrix(
+                        mesh,
+                        xform,
+                        xform_offset=xform_offset,
+                        xform_space=xform_space,
+                    )
+                )
             except Exception:
                 pass
         name = _sanitize_name(row.get("name") or path.stem, "object")
@@ -482,6 +535,51 @@ def _default_output_path(node_item) -> Path:
     else:
         scene_name = _sanitize_name(getattr(getattr(node_item, "model", None), "name", "") or "scene", "scene")
     return _export_dir(node_item) / f"{scene_name}_export.fbx"
+
+
+def _dialog_parent(node_item):
+    scene = None
+    try:
+        scene = node_item.scene()
+    except Exception:
+        scene = None
+    if scene is not None:
+        try:
+            views = scene.views()
+            if views:
+                win = views[0].window()
+                if win is not None:
+                    return win
+        except Exception:
+            pass
+    try:
+        win = node_item.window()
+        if win is not None:
+            return win
+    except Exception:
+        pass
+    try:
+        aw = QtWidgets.QApplication.activeWindow()
+        if aw is not None and aw.isWindow():
+            return aw
+    except Exception:
+        pass
+    return None
+
+
+def _scene_xform_space(node_item) -> str:
+    parent = _dialog_parent(node_item)
+    glv = getattr(parent, "gl_view", None) if parent is not None else None
+    if glv is None:
+        return "local"
+
+    raw = str(getattr(glv, "_mgl_xform_space", "") or "").strip().lower()
+    if raw in {"local", "world"}:
+        return raw
+    try:
+        return "local" if bool(getattr(glv, "_xform_use_local", True)) else "world"
+    except Exception:
+        return "local"
 
 
 class ExportFBXWidget(QtWidgets.QWidget):
@@ -640,11 +738,18 @@ class ExportFBXWidget(QtWidgets.QWidget):
             start.parent.mkdir(parents=True, exist_ok=True)
         except Exception:
             pass
+        parent = _dialog_parent(self._node_item) or self
+        opts = QtWidgets.QFileDialog.Options()
+        try:
+            opts |= QtWidgets.QFileDialog.DontUseNativeDialog
+        except Exception:
+            pass
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self,
+            parent,
             "Export FBX",
             str(start),
             "FBX Files (*.fbx)",
+            options=opts,
         )
         if not path:
             return
@@ -653,11 +758,38 @@ class ExportFBXWidget(QtWidgets.QWidget):
         self._output_edit.setText(path)
         _set_param_value(self._node_item, "output", path, notify_scene=True)
 
+    def _show_popup(self, icon, text: str, details: str = "") -> None:
+        parent = _dialog_parent(self._node_item) or self
+        box = QtWidgets.QMessageBox(parent)
+        box.setWindowTitle("Export FBX")
+        box.setIcon(icon)
+        box.setText(str(text or ""))
+        try:
+            box.setTextFormat(QtCore.Qt.PlainText)
+        except Exception:
+            pass
+        if details:
+            try:
+                box.setDetailedText(str(details))
+            except Exception:
+                pass
+        box.setStandardButtons(QtWidgets.QMessageBox.Ok)
+        box.setStyleSheet(
+            "QMessageBox{background:#0f1216;color:#e6edf3;}"
+            "QLabel{color:#e6edf3;}"
+            "QPushButton{background:#1f2937;color:#e2e8f0;border:1px solid #475569;border-radius:4px;padding:4px 12px;min-width:72px;}"
+            "QPushButton:hover{background:#273449;}"
+        )
+        try:
+            box.exec()
+        except Exception:
+            box.exec_()
+
     def _on_export_clicked(self):
         include_hidden = bool(self._include_hidden.isChecked())
         assets, err = _collect_scene_assets_for_export(self._node_item, include_hidden=include_hidden)
         if err:
-            QtWidgets.QMessageBox.warning(self, "Export FBX", err)
+            self._show_popup(QtWidgets.QMessageBox.Warning, err)
             self._refresh_status()
             return
 
@@ -665,18 +797,17 @@ class ExportFBXWidget(QtWidgets.QWidget):
         try:
             out_path.parent.mkdir(parents=True, exist_ok=True)
         except Exception:
-            QtWidgets.QMessageBox.critical(self, "Export FBX", "Failed to create output directory.")
+            self._show_popup(QtWidgets.QMessageBox.Critical, "Failed to create output directory.")
             return
 
         self._set_busy(True)
         try:
-            scene_obj, exported_count, skipped = _build_export_scene(assets)
+            scene_obj, exported_count, skipped = _build_export_scene(
+                assets,
+                xform_space=_scene_xform_space(self._node_item),
+            )
             if scene_obj is None or exported_count <= 0:
-                QtWidgets.QMessageBox.warning(
-                    self,
-                    "Export FBX",
-                    "No mesh data could be prepared for export.",
-                )
+                self._show_popup(QtWidgets.QMessageBox.Warning, "No mesh data could be prepared for export.")
                 return
 
             _export_trimesh_scene_to_fbx(scene_obj, out_path)
@@ -688,9 +819,9 @@ class ExportFBXWidget(QtWidgets.QWidget):
             msg = f"Exported {exported_count} object(s) to:\n{out_path}"
             if skipped:
                 msg += f"\n\nSkipped {len(skipped)} asset(s) that could not be meshed."
-            QtWidgets.QMessageBox.information(self, "Export FBX", msg)
+            self._show_popup(QtWidgets.QMessageBox.Information, msg)
         except Exception as exc:
-            QtWidgets.QMessageBox.critical(self, "Export FBX", f"Export failed:\n{exc}")
+            self._show_popup(QtWidgets.QMessageBox.Critical, "Export failed.", str(exc))
         finally:
             self._set_busy(False)
             self._refresh_status()

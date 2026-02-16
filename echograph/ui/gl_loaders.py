@@ -563,6 +563,24 @@ def load_fbx_mesh_arrays_pyassimp(path: Path) -> MeshArrays:
                 mesh_texture_image = None
                 mesh_color = None
                 if props:
+                    def _prop_key_name(prop_key: object) -> str:
+                        if isinstance(prop_key, tuple):
+                            if not prop_key:
+                                return ""
+                            return str(prop_key[0] or "").strip().lower()
+                        return str(prop_key or "").strip().lower()
+
+                    def _prop_text(value: object) -> Optional[str]:
+                        if isinstance(value, bytes):
+                            try:
+                                value = value.decode("utf-8", errors="ignore")
+                            except Exception:
+                                return None
+                        if isinstance(value, str):
+                            text = value.strip()
+                            return text or None
+                        return None
+
                     tex_value = None
                     for semantic in (
                         ai_material.aiTextureType_DIFFUSE,
@@ -574,9 +592,11 @@ def load_fbx_mesh_arrays_pyassimp(path: Path) -> MeshArrays:
                             break
                         tex_value = None
                     if tex_value is None:
-                        for (key, _semantic), value in props.items():
-                            if key == "file" and isinstance(value, str) and value:
-                                tex_value = value
+                        for prop_key, value in props.items():
+                            key = _prop_key_name(prop_key)
+                            text_value = _prop_text(value)
+                            if key == "file" and text_value:
+                                tex_value = text_value
                                 break
                     if isinstance(tex_value, str) and tex_value.startswith("*"):
                         try:
@@ -596,6 +616,12 @@ def load_fbx_mesh_arrays_pyassimp(path: Path) -> MeshArrays:
                     color_val = props.get(("diffuse", ai_material.aiTextureType_NONE)) if props else None
                     if color_val is None:
                         color_val = props.get(("color", ai_material.aiTextureType_NONE)) if props else None
+                    if color_val is None:
+                        for prop_key, value in props.items():
+                            key = str(_prop_key_name(prop_key))
+                            if key in {"diffuse", "color", "basecolor", "base_color"}:
+                                color_val = value
+                                break
                     if color_val is not None:
                         mesh_color = _normalize_color(color_val)
 
