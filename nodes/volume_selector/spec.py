@@ -613,6 +613,9 @@ def _load_obj_polygon_mesh(path: Path):
     out_uv: List[List[float]] = []
     out_norm: List[List[float]] = []
     faces_out: List[List[int]] = []
+    has_authored_uv = False
+    # Canonicalize by OBJ corner tuple so shared topology/UV seams are preserved.
+    vertex_lookup: Dict[Tuple[int, Optional[int], Optional[int]], int] = {}
     try:
         raw = path.read_text(encoding="utf-8", errors="ignore")
     except Exception:
@@ -672,21 +675,29 @@ def _load_obj_polygon_mesh(path: Path):
                 v_idx = _resolve_obj_index(v_idx_raw, len(positions))
                 if v_idx is None:
                     continue
-                vx, vy, vz = positions[v_idx]
                 vt_idx = _resolve_obj_index(vt_idx_raw, len(texcoords))
-                if vt_idx is not None:
-                    u, v = texcoords[vt_idx]
-                else:
-                    u, v = 0.0, 0.0
                 vn_idx = _resolve_obj_index(vn_idx_raw, len(normals_src))
-                if vn_idx is not None:
-                    nx, ny, nz = normals_src[vn_idx]
-                else:
-                    nx, ny, nz = 0.0, 0.0, 0.0
-                out_pos.append([float(vx), float(vy), float(vz)])
-                out_uv.append([float(u), float(v)])
-                out_norm.append([float(nx), float(ny), float(nz)])
-                face_idx.append(len(out_pos) - 1)
+                key = (int(v_idx), int(vt_idx) if vt_idx is not None else None, int(vn_idx) if vn_idx is not None else None)
+                mapped = vertex_lookup.get(key)
+                if mapped is None:
+                    vx, vy, vz = positions[v_idx]
+                    if vt_idx is not None:
+                        u, v = texcoords[vt_idx]
+                        has_authored_uv = True
+                    else:
+                        u, v = 0.0, 0.0
+                    if vn_idx is not None:
+                        nx, ny, nz = normals_src[vn_idx]
+                    else:
+                        nx, ny, nz = 0.0, 0.0, 0.0
+                    out_pos.append([float(vx), float(vy), float(vz)])
+                    out_uv.append([float(u), float(v)])
+                    out_norm.append([float(nx), float(ny), float(nz)])
+                    mapped = len(out_pos) - 1
+                    vertex_lookup[key] = mapped
+                face_idx.append(int(mapped))
+            if len(face_idx) >= 2 and face_idx[0] == face_idx[-1]:
+                face_idx.pop()
             if len(face_idx) >= 3:
                 faces_out.append(face_idx)
 
@@ -694,7 +705,7 @@ def _load_obj_polygon_mesh(path: Path):
         return None, None, None, None
     pts = np.asarray(out_pos, dtype="f4").reshape(-1, 3)
     norms = np.asarray(out_norm, dtype="f4").reshape(-1, 3)
-    uvs = np.asarray(out_uv, dtype="f4").reshape(-1, 2)
+    uvs = np.asarray(out_uv, dtype="f4").reshape(-1, 2) if has_authored_uv else None
     return pts, norms, uvs, faces_out
 
 
@@ -713,6 +724,7 @@ def _load_fbx_ascii_polygon_mesh(path: Path):
     out_uv: List[List[float]] = []
     out_norm: List[List[float]] = []
     faces_out: List[List[int]] = []
+    has_authored_uv = False
 
     for match in geo_pattern.finditer(raw):
         brace_start = raw.find("{", match.end() - 1)
@@ -732,36 +744,126 @@ def _load_fbx_ascii_polygon_mesh(path: Path):
         if vertices.size == 0:
             continue
         max_idx = int(vertices.shape[0] - 1)
+
+        uv_layer = None
+        try:
+            uv_layer = gl_loaders._fbx_extract_uv_layer(block)  # type: ignore[attr-defined]
+        except Exception:
+            uv_layer = None
+
+        mapping = ""
+        reference = ""
+        uv_direct = None
+        uv_index: List[int] = []
+        if uv_layer is not None:
+            try:
+                mapping, reference, uv_list, uv_index = uv_layer
+            except Exception:
+                mapping, reference, uv_list, uv_index = "", "", [], []
+            if mapping == "byvertice":
+                mapping = "byvertex"
+            if len(uv_list) % 2 != 0:
+                uv_list = uv_list[: (len(uv_list) // 2) * 2]
+            if uv_list:
+                try:
+                    uv_direct = np.asarray(uv_list, dtype="f4").reshape(-1, 2)
+                except Exception:
+                    uv_direct = None
+
+        poly_vert_cursor = 0
+        poly_index = 0
         polygon: List[int] = []
-        for idx in poly_idx:
+        polygon_uv: List[Optional[int]] = []
+        vertex_lookup: Dict[Tuple[int, Optional[int]], int] = {}
+
+        for idx_raw in poly_idx:
             end_poly = False
+            idx = int(idx_raw)
             if idx < 0:
                 idx = -idx - 1
                 end_poly = True
+
+            uv_idx_val: Optional[int] = None
+            if uv_direct is not None:
+                if mapping == "bypolygonvertex":
+                    if reference == "indextodirect":
+                        if poly_vert_cursor < len(uv_index):
+                            try:
+                                uv_idx_val = int(uv_index[poly_vert_cursor])
+                            except Exception:
+                                uv_idx_val = None
+                    else:
+                        uv_idx_val = int(poly_vert_cursor)
+                elif mapping == "byvertex":
+                    if reference == "indextodirect":
+                        if 0 <= idx < len(uv_index):
+                            try:
+                                uv_idx_val = int(uv_index[idx])
+                            except Exception:
+                                uv_idx_val = None
+                    else:
+                        uv_idx_val = int(idx)
+                elif mapping == "bypolygon":
+                    if reference == "indextodirect":
+                        if poly_index < len(uv_index):
+                            try:
+                                uv_idx_val = int(uv_index[poly_index])
+                            except Exception:
+                                uv_idx_val = None
+                    else:
+                        uv_idx_val = int(poly_index)
+                elif mapping == "allsame":
+                    uv_idx_val = 0
+
             if idx < 0 or idx > max_idx:
                 polygon = []
+                polygon_uv = []
+                poly_vert_cursor += 1
                 if end_poly:
-                    continue
-            else:
-                polygon.append(int(idx))
+                    poly_index += 1
+                continue
+
+            polygon.append(int(idx))
+            polygon_uv.append(uv_idx_val)
+            poly_vert_cursor += 1
+
             if end_poly:
                 if len(polygon) >= 3:
                     face_idx: List[int] = []
-                    for vid in polygon:
-                        vx, vy, vz = vertices[vid]
-                        out_pos.append([float(vx), float(vy), float(vz)])
-                        out_uv.append([0.0, 0.0])
-                        out_norm.append([0.0, 0.0, 0.0])
-                        face_idx.append(len(out_pos) - 1)
+                    for vid, uv_idx_cur in zip(polygon, polygon_uv):
+                        key = (
+                            int(vid),
+                            int(uv_idx_cur) if uv_idx_cur is not None else None,
+                        )
+                        mapped = vertex_lookup.get(key)
+                        if mapped is None:
+                            vx, vy, vz = vertices[vid]
+                            u = 0.0
+                            v = 0.0
+                            if uv_direct is not None and uv_idx_cur is not None:
+                                if 0 <= int(uv_idx_cur) < int(uv_direct.shape[0]):
+                                    u = float(uv_direct[int(uv_idx_cur)][0])
+                                    v = float(uv_direct[int(uv_idx_cur)][1])
+                                    has_authored_uv = True
+                            out_pos.append([float(vx), float(vy), float(vz)])
+                            out_uv.append([float(u), float(v)])
+                            out_norm.append([0.0, 0.0, 0.0])
+                            mapped = len(out_pos) - 1
+                            vertex_lookup[key] = mapped
+                        face_idx.append(int(mapped))
+                    if len(face_idx) >= 2 and face_idx[0] == face_idx[-1]:
+                        face_idx.pop()
                     if len(face_idx) >= 3:
                         faces_out.append(face_idx)
                 polygon = []
+                polygon_uv = []
+                poly_index += 1
 
     if not out_pos or not faces_out:
         return None, None, None, None
     pts = np.asarray(out_pos, dtype="f4").reshape(-1, 3)
     norms = np.asarray(out_norm, dtype="f4").reshape(-1, 3)
-    uvs = np.asarray(out_uv, dtype="f4").reshape(-1, 2)
+    uvs = np.asarray(out_uv, dtype="f4").reshape(-1, 2) if has_authored_uv else None
     return pts, norms, uvs, faces_out
 
 
@@ -795,6 +897,7 @@ def _load_fbx_polygon_mesh(path: Path):
         out_uv: List[List[float]] = []
         out_norm: List[List[float]] = []
         faces_out: List[List[int]] = []
+        has_authored_uv = False
         with pyassimp.load(str(path), file_type="fbx", processing=processing) as scene:
             for mesh in scene.meshes or []:
                 vertices = np.asarray(getattr(mesh, "vertices", []), dtype="f4")
@@ -819,6 +922,7 @@ def _load_fbx_polygon_mesh(path: Path):
                 faces = getattr(mesh, "faces", None)
                 if faces is None:
                     continue
+                vertex_lookup: Dict[int, int] = {}
                 for face in faces:
                     try:
                         idxs = [int(i) for i in face]
@@ -830,19 +934,26 @@ def _load_fbx_polygon_mesh(path: Path):
                     for idx in idxs:
                         if idx < 0 or idx >= len(vertices):
                             continue
-                        vx, vy, vz = vertices[idx]
-                        if normals_raw is not None:
-                            nx, ny, nz = normals_raw[idx]
-                        else:
-                            nx, ny, nz = 0.0, 0.0, 0.0
-                        if uv_raw is not None:
-                            u, v = uv_raw[idx]
-                        else:
-                            u, v = 0.0, 0.0
-                        out_pos.append([float(vx), float(vy), float(vz)])
-                        out_uv.append([float(u), float(v)])
-                        out_norm.append([float(nx), float(ny), float(nz)])
-                        face_idx.append(len(out_pos) - 1)
+                        mapped = vertex_lookup.get(int(idx))
+                        if mapped is None:
+                            vx, vy, vz = vertices[idx]
+                            if normals_raw is not None:
+                                nx, ny, nz = normals_raw[idx]
+                            else:
+                                nx, ny, nz = 0.0, 0.0, 0.0
+                            if uv_raw is not None:
+                                u, v = uv_raw[idx]
+                                has_authored_uv = True
+                            else:
+                                u, v = 0.0, 0.0
+                            out_pos.append([float(vx), float(vy), float(vz)])
+                            out_uv.append([float(u), float(v)])
+                            out_norm.append([float(nx), float(ny), float(nz)])
+                            mapped = len(out_pos) - 1
+                            vertex_lookup[int(idx)] = mapped
+                        face_idx.append(int(mapped))
+                    if len(face_idx) >= 2 and face_idx[0] == face_idx[-1]:
+                        face_idx.pop()
                     if len(face_idx) >= 3:
                         faces_out.append(face_idx)
     except Exception:
@@ -852,7 +963,7 @@ def _load_fbx_polygon_mesh(path: Path):
         return None, None, None, None
     pts = np.asarray(out_pos, dtype="f4").reshape(-1, 3)
     norms = np.asarray(out_norm, dtype="f4").reshape(-1, 3)
-    uvs = np.asarray(out_uv, dtype="f4").reshape(-1, 2)
+    uvs = np.asarray(out_uv, dtype="f4").reshape(-1, 2) if has_authored_uv else None
     return pts, norms, uvs, faces_out
 
 
@@ -1023,17 +1134,38 @@ def _ensure_normals(points, normals, faces: Optional[List[List[int]]] = None):
     def _compute_face_normal(face_idx: List[int]):
         if not face_idx or len(face_idx) < 3:
             return None
-        try:
-            a = pts[face_idx[0]]
-            b = pts[face_idx[1]]
-            c = pts[face_idx[2]]
-        except Exception:
+        clean: List[int] = []
+        for raw in face_idx:
+            try:
+                vi = int(raw)
+            except Exception:
+                continue
+            if vi < 0 or vi >= pts.shape[0]:
+                continue
+            if clean and clean[-1] == vi:
+                continue
+            clean.append(vi)
+        if len(clean) >= 2 and clean[0] == clean[-1]:
+            clean.pop()
+        if len(clean) < 3:
             return None
-        n = np.cross(b - a, c - a)
-        ln = float(np.linalg.norm(n))
-        if ln <= 1e-8:
-            return None
-        return (n / ln).astype("f4")
+
+        # Some polygon data can start with collinear/duplicated verts.
+        # Scan for any non-degenerate triplet instead of trusting the first 3.
+        for i in range(len(clean) - 2):
+            a = pts[clean[i]]
+            for j in range(i + 1, len(clean) - 1):
+                b = pts[clean[j]]
+                ab = b - a
+                if float(np.linalg.norm(ab)) <= 1e-8:
+                    continue
+                for k in range(j + 1, len(clean)):
+                    c = pts[clean[k]]
+                    n = np.cross(ab, c - a)
+                    ln = float(np.linalg.norm(n))
+                    if ln > 1e-8:
+                        return (n / ln).astype("f4")
+        return None
 
     def _rebuild_from_faces():
         rebuilt = np.zeros_like(pts, dtype="f4")
@@ -1126,20 +1258,44 @@ def _ensure_uvs(points, uvs):
         import numpy as np
     except Exception:
         return uvs
+    pts = np.asarray(points, dtype="f4").reshape(-1, 3)
+    if pts.size == 0:
+        return np.zeros((0, 2), dtype="f4")
+
+    def _project_uvs_from_bounds():
+        try:
+            bmin = pts.min(axis=0)
+            bmax = pts.max(axis=0)
+        except Exception:
+            bmin = np.array([0.0, 0.0, 0.0], dtype="f4")
+            bmax = np.array([1.0, 1.0, 1.0], dtype="f4")
+        ext = np.abs(bmax - bmin)
+        pairs = [(0, 2), (0, 1), (1, 2)]
+        pair = max(pairs, key=lambda p: float(ext[p[0]] * ext[p[1]]))
+        iu, iv = int(pair[0]), int(pair[1])
+        du = float(ext[iu])
+        dv = float(ext[iv])
+        if du <= 1e-8:
+            du = 1.0
+        if dv <= 1e-8:
+            dv = 1.0
+        u = (pts[:, iu] - float(bmin[iu])) / du
+        v = (pts[:, iv] - float(bmin[iv])) / dv
+        return np.stack([u, v], axis=1).astype("f4")
+
     if uvs is not None and getattr(uvs, "size", 0):
-        return uvs
-    try:
-        bmin = points.min(axis=0)
-        bmax = points.max(axis=0)
-    except Exception:
-        bmin = (0.0, 0.0, 0.0)
-        bmax = (1.0, 1.0, 1.0)
-    dx = float(bmax[0] - bmin[0]) if float(bmax[0] - bmin[0]) != 0.0 else 1.0
-    dz = float(bmax[2] - bmin[2]) if float(bmax[2] - bmin[2]) != 0.0 else 1.0
-    u = (points[:, 0] - float(bmin[0])) / dx
-    v = (points[:, 2] - float(bmin[2])) / dz
-    uvs = np.stack([u, v], axis=1).astype("f4")
-    return uvs
+        try:
+            arr = np.asarray(uvs, dtype="f4").reshape(-1, 2)
+        except Exception:
+            return _project_uvs_from_bounds()
+        if arr.shape[0] != pts.shape[0]:
+            return _project_uvs_from_bounds()
+        finite = np.isfinite(arr).all(axis=1)
+        if not finite.all():
+            return _project_uvs_from_bounds()
+        # Preserve provided UVs exactly, including flat/all-zero layouts.
+        return arr.astype("f4")
+    return _project_uvs_from_bounds()
 
 
 def _split_mesh(
@@ -1160,7 +1316,7 @@ def _split_mesh(
             invert=bool(invert),
             error="numpy unavailable",
         )
-        return None, None, None, "numpy unavailable"
+        return None, None, None, None, "numpy unavailable"
 
     pts, norms, uvs, faces = _load_mesh_polygon_data(mesh_path)
     if pts is None or not getattr(pts, "size", 0):
@@ -1211,16 +1367,31 @@ def _split_mesh(
         except Exception:
             pass
     input_bounds = _points_bounds(pts)
-    kept_pts: List[List[float]] = []
-    kept_norms: List[List[float]] = []
-    kept_uvs: List[List[float]] = []
-    kept_faces: List[List[int]] = []
+    kept_source_faces: List[List[int]] = []
     eps = 1e-6
+
+    def _clean_face(face_raw):
+        clean: List[int] = []
+        for raw_idx in face_raw:
+            try:
+                vi = int(raw_idx)
+            except Exception:
+                continue
+            if vi < 0 or vi >= pts.shape[0]:
+                continue
+            if clean and clean[-1] == vi:
+                continue
+            clean.append(vi)
+        if len(clean) >= 2 and clean[0] == clean[-1]:
+            clean.pop()
+        return clean
+
     for face in faces:
-        if not face or len(face) < 3:
+        clean_face = _clean_face(face)
+        if len(clean_face) < 3:
             continue
         inside = True
-        for vidx in face:
+        for vidx in clean_face:
             try:
                 v = pts[vidx]
             except Exception:
@@ -1232,22 +1403,9 @@ def _split_mesh(
         keep = inside if not invert else not inside
         if not keep:
             continue
-        new_face: List[int] = []
-        for vidx in face:
-            try:
-                v = pts[vidx]
-                n = norms[vidx]
-                uv = uvs[vidx]
-            except Exception:
-                continue
-            kept_pts.append([float(v[0]), float(v[1]), float(v[2])])
-            kept_norms.append([float(n[0]), float(n[1]), float(n[2])])
-            kept_uvs.append([float(uv[0]), float(uv[1])])
-            new_face.append(len(kept_pts) - 1)
-        if len(new_face) >= 3:
-            kept_faces.append(new_face)
+        kept_source_faces.append(clean_face)
 
-    if not kept_faces:
+    if not kept_source_faces:
         _debug_log(
             "split_mesh",
             enabled=debug,
@@ -1263,6 +1421,36 @@ def _split_mesh(
             kept_face_count=0,
             error="No faces inside volume.",
         )
+        return None, None, None, None, "No faces inside volume."
+
+    # Reindex only vertices/UVs/normals referenced by kept polygons.
+    # This preserves authored UVs while removing data for discarded polygons.
+    kept_pts: List[List[float]] = []
+    kept_norms: List[List[float]] = []
+    kept_uvs: List[List[float]] = []
+    kept_faces: List[List[int]] = []
+    remap: Dict[int, int] = {}
+    for face in kept_source_faces:
+        new_face: List[int] = []
+        for vidx in face:
+            mapped = remap.get(vidx)
+            if mapped is None:
+                try:
+                    v = pts[vidx]
+                    n = norms[vidx]
+                    uv = uvs[vidx]
+                except Exception:
+                    continue
+                kept_pts.append([float(v[0]), float(v[1]), float(v[2])])
+                kept_norms.append([float(n[0]), float(n[1]), float(n[2])])
+                kept_uvs.append([float(uv[0]), float(uv[1])])
+                mapped = len(kept_pts) - 1
+                remap[vidx] = mapped
+            new_face.append(int(mapped))
+        if len(new_face) >= 3:
+            kept_faces.append(new_face)
+
+    if not kept_faces or not kept_pts:
         return None, None, None, None, "No faces inside volume."
 
     pts_out = np.array(kept_pts, dtype="f4").reshape(-1, 3)
