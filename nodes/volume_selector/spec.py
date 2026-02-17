@@ -1006,40 +1006,119 @@ def _ensure_normals(points, normals, faces: Optional[List[List[int]]] = None):
         import numpy as np
     except Exception:
         return normals
+    pts = np.asarray(points, dtype="f4").reshape(-1, 3)
+    if pts.size == 0:
+        return np.zeros((0, 3), dtype="f4")
+
+    # Start from provided normals when possible, but do not trust zero/invalid data.
+    normals_arr = None
     if normals is not None and getattr(normals, "size", 0):
-        return normals
-    normals = np.zeros_like(points)
-    if faces:
-        for face in faces:
-            if not face or len(face) < 3:
-                continue
-            try:
-                a = points[face[0]]
-                b = points[face[1]]
-                c = points[face[2]]
-            except Exception:
-                continue
-            n = np.cross(b - a, c - a)
-            length = float(np.linalg.norm(n))
-            if length > 1e-6:
-                n = n / length
-            for idx in face:
-                try:
-                    normals[idx] = n
-                except Exception:
-                    continue
-        return normals
-    for i in range(0, points.shape[0], 3):
-        tri = points[i:i + 3]
-        if tri.shape[0] != 3:
-            continue
-        a, b, c = tri
+        try:
+            cand = np.asarray(normals, dtype="f4").reshape(-1, 3)
+            if cand.shape[0] == pts.shape[0]:
+                normals_arr = cand.copy()
+        except Exception:
+            normals_arr = None
+
+    def _compute_face_normal(face_idx: List[int]):
+        if not face_idx or len(face_idx) < 3:
+            return None
+        try:
+            a = pts[face_idx[0]]
+            b = pts[face_idx[1]]
+            c = pts[face_idx[2]]
+        except Exception:
+            return None
         n = np.cross(b - a, c - a)
-        length = float(np.linalg.norm(n))
-        if length > 1e-6:
-            n = n / length
-        normals[i:i + 3] = n
-    return normals
+        ln = float(np.linalg.norm(n))
+        if ln <= 1e-8:
+            return None
+        return (n / ln).astype("f4")
+
+    def _rebuild_from_faces():
+        rebuilt = np.zeros_like(pts, dtype="f4")
+        if faces:
+            accum = np.zeros_like(pts, dtype="f4")
+            counts = np.zeros((pts.shape[0],), dtype="i4")
+            for face in faces:
+                if not face or len(face) < 3:
+                    continue
+                n = _compute_face_normal(face)
+                if n is None:
+                    continue
+                for idx in face:
+                    try:
+                        vi = int(idx)
+                    except Exception:
+                        continue
+                    if vi < 0 or vi >= pts.shape[0]:
+                        continue
+                    accum[vi] += n
+                    counts[vi] += 1
+            valid = counts > 0
+            if valid.any():
+                rebuilt[valid] = accum[valid]
+                lens = np.linalg.norm(rebuilt[valid], axis=1)
+                lens[lens < 1e-8] = 1.0
+                rebuilt[valid] = rebuilt[valid] / lens.reshape(-1, 1)
+            missing = ~valid
+            if missing.any():
+                rebuilt[missing] = np.array([0.0, 0.0, 1.0], dtype="f4")
+            return rebuilt
+
+        for i in range(0, pts.shape[0], 3):
+            tri = pts[i:i + 3]
+            if tri.shape[0] != 3:
+                continue
+            a, b, c = tri
+            n = np.cross(b - a, c - a)
+            ln = float(np.linalg.norm(n))
+            if ln > 1e-8:
+                n = n / ln
+            rebuilt[i:i + 3] = n
+        lens = np.linalg.norm(rebuilt, axis=1)
+        zero = lens <= 1e-8
+        if zero.any():
+            rebuilt[zero] = np.array([0.0, 0.0, 1.0], dtype="f4")
+        return rebuilt
+
+    if normals_arr is None:
+        return _rebuild_from_faces().astype("f4")
+
+    finite = np.isfinite(normals_arr).all(axis=1)
+    lengths = np.linalg.norm(normals_arr, axis=1)
+    valid = finite & (lengths > 1e-6)
+    if not valid.any():
+        return _rebuild_from_faces().astype("f4")
+
+    normals_arr[valid] = normals_arr[valid] / lengths[valid].reshape(-1, 1)
+    missing = ~valid
+    if missing.any():
+        if faces:
+            for face in faces:
+                if not face or len(face) < 3:
+                    continue
+                n = _compute_face_normal(face)
+                if n is None:
+                    continue
+                for idx in face:
+                    try:
+                        vi = int(idx)
+                    except Exception:
+                        continue
+                    if vi < 0 or vi >= normals_arr.shape[0]:
+                        continue
+                    if missing[vi]:
+                        normals_arr[vi] = n
+            lengths = np.linalg.norm(normals_arr, axis=1)
+            missing = ~(np.isfinite(normals_arr).all(axis=1) & (lengths > 1e-6))
+
+        if missing.any():
+            normals_arr[missing] = np.array([0.0, 0.0, 1.0], dtype="f4")
+            lengths = np.linalg.norm(normals_arr, axis=1)
+        good = lengths > 1e-8
+        normals_arr[good] = normals_arr[good] / lengths[good].reshape(-1, 1)
+    return normals_arr.astype("f4")
 
 
 def _ensure_uvs(points, uvs):
@@ -1189,6 +1268,7 @@ def _split_mesh(
     pts_out = np.array(kept_pts, dtype="f4").reshape(-1, 3)
     norms_out = np.array(kept_norms, dtype="f4").reshape(-1, 3)
     uvs_out = np.array(kept_uvs, dtype="f4").reshape(-1, 2)
+    norms_out = _ensure_normals(pts_out, norms_out, faces=kept_faces)
     input_tri_equiv = 0
     kept_tri_equiv = 0
     try:
@@ -1220,6 +1300,7 @@ def _split_mesh(
 def _write_obj(path: Path, points, normals, uvs, faces: Optional[List[List[int]]] = None) -> Optional[str]:
     if points is None or not getattr(points, "size", 0):
         return "No output mesh."
+    normals = _ensure_normals(points, normals, faces=faces)
     lines = ["# EchoGraph Volume Split"]
     for x, y, z in points:
         lines.append(f"v {float(x):.6f} {float(y):.6f} {float(z):.6f}")

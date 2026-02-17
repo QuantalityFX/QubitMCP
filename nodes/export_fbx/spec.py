@@ -300,6 +300,309 @@ def _parse_vec3(value, default):
     return default
 
 
+def _is_identity_xform(xform, eps: float = 1e-6) -> bool:
+    if not isinstance(xform, dict):
+        return True
+    pos = _parse_vec3(xform.get("pos"), (0.0, 0.0, 0.0))
+    rot = _parse_vec3(xform.get("rot"), (0.0, 0.0, 0.0))
+    scl = _parse_vec3(xform.get("scl"), (1.0, 1.0, 1.0))
+    try:
+        return (
+            abs(float(pos[0])) <= eps
+            and abs(float(pos[1])) <= eps
+            and abs(float(pos[2])) <= eps
+            and abs(float(rot[0])) <= eps
+            and abs(float(rot[1])) <= eps
+            and abs(float(rot[2])) <= eps
+            and abs(float(scl[0]) - 1.0) <= eps
+            and abs(float(scl[1]) - 1.0) <= eps
+            and abs(float(scl[2]) - 1.0) <= eps
+        )
+    except Exception:
+        return False
+
+
+def _can_passthrough_fbx_asset(row) -> bool:
+    if not isinstance(row, dict):
+        return False
+    path = row.get("path")
+    if not isinstance(path, Path):
+        return False
+    if path.suffix.lower() != ".fbx":
+        return False
+    # If texture was overridden upstream, keep normal conversion path.
+    if isinstance(row.get("texture_path"), Path):
+        return False
+    if bool(row.get("xform_offset")):
+        return False
+    return _is_identity_xform(row.get("xform"))
+
+
+def _load_mesh_polygon_data_for_export(path: Path):
+    try:
+        from nodes.volume_selector import spec as volume_spec
+    except Exception:
+        return None, None, None, None
+    try:
+        loader = getattr(volume_spec, "_load_mesh_polygon_data", None)
+        if callable(loader):
+            return loader(path)
+    except Exception:
+        return None, None, None, None
+    return None, None, None, None
+
+
+def _apply_scene_xform_arrays(points, normals, xform, xform_offset: bool = False, xform_space: str = "local"):
+    try:
+        import numpy as np
+    except Exception:
+        return points, normals
+    pts = np.asarray(points, dtype="f8").reshape(-1, 3)
+    nrm = np.asarray(normals, dtype="f8").reshape(-1, 3)
+    if pts.size == 0:
+        return pts.astype("f4"), nrm.astype("f4")
+    if nrm.shape[0] != pts.shape[0]:
+        nrm = np.zeros_like(pts, dtype="f8")
+
+    if not isinstance(xform, dict) and not bool(xform_offset):
+        return pts.astype("f4"), nrm.astype("f4")
+
+    class _BoundsMesh:
+        def __init__(self, bmin, bmax):
+            self.bounds = (bmin, bmax)
+
+    try:
+        bmin = pts.min(axis=0)
+        bmax = pts.max(axis=0)
+    except Exception:
+        bmin = np.zeros(3, dtype="f8")
+        bmax = np.zeros(3, dtype="f8")
+
+    mat = _scene_xform_matrix(
+        _BoundsMesh(np.asarray(bmin, dtype="f8"), np.asarray(bmax, dtype="f8")),
+        xform if isinstance(xform, dict) else {},
+        xform_offset=bool(xform_offset),
+        xform_space=xform_space,
+    )
+    try:
+        mat = np.asarray(mat, dtype="f8").reshape(4, 4)
+    except Exception:
+        return pts.astype("f4"), nrm.astype("f4")
+
+    ones = np.ones((pts.shape[0], 1), dtype="f8")
+    pts_h = np.concatenate([pts, ones], axis=1)
+    pts_t = (mat @ pts_h.T).T[:, :3]
+
+    try:
+        linear = mat[:3, :3]
+        nmat = np.linalg.inv(linear).T
+        nrm_t = (nrm @ nmat.T)
+        lens = np.linalg.norm(nrm_t, axis=1)
+        lens[lens < 1e-8] = 1.0
+        nrm_t = nrm_t / lens.reshape(-1, 1)
+    except Exception:
+        nrm_t = nrm
+
+    return pts_t.astype("f4"), nrm_t.astype("f4")
+
+
+def _ensure_export_normals(points, normals, faces):
+    try:
+        import numpy as np
+    except Exception:
+        return normals
+
+    pts = np.asarray(points, dtype="f4").reshape(-1, 3)
+    if pts.size == 0:
+        return np.zeros((0, 3), dtype="f4")
+
+    nrm = None
+    if normals is not None and getattr(normals, "size", 0):
+        try:
+            cand = np.asarray(normals, dtype="f4").reshape(-1, 3)
+            if cand.shape[0] == pts.shape[0]:
+                nrm = cand.copy()
+        except Exception:
+            nrm = None
+
+    if nrm is None:
+        nrm = np.zeros_like(pts, dtype="f4")
+
+    # Mark invalid normals and rebuild them from face normals.
+    finite = np.isfinite(nrm).all(axis=1)
+    lengths = np.linalg.norm(nrm, axis=1)
+    valid = finite & (lengths > 1e-6)
+    if valid.any():
+        nrm[valid] = nrm[valid] / lengths[valid].reshape(-1, 1)
+
+    missing = ~valid
+    if missing.any():
+        accum = np.zeros_like(pts, dtype="f4")
+        counts = np.zeros((pts.shape[0],), dtype="i4")
+        for face in faces or []:
+            try:
+                idxs = [int(i) for i in face]
+            except Exception:
+                continue
+            idxs = [i for i in idxs if 0 <= i < pts.shape[0]]
+            if len(idxs) < 3:
+                continue
+            a, b, c = pts[idxs[0]], pts[idxs[1]], pts[idxs[2]]
+            fn = np.cross(b - a, c - a)
+            ln = float(np.linalg.norm(fn))
+            if ln <= 1e-8:
+                continue
+            fn = (fn / ln).astype("f4")
+            for vi in idxs:
+                accum[vi] += fn
+                counts[vi] += 1
+
+        use = counts > 0
+        if use.any():
+            nrm[use] = accum[use]
+            lens = np.linalg.norm(nrm[use], axis=1)
+            lens[lens < 1e-8] = 1.0
+            nrm[use] = nrm[use] / lens.reshape(-1, 1)
+
+        still = np.linalg.norm(nrm, axis=1) <= 1e-6
+        if still.any():
+            nrm[still] = np.array([0.0, 0.0, 1.0], dtype="f4")
+
+    return nrm.astype("f4")
+
+
+def _write_topology_obj_scene(asset_rows, output_obj: Path, xform_space: str = "local"):
+    try:
+        import numpy as np
+    except Exception:
+        return 0, list(asset_rows or []), "numpy unavailable"
+
+    lines = ["# EchoGraph topology-preserving FBX staging OBJ"]
+    vert_offset = 1
+    exported = 0
+    skipped = []
+
+    for row in list(asset_rows or []):
+        path = row.get("path")
+        if not isinstance(path, Path):
+            skipped.append(row)
+            continue
+
+        pts, norms, uvs, faces = _load_mesh_polygon_data_for_export(path)
+        if pts is None or faces is None or not faces:
+            skipped.append(row)
+            continue
+        try:
+            pts = np.asarray(pts, dtype="f4").reshape(-1, 3)
+        except Exception:
+            skipped.append(row)
+            continue
+        if pts.size == 0:
+            skipped.append(row)
+            continue
+
+        if norms is None or not getattr(norms, "size", 0):
+            norms = np.zeros_like(pts, dtype="f4")
+        else:
+            try:
+                norms = np.asarray(norms, dtype="f4").reshape(-1, 3)
+            except Exception:
+                norms = np.zeros_like(pts, dtype="f4")
+        if norms.shape[0] != pts.shape[0]:
+            norms = np.zeros_like(pts, dtype="f4")
+        norms = _ensure_export_normals(pts, norms, faces)
+
+        if uvs is None or not getattr(uvs, "size", 0):
+            uvs = np.zeros((pts.shape[0], 2), dtype="f4")
+        else:
+            try:
+                uvs = np.asarray(uvs, dtype="f4").reshape(-1, 2)
+            except Exception:
+                uvs = np.zeros((pts.shape[0], 2), dtype="f4")
+        if uvs.shape[0] != pts.shape[0]:
+            uvs = np.zeros((pts.shape[0], 2), dtype="f4")
+
+        pts, norms = _apply_scene_xform_arrays(
+            pts,
+            norms,
+            row.get("xform"),
+            xform_offset=bool(row.get("xform_offset")),
+            xform_space=xform_space,
+        )
+        norms = _ensure_export_normals(pts, norms, faces)
+
+        buckets = {}
+        pcount = int(pts.shape[0])
+        for face in faces:
+            try:
+                idxs = [int(i) for i in face]
+            except Exception:
+                continue
+            idxs = [i for i in idxs if 0 <= i < pcount]
+            if len(idxs) < 3:
+                continue
+            n = len(idxs)
+            bucket = buckets.get(n)
+            if bucket is None:
+                buckets[n] = [idxs]
+            else:
+                bucket.append(idxs)
+
+        if not buckets:
+            skipped.append(row)
+            continue
+
+        base_name = _sanitize_name(row.get("name") or path.stem, "object")
+
+        for x, y, z in pts:
+            lines.append(f"v {float(x):.8f} {float(y):.8f} {float(z):.8f}")
+        for u, v in uvs:
+            lines.append(f"vt {float(u):.8f} {float(v):.8f}")
+        for nx, ny, nz in norms:
+            lines.append(f"vn {float(nx):.8f} {float(ny):.8f} {float(nz):.8f}")
+
+        keys = sorted(buckets.keys())
+        multi = len(keys) > 1
+        for n in keys:
+            obj_name = f"{base_name}_{n}gon" if multi else base_name
+            lines.append(f"o {obj_name}")
+            for idxs in buckets[n]:
+                parts = []
+                for idx in idxs:
+                    gi = vert_offset + int(idx)
+                    parts.append(f"{gi}/{gi}/{gi}")
+                lines.append("f " + " ".join(parts))
+
+        vert_offset += pcount
+        exported += 1
+
+    if exported <= 0:
+        return 0, skipped, "No mesh data could be prepared for export."
+
+    output_obj.parent.mkdir(parents=True, exist_ok=True)
+    output_obj.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return exported, skipped, ""
+
+
+def _export_topology_preserving_fbx(asset_rows, output_path: Path, xform_space: str = "local"):
+    from echograph.ui.gl_loaders import ensure_assimp_dll
+
+    ensure_assimp_dll()
+    import pyassimp
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="echograph_export_fbx_poly_"))
+    obj_path = tmp_dir / "scene.obj"
+    try:
+        exported, skipped, err = _write_topology_obj_scene(asset_rows, obj_path, xform_space=xform_space)
+        if err:
+            raise RuntimeError(err)
+        with pyassimp.load(str(obj_path), file_type="obj", processing=0) as ai_scene:
+            pyassimp.export(ai_scene, str(output_path), file_type="fbx", processing=0)
+        return exported, skipped
+    finally:
+        shutil.rmtree(str(tmp_dir), ignore_errors=True)
+
+
 def _load_mesh_as_trimesh(path: Path):
     try:
         import trimesh
@@ -802,21 +1105,40 @@ class ExportFBXWidget(QtWidgets.QWidget):
 
         self._set_busy(True)
         try:
-            scene_obj, exported_count, skipped = _build_export_scene(
+            # Preserve topology exactly when exporting a single untouched FBX.
+            if len(assets) == 1 and _can_passthrough_fbx_asset(assets[0]):
+                src_path = assets[0].get("path")
+                if not isinstance(src_path, Path):
+                    raise RuntimeError("Invalid source asset path.")
+                src_resolved = src_path.resolve()
+                out_resolved = out_path.resolve()
+                if src_resolved != out_resolved:
+                    shutil.copy2(str(src_resolved), str(out_resolved))
+                if not out_path.exists():
+                    raise RuntimeError("FBX file was not created.")
+                _set_param_value(self._node_item, "output", str(out_path), notify_scene=True)
+                _set_param_value(self._node_item, "include_hidden", "1" if include_hidden else "0", notify_scene=True)
+                self._show_popup(
+                    QtWidgets.QMessageBox.Information,
+                    f"Exported 1 object to:\n{out_path}\n\nTopology preserved (FBX passthrough).",
+                )
+                return
+
+            exported_count, skipped = _export_topology_preserving_fbx(
                 assets,
+                out_path,
                 xform_space=_scene_xform_space(self._node_item),
             )
-            if scene_obj is None or exported_count <= 0:
+            if exported_count <= 0:
                 self._show_popup(QtWidgets.QMessageBox.Warning, "No mesh data could be prepared for export.")
                 return
 
-            _export_trimesh_scene_to_fbx(scene_obj, out_path)
             if not out_path.exists():
                 raise RuntimeError("FBX file was not created.")
 
             _set_param_value(self._node_item, "output", str(out_path), notify_scene=True)
             _set_param_value(self._node_item, "include_hidden", "1" if include_hidden else "0", notify_scene=True)
-            msg = f"Exported {exported_count} object(s) to:\n{out_path}"
+            msg = f"Exported {exported_count} object(s) to:\n{out_path}\n\nTopology preserved (no forced triangulation)."
             if skipped:
                 msg += f"\n\nSkipped {len(skipped)} asset(s) that could not be meshed."
             self._show_popup(QtWidgets.QMessageBox.Information, msg)
