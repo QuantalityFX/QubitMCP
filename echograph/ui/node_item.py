@@ -1310,7 +1310,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 inner_w = max(40, int(node_w) - 12)
                 body_h += inner_w + self._PADDING
         elif kind in ("export_fbx", "exportfbx", "export fbx"):
-            body_h = 96
+            # Keep extra bottom frame space for Export FBX node controls.
+            body_h = 105
             node_w = self._BASE_W
         elif kind in ("image_collection", "imagecollection"):
             body_h = self._IMG_CTRL_H + self._IMG_CANVAS_H

@@ -900,7 +900,7 @@ class ExportFBXWidget(QtWidgets.QWidget):
         self._status = QtWidgets.QLabel("")
         self._status.setStyleSheet("color:#94a3b8;font-size:11px;")
         self._status.setMinimumWidth(0)
-        self._status.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        self._status.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Fixed)
         layout.addWidget(self._status, 0)
 
         row = QtWidgets.QHBoxLayout()
@@ -908,7 +908,9 @@ class ExportFBXWidget(QtWidgets.QWidget):
         row.setSpacing(4)
         self._output_edit = QtWidgets.QLineEdit()
         self._output_edit.setPlaceholderText("Output FBX path")
+        self._output_edit.setMinimumWidth(0)
         self._output_edit.setMinimumHeight(24)
+        self._output_edit.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Fixed)
         self._output_edit.setStyleSheet(
             "QLineEdit{background:#0f1216;color:#e6edf3;border:1px solid #3c4450;border-radius:4px;padding:2px 6px;}"
         )
@@ -1156,8 +1158,19 @@ def render_node_body(node_item, y_cursor: int) -> int:
     proxy.setZValue(node_item.zValue() + 0.1)
     proxy.setPos(0, y_cursor)
 
+    w = int(getattr(node_item, "width", 220))
+    try:
+        body.setMinimumWidth(w)
+        body.setMaximumWidth(w)
+    except Exception:
+        pass
+    try:
+        proxy.setMinimumWidth(w)
+        proxy.setMaximumWidth(w)
+    except Exception:
+        pass
     h = body.sizeHint().height()
-    proxy.resize(node_item.width, h)
+    proxy.resize(w, h)
     try:
         node_item._plugin_proxies.append(proxy)
     except Exception:
