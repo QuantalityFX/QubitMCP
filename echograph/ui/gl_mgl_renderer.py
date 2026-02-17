@@ -1427,6 +1427,8 @@ class MGLRendererMixin:
         if not submeshes and vao is None:
             return
         edge_wire = bool(payload.get("edge_wire"))
+        path_key = str(payload.get("path", "") or "").strip().lower()
+        is_fbx_payload = path_key.endswith(".fbx")
         model_np = None
         try:
             payload = item.payload or {}
@@ -1484,7 +1486,13 @@ class MGLRendererMixin:
                 proc_state = None
         self._mgl_apply_procedural_uniforms(proc_state)
         manual_texture = self._mgl_texture if self._mgl_texture_override else None
-        wire_overlay = bool(self._mgl_wireframe and not edge_wire and (submeshes or vao is not None))
+        # For FBX, avoid fallback triangle-wire overlay; only show explicit edge wire items.
+        wire_overlay = bool(
+            self._mgl_wireframe
+            and not edge_wire
+            and (not is_fbx_payload)
+            and (submeshes or vao is not None)
+        )
         if wire_overlay:
             try:
                 self._mgl_ctx.polygon_offset = (1.0, 1.0)
@@ -4988,10 +4996,18 @@ class MGLRendererMixin:
                 entry.get("tbo"),
                 entry.get("ibo"),
             ]
+            path_key = str(getattr(self, "_mgl_mesh_path", "") or "")
+            is_fbx = path_key.strip().lower().endswith(".fbx")
             item = MGLSceneItem(
                 name="mesh",
                 draw_fn=MGLRendererMixin._mgl_draw_scene_mesh,
-                payload={"vao": entry.get("vao"), "texture": None, "color": self._mgl_mesh_color},
+                payload={
+                    "vao": entry.get("vao"),
+                    "texture": None,
+                    "color": self._mgl_mesh_color,
+                    "path": path_key,
+                    "edge_wire": bool(is_fbx),
+                },
                 resources=[res for res in resources if res is not None],
                 order=10,
                 tag="model",
@@ -5034,10 +5050,16 @@ class MGLRendererMixin:
                         sub.get("texture"),
                     ]
                 )
+            path_key = str(getattr(self, "_mgl_mesh_path", "") or "")
+            is_fbx = path_key.strip().lower().endswith(".fbx")
             item = MGLSceneItem(
                 name="mesh",
                 draw_fn=MGLRendererMixin._mgl_draw_scene_mesh,
-                payload={"submeshes": entries},
+                payload={
+                    "submeshes": entries,
+                    "path": path_key,
+                    "edge_wire": bool(is_fbx),
+                },
                 resources=[res for res in resources if res is not None],
                 order=10,
                 tag="model",
@@ -5242,7 +5264,12 @@ class MGLRendererMixin:
                 item = MGLSceneItem(
                     name=path.name,
                     draw_fn=MGLRendererMixin._mgl_draw_scene_mesh,
-                    payload={"vao": entry.get("vao"), "texture": None, "color": self._mgl_mesh_color},
+                    payload={
+                        "vao": entry.get("vao"),
+                        "texture": None,
+                        "color": self._mgl_mesh_color,
+                        "path": str(path),
+                    },
                     resources=[res for res in resources if res is not None],
                     order=10,
                     tag="model",
@@ -5277,7 +5304,7 @@ class MGLRendererMixin:
                     item = MGLSceneItem(
                         name=path.name,
                         draw_fn=MGLRendererMixin._mgl_draw_scene_mesh,
-                        payload={"submeshes": entries},
+                        payload={"submeshes": entries, "path": str(path)},
                         resources=[res for res in resources if res is not None],
                         order=10,
                         tag="model",
@@ -5314,7 +5341,12 @@ class MGLRendererMixin:
                     item = MGLSceneItem(
                         name=path.name,
                         draw_fn=MGLRendererMixin._mgl_draw_scene_mesh,
-                        payload={"vao": entry.get("vao"), "texture": None, "color": self._mgl_mesh_color},
+                        payload={
+                            "vao": entry.get("vao"),
+                            "texture": None,
+                            "color": self._mgl_mesh_color,
+                            "path": str(path),
+                        },
                         resources=[res for res in resources if res is not None],
                         order=10,
                         tag="model",
