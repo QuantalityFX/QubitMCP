@@ -7,7 +7,7 @@ import math
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 try:
     from PySide6 import QtWidgets, QtCore
@@ -591,13 +591,301 @@ def _mtime_ns_from_stat(st) -> int:
             return 0
 
 
+def _resolve_obj_index(value: Optional[int], total: int) -> Optional[int]:
+    if value is None:
+        return None
+    if value < 0:
+        value = total + value + 1
+    if value <= 0 or value > total:
+        return None
+    return int(value - 1)
+
+
+def _load_obj_polygon_mesh(path: Path):
+    try:
+        import numpy as np
+    except Exception:
+        return None, None, None, None
+    positions: List[Tuple[float, float, float]] = []
+    texcoords: List[Tuple[float, float]] = []
+    normals_src: List[Tuple[float, float, float]] = []
+    out_pos: List[List[float]] = []
+    out_uv: List[List[float]] = []
+    out_norm: List[List[float]] = []
+    faces_out: List[List[int]] = []
+    try:
+        raw = path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        try:
+            raw = path.read_text(errors="ignore")
+        except Exception:
+            return None, None, None, None
+
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if not parts:
+            continue
+        head = parts[0].lower()
+        if head == "v" and len(parts) >= 4:
+            try:
+                positions.append((float(parts[1]), float(parts[2]), float(parts[3])))
+            except Exception:
+                continue
+        elif head == "vt" and len(parts) >= 3:
+            try:
+                texcoords.append((float(parts[1]), float(parts[2])))
+            except Exception:
+                continue
+        elif head == "vn" and len(parts) >= 4:
+            try:
+                normals_src.append((float(parts[1]), float(parts[2]), float(parts[3])))
+            except Exception:
+                continue
+        elif head == "f" and len(parts) >= 4:
+            face_idx: List[int] = []
+            for tok in parts[1:]:
+                if not tok:
+                    continue
+                vals = tok.split("/")
+                v_idx_raw = None
+                vt_idx_raw = None
+                vn_idx_raw = None
+                try:
+                    if len(vals) >= 1 and vals[0]:
+                        v_idx_raw = int(vals[0])
+                except Exception:
+                    v_idx_raw = None
+                try:
+                    if len(vals) >= 2 and vals[1]:
+                        vt_idx_raw = int(vals[1])
+                except Exception:
+                    vt_idx_raw = None
+                try:
+                    if len(vals) >= 3 and vals[2]:
+                        vn_idx_raw = int(vals[2])
+                except Exception:
+                    vn_idx_raw = None
+
+                v_idx = _resolve_obj_index(v_idx_raw, len(positions))
+                if v_idx is None:
+                    continue
+                vx, vy, vz = positions[v_idx]
+                vt_idx = _resolve_obj_index(vt_idx_raw, len(texcoords))
+                if vt_idx is not None:
+                    u, v = texcoords[vt_idx]
+                else:
+                    u, v = 0.0, 0.0
+                vn_idx = _resolve_obj_index(vn_idx_raw, len(normals_src))
+                if vn_idx is not None:
+                    nx, ny, nz = normals_src[vn_idx]
+                else:
+                    nx, ny, nz = 0.0, 0.0, 0.0
+                out_pos.append([float(vx), float(vy), float(vz)])
+                out_uv.append([float(u), float(v)])
+                out_norm.append([float(nx), float(ny), float(nz)])
+                face_idx.append(len(out_pos) - 1)
+            if len(face_idx) >= 3:
+                faces_out.append(face_idx)
+
+    if not out_pos or not faces_out:
+        return None, None, None, None
+    pts = np.asarray(out_pos, dtype="f4").reshape(-1, 3)
+    norms = np.asarray(out_norm, dtype="f4").reshape(-1, 3)
+    uvs = np.asarray(out_uv, dtype="f4").reshape(-1, 2)
+    return pts, norms, uvs, faces_out
+
+
+def _load_fbx_ascii_polygon_mesh(path: Path):
+    try:
+        import numpy as np
+        from echograph.ui import gl_loaders
+    except Exception:
+        return None, None, None, None
+    try:
+        raw = path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return None, None, None, None
+    geo_pattern = re.compile(r'Geometry:\s*[^\n]*"Mesh"[^\n]*\{', re.IGNORECASE)
+    out_pos: List[List[float]] = []
+    out_uv: List[List[float]] = []
+    out_norm: List[List[float]] = []
+    faces_out: List[List[int]] = []
+
+    for match in geo_pattern.finditer(raw):
+        brace_start = raw.find("{", match.end() - 1)
+        if brace_start < 0:
+            continue
+        brace_end = gl_loaders._find_matching_brace(raw, brace_start)  # type: ignore[attr-defined]
+        if brace_end < 0:
+            continue
+        block = raw[brace_start + 1 : brace_end]
+        verts = gl_loaders._fbx_extract_array(block, "Vertices", as_int=False)  # type: ignore[attr-defined]
+        poly_idx = gl_loaders._fbx_extract_array(block, "PolygonVertexIndex", as_int=True)  # type: ignore[attr-defined]
+        if not verts or not poly_idx:
+            continue
+        if len(verts) % 3 != 0:
+            verts = verts[: (len(verts) // 3) * 3]
+        vertices = np.asarray(verts, dtype="f4").reshape(-1, 3)
+        if vertices.size == 0:
+            continue
+        max_idx = int(vertices.shape[0] - 1)
+        polygon: List[int] = []
+        for idx in poly_idx:
+            end_poly = False
+            if idx < 0:
+                idx = -idx - 1
+                end_poly = True
+            if idx < 0 or idx > max_idx:
+                polygon = []
+                if end_poly:
+                    continue
+            else:
+                polygon.append(int(idx))
+            if end_poly:
+                if len(polygon) >= 3:
+                    face_idx: List[int] = []
+                    for vid in polygon:
+                        vx, vy, vz = vertices[vid]
+                        out_pos.append([float(vx), float(vy), float(vz)])
+                        out_uv.append([0.0, 0.0])
+                        out_norm.append([0.0, 0.0, 0.0])
+                        face_idx.append(len(out_pos) - 1)
+                    if len(face_idx) >= 3:
+                        faces_out.append(face_idx)
+                polygon = []
+
+    if not out_pos or not faces_out:
+        return None, None, None, None
+    pts = np.asarray(out_pos, dtype="f4").reshape(-1, 3)
+    norms = np.asarray(out_norm, dtype="f4").reshape(-1, 3)
+    uvs = np.asarray(out_uv, dtype="f4").reshape(-1, 2)
+    return pts, norms, uvs, faces_out
+
+
+def _load_fbx_polygon_mesh(path: Path):
+    try:
+        import numpy as np
+        from echograph.ui import gl_loaders
+    except Exception:
+        return None, None, None, None
+
+    # FBX ASCII can preserve polygon lists directly.
+    try:
+        if gl_loaders._is_ascii_fbx(path):  # type: ignore[attr-defined]
+            pts, norms, uvs, faces = _load_fbx_ascii_polygon_mesh(path)
+            if pts is not None and faces:
+                return pts, norms, uvs, faces
+    except Exception:
+        pass
+
+    # FBX binary via pyassimp without triangulate flag.
+    try:
+        gl_loaders.ensure_assimp_dll()
+        import pyassimp
+        from pyassimp import postprocess as ai_post
+    except Exception:
+        return None, None, None, None
+
+    try:
+        processing = ai_post.aiProcess_PreTransformVertices | ai_post.aiProcess_JoinIdenticalVertices
+        out_pos: List[List[float]] = []
+        out_uv: List[List[float]] = []
+        out_norm: List[List[float]] = []
+        faces_out: List[List[int]] = []
+        with pyassimp.load(str(path), file_type="fbx", processing=processing) as scene:
+            for mesh in scene.meshes or []:
+                vertices = np.asarray(getattr(mesh, "vertices", []), dtype="f4")
+                if vertices.size == 0:
+                    continue
+                normals_raw = None
+                try:
+                    nraw = getattr(mesh, "normals", None)
+                    if nraw is not None and len(nraw) == len(vertices):
+                        normals_raw = np.asarray(nraw, dtype="f4").reshape(-1, 3)
+                except Exception:
+                    normals_raw = None
+                uv_raw = None
+                try:
+                    tcoords = getattr(mesh, "texturecoords", None)
+                    if tcoords is not None and len(tcoords) > 0:
+                        uv0 = np.asarray(tcoords[0], dtype="f4")
+                        if uv0.shape[0] == vertices.shape[0] and uv0.shape[1] >= 2:
+                            uv_raw = uv0[:, :2]
+                except Exception:
+                    uv_raw = None
+                faces = getattr(mesh, "faces", None)
+                if faces is None:
+                    continue
+                for face in faces:
+                    try:
+                        idxs = [int(i) for i in face]
+                    except Exception:
+                        continue
+                    if len(idxs) < 3:
+                        continue
+                    face_idx: List[int] = []
+                    for idx in idxs:
+                        if idx < 0 or idx >= len(vertices):
+                            continue
+                        vx, vy, vz = vertices[idx]
+                        if normals_raw is not None:
+                            nx, ny, nz = normals_raw[idx]
+                        else:
+                            nx, ny, nz = 0.0, 0.0, 0.0
+                        if uv_raw is not None:
+                            u, v = uv_raw[idx]
+                        else:
+                            u, v = 0.0, 0.0
+                        out_pos.append([float(vx), float(vy), float(vz)])
+                        out_uv.append([float(u), float(v)])
+                        out_norm.append([float(nx), float(ny), float(nz)])
+                        face_idx.append(len(out_pos) - 1)
+                    if len(face_idx) >= 3:
+                        faces_out.append(face_idx)
+    except Exception:
+        return None, None, None, None
+
+    if not out_pos or not faces_out:
+        return None, None, None, None
+    pts = np.asarray(out_pos, dtype="f4").reshape(-1, 3)
+    norms = np.asarray(out_norm, dtype="f4").reshape(-1, 3)
+    uvs = np.asarray(out_uv, dtype="f4").reshape(-1, 2)
+    return pts, norms, uvs, faces_out
+
+
+def _load_mesh_polygon_data(path: Path):
+    ext = path.suffix.lower()
+    if ext == ".obj":
+        return _load_obj_polygon_mesh(path)
+    if ext == ".fbx":
+        return _load_fbx_polygon_mesh(path)
+
+    pts, norms, uvs = _load_mesh_arrays(path)
+    if pts is None or not getattr(pts, "size", 0):
+        return None, None, None, None
+    try:
+        face_count = int(pts.shape[0] // 3)
+    except Exception:
+        face_count = 0
+    faces: List[List[int]] = []
+    for i in range(face_count):
+        a = i * 3
+        faces.append([a, a + 1, a + 2])
+    if not faces:
+        return None, None, None, None
+    return pts, norms, uvs, faces
+
+
 def _materialize_transformed_input(
     mesh_path: Path,
     out_path: Path,
     mesh_xform: dict,
     debug: bool = False,
 ) -> Optional[str]:
-    pts, norms, uvs = _load_mesh_arrays(mesh_path)
+    pts, norms, uvs, faces = _load_mesh_polygon_data(mesh_path)
     if pts is None or not getattr(pts, "size", 0):
         _debug_log(
             "materialize_transformed_input",
@@ -607,16 +895,16 @@ def _materialize_transformed_input(
             error="Mesh load failed.",
         )
         return "Mesh load failed."
-    if pts.shape[0] % 3 != 0:
+    if not faces:
         _debug_log(
             "materialize_transformed_input",
             enabled=debug,
             mesh_path=str(mesh_path),
             out_path=str(out_path),
-            error="Mesh is not triangulated.",
+            error="Mesh has no polygon faces.",
         )
-        return "Mesh is not triangulated."
-    norms = _ensure_normals(pts, norms)
+        return "Mesh has no polygon faces."
+    norms = _ensure_normals(pts, norms, faces=faces)
     uvs = _ensure_uvs(pts, uvs)
     pos = mesh_xform.get("pos", (0.0, 0.0, 0.0))
     rot = mesh_xform.get("rot", (0.0, 0.0, 0.0))
@@ -624,7 +912,12 @@ def _materialize_transformed_input(
     in_bounds = _points_bounds(pts)
     pts_t, norms_t = _apply_transform(pts, norms, pos, rot, scl)
     out_bounds = _points_bounds(pts_t)
-    err = _write_obj(out_path, pts_t, norms_t, uvs)
+    err = _write_obj(out_path, pts_t, norms_t, uvs, faces=faces)
+    tri_equiv = 0
+    try:
+        tri_equiv = int(sum(max(0, len(face) - 2) for face in (faces or [])))
+    except Exception:
+        tri_equiv = 0
     _debug_log(
         "materialize_transformed_input",
         enabled=debug,
@@ -636,7 +929,8 @@ def _materialize_transformed_input(
         input_bounds=in_bounds,
         output_bounds=out_bounds,
         point_count=int(pts.shape[0]),
-        tri_count=int(pts.shape[0] // 3),
+        face_count=int(len(faces or [])),
+        tri_equiv=int(tri_equiv),
         error=(err or ""),
     )
     return err
@@ -682,7 +976,7 @@ def _volume_bounds(path: Path) -> Optional[Tuple[Tuple[float, float, float], Tup
         import numpy as np
     except Exception:
         return None
-    pts, _, _ = _load_mesh_arrays(path)
+    pts, _, _, _ = _load_mesh_polygon_data(path)
     if pts is None or not getattr(pts, "size", 0):
         return None
     try:
@@ -707,7 +1001,7 @@ def _points_bounds(points):
         return None
 
 
-def _ensure_normals(points, normals):
+def _ensure_normals(points, normals, faces: Optional[List[List[int]]] = None):
     try:
         import numpy as np
     except Exception:
@@ -715,6 +1009,26 @@ def _ensure_normals(points, normals):
     if normals is not None and getattr(normals, "size", 0):
         return normals
     normals = np.zeros_like(points)
+    if faces:
+        for face in faces:
+            if not face or len(face) < 3:
+                continue
+            try:
+                a = points[face[0]]
+                b = points[face[1]]
+                c = points[face[2]]
+            except Exception:
+                continue
+            n = np.cross(b - a, c - a)
+            length = float(np.linalg.norm(n))
+            if length > 1e-6:
+                n = n / length
+            for idx in face:
+                try:
+                    normals[idx] = n
+                except Exception:
+                    continue
+        return normals
     for i in range(0, points.shape[0], 3):
         tri = points[i:i + 3]
         if tri.shape[0] != 3:
@@ -769,7 +1083,7 @@ def _split_mesh(
         )
         return None, None, None, "numpy unavailable"
 
-    pts, norms, uvs = _load_mesh_arrays(mesh_path)
+    pts, norms, uvs, faces = _load_mesh_polygon_data(mesh_path)
     if pts is None or not getattr(pts, "size", 0):
         _debug_log(
             "split_mesh",
@@ -779,17 +1093,17 @@ def _split_mesh(
             invert=bool(invert),
             error="Mesh load failed.",
         )
-        return None, None, None, "Mesh load failed."
-    if pts.shape[0] % 3 != 0:
+        return None, None, None, None, "Mesh load failed."
+    if not faces:
         _debug_log(
             "split_mesh",
             enabled=debug,
             mesh_path=str(mesh_path),
             volume_path=str(volume_path),
             invert=bool(invert),
-            error="Mesh is not triangulated.",
+            error="Mesh has no polygon faces.",
         )
-        return None, None, None, "Mesh is not triangulated."
+        return None, None, None, None, "Mesh has no polygon faces."
 
     bounds = _volume_bounds(volume_path)
     if bounds is None:
@@ -802,12 +1116,12 @@ def _split_mesh(
             mesh_bounds=_points_bounds(pts),
             error="Volume mesh missing or invalid.",
         )
-        return None, None, None, "Volume mesh missing or invalid."
+        return None, None, None, None, "Volume mesh missing or invalid."
     (minx, miny, minz), (maxx, maxy, maxz) = bounds
     bmin = np.array([minx, miny, minz], dtype="f4")
     bmax = np.array([maxx, maxy, maxz], dtype="f4")
 
-    norms = _ensure_normals(pts, norms)
+    norms = _ensure_normals(pts, norms, faces=faces)
     uvs = _ensure_uvs(pts, uvs)
     if mesh_xform:
         try:
@@ -818,27 +1132,43 @@ def _split_mesh(
         except Exception:
             pass
     input_bounds = _points_bounds(pts)
-    kept_pts = []
-    kept_norms = []
-    kept_uvs = []
+    kept_pts: List[List[float]] = []
+    kept_norms: List[List[float]] = []
+    kept_uvs: List[List[float]] = []
+    kept_faces: List[List[int]] = []
     eps = 1e-6
-    for i in range(0, pts.shape[0], 3):
-        tri = pts[i:i + 3]
-        if tri.shape[0] != 3:
+    for face in faces:
+        if not face or len(face) < 3:
             continue
         inside = True
-        for v in tri:
+        for vidx in face:
+            try:
+                v = pts[vidx]
+            except Exception:
+                inside = False
+                break
             if (v < (bmin - eps)).any() or (v > (bmax + eps)).any():
                 inside = False
                 break
         keep = inside if not invert else not inside
         if not keep:
             continue
-        kept_pts.extend(tri.tolist())
-        kept_norms.extend(norms[i:i + 3].tolist())
-        kept_uvs.extend(uvs[i:i + 3].tolist())
+        new_face: List[int] = []
+        for vidx in face:
+            try:
+                v = pts[vidx]
+                n = norms[vidx]
+                uv = uvs[vidx]
+            except Exception:
+                continue
+            kept_pts.append([float(v[0]), float(v[1]), float(v[2])])
+            kept_norms.append([float(n[0]), float(n[1]), float(n[2])])
+            kept_uvs.append([float(uv[0]), float(uv[1])])
+            new_face.append(len(kept_pts) - 1)
+        if len(new_face) >= 3:
+            kept_faces.append(new_face)
 
-    if not kept_pts:
+    if not kept_faces:
         _debug_log(
             "split_mesh",
             enabled=debug,
@@ -850,15 +1180,22 @@ def _split_mesh(
                 "min": [float(minx), float(miny), float(minz)],
                 "max": [float(maxx), float(maxy), float(maxz)],
             },
-            input_tri_count=int(pts.shape[0] // 3),
-            kept_tri_count=0,
+            input_face_count=int(len(faces)),
+            kept_face_count=0,
             error="No faces inside volume.",
         )
-        return None, None, None, "No faces inside volume."
+        return None, None, None, None, "No faces inside volume."
 
     pts_out = np.array(kept_pts, dtype="f4").reshape(-1, 3)
     norms_out = np.array(kept_norms, dtype="f4").reshape(-1, 3)
     uvs_out = np.array(kept_uvs, dtype="f4").reshape(-1, 2)
+    input_tri_equiv = 0
+    kept_tri_equiv = 0
+    try:
+        input_tri_equiv = int(sum(max(0, len(face) - 2) for face in faces))
+        kept_tri_equiv = int(sum(max(0, len(face) - 2) for face in kept_faces))
+    except Exception:
+        pass
     _debug_log(
         "split_mesh",
         enabled=debug,
@@ -871,14 +1208,16 @@ def _split_mesh(
             "min": [float(minx), float(miny), float(minz)],
             "max": [float(maxx), float(maxy), float(maxz)],
         },
-        input_tri_count=int(pts.shape[0] // 3),
-        kept_tri_count=int(pts_out.shape[0] // 3),
+        input_face_count=int(len(faces)),
+        kept_face_count=int(len(kept_faces)),
+        input_tri_equiv=int(input_tri_equiv),
+        kept_tri_equiv=int(kept_tri_equiv),
         error="",
     )
-    return pts_out, norms_out, uvs_out, None
+    return pts_out, norms_out, uvs_out, kept_faces, None
 
 
-def _write_obj(path: Path, points, normals, uvs) -> Optional[str]:
+def _write_obj(path: Path, points, normals, uvs, faces: Optional[List[List[int]]] = None) -> Optional[str]:
     if points is None or not getattr(points, "size", 0):
         return "No output mesh."
     lines = ["# EchoGraph Volume Split"]
@@ -888,12 +1227,22 @@ def _write_obj(path: Path, points, normals, uvs) -> Optional[str]:
         lines.append(f"vt {float(u):.6f} {float(v):.6f}")
     for nx, ny, nz in normals:
         lines.append(f"vn {float(nx):.6f} {float(ny):.6f} {float(nz):.6f}")
-    tri_count = int(points.shape[0] // 3)
-    for i in range(tri_count):
-        a = i * 3 + 1
-        b = a + 1
-        c = a + 2
-        lines.append(f"f {a}/{a}/{a} {b}/{b}/{b} {c}/{c}/{c}")
+    if faces:
+        for face in faces:
+            if not face or len(face) < 3:
+                continue
+            parts = []
+            for idx in face:
+                i = int(idx) + 1
+                parts.append(f"{i}/{i}/{i}")
+            lines.append("f " + " ".join(parts))
+    else:
+        tri_count = int(points.shape[0] // 3)
+        for i in range(tri_count):
+            a = i * 3 + 1
+            b = a + 1
+            c = a + 2
+            lines.append(f"f {a}/{a}/{a} {b}/{b}/{b} {c}/{c}/{c}")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return None
@@ -1454,7 +1803,7 @@ class VolumeSplitWidget(QtWidgets.QWidget):
             )
             return
 
-        pts, norms, uvs, err = _split_mesh(
+        pts, norms, uvs, faces, err = _split_mesh(
             Path(split_mesh_path),
             Path(volume_path),
             invert=invert,
@@ -1506,7 +1855,7 @@ class VolumeSplitWidget(QtWidgets.QWidget):
                 )
             return
 
-        err = _write_obj(out_path, pts, norms, uvs)
+        err = _write_obj(out_path, pts, norms, uvs, faces=faces)
         if err:
             self._status.setText(err)
             self._view_btn.setEnabled(False)
@@ -1549,7 +1898,8 @@ class VolumeSplitWidget(QtWidgets.QWidget):
             volume_path=volume_path,
             out_path=str(out_path),
             output_bounds=_points_bounds(pts),
-            output_tri_count=int(pts.shape[0] // 3) if getattr(pts, "size", 0) else 0,
+            output_face_count=int(len(faces or [])),
+            output_tri_equiv=int(sum(max(0, len(face) - 2) for face in (faces or []))),
         )
 
     def _on_split_clicked(self):

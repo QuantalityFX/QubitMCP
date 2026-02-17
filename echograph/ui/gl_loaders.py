@@ -375,6 +375,180 @@ def _load_fbx_ascii_mesh_arrays(path: Path) -> MeshArrays:
     )
 
 
+def _mesh_raw_edge_vertices(vertices: "np.ndarray", faces: Iterable[Iterable[int]]) -> "np.ndarray":
+    if np is None:
+        raise RuntimeError("numpy unavailable")
+    verts = np.asarray(vertices, dtype="f4").reshape(-1, 3)
+    if verts.size == 0:
+        return np.zeros((0, 3), dtype="f4")
+    vertex_count = int(verts.shape[0])
+    edges = set()
+    for face in faces:
+        try:
+            idxs = [int(i) for i in face]
+        except Exception:
+            continue
+        if len(idxs) < 2:
+            continue
+        for i in range(len(idxs)):
+            a = idxs[i]
+            b = idxs[(i + 1) % len(idxs)]
+            if a == b:
+                continue
+            if a < 0 or b < 0 or a >= vertex_count or b >= vertex_count:
+                continue
+            edge = (a, b) if a < b else (b, a)
+            edges.add(edge)
+
+    if not edges:
+        return np.zeros((0, 3), dtype="f4")
+    line_pos: List[float] = []
+    for a, b in edges:
+        try:
+            ax, ay, az = verts[a]
+            bx, by, bz = verts[b]
+        except Exception:
+            continue
+        line_pos.extend([float(ax), float(ay), float(az), float(bx), float(by), float(bz)])
+    if not line_pos:
+        return np.zeros((0, 3), dtype="f4")
+    return np.asarray(line_pos, dtype="f4").reshape(-1, 3)
+
+
+def _mesh_feature_edge_vertices(
+    vertices: "np.ndarray",
+    faces: Iterable[Iterable[int]],
+    coplanar_eps: float = 0.9995,
+    weld_eps: float = 1.0e-5,
+) -> "np.ndarray":
+    if np is None:
+        raise RuntimeError("numpy unavailable")
+    verts = np.asarray(vertices, dtype="f4").reshape(-1, 3)
+    if verts.size == 0:
+        return np.zeros((0, 3), dtype="f4")
+
+    # Weld near-identical vertices first so UV/material seams do not break adjacency.
+    vertex_count = int(verts.shape[0])
+    inv = 1.0 / float(weld_eps) if float(weld_eps) > 0.0 else 1.0e5
+    key_to_idx: Dict[Tuple[int, int, int], int] = {}
+    index_map: List[int] = [0] * vertex_count
+    canon_positions: List[Tuple[float, float, float]] = []
+    for i in range(vertex_count):
+        p = verts[i]
+        px, py, pz = float(p[0]), float(p[1]), float(p[2])
+        try:
+            key = (int(round(px * inv)), int(round(py * inv)), int(round(pz * inv)))
+        except Exception:
+            key = (i, i, i)
+        canon = key_to_idx.get(key)
+        if canon is None:
+            canon = len(canon_positions)
+            key_to_idx[key] = canon
+            canon_positions.append((px, py, pz))
+        index_map[i] = canon
+
+    if not canon_positions:
+        return np.zeros((0, 3), dtype="f4")
+    pos_np = np.asarray(canon_positions, dtype="f4")
+
+    canon_faces: List[List[int]] = []
+    for face in faces:
+        try:
+            raw = [int(i) for i in face]
+        except Exception:
+            continue
+        if len(raw) < 2:
+            continue
+        canon_face: List[int] = []
+        for idx in raw:
+            if idx < 0 or idx >= vertex_count:
+                continue
+            canon = int(index_map[idx])
+            if canon_face and canon_face[-1] == canon:
+                continue
+            canon_face.append(canon)
+        if len(canon_face) >= 2 and canon_face[0] == canon_face[-1]:
+            canon_face.pop()
+        if len(canon_face) < 2:
+            continue
+        if all(v == canon_face[0] for v in canon_face):
+            continue
+        canon_faces.append(canon_face)
+
+    if not canon_faces:
+        return np.zeros((0, 3), dtype="f4")
+
+    normals: List[Optional["np.ndarray"]] = []
+    for face in canon_faces:
+        if len(face) < 3:
+            normals.append(None)
+            continue
+        normal = None
+        try:
+            base = pos_np[face[0]]
+            for j in range(1, len(face) - 1):
+                a = pos_np[face[j]]
+                b = pos_np[face[j + 1]]
+                cand = np.cross(a - base, b - base)
+                ln = float(np.linalg.norm(cand))
+                if ln > 1.0e-8:
+                    normal = (cand / ln).astype("f4")
+                    break
+        except Exception:
+            normal = None
+        normals.append(normal)
+
+    edge_normals: Dict[Tuple[int, int], List[Optional["np.ndarray"]]] = {}
+    for fi, face in enumerate(canon_faces):
+        n = normals[fi] if fi < len(normals) else None
+        if len(face) < 2:
+            continue
+        for i in range(len(face)):
+            a = face[i]
+            b = face[(i + 1) % len(face)]
+            if a == b:
+                continue
+            edge = (a, b) if a < b else (b, a)
+            bucket = edge_normals.get(edge)
+            if bucket is None:
+                edge_normals[edge] = [n]
+            else:
+                bucket.append(n)
+
+    line_pos: List[float] = []
+    for (a, b), norms in edge_normals.items():
+        keep = True
+        valid = [n for n in norms if n is not None]
+        if len(valid) >= 2:
+            # Suppress triangulation diagonals (or any fully coplanar shared edge).
+            keep = False
+            for i in range(len(valid)):
+                n0 = valid[i]
+                for j in range(i + 1, len(valid)):
+                    n1 = valid[j]
+                    try:
+                        dot = abs(float(np.dot(n0, n1)))
+                    except Exception:
+                        dot = 0.0
+                    if dot < float(coplanar_eps):
+                        keep = True
+                        break
+                if keep:
+                    break
+        if not keep:
+            continue
+        try:
+            ax, ay, az = pos_np[a]
+            bx, by, bz = pos_np[b]
+        except Exception:
+            continue
+        line_pos.extend([float(ax), float(ay), float(az), float(bx), float(by), float(bz)])
+
+    if not line_pos:
+        return np.zeros((0, 3), dtype="f4")
+    return np.asarray(line_pos, dtype="f4").reshape(-1, 3)
+
+
 def _load_fbx_ascii_edge_vertices(path: Path) -> "np.ndarray":
     if np is None:
         raise RuntimeError("numpy unavailable")
@@ -452,36 +626,31 @@ def load_fbx_edge_vertices(path: Path) -> "np.ndarray":
     try:
         processing = ai_post.aiProcess_PreTransformVertices | ai_post.aiProcess_JoinIdenticalVertices
         with pyassimp.load(str(path), file_type="fbx", processing=processing) as scene:
-            line_pos: List[float] = []
+            line_sets: List["np.ndarray"] = []
             for mesh in scene.meshes or []:
                 vertices = np.asarray(getattr(mesh, "vertices", []), dtype="f4")
                 faces = getattr(mesh, "faces", None)
-                if vertices.size == 0 or not faces:
+                if faces is None:
                     continue
-                edges = set()
-                for face in faces:
-                    try:
-                        idxs = [int(i) for i in face]
-                    except Exception:
-                        continue
-                    if len(idxs) < 2:
-                        continue
-                    for i in range(len(idxs)):
-                        a = idxs[i]
-                        b = idxs[(i + 1) % len(idxs)]
-                        if a == b:
-                            continue
-                        if a < 0 or b < 0 or a >= len(vertices) or b >= len(vertices):
-                            continue
-                        edge = (a, b) if a < b else (b, a)
-                        edges.add(edge)
-                for a, b in edges:
-                    ax, ay, az = vertices[a]
-                    bx, by, bz = vertices[b]
-                    line_pos.extend([ax, ay, az, bx, by, bz])
-            if not line_pos:
+                try:
+                    face_count = len(faces)
+                except Exception:
+                    face_count = 0
+                if vertices.size == 0 or face_count <= 0:
+                    continue
+
+                # Preserve authored triangle edges by default; only fallback to
+                # feature-edge extraction if raw extraction cannot build wires.
+                line_points = _mesh_raw_edge_vertices(vertices, faces)
+                if line_points.size == 0:
+                    line_points = _mesh_feature_edge_vertices(vertices, faces)
+                if line_points.size == 0:
+                    continue
+                line_sets.append(line_points.astype("f4").reshape(-1, 3))
+
+            if not line_sets:
                 raise RuntimeError("FBX edge data empty")
-            return np.array(line_pos, dtype="f4").reshape(-1, 3)
+            return np.concatenate(line_sets, axis=0).astype("f4")
     except Exception as exc:
         if _is_ascii_fbx(path):
             return _load_fbx_ascii_edge_vertices(path)

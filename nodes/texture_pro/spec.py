@@ -3539,7 +3539,9 @@ class TextureProWidget(QtWidgets.QWidget):
                     pass
             return
 
-        src_path = (_resolve_input_path(self._node_item) or "").strip()
+        src_item, src_kind, src_path = _resolve_input_item(self._node_item)
+        src_kind = (src_kind or "").strip().lower()
+        src_path = (src_path or _resolve_input_path(self._node_item) or "").strip()
         if not src_path or not os.path.exists(src_path):
             QtWidgets.QMessageBox.warning(
                 _resolve_window(self._node_item) or self,
@@ -3547,18 +3549,44 @@ class TextureProWidget(QtWidgets.QWidget):
                 "No valid input mesh connected.",
             )
             return
-        win = _resolve_window(self._node_item)
-        handler = getattr(win, "open_3d_model", None) if win is not None else None
-        if callable(handler):
+        ext = Path(src_path).suffix.lower()
+        texture_arg = None
+        # Match Import node preview behavior for OBJ sources by passing its texture slot through.
+        if src_kind == "import" and ext == ".obj" and src_item is not None:
             try:
-                handler(src_path, None, frame=False)
-            except TypeError:
-                try:
-                    handler(src_path, None)
-                except Exception:
-                    pass
+                src_model = getattr(src_item, "model", None)
+                texture_raw = _param_value(src_model, "texture").strip() if src_model is not None else ""
+                texture_arg = texture_raw or None
             except Exception:
-                pass
+                texture_arg = None
+        win = _resolve_window(self._node_item)
+        opened = False
+        # For Import inputs, go through the Import node's own open path first.
+        if src_kind == "import" and src_item is not None:
+            open_import_model = getattr(src_item, "_open_import_model", None)
+            if callable(open_import_model):
+                try:
+                    opened = bool(open_import_model(src_path, ext))
+                except Exception:
+                    opened = False
+
+        if not opened:
+            handler = getattr(win, "open_3d_model", None) if win is not None else None
+            if callable(handler):
+                try:
+                    # Use the same open path as Import node for identical viewport behavior.
+                    handler(src_path, texture_arg)
+                    opened = True
+                except TypeError:
+                    try:
+                        handler(src_path, texture_arg, frame=True)
+                        opened = True
+                    except Exception:
+                        opened = False
+                except Exception:
+                    opened = False
+        if not opened:
+            return
         glv = getattr(win, "gl_view", None) if win is not None else None
         if glv is not None and hasattr(glv, "set_procedural_texture_provider"):
             try:
