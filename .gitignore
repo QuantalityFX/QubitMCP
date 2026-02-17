@@ -1,0 +1,37 @@
+# Python virtualenvs and bytecode
+.venv/
+**/.venv/
+venv/
+**/venv/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+
+# workstation tools
+/tools/
+
+# Local app state
+/hotkeys.json
+/recent_graphs.json
+
+# Librarian runtime/cache artifacts
+/nodes/librarian/ipc/
+/nodes/librarian/storage/
+/nodes/librarian/query_cache.json
+/nodes/librarian/settings.json
+/nodes/librarian/librarian_child.log
+
+# Script workspace (local/scratch)
+/scripts/
+
+# External/vendor trees
+/echograph/QOpenGLWidget_example-main/
+/echograph/repos/
+/vcpkg/
+
+# Large/local data assets
+/echograph/3dmodels/
+/echograph/data/
+
+# Debug logs
+/logs/
