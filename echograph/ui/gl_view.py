@@ -4818,8 +4818,6 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             py_dev=py_dev,
             axes=axes,
             PV=PV,
-            rot_shared=rot_shared,
-            hit=hit,
         )
 
     def _handle_mouse_press_moderngl_left_gizmo_dispatch_rotate(
@@ -4893,8 +4891,6 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         py_dev,
         axes,
         PV,
-        rot_shared,
-        hit,
     ):
         # --- scale gizmo drag start (axis cubes + center) ---
         if self._handle_mouse_press_moderngl_left_gizmo_scale_pick(
@@ -4997,68 +4993,91 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
     ):
         rot_shared = None
         hit = None
-        if mode == "rotate":
-            rot_shared = getattr(self, "_rot_shared", None)
-            center = getattr(self, "_rot_shared_center_px", None)
-            mvp = getattr(self, "_rot_shared_mvp", None)
+        if mode != "rotate":
+            return False, rot_shared, hit
 
-            if rot_shared is not None and center is not None and mvp is not None and owner:
-                mp = e.position() if hasattr(e, "position") else QtCore.QPointF(e.x(), e.y())
+        rot_shared = getattr(self, "_rot_shared", None)
+        center = getattr(self, "_rot_shared_center_px", None)
+        mvp = getattr(self, "_rot_shared_mvp", None)
+        if not self._handle_mouse_press_moderngl_left_gizmo_rotate_ring_pick_ready(
+            rot_shared=rot_shared,
+            center=center,
+            mvp=mvp,
+            owner=owner,
+        ):
+            return False, rot_shared, hit
 
-                # match smoketest-style picking (same args as hover/draw)
-                band = max(12.0, float(rot_shared.xyz_ring_radius_px()) * 0.14)
+        mp, hit = self._handle_mouse_press_moderngl_left_gizmo_rotate_ring_pick_hit(
+            e=e,
+            rot_shared=rot_shared,
+            center=center,
+            mvp=mvp,
+        )
+        self._mgl_log(
+            f"[ROT_SHARED] pick hit={hit} mode={getattr(self,'_xform_gizmo_mode',None)} owner={owner}"
+        )
 
-                clip_enabled = bool(getattr(self, "_rot_clip_enabled", True))
-                back_clip_cos = -math.cos(math.pi * float(getattr(self, "_rot_clip_frac", 0.30)))
+        if self._handle_mouse_press_moderngl_left_gizmo_rotate_ring_axis_pick(
+            e=e,
+            owner=owner,
+            g=g,
+            hit=hit,
+            rot_shared=rot_shared,
+            mp=mp,
+            dpr=dpr,
+            vw=vw,
+            vh=vh,
+            PV=PV,
+        ):
+            return True, rot_shared, hit
 
-                view_dir_local = getattr(self, "_rot_shared_view_dir_local", None)
-                if view_dir_local is None:
-                    view_dir_local = QtGui.QVector3D(0.0, 0.0, 1.0)
-
-                hit = rot_shared.pick_axis_2d(
-                    widget=self,
-                    center=center,
-                    mouse_px=QtCore.QPointF(mp),   # logical px
-                    viewport_w=self.width(),       # logical px (must match center/mouse)
-                    viewport_h=self.height(),
-                    mvp=mvp,
-                    view_dir_local=view_dir_local,
-                    back_clip_cos=float(back_clip_cos),
-                    clip_enabled=bool(clip_enabled),
-                    threshold_px=float(band),
-                )
-
-
-                self._mgl_log(
-                    f"[ROT_SHARED] pick hit={hit} mode={getattr(self,'_xform_gizmo_mode',None)} owner={owner}"
-                )
-
-                if self._handle_mouse_press_moderngl_left_gizmo_rotate_ring_axis_pick(
-                    e=e,
-                    owner=owner,
-                    g=g,
-                    hit=hit,
-                    rot_shared=rot_shared,
-                    mp=mp,
-                    dpr=dpr,
-                    vw=vw,
-                    vh=vh,
-                    PV=PV,
-                ):
-                    return True, rot_shared, hit
-
-                if self._handle_mouse_press_moderngl_left_gizmo_rotate_ring_view_pick(
-                    e=e,
-                    owner=owner,
-                    g=g,
-                    p0=p0,
-                    hit=hit,
-                    rot_shared=rot_shared,
-                    V=V,
-                    M=M,
-                ):
-                    return True, rot_shared, hit
+        if self._handle_mouse_press_moderngl_left_gizmo_rotate_ring_view_pick(
+            e=e,
+            owner=owner,
+            g=g,
+            p0=p0,
+            hit=hit,
+            rot_shared=rot_shared,
+            V=V,
+            M=M,
+        ):
+            return True, rot_shared, hit
         return False, rot_shared, hit
+
+    def _handle_mouse_press_moderngl_left_gizmo_rotate_ring_pick_ready(self, *, rot_shared, center, mvp, owner):
+        return (
+            rot_shared is not None
+            and center is not None
+            and mvp is not None
+            and owner not in (None, "")
+        )
+
+    def _handle_mouse_press_moderngl_left_gizmo_rotate_ring_pick_hit(self, *, e, rot_shared, center, mvp):
+        mp = e.position() if hasattr(e, "position") else QtCore.QPointF(e.x(), e.y())
+
+        # match smoketest-style picking (same args as hover/draw)
+        band = max(12.0, float(rot_shared.xyz_ring_radius_px()) * 0.14)
+
+        clip_enabled = bool(getattr(self, "_rot_clip_enabled", True))
+        back_clip_cos = -math.cos(math.pi * float(getattr(self, "_rot_clip_frac", 0.30)))
+
+        view_dir_local = getattr(self, "_rot_shared_view_dir_local", None)
+        if view_dir_local is None:
+            view_dir_local = QtGui.QVector3D(0.0, 0.0, 1.0)
+
+        hit = rot_shared.pick_axis_2d(
+            widget=self,
+            center=center,
+            mouse_px=QtCore.QPointF(mp),  # logical px
+            viewport_w=self.width(),  # logical px (must match center/mouse)
+            viewport_h=self.height(),
+            mvp=mvp,
+            view_dir_local=view_dir_local,
+            back_clip_cos=float(back_clip_cos),
+            clip_enabled=bool(clip_enabled),
+            threshold_px=float(band),
+        )
+        return mp, hit
 
     def _handle_mouse_press_moderngl_left_gizmo_rotate_ring_axis_pick(
         self,
@@ -5241,10 +5260,25 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         if hit != "view":
             return False
 
+        self._handle_mouse_press_moderngl_left_gizmo_rotate_ring_view_begin_owner(owner=owner)
+        self._handle_mouse_press_moderngl_left_gizmo_rotate_ring_view_sync_q0(owner=owner)
+        self._handle_mouse_press_moderngl_left_gizmo_rotate_ring_view_set_center(p0=p0)
+        self._handle_mouse_press_moderngl_left_gizmo_rotate_ring_view_set_forward(g=g, V=V, M=M)
+
+        try:
+            rot_shared.begin_view_ring_drag()  # smoketest-style: no ray math here
+        except Exception:
+            pass
+
+        e.accept()
+        return True
+
+    def _handle_mouse_press_moderngl_left_gizmo_rotate_ring_view_begin_owner(self, *, owner):
         self._rot_shared_owner = owner
         self._begin_xform_history(owner)
 
-        # Persisted quaternion for this owner (same idea as axis rings)
+    def _handle_mouse_press_moderngl_left_gizmo_rotate_ring_view_sync_q0(self, *, owner):
+        # Persisted quaternion for this owner (same idea as axis rings).
         q0 = None
         try:
             q0 = self._rot_owner_quat.get(owner)
@@ -5269,13 +5303,15 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             except Exception:
                 pass
 
-        # Store view ring center in DEVICE pixels (project() returns device px)
+    def _handle_mouse_press_moderngl_left_gizmo_rotate_ring_view_set_center(self, *, p0):
+        # Store view ring center in DEVICE pixels (project() returns device px).
         try:
             self._rot_shared_view_center_px = QtCore.QPointF(float(p0[0]), float(p0[1]))
         except Exception:
             self._rot_shared_view_center_px = None
 
-        # Compute camera forward direction in world (same logic you had before)
+    def _handle_mouse_press_moderngl_left_gizmo_rotate_ring_view_set_forward(self, *, g, V, M):
+        # Compute camera forward direction in world (same logic you had before).
         forward_world = QtGui.QVector3D(0.0, 0.0, -1.0)
         try:
             VM = (np.asarray(V, dtype=np.float32) @ np.asarray(M, dtype=np.float32)).astype(np.float32)
@@ -5294,14 +5330,6 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
         self._rot_shared_view_forward_world = forward_world
 
-        try:
-            rot_shared.begin_view_ring_drag()  # smoketest-style: no ray math here
-        except Exception:
-            pass
-
-        e.accept()
-        return True
-
     def _handle_mouse_press_moderngl_left_gizmo_rotate_arc_pick(
         self,
         *,
@@ -5319,72 +5347,127 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
     ):
         if mode == "rotate" and rot_shared is not None and p0 is not None and hit is None:
             try:
-                disc_r = float(rot_shared.xyz_ring_radius_px()) * float(dpr)
+                prepared = self._handle_mouse_press_moderngl_left_gizmo_rotate_arc_pick_prepare(
+                    owner=owner,
+                    rot_shared=rot_shared,
+                    p0=p0,
+                    dpr=dpr,
+                    px_dev=px_dev,
+                    py_dev=py_dev,
+                    V=V,
+                    M=M,
+                )
+                if prepared is None:
+                    return False
 
-                dx0 = float(px_dev) - float(p0[0])
-                dy0 = float(py_dev) - float(p0[1])
+                self._handle_mouse_press_moderngl_left_gizmo_rotate_arc_pick_begin_state(
+                    p0=p0,
+                    px_dev=px_dev,
+                    py_dev=py_dev,
+                    **prepared,
+                )
 
-                if (dx0 * dx0 + dy0 * dy0) <= (disc_r * disc_r):
-                    self._rot_shared_owner = owner
-                    self._begin_xform_history(owner)
-
-                    # Always sync q0 from the owner's CURRENT outliner rotation
-                    # (prevents first-drag snap after manual edits / zeroing)
-                    q0 = self._rot_shared_sync_q0_from_owner(owner)
-
-                    # camera basis from inverse view*model (matches pick/unproject space)
-                    invVM = np.linalg.inv(
-                        (np.asarray(V, dtype=np.float32) @ np.asarray(M, dtype=np.float32)).astype(
-                            np.float32
-                        )
-                    )
-                    r = invVM[:3, 0]
-                    u = invVM[:3, 1]
-                    f = -invVM[:3, 2]  # camera looks down -Z
-
-                    right_world = QtGui.QVector3D(float(r[0]), float(r[1]), float(r[2]))
-                    up_world = QtGui.QVector3D(float(u[0]), float(u[1]), float(u[2]))
-                    forward_world = QtGui.QVector3D(float(f[0]), float(f[1]), float(f[2]))
-
-                    # normalize basis for stability
-                    try:
-                        if right_world.length() > 1e-6:
-                            right_world = right_world / right_world.length()
-                        if up_world.length() > 1e-6:
-                            up_world = up_world / up_world.length()
-                        if forward_world.length() > 1e-6:
-                            forward_world = forward_world / forward_world.length()
-                    except Exception:
-                        pass
-
-                    # stash arcball drag state
-                    self._rot_shared_arc_active = True
-                    self._rot_shared_arc_center_px = QtCore.QPointF(float(p0[0]), float(p0[1]))
-                    self._rot_shared_arc_radius_px = float(disc_r)
-                    self._rot_shared_arc_right_world = right_world
-                    self._rot_shared_arc_up_world = up_world
-                    self._rot_shared_arc_forward_world = forward_world
-                    self._rot_shared_arc_start_q = q0
-
-                    mouse_pf = QtCore.QPointF(float(px_dev), float(py_dev))
-                    start_vec = self._arcball_vec_world(
-                        mouse_px_dev=mouse_pf,
-                        center_px_dev=self._rot_shared_arc_center_px,
-                        radius_px=self._rot_shared_arc_radius_px,
-                        right_world=right_world,
-                        up_world=up_world,
-                        forward_world=forward_world,
-                    )
-                    self._rot_shared_arc_start_vec = start_vec
-
-                    e.accept()
-                    return True
+                e.accept()
+                return True
             except Exception as ex:
                 try:
                     self._mgl_log("[ROT_SHARED_ARC_BEGIN_ERR] " + repr(ex))
                 except Exception:
                     print("[ROT_SHARED_ARC_BEGIN_ERR] " + repr(ex), flush=True)
         return False
+
+    def _handle_mouse_press_moderngl_left_gizmo_rotate_arc_pick_prepare(
+        self,
+        *,
+        owner,
+        rot_shared,
+        p0,
+        dpr,
+        px_dev,
+        py_dev,
+        V,
+        M,
+    ):
+        disc_r = float(rot_shared.xyz_ring_radius_px()) * float(dpr)
+        dx0 = float(px_dev) - float(p0[0])
+        dy0 = float(py_dev) - float(p0[1])
+        if (dx0 * dx0 + dy0 * dy0) > (disc_r * disc_r):
+            return None
+
+        self._rot_shared_owner = owner
+        self._begin_xform_history(owner)
+
+        # Always sync q0 from the owner's CURRENT outliner rotation
+        # (prevents first-drag snap after manual edits / zeroing)
+        q0 = self._rot_shared_sync_q0_from_owner(owner)
+        right_world, up_world, forward_world = self._handle_mouse_press_moderngl_left_gizmo_rotate_arc_pick_basis(
+            V=V,
+            M=M,
+        )
+        return {
+            "disc_r": disc_r,
+            "q0": q0,
+            "right_world": right_world,
+            "up_world": up_world,
+            "forward_world": forward_world,
+        }
+
+    def _handle_mouse_press_moderngl_left_gizmo_rotate_arc_pick_basis(self, *, V, M):
+        # camera basis from inverse view*model (matches pick/unproject space)
+        invVM = np.linalg.inv(
+            (np.asarray(V, dtype=np.float32) @ np.asarray(M, dtype=np.float32)).astype(np.float32)
+        )
+        r = invVM[:3, 0]
+        u = invVM[:3, 1]
+        f = -invVM[:3, 2]  # camera looks down -Z
+
+        right_world = QtGui.QVector3D(float(r[0]), float(r[1]), float(r[2]))
+        up_world = QtGui.QVector3D(float(u[0]), float(u[1]), float(u[2]))
+        forward_world = QtGui.QVector3D(float(f[0]), float(f[1]), float(f[2]))
+
+        # normalize basis for stability
+        try:
+            if right_world.length() > 1e-6:
+                right_world = right_world / right_world.length()
+            if up_world.length() > 1e-6:
+                up_world = up_world / up_world.length()
+            if forward_world.length() > 1e-6:
+                forward_world = forward_world / forward_world.length()
+        except Exception:
+            pass
+        return right_world, up_world, forward_world
+
+    def _handle_mouse_press_moderngl_left_gizmo_rotate_arc_pick_begin_state(
+        self,
+        *,
+        p0,
+        px_dev,
+        py_dev,
+        disc_r,
+        q0,
+        right_world,
+        up_world,
+        forward_world,
+    ):
+        # stash arcball drag state
+        self._rot_shared_arc_active = True
+        self._rot_shared_arc_center_px = QtCore.QPointF(float(p0[0]), float(p0[1]))
+        self._rot_shared_arc_radius_px = float(disc_r)
+        self._rot_shared_arc_right_world = right_world
+        self._rot_shared_arc_up_world = up_world
+        self._rot_shared_arc_forward_world = forward_world
+        self._rot_shared_arc_start_q = q0
+
+        mouse_pf = QtCore.QPointF(float(px_dev), float(py_dev))
+        start_vec = self._arcball_vec_world(
+            mouse_px_dev=mouse_pf,
+            center_px_dev=self._rot_shared_arc_center_px,
+            radius_px=self._rot_shared_arc_radius_px,
+            right_world=right_world,
+            up_world=up_world,
+            forward_world=forward_world,
+        )
+        self._rot_shared_arc_start_vec = start_vec
 
     def _handle_mouse_press_moderngl_left_gizmo_scale_pick(
         self,
@@ -6790,151 +6873,104 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             and (e.buttons() & QtCore.Qt.LeftButton)
         ):
             try:
-                owner = getattr(self, "_rot_shared_owner", None)
-                if owner is None:
-                    return True
-
-                center_pf = getattr(self, "_rot_shared_view_center_px", None)
-                if not isinstance(center_pf, QtCore.QPointF):
-                    return True
-
-                forward_world = getattr(self, "_rot_shared_view_forward_world", None)
-                if not isinstance(forward_world, QtGui.QVector3D):
-                    return True
-
-                dpr = float(self.devicePixelRatioF()) if hasattr(self, "devicePixelRatioF") else 1.0
-                mp = e.position() if hasattr(e, "position") else QtCore.QPointF(e.x(), e.y())
-                mouse_pf = QtCore.QPointF(float(mp.x()) * dpr, float(mp.y()) * dpr)
-
-                qcur = None
-                try:
-                    qcur = self._rot_owner_quat.get(owner)
-                except Exception:
-                    qcur = None
-
-                if qcur is None:
-                    rot_deg, is_splat = self._get_owner_rot_deg(owner)
-                    self._rot_shared_is_splat = bool(is_splat)
-                    qcur = self._rot_shared_q_from_euler_deg(
-                        (float(rot_deg[0]), float(rot_deg[1]), float(rot_deg[2]))
-                    )
-                    try:
-                        self._rot_owner_quat[owner] = qcur
-                    except Exception:
-                        pass
-
-                qnew = rot_shared.update_view_ring_drag(mouse_pf, center_pf, forward_world, qcur)
-                if qnew is None:
-                    return True
-
-                try:
-                    if hasattr(qnew, "normalized"):
-                        qnew = qnew.normalized()
-                except Exception:
-                    pass
-
-                try:
-                    self._rot_owner_quat[owner] = qnew
-                except Exception:
-                    pass
-
-                rx, ry, rz = self._rot_shared_euler_deg_from_q(qnew)
-
-                cur_rot_deg, _is_splat = self._get_owner_rot_deg(owner)
-                rx, ry, rz = self._rot_shared_euler_deg_from_q_continuous(qnew, cur_rot_deg)
-
-                self._set_owner_rot_deg(
-                    owner,
-                    (rx, ry, rz),
-                    bool(getattr(self, "_rot_shared_is_splat", False)),
+                prepared = self._handle_mouse_move_moderngl_rot_shared_view_drag_prepare(
+                    e=e,
+                    rot_shared=rot_shared,
                 )
-
-                self.update()
-                e.accept()
+                if prepared is None:
+                    return True
+                owner, qnew = prepared
+                self._handle_mouse_move_moderngl_rot_shared_view_drag_apply(
+                    e=e,
+                    owner=owner,
+                    qnew=qnew,
+                )
                 return True
 
             except Exception as ex:
                 _rot_dbg("[ROT_SHARED_VIEW_MOVE_ERR] " + repr(ex))
         return False
 
+    def _handle_mouse_move_moderngl_rot_shared_view_drag_prepare(self, *, e, rot_shared):
+        owner = getattr(self, "_rot_shared_owner", None)
+        if owner is None:
+            return None
+
+        center_pf = getattr(self, "_rot_shared_view_center_px", None)
+        if not isinstance(center_pf, QtCore.QPointF):
+            return None
+
+        forward_world = getattr(self, "_rot_shared_view_forward_world", None)
+        if not isinstance(forward_world, QtGui.QVector3D):
+            return None
+
+        dpr = float(self.devicePixelRatioF()) if hasattr(self, "devicePixelRatioF") else 1.0
+        mp = e.position() if hasattr(e, "position") else QtCore.QPointF(e.x(), e.y())
+        mouse_pf = QtCore.QPointF(float(mp.x()) * dpr, float(mp.y()) * dpr)
+
+        qcur = self._handle_mouse_move_moderngl_rot_shared_view_drag_qcur(owner=owner)
+        qnew = rot_shared.update_view_ring_drag(mouse_pf, center_pf, forward_world, qcur)
+        if qnew is None:
+            return None
+
+        try:
+            if hasattr(qnew, "normalized"):
+                qnew = qnew.normalized()
+        except Exception:
+            pass
+        return owner, qnew
+
+    def _handle_mouse_move_moderngl_rot_shared_view_drag_qcur(self, *, owner):
+        qcur = None
+        try:
+            qcur = self._rot_owner_quat.get(owner)
+        except Exception:
+            qcur = None
+
+        if qcur is None:
+            rot_deg, is_splat = self._get_owner_rot_deg(owner)
+            self._rot_shared_is_splat = bool(is_splat)
+            qcur = self._rot_shared_q_from_euler_deg(
+                (float(rot_deg[0]), float(rot_deg[1]), float(rot_deg[2]))
+            )
+            try:
+                self._rot_owner_quat[owner] = qcur
+            except Exception:
+                pass
+        return qcur
+
+    def _handle_mouse_move_moderngl_rot_shared_view_drag_apply(self, *, e, owner, qnew):
+        try:
+            self._rot_owner_quat[owner] = qnew
+        except Exception:
+            pass
+
+        rx, ry, rz = self._rot_shared_euler_deg_from_q(qnew)
+
+        cur_rot_deg, _is_splat = self._get_owner_rot_deg(owner)
+        rx, ry, rz = self._rot_shared_euler_deg_from_q_continuous(qnew, cur_rot_deg)
+
+        self._set_owner_rot_deg(
+            owner,
+            (rx, ry, rz),
+            bool(getattr(self, "_rot_shared_is_splat", False)),
+        )
+
+        self.update()
+        e.accept()
+
     def _handle_mouse_move_moderngl_rot_shared_arc_drag(self, e):
         if bool(getattr(self, "_rot_shared_arc_active", False)) and (e.buttons() & QtCore.Qt.LeftButton):
             try:
-                owner = getattr(self, "_rot_shared_owner", None)
-                if owner is None:
+                prepared = self._handle_mouse_move_moderngl_rot_shared_arc_drag_prepare(e=e)
+                if prepared is None:
                     return True
-
-                center_pf = getattr(self, "_rot_shared_arc_center_px", None)
-                if not isinstance(center_pf, QtCore.QPointF):
-                    return True
-
-                dpr = float(self.devicePixelRatioF()) if hasattr(self, "devicePixelRatioF") else 1.0
-                mp = e.position() if hasattr(e, "position") else QtCore.QPointF(e.x(), e.y())
-                mouse_pf = QtCore.QPointF(float(mp.x()) * dpr, float(mp.y()) * dpr)
-
-                start_vec = getattr(self, "_rot_shared_arc_start_vec", None)
-                if not isinstance(start_vec, QtGui.QVector3D):
-                    return True
-
-                right_world = getattr(self, "_rot_shared_arc_right_world", None)
-                up_world = getattr(self, "_rot_shared_arc_up_world", None)
-                forward_world = getattr(self, "_rot_shared_arc_forward_world", None)
-                if not (
-                    isinstance(right_world, QtGui.QVector3D)
-                    and isinstance(up_world, QtGui.QVector3D)
-                    and isinstance(forward_world, QtGui.QVector3D)
-                ):
-                    return True
-
-                radius_px = float(getattr(self, "_rot_shared_arc_radius_px", 1.0))
-                cur_vec = self._arcball_vec_world(
-                    mouse_px_dev=mouse_pf,
-                    center_px_dev=center_pf,
-                    radius_px=radius_px,
-                    right_world=right_world,
-                    up_world=up_world,
-                    forward_world=forward_world,
+                owner, qnew = prepared
+                self._handle_mouse_move_moderngl_rot_shared_arc_drag_apply(
+                    e=e,
+                    owner=owner,
+                    qnew=qnew,
                 )
-
-                q_delta = quat_from_two_vectors(start_vec, cur_vec)
-
-                q0 = getattr(self, "_rot_shared_arc_start_q", None)
-                if q0 is None:
-                    return True
-
-                qnew = (q_delta * q0)
-                try:
-                    if hasattr(qnew, "normalized"):
-                        qnew = qnew.normalized()
-                except Exception:
-                    pass
-
-                # persist quaternion cache (arcball uses qnew directly)
-                try:
-                    self._rot_owner_quat[owner] = qnew
-                except Exception:
-                    pass
-
-                # APPLY to owner so the object visibly rotates during arcball drag
-                # unwrap vs current outliner values so angles keep accumulating past 180
-                try:
-                    rx, ry, rz = self._rot_shared_euler_deg_from_q(qnew)
-
-                    cur_rot_deg, _is_splat = self._get_owner_rot_deg(owner)
-                    rx = self._unwrap_deg(float(cur_rot_deg[0]), float(rx))
-                    ry = self._unwrap_deg(float(cur_rot_deg[1]), float(ry))
-                    rz = self._unwrap_deg(float(cur_rot_deg[2]), float(rz))
-
-                    self._set_owner_rot_deg(
-                        owner,
-                        (rx, ry, rz),
-                        bool(getattr(self, "_rot_shared_is_splat", False)),
-                    )
-                except Exception:
-                    pass
-
-                self.update()
-                e.accept()
                 return True
 
             except Exception as ex:
@@ -6943,6 +6979,84 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 except Exception:
                     pass
         return False
+
+    def _handle_mouse_move_moderngl_rot_shared_arc_drag_prepare(self, *, e):
+        owner = getattr(self, "_rot_shared_owner", None)
+        if owner is None:
+            return None
+
+        center_pf = getattr(self, "_rot_shared_arc_center_px", None)
+        if not isinstance(center_pf, QtCore.QPointF):
+            return None
+
+        dpr = float(self.devicePixelRatioF()) if hasattr(self, "devicePixelRatioF") else 1.0
+        mp = e.position() if hasattr(e, "position") else QtCore.QPointF(e.x(), e.y())
+        mouse_pf = QtCore.QPointF(float(mp.x()) * dpr, float(mp.y()) * dpr)
+
+        start_vec = getattr(self, "_rot_shared_arc_start_vec", None)
+        if not isinstance(start_vec, QtGui.QVector3D):
+            return None
+
+        right_world = getattr(self, "_rot_shared_arc_right_world", None)
+        up_world = getattr(self, "_rot_shared_arc_up_world", None)
+        forward_world = getattr(self, "_rot_shared_arc_forward_world", None)
+        if not (
+            isinstance(right_world, QtGui.QVector3D)
+            and isinstance(up_world, QtGui.QVector3D)
+            and isinstance(forward_world, QtGui.QVector3D)
+        ):
+            return None
+
+        radius_px = float(getattr(self, "_rot_shared_arc_radius_px", 1.0))
+        cur_vec = self._arcball_vec_world(
+            mouse_px_dev=mouse_pf,
+            center_px_dev=center_pf,
+            radius_px=radius_px,
+            right_world=right_world,
+            up_world=up_world,
+            forward_world=forward_world,
+        )
+
+        q_delta = quat_from_two_vectors(start_vec, cur_vec)
+        q0 = getattr(self, "_rot_shared_arc_start_q", None)
+        if q0 is None:
+            return None
+
+        qnew = q_delta * q0
+        try:
+            if hasattr(qnew, "normalized"):
+                qnew = qnew.normalized()
+        except Exception:
+            pass
+        return owner, qnew
+
+    def _handle_mouse_move_moderngl_rot_shared_arc_drag_apply(self, *, e, owner, qnew):
+        # persist quaternion cache (arcball uses qnew directly)
+        try:
+            self._rot_owner_quat[owner] = qnew
+        except Exception:
+            pass
+
+        # APPLY to owner so the object visibly rotates during arcball drag
+        # unwrap vs current outliner values so angles keep accumulating past 180
+        try:
+            rx, ry, rz = self._rot_shared_euler_deg_from_q(qnew)
+
+            cur_rot_deg, _is_splat = self._get_owner_rot_deg(owner)
+            rx = self._unwrap_deg(float(cur_rot_deg[0]), float(rx))
+            ry = self._unwrap_deg(float(cur_rot_deg[1]), float(ry))
+            rz = self._unwrap_deg(float(cur_rot_deg[2]), float(rz))
+
+            self._set_owner_rot_deg(
+                owner,
+                (rx, ry, rz),
+                bool(getattr(self, "_rot_shared_is_splat", False)),
+            )
+        except Exception:
+            pass
+
+        self.update()
+        e.accept()
 
     def _handle_mouse_move_moderngl_rot_shared_axis_drag(self, e, mp, _rot_dbg):
         rot_shared = getattr(self, "_rot_shared", None)
@@ -8160,6 +8274,20 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             return False
 
         self._commit_xform_history()
+        self._handle_mouse_release_moderngl_log_splat_drag_end()
+        self._handle_mouse_release_moderngl_reset_xform_drag_state()
+
+        # Important: don't let a gizmo drag "fall through" into click-pick or orbit
+        self._mgl_pick_press_pos = None
+
+        # Safety: if we somehow grabbed the mouse, release it now
+        self._handle_mouse_release_moderngl_release_mouse_grab()
+
+        self.setCursor(QtCore.Qt.ArrowCursor)
+        e.accept()
+        return True
+
+    def _handle_mouse_release_moderngl_log_splat_drag_end(self):
         # Log splat drag end with gizmo + xform state.
         try:
             if getattr(self, "_xform_drag_kind", None) == "splat":
@@ -8198,6 +8326,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         except Exception:
             pass
 
+    def _handle_mouse_release_moderngl_reset_xform_drag_state(self):
         self._xform_dragging = False
         self._xform_drag_axis = None
         self._xform_drag_owner = None
@@ -8214,19 +8343,12 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._xform_drag_plane_start = None
         self._xform_gizmo_pos_locked = False
 
-        # Important: don't let a gizmo drag "fall through" into click-pick or orbit
-        self._mgl_pick_press_pos = None
-
-        # Safety: if we somehow grabbed the mouse, release it now
+    def _handle_mouse_release_moderngl_release_mouse_grab(self):
         try:
             if QtWidgets.QApplication.mouseGrabber() is self:
                 self.releaseMouse()
         except Exception:
             pass
-
-        self.setCursor(QtCore.Qt.ArrowCursor)
-        e.accept()
-        return True
 
     def _handle_mouse_release_moderngl_click_pick(self, e):
         if e.button() == QtCore.Qt.LeftButton:
