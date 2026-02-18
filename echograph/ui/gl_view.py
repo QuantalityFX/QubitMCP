@@ -6635,159 +6635,362 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 drag_mode = getattr(self, "_xform_drag_mode", "translate") or "translate"
 
                 if drag_mode == "scale":
-                    try:
-                        use_local = bool(getattr(self, "_xform_use_local", False))
-                        start_scl = getattr(self, "_xform_drag_start_scl", None)
-                        if start_scl is None:
-                            try:
-                                start_scl, _ = self._get_owner_scl(owner)
-                            except Exception:
-                                start_scl = (1.0, 1.0, 1.0)
-                            self._xform_drag_start_scl = start_scl
+                    return self._handle_mouse_move_moderngl_xform_scale_drag(
+                        e=e,
+                        axis=axis,
+                        owner=owner,
+                        g0=g0,
+                        px=px,
+                        py=py,
+                        vw=vw,
+                        vh=vh,
+                        P=P,
+                        V=V,
+                        M=M,
+                    )
 
-                        is_splat = bool(getattr(self, "_xform_drag_kind", None) == "splat")
+                return self._handle_mouse_move_moderngl_xform_translate_drag(
+                    e=e,
+                    axis=axis,
+                    owner=owner,
+                    g0=g0,
+                    px=px,
+                    py=py,
+                    vw=vw,
+                    vh=vh,
+                    renderer=renderer,
+                    P=P,
+                    V=V,
+                    M=M,
+                )
 
-                        if axis == "u":
-                            start_px = getattr(self, "_xform_scale_start_px", None)
-                            if start_px is None:
-                                try:
-                                    start_px = float(px)
-                                    self._xform_scale_start_px = start_px
-                                except Exception:
-                                    start_px = float(px)
+            except Exception as exc:
+                print("[GIZMO_DRAG] failed:", exc, flush=True)
 
-                            dx = float(px) - float(start_px)
-                            # Horizontal-only uniform scale: right = bigger, left = smaller.
-                            sensitivity = 0.0020
-                            factor = 1.0 + (dx * sensitivity)
-                            factor = max(0.01, float(factor))
-                            new_scl = (
-                                max(0.01, float(start_scl[0]) * factor),
-                                max(0.01, float(start_scl[1]) * factor),
-                                max(0.01, float(start_scl[2]) * factor),
-                            )
-                        else:
-                            if P is None or V is None or M is None:
-                                return True
+        return False
 
-                            axis_world = getattr(self, "_xform_scale_axis_world", None)
-                            if axis_world is None:
-                                axis_local = (
-                                    np.array([1.0, 0.0, 0.0], dtype="f4")
-                                    if axis == "x"
-                                    else (np.array([0.0, 1.0, 0.0], dtype="f4") if axis == "y" else np.array([0.0, 0.0, 1.0], dtype="f4"))
-                                )
-                                axis_world = axis_local
-                                if use_local:
-                                    try:
-                                        rot_deg, _ = self._get_owner_rot_deg(owner)
-                                        rx, ry, rz = float(rot_deg[0]), float(rot_deg[1]), float(rot_deg[2])
-                                        cx, sx = math.cos(math.radians(rx)), math.sin(math.radians(rx))
-                                        cy, sy = math.cos(math.radians(ry)), math.sin(math.radians(ry))
-                                        cz, sz = math.cos(math.radians(rz)), math.sin(math.radians(rz))
+    def _handle_mouse_move_moderngl_xform_translate_drag(
+        self,
+        e,
+        axis,
+        owner,
+        g0,
+        px,
+        py,
+        vw,
+        vh,
+        renderer,
+        P,
+        V,
+        M,
+    ):
+        if P is None or V is None or M is None:
+            return True
 
-                                        Rx = np.array(
-                                            [[1.0, 0.0, 0.0, 0.0],
-                                             [0.0,  cx,  sx, 0.0],
-                                             [0.0, -sx,  cx, 0.0],
-                                             [0.0, 0.0, 0.0, 1.0]],
-                                            dtype=np.float32,
-                                        )
-                                        Ry = np.array(
-                                            [[ cy, 0.0, -sy, 0.0],
-                                             [0.0, 1.0, 0.0, 0.0],
-                                             [ sy, 0.0,  cy, 0.0],
-                                             [0.0, 0.0, 0.0, 1.0]],
-                                            dtype=np.float32,
-                                        )
-                                        Rz = np.array(
-                                            [[ cz,  sz, 0.0, 0.0],
-                                             [-sz,  cz, 0.0, 0.0],
-                                             [0.0, 0.0, 1.0, 0.0],
-                                             [0.0, 0.0, 0.0, 1.0]],
-                                            dtype=np.float32,
-                                        )
-                                        R = (Rz @ Ry @ Rx).astype(np.float32)
-                                        axis_world = (R[:3, :3] @ axis_local).astype(np.float32)
-                                    except Exception:
-                                        axis_world = axis_local
+        PV = (P @ V @ M).astype("f4")
+        invPV = np.linalg.inv(PV)
 
-                            if isinstance(axis_world, QtGui.QVector3D):
-                                axis_world = np.array([axis_world.x(), axis_world.y(), axis_world.z()], dtype="f4")
+        # mouse ray in world
+        x = (2.0 * (px / max(1.0, vw))) - 1.0
+        y = 1.0 - (2.0 * (py / max(1.0, vh)))
+        near = np.array([x, y, -1.0, 1.0], dtype="f4")
+        far = np.array([x, y, 1.0, 1.0], dtype="f4")
+        pN = invPV @ near
+        pF = invPV @ far
+        pN = pN[:3] / pN[3]
+        pF = pF[:3] / pF[3]
+        ray_o = pN.astype("f4")
+        ray_d = (pF - pN).astype("f4")
+        n = float(np.linalg.norm(ray_d))
+        if n < 1e-8:
+            return True
+        ray_d /= n
 
-                            axis_world = np.asarray(axis_world, dtype=np.float32)
-                            ln = float(np.linalg.norm(axis_world))
-                            if ln > 1e-8:
-                                axis_world = axis_world / ln
-                            else:
-                                return True
-                            self._xform_scale_axis_world = axis_world
+        new_pos = self._handle_mouse_move_moderngl_xform_translate_compute_pos(
+            axis=axis,
+            owner=owner,
+            g0=g0,
+            ray_o=ray_o,
+            ray_d=ray_d,
+            V=V,
+            M=M,
+        )
 
-                            PV = (P @ V @ M).astype("f4")
-                            invPV = np.linalg.inv(PV)
+        if new_pos is None:
+            return True
 
-                            # mouse ray in world
-                            x = (2.0 * (px / max(1.0, vw))) - 1.0
-                            y = 1.0 - (2.0 * (py / max(1.0, vh)))
-                            near = np.array([x, y, -1.0, 1.0], dtype="f4")
-                            far = np.array([x, y, 1.0, 1.0], dtype="f4")
-                            pN = invPV @ near
-                            pF = invPV @ far
-                            pN = pN[:3] / pN[3]
-                            pF = pF[:3] / pF[3]
-                            ray_o = pN.astype("f4")
-                            ray_d = (pF - pN).astype("f4")
-                            n = float(np.linalg.norm(ray_d))
-                            if n < 1e-8:
-                                return True
-                            ray_d /= n
+        self._handle_mouse_move_moderngl_xform_translate_apply_owner(
+            new_pos=new_pos,
+            owner=owner,
+            renderer=renderer,
+        )
 
-                            w0 = ray_o - g0
-                            ad = float(np.dot(axis_world, ray_d))
-                            denom = 1.0 - ad * ad
-                            if abs(denom) < 1e-6:
-                                s = float(np.dot(axis_world, w0))
-                            else:
-                                s = float((ad * float(np.dot(ray_d, w0)) - float(np.dot(axis_world, w0))) / denom)
+        # redraw
+        self.update()
+        e.accept()
+        return True
 
-                            s0 = getattr(self, "_xform_drag_s0", None)
-                            if s0 is None:
-                                self._xform_drag_s0 = s
-                                s0 = s
-
-                            if abs(float(s0)) > 1e-6:
-                                factor = float(s) / float(s0)
-                            else:
-                                factor = 1.0
-                            factor = max(0.01, float(factor))
-
-                            new_scl = [float(start_scl[0]), float(start_scl[1]), float(start_scl[2])]
-                            idx = 0 if axis == "x" else (1 if axis == "y" else 2)
-                            new_scl[idx] = max(0.01, new_scl[idx] * factor)
-                            new_scl = tuple(new_scl)
-
-                        self._mgl_set_scene_asset_xform(
-                            owner,
-                            scl=new_scl,
-                            apply_to_scene_models=not is_splat,
-                            use_splat_xform=bool(is_splat),
+    def _handle_mouse_move_moderngl_xform_translate_compute_pos(
+        self,
+        axis,
+        owner,
+        g0,
+        ray_o,
+        ray_d,
+        V,
+        M,
+    ):
+        if axis == "view":
+            nrm = getattr(self, "_xform_drag_plane_normal", None)
+            if nrm is None:
+                try:
+                    invVM = np.linalg.inv(
+                        (np.asarray(V, dtype=np.float32) @ np.asarray(M, dtype=np.float32)).astype(
+                            np.float32
                         )
-                        try:
-                            w = self.window()
-                            if hasattr(w, "update_scene_asset_xform"):
-                                w.update_scene_asset_xform(owner)
-                        except Exception:
-                            pass
+                    )
+                    nrm = -invVM[:3, 2]
+                    nlen = float(np.linalg.norm(nrm))
+                    if nlen > 1e-6:
+                        nrm = nrm / nlen
+                    else:
+                        nrm = None
+                except Exception:
+                    nrm = None
+            start_hit = getattr(self, "_xform_drag_plane_start", None)
+            if nrm is not None:
+                denom = float(np.dot(ray_d, nrm))
+                if abs(denom) > 1e-6:
+                    t = float(np.dot((g0 - ray_o), nrm)) / denom
+                    hit = ray_o + (t * ray_d)
+                    if start_hit is None:
+                        self._xform_drag_plane_start = hit
+                        start_hit = hit
+                    delta = hit - start_hit
+                    return g0 + delta
+            return None
 
-                        self.update()
-                        e.accept()
-                        return True
-                    except Exception as exc:
-                        print("[GIZMO_SCALE] failed:", exc, flush=True)
-                        return True
+        axes = {
+            "x": np.array([1.0, 0.0, 0.0], dtype="f4"),
+            "y": np.array([0.0, 1.0, 0.0], dtype="f4"),
+            "z": np.array([0.0, 0.0, 1.0], dtype="f4"),
+        }
+        a = getattr(self, "_xform_drag_axis_world", None)
+        if a is None:
+            a = axes.get(axis)
+            if a is None:
+                return None
+            if bool(getattr(self, "_xform_use_local", False)):
+                try:
+                    rot_deg, _ = self._get_owner_rot_deg(owner)
+                    rx, ry, rz = float(rot_deg[0]), float(rot_deg[1]), float(rot_deg[2])
+                    cx, sx = math.cos(math.radians(rx)), math.sin(math.radians(rx))
+                    cy, sy = math.cos(math.radians(ry)), math.sin(math.radians(ry))
+                    cz, sz = math.cos(math.radians(rz)), math.sin(math.radians(rz))
 
+                    Rx = np.array(
+                        [[1.0, 0.0, 0.0, 0.0], [0.0, cx, sx, 0.0], [0.0, -sx, cx, 0.0], [0.0, 0.0, 0.0, 1.0]],
+                        dtype=np.float32,
+                    )
+                    Ry = np.array(
+                        [[cy, 0.0, -sy, 0.0], [0.0, 1.0, 0.0, 0.0], [sy, 0.0, cy, 0.0], [0.0, 0.0, 0.0, 1.0]],
+                        dtype=np.float32,
+                    )
+                    Rz = np.array(
+                        [[cz, sz, 0.0, 0.0], [-sz, cz, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
+                        dtype=np.float32,
+                    )
+                    R = (Rz @ Ry @ Rx).astype(np.float32)
+                    a = (R[:3, :3] @ a).astype(np.float32)
+                except Exception:
+                    a = axes.get(axis)
+
+        if isinstance(a, QtGui.QVector3D):
+            a = np.array([a.x(), a.y(), a.z()], dtype="f4")
+
+        a = np.asarray(a, dtype="f4")
+        al = float(np.linalg.norm(a))
+        if al > 1e-8:
+            a = a / al
+
+        # Compute parameter "s" along axis line closest to the mouse ray
+        w0 = ray_o - g0
+        ad = float(np.dot(a, ray_d))
+        denom = 1.0 - ad * ad
+        if abs(denom) < 1e-6:
+            s = float(np.dot(a, w0))
+        else:
+            s = float((ad * float(np.dot(ray_d, w0)) - float(np.dot(a, w0))) / denom)
+
+        # On first move after pick, capture s0
+        s0 = getattr(self, "_xform_drag_s0", None)
+        if s0 is None:
+            self._xform_drag_s0 = s
+            s0 = s
+
+        delta = (float(s0) - s) * a
+        return g0 + delta
+
+    def _handle_mouse_move_moderngl_xform_translate_apply_owner(self, new_pos, owner, renderer):
+        self._xform_gizmo_pos = (float(new_pos[0]), float(new_pos[1]), float(new_pos[2]))
+
+        # Move the selected asset (splat vs mesh) based on current renderer state.
+        is_splat = False
+        try:
+            splat_map = getattr(renderer, "_mgl_scene_splats_world", None)
+            if not isinstance(splat_map, dict) or not splat_map:
+                splat_map = getattr(renderer, "_mgl_scene_splats", None)
+            if isinstance(splat_map, dict) and owner in splat_map:
+                is_splat = True
+        except Exception:
+            is_splat = False
+
+        # For splats, xform.pos is a translation offset from the original pivot.
+        set_pos = self._xform_gizmo_pos
+        if is_splat:
+            try:
+                pivot = None
+                bounds_map = getattr(renderer, "_mgl_scene_splats_bounds_local", None) or getattr(
+                    renderer, "_mgl_scene_splat_bounds_by_owner", None
+                )
+                if isinstance(bounds_map, dict) and owner in bounds_map:
+                    bmin, bmax = bounds_map.get(owner) or (None, None)
+                    if bmin is not None and bmax is not None:
+                        pivot = (bmin + bmax) * 0.5
+                if pivot is not None:
+                    set_pos = (
+                        float(new_pos[0] - pivot[0]),
+                        float(new_pos[1] - pivot[1]),
+                        float(new_pos[2] - pivot[2]),
+                    )
+            except Exception:
+                set_pos = self._xform_gizmo_pos
+
+        self._mgl_set_scene_asset_xform(
+            owner,
+            pos=set_pos,
+            apply_to_scene_models=not is_splat,
+            use_splat_xform=bool(is_splat),
+        )
+        # Sync transform panel in the outliner (if visible)
+        try:
+            w = self.window()
+            if hasattr(w, "update_scene_asset_xform"):
+                w.update_scene_asset_xform(owner)
+        except Exception:
+            pass
+
+    def _handle_mouse_move_moderngl_xform_scale_drag(
+        self,
+        e,
+        axis,
+        owner,
+        g0,
+        px,
+        py,
+        vw,
+        vh,
+        P,
+        V,
+        M,
+    ):
+        try:
+            use_local = bool(getattr(self, "_xform_use_local", False))
+            start_scl = getattr(self, "_xform_drag_start_scl", None)
+            if start_scl is None:
+                try:
+                    start_scl, _ = self._get_owner_scl(owner)
+                except Exception:
+                    start_scl = (1.0, 1.0, 1.0)
+                self._xform_drag_start_scl = start_scl
+
+            is_splat = bool(getattr(self, "_xform_drag_kind", None) == "splat")
+
+            if axis == "u":
+                start_px = getattr(self, "_xform_scale_start_px", None)
+                if start_px is None:
+                    try:
+                        start_px = float(px)
+                        self._xform_scale_start_px = start_px
+                    except Exception:
+                        start_px = float(px)
+
+                dx = float(px) - float(start_px)
+                # Horizontal-only uniform scale: right = bigger, left = smaller.
+                sensitivity = 0.0020
+                factor = 1.0 + (dx * sensitivity)
+                factor = max(0.01, float(factor))
+                new_scl = (
+                    max(0.01, float(start_scl[0]) * factor),
+                    max(0.01, float(start_scl[1]) * factor),
+                    max(0.01, float(start_scl[2]) * factor),
+                )
+            else:
                 if P is None or V is None or M is None:
                     return True
+
+                axis_world = getattr(self, "_xform_scale_axis_world", None)
+                if axis_world is None:
+                    axis_local = (
+                        np.array([1.0, 0.0, 0.0], dtype="f4")
+                        if axis == "x"
+                        else (
+                            np.array([0.0, 1.0, 0.0], dtype="f4")
+                            if axis == "y"
+                            else np.array([0.0, 0.0, 1.0], dtype="f4")
+                        )
+                    )
+                    axis_world = axis_local
+                    if use_local:
+                        try:
+                            rot_deg, _ = self._get_owner_rot_deg(owner)
+                            rx, ry, rz = float(rot_deg[0]), float(rot_deg[1]), float(rot_deg[2])
+                            cx, sx = math.cos(math.radians(rx)), math.sin(math.radians(rx))
+                            cy, sy = math.cos(math.radians(ry)), math.sin(math.radians(ry))
+                            cz, sz = math.cos(math.radians(rz)), math.sin(math.radians(rz))
+
+                            Rx = np.array(
+                                [
+                                    [1.0, 0.0, 0.0, 0.0],
+                                    [0.0, cx, sx, 0.0],
+                                    [0.0, -sx, cx, 0.0],
+                                    [0.0, 0.0, 0.0, 1.0],
+                                ],
+                                dtype=np.float32,
+                            )
+                            Ry = np.array(
+                                [
+                                    [cy, 0.0, -sy, 0.0],
+                                    [0.0, 1.0, 0.0, 0.0],
+                                    [sy, 0.0, cy, 0.0],
+                                    [0.0, 0.0, 0.0, 1.0],
+                                ],
+                                dtype=np.float32,
+                            )
+                            Rz = np.array(
+                                [
+                                    [cz, sz, 0.0, 0.0],
+                                    [-sz, cz, 0.0, 0.0],
+                                    [0.0, 0.0, 1.0, 0.0],
+                                    [0.0, 0.0, 0.0, 1.0],
+                                ],
+                                dtype=np.float32,
+                            )
+                            R = (Rz @ Ry @ Rx).astype(np.float32)
+                            axis_world = (R[:3, :3] @ axis_local).astype(np.float32)
+                        except Exception:
+                            axis_world = axis_local
+
+                if isinstance(axis_world, QtGui.QVector3D):
+                    axis_world = np.array([axis_world.x(), axis_world.y(), axis_world.z()], dtype="f4")
+
+                axis_world = np.asarray(axis_world, dtype=np.float32)
+                ln = float(np.linalg.norm(axis_world))
+                if ln > 1e-8:
+                    axis_world = axis_world / ln
+                else:
+                    return True
+                self._xform_scale_axis_world = axis_world
 
                 PV = (P @ V @ M).astype("f4")
                 invPV = np.linalg.inv(PV)
@@ -6808,166 +7011,57 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     return True
                 ray_d /= n
 
-                new_pos = None
-                if axis == "view":
-                    nrm = getattr(self, "_xform_drag_plane_normal", None)
-                    if nrm is None:
-                        try:
-                            invVM = np.linalg.inv(
-                                (np.asarray(V, dtype=np.float32) @ np.asarray(M, dtype=np.float32)).astype(
-                                    np.float32
-                                )
-                            )
-                            nrm = -invVM[:3, 2]
-                            nlen = float(np.linalg.norm(nrm))
-                            if nlen > 1e-6:
-                                nrm = nrm / nlen
-                            else:
-                                nrm = None
-                        except Exception:
-                            nrm = None
-                    start_hit = getattr(self, "_xform_drag_plane_start", None)
-                    if nrm is not None:
-                        denom = float(np.dot(ray_d, nrm))
-                        if abs(denom) > 1e-6:
-                            t = float(np.dot((g0 - ray_o), nrm)) / denom
-                            hit = ray_o + (t * ray_d)
-                            if start_hit is None:
-                                self._xform_drag_plane_start = hit
-                                start_hit = hit
-                            delta = hit - start_hit
-                            new_pos = g0 + delta
+                w0 = ray_o - g0
+                ad = float(np.dot(axis_world, ray_d))
+                denom = 1.0 - ad * ad
+                if abs(denom) < 1e-6:
+                    s = float(np.dot(axis_world, w0))
                 else:
-                    axes = {
-                        "x": np.array([1.0, 0.0, 0.0], dtype="f4"),
-                        "y": np.array([0.0, 1.0, 0.0], dtype="f4"),
-                        "z": np.array([0.0, 0.0, 1.0], dtype="f4"),
-                    }
-                    a = getattr(self, "_xform_drag_axis_world", None)
-                    if a is None:
-                        a = axes.get(axis)
-                        if a is None:
-                            return True
-                        if bool(getattr(self, "_xform_use_local", False)):
-                            try:
-                                rot_deg, _ = self._get_owner_rot_deg(owner)
-                                rx, ry, rz = float(rot_deg[0]), float(rot_deg[1]), float(rot_deg[2])
-                                cx, sx = math.cos(math.radians(rx)), math.sin(math.radians(rx))
-                                cy, sy = math.cos(math.radians(ry)), math.sin(math.radians(ry))
-                                cz, sz = math.cos(math.radians(rz)), math.sin(math.radians(rz))
+                    s = float((ad * float(np.dot(ray_d, w0)) - float(np.dot(axis_world, w0))) / denom)
 
-                                Rx = np.array(
-                                    [[1.0, 0.0, 0.0, 0.0],
-                                     [0.0,  cx,  sx, 0.0],
-                                     [0.0, -sx,  cx, 0.0],
-                                     [0.0, 0.0, 0.0, 1.0]],
-                                    dtype=np.float32,
-                                )
-                                Ry = np.array(
-                                    [[ cy, 0.0, -sy, 0.0],
-                                     [0.0, 1.0, 0.0, 0.0],
-                                     [ sy, 0.0,  cy, 0.0],
-                                     [0.0, 0.0, 0.0, 1.0]],
-                                    dtype=np.float32,
-                                )
-                                Rz = np.array(
-                                    [[ cz,  sz, 0.0, 0.0],
-                                     [-sz,  cz, 0.0, 0.0],
-                                     [0.0, 0.0, 1.0, 0.0],
-                                     [0.0, 0.0, 0.0, 1.0]],
-                                    dtype=np.float32,
-                                )
-                                R = (Rz @ Ry @ Rx).astype(np.float32)
-                                a = (R[:3, :3] @ a).astype(np.float32)
-                            except Exception:
-                                a = axes.get(axis)
+                s0 = getattr(self, "_xform_drag_s0", None)
+                if s0 is None:
+                    self._xform_drag_s0 = s
+                    s0 = s
 
-                    if isinstance(a, QtGui.QVector3D):
-                        a = np.array([a.x(), a.y(), a.z()], dtype="f4")
+                if abs(float(s0)) > 1e-6:
+                    factor = float(s) / float(s0)
+                else:
+                    factor = 1.0
+                factor = max(0.01, float(factor))
 
-                    a = np.asarray(a, dtype="f4")
-                    al = float(np.linalg.norm(a))
-                    if al > 1e-8:
-                        a = a / al
+                new_scl = [float(start_scl[0]), float(start_scl[1]), float(start_scl[2])]
+                idx = 0 if axis == "x" else (1 if axis == "y" else 2)
+                new_scl[idx] = max(0.01, new_scl[idx] * factor)
+                new_scl = tuple(new_scl)
 
-                    # Compute parameter "s" along axis line closest to the mouse ray
-                    w0 = ray_o - g0
-                    ad = float(np.dot(a, ray_d))
-                    denom = 1.0 - ad * ad
-                    if abs(denom) < 1e-6:
-                        s = float(np.dot(a, w0))
-                    else:
-                        s = float((ad * float(np.dot(ray_d, w0)) - float(np.dot(a, w0))) / denom)
+            self._handle_mouse_move_moderngl_xform_scale_apply_owner(
+                e=e,
+                owner=owner,
+                new_scl=new_scl,
+                is_splat=is_splat,
+            )
+            return True
+        except Exception as exc:
+            print("[GIZMO_SCALE] failed:", exc, flush=True)
+            return True
 
-                    # On first move after pick, capture s0
-                    s0 = getattr(self, "_xform_drag_s0", None)
-                    if s0 is None:
-                        self._xform_drag_s0 = s
-                        s0 = s
+    def _handle_mouse_move_moderngl_xform_scale_apply_owner(self, e, owner, new_scl, is_splat):
+        self._mgl_set_scene_asset_xform(
+            owner,
+            scl=new_scl,
+            apply_to_scene_models=not is_splat,
+            use_splat_xform=bool(is_splat),
+        )
+        try:
+            w = self.window()
+            if hasattr(w, "update_scene_asset_xform"):
+                w.update_scene_asset_xform(owner)
+        except Exception:
+            pass
 
-                    delta = (float(s0) - s) * a
-                    new_pos = g0 + delta
-
-                if new_pos is None:
-                    return True
-
-                self._xform_gizmo_pos = (float(new_pos[0]), float(new_pos[1]), float(new_pos[2]))
-
-                # Move the selected asset (splat vs mesh) based on current renderer state.
-                is_splat = False
-                try:
-                    splat_map = getattr(renderer, "_mgl_scene_splats_world", None)
-                    if not isinstance(splat_map, dict) or not splat_map:
-                        splat_map = getattr(renderer, "_mgl_scene_splats", None)
-                    if isinstance(splat_map, dict) and owner in splat_map:
-                        is_splat = True
-                except Exception:
-                    is_splat = False
-
-                # For splats, xform.pos is a translation offset from the original pivot.
-                set_pos = self._xform_gizmo_pos
-                if is_splat:
-                    try:
-                        pivot = None
-                        bounds_map = getattr(renderer, "_mgl_scene_splats_bounds_local", None) or getattr(
-                            renderer, "_mgl_scene_splat_bounds_by_owner", None
-                        )
-                        if isinstance(bounds_map, dict) and owner in bounds_map:
-                            bmin, bmax = bounds_map.get(owner) or (None, None)
-                            if bmin is not None and bmax is not None:
-                                pivot = (bmin + bmax) * 0.5
-                        if pivot is not None:
-                            set_pos = (
-                                float(new_pos[0] - pivot[0]),
-                                float(new_pos[1] - pivot[1]),
-                                float(new_pos[2] - pivot[2]),
-                            )
-                    except Exception:
-                        set_pos = self._xform_gizmo_pos
-
-                self._mgl_set_scene_asset_xform(
-                    owner,
-                    pos=set_pos,
-                    apply_to_scene_models=not is_splat,
-                    use_splat_xform=bool(is_splat),
-                )
-                # Sync transform panel in the outliner (if visible)
-                try:
-                    w = self.window()
-                    if hasattr(w, "update_scene_asset_xform"):
-                        w.update_scene_asset_xform(owner)
-                except Exception:
-                    pass
-
-                # redraw
-                self.update()
-                e.accept()
-                return True
-
-            except Exception as exc:
-                print("[GIZMO_DRAG] failed:", exc, flush=True)
-
-        return False
+        self.update()
+        e.accept()
 
     def _handle_mouse_move_moderngl_arcball_drag(self, e):
         if self._mgl_arcball is not None and (e.buttons() & QtCore.Qt.LeftButton):
@@ -7350,302 +7444,16 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
     def _handle_mouse_release_moderngl(self, e):
         if self._use_moderngl:
             if e.button() == QtCore.Qt.RightButton:
-                try:
-                    orbit_enabled = bool(getattr(self, "_orbit_cam_enabled", True))
-                    fly_mode = bool(getattr(self, "_fly_mode_enabled", False))
-                    if orbit_enabled and bool(getattr(self, "_fps_camera_active", False)):
-                        self._fps_cam_sync_orbit_from_camera()
-                    if not fly_mode:
-                        self._fps_nav_active = False
-                        self._fps_nav_keys = set()
-                        self._fps_nav_look_last_pos = None
-                    else:
-                        self._fps_nav_look_last_pos = None
-                        try:
-                            anchor = getattr(self, "_fps_nav_cursor_anchor", None)
-                            if anchor is not None:
-                                QtGui.QCursor.setPos(anchor)
-                        except Exception:
-                            pass
-                        self._fps_nav_cursor_anchor = None
-                        self._fps_nav_warping = False
-                    if orbit_enabled:
-                        self._fps_camera_active = False
-                except Exception:
-                    pass
+                self._handle_mouse_release_moderngl_right_button_nav()
             # --- 1) If we were dragging the gizmo, ALWAYS end that first ---
-            if getattr(self, "_xform_dragging", False):
-                self._commit_xform_history()
-                # Log splat drag end with gizmo + xform state.
-                try:
-                    if getattr(self, "_xform_drag_kind", None) == "splat":
-                        renderer = getattr(self, "_mgl_renderer", None) or self
-                        owner = getattr(self, "_xform_drag_owner", None)
-                        xf = {}
-                        get_xf = getattr(renderer, "_mgl_get_scene_splat_xform", None)
-                        if callable(get_xf) and owner:
-                            xf = get_xf(owner) or {}
-                        xf_pos = tuple((xf or {}).get("pos", (0.0, 0.0, 0.0)))
-                        pivot = None
-                        bounds_map = (
-                            getattr(renderer, "_mgl_scene_splats_bounds_local", None)
-                            or getattr(renderer, "_mgl_scene_splat_bounds_by_owner", None)
-                        )
-                        if isinstance(bounds_map, dict) and owner in bounds_map:
-                            mins, maxs = bounds_map.get(owner) or (None, None)
-                            if mins is not None and maxs is not None:
-                                pivot = (
-                                    (float(mins[0]) + float(maxs[0])) * 0.5,
-                                    (float(mins[1]) + float(maxs[1])) * 0.5,
-                                    (float(mins[2]) + float(maxs[2])) * 0.5,
-                                )
-                        self._mgl_log(
-                            "splat: drag_end owner="
-                            + str(owner)
-                            + " gizmo_pos="
-                            + str(getattr(self, "_xform_gizmo_pos", None))
-                            + " xf_pos="
-                            + str(xf_pos)
-                            + " pivot="
-                            + str(pivot)
-                            + " drag_start="
-                            + str(getattr(self, "_xform_drag_start_pos", None))
-                        )
-                except Exception:
-                    pass
-
-                self._xform_dragging = False
-                self._xform_drag_axis = None
-                self._xform_drag_owner = None
-                self._xform_drag_s0 = None
-                self._xform_drag_kind = None
-                self._xform_drag_mode = None
-                self._xform_drag_start_scl = None
-                self._xform_scale_start_dist = None
-                self._xform_scale_start_px = None
-                self._xform_scale_axis_world = None
-                self._xform_scale_center_px = None
-                self._xform_drag_axis_world = None
-                self._xform_drag_plane_normal = None
-                self._xform_drag_plane_start = None
-                self._xform_gizmo_pos_locked = False
-
-                # Important: don't let a gizmo drag "fall through" into click-pick or orbit
-                self._mgl_pick_press_pos = None
-
-                # Safety: if we somehow grabbed the mouse, release it now
-                try:
-                    if QtWidgets.QApplication.mouseGrabber() is self:
-                        self.releaseMouse()
-                except Exception:
-                    pass
-
-                self.setCursor(QtCore.Qt.ArrowCursor)
-                e.accept()
+            if self._handle_mouse_release_moderngl_end_xform_drag(e):
                 return True
 
             # --- 2) Normal click-pick (only if it was a click, not a drag) ---
-            if e.button() == QtCore.Qt.LeftButton:
-                try:
-                    press = getattr(self, "_mgl_pick_press_pos", None)
-                    if press is not None:
-                        dx = abs(int(e.x()) - int(press.x()))
-                        dy = abs(int(e.y()) - int(press.y()))
-                        if dx <= 8 and dy <= 8:
-                            renderer = getattr(self, "_mgl_renderer", None) or self
-                            pick = getattr(renderer, "pick_owner_at", None)
-                            if callable(pick):
-                                dpr = 1.0
-                                try:
-                                    dpr = float(self.devicePixelRatioF())
-                                except Exception:
-                                    try:
-                                        dpr = float(self.devicePixelRatio())
-                                    except Exception:
-                                        dpr = 1.0
-
-                                px = int(e.x() * dpr)
-                                py = int(e.y() * dpr)
-                                vw = int(self.width() * dpr)
-                                vh = int(self.height() * dpr)
-
-                                owner = None
-                                hit = None
-
-                                pick_hit = getattr(renderer, "pick_hit_at", None)
-                                if callable(pick_hit):
-                                    owner, hit = pick_hit(px, py, vw, vh)
-                                else:
-                                    owner = pick(px, py, vw, vh)
-
-                                if owner:
-                                    w = self.window()
-                                    if hasattr(w, "select_scene_asset"):
-                                        w.select_scene_asset(owner)
-                                    try:
-                                        kind = getattr(renderer, "_mgl_last_pick_kind", None)
-                                    except Exception:
-                                        kind = None
-                                    try:
-                                        self._mgl_log(
-                                            "scene: pick owner=" + str(owner) + " kind=" + str(kind)
-                                        )
-                                    except Exception:
-                                        pass
-
-                                    # Force gizmo to the owner pivot (stored xform) or bounds center fallback
-                                    self._xform_gizmo_owner = owner
-                                    try:
-                                        self._xform_gizmo_owner_kind = getattr(renderer, "_mgl_last_pick_kind", None)
-                                    except Exception:
-                                        self._xform_gizmo_owner_kind = None
-
-                                    try:
-                                        # Use stored xform position when available
-                                        xf = {}
-                                        is_splat = False
-                                        try:
-                                            splat_map = getattr(renderer, "_mgl_scene_splats_world", None)
-                                            if not isinstance(splat_map, dict) or not splat_map:
-                                                splat_map = getattr(renderer, "_mgl_scene_splats", None)
-                                            if isinstance(splat_map, dict) and owner in splat_map:
-                                                is_splat = True
-                                        except Exception:
-                                            is_splat = False
-
-                                        get_xf = getattr(renderer, "_mgl_get_scene_splat_xform", None) if is_splat else getattr(renderer, "_mgl_get_scene_asset_xform", None)
-                                        if callable(get_xf):
-                                            xf = get_xf(owner) or {}
-                                        xf_pos = tuple((xf or {}).get("pos", (0.0, 0.0, 0.0)))
-
-                                        # For splats, xform.pos is an offset from the local pivot.
-                                        pivot = None
-                                        if is_splat:
-                                            try:
-                                                bounds_map = (
-                                                    getattr(renderer, "_mgl_scene_splats_bounds_local", None)
-                                                    or getattr(renderer, "_mgl_scene_splat_bounds_by_owner", None)
-                                                )
-                                                if isinstance(bounds_map, dict) and owner in bounds_map:
-                                                    mins, maxs = bounds_map.get(owner) or (None, None)
-                                                    if mins is not None and maxs is not None:
-                                                        pivot = (
-                                                            (float(mins[0]) + float(maxs[0])) * 0.5,
-                                                            (float(mins[1]) + float(maxs[1])) * 0.5,
-                                                            (float(mins[2]) + float(maxs[2])) * 0.5,
-                                                        )
-                                            except Exception:
-                                                pivot = None
-
-                                        if is_splat:
-                                            # splat xform.pos is an offset from local pivot
-                                            if pivot is not None:
-                                                self._xform_gizmo_pos = (
-                                                    float(xf_pos[0] + pivot[0]),
-                                                    float(xf_pos[1] + pivot[1]),
-                                                    float(xf_pos[2] + pivot[2]),
-                                                )
-                                                self._xform_gizmo_pos_locked = True
-                                            else:
-                                                # fallback to bounds center
-                                                bounds_map = (
-                                                    getattr(renderer, "_mgl_scene_splats_bounds_local", None)
-                                                    or getattr(renderer, "_mgl_scene_splat_bounds_by_owner", None)
-                                                )
-                                                if isinstance(bounds_map, dict) and owner in bounds_map:
-                                                    mins, maxs = bounds_map.get(owner) or (None, None)
-                                                    if mins is not None and maxs is not None:
-                                                        cx = (float(mins[0]) + float(maxs[0])) * 0.5
-                                                        cy = (float(mins[1]) + float(maxs[1])) * 0.5
-                                                        cz = (float(mins[2]) + float(maxs[2])) * 0.5
-                                                        self._xform_gizmo_pos = (cx, cy, cz)
-                                                        self._xform_gizmo_pos_locked = True
-                                        else:
-                                            # mesh: pos is already world pivot (even if zero)
-                                            self._xform_gizmo_pos = (
-                                                float(xf_pos[0]),
-                                                float(xf_pos[1]),
-                                                float(xf_pos[2]),
-                                            )
-                                            self._xform_gizmo_pos_locked = True
-
-                                        # Log splat selection + gizmo placement for debugging.
-                                        try:
-                                            if is_splat:
-                                                self._mgl_log(
-                                                    "splat: select owner="
-                                                    + str(owner)
-                                                    + " xf_pos="
-                                                    + str(xf_pos)
-                                                    + " pivot="
-                                                    + str(pivot)
-                                                    + " gizmo_pos="
-                                                    + str(getattr(self, "_xform_gizmo_pos", None))
-                                                )
-                                        except Exception:
-                                            pass
-                                    except Exception:
-                                        pass
-
-                                    # Allow outliner edits to reposition the gizmo after selection.
-                                    try:
-                                        self._xform_gizmo_pos_locked = False
-                                    except Exception:
-                                        pass
-
-                                    self.update()
-                                else:
-                                    # Clicked empty space: clear selection + hide gizmo
-                                    try:
-                                        self._mgl_log("scene: click empty -> clear selection")
-                                    except Exception:
-                                        pass
-
-                                    # Clear gizmo selection state
-                                    self._xform_gizmo_owner = None
-                                    self._xform_gizmo_owner_kind = None
-                                    self._xform_gizmo_pos_locked = False
-                                    self._xform_gizmo_pos = (0.0, 0.0, 0.0)
-
-                                    # Stop any active rotate drags safely
-                                    try:
-                                        rot_shared = getattr(self, "_rot_shared", None)
-                                        if rot_shared is not None:
-                                            rot_shared.end_drag()
-                                    except Exception:
-                                        pass
-
-                                    # Clear outliner selection if the window exposes the helper
-                                    try:
-                                        w = self.window()
-                                        if w is not None and hasattr(w, "clear_scene_asset_selection"):
-                                            w.clear_scene_asset_selection()
-                                    except Exception:
-                                        pass
-
-                                    self.update()
-
-                except Exception:
-                    pass
+            self._handle_mouse_release_moderngl_click_pick(e)
 
             # --- 3) Always end camera interactions cleanly ---
-            if e.button() == QtCore.Qt.LeftButton:
-                self._mgl_pick_press_pos = None
-                self._mgl_orbit_dragging = False
-                self._mgl_orbit_last_pos = None
-                if self._mgl_arcball is not None:
-                    try:
-                        self._mgl_arcball.onClickLeftUp()
-                    except Exception:
-                        pass
-
-            if e.button() == QtCore.Qt.RightButton:
-                self._mgl_zoom_press_pos = None
-                self._mgl_zoom_start = None
-                self._mgl_zoom_center_start = None
-                self._mgl_zoom_cam_start = None
-                self._mgl_zoom_cam_dir = None
-                self._mgl_zoom_ray_dir = None
+            self._handle_mouse_release_moderngl_end_camera_interactions(e)
 
             # Safety: if we somehow grabbed the mouse, release it now
             try:
@@ -7659,6 +7467,314 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             return True
 
         return False
+
+    def _handle_mouse_release_moderngl_right_button_nav(self):
+        try:
+            orbit_enabled = bool(getattr(self, "_orbit_cam_enabled", True))
+            fly_mode = bool(getattr(self, "_fly_mode_enabled", False))
+            if orbit_enabled and bool(getattr(self, "_fps_camera_active", False)):
+                self._fps_cam_sync_orbit_from_camera()
+            if not fly_mode:
+                self._fps_nav_active = False
+                self._fps_nav_keys = set()
+                self._fps_nav_look_last_pos = None
+            else:
+                self._fps_nav_look_last_pos = None
+                try:
+                    anchor = getattr(self, "_fps_nav_cursor_anchor", None)
+                    if anchor is not None:
+                        QtGui.QCursor.setPos(anchor)
+                except Exception:
+                    pass
+                self._fps_nav_cursor_anchor = None
+                self._fps_nav_warping = False
+            if orbit_enabled:
+                self._fps_camera_active = False
+        except Exception:
+            pass
+
+    def _handle_mouse_release_moderngl_end_xform_drag(self, e):
+        if not getattr(self, "_xform_dragging", False):
+            return False
+
+        self._commit_xform_history()
+        # Log splat drag end with gizmo + xform state.
+        try:
+            if getattr(self, "_xform_drag_kind", None) == "splat":
+                renderer = getattr(self, "_mgl_renderer", None) or self
+                owner = getattr(self, "_xform_drag_owner", None)
+                xf = {}
+                get_xf = getattr(renderer, "_mgl_get_scene_splat_xform", None)
+                if callable(get_xf) and owner:
+                    xf = get_xf(owner) or {}
+                xf_pos = tuple((xf or {}).get("pos", (0.0, 0.0, 0.0)))
+                pivot = None
+                bounds_map = (
+                    getattr(renderer, "_mgl_scene_splats_bounds_local", None)
+                    or getattr(renderer, "_mgl_scene_splat_bounds_by_owner", None)
+                )
+                if isinstance(bounds_map, dict) and owner in bounds_map:
+                    mins, maxs = bounds_map.get(owner) or (None, None)
+                    if mins is not None and maxs is not None:
+                        pivot = (
+                            (float(mins[0]) + float(maxs[0])) * 0.5,
+                            (float(mins[1]) + float(maxs[1])) * 0.5,
+                            (float(mins[2]) + float(maxs[2])) * 0.5,
+                        )
+                self._mgl_log(
+                    "splat: drag_end owner="
+                    + str(owner)
+                    + " gizmo_pos="
+                    + str(getattr(self, "_xform_gizmo_pos", None))
+                    + " xf_pos="
+                    + str(xf_pos)
+                    + " pivot="
+                    + str(pivot)
+                    + " drag_start="
+                    + str(getattr(self, "_xform_drag_start_pos", None))
+                )
+        except Exception:
+            pass
+
+        self._xform_dragging = False
+        self._xform_drag_axis = None
+        self._xform_drag_owner = None
+        self._xform_drag_s0 = None
+        self._xform_drag_kind = None
+        self._xform_drag_mode = None
+        self._xform_drag_start_scl = None
+        self._xform_scale_start_dist = None
+        self._xform_scale_start_px = None
+        self._xform_scale_axis_world = None
+        self._xform_scale_center_px = None
+        self._xform_drag_axis_world = None
+        self._xform_drag_plane_normal = None
+        self._xform_drag_plane_start = None
+        self._xform_gizmo_pos_locked = False
+
+        # Important: don't let a gizmo drag "fall through" into click-pick or orbit
+        self._mgl_pick_press_pos = None
+
+        # Safety: if we somehow grabbed the mouse, release it now
+        try:
+            if QtWidgets.QApplication.mouseGrabber() is self:
+                self.releaseMouse()
+        except Exception:
+            pass
+
+        self.setCursor(QtCore.Qt.ArrowCursor)
+        e.accept()
+        return True
+
+    def _handle_mouse_release_moderngl_click_pick(self, e):
+        if e.button() == QtCore.Qt.LeftButton:
+            try:
+                press = getattr(self, "_mgl_pick_press_pos", None)
+                if press is not None:
+                    dx = abs(int(e.x()) - int(press.x()))
+                    dy = abs(int(e.y()) - int(press.y()))
+                    if dx <= 8 and dy <= 8:
+                        renderer = getattr(self, "_mgl_renderer", None) or self
+                        pick = getattr(renderer, "pick_owner_at", None)
+                        if callable(pick):
+                            dpr = 1.0
+                            try:
+                                dpr = float(self.devicePixelRatioF())
+                            except Exception:
+                                try:
+                                    dpr = float(self.devicePixelRatio())
+                                except Exception:
+                                    dpr = 1.0
+
+                            px = int(e.x() * dpr)
+                            py = int(e.y() * dpr)
+                            vw = int(self.width() * dpr)
+                            vh = int(self.height() * dpr)
+
+                            owner = None
+                            hit = None
+
+                            pick_hit = getattr(renderer, "pick_hit_at", None)
+                            if callable(pick_hit):
+                                owner, hit = pick_hit(px, py, vw, vh)
+                            else:
+                                owner = pick(px, py, vw, vh)
+
+                            if owner:
+                                self._handle_mouse_release_moderngl_pick_owner(owner, renderer)
+                            else:
+                                self._handle_mouse_release_moderngl_pick_empty()
+            except Exception:
+                pass
+
+    def _handle_mouse_release_moderngl_pick_owner(self, owner, renderer):
+        w = self.window()
+        if hasattr(w, "select_scene_asset"):
+            w.select_scene_asset(owner)
+        try:
+            kind = getattr(renderer, "_mgl_last_pick_kind", None)
+        except Exception:
+            kind = None
+        try:
+            self._mgl_log("scene: pick owner=" + str(owner) + " kind=" + str(kind))
+        except Exception:
+            pass
+
+        # Force gizmo to the owner pivot (stored xform) or bounds center fallback
+        self._xform_gizmo_owner = owner
+        try:
+            self._xform_gizmo_owner_kind = getattr(renderer, "_mgl_last_pick_kind", None)
+        except Exception:
+            self._xform_gizmo_owner_kind = None
+
+        try:
+            # Use stored xform position when available
+            xf = {}
+            is_splat = False
+            try:
+                splat_map = getattr(renderer, "_mgl_scene_splats_world", None)
+                if not isinstance(splat_map, dict) or not splat_map:
+                    splat_map = getattr(renderer, "_mgl_scene_splats", None)
+                if isinstance(splat_map, dict) and owner in splat_map:
+                    is_splat = True
+            except Exception:
+                is_splat = False
+
+            get_xf = (
+                getattr(renderer, "_mgl_get_scene_splat_xform", None)
+                if is_splat
+                else getattr(renderer, "_mgl_get_scene_asset_xform", None)
+            )
+            if callable(get_xf):
+                xf = get_xf(owner) or {}
+            xf_pos = tuple((xf or {}).get("pos", (0.0, 0.0, 0.0)))
+
+            # For splats, xform.pos is an offset from the local pivot.
+            pivot = None
+            if is_splat:
+                try:
+                    bounds_map = (
+                        getattr(renderer, "_mgl_scene_splats_bounds_local", None)
+                        or getattr(renderer, "_mgl_scene_splat_bounds_by_owner", None)
+                    )
+                    if isinstance(bounds_map, dict) and owner in bounds_map:
+                        mins, maxs = bounds_map.get(owner) or (None, None)
+                        if mins is not None and maxs is not None:
+                            pivot = (
+                                (float(mins[0]) + float(maxs[0])) * 0.5,
+                                (float(mins[1]) + float(maxs[1])) * 0.5,
+                                (float(mins[2]) + float(maxs[2])) * 0.5,
+                            )
+                except Exception:
+                    pivot = None
+
+            if is_splat:
+                # splat xform.pos is an offset from local pivot
+                if pivot is not None:
+                    self._xform_gizmo_pos = (
+                        float(xf_pos[0] + pivot[0]),
+                        float(xf_pos[1] + pivot[1]),
+                        float(xf_pos[2] + pivot[2]),
+                    )
+                    self._xform_gizmo_pos_locked = True
+                else:
+                    # fallback to bounds center
+                    bounds_map = (
+                        getattr(renderer, "_mgl_scene_splats_bounds_local", None)
+                        or getattr(renderer, "_mgl_scene_splat_bounds_by_owner", None)
+                    )
+                    if isinstance(bounds_map, dict) and owner in bounds_map:
+                        mins, maxs = bounds_map.get(owner) or (None, None)
+                        if mins is not None and maxs is not None:
+                            cx = (float(mins[0]) + float(maxs[0])) * 0.5
+                            cy = (float(mins[1]) + float(maxs[1])) * 0.5
+                            cz = (float(mins[2]) + float(maxs[2])) * 0.5
+                            self._xform_gizmo_pos = (cx, cy, cz)
+                            self._xform_gizmo_pos_locked = True
+            else:
+                # mesh: pos is already world pivot (even if zero)
+                self._xform_gizmo_pos = (
+                    float(xf_pos[0]),
+                    float(xf_pos[1]),
+                    float(xf_pos[2]),
+                )
+                self._xform_gizmo_pos_locked = True
+
+            # Log splat selection + gizmo placement for debugging.
+            try:
+                if is_splat:
+                    self._mgl_log(
+                        "splat: select owner="
+                        + str(owner)
+                        + " xf_pos="
+                        + str(xf_pos)
+                        + " pivot="
+                        + str(pivot)
+                        + " gizmo_pos="
+                        + str(getattr(self, "_xform_gizmo_pos", None))
+                    )
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        # Allow outliner edits to reposition the gizmo after selection.
+        try:
+            self._xform_gizmo_pos_locked = False
+        except Exception:
+            pass
+
+        self.update()
+
+    def _handle_mouse_release_moderngl_pick_empty(self):
+        # Clicked empty space: clear selection + hide gizmo
+        try:
+            self._mgl_log("scene: click empty -> clear selection")
+        except Exception:
+            pass
+
+        # Clear gizmo selection state
+        self._xform_gizmo_owner = None
+        self._xform_gizmo_owner_kind = None
+        self._xform_gizmo_pos_locked = False
+        self._xform_gizmo_pos = (0.0, 0.0, 0.0)
+
+        # Stop any active rotate drags safely
+        try:
+            rot_shared = getattr(self, "_rot_shared", None)
+            if rot_shared is not None:
+                rot_shared.end_drag()
+        except Exception:
+            pass
+
+        # Clear outliner selection if the window exposes the helper
+        try:
+            w = self.window()
+            if w is not None and hasattr(w, "clear_scene_asset_selection"):
+                w.clear_scene_asset_selection()
+        except Exception:
+            pass
+
+        self.update()
+
+    def _handle_mouse_release_moderngl_end_camera_interactions(self, e):
+        if e.button() == QtCore.Qt.LeftButton:
+            self._mgl_pick_press_pos = None
+            self._mgl_orbit_dragging = False
+            self._mgl_orbit_last_pos = None
+            if self._mgl_arcball is not None:
+                try:
+                    self._mgl_arcball.onClickLeftUp()
+                except Exception:
+                    pass
+
+        if e.button() == QtCore.Qt.RightButton:
+            self._mgl_zoom_press_pos = None
+            self._mgl_zoom_start = None
+            self._mgl_zoom_center_start = None
+            self._mgl_zoom_cam_start = None
+            self._mgl_zoom_cam_dir = None
+            self._mgl_zoom_ray_dir = None
 
     def _handle_mouse_release_example_pipeline(self, e):
         if self._use_example_pipeline:
