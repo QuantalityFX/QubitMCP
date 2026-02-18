@@ -104,3 +104,66 @@ def axis_line_ray_param(axis_world, g0, ray_o, ray_d):
     if abs(denom) < 1e-6:
         return float(np.dot(axis_world, w0))
     return float((ad * float(np.dot(ray_d, w0)) - float(np.dot(axis_world, w0))) / denom)
+
+
+def unwrap_deg(prev_deg, new_deg_wrapped):
+    d = float(new_deg_wrapped) - float(prev_deg)
+    out = float(new_deg_wrapped)
+    if d > 180.0:
+        out -= 360.0
+    elif d < -180.0:
+        out += 360.0
+    return out
+
+
+def closest_unwrapped_euler(candidates, current_xyz):
+    cx, cy, cz = float(current_xyz[0]), float(current_xyz[1]), float(current_xyz[2])
+    best = None
+    best_err = 1e30
+    for ax, ay, az in candidates:
+        ux = unwrap_deg(cx, ax)
+        uy = unwrap_deg(cy, ay)
+        uz = unwrap_deg(cz, az)
+        err = (ux - cx) * (ux - cx) + (uy - cy) * (uy - cy) + (uz - cz) * (uz - cz)
+        if err < best_err:
+            best_err = err
+            best = (ux, uy, uz)
+    return best
+
+
+def gizmo_screen_scale(P, V, M, T, R, viewport_height_px, scale_multiplier, target_ring_px, ring_radius):
+    try:
+        vh_s = float(max(1.0, viewport_height_px))
+        Pn = np.asarray(P, dtype=np.float32)
+        Vn = np.asarray(V, dtype=np.float32)
+        Mn = np.asarray(M, dtype=np.float32)
+        proj_y = abs(float(Pn[1, 1]))
+        if proj_y <= 1e-6:
+            return 1.0
+
+        vm = (Vn @ Mn @ (T @ R)).astype(np.float32)
+        cp = vm @ np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+        w = float(cp[3]) if abs(float(cp[3])) > 1e-6 else 1.0
+        dist_raw = abs(float(cp[2]) / w)
+        dist_raw = max(dist_raw, 1e-6)
+        dist = dist_raw * float(scale_multiplier)
+
+        ring_r = float(ring_radius)
+        if ring_r <= 1e-6:
+            return 1.0
+
+        scene_scale = 1.0
+        try:
+            sx = float(np.linalg.norm(Mn[:3, 0]))
+            sy = float(np.linalg.norm(Mn[:3, 1]))
+            sz = float(np.linalg.norm(Mn[:3, 2]))
+            scene_scale = (sx + sy + sz) / 3.0
+            if scene_scale <= 1e-6:
+                scene_scale = 1.0
+        except Exception:
+            scene_scale = 1.0
+
+        s = (float(target_ring_px) * 2.0 * dist) / (vh_s * proj_y * ring_r * scene_scale)
+        return max(1e-6, min(1000.0, float(s)))
+    except Exception:
+        return 1.0
