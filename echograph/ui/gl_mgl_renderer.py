@@ -2914,348 +2914,7 @@ class MGLRendererMixin:
         except Exception:
             pass
 
-    def _paint_mgl(self) -> None:
-        if getattr(self, "_render_paused", False):
-            return
-        now = time.perf_counter()
-        dt = now - getattr(self, "_fps_last_t", now)
-        self._fps_last_t = now
-
-        if dt > 0.0:
-            if self._fps_ema <= 0.0:
-                self._fps_ema = dt
-            else:
-                self._fps_ema = self._fps_ema * 0.9 + dt * 0.1
-            self._fps = 1.0 / max(self._fps_ema, 1e-6)
-
-        frame_id = int(getattr(self, "_mgl_frame_id", 0) or 0) + 1
-        self._mgl_frame_id = frame_id
-        try:
-            if not math.isfinite(dt) or dt < 0.0:
-                dt = 0.0
-        except Exception:
-            dt = 0.0
-        # Clamp large gaps so procedural animations don't "jump" on first frame.
-        step = min(max(float(dt), 0.0), 0.1)
-        try:
-            self._mgl_update_procedural_textures(step, frame_id)
-        except Exception:
-            pass
-
-        dbg = bool(getattr(self, "_mgl_debug", False))
-        self._dbgprint(dbg, "[MGL] ENTER _paint_mgl", flush=True)
-
-        if not _HAS_MGL or self._mgl_ctx is None:
-            try:
-                c = self._viewport_bg
-                self._gl.glClearColor(c.redF(), c.greenF(), c.blueF(), 1.0)
-            except Exception:
-                pass
-            return
-        try:
-            self._mgl_bind_default_fbo()
-            # QOpenGLWidget already has the correct default framebuffer bound.
-            # Avoid Framebuffer.clear() because it may bind/use() internally and can hard-crash some drivers.
-            self._dbgprint(dbg, "[MGL] set viewport", flush=True)
-            self._mgl_ctx.viewport = (0, 0, max(2, self.width()), max(2, self.height()))
-            self._dbgprint(dbg, "[MGL] after viewport assign", flush=True)
-
-            col = self._mgl_bg_color or (0.15, 0.15, 0.15, 1.0)
-            if len(col) >= 4:
-                r, g, b, a = col[:4]
-            else:
-                r, g, b = col[:3]
-                a = 1.0
-
-            try:
-                if self._gl is not None:
-                    w = max(2, self.width())
-                    h = max(2, self.height())
-                    self._dbgprint(dbg, "[MGL] before glViewport", flush=True)
-                    self._gl.glViewport(0, 0, w, h)
-                    self._dbgprint(dbg, "[MGL] after glViewport", flush=True)
-
-                    self._dbgprint(dbg, "[MGL] before glClearColor", flush=True)
-                    self._gl.glClearColor(r, g, b, a)
-                    self._dbgprint(dbg, "[MGL] after glClearColor", flush=True)
-
-                    # bind Qt's default FBO (snapshot/grab can change the bound framebuffer)
-                    try:
-                        fbo = int(self.defaultFramebufferObject())
-                        self._gl.glBindFramebuffer(0x8D40, fbo)  # GL_FRAMEBUFFER
-                    except Exception:
-                        pass
-
-                    self._dbgprint(dbg, "[MGL] before glClear", flush=True)
-                    try:
-                        self._gl.glClearDepth(1.0)
-                    except Exception:
-                        pass
-                    self._gl.glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-                    self._dbgprint(dbg, "[MGL] after glClear", flush=True)
-
-            except Exception:
-                # Fallback: raw GL clear
-                try:
-                    if self._gl is not None:
-                        try:
-                            fbo = int(self.defaultFramebufferObject())
-                            self._gl.glBindFramebuffer(0x8D40, fbo)  # GL_FRAMEBUFFER
-                        except Exception:
-                            pass
-
-                        self._gl.glClearColor(r, g, b, a)
-                        try:
-                            self._gl.glClearDepth(1.0)
-                        except Exception:
-                            pass
-                        self._gl.glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-                except Exception:
-                    pass
-
-            self._dbgprint(dbg, "[MGL] after raw gl clear block", flush=True)
-
-            # Ensure Qt's default framebuffer is bound (snapshot/grab can change FBO binding)
-            try:
-                if self._gl is not None and hasattr(self, "defaultFramebufferObject"):
-                    fbo = int(self.defaultFramebufferObject())
-                    self._gl.glBindFramebuffer(0x8D40, fbo)  # GL_FRAMEBUFFER
-            except Exception:
-                pass
-
-        except Exception as exc:
-            import traceback
-            self._mgl_error = f"ModernGL framebuffer error: {exc}"
-            self._dbgprint(dbg, "[MGL] framebuffer exception:", exc, flush=True)
-            traceback.print_exc()
-            return
-
-        flags = moderngl.BLEND | moderngl.DEPTH_TEST
-        if self._mgl_cull_enabled:
-            flags |= moderngl.CULL_FACE
-        self._dbgprint(dbg, "[MGL] before mgl enable", flush=True)
-        self._mgl_ctx.enable(flags)
-        self._dbgprint(dbg, "[MGL] after mgl enable", flush=True)
-
-        self._mgl_ctx.wireframe = False
-        try:
-            # Ensure depth writes are on before drawing the scene.
-            self._mgl_ctx.depth_mask = True
-        except Exception:
-            pass
-
-        self._dbgprint(dbg, "[MGL] after wireframe", flush=True)
-        if self._mgl_prog is None or self._mgl_grid_prog is None:
-            return
-        self._dbgprint(dbg, "[MGL] prog ok", flush=True)
-
-        pending_grid = getattr(self, "_mgl_grid_model_pending_path", None)
-        if pending_grid is not None:
-            self._mgl_grid_model_pending_path = None
-
-            # Only load the legacy grid-model if it is explicitly enabled.
-            if bool(getattr(self, "_mgl_grid_model_visible", False)):
-                self._mgl_load_grid_model(Path(pending_grid), in_paint=True)
-
-
-        aspect = self.width() / max(1.0, self.height())
-        try:
-            zoom = float(getattr(self, "_mgl_camera_zoom", 1.0))
-        except Exception:
-            zoom = 1.0
-        near = max(0.0001, min(0.02, zoom * 0.002))
-        try:
-            far = float(getattr(self, "_mgl_clip_far", 1000.0))
-        except Exception:
-            far = 1000.0
-        if far <= near:
-            far = near + 1.0
-        proj = Matrix44.perspective_projection(self._mgl_fov, aspect, near, far)
-        self._dbgprint(dbg, "[MGL] proj ok", flush=True)
-
-        self._dbgprint(dbg, "[MGL] before lookat", flush=True)
-        lookat = Matrix44.look_at(
-            (0.0, 0.0, float(self._mgl_camera_zoom)),
-            (0.0, 0.0, 0.0),
-            (0.0, 1.0, 0.0),
-        )
-        self._dbgprint(dbg, "[MGL] after lookat", flush=True)
-        self._dbgprint(dbg, "[MGL] before transform build", flush=True)
-
-        if self._mgl_arcball is not None and self._mgl_center is not None:
-            self._mgl_arcball.Transform[3, :3] = -self._mgl_arcball.Transform[:3, :3].T @ self._mgl_center
-
-        # build transform safely
-        if self._mgl_arcball is not None:
-            try:
-                src = self._mgl_arcball.Transform
-                if hasattr(src, "tolist"):
-                    transform = Matrix44(src.tolist(), dtype="f4")
-                else:
-                    transform = Matrix44(src, dtype="f4")
-            except Exception:
-                transform = Matrix44.identity(dtype="f4")
-        else:
-            transform = Matrix44.identity(dtype="f4")
-
-        # If FPS camera is active, override view matrix and bypass arcball transform.
-        try:
-            use_fps_cam = bool(getattr(self, "_fps_camera_active", False)) and getattr(self, "_fps_camera", None) is not None
-        except Exception:
-            use_fps_cam = False
-        if use_fps_cam:
-            try:
-                cam = getattr(self, "_fps_camera", None)
-                roll_locked = bool(getattr(self, "_mgl_orbit_locked", True))
-                if cam is not None:
-                    lookat = cam.view_matrix(roll_locked=roll_locked)
-                    transform = Matrix44.identity(dtype="f4")
-            except Exception:
-                pass
-        # cache matrices for picking (screen click -> ray)
-        try:
-            if np is not None:
-                self._mgl_pick_proj = np.array(proj, dtype="f4").T
-                self._mgl_pick_view = np.array(lookat, dtype="f4").T
-                self._mgl_pick_model = np.array(transform, dtype="f4").T
-        except Exception:
-            pass
-        # cache camera world position for debug + grid falloff
-        try:
-            cam_world = None
-            if np is not None:
-                if use_fps_cam:
-                    cam = getattr(self, "_fps_camera", None)
-                    if cam is not None:
-                        pos = np.array(getattr(cam, "position", (0.0, 0.0, 0.0)), dtype=np.float32)
-                        cam_world = (float(pos[0]), float(pos[1]), float(pos[2]))
-                if cam_world is None:
-                    arc = getattr(self, "_mgl_arcball", None)
-                    center = getattr(self, "_mgl_center", None)
-                    zoom = float(getattr(self, "_mgl_camera_zoom", 0.0))
-                    if arc is not None and hasattr(arc, "Transform"):
-                        rot = np.array(arc.Transform[:3, :3], dtype=np.float32)
-                        # remove uniform scale so we only apply rotation
-                        scale = float(np.linalg.norm(rot, ord="fro") / math.sqrt(3.0))
-                        if scale > 1e-6:
-                            rot = rot / scale
-                        cam_local = np.array([0.0, 0.0, zoom], dtype=np.float32)
-                        cam_rot = rot.T @ cam_local
-                        if center is not None:
-                            cam_world = (
-                                float(cam_rot[0] + float(center[0])),
-                                float(cam_rot[1] + float(center[1])),
-                                float(cam_rot[2] + float(center[2])),
-                            )
-                        else:
-                            cam_world = (float(cam_rot[0]), float(cam_rot[1]), float(cam_rot[2]))
-                if cam_world is None:
-                    view_mat = (lookat * transform).astype("f4")
-                    view_np = np.array(view_mat, dtype=np.float32)
-                    inv = np.linalg.inv(view_np)
-                    cam = inv @ np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
-                    cam_world = (float(cam[0]), float(cam[1]), float(cam[2]))
-            self._mgl_cam_world = cam_world
-        except Exception:
-            self._mgl_cam_world = None
-
-        # cache stable 3x3 rotation for gizmo (no yaw/pitch)
-        try:
-            self._gizmo_rot3 = (
-                (float(transform[0][0]), float(transform[0][1]), float(transform[0][2])),
-                (float(transform[1][0]), float(transform[1][1]), float(transform[1][2])),
-                (float(transform[2][0]), float(transform[2][1]), float(transform[2][2])),
-            )
-        except Exception:
-            self._gizmo_rot3 = None
-
-
-        self._dbgprint(dbg, "[MGL] after transform build", flush=True)
-
-        self._dbgprint(dbg, "[MGL] before mvp compute", flush=True)
-
-        if self._mgl_scale_multiplier != 1.0:
-            scale_mat = Matrix44.from_scale(
-                [self._mgl_scale_multiplier] * 3,
-                dtype="f4",
-            )
-            mvp = proj * lookat * transform * scale_mat
-        else:
-            mvp = proj * lookat * transform
-        self._dbgprint(dbg, "[MGL] after mvp compute", flush=True)
-
-        self._dbgprint(dbg, "[MGL] before Mvp write", flush=True)
-        self._mgl_prog["Mvp"].write(mvp.astype("f4").tobytes())
-        self._dbgprint(dbg, "[MGL] after Mvp write", flush=True)
-
-        # Apply any pending visibility changes in GL context (safe).
-        try:
-            if bool(getattr(self, "_mgl_visibility_dirty", False)):
-                self._mgl_visibility_dirty = False
-                pending = getattr(self, "_mgl_pending_visibility", None)
-                if isinstance(pending, dict):
-                    for key, vis in list(pending.items()):
-                        try:
-                            self._mgl_set_scene_item_visibility(key, bool(vis))
-                        except Exception:
-                            pass
-                    pending.clear()
-                # Recompute splat render flag after visibility updates
-                try:
-                    splat_map = getattr(self, "_mgl_scene_splats", None) or {}
-                    visibility = getattr(self, "_mgl_scene_visibility", {}) or {}
-                    any_visible = False
-                    if isinstance(splat_map, dict):
-                        for k in splat_map.keys():
-                            if bool(visibility.get(k, True)):
-                                any_visible = True
-                                break
-                    self._mgl_render_splats = bool(any_visible)
-                    need_rebuild = False
-                    if self._mgl_render_splats:
-                        need_rebuild = bool(
-                            getattr(self, "_mgl_splats_need_rebuild", False)
-                            or getattr(self, "_mgl_splatq_vao", None) is None
-                            or not bool(getattr(self, "_mgl_splat_count", 0))
-                        )
-                    self._mgl_splats_visibility_dirty = bool(need_rebuild)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-        # If splat visibility changed, rebuild in GL context.
-        try:
-            if bool(getattr(self, "_mgl_splats_visibility_dirty", False)):
-                if bool(getattr(self, "_mgl_render_splats", False)):
-                    now = time.time()
-                    last = float(getattr(self, "_mgl_splats_rebuild_ts", 0.0) or 0.0)
-                    min_dt = float(getattr(self, "_mgl_splats_rebuild_min_dt", 0.05) or 0.05)
-                    if now - last < min_dt:
-                        # Keep dirty flag set; try again next frame.
-                        self._mgl_splats_visibility_dirty = True
-                    else:
-                        self._mgl_splats_visibility_dirty = False
-                        self._mgl_splats_rebuild_ts = now
-                        try:
-                            self._mgl_rebuild_scene_splats(preserve_camera=True)
-                        except Exception as exc:
-                            try:
-                                self._mgl_log("splats: rebuild (visibility dirty) failed err=" + repr(exc))
-                            except Exception:
-                                pass
-                else:
-                    self._mgl_splats_visibility_dirty = False
-        except Exception:
-            pass
-
-        self._mgl_upload_pending_splats()
-
-        scene = getattr(self, "_mgl_scene", None)
-        if scene is not None:
-            scene.draw(self, mvp)
-
-        # --- GRID (draw BEFORE splats so splats layer on top) ---
+    def _paint_mgl_draw_grid_pass(self, *, mvp) -> None:
         try:
             if bool(getattr(self, "_mgl_grid_visible", False)):
                 if self._mgl_grid_vao is None:
@@ -3276,7 +2935,6 @@ class MGLRendererMixin:
             pass
         if bool(getattr(self, "_mgl_grid_visible", False)) and self._mgl_grid_vao is not None:
             try:
-                # Save state we touch
                 try:
                     _prev_depth_mask = bool(getattr(self._mgl_ctx, "depth_mask", True))
                 except Exception:
@@ -3290,7 +2948,6 @@ class MGLRendererMixin:
                 except Exception:
                     _prev_depth_func = None
 
-                # Draw grid with depth test so it stays behind meshes/splats.
                 prev_depth_test = True
                 try:
                     prev_depth_test = bool(getattr(self._mgl_ctx, "depth_test", True))
@@ -3301,7 +2958,6 @@ class MGLRendererMixin:
                 except Exception:
                     pass
                 try:
-                    # Ensure grid tests against scene depth (default <=)
                     self._mgl_ctx.depth_func = "<="
                 except Exception:
                     pass
@@ -3318,7 +2974,6 @@ class MGLRendererMixin:
                 except Exception:
                     pass
 
-                # Use the configured grid alpha (default is high for visibility).
                 try:
                     grid_alpha = float(getattr(self, "_mgl_grid_alpha", 0.35))
                 except Exception:
@@ -3408,7 +3063,6 @@ class MGLRendererMixin:
                             fade_end = max_fade
                             fade_start = max(0.0, fade_end * ratio)
                     else:
-                        # Tie fade radius to camera distance with smooth exponential scaling.
                         try:
                             cam_dist = float(getattr(self, "_mgl_camera_zoom", 0.0))
                         except Exception:
@@ -3524,7 +3178,6 @@ class MGLRendererMixin:
                             skip_z = None
 
                     block_verts = steps * 2
-                    # Block 0: lines parallel to Z at constant X (skip X=0 when it falls inside this block)
                     if skip_x is None:
                         self._mgl_grid_vao.render(mode=moderngl.LINES, vertices=block_verts, first=0)
                     else:
@@ -3534,7 +3187,6 @@ class MGLRendererMixin:
                             self._mgl_grid_vao.render(mode=moderngl.LINES, vertices=before, first=0)
                         if after > 0:
                             self._mgl_grid_vao.render(mode=moderngl.LINES, vertices=after, first=(skip_x + 1) * 2)
-                    # Block 1: lines parallel to X at constant Z (skip Z=0 when it falls inside this block)
                     base = block_verts
                     if skip_z is None:
                         self._mgl_grid_vao.render(mode=moderngl.LINES, vertices=block_verts, first=base)
@@ -3550,7 +3202,6 @@ class MGLRendererMixin:
                                 first=base + (skip_z + 1) * 2,
                             )
 
-                    # Draw the 2 center axes once (thicker) so origin reads as "+"
                     try:
                         _center_prev_lw = float(getattr(self._mgl_ctx, "line_width", 1.0))
                     except Exception:
@@ -3598,7 +3249,6 @@ class MGLRendererMixin:
                 except Exception:
                     self._mgl_grid_vao.render(moderngl.LINES)
 
-                # Restore
                 try:
                     self._mgl_ctx.line_width = _prev_lw
                 except Exception:
@@ -3617,8 +3267,8 @@ class MGLRendererMixin:
             except Exception:
                 pass
 
-
-        # --- SPLATS (instanced-quad only) ---
+    def _paint_mgl_draw_splats_pass(self, *, proj, lookat, transform) -> None:
+        dbg = bool(getattr(self, "_mgl_debug", False))
         try:
             reason = None
             if not bool(getattr(self, "_mgl_render_splats", False)):
@@ -3675,7 +3325,6 @@ class MGLRendererMixin:
                 except Exception:
                     pass
 
-
                 # disable depth writes (robust: ModernGL + raw GL fallback)
                 prev_depth_mask = True
                 try:
@@ -3695,7 +3344,6 @@ class MGLRendererMixin:
                             did_set_depth_mask = True
                     except Exception:
                         pass
-
 
                 # model matrix (same as mesh path)
                 if self._mgl_scale_multiplier != 1.0:
@@ -3724,8 +3372,6 @@ class MGLRendererMixin:
                 # tick + gate sorting
                 self._mgl_splat_sort_tick = (self._mgl_splat_sort_tick + 1) % 1000000
                 do_sort = (self._mgl_splat_sort_tick % 10) == 0  # sort every 10th frame
-
-                dbg = bool(getattr(self, "_mgl_debug", False))
 
                 # SORT (only sometimes)
                 try:
@@ -3811,6 +3457,7 @@ class MGLRendererMixin:
                 print("[SPLATQ] PAINT CRASH:", exc)
             traceback.print_exc()
 
+    def _paint_mgl_draw_splat_wireframe_pass(self, *, mvp) -> None:
         if (
             self._mgl_wireframe
             and self._mgl_render_splats
@@ -3840,6 +3487,372 @@ class MGLRendererMixin:
                 self._mgl_ctx.line_width = 1.0
             except Exception:
                 pass
+
+    def _paint_mgl_update_frame_timing(self) -> None:
+        now = time.perf_counter()
+        dt = now - getattr(self, "_fps_last_t", now)
+        self._fps_last_t = now
+
+        if dt > 0.0:
+            if self._fps_ema <= 0.0:
+                self._fps_ema = dt
+            else:
+                self._fps_ema = self._fps_ema * 0.9 + dt * 0.1
+            self._fps = 1.0 / max(self._fps_ema, 1e-6)
+
+        frame_id = int(getattr(self, "_mgl_frame_id", 0) or 0) + 1
+        self._mgl_frame_id = frame_id
+        try:
+            if not math.isfinite(dt) or dt < 0.0:
+                dt = 0.0
+        except Exception:
+            dt = 0.0
+        # Clamp large gaps so procedural animations don't "jump" on first frame.
+        step = min(max(float(dt), 0.0), 0.1)
+        try:
+            self._mgl_update_procedural_textures(step, frame_id)
+        except Exception:
+            pass
+
+    def _paint_mgl_prepare_framebuffer(self, *, dbg) -> bool:
+        if not _HAS_MGL or self._mgl_ctx is None:
+            try:
+                c = self._viewport_bg
+                self._gl.glClearColor(c.redF(), c.greenF(), c.blueF(), 1.0)
+            except Exception:
+                pass
+            return False
+        try:
+            self._mgl_bind_default_fbo()
+            # QOpenGLWidget already has the correct default framebuffer bound.
+            # Avoid Framebuffer.clear() because it may bind/use() internally and can hard-crash some drivers.
+            self._dbgprint(dbg, "[MGL] set viewport", flush=True)
+            self._mgl_ctx.viewport = (0, 0, max(2, self.width()), max(2, self.height()))
+            self._dbgprint(dbg, "[MGL] after viewport assign", flush=True)
+
+            col = self._mgl_bg_color or (0.15, 0.15, 0.15, 1.0)
+            if len(col) >= 4:
+                r, g, b, a = col[:4]
+            else:
+                r, g, b = col[:3]
+                a = 1.0
+
+            try:
+                if self._gl is not None:
+                    w = max(2, self.width())
+                    h = max(2, self.height())
+                    self._dbgprint(dbg, "[MGL] before glViewport", flush=True)
+                    self._gl.glViewport(0, 0, w, h)
+                    self._dbgprint(dbg, "[MGL] after glViewport", flush=True)
+
+                    self._dbgprint(dbg, "[MGL] before glClearColor", flush=True)
+                    self._gl.glClearColor(r, g, b, a)
+                    self._dbgprint(dbg, "[MGL] after glClearColor", flush=True)
+
+                    # bind Qt's default FBO (snapshot/grab can change the bound framebuffer)
+                    try:
+                        fbo = int(self.defaultFramebufferObject())
+                        self._gl.glBindFramebuffer(0x8D40, fbo)  # GL_FRAMEBUFFER
+                    except Exception:
+                        pass
+
+                    self._dbgprint(dbg, "[MGL] before glClear", flush=True)
+                    try:
+                        self._gl.glClearDepth(1.0)
+                    except Exception:
+                        pass
+                    self._gl.glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+                    self._dbgprint(dbg, "[MGL] after glClear", flush=True)
+
+            except Exception:
+                # Fallback: raw GL clear
+                try:
+                    if self._gl is not None:
+                        try:
+                            fbo = int(self.defaultFramebufferObject())
+                            self._gl.glBindFramebuffer(0x8D40, fbo)  # GL_FRAMEBUFFER
+                        except Exception:
+                            pass
+
+                        self._gl.glClearColor(r, g, b, a)
+                        try:
+                            self._gl.glClearDepth(1.0)
+                        except Exception:
+                            pass
+                        self._gl.glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+                except Exception:
+                    pass
+
+            self._dbgprint(dbg, "[MGL] after raw gl clear block", flush=True)
+
+            # Ensure Qt's default framebuffer is bound (snapshot/grab can change FBO binding)
+            try:
+                if self._gl is not None and hasattr(self, "defaultFramebufferObject"):
+                    fbo = int(self.defaultFramebufferObject())
+                    self._gl.glBindFramebuffer(0x8D40, fbo)  # GL_FRAMEBUFFER
+            except Exception:
+                pass
+
+        except Exception as exc:
+            import traceback
+            self._mgl_error = f"ModernGL framebuffer error: {exc}"
+            self._dbgprint(dbg, "[MGL] framebuffer exception:", exc, flush=True)
+            traceback.print_exc()
+            return False
+        return True
+
+    def _paint_mgl_setup_context_state(self, *, dbg) -> bool:
+        flags = moderngl.BLEND | moderngl.DEPTH_TEST
+        if self._mgl_cull_enabled:
+            flags |= moderngl.CULL_FACE
+        self._dbgprint(dbg, "[MGL] before mgl enable", flush=True)
+        self._mgl_ctx.enable(flags)
+        self._dbgprint(dbg, "[MGL] after mgl enable", flush=True)
+
+        self._mgl_ctx.wireframe = False
+        try:
+            # Ensure depth writes are on before drawing the scene.
+            self._mgl_ctx.depth_mask = True
+        except Exception:
+            pass
+
+        self._dbgprint(dbg, "[MGL] after wireframe", flush=True)
+        if self._mgl_prog is None or self._mgl_grid_prog is None:
+            return False
+        self._dbgprint(dbg, "[MGL] prog ok", flush=True)
+
+        pending_grid = getattr(self, "_mgl_grid_model_pending_path", None)
+        if pending_grid is not None:
+            self._mgl_grid_model_pending_path = None
+
+            # Only load the legacy grid-model if it is explicitly enabled.
+            if bool(getattr(self, "_mgl_grid_model_visible", False)):
+                self._mgl_load_grid_model(Path(pending_grid), in_paint=True)
+        return True
+
+    def _paint_mgl_build_matrices(self, *, dbg):
+        aspect = self.width() / max(1.0, self.height())
+        try:
+            zoom = float(getattr(self, "_mgl_camera_zoom", 1.0))
+        except Exception:
+            zoom = 1.0
+        near = max(0.0001, min(0.02, zoom * 0.002))
+        try:
+            far = float(getattr(self, "_mgl_clip_far", 1000.0))
+        except Exception:
+            far = 1000.0
+        if far <= near:
+            far = near + 1.0
+        proj = Matrix44.perspective_projection(self._mgl_fov, aspect, near, far)
+        self._dbgprint(dbg, "[MGL] proj ok", flush=True)
+
+        self._dbgprint(dbg, "[MGL] before lookat", flush=True)
+        lookat = Matrix44.look_at(
+            (0.0, 0.0, float(self._mgl_camera_zoom)),
+            (0.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+        )
+        self._dbgprint(dbg, "[MGL] after lookat", flush=True)
+        self._dbgprint(dbg, "[MGL] before transform build", flush=True)
+
+        if self._mgl_arcball is not None and self._mgl_center is not None:
+            self._mgl_arcball.Transform[3, :3] = -self._mgl_arcball.Transform[:3, :3].T @ self._mgl_center
+
+        # build transform safely
+        if self._mgl_arcball is not None:
+            try:
+                src = self._mgl_arcball.Transform
+                if hasattr(src, "tolist"):
+                    transform = Matrix44(src.tolist(), dtype="f4")
+                else:
+                    transform = Matrix44(src, dtype="f4")
+            except Exception:
+                transform = Matrix44.identity(dtype="f4")
+        else:
+            transform = Matrix44.identity(dtype="f4")
+
+        # If FPS camera is active, override view matrix and bypass arcball transform.
+        try:
+            use_fps_cam = bool(getattr(self, "_fps_camera_active", False)) and getattr(self, "_fps_camera", None) is not None
+        except Exception:
+            use_fps_cam = False
+        if use_fps_cam:
+            try:
+                cam = getattr(self, "_fps_camera", None)
+                roll_locked = bool(getattr(self, "_mgl_orbit_locked", True))
+                if cam is not None:
+                    lookat = cam.view_matrix(roll_locked=roll_locked)
+                    transform = Matrix44.identity(dtype="f4")
+            except Exception:
+                pass
+        # cache matrices for picking (screen click -> ray)
+        try:
+            if np is not None:
+                self._mgl_pick_proj = np.array(proj, dtype="f4").T
+                self._mgl_pick_view = np.array(lookat, dtype="f4").T
+                self._mgl_pick_model = np.array(transform, dtype="f4").T
+        except Exception:
+            pass
+        # cache camera world position for debug + grid falloff
+        try:
+            cam_world = None
+            if np is not None:
+                if use_fps_cam:
+                    cam = getattr(self, "_fps_camera", None)
+                    if cam is not None:
+                        pos = np.array(getattr(cam, "position", (0.0, 0.0, 0.0)), dtype=np.float32)
+                        cam_world = (float(pos[0]), float(pos[1]), float(pos[2]))
+                if cam_world is None:
+                    arc = getattr(self, "_mgl_arcball", None)
+                    center = getattr(self, "_mgl_center", None)
+                    zoom = float(getattr(self, "_mgl_camera_zoom", 0.0))
+                    if arc is not None and hasattr(arc, "Transform"):
+                        rot = np.array(arc.Transform[:3, :3], dtype=np.float32)
+                        # remove uniform scale so we only apply rotation
+                        scale = float(np.linalg.norm(rot, ord="fro") / math.sqrt(3.0))
+                        if scale > 1e-6:
+                            rot = rot / scale
+                        cam_local = np.array([0.0, 0.0, zoom], dtype=np.float32)
+                        cam_rot = rot.T @ cam_local
+                        if center is not None:
+                            cam_world = (
+                                float(cam_rot[0] + float(center[0])),
+                                float(cam_rot[1] + float(center[1])),
+                                float(cam_rot[2] + float(center[2])),
+                            )
+                        else:
+                            cam_world = (float(cam_rot[0]), float(cam_rot[1]), float(cam_rot[2]))
+                if cam_world is None:
+                    view_mat = (lookat * transform).astype("f4")
+                    view_np = np.array(view_mat, dtype=np.float32)
+                    inv = np.linalg.inv(view_np)
+                    cam = inv @ np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+                    cam_world = (float(cam[0]), float(cam[1]), float(cam[2]))
+            self._mgl_cam_world = cam_world
+        except Exception:
+            self._mgl_cam_world = None
+
+        # cache stable 3x3 rotation for gizmo (no yaw/pitch)
+        try:
+            self._gizmo_rot3 = (
+                (float(transform[0][0]), float(transform[0][1]), float(transform[0][2])),
+                (float(transform[1][0]), float(transform[1][1]), float(transform[1][2])),
+                (float(transform[2][0]), float(transform[2][1]), float(transform[2][2])),
+            )
+        except Exception:
+            self._gizmo_rot3 = None
+
+        self._dbgprint(dbg, "[MGL] after transform build", flush=True)
+        self._dbgprint(dbg, "[MGL] before mvp compute", flush=True)
+
+        if self._mgl_scale_multiplier != 1.0:
+            scale_mat = Matrix44.from_scale(
+                [self._mgl_scale_multiplier] * 3,
+                dtype="f4",
+            )
+            mvp = proj * lookat * transform * scale_mat
+        else:
+            mvp = proj * lookat * transform
+        self._dbgprint(dbg, "[MGL] after mvp compute", flush=True)
+
+        self._dbgprint(dbg, "[MGL] before Mvp write", flush=True)
+        self._mgl_prog["Mvp"].write(mvp.astype("f4").tobytes())
+        self._dbgprint(dbg, "[MGL] after Mvp write", flush=True)
+        return proj, lookat, transform, mvp
+
+    def _paint_mgl_apply_scene_visibility_and_upload(self, *, mvp) -> None:
+        # Apply any pending visibility changes in GL context (safe).
+        try:
+            if bool(getattr(self, "_mgl_visibility_dirty", False)):
+                self._mgl_visibility_dirty = False
+                pending = getattr(self, "_mgl_pending_visibility", None)
+                if isinstance(pending, dict):
+                    for key, vis in list(pending.items()):
+                        try:
+                            self._mgl_set_scene_item_visibility(key, bool(vis))
+                        except Exception:
+                            pass
+                    pending.clear()
+                # Recompute splat render flag after visibility updates
+                try:
+                    splat_map = getattr(self, "_mgl_scene_splats", None) or {}
+                    visibility = getattr(self, "_mgl_scene_visibility", {}) or {}
+                    any_visible = False
+                    if isinstance(splat_map, dict):
+                        for k in splat_map.keys():
+                            if bool(visibility.get(k, True)):
+                                any_visible = True
+                                break
+                    self._mgl_render_splats = bool(any_visible)
+                    need_rebuild = False
+                    if self._mgl_render_splats:
+                        need_rebuild = bool(
+                            getattr(self, "_mgl_splats_need_rebuild", False)
+                            or getattr(self, "_mgl_splatq_vao", None) is None
+                            or not bool(getattr(self, "_mgl_splat_count", 0))
+                        )
+                    self._mgl_splats_visibility_dirty = bool(need_rebuild)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # If splat visibility changed, rebuild in GL context.
+        try:
+            if bool(getattr(self, "_mgl_splats_visibility_dirty", False)):
+                if bool(getattr(self, "_mgl_render_splats", False)):
+                    now = time.time()
+                    last = float(getattr(self, "_mgl_splats_rebuild_ts", 0.0) or 0.0)
+                    min_dt = float(getattr(self, "_mgl_splats_rebuild_min_dt", 0.05) or 0.05)
+                    if now - last < min_dt:
+                        # Keep dirty flag set; try again next frame.
+                        self._mgl_splats_visibility_dirty = True
+                    else:
+                        self._mgl_splats_visibility_dirty = False
+                        self._mgl_splats_rebuild_ts = now
+                        try:
+                            self._mgl_rebuild_scene_splats(preserve_camera=True)
+                        except Exception as exc:
+                            try:
+                                self._mgl_log("splats: rebuild (visibility dirty) failed err=" + repr(exc))
+                            except Exception:
+                                pass
+                else:
+                    self._mgl_splats_visibility_dirty = False
+        except Exception:
+            pass
+
+        self._mgl_upload_pending_splats()
+
+        scene = getattr(self, "_mgl_scene", None)
+        if scene is not None:
+            scene.draw(self, mvp)
+
+    def _paint_mgl(self) -> None:
+        if getattr(self, "_render_paused", False):
+            return
+        self._paint_mgl_update_frame_timing()
+
+        dbg = bool(getattr(self, "_mgl_debug", False))
+        self._dbgprint(dbg, "[MGL] ENTER _paint_mgl", flush=True)
+
+        if not self._paint_mgl_prepare_framebuffer(dbg=dbg):
+            return
+        if not self._paint_mgl_setup_context_state(dbg=dbg):
+            return
+
+        proj, lookat, transform, mvp = self._paint_mgl_build_matrices(dbg=dbg)
+        self._paint_mgl_apply_scene_visibility_and_upload(mvp=mvp)
+
+        self._paint_mgl_draw_grid_pass(mvp=mvp)
+
+
+        self._paint_mgl_draw_splats_pass(
+            proj=proj,
+            lookat=lookat,
+            transform=transform,
+        )
+        self._paint_mgl_draw_splat_wireframe_pass(mvp=mvp)
 
 
 
