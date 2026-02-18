@@ -691,6 +691,7 @@ class TextureLayerWidget(QtWidgets.QWidget):
         self._scene_input = False
         self._base_item = None
         self._overlay_item = None
+        self._selection_connected = False
 
         _ensure_param(node_item, "mesh", "")
         _ensure_param(node_item, "base", "")
@@ -748,14 +749,15 @@ class TextureLayerWidget(QtWidgets.QWidget):
         layout.addLayout(right, 1)
 
         self._ensure_scene()
-        self._refresh_preview()
+        if self._is_selected():
+            self._refresh_preview()
 
         self._frame_timer = QtCore.QTimer(self)
         self._frame_timer.setInterval(60)
         self._frame_timer.timeout.connect(self._on_timer_tick)
-        self._frame_timer.start()
 
         QtCore.QTimer.singleShot(0, self._update_inputs)
+        QtCore.QTimer.singleShot(0, self._update_timer_state)
 
     def sizeHint(self):
         w = 250
@@ -802,11 +804,35 @@ class TextureLayerWidget(QtWidgets.QWidget):
                 self._scene.paramChanged.connect(self._on_scene_param_changed)
             except Exception:
                 pass
+        if hasattr(self._scene, "selectionChanged") and not self._selection_connected:
+            try:
+                self._scene.selectionChanged.connect(self._on_scene_selection_changed)
+                self._selection_connected = True
+            except Exception:
+                self._selection_connected = False
         self._scene_connected = True
 
     def _on_scene_param_changed(self, name=None, _params=None):
         if _param_change_relevant(self._node_item, name):
             self._schedule_update()
+
+    def _on_scene_selection_changed(self):
+        self._update_timer_state()
+        if self._is_selected():
+            self._refresh_preview(force=True)
+
+    def _update_timer_state(self):
+        timer = getattr(self, "_frame_timer", None)
+        if timer is None:
+            return
+        active = bool(self._is_selected())
+        try:
+            if active and (not timer.isActive()):
+                timer.start()
+            elif (not active) and timer.isActive():
+                timer.stop()
+        except Exception:
+            pass
 
     def _schedule_update(self):
         if self._pending:
@@ -1156,7 +1182,8 @@ class TextureLayerWidget(QtWidgets.QWidget):
             else:
                 self._view_btn.setToolTip("View textured model")
 
-        self._refresh_preview(force=True)
+        if self._is_selected():
+            self._refresh_preview(force=True)
 
     def _set_param(self, name: str, value: str, notify_scene: bool = True):
         try:
@@ -1175,6 +1202,8 @@ class TextureLayerWidget(QtWidgets.QWidget):
             pass
 
     def _on_timer_tick(self):
+        if not self._is_selected():
+            return
         glv = self._get_gl_view()
         use_gpu = self._gpu_preview_available(glv)
         selected = self._is_selected()

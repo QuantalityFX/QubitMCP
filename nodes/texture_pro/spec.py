@@ -1598,6 +1598,7 @@ class TextureProWidget(QtWidgets.QWidget):
         self._input_item = None
         self._input_kind = ""
         self._scene_input = False
+        self._selection_connected = False
 
         layout = QtWidgets.QHBoxLayout(self)
         layout.setContentsMargins(6, 4, 6, 10)
@@ -2139,15 +2140,15 @@ class TextureProWidget(QtWidgets.QWidget):
             pass
 
         self._ensure_scene()
-        self._refresh_preview()
+        if self._is_selected():
+            self._refresh_preview()
 
         self._frame_timer = QtCore.QTimer(self)
         self._frame_timer.setInterval(60)
         self._frame_timer.timeout.connect(self._on_timer_tick)
-        self._frame_timer.start()
 
-        QtCore.QTimer.singleShot(0, self._hook_viewport)
         QtCore.QTimer.singleShot(0, self._update_inputs)
+        QtCore.QTimer.singleShot(0, self._update_timer_state)
 
     def sizeHint(self):
         w = 250
@@ -2194,11 +2195,37 @@ class TextureProWidget(QtWidgets.QWidget):
                 self._scene.paramChanged.connect(self._on_scene_param_changed)
             except Exception:
                 pass
+        if hasattr(self._scene, "selectionChanged") and not self._selection_connected:
+            try:
+                self._scene.selectionChanged.connect(self._on_scene_selection_changed)
+                self._selection_connected = True
+            except Exception:
+                self._selection_connected = False
         self._scene_connected = True
 
     def _on_scene_param_changed(self, name=None, _params=None):
         if _param_change_relevant(self._node_item, name):
             self._schedule_update()
+
+    def _on_scene_selection_changed(self):
+        self._update_timer_state()
+        if self._is_selected():
+            self._refresh_preview(force=True)
+
+    def _update_timer_state(self):
+        timer = getattr(self, "_frame_timer", None)
+        if timer is None:
+            return
+        active = bool(self._is_selected())
+        try:
+            if active and (not timer.isActive()):
+                timer.start()
+            elif (not active) and timer.isActive():
+                timer.stop()
+        except Exception:
+            pass
+        if not active:
+            self._unhook_viewport()
 
     def _schedule_update(self):
         if self._pending:
@@ -3125,11 +3152,29 @@ class TextureProWidget(QtWidgets.QWidget):
         except Exception:
             self._frame_hooked = False
 
+    def _unhook_viewport(self):
+        if not self._frame_hooked:
+            return
+        glv = self._get_gl_view()
+        if glv is None:
+            self._frame_hooked = False
+            return
+        try:
+            if hasattr(glv, "frameSwapped"):
+                glv.frameSwapped.disconnect(self._on_frame_swapped)
+        except Exception:
+            pass
+        self._frame_hooked = False
+
     def _on_frame_swapped(self):
+        if not self._is_selected():
+            return
         self._last_frame_ts = time.time()
         self._tick(from_view=True)
 
     def _on_timer_tick(self):
+        if not self._is_selected():
+            return
         if not self._frame_hooked:
             self._hook_viewport()
         if self._frame_hooked and (time.time() - self._last_frame_ts) < 0.5:
