@@ -4695,152 +4695,290 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         return False
 
     def _handle_mouse_press_moderngl_left_gizmo(self, e):
-        if e.button() == QtCore.Qt.LeftButton:
-            try:
-                owner = getattr(self, "_xform_gizmo_owner", None)
-                pos = getattr(self, "_xform_gizmo_pos", None)
-
-                if owner and pos and (np is not None):
-                    mode = getattr(self, "_xform_gizmo_mode", "translate") or "translate"
-
-                    dpr = float(getattr(self, "devicePixelRatioF", lambda: 1.0)())
-                    vw = float(self.width()) * dpr
-                    vh = float(self.height()) * dpr
-
-                    renderer = getattr(self, "_mgl_renderer", None) or self
-                    P = getattr(renderer, "_mgl_pick_proj", None)
-                    V = getattr(renderer, "_mgl_pick_view", None)
-                    M = getattr(renderer, "_mgl_pick_model", None)
-
-                    if P is not None and V is not None and M is not None:
-                        PV = (P @ V @ M).astype("f4")
-
-                        def project(world_xyz):
-                            p = np.array([world_xyz[0], world_xyz[1], world_xyz[2], 1.0], dtype="f4")
-                            c = PV @ p
-                            if abs(float(c[3])) < 1e-8:
-                                return None
-                            ndc = c[:3] / c[3]
-                            sx = (ndc[0] * 0.5 + 0.5) * vw
-                            sy = (1.0 - (ndc[1] * 0.5 + 0.5)) * vh
-                            return float(sx), float(sy)
-
-                        def dist_pt_seg(px2, py2, ax, ay, bx, by):
-                            abx = bx - ax
-                            aby = by - ay
-                            apx = px2 - ax
-                            apy = py2 - ay
-                            ab2 = abx * abx + aby * aby
-                            if ab2 < 1e-8:
-                                dx = px2 - ax
-                                dy = py2 - ay
-                                return (dx * dx + dy * dy) ** 0.5
-                            t = max(0.0, min(1.0, (apx * abx + apy * aby) / ab2))
-                            cx = ax + t * abx
-                            cy = ay + t * aby
-                            dx = px2 - cx
-                            dy = py2 - cy
-                            return (dx * dx + dy * dy) ** 0.5
-
-                        g = np.array([float(pos[0]), float(pos[1]), float(pos[2])], dtype="f4")
-                        axis_len = 1.0
-                        axes = {
-                            "x": np.array([1.0, 0.0, 0.0], dtype="f4"),
-                            "y": np.array([0.0, 1.0, 0.0], dtype="f4"),
-                            "z": np.array([0.0, 0.0, 1.0], dtype="f4"),
-                        }
-
-                        p0 = project(g)
-
-                        # --- shared rotate gizmo drag start (NEW, RotateGizmoShared only) ---
-                        handled, rot_shared, hit = self._handle_mouse_press_moderngl_left_gizmo_rotate_ring_pick(
-                            e=e,
-                            mode=mode,
-                            owner=owner,
-                            g=g,
-                            p0=p0,
-                            dpr=dpr,
-                            vw=vw,
-                            vh=vh,
-                            V=V,
-                            M=M,
-                            PV=PV,
-                        )
-                        if handled:
-                            return True
-
-
-                        # mouse in device pixels (must match project() output space)
-                        try:
-                            mp = e.position() if hasattr(e, "position") else QtCore.QPointF(e.x(), e.y())
-                        except Exception:
-                            mp = QtCore.QPointF(e.x(), e.y())
-
-                        dpr = float(self.devicePixelRatioF()) if hasattr(self, "devicePixelRatioF") else 1.0
-                        px_dev = float(mp.x()) * dpr
-                        py_dev = float(mp.y()) * dpr
-
-                        # --- ROT_SHARED center-disc arcball drag (smoketest style) ---
-                        if self._handle_mouse_press_moderngl_left_gizmo_rotate_arc_pick(
-                            e=e,
-                            mode=mode,
-                            rot_shared=rot_shared,
-                            p0=p0,
-                            hit=hit,
-                            owner=owner,
-                            dpr=dpr,
-                            px_dev=px_dev,
-                            py_dev=py_dev,
-                            V=V,
-                            M=M,
-                        ):
-                            return True
-
-                        # --- scale gizmo drag start (axis cubes + center) ---
-                        if self._handle_mouse_press_moderngl_left_gizmo_scale_pick(
-                            e=e,
-                            p0=p0,
-                            mode=mode,
-                            owner=owner,
-                            g=g,
-                            axis_len=axis_len,
-                            dpr=dpr,
-                            vw=vw,
-                            vh=vh,
-                            P=P,
-                            V=V,
-                            M=M,
-                            renderer=renderer,
-                            px_dev=px_dev,
-                            py_dev=py_dev,
-                        ):
-                            return True
-
-                        if self._handle_mouse_press_moderngl_left_gizmo_translate_pick(
-                            e=e,
-                            p0=p0,
-                            mode=mode,
-                            owner=owner,
-                            g=g,
-                            axes=axes,
-                            axis_len=axis_len,
-                            dpr=dpr,
-                            vw=vw,
-                            vh=vh,
-                            P=P,
-                            V=V,
-                            M=M,
-                            renderer=renderer,
-                            px_dev=px_dev,
-                            py_dev=py_dev,
-                            project=project,
-                            dist_pt_seg=dist_pt_seg,
-                        ):
-                            return True
-
-            except Exception as exc:
-                print("[GIZMO_PICK] failed:", exc, flush=True)
+        if e.button() != QtCore.Qt.LeftButton:
+            return False
+        try:
+            ctx = self._handle_mouse_press_moderngl_left_gizmo_build_context(e)
+            if ctx is None:
+                return False
+            return self._handle_mouse_press_moderngl_left_gizmo_dispatch(e=e, **ctx)
+        except Exception as exc:
+            print("[GIZMO_PICK] failed:", exc, flush=True)
         return False
+
+    def _handle_mouse_press_moderngl_left_gizmo_build_context(self, e):
+        owner = getattr(self, "_xform_gizmo_owner", None)
+        pos = getattr(self, "_xform_gizmo_pos", None)
+        if owner in (None, "") or pos is None or (np is None):
+            return None
+
+        mode = getattr(self, "_xform_gizmo_mode", "translate") or "translate"
+
+        dpr = float(getattr(self, "devicePixelRatioF", lambda: 1.0)())
+        vw = float(self.width()) * dpr
+        vh = float(self.height()) * dpr
+
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        P = getattr(renderer, "_mgl_pick_proj", None)
+        V = getattr(renderer, "_mgl_pick_view", None)
+        M = getattr(renderer, "_mgl_pick_model", None)
+        if P is None or V is None or M is None:
+            return None
+
+        PV = (P @ V @ M).astype("f4")
+
+        g = np.array([float(pos[0]), float(pos[1]), float(pos[2])], dtype="f4")
+        axis_len = 1.0
+        axes = {
+            "x": np.array([1.0, 0.0, 0.0], dtype="f4"),
+            "y": np.array([0.0, 1.0, 0.0], dtype="f4"),
+            "z": np.array([0.0, 0.0, 1.0], dtype="f4"),
+        }
+        p0 = self._handle_mouse_press_moderngl_left_gizmo_project_world(
+            world_xyz=g,
+            PV=PV,
+            vw=vw,
+            vh=vh,
+        )
+
+        px_dev, py_dev = self._handle_mouse_press_moderngl_left_gizmo_mouse_dev_pos(e=e, dpr=dpr)
+        return {
+            "owner": owner,
+            "mode": mode,
+            "dpr": dpr,
+            "vw": vw,
+            "vh": vh,
+            "renderer": renderer,
+            "P": P,
+            "V": V,
+            "M": M,
+            "PV": PV,
+            "g": g,
+            "axis_len": axis_len,
+            "axes": axes,
+            "p0": p0,
+            "px_dev": px_dev,
+            "py_dev": py_dev,
+        }
+
+    def _handle_mouse_press_moderngl_left_gizmo_dispatch(
+        self,
+        *,
+        e,
+        owner,
+        mode,
+        dpr,
+        vw,
+        vh,
+        renderer,
+        P,
+        V,
+        M,
+        PV,
+        g,
+        axis_len,
+        axes,
+        p0,
+        px_dev,
+        py_dev,
+    ):
+        handled, rot_shared, hit = self._handle_mouse_press_moderngl_left_gizmo_dispatch_rotate(
+            e=e,
+            mode=mode,
+            owner=owner,
+            g=g,
+            p0=p0,
+            dpr=dpr,
+            vw=vw,
+            vh=vh,
+            V=V,
+            M=M,
+            PV=PV,
+            px_dev=px_dev,
+            py_dev=py_dev,
+        )
+        if handled:
+            return True
+
+        return self._handle_mouse_press_moderngl_left_gizmo_dispatch_xform(
+            e=e,
+            p0=p0,
+            mode=mode,
+            owner=owner,
+            g=g,
+            axis_len=axis_len,
+            dpr=dpr,
+            vw=vw,
+            vh=vh,
+            P=P,
+            V=V,
+            M=M,
+            renderer=renderer,
+            px_dev=px_dev,
+            py_dev=py_dev,
+            axes=axes,
+            PV=PV,
+            rot_shared=rot_shared,
+            hit=hit,
+        )
+
+    def _handle_mouse_press_moderngl_left_gizmo_dispatch_rotate(
+        self,
+        *,
+        e,
+        mode,
+        owner,
+        g,
+        p0,
+        dpr,
+        vw,
+        vh,
+        V,
+        M,
+        PV,
+        px_dev,
+        py_dev,
+    ):
+        # --- shared rotate gizmo drag start (NEW, RotateGizmoShared only) ---
+        handled, rot_shared, hit = self._handle_mouse_press_moderngl_left_gizmo_rotate_ring_pick(
+            e=e,
+            mode=mode,
+            owner=owner,
+            g=g,
+            p0=p0,
+            dpr=dpr,
+            vw=vw,
+            vh=vh,
+            V=V,
+            M=M,
+            PV=PV,
+        )
+        if handled:
+            return True, rot_shared, hit
+
+        # --- ROT_SHARED center-disc arcball drag (smoketest style) ---
+        if self._handle_mouse_press_moderngl_left_gizmo_rotate_arc_pick(
+            e=e,
+            mode=mode,
+            rot_shared=rot_shared,
+            p0=p0,
+            hit=hit,
+            owner=owner,
+            dpr=dpr,
+            px_dev=px_dev,
+            py_dev=py_dev,
+            V=V,
+            M=M,
+        ):
+            return True, rot_shared, hit
+        return False, rot_shared, hit
+
+    def _handle_mouse_press_moderngl_left_gizmo_dispatch_xform(
+        self,
+        *,
+        e,
+        p0,
+        mode,
+        owner,
+        g,
+        axis_len,
+        dpr,
+        vw,
+        vh,
+        P,
+        V,
+        M,
+        renderer,
+        px_dev,
+        py_dev,
+        axes,
+        PV,
+        rot_shared,
+        hit,
+    ):
+        # --- scale gizmo drag start (axis cubes + center) ---
+        if self._handle_mouse_press_moderngl_left_gizmo_scale_pick(
+            e=e,
+            p0=p0,
+            mode=mode,
+            owner=owner,
+            g=g,
+            axis_len=axis_len,
+            dpr=dpr,
+            vw=vw,
+            vh=vh,
+            P=P,
+            V=V,
+            M=M,
+            renderer=renderer,
+            px_dev=px_dev,
+            py_dev=py_dev,
+        ):
+            return True
+
+        project = lambda world_xyz: self._handle_mouse_press_moderngl_left_gizmo_project_world(
+            world_xyz=world_xyz,
+            PV=PV,
+            vw=vw,
+            vh=vh,
+        )
+        if self._handle_mouse_press_moderngl_left_gizmo_translate_pick(
+            e=e,
+            p0=p0,
+            mode=mode,
+            owner=owner,
+            g=g,
+            axes=axes,
+            axis_len=axis_len,
+            dpr=dpr,
+            vw=vw,
+            vh=vh,
+            P=P,
+            V=V,
+            M=M,
+            renderer=renderer,
+            px_dev=px_dev,
+            py_dev=py_dev,
+            project=project,
+            dist_pt_seg=self._handle_mouse_press_moderngl_left_gizmo_dist_pt_seg,
+        ):
+            return True
+        return False
+
+    def _handle_mouse_press_moderngl_left_gizmo_project_world(self, *, world_xyz, PV, vw, vh):
+        p = np.array([world_xyz[0], world_xyz[1], world_xyz[2], 1.0], dtype="f4")
+        c = PV @ p
+        if abs(float(c[3])) < 1e-8:
+            return None
+        ndc = c[:3] / c[3]
+        sx = (ndc[0] * 0.5 + 0.5) * vw
+        sy = (1.0 - (ndc[1] * 0.5 + 0.5)) * vh
+        return float(sx), float(sy)
+
+    def _handle_mouse_press_moderngl_left_gizmo_mouse_dev_pos(self, *, e, dpr):
+        # mouse in device pixels (must match project() output space)
+        try:
+            mp = e.position() if hasattr(e, "position") else QtCore.QPointF(e.x(), e.y())
+        except Exception:
+            mp = QtCore.QPointF(e.x(), e.y())
+        return float(mp.x()) * float(dpr), float(mp.y()) * float(dpr)
+
+    def _handle_mouse_press_moderngl_left_gizmo_dist_pt_seg(self, px2, py2, ax, ay, bx, by):
+        abx = bx - ax
+        aby = by - ay
+        apx = px2 - ax
+        apy = py2 - ay
+        ab2 = abx * abx + aby * aby
+        if ab2 < 1e-8:
+            dx = px2 - ax
+            dy = py2 - ay
+            return (dx * dx + dy * dy) ** 0.5
+        t = max(0.0, min(1.0, (apx * abx + apy * aby) / ab2))
+        cx = ax + t * abx
+        cy = ay + t * aby
+        dx = px2 - cx
+        dy = py2 - cy
+        return (dx * dx + dy * dy) ** 0.5
 
     def _handle_mouse_press_moderngl_left_gizmo_rotate_ring_pick(
         self,
@@ -4939,10 +5077,43 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         if hit not in ("x", "y", "z"):
             return False
 
+        self._handle_mouse_press_moderngl_left_gizmo_rotate_ring_axis_begin_owner(owner=owner)
+        q0, axis_world, center_w = self._handle_mouse_press_moderngl_left_gizmo_rotate_ring_axis_vectors(
+            owner=owner,
+            hit=hit,
+            g=g,
+        )
+        start_dir = self._handle_mouse_press_moderngl_left_gizmo_rotate_ring_axis_start_dir(
+            mp=mp,
+            dpr=dpr,
+            vw=vw,
+            vh=vh,
+            PV=PV,
+            center_w=center_w,
+            axis_world=axis_world,
+        )
+        if start_dir is None:
+            return False
+
+        start_rot_deg, _is_splat = self._get_owner_rot_deg(owner)
+        self._handle_mouse_press_moderngl_left_gizmo_rotate_ring_axis_begin_drag(
+            rot_shared=rot_shared,
+            hit=hit,
+            q0=q0,
+            axis_world=axis_world,
+            start_dir=start_dir,
+            start_rot_deg=start_rot_deg,
+        )
+
+        e.accept()
+        return True
+
+    def _handle_mouse_press_moderngl_left_gizmo_rotate_ring_axis_begin_owner(self, *, owner):
         self._rot_shared_owner = owner
         self._begin_xform_history(owner)
         self._begin_xform_history(owner)
 
+    def _handle_mouse_press_moderngl_left_gizmo_rotate_ring_axis_vectors(self, *, owner, hit, g):
         q0 = self._rot_shared_sync_q0_from_owner(owner)
 
         axis_local = (
@@ -4958,13 +5129,25 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
         center_w = QtGui.QVector3D(float(g[0]), float(g[1]), float(g[2]))
         self._rot_shared_axis_center_world = center_w
+        return q0, axis_world, center_w
 
+    def _handle_mouse_press_moderngl_left_gizmo_rotate_ring_axis_start_dir(
+        self,
+        *,
+        mp,
+        dpr,
+        vw,
+        vh,
+        PV,
+        center_w,
+        axis_world,
+    ):
         # Cache invPV + viewport info for mouseMoveEvent (so move does not need P/V/M)
         try:
             invPV = np.linalg.inv(PV)
         except Exception as ex:
             print("[ROT_SHARED_AXIS_BEGIN_ERR] invPV", repr(ex), flush=True)
-            return False
+            return None
 
         self._rot_shared_invPV = invPV
         self._rot_shared_vw = float(vw)
@@ -4985,7 +5168,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
         if abs(float(pN[3])) < 1e-8 or abs(float(pF[3])) < 1e-8:
             print("[ROT_SHARED_AXIS_BEGIN_ERR] bad clip w", flush=True)
-            return False
+            return None
 
         pN = pN[:3] / pN[3]
         pF = pF[:3] / pF[3]
@@ -4996,19 +5179,28 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         ln = float(np.linalg.norm(rd_np))
         if ln < 1e-8:
             print("[ROT_SHARED_AXIS_BEGIN_ERR] ray too small", flush=True)
-            return False
+            return None
 
         rd_np /= ln
         rd = QtGui.QVector3D(float(rd_np[0]), float(rd_np[1]), float(rd_np[2]))
         # Smoketest-style: closest point on ray to gizmo center, then project onto ring plane
-        start_dir = self._axis_ring_dir_world(
+        return self._axis_ring_dir_world(
             cam=ro,  # ro is fine as ray origin (it lies on the same ray)
             ray_d=rd,
             center_w=center_w,
             axis_world=axis_world,
         )
 
-        start_rot_deg, _is_splat = self._get_owner_rot_deg(owner)
+    def _handle_mouse_press_moderngl_left_gizmo_rotate_ring_axis_begin_drag(
+        self,
+        *,
+        rot_shared,
+        hit,
+        q0,
+        axis_world,
+        start_dir,
+        start_rot_deg,
+    ):
         # cache axis name + start euler for an axis-only update (prevents X/Z drift when dragging Y)
         self._rot_shared_axis = str(hit)
         self._rot_shared_axis_start_euler_deg = (
@@ -5033,9 +5225,6 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             rot_shared.drag_axis.last_dir = QtGui.QVector3D(start_dir)
         except Exception:
             rot_shared.drag_axis.last_dir = start_dir
-
-        e.accept()
-        return True
 
     def _handle_mouse_press_moderngl_left_gizmo_rotate_ring_view_pick(
         self,
@@ -5355,51 +5544,15 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         T[2, 3] = float(g[2])
 
         # Match rotate gizmo scaling so cubes stay screen-sized.
-        s = 1.0
-        try:
-            dpr_s = float(dpr)
-            vh_s = float(max(1, self.height())) * dpr_s
-            Pn = np.asarray(P, dtype=np.float32)
-            Vn = np.asarray(V, dtype=np.float32)
-            Mn = np.asarray(M, dtype=np.float32)
-            proj_y = abs(float(Pn[1, 1]))
-            if proj_y > 1e-6:
-                vm = (Vn @ Mn @ (T @ R)).astype(np.float32)
-                cp = vm @ np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
-                w = float(cp[3]) if abs(float(cp[3])) > 1e-6 else 1.0
-                dist_raw = abs(float(cp[2]) / w)
-                dist_raw = max(dist_raw, 1e-6)
-
-                try:
-                    sm = float(getattr(renderer, "_mgl_scale_multiplier", 1.0))
-                except Exception:
-                    sm = 1.0
-                dist = dist_raw * sm
-
-                rot_shared = getattr(self, "_rot_shared", None)
-                if rot_shared is not None:
-                    target_ring_px = float(rot_shared.xyz_ring_radius_px())
-                    ring_r = float(getattr(rot_shared, "gizmo_radius", 0.9))
-                else:
-                    target_ring_px = 110.0 * 1.3
-                    ring_r = 0.9
-
-                if ring_r > 1e-6:
-                    scene_scale = 1.0
-                    try:
-                        sx = float(np.linalg.norm(Mn[:3, 0]))
-                        sy = float(np.linalg.norm(Mn[:3, 1]))
-                        sz = float(np.linalg.norm(Mn[:3, 2]))
-                        scene_scale = (sx + sy + sz) / 3.0
-                        if scene_scale <= 1e-6:
-                            scene_scale = 1.0
-                    except Exception:
-                        scene_scale = 1.0
-
-                    s = (target_ring_px * 2.0 * dist) / (vh_s * proj_y * ring_r * scene_scale)
-                    s = max(1e-6, min(1000.0, float(s)))
-        except Exception:
-            s = 1.0
+        s = self._handle_mouse_press_moderngl_left_gizmo_translate_axis_proj_scale(
+            dpr=dpr,
+            P=P,
+            V=V,
+            M=M,
+            T=T,
+            R=R,
+            renderer=renderer,
+        )
 
         S = np.eye(4, dtype=np.float32)
         S[0, 0] = s
@@ -5409,21 +5562,26 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         TRS = (T @ R @ S).astype(np.float32)
         PVTRS = (P @ V @ M @ TRS).astype(np.float32)
 
-        def project_local(local_xyz):
-            p = np.array([local_xyz[0], local_xyz[1], local_xyz[2], 1.0], dtype="f4")
-            c = PVTRS @ p
-            if abs(float(c[3])) < 1e-8:
-                return None
-            ndc = c[:3] / c[3]
-            sx = (ndc[0] * 0.5 + 0.5) * vw
-            sy = (1.0 - (ndc[1] * 0.5 + 0.5)) * vh
-            return float(sx), float(sy)
-
         cube_axis_pos = axis_len - 0.18 + (0.12 * 0.5)
         return {
-            "x": project_local((cube_axis_pos, 0.0, 0.0)),
-            "y": project_local((0.0, cube_axis_pos, 0.0)),
-            "z": project_local((0.0, 0.0, cube_axis_pos)),
+            "x": self._handle_mouse_press_moderngl_left_gizmo_translate_project_local(
+                local_xyz=(cube_axis_pos, 0.0, 0.0),
+                PVTRS=PVTRS,
+                vw=vw,
+                vh=vh,
+            ),
+            "y": self._handle_mouse_press_moderngl_left_gizmo_translate_project_local(
+                local_xyz=(0.0, cube_axis_pos, 0.0),
+                PVTRS=PVTRS,
+                vw=vw,
+                vh=vh,
+            ),
+            "z": self._handle_mouse_press_moderngl_left_gizmo_translate_project_local(
+                local_xyz=(0.0, 0.0, cube_axis_pos),
+                PVTRS=PVTRS,
+                vw=vw,
+                vh=vh,
+            ),
         }
 
     def _handle_mouse_press_moderngl_left_gizmo_scale_pick_axis(self, *, p0, axis_proj, px_dev, py_dev):
@@ -5479,76 +5637,101 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         R,
         px_dev,
     ):
-        if pick_axis is not None:
-            is_splat = False
-            try:
-                splat_map = getattr(renderer, "_mgl_scene_splats_world", None)
-                if not isinstance(splat_map, dict) or not splat_map:
-                    splat_map = getattr(renderer, "_mgl_scene_splats", None)
-                if isinstance(splat_map, dict) and owner in splat_map:
-                    is_splat = True
-            except Exception:
-                is_splat = False
+        if pick_axis is None:
+            return False
 
-            get_xf = (
-                getattr(renderer, "_mgl_get_scene_splat_xform", None)
-                if is_splat
-                else getattr(renderer, "_mgl_get_scene_asset_xform", None)
+        is_splat = self._handle_mouse_press_moderngl_left_gizmo_owner_is_splat(
+            renderer=renderer,
+            owner=owner,
+        )
+        start_scl = self._handle_mouse_press_moderngl_left_gizmo_scale_start_scl(
+            renderer=renderer,
+            owner=owner,
+            is_splat=is_splat,
+        )
+        self._handle_mouse_press_moderngl_left_gizmo_scale_begin_drag(
+            owner=owner,
+            g=g,
+            pick_axis=pick_axis,
+            is_splat=is_splat,
+            start_scl=start_scl,
+        )
+
+        if pick_axis == "u":
+            self._handle_mouse_press_moderngl_left_gizmo_scale_start_uniform(
+                p0=p0,
+                dx0=dx0,
+                dy0=dy0,
+                px_dev=px_dev,
             )
-            xf = get_xf(owner) if callable(get_xf) else {}
-            scl = tuple((xf or {}).get("scl", (1.0, 1.0, 1.0)))
-            try:
-                start_scl = (float(scl[0]), float(scl[1]), float(scl[2]))
-            except Exception:
-                start_scl = (1.0, 1.0, 1.0)
+        else:
+            self._handle_mouse_press_moderngl_left_gizmo_scale_start_axis(
+                pick_axis=pick_axis,
+                use_local=use_local,
+                R=R,
+            )
 
-            self._xform_dragging = True
-            self._begin_xform_history(owner)
-            self._xform_drag_mode = "scale"
-            self._xform_drag_axis = pick_axis
-            self._xform_drag_owner = owner
-            self._xform_drag_kind = "splat" if is_splat else "mesh"
-            self._xform_drag_start_pos = g.copy()
-            self._xform_gizmo_pos_locked = True
-            self._xform_drag_s0 = None
-            self._xform_drag_start_scl = start_scl
-            self._xform_scale_start_dist = None
-            self._xform_scale_axis_world = None
-            self._xform_scale_center_px = None
+        # Important: prevent old click-pick/orbit press state from interfering.
+        self._mgl_pick_press_pos = None
+
+        print("[GIZMO_SCALE_PICK] axis=", pick_axis, "owner=", owner, flush=True)
+        self.setCursor(QtCore.Qt.SizeAllCursor)
+        e.accept()
+        return True
+
+    def _handle_mouse_press_moderngl_left_gizmo_scale_start_scl(self, *, renderer, owner, is_splat):
+        get_xf = (
+            getattr(renderer, "_mgl_get_scene_splat_xform", None)
+            if is_splat
+            else getattr(renderer, "_mgl_get_scene_asset_xform", None)
+        )
+        xf = get_xf(owner) if callable(get_xf) else {}
+        scl = tuple((xf or {}).get("scl", (1.0, 1.0, 1.0)))
+        try:
+            return (float(scl[0]), float(scl[1]), float(scl[2]))
+        except Exception:
+            return (1.0, 1.0, 1.0)
+
+    def _handle_mouse_press_moderngl_left_gizmo_scale_begin_drag(self, *, owner, g, pick_axis, is_splat, start_scl):
+        self._xform_dragging = True
+        self._begin_xform_history(owner)
+        self._xform_drag_mode = "scale"
+        self._xform_drag_axis = pick_axis
+        self._xform_drag_owner = owner
+        self._xform_drag_kind = "splat" if is_splat else "mesh"
+        self._xform_drag_start_pos = g.copy()
+        self._xform_gizmo_pos_locked = True
+        self._xform_drag_s0 = None
+        self._xform_drag_start_scl = start_scl
+        self._xform_scale_start_dist = None
+        self._xform_scale_axis_world = None
+        self._xform_scale_center_px = None
+        self._xform_scale_start_px = None
+
+    def _handle_mouse_press_moderngl_left_gizmo_scale_start_uniform(self, *, p0, dx0, dy0, px_dev):
+        self._xform_scale_center_px = QtCore.QPointF(float(p0[0]), float(p0[1]))
+        self._xform_scale_start_dist = max(1e-6, (dx0 * dx0 + dy0 * dy0) ** 0.5)
+        try:
+            self._xform_scale_start_px = float(px_dev)
+        except Exception:
             self._xform_scale_start_px = None
 
-            if pick_axis == "u":
-                self._xform_scale_center_px = QtCore.QPointF(float(p0[0]), float(p0[1]))
-                self._xform_scale_start_dist = max(1e-6, (dx0 * dx0 + dy0 * dy0) ** 0.5)
-                try:
-                    self._xform_scale_start_px = float(px_dev)
-                except Exception:
-                    self._xform_scale_start_px = None
-            else:
-                axis_local = (
-                    np.array([1.0, 0.0, 0.0], dtype="f4")
-                    if pick_axis == "x"
-                    else (np.array([0.0, 1.0, 0.0], dtype="f4") if pick_axis == "y" else np.array([0.0, 0.0, 1.0], dtype="f4"))
-                )
+    def _handle_mouse_press_moderngl_left_gizmo_scale_start_axis(self, *, pick_axis, use_local, R):
+        axis_local = (
+            np.array([1.0, 0.0, 0.0], dtype="f4")
+            if pick_axis == "x"
+            else (np.array([0.0, 1.0, 0.0], dtype="f4") if pick_axis == "y" else np.array([0.0, 0.0, 1.0], dtype="f4"))
+        )
+        axis_world = axis_local
+        if use_local:
+            try:
+                axis_world = (R[:3, :3] @ axis_local).astype(np.float32)
+            except Exception:
                 axis_world = axis_local
-                if use_local:
-                    try:
-                        axis_world = (R[:3, :3] @ axis_local).astype(np.float32)
-                    except Exception:
-                        axis_world = axis_local
-                ln = float(np.linalg.norm(axis_world))
-                if ln > 1e-8:
-                    axis_world = axis_world / ln
-                self._xform_scale_axis_world = axis_world
-
-            # Important: prevent old click-pick/orbit press state from interfering.
-            self._mgl_pick_press_pos = None
-
-            print("[GIZMO_SCALE_PICK] axis=", pick_axis, "owner=", owner, flush=True)
-            self.setCursor(QtCore.Qt.SizeAllCursor)
-            e.accept()
-            return True
-        return False
+        ln = float(np.linalg.norm(axis_world))
+        if ln > 1e-8:
+            axis_world = axis_world / ln
+        self._xform_scale_axis_world = axis_world
 
     def _handle_mouse_press_moderngl_left_gizmo_translate_pick(
         self,
@@ -5729,60 +5912,60 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         renderer,
         project,
     ):
+        axis_proj, max_axis_len = self._handle_mouse_press_moderngl_left_gizmo_translate_axis_proj_scaled(
+            p0=p0,
+            g=g,
+            axis_len=axis_len,
+            dpr=dpr,
+            vw=vw,
+            vh=vh,
+            P=P,
+            V=V,
+            M=M,
+            R=R,
+            renderer=renderer,
+        )
+        if not axis_proj:
+            axis_proj, max_axis_len = self._handle_mouse_press_moderngl_left_gizmo_translate_axis_proj_fallback(
+                p0=p0,
+                g=g,
+                axis_dirs=axis_dirs,
+                axis_len=axis_len,
+                project=project,
+            )
+        return axis_proj, max_axis_len
+
+    def _handle_mouse_press_moderngl_left_gizmo_translate_axis_proj_scaled(
+        self,
+        *,
+        p0,
+        g,
+        axis_len,
+        dpr,
+        vw,
+        vh,
+        P,
+        V,
+        M,
+        R,
+        renderer,
+    ):
         # Project using the same scaled gizmo transform as the draw path.
-        axis_proj = {}
-        max_axis_len = 0.0
         try:
             T = np.eye(4, dtype=np.float32)
             T[0, 3] = float(g[0])
             T[1, 3] = float(g[1])
             T[2, 3] = float(g[2])
 
-            s = 1.0
-            try:
-                dpr_s = float(dpr)
-                vh_s = float(max(1, self.height())) * dpr_s
-                Pn = np.asarray(P, dtype=np.float32)
-                Vn = np.asarray(V, dtype=np.float32)
-                Mn = np.asarray(M, dtype=np.float32)
-                proj_y = abs(float(Pn[1, 1]))
-                if proj_y > 1e-6:
-                    vm = (Vn @ Mn @ (T @ R)).astype(np.float32)
-                    cp = vm @ np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
-                    w = float(cp[3]) if abs(float(cp[3])) > 1e-6 else 1.0
-                    dist_raw = abs(float(cp[2]) / w)
-                    dist_raw = max(dist_raw, 1e-6)
-
-                    try:
-                        sm = float(getattr(renderer, "_mgl_scale_multiplier", 1.0))
-                    except Exception:
-                        sm = 1.0
-                    dist = dist_raw * sm
-
-                    rot_shared = getattr(self, "_rot_shared", None)
-                    if rot_shared is not None:
-                        target_ring_px = float(rot_shared.xyz_ring_radius_px())
-                        ring_r = float(getattr(rot_shared, "gizmo_radius", 0.9))
-                    else:
-                        target_ring_px = 110.0 * 1.3
-                        ring_r = 0.9
-
-                    if ring_r > 1e-6:
-                        scene_scale = 1.0
-                        try:
-                            sx = float(np.linalg.norm(Mn[:3, 0]))
-                            sy = float(np.linalg.norm(Mn[:3, 1]))
-                            sz = float(np.linalg.norm(Mn[:3, 2]))
-                            scene_scale = (sx + sy + sz) / 3.0
-                            if scene_scale <= 1e-6:
-                                scene_scale = 1.0
-                        except Exception:
-                            scene_scale = 1.0
-
-                        s = (target_ring_px * 2.0 * dist) / (vh_s * proj_y * ring_r * scene_scale)
-                        s = max(1e-6, min(1000.0, float(s)))
-            except Exception:
-                s = 1.0
+            s = self._handle_mouse_press_moderngl_left_gizmo_translate_axis_proj_scale(
+                dpr=dpr,
+                P=P,
+                V=V,
+                M=M,
+                T=T,
+                R=R,
+                renderer=renderer,
+            )
 
             S = np.eye(4, dtype=np.float32)
             S[0, 0] = s
@@ -5792,45 +5975,125 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             TRS = (T @ R @ S).astype(np.float32)
             PVTRS = (P @ V @ M @ TRS).astype(np.float32)
 
-            def project_local(local_xyz):
-                p = np.array([local_xyz[0], local_xyz[1], local_xyz[2], 1.0], dtype="f4")
-                c = PVTRS @ p
-                if abs(float(c[3])) < 1e-8:
-                    return None
-                ndc = c[:3] / c[3]
-                sx = (ndc[0] * 0.5 + 0.5) * vw
-                sy = (1.0 - (ndc[1] * 0.5 + 0.5)) * vh
-                return float(sx), float(sy)
-
             line_end = float(axis_len) - 0.18
             axis_proj = {
-                "x": project_local((line_end, 0.0, 0.0)),
-                "y": project_local((0.0, line_end, 0.0)),
-                "z": project_local((0.0, 0.0, line_end)),
+                "x": self._handle_mouse_press_moderngl_left_gizmo_translate_project_local(
+                    local_xyz=(line_end, 0.0, 0.0),
+                    PVTRS=PVTRS,
+                    vw=vw,
+                    vh=vh,
+                ),
+                "y": self._handle_mouse_press_moderngl_left_gizmo_translate_project_local(
+                    local_xyz=(0.0, line_end, 0.0),
+                    PVTRS=PVTRS,
+                    vw=vw,
+                    vh=vh,
+                ),
+                "z": self._handle_mouse_press_moderngl_left_gizmo_translate_project_local(
+                    local_xyz=(0.0, 0.0, line_end),
+                    PVTRS=PVTRS,
+                    vw=vw,
+                    vh=vh,
+                ),
             }
-            for name, p1 in axis_proj.items():
-                if p1 is None:
-                    continue
-                dx1 = float(p1[0]) - float(p0[0])
-                dy1 = float(p1[1]) - float(p0[1])
-                dist = (dx1 * dx1 + dy1 * dy1) ** 0.5
-                if dist > max_axis_len:
-                    max_axis_len = dist
+            max_axis_len = self._handle_mouse_press_moderngl_left_gizmo_axis_proj_max_len(
+                p0=p0,
+                axis_proj=axis_proj,
+            )
+            return axis_proj, max_axis_len
         except Exception:
-            axis_proj = {}
-            max_axis_len = 0.0
+            return {}, 0.0
 
-        if not axis_proj:
-            for name, a in axis_dirs.items():
-                p1 = project(g + a * axis_len)
-                if p1 is None:
-                    continue
-                axis_proj[name] = p1
-                dx1 = float(p1[0]) - float(p0[0])
-                dy1 = float(p1[1]) - float(p0[1])
-                dist = (dx1 * dx1 + dy1 * dy1) ** 0.5
-                if dist > max_axis_len:
-                    max_axis_len = dist
+    def _handle_mouse_press_moderngl_left_gizmo_translate_axis_proj_scale(self, *, dpr, P, V, M, T, R, renderer):
+        s = 1.0
+        try:
+            dpr_s = float(dpr)
+            vh_s = float(max(1, self.height())) * dpr_s
+            Pn = np.asarray(P, dtype=np.float32)
+            Vn = np.asarray(V, dtype=np.float32)
+            Mn = np.asarray(M, dtype=np.float32)
+            proj_y = abs(float(Pn[1, 1]))
+            if proj_y > 1e-6:
+                vm = (Vn @ Mn @ (T @ R)).astype(np.float32)
+                cp = vm @ np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+                w = float(cp[3]) if abs(float(cp[3])) > 1e-6 else 1.0
+                dist_raw = abs(float(cp[2]) / w)
+                dist_raw = max(dist_raw, 1e-6)
+
+                try:
+                    sm = float(getattr(renderer, "_mgl_scale_multiplier", 1.0))
+                except Exception:
+                    sm = 1.0
+                dist = dist_raw * sm
+
+                rot_shared = getattr(self, "_rot_shared", None)
+                if rot_shared is not None:
+                    target_ring_px = float(rot_shared.xyz_ring_radius_px())
+                    ring_r = float(getattr(rot_shared, "gizmo_radius", 0.9))
+                else:
+                    target_ring_px = 110.0 * 1.3
+                    ring_r = 0.9
+
+                if ring_r > 1e-6:
+                    scene_scale = 1.0
+                    try:
+                        sx = float(np.linalg.norm(Mn[:3, 0]))
+                        sy = float(np.linalg.norm(Mn[:3, 1]))
+                        sz = float(np.linalg.norm(Mn[:3, 2]))
+                        scene_scale = (sx + sy + sz) / 3.0
+                        if scene_scale <= 1e-6:
+                            scene_scale = 1.0
+                    except Exception:
+                        scene_scale = 1.0
+
+                    s = (target_ring_px * 2.0 * dist) / (vh_s * proj_y * ring_r * scene_scale)
+                    s = max(1e-6, min(1000.0, float(s)))
+        except Exception:
+            s = 1.0
+        return s
+
+    def _handle_mouse_press_moderngl_left_gizmo_translate_project_local(self, *, local_xyz, PVTRS, vw, vh):
+        p = np.array([local_xyz[0], local_xyz[1], local_xyz[2], 1.0], dtype="f4")
+        c = PVTRS @ p
+        if abs(float(c[3])) < 1e-8:
+            return None
+        ndc = c[:3] / c[3]
+        sx = (ndc[0] * 0.5 + 0.5) * vw
+        sy = (1.0 - (ndc[1] * 0.5 + 0.5)) * vh
+        return float(sx), float(sy)
+
+    def _handle_mouse_press_moderngl_left_gizmo_axis_proj_max_len(self, *, p0, axis_proj):
+        max_axis_len = 0.0
+        for p1 in axis_proj.values():
+            if p1 is None:
+                continue
+            dx1 = float(p1[0]) - float(p0[0])
+            dy1 = float(p1[1]) - float(p0[1])
+            dist = (dx1 * dx1 + dy1 * dy1) ** 0.5
+            if dist > max_axis_len:
+                max_axis_len = dist
+        return max_axis_len
+
+    def _handle_mouse_press_moderngl_left_gizmo_translate_axis_proj_fallback(
+        self,
+        *,
+        p0,
+        g,
+        axis_dirs,
+        axis_len,
+        project,
+    ):
+        axis_proj = {}
+        max_axis_len = 0.0
+        for name, a in axis_dirs.items():
+            p1 = project(g + a * axis_len)
+            if p1 is None:
+                continue
+            axis_proj[name] = p1
+        max_axis_len = self._handle_mouse_press_moderngl_left_gizmo_axis_proj_max_len(
+            p0=p0,
+            axis_proj=axis_proj,
+        )
         return axis_proj, max_axis_len
 
     def _handle_mouse_press_moderngl_left_gizmo_translate_is_far_from_center(self, *, p0, px_dev, py_dev, max_axis_len):
@@ -5918,11 +6181,11 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         dx0,
         dy0,
     ):
-        try:
-            center_r = 14.0 * float(dpr)
-        except Exception:
-            center_r = 14.0
-        if (dx0 * dx0 + dy0 * dy0) > (center_r * center_r):
+        if not self._handle_mouse_press_moderngl_left_gizmo_translate_start_view_is_center_hit(
+            dx0=dx0,
+            dy0=dy0,
+            dpr=dpr,
+        ):
             return False
 
         # free-move on view plane (camera-facing)
@@ -5940,19 +6203,54 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._xform_drag_plane_normal = None
         self._xform_drag_plane_start = None
 
-        try:
-            invVM = np.linalg.inv(
-                (np.asarray(V, dtype=np.float32) @ np.asarray(M, dtype=np.float32)).astype(np.float32)
+        n = self._handle_mouse_press_moderngl_left_gizmo_translate_start_view_plane_normal(V=V, M=M)
+        ray = self._handle_mouse_press_moderngl_left_gizmo_translate_start_view_ray(
+            px_dev=px_dev,
+            py_dev=py_dev,
+            vw=vw,
+            vh=vh,
+            P=P,
+            V=V,
+            M=M,
+        )
+        if n is not None and ray is not None:
+            ray_o, ray_d = ray
+            hit = self._handle_mouse_press_moderngl_left_gizmo_translate_start_view_plane_hit(
+                g=g,
+                plane_normal=n,
+                ray_o=ray_o,
+                ray_d=ray_d,
             )
+            if hit is not None:
+                self._xform_drag_plane_normal = n
+                self._xform_drag_plane_start = hit
+
+        # Important: prevent old click-pick/orbit press state from interfering
+        self._mgl_pick_press_pos = None
+
+        self.setCursor(QtCore.Qt.SizeAllCursor)
+        e.accept()
+        return True
+
+    def _handle_mouse_press_moderngl_left_gizmo_translate_start_view_is_center_hit(self, *, dx0, dy0, dpr):
+        try:
+            center_r = 14.0 * float(dpr)
+        except Exception:
+            center_r = 14.0
+        return (dx0 * dx0 + dy0 * dy0) <= (center_r * center_r)
+
+    def _handle_mouse_press_moderngl_left_gizmo_translate_start_view_plane_normal(self, *, V, M):
+        try:
+            invVM = np.linalg.inv((np.asarray(V, dtype=np.float32) @ np.asarray(M, dtype=np.float32)).astype(np.float32))
             n = -invVM[:3, 2]
             nlen = float(np.linalg.norm(n))
             if nlen > 1e-6:
-                n = n / nlen
-            else:
-                n = None
+                return n / nlen
         except Exception:
-            n = None
+            pass
+        return None
 
+    def _handle_mouse_press_moderngl_left_gizmo_translate_start_view_ray(self, *, px_dev, py_dev, vw, vh, P, V, M):
         try:
             PV = (P @ V @ M).astype("f4")
             invPV = np.linalg.inv(PV)
@@ -5969,26 +6267,17 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             rn = float(np.linalg.norm(ray_d))
             if rn > 1e-8:
                 ray_d /= rn
-            else:
-                ray_d = None
+                return ray_o, ray_d
         except Exception:
-            ray_o = None
-            ray_d = None
+            pass
+        return None
 
-        if n is not None and ray_o is not None and ray_d is not None:
-            denom = float(np.dot(ray_d, n))
-            if abs(denom) > 1e-6:
-                t = float(np.dot((g - ray_o), n)) / denom
-                hit = ray_o + (t * ray_d)
-                self._xform_drag_plane_normal = n
-                self._xform_drag_plane_start = hit
-
-        # Important: prevent old click-pick/orbit press state from interfering
-        self._mgl_pick_press_pos = None
-
-        self.setCursor(QtCore.Qt.SizeAllCursor)
-        e.accept()
-        return True
+    def _handle_mouse_press_moderngl_left_gizmo_translate_start_view_plane_hit(self, *, g, plane_normal, ray_o, ray_d):
+        denom = float(np.dot(ray_d, plane_normal))
+        if abs(denom) <= 1e-6:
+            return None
+        t = float(np.dot((g - ray_o), plane_normal)) / denom
+        return ray_o + (t * ray_d)
 
     def _handle_mouse_press_moderngl_left_gizmo_translate_start_axis_drag(
         self,
@@ -6150,6 +6439,15 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
     def _handle_mouse_press_moderngl_right_start_zoom(self, e):
         self._mgl_zoom_press_pos = e.pos()
         self._mgl_zoom_start = float(self._mgl_camera_zoom)
+        self._handle_mouse_press_moderngl_right_start_zoom_center()
+        self._handle_mouse_press_moderngl_right_start_zoom_ray(e)
+        self._handle_mouse_press_moderngl_right_start_zoom_cam_start()
+        self._handle_mouse_press_moderngl_right_start_zoom_cam_dir()
+        self.setCursor(QtCore.Qt.SizeVerCursor)
+        e.accept()
+        return True
+
+    def _handle_mouse_press_moderngl_right_start_zoom_center(self):
         try:
             center = getattr(self, "_mgl_center", None)
             if center is None:
@@ -6164,6 +6462,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 )
         except Exception:
             self._mgl_zoom_center_start = None
+
+    def _handle_mouse_press_moderngl_right_start_zoom_ray(self, e):
         try:
             ray = self._ray_from_mouse(e.pos())
             if ray is not None:
@@ -6180,6 +6480,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 self._mgl_zoom_ray_dir = None
         except Exception:
             self._mgl_zoom_ray_dir = None
+
+    def _handle_mouse_press_moderngl_right_start_zoom_cam_start(self):
         try:
             cam_world = getattr(self, "_mgl_cam_world", None)
             if cam_world is None and np is not None:
@@ -6210,6 +6512,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 self._mgl_zoom_cam_start = None
         except Exception:
             self._mgl_zoom_cam_start = None
+
+    def _handle_mouse_press_moderngl_right_start_zoom_cam_dir(self):
         try:
             cam_start = self._mgl_zoom_cam_start
             c0 = self._mgl_zoom_center_start
@@ -6236,9 +6540,6 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 self._mgl_zoom_cam_dir = None
         except Exception:
             self._mgl_zoom_cam_dir = None
-        self.setCursor(QtCore.Qt.SizeVerCursor)
-        e.accept()
-        return True
 
     def _handle_mouse_press_example_pipeline(self, e):
         if self._use_example_pipeline:
@@ -7014,35 +7315,72 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         M,
     ):
         if axis == "view":
-            nrm = getattr(self, "_xform_drag_plane_normal", None)
-            if nrm is None:
-                try:
-                    invVM = np.linalg.inv(
-                        (np.asarray(V, dtype=np.float32) @ np.asarray(M, dtype=np.float32)).astype(
-                            np.float32
-                        )
-                    )
-                    nrm = -invVM[:3, 2]
-                    nlen = float(np.linalg.norm(nrm))
-                    if nlen > 1e-6:
-                        nrm = nrm / nlen
-                    else:
-                        nrm = None
-                except Exception:
+            return self._handle_mouse_move_moderngl_xform_translate_compute_pos_view(
+                g0=g0,
+                ray_o=ray_o,
+                ray_d=ray_d,
+                V=V,
+                M=M,
+            )
+
+        return self._handle_mouse_move_moderngl_xform_translate_compute_pos_axis(
+            axis=axis,
+            owner=owner,
+            g0=g0,
+            ray_o=ray_o,
+            ray_d=ray_d,
+        )
+
+    def _handle_mouse_move_moderngl_xform_translate_compute_pos_view(self, *, g0, ray_o, ray_d, V, M):
+        nrm = getattr(self, "_xform_drag_plane_normal", None)
+        if nrm is None:
+            try:
+                invVM = np.linalg.inv(
+                    (np.asarray(V, dtype=np.float32) @ np.asarray(M, dtype=np.float32)).astype(np.float32)
+                )
+                nrm = -invVM[:3, 2]
+                nlen = float(np.linalg.norm(nrm))
+                if nlen > 1e-6:
+                    nrm = nrm / nlen
+                else:
                     nrm = None
-            start_hit = getattr(self, "_xform_drag_plane_start", None)
-            if nrm is not None:
-                denom = float(np.dot(ray_d, nrm))
-                if abs(denom) > 1e-6:
-                    t = float(np.dot((g0 - ray_o), nrm)) / denom
-                    hit = ray_o + (t * ray_d)
-                    if start_hit is None:
-                        self._xform_drag_plane_start = hit
-                        start_hit = hit
-                    delta = hit - start_hit
-                    return g0 + delta
+            except Exception:
+                nrm = None
+        start_hit = getattr(self, "_xform_drag_plane_start", None)
+        if nrm is not None:
+            denom = float(np.dot(ray_d, nrm))
+            if abs(denom) > 1e-6:
+                t = float(np.dot((g0 - ray_o), nrm)) / denom
+                hit = ray_o + (t * ray_d)
+                if start_hit is None:
+                    self._xform_drag_plane_start = hit
+                    start_hit = hit
+                delta = hit - start_hit
+                return g0 + delta
+        return None
+
+    def _handle_mouse_move_moderngl_xform_translate_compute_pos_axis(self, *, axis, owner, g0, ray_o, ray_d):
+        a = self._handle_mouse_move_moderngl_xform_translate_axis_world(axis=axis, owner=owner)
+        if a is None:
             return None
 
+        s = self._handle_mouse_move_moderngl_xform_translate_axis_param(
+            axis_world=a,
+            g0=g0,
+            ray_o=ray_o,
+            ray_d=ray_d,
+        )
+
+        # On first move after pick, capture s0.
+        s0 = getattr(self, "_xform_drag_s0", None)
+        if s0 is None:
+            self._xform_drag_s0 = s
+            s0 = s
+
+        delta = (float(s0) - s) * a
+        return g0 + delta
+
+    def _handle_mouse_move_moderngl_xform_translate_axis_world(self, *, axis, owner):
         axes = {
             "x": np.array([1.0, 0.0, 0.0], dtype="f4"),
             "y": np.array([0.0, 1.0, 0.0], dtype="f4"),
@@ -7085,24 +7423,16 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         al = float(np.linalg.norm(a))
         if al > 1e-8:
             a = a / al
+        return a
 
-        # Compute parameter "s" along axis line closest to the mouse ray
+    def _handle_mouse_move_moderngl_xform_translate_axis_param(self, *, axis_world, g0, ray_o, ray_d):
+        # Compute parameter "s" along axis line closest to the mouse ray.
         w0 = ray_o - g0
-        ad = float(np.dot(a, ray_d))
+        ad = float(np.dot(axis_world, ray_d))
         denom = 1.0 - ad * ad
         if abs(denom) < 1e-6:
-            s = float(np.dot(a, w0))
-        else:
-            s = float((ad * float(np.dot(ray_d, w0)) - float(np.dot(a, w0))) / denom)
-
-        # On first move after pick, capture s0
-        s0 = getattr(self, "_xform_drag_s0", None)
-        if s0 is None:
-            self._xform_drag_s0 = s
-            s0 = s
-
-        delta = (float(s0) - s) * a
-        return g0 + delta
+            return float(np.dot(axis_world, w0))
+        return float((ad * float(np.dot(ray_d, w0)) - float(np.dot(axis_world, w0))) / denom)
 
     def _handle_mouse_move_moderngl_xform_translate_apply_owner(self, new_pos, owner, renderer):
         self._xform_gizmo_pos = (float(new_pos[0]), float(new_pos[1]), float(new_pos[2]))
@@ -7940,101 +8270,57 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 pass
 
     def _handle_mouse_release_moderngl_pick_owner(self, owner, renderer):
+        self._handle_mouse_release_moderngl_pick_owner_select(owner=owner, renderer=renderer)
+        self._handle_mouse_release_moderngl_pick_owner_place_gizmo(owner=owner, renderer=renderer)
+
+        # Allow outliner edits to reposition the gizmo after selection.
+        try:
+            self._xform_gizmo_pos_locked = False
+        except Exception:
+            pass
+
+        self.update()
+
+    def _handle_mouse_release_moderngl_pick_owner_select(self, *, owner, renderer):
         w = self.window()
         if hasattr(w, "select_scene_asset"):
             w.select_scene_asset(owner)
+
         try:
             kind = getattr(renderer, "_mgl_last_pick_kind", None)
         except Exception:
             kind = None
+
         try:
             self._mgl_log("scene: pick owner=" + str(owner) + " kind=" + str(kind))
         except Exception:
             pass
 
-        # Force gizmo to the owner pivot (stored xform) or bounds center fallback
+        # Force gizmo to the owner pivot (stored xform) or bounds center fallback.
         self._xform_gizmo_owner = owner
         try:
-            self._xform_gizmo_owner_kind = getattr(renderer, "_mgl_last_pick_kind", None)
+            self._xform_gizmo_owner_kind = kind
         except Exception:
             self._xform_gizmo_owner_kind = None
 
+    def _handle_mouse_release_moderngl_pick_owner_place_gizmo(self, *, owner, renderer):
         try:
-            # Use stored xform position when available
-            xf = {}
-            is_splat = False
-            try:
-                splat_map = getattr(renderer, "_mgl_scene_splats_world", None)
-                if not isinstance(splat_map, dict) or not splat_map:
-                    splat_map = getattr(renderer, "_mgl_scene_splats", None)
-                if isinstance(splat_map, dict) and owner in splat_map:
-                    is_splat = True
-            except Exception:
-                is_splat = False
-
-            get_xf = (
-                getattr(renderer, "_mgl_get_scene_splat_xform", None)
-                if is_splat
-                else getattr(renderer, "_mgl_get_scene_asset_xform", None)
+            is_splat = self._handle_mouse_release_moderngl_pick_owner_is_splat(owner=owner, renderer=renderer)
+            xf_pos = self._handle_mouse_release_moderngl_pick_owner_xf_pos(
+                owner=owner,
+                renderer=renderer,
+                is_splat=is_splat,
             )
-            if callable(get_xf):
-                xf = get_xf(owner) or {}
-            xf_pos = tuple((xf or {}).get("pos", (0.0, 0.0, 0.0)))
-
-            # For splats, xform.pos is an offset from the local pivot.
-            pivot = None
-            if is_splat:
-                try:
-                    bounds_map = (
-                        getattr(renderer, "_mgl_scene_splats_bounds_local", None)
-                        or getattr(renderer, "_mgl_scene_splat_bounds_by_owner", None)
-                    )
-                    if isinstance(bounds_map, dict) and owner in bounds_map:
-                        mins, maxs = bounds_map.get(owner) or (None, None)
-                        if mins is not None and maxs is not None:
-                            pivot = (
-                                (float(mins[0]) + float(maxs[0])) * 0.5,
-                                (float(mins[1]) + float(maxs[1])) * 0.5,
-                                (float(mins[2]) + float(maxs[2])) * 0.5,
-                            )
-                except Exception:
-                    pivot = None
 
             if is_splat:
-                # splat xform.pos is an offset from local pivot
-                if pivot is not None:
-                    self._xform_gizmo_pos = (
-                        float(xf_pos[0] + pivot[0]),
-                        float(xf_pos[1] + pivot[1]),
-                        float(xf_pos[2] + pivot[2]),
-                    )
-                    self._xform_gizmo_pos_locked = True
-                else:
-                    # fallback to bounds center
-                    bounds_map = (
-                        getattr(renderer, "_mgl_scene_splats_bounds_local", None)
-                        or getattr(renderer, "_mgl_scene_splat_bounds_by_owner", None)
-                    )
-                    if isinstance(bounds_map, dict) and owner in bounds_map:
-                        mins, maxs = bounds_map.get(owner) or (None, None)
-                        if mins is not None and maxs is not None:
-                            cx = (float(mins[0]) + float(maxs[0])) * 0.5
-                            cy = (float(mins[1]) + float(maxs[1])) * 0.5
-                            cz = (float(mins[2]) + float(maxs[2])) * 0.5
-                            self._xform_gizmo_pos = (cx, cy, cz)
-                            self._xform_gizmo_pos_locked = True
-            else:
-                # mesh: pos is already world pivot (even if zero)
-                self._xform_gizmo_pos = (
-                    float(xf_pos[0]),
-                    float(xf_pos[1]),
-                    float(xf_pos[2]),
+                pivot = self._handle_mouse_release_moderngl_pick_owner_splat_pivot(owner=owner, renderer=renderer)
+                self._handle_mouse_release_moderngl_pick_owner_set_splat_pos(
+                    owner=owner,
+                    renderer=renderer,
+                    xf_pos=xf_pos,
+                    pivot=pivot,
                 )
-                self._xform_gizmo_pos_locked = True
-
-            # Log splat selection + gizmo placement for debugging.
-            try:
-                if is_splat:
+                try:
                     self._mgl_log(
                         "splat: select owner="
                         + str(owner)
@@ -8045,18 +8331,99 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                         + " gizmo_pos="
                         + str(getattr(self, "_xform_gizmo_pos", None))
                     )
-            except Exception:
-                pass
+                except Exception:
+                    pass
+            else:
+                # mesh: pos is already world pivot (even if zero)
+                self._xform_gizmo_pos = (
+                    float(xf_pos[0]),
+                    float(xf_pos[1]),
+                    float(xf_pos[2]),
+                )
+                self._xform_gizmo_pos_locked = True
         except Exception:
             pass
 
-        # Allow outliner edits to reposition the gizmo after selection.
+    def _handle_mouse_release_moderngl_pick_owner_is_splat(self, *, owner, renderer):
+        is_splat = False
         try:
-            self._xform_gizmo_pos_locked = False
+            splat_map = getattr(renderer, "_mgl_scene_splats_world", None)
+            if not isinstance(splat_map, dict) or not splat_map:
+                splat_map = getattr(renderer, "_mgl_scene_splats", None)
+            if isinstance(splat_map, dict) and owner in splat_map:
+                is_splat = True
+        except Exception:
+            is_splat = False
+        return is_splat
+
+    def _handle_mouse_release_moderngl_pick_owner_xf_pos(self, *, owner, renderer, is_splat):
+        xf = {}
+        get_xf = (
+            getattr(renderer, "_mgl_get_scene_splat_xform", None)
+            if is_splat
+            else getattr(renderer, "_mgl_get_scene_asset_xform", None)
+        )
+        if callable(get_xf):
+            xf = get_xf(owner) or {}
+        return tuple((xf or {}).get("pos", (0.0, 0.0, 0.0)))
+
+    def _handle_mouse_release_moderngl_pick_owner_splat_pivot(self, *, owner, renderer):
+        # For splats, xform.pos is an offset from the local pivot.
+        try:
+            bounds_map = (
+                getattr(renderer, "_mgl_scene_splats_bounds_local", None)
+                or getattr(renderer, "_mgl_scene_splat_bounds_by_owner", None)
+            )
+            if isinstance(bounds_map, dict) and owner in bounds_map:
+                mins, maxs = bounds_map.get(owner) or (None, None)
+                if mins is not None and maxs is not None:
+                    return (
+                        (float(mins[0]) + float(maxs[0])) * 0.5,
+                        (float(mins[1]) + float(maxs[1])) * 0.5,
+                        (float(mins[2]) + float(maxs[2])) * 0.5,
+                    )
         except Exception:
             pass
+        return None
 
-        self.update()
+    def _handle_mouse_release_moderngl_pick_owner_splat_bounds_center(self, *, owner, renderer):
+        try:
+            bounds_map = (
+                getattr(renderer, "_mgl_scene_splats_bounds_local", None)
+                or getattr(renderer, "_mgl_scene_splat_bounds_by_owner", None)
+            )
+            if isinstance(bounds_map, dict) and owner in bounds_map:
+                mins, maxs = bounds_map.get(owner) or (None, None)
+                if mins is not None and maxs is not None:
+                    return (
+                        (float(mins[0]) + float(maxs[0])) * 0.5,
+                        (float(mins[1]) + float(maxs[1])) * 0.5,
+                        (float(mins[2]) + float(maxs[2])) * 0.5,
+                    )
+        except Exception:
+            pass
+        return None
+
+    def _handle_mouse_release_moderngl_pick_owner_set_splat_pos(self, *, owner, renderer, xf_pos, pivot):
+        # splat xform.pos is an offset from local pivot
+        if pivot is not None:
+            self._xform_gizmo_pos = (
+                float(xf_pos[0] + pivot[0]),
+                float(xf_pos[1] + pivot[1]),
+                float(xf_pos[2] + pivot[2]),
+            )
+            self._xform_gizmo_pos_locked = True
+            return
+
+        # fallback to bounds center
+        center = self._handle_mouse_release_moderngl_pick_owner_splat_bounds_center(
+            owner=owner,
+            renderer=renderer,
+        )
+        if center is None:
+            return
+        self._xform_gizmo_pos = center
+        self._xform_gizmo_pos_locked = True
 
     def _handle_mouse_release_moderngl_pick_empty(self):
         # Clicked empty space: clear selection + hide gizmo
