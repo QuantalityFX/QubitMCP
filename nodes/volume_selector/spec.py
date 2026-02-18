@@ -591,6 +591,72 @@ def _mtime_ns_from_stat(st) -> int:
             return 0
 
 
+def _cache_meta_path(path: Path) -> Path:
+    return Path(str(path) + ".meta.json")
+
+
+def _stamp_key(stamp) -> str:
+    try:
+        return json.dumps(stamp, ensure_ascii=False, separators=(",", ":"), default=str)
+    except Exception:
+        try:
+            return repr(stamp)
+        except Exception:
+            return ""
+
+
+def _read_cached_stamp(path: Path) -> str:
+    meta_path = _cache_meta_path(path)
+    try:
+        data = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    value = data.get("stamp", "")
+    return str(value or "")
+
+
+def _write_cached_stamp(path: Path, stamp) -> None:
+    meta_path = _cache_meta_path(path)
+    payload = {"stamp": _stamp_key(stamp)}
+    try:
+        meta_path.parent.mkdir(parents=True, exist_ok=True)
+        meta_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _cache_matches(path: Path, stamp) -> bool:
+    return _read_cached_stamp(path) == _stamp_key(stamp)
+
+
+def _output_is_fresh(out_path: Path, inputs: list[str]) -> bool:
+    try:
+        st_out = os.stat(out_path)
+    except Exception:
+        return False
+    out_ns = _mtime_ns_from_stat(st_out)
+    if out_ns <= 0:
+        return False
+    for path in inputs or []:
+        p = str(path or "").strip()
+        if not p:
+            return False
+        try:
+            st_in = os.stat(p)
+        except Exception:
+            return False
+        if _mtime_ns_from_stat(st_in) > out_ns:
+            return False
+    return True
+
+
+def _paths_equal(a: str, b: str) -> bool:
+    try:
+        return os.path.normcase(os.path.normpath(str(a or ""))) == os.path.normcase(os.path.normpath(str(b or "")))
+    except Exception:
+        return str(a or "") == str(b or "")
+
+
 def _resolve_obj_index(value: Optional[int], total: int) -> Optional[int]:
     if value is None:
         return None
@@ -1997,7 +2063,16 @@ class VolumeSplitWidget(QtWidgets.QWidget):
                     mesh_xform.get("rot"),
                     mesh_xform.get("scl"),
                 )
-            if force or self._last_input_xform_stamp != xstamp or (not xform_path.exists()):
+            xform_cache_hit = False
+            if (not force) and xform_path.exists():
+                if self._last_input_xform_stamp == xstamp:
+                    xform_cache_hit = True
+                elif _cache_matches(xform_path, xstamp):
+                    xform_cache_hit = True
+                elif self._last_input_xform_stamp is None and _output_is_fresh(xform_path, [mesh_path]):
+                    xform_cache_hit = True
+                    _write_cached_stamp(xform_path, xstamp)
+            if not xform_cache_hit:
                 err = _materialize_transformed_input(Path(mesh_path), xform_path, mesh_xform, debug=debug)
                 if err:
                     self._status.setText(err)
@@ -2011,7 +2086,8 @@ class VolumeSplitWidget(QtWidgets.QWidget):
                     self._set_param("volume", volume_path, notify_scene=False)
                     self._set_param("path", "", notify_scene=True)
                     return
-                self._last_input_xform_stamp = xstamp
+                _write_cached_stamp(xform_path, xstamp)
+            self._last_input_xform_stamp = xstamp
             split_mesh_path = str(xform_path)
             view_mesh_path = str(xform_path)
             _debug_log(
@@ -2049,7 +2125,19 @@ class VolumeSplitWidget(QtWidgets.QWidget):
         )
 
         out_path = _output_path(self._node_item, mesh_path, volume_path)
-        if not force and self._last_stamp == stamp and out_path.exists():
+        cache_hit = False
+        if (not force) and out_path.exists():
+            if self._last_stamp == stamp:
+                cache_hit = True
+            elif _cache_matches(out_path, stamp):
+                cache_hit = True
+            elif self._last_stamp is None:
+                cur_path = (_param_value(model, "path") if model is not None else "").strip()
+                if _paths_equal(cur_path, str(out_path)) and _output_is_fresh(out_path, [split_mesh_path, volume_path]):
+                    cache_hit = True
+                    _write_cached_stamp(out_path, stamp)
+        if cache_hit:
+            self._last_stamp = stamp
             self._status.setText(mesh_label or Path(mesh_path).name)
             self._view_btn.setEnabled(True)
             try:
@@ -2144,6 +2232,7 @@ class VolumeSplitWidget(QtWidgets.QWidget):
             )
             return
 
+        _write_cached_stamp(out_path, stamp)
         self._last_stamp = stamp
         self._status.setText(mesh_label or Path(mesh_path).name)
         self._view_btn.setEnabled(True)

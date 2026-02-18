@@ -303,6 +303,82 @@ def _output_path(node_item, src_path: str) -> Path:
     return _transform_dir(node_item) / f"{node_name}_{src_stem}_xform.obj"
 
 
+def _cache_meta_path(path: Path) -> Path:
+    return Path(str(path) + ".meta.json")
+
+
+def _stamp_key(stamp) -> str:
+    try:
+        return json.dumps(stamp, ensure_ascii=False, separators=(",", ":"), default=str)
+    except Exception:
+        try:
+            return repr(stamp)
+        except Exception:
+            return ""
+
+
+def _read_cached_stamp(path: Path) -> str:
+    meta_path = _cache_meta_path(path)
+    try:
+        data = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    value = data.get("stamp", "")
+    return str(value or "")
+
+
+def _write_cached_stamp(path: Path, stamp) -> None:
+    meta_path = _cache_meta_path(path)
+    payload = {"stamp": _stamp_key(stamp)}
+    try:
+        meta_path.parent.mkdir(parents=True, exist_ok=True)
+        meta_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _cache_matches(path: Path, stamp) -> bool:
+    return _read_cached_stamp(path) == _stamp_key(stamp)
+
+
+def _mtime_ns_from_stat(st) -> int:
+    try:
+        return int(getattr(st, "st_mtime_ns"))
+    except Exception:
+        try:
+            return int(float(getattr(st, "st_mtime", 0.0)) * 1_000_000_000)
+        except Exception:
+            return 0
+
+
+def _output_is_fresh(out_path: Path, inputs: list[str]) -> bool:
+    try:
+        st_out = os.stat(out_path)
+    except Exception:
+        return False
+    out_ns = _mtime_ns_from_stat(st_out)
+    if out_ns <= 0:
+        return False
+    for path in inputs or []:
+        p = str(path or "").strip()
+        if not p:
+            return False
+        try:
+            st_in = os.stat(p)
+        except Exception:
+            return False
+        if _mtime_ns_from_stat(st_in) > out_ns:
+            return False
+    return True
+
+
+def _paths_equal(a: str, b: str) -> bool:
+    try:
+        return os.path.normcase(os.path.normpath(str(a or ""))) == os.path.normcase(os.path.normpath(str(b or "")))
+    except Exception:
+        return str(a or "") == str(b or "")
+
+
 def _parse_vec3(value: str, default: Tuple[float, float, float]) -> Tuple[float, float, float]:
     try:
         parts = [p.strip() for p in str(value or "").split(",")]
@@ -919,7 +995,19 @@ class TransformWidget(QtWidgets.QWidget):
             stamp = (src_path, None, None, pos, rot, scl)
 
         out_path = _output_path(self._node_item, src_path)
-        if not force and self._last_stamp == stamp and out_path.exists():
+        cache_hit = False
+        if (not force) and out_path.exists():
+            if self._last_stamp == stamp:
+                cache_hit = True
+            elif _cache_matches(out_path, stamp):
+                cache_hit = True
+            elif self._last_stamp is None:
+                cur_path = (_param_value(model, "path") if model is not None else "").strip()
+                if _paths_equal(cur_path, str(out_path)) and _output_is_fresh(out_path, [src_path]):
+                    cache_hit = True
+                    _write_cached_stamp(out_path, stamp)
+        if cache_hit:
+            self._last_stamp = stamp
             self._status.setText(label)
             self._view_btn.setEnabled(True)
             self._set_param("source", src_path, notify_scene=False)
@@ -945,6 +1033,7 @@ class TransformWidget(QtWidgets.QWidget):
             self._set_param("path", "", notify_scene=True)
             return
 
+        _write_cached_stamp(out_path, stamp)
         self._last_stamp = stamp
         self._status.setText(label)
         self._view_btn.setEnabled(True)

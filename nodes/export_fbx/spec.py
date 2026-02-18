@@ -132,7 +132,8 @@ def _param_bool(model, name: str, default: bool = False) -> bool:
 def build_ports(node_item) -> None:
     _ensure_param(node_item, "output", "")
     _ensure_param(node_item, "include_hidden", "1")
-    _ensure_hidden_params(getattr(node_item, "model", None), ["output", "include_hidden"])
+    _ensure_param(node_item, "triangulate", "0")
+    _ensure_hidden_params(getattr(node_item, "model", None), ["output", "include_hidden", "triangulate"])
     if hasattr(node_item, "ensure_input"):
         node_item.ensure_input("scene")
 
@@ -471,16 +472,73 @@ def _ensure_export_normals(points, normals, faces):
     return nrm.astype("f4")
 
 
-def _write_topology_obj_scene(asset_rows, output_obj: Path, xform_space: str = "local"):
+def _triangulate_polygon_faces(points, faces, area_eps: float = 1e-12):
+    try:
+        import numpy as np
+    except Exception:
+        return []
+
+    pts = np.asarray(points, dtype="f8").reshape(-1, 3)
+    pcount = int(pts.shape[0])
+    out = []
+    for face in faces or []:
+        try:
+            idxs = [int(i) for i in face]
+        except Exception:
+            continue
+        idxs = [i for i in idxs if 0 <= i < pcount]
+        if len(idxs) < 3:
+            continue
+
+        # Collapse consecutive duplicates and optional closing duplicate.
+        cleaned = []
+        last = None
+        for i in idxs:
+            if last is None or i != last:
+                cleaned.append(i)
+            last = i
+        if len(cleaned) >= 2 and cleaned[0] == cleaned[-1]:
+            cleaned = cleaned[:-1]
+        if len(cleaned) < 3:
+            continue
+
+        anchor = int(cleaned[0])
+        for j in range(1, len(cleaned) - 1):
+            tri = [anchor, int(cleaned[j]), int(cleaned[j + 1])]
+            if len({tri[0], tri[1], tri[2]}) < 3:
+                continue
+            a = pts[tri[0]]
+            b = pts[tri[1]]
+            c = pts[tri[2]]
+            area2 = float(np.linalg.norm(np.cross(b - a, c - a)))
+            if area2 <= area_eps:
+                continue
+            out.append(tri)
+    return out
+
+
+def _write_topology_obj_scene(
+    asset_rows,
+    output_obj: Path,
+    xform_space: str = "local",
+    triangulate: bool = False,
+    scale: float = 1.0,
+):
     try:
         import numpy as np
     except Exception:
         return 0, list(asset_rows or []), "numpy unavailable"
 
-    lines = ["# EchoGraph topology-preserving FBX staging OBJ"]
+    mtl_name = f"{output_obj.stem}.mtl"
+    lines = [
+        "# EchoGraph topology-preserving FBX staging OBJ",
+        f"mtllib {mtl_name}",
+    ]
     vert_offset = 1
     exported = 0
     skipped = []
+    material_order = []
+    material_seen = set()
 
     for row in list(asset_rows or []):
         path = row.get("path")
@@ -529,30 +587,44 @@ def _write_topology_obj_scene(asset_rows, output_obj: Path, xform_space: str = "
             xform_offset=bool(row.get("xform_offset")),
             xform_space=xform_space,
         )
-        norms = _ensure_export_normals(pts, norms, faces)
-
-        buckets = {}
-        pcount = int(pts.shape[0])
-        for face in faces:
+        if abs(float(scale) - 1.0) > 1e-9:
             try:
-                idxs = [int(i) for i in face]
+                pts = (pts.astype("f8") * float(scale)).astype("f4")
             except Exception:
-                continue
-            idxs = [i for i in idxs if 0 <= i < pcount]
-            if len(idxs) < 3:
-                continue
-            n = len(idxs)
-            bucket = buckets.get(n)
-            if bucket is None:
-                buckets[n] = [idxs]
-            else:
-                bucket.append(idxs)
+                pass
+        norms = _ensure_export_normals(pts, norms, faces)
+        pcount = int(pts.shape[0])
 
-        if not buckets:
-            skipped.append(row)
-            continue
+        if triangulate:
+            tri_faces = _triangulate_polygon_faces(pts, faces)
+            if not tri_faces:
+                skipped.append(row)
+                continue
+        else:
+            buckets = {}
+            for face in faces:
+                try:
+                    idxs = [int(i) for i in face]
+                except Exception:
+                    continue
+                idxs = [i for i in idxs if 0 <= i < pcount]
+                if len(idxs) < 3:
+                    continue
+                n = len(idxs)
+                bucket = buckets.get(n)
+                if bucket is None:
+                    buckets[n] = [idxs]
+                else:
+                    bucket.append(idxs)
+
+            if not buckets:
+                skipped.append(row)
+                continue
 
         base_name = _sanitize_name(row.get("name") or path.stem, "object")
+        row_tex = row.get("texture_path")
+        if not isinstance(row_tex, Path):
+            row_tex = None
 
         for x, y, z in pts:
             lines.append(f"v {float(x):.8f} {float(y):.8f} {float(z):.8f}")
@@ -561,17 +633,41 @@ def _write_topology_obj_scene(asset_rows, output_obj: Path, xform_space: str = "
         for nx, ny, nz in norms:
             lines.append(f"vn {float(nx):.8f} {float(ny):.8f} {float(nz):.8f}")
 
-        keys = sorted(buckets.keys())
-        multi = len(keys) > 1
-        for n in keys:
-            obj_name = f"{base_name}_{n}gon" if multi else base_name
-            lines.append(f"o {obj_name}")
-            for idxs in buckets[n]:
+        if triangulate:
+            lines.append(f"o {base_name}")
+            # Hint smoothing continuity for OBJ consumers and importers.
+            lines.append("s 1")
+            # Unreal-friendly material slot naming.
+            mat_name = _sanitize_name(f"M_{base_name}", "material")
+            lines.append(f"usemtl {mat_name}")
+            if mat_name not in material_seen:
+                material_seen.add(mat_name)
+                # In Unreal-compatible mode, avoid opacity side-effects from diffuse alpha.
+                material_order.append((mat_name, None))
+            for idxs in tri_faces:
                 parts = []
                 for idx in idxs:
                     gi = vert_offset + int(idx)
                     parts.append(f"{gi}/{gi}/{gi}")
                 lines.append("f " + " ".join(parts))
+        else:
+            keys = sorted(buckets.keys())
+            multi = len(keys) > 1
+            for n in keys:
+                obj_name = f"{base_name}_{n}gon" if multi else base_name
+                lines.append(f"o {obj_name}")
+                lines.append("s 1")
+                mat_name = _sanitize_name(f"{obj_name}_mat", "material")
+                lines.append(f"usemtl {mat_name}")
+                if mat_name not in material_seen:
+                    material_seen.add(mat_name)
+                    material_order.append((mat_name, row_tex))
+                for idxs in buckets[n]:
+                    parts = []
+                    for idx in idxs:
+                        gi = vert_offset + int(idx)
+                        parts.append(f"{gi}/{gi}/{gi}")
+                    lines.append("f " + " ".join(parts))
 
         vert_offset += pcount
         exported += 1
@@ -581,23 +677,57 @@ def _write_topology_obj_scene(asset_rows, output_obj: Path, xform_space: str = "
 
     output_obj.parent.mkdir(parents=True, exist_ok=True)
     output_obj.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    mtl_lines = ["# EchoGraph autogenerated MTL"]
+    for mat_name, tex_path in material_order:
+        mtl_lines.append(f"newmtl {mat_name}")
+        mtl_lines.append("Ka 0.200000 0.200000 0.200000")
+        mtl_lines.append("Kd 0.800000 0.800000 0.800000")
+        mtl_lines.append("Ks 0.000000 0.000000 0.000000")
+        mtl_lines.append("Ns 1.000000")
+        mtl_lines.append("d 1.000000")
+        mtl_lines.append("Tr 0.000000")
+        mtl_lines.append("illum 2")
+        if isinstance(tex_path, Path):
+            try:
+                tex_ref = tex_path.as_posix()
+                if tex_ref:
+                    mtl_lines.append(f"map_Kd {tex_ref}")
+            except Exception:
+                pass
+        mtl_lines.append("")
+    output_obj.with_suffix(".mtl").write_text("\n".join(mtl_lines) + "\n", encoding="utf-8")
     return exported, skipped, ""
 
 
-def _export_topology_preserving_fbx(asset_rows, output_path: Path, xform_space: str = "local"):
+def _export_topology_preserving_fbx(asset_rows, output_path: Path, xform_space: str = "local", triangulate: bool = False):
     from echograph.ui.gl_loaders import ensure_assimp_dll
 
     ensure_assimp_dll()
     import pyassimp
+    from pyassimp import postprocess as ai_post
 
+    export_scale = 100.0 if triangulate else 1.0
     tmp_dir = Path(tempfile.mkdtemp(prefix="echograph_export_fbx_poly_"))
     obj_path = tmp_dir / "scene.obj"
     try:
-        exported, skipped, err = _write_topology_obj_scene(asset_rows, obj_path, xform_space=xform_space)
+        exported, skipped, err = _write_topology_obj_scene(
+            asset_rows,
+            obj_path,
+            xform_space=xform_space,
+            triangulate=triangulate,
+            scale=export_scale,
+        )
         if err:
             raise RuntimeError(err)
-        with pyassimp.load(str(obj_path), file_type="obj", processing=0) as ai_scene:
-            pyassimp.export(ai_scene, str(output_path), file_type="fbx", processing=0)
+        processing = 0
+        if triangulate:
+            processing |= int(getattr(ai_post, "aiProcess_Triangulate", 0))
+            processing |= int(getattr(ai_post, "aiProcess_JoinIdenticalVertices", 0))
+            processing |= int(getattr(ai_post, "aiProcess_SortByPType", 0))
+            processing |= int(getattr(ai_post, "aiProcess_GenSmoothNormals", 0))
+            processing |= int(getattr(ai_post, "aiProcess_ConvertToLeftHanded", 0))
+        with pyassimp.load(str(obj_path), file_type="obj", processing=processing) as ai_scene:
+            pyassimp.export(ai_scene, str(output_path), file_type="fbx", processing=processing)
         return exported, skipped
     finally:
         shutil.rmtree(str(tmp_dir), ignore_errors=True)
@@ -815,6 +945,124 @@ def _build_export_scene(asset_rows, xform_space: str = "local"):
     return scene, exported, skipped
 
 
+def _build_unreal_compatible_scene(asset_rows, xform_space: str = "local"):
+    try:
+        import numpy as np
+        import trimesh
+    except Exception:
+        return None, 0, list(asset_rows or [])
+
+    try:
+        from PIL import Image
+    except Exception:
+        Image = None  # type: ignore[assignment]
+
+    scene = trimesh.Scene()
+    exported = 0
+    skipped = []
+    for row in list(asset_rows or []):
+        path = row.get("path")
+        if not isinstance(path, Path):
+            skipped.append(row)
+            continue
+
+        pts, norms, uvs, faces = _load_mesh_polygon_data_for_export(path)
+        if pts is None or faces is None or not faces:
+            skipped.append(row)
+            continue
+        try:
+            pts = np.asarray(pts, dtype="f4").reshape(-1, 3)
+        except Exception:
+            skipped.append(row)
+            continue
+        if pts.size == 0:
+            skipped.append(row)
+            continue
+
+        if norms is None or not getattr(norms, "size", 0):
+            norms = np.zeros_like(pts, dtype="f4")
+        else:
+            try:
+                norms = np.asarray(norms, dtype="f4").reshape(-1, 3)
+            except Exception:
+                norms = np.zeros_like(pts, dtype="f4")
+        if norms.shape[0] != pts.shape[0]:
+            norms = np.zeros_like(pts, dtype="f4")
+
+        if uvs is None or not getattr(uvs, "size", 0):
+            uvs = np.zeros((pts.shape[0], 2), dtype="f4")
+        else:
+            try:
+                uvs = np.asarray(uvs, dtype="f4").reshape(-1, 2)
+            except Exception:
+                uvs = np.zeros((pts.shape[0], 2), dtype="f4")
+        if uvs.shape[0] != pts.shape[0]:
+            uvs = np.zeros((pts.shape[0], 2), dtype="f4")
+
+        pts, norms = _apply_scene_xform_arrays(
+            pts,
+            norms,
+            row.get("xform"),
+            xform_offset=bool(row.get("xform_offset")),
+            xform_space=xform_space,
+        )
+        try:
+            # Export Unreal-compatible scale directly in centimeters.
+            pts = (pts.astype("f8") * 100.0).astype("f4")
+        except Exception:
+            pass
+        tri_faces = _triangulate_polygon_faces(pts, faces)
+        if not tri_faces:
+            skipped.append(row)
+            continue
+
+        try:
+            tri_arr = np.asarray(tri_faces, dtype=np.int64).reshape(-1, 3)
+            mesh = trimesh.Trimesh(vertices=pts, faces=tri_arr, process=False)
+        except Exception:
+            skipped.append(row)
+            continue
+        try:
+            mesh.remove_unreferenced_vertices()
+        except Exception:
+            pass
+
+        name = _sanitize_name(row.get("name") or path.stem, "object")
+        mat_name = _sanitize_name(f"M_{name}", "material")
+        material = trimesh.visual.material.PBRMaterial(
+            name=mat_name,
+            baseColorFactor=[204, 204, 204, 255],
+            metallicFactor=0.0,
+            roughnessFactor=1.0,
+        )
+        tex_path = row.get("texture_path")
+        if isinstance(tex_path, Path) and Image is not None:
+            try:
+                rgb = Image.open(str(tex_path)).convert("RGB")
+                rgba = Image.new("RGBA", rgb.size, (255, 255, 255, 255))
+                rgba.paste(rgb)
+                material.baseColorTexture = rgba
+            except Exception:
+                pass
+
+        try:
+            mesh.visual = trimesh.visual.texture.TextureVisuals(
+                uv=uvs.astype("f4"),
+                material=material,
+            )
+        except Exception:
+            pass
+
+        try:
+            scene.add_geometry(mesh, node_name=name, geom_name=name, transform=np.eye(4))
+        except Exception:
+            skipped.append(row)
+            continue
+        exported += 1
+
+    return scene, exported, skipped
+
+
 def _export_trimesh_scene_to_fbx(scene_obj, output_path: Path) -> None:
     from echograph.ui.gl_loaders import ensure_assimp_dll
 
@@ -932,6 +1180,11 @@ class ExportFBXWidget(QtWidgets.QWidget):
         self._include_hidden.stateChanged.connect(self._on_include_hidden_changed)
         layout.addWidget(self._include_hidden, 0)
 
+        self._triangulate = QtWidgets.QCheckBox("Triangulate (Unreal compatible)")
+        self._triangulate.setStyleSheet("QCheckBox{color:#94a3b8;font-size:10px;}")
+        self._triangulate.stateChanged.connect(self._on_triangulate_changed)
+        layout.addWidget(self._triangulate, 0)
+
         self._export_btn = QtWidgets.QPushButton("Export FBX")
         self._export_btn.setStyleSheet(
             "QPushButton{background:#0f766e;color:#f8fafc;border-radius:4px;padding:4px 10px;}"
@@ -946,7 +1199,7 @@ class ExportFBXWidget(QtWidgets.QWidget):
         self._refresh_status()
 
     def sizeHint(self):
-        return QtCore.QSize(240, 96)
+        return QtCore.QSize(240, 116)
 
     def _ensure_scene(self):
         if self._scene is None:
@@ -990,6 +1243,13 @@ class ExportFBXWidget(QtWidgets.QWidget):
         finally:
             self._include_hidden.blockSignals(False)
 
+        triangulate = _param_bool(model, "triangulate", False)
+        try:
+            self._triangulate.blockSignals(True)
+            self._triangulate.setChecked(triangulate)
+        finally:
+            self._triangulate.blockSignals(False)
+
     def _on_output_edit_committed(self):
         text = (self._output_edit.text() or "").strip()
         _set_param_value(self._node_item, "output", text, notify_scene=True)
@@ -998,6 +1258,10 @@ class ExportFBXWidget(QtWidgets.QWidget):
         enabled = bool(self._include_hidden.isChecked())
         _set_param_value(self._node_item, "include_hidden", "1" if enabled else "0", notify_scene=True)
         self._refresh_status()
+
+    def _on_triangulate_changed(self, _state):
+        enabled = bool(self._triangulate.isChecked())
+        _set_param_value(self._node_item, "triangulate", "1" if enabled else "0", notify_scene=True)
 
     def _set_busy(self, busy: bool):
         self._busy = bool(busy)
@@ -1092,6 +1356,7 @@ class ExportFBXWidget(QtWidgets.QWidget):
 
     def _on_export_clicked(self):
         include_hidden = bool(self._include_hidden.isChecked())
+        triangulate = bool(self._triangulate.isChecked())
         assets, err = _collect_scene_assets_for_export(self._node_item, include_hidden=include_hidden)
         if err:
             self._show_popup(QtWidgets.QMessageBox.Warning, err)
@@ -1108,7 +1373,7 @@ class ExportFBXWidget(QtWidgets.QWidget):
         self._set_busy(True)
         try:
             # Preserve topology exactly when exporting a single untouched FBX.
-            if len(assets) == 1 and _can_passthrough_fbx_asset(assets[0]):
+            if (not triangulate) and len(assets) == 1 and _can_passthrough_fbx_asset(assets[0]):
                 src_path = assets[0].get("path")
                 if not isinstance(src_path, Path):
                     raise RuntimeError("Invalid source asset path.")
@@ -1120,17 +1385,29 @@ class ExportFBXWidget(QtWidgets.QWidget):
                     raise RuntimeError("FBX file was not created.")
                 _set_param_value(self._node_item, "output", str(out_path), notify_scene=True)
                 _set_param_value(self._node_item, "include_hidden", "1" if include_hidden else "0", notify_scene=True)
+                _set_param_value(self._node_item, "triangulate", "1" if triangulate else "0", notify_scene=True)
                 self._show_popup(
                     QtWidgets.QMessageBox.Information,
                     f"Exported 1 object to:\n{out_path}\n\nTopology preserved (FBX passthrough).",
                 )
                 return
 
-            exported_count, skipped = _export_topology_preserving_fbx(
-                assets,
-                out_path,
-                xform_space=_scene_xform_space(self._node_item),
-            )
+            if triangulate:
+                scene_obj, exported_count, skipped = _build_unreal_compatible_scene(
+                    assets,
+                    xform_space=_scene_xform_space(self._node_item),
+                )
+                if exported_count <= 0 or scene_obj is None:
+                    self._show_popup(QtWidgets.QMessageBox.Warning, "No mesh data could be prepared for export.")
+                    return
+                _export_trimesh_scene_to_fbx(scene_obj, out_path)
+            else:
+                exported_count, skipped = _export_topology_preserving_fbx(
+                    assets,
+                    out_path,
+                    xform_space=_scene_xform_space(self._node_item),
+                    triangulate=False,
+                )
             if exported_count <= 0:
                 self._show_popup(QtWidgets.QMessageBox.Warning, "No mesh data could be prepared for export.")
                 return
@@ -1140,7 +1417,12 @@ class ExportFBXWidget(QtWidgets.QWidget):
 
             _set_param_value(self._node_item, "output", str(out_path), notify_scene=True)
             _set_param_value(self._node_item, "include_hidden", "1" if include_hidden else "0", notify_scene=True)
-            msg = f"Exported {exported_count} object(s) to:\n{out_path}\n\nTopology preserved (no forced triangulation)."
+            _set_param_value(self._node_item, "triangulate", "1" if triangulate else "0", notify_scene=True)
+            if triangulate:
+                mode_msg = "Triangulated for Unreal compatibility."
+            else:
+                mode_msg = "Topology preserved (no forced triangulation)."
+            msg = f"Exported {exported_count} object(s) to:\n{out_path}\n\n{mode_msg}"
             if skipped:
                 msg += f"\n\nSkipped {len(skipped)} asset(s) that could not be meshed."
             self._show_popup(QtWidgets.QMessageBox.Information, msg)
