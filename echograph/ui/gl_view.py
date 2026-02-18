@@ -4709,41 +4709,27 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             ctx = self._handle_mouse_press_moderngl_left_gizmo_build_context(e)
             if ctx is None:
                 return False
-            return self._handle_mouse_press_moderngl_left_gizmo_dispatch(e=e, **ctx)
+            return self._handle_mouse_press_moderngl_left_gizmo_dispatch(e=e, ctx=ctx)
         except Exception as exc:
             print("[GIZMO_PICK] failed:", exc, flush=True)
         return False
 
     def _handle_mouse_press_moderngl_left_gizmo_build_context(self, e):
-        owner = getattr(self, "_xform_gizmo_owner", None)
-        pos = getattr(self, "_xform_gizmo_pos", None)
+        owner, pos = self._handle_mouse_press_moderngl_left_gizmo_owner_pos()
         if owner in (None, "") or pos is None or (np is None):
             return None
 
         mode = getattr(self, "_xform_gizmo_mode", "translate") or "translate"
 
-        dpr = float(getattr(self, "devicePixelRatioF", lambda: 1.0)())
-        vw = float(self.width()) * dpr
-        vh = float(self.height()) * dpr
-
+        dpr, vw, vh = self._handle_mouse_press_moderngl_left_gizmo_pick_viewport()
         renderer = getattr(self, "_mgl_renderer", None) or self
-        P = getattr(renderer, "_mgl_pick_proj", None)
-        V = getattr(renderer, "_mgl_pick_view", None)
-        M = getattr(renderer, "_mgl_pick_model", None)
-        if P is None or V is None or M is None:
+        matrices = self._handle_mouse_press_moderngl_left_gizmo_pick_matrices(renderer=renderer)
+        if matrices is None:
             return None
+        P, V, M, PV = matrices
 
-        PV = (P @ V @ M).astype("f4")
-
-        g = np.array([float(pos[0]), float(pos[1]), float(pos[2])], dtype="f4")
-        axis_len = 1.0
-        axes = {
-            "x": np.array([1.0, 0.0, 0.0], dtype="f4"),
-            "y": np.array([0.0, 1.0, 0.0], dtype="f4"),
-            "z": np.array([0.0, 0.0, 1.0], dtype="f4"),
-        }
-        p0 = self._handle_mouse_press_moderngl_left_gizmo_project_world(
-            world_xyz=g,
+        g, axis_len, axes, p0 = self._handle_mouse_press_moderngl_left_gizmo_pick_basis(
+            pos=pos,
             PV=PV,
             vw=vw,
             vh=vh,
@@ -4769,63 +4755,71 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             "py_dev": py_dev,
         }
 
+    def _handle_mouse_press_moderngl_left_gizmo_owner_pos(self):
+        owner = getattr(self, "_xform_gizmo_owner", None)
+        pos = getattr(self, "_xform_gizmo_pos", None)
+        return owner, pos
+
+    def _handle_mouse_press_moderngl_left_gizmo_pick_viewport(self):
+        dpr = float(getattr(self, "devicePixelRatioF", lambda: 1.0)())
+        vw = float(self.width()) * dpr
+        vh = float(self.height()) * dpr
+        return dpr, vw, vh
+
+    def _handle_mouse_press_moderngl_left_gizmo_pick_matrices(self, *, renderer):
+        P = getattr(renderer, "_mgl_pick_proj", None)
+        V = getattr(renderer, "_mgl_pick_view", None)
+        M = getattr(renderer, "_mgl_pick_model", None)
+        if P is None or V is None or M is None:
+            return None
+        PV = (P @ V @ M).astype("f4")
+        return P, V, M, PV
+
+    def _handle_mouse_press_moderngl_left_gizmo_pick_basis(self, *, pos, PV, vw, vh):
+        g = np.array([float(pos[0]), float(pos[1]), float(pos[2])], dtype="f4")
+        axis_len = 1.0
+        axes = {
+            "x": np.array([1.0, 0.0, 0.0], dtype="f4"),
+            "y": np.array([0.0, 1.0, 0.0], dtype="f4"),
+            "z": np.array([0.0, 0.0, 1.0], dtype="f4"),
+        }
+        p0 = self._handle_mouse_press_moderngl_left_gizmo_project_world(
+            world_xyz=g,
+            PV=PV,
+            vw=vw,
+            vh=vh,
+        )
+        return g, axis_len, axes, p0
+
     def _handle_mouse_press_moderngl_left_gizmo_dispatch(
         self,
         *,
         e,
-        owner,
-        mode,
-        dpr,
-        vw,
-        vh,
-        renderer,
-        P,
-        V,
-        M,
-        PV,
-        g,
-        axis_len,
-        axes,
-        p0,
-        px_dev,
-        py_dev,
+        ctx,
     ):
-        handled, rot_shared, hit = self._handle_mouse_press_moderngl_left_gizmo_dispatch_rotate(
+        handled, _rot_shared, _hit = self._handle_mouse_press_moderngl_left_gizmo_dispatch_rotate_from_ctx(
             e=e,
-            mode=mode,
-            owner=owner,
-            g=g,
-            p0=p0,
-            dpr=dpr,
-            vw=vw,
-            vh=vh,
-            V=V,
-            M=M,
-            PV=PV,
-            px_dev=px_dev,
-            py_dev=py_dev,
+            ctx=ctx,
         )
         if handled:
             return True
+        return self._handle_mouse_press_moderngl_left_gizmo_dispatch_xform(e=e, **ctx)
 
-        return self._handle_mouse_press_moderngl_left_gizmo_dispatch_xform(
+    def _handle_mouse_press_moderngl_left_gizmo_dispatch_rotate_from_ctx(self, *, e, ctx):
+        return self._handle_mouse_press_moderngl_left_gizmo_dispatch_rotate(
             e=e,
-            p0=p0,
-            mode=mode,
-            owner=owner,
-            g=g,
-            axis_len=axis_len,
-            dpr=dpr,
-            vw=vw,
-            vh=vh,
-            P=P,
-            V=V,
-            M=M,
-            renderer=renderer,
-            px_dev=px_dev,
-            py_dev=py_dev,
-            axes=axes,
-            PV=PV,
+            mode=ctx["mode"],
+            owner=ctx["owner"],
+            g=ctx["g"],
+            p0=ctx["p0"],
+            dpr=ctx["dpr"],
+            vw=ctx["vw"],
+            vh=ctx["vh"],
+            V=ctx["V"],
+            M=ctx["M"],
+            PV=ctx["PV"],
+            px_dev=ctx["px_dev"],
+            py_dev=ctx["py_dev"],
         )
 
     def _handle_mouse_press_moderngl_left_gizmo_dispatch_rotate(
@@ -4982,8 +4976,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         py_dev,
     ):
         # --- scale gizmo drag start (axis cubes + center) ---
-        return self._handle_mouse_press_moderngl_left_gizmo_scale_pick(
-            e=e,
+        scale_ctx = self._handle_mouse_press_moderngl_left_gizmo_scale_pick_context(
             p0=p0,
             mode=mode,
             owner=owner,
@@ -4999,6 +4992,45 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             px_dev=px_dev,
             py_dev=py_dev,
         )
+        return self._handle_mouse_press_moderngl_left_gizmo_scale_pick(
+            e=e,
+            ctx=scale_ctx,
+        )
+
+    def _handle_mouse_press_moderngl_left_gizmo_scale_pick_context(
+        self,
+        *,
+        p0,
+        mode,
+        owner,
+        g,
+        axis_len,
+        dpr,
+        vw,
+        vh,
+        P,
+        V,
+        M,
+        renderer,
+        px_dev,
+        py_dev,
+    ):
+        return {
+            "p0": p0,
+            "mode": mode,
+            "owner": owner,
+            "g": g,
+            "axis_len": axis_len,
+            "dpr": dpr,
+            "vw": vw,
+            "vh": vh,
+            "P": P,
+            "V": V,
+            "M": M,
+            "renderer": renderer,
+            "px_dev": px_dev,
+            "py_dev": py_dev,
+        }
 
     def _handle_mouse_press_moderngl_left_gizmo_dispatch_xform_translate(
         self,
@@ -5027,8 +5059,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             vw=vw,
             vh=vh,
         )
-        return self._handle_mouse_press_moderngl_left_gizmo_translate_pick(
-            e=e,
+        translate_ctx = self._handle_mouse_press_moderngl_left_gizmo_translate_pick_context(
             p0=p0,
             mode=mode,
             owner=owner,
@@ -5044,9 +5075,50 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             renderer=renderer,
             px_dev=px_dev,
             py_dev=py_dev,
+        )
+        return self._handle_mouse_press_moderngl_left_gizmo_translate_pick(
+            e=e,
+            ctx=translate_ctx,
             project=project,
             dist_pt_seg=self._handle_mouse_press_moderngl_left_gizmo_dist_pt_seg,
         )
+
+    def _handle_mouse_press_moderngl_left_gizmo_translate_pick_context(
+        self,
+        *,
+        p0,
+        mode,
+        owner,
+        g,
+        axes,
+        axis_len,
+        dpr,
+        vw,
+        vh,
+        P,
+        V,
+        M,
+        renderer,
+        px_dev,
+        py_dev,
+    ):
+        return {
+            "p0": p0,
+            "mode": mode,
+            "owner": owner,
+            "g": g,
+            "axes": axes,
+            "axis_len": axis_len,
+            "dpr": dpr,
+            "vw": vw,
+            "vh": vh,
+            "P": P,
+            "V": V,
+            "M": M,
+            "renderer": renderer,
+            "px_dev": px_dev,
+            "py_dev": py_dev,
+        }
 
     def _handle_mouse_press_moderngl_left_gizmo_project_world(self, *, world_xyz, PV, vw, vh):
         return _gv_project_world(world_xyz=world_xyz, PV=PV, vw=vw, vh=vh)
@@ -5626,51 +5698,34 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self,
         *,
         e,
-        p0,
-        mode,
-        owner,
-        g,
-        axis_len,
-        dpr,
-        vw,
-        vh,
-        P,
-        V,
-        M,
-        renderer,
-        px_dev,
-        py_dev,
+        ctx,
     ):
-        if p0 is not None and mode == "scale":
+        if ctx["p0"] is not None and ctx["mode"] == "scale":
             try:
                 use_local, R, pick_axis, dx0, dy0 = self._handle_mouse_press_moderngl_left_gizmo_scale_prepare(
-                    p0=p0,
-                    mode=mode,
-                    owner=owner,
-                    g=g,
-                    axis_len=axis_len,
-                    dpr=dpr,
-                    vw=vw,
-                    vh=vh,
-                    P=P,
-                    V=V,
-                    M=M,
-                    renderer=renderer,
-                    px_dev=px_dev,
-                    py_dev=py_dev,
+                    p0=ctx["p0"],
+                    mode=ctx["mode"],
+                    owner=ctx["owner"],
+                    g=ctx["g"],
+                    axis_len=ctx["axis_len"],
+                    dpr=ctx["dpr"],
+                    vw=ctx["vw"],
+                    vh=ctx["vh"],
+                    P=ctx["P"],
+                    V=ctx["V"],
+                    M=ctx["M"],
+                    renderer=ctx["renderer"],
+                    px_dev=ctx["px_dev"],
+                    py_dev=ctx["py_dev"],
                 )
                 if self._handle_mouse_press_moderngl_left_gizmo_scale_start(
                     e=e,
+                    ctx=ctx,
                     pick_axis=pick_axis,
-                    renderer=renderer,
-                    owner=owner,
-                    g=g,
-                    p0=p0,
                     dx0=dx0,
                     dy0=dy0,
                     use_local=use_local,
                     R=R,
-                    px_dev=px_dev,
                 ):
                     return True
             except Exception as ex:
@@ -5834,20 +5889,32 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self,
         *,
         e,
+        ctx,
         pick_axis,
-        renderer,
-        owner,
-        g,
-        p0,
         dx0,
         dy0,
         use_local,
         R,
-        px_dev,
     ):
         if pick_axis is None:
             return False
 
+        owner = self._handle_mouse_press_moderngl_left_gizmo_scale_start_begin(ctx=ctx, pick_axis=pick_axis)
+        self._handle_mouse_press_moderngl_left_gizmo_scale_start_mode(
+            pick_axis=pick_axis,
+            p0=ctx["p0"],
+            dx0=dx0,
+            dy0=dy0,
+            px_dev=ctx["px_dev"],
+            use_local=use_local,
+            R=R,
+        )
+        self._handle_mouse_press_moderngl_left_gizmo_scale_start_finalize(e=e, pick_axis=pick_axis, owner=owner)
+        return True
+
+    def _handle_mouse_press_moderngl_left_gizmo_scale_start_begin(self, *, ctx, pick_axis):
+        renderer = ctx["renderer"]
+        owner = ctx["owner"]
         is_splat = self._handle_mouse_press_moderngl_left_gizmo_owner_is_splat(
             renderer=renderer,
             owner=owner,
@@ -5859,12 +5926,24 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         )
         self._handle_mouse_press_moderngl_left_gizmo_scale_begin_drag(
             owner=owner,
-            g=g,
+            g=ctx["g"],
             pick_axis=pick_axis,
             is_splat=is_splat,
             start_scl=start_scl,
         )
+        return owner
 
+    def _handle_mouse_press_moderngl_left_gizmo_scale_start_mode(
+        self,
+        *,
+        pick_axis,
+        p0,
+        dx0,
+        dy0,
+        px_dev,
+        use_local,
+        R,
+    ):
         if pick_axis == "u":
             self._handle_mouse_press_moderngl_left_gizmo_scale_start_uniform(
                 p0=p0,
@@ -5872,20 +5951,19 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 dy0=dy0,
                 px_dev=px_dev,
             )
-        else:
-            self._handle_mouse_press_moderngl_left_gizmo_scale_start_axis(
-                pick_axis=pick_axis,
-                use_local=use_local,
-                R=R,
-            )
+            return
+        self._handle_mouse_press_moderngl_left_gizmo_scale_start_axis(
+            pick_axis=pick_axis,
+            use_local=use_local,
+            R=R,
+        )
 
+    def _handle_mouse_press_moderngl_left_gizmo_scale_start_finalize(self, *, e, pick_axis, owner):
         # Important: prevent old click-pick/orbit press state from interfering.
         self._mgl_pick_press_pos = None
-
         print("[GIZMO_SCALE_PICK] axis=", pick_axis, "owner=", owner, flush=True)
         self.setCursor(QtCore.Qt.SizeAllCursor)
         e.accept()
-        return True
 
     def _handle_mouse_press_moderngl_left_gizmo_scale_start_scl(self, *, renderer, owner, is_splat):
         get_xf = (
@@ -5944,99 +6022,57 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self,
         *,
         e,
-        p0,
-        mode,
-        owner,
-        g,
-        axes,
-        axis_len,
-        dpr,
-        vw,
-        vh,
-        P,
-        V,
-        M,
-        renderer,
-        px_dev,
-        py_dev,
+        ctx,
         project,
         dist_pt_seg,
     ):
         p0, axis_dirs, axis_proj = self._handle_mouse_press_moderngl_left_gizmo_translate_prepare(
-            p0=p0,
-            mode=mode,
-            owner=owner,
-            g=g,
-            axes=axes,
-            axis_len=axis_len,
-            dpr=dpr,
-            vw=vw,
-            vh=vh,
-            P=P,
-            V=V,
-            M=M,
-            renderer=renderer,
-            px_dev=px_dev,
-            py_dev=py_dev,
+            p0=ctx["p0"],
+            mode=ctx["mode"],
+            owner=ctx["owner"],
+            g=ctx["g"],
+            axes=ctx["axes"],
+            axis_len=ctx["axis_len"],
+            dpr=ctx["dpr"],
+            vw=ctx["vw"],
+            vh=ctx["vh"],
+            P=ctx["P"],
+            V=ctx["V"],
+            M=ctx["M"],
+            renderer=ctx["renderer"],
+            px_dev=ctx["px_dev"],
+            py_dev=ctx["py_dev"],
             project=project,
         )
-        start_kwargs = self._handle_mouse_press_moderngl_left_gizmo_translate_start_kwargs(
+        return self._handle_mouse_press_moderngl_left_gizmo_translate_pick_start(
             e=e,
+            ctx=ctx,
             p0=p0,
-            mode=mode,
-            owner=owner,
-            g=g,
-            dpr=dpr,
-            vw=vw,
-            vh=vh,
-            P=P,
-            V=V,
-            M=M,
-            renderer=renderer,
-            px_dev=px_dev,
-            py_dev=py_dev,
+            axis_dirs=axis_dirs,
+            axis_proj=axis_proj,
             dist_pt_seg=dist_pt_seg,
         )
-        start_kwargs["axis_dirs"] = axis_dirs
-        start_kwargs["axis_proj"] = axis_proj
-        return bool(self._handle_mouse_press_moderngl_left_gizmo_translate_start(**start_kwargs))
 
-    def _handle_mouse_press_moderngl_left_gizmo_translate_start_kwargs(
+    def _handle_mouse_press_moderngl_left_gizmo_translate_pick_start(
         self,
         *,
         e,
+        ctx,
         p0,
-        mode,
-        owner,
-        g,
-        dpr,
-        vw,
-        vh,
-        P,
-        V,
-        M,
-        renderer,
-        px_dev,
-        py_dev,
+        axis_dirs,
+        axis_proj,
         dist_pt_seg,
     ):
-        return {
-            "e": e,
-            "p0": p0,
-            "mode": mode,
-            "owner": owner,
-            "g": g,
-            "dpr": dpr,
-            "vw": vw,
-            "vh": vh,
-            "P": P,
-            "V": V,
-            "M": M,
-            "renderer": renderer,
-            "px_dev": px_dev,
-            "py_dev": py_dev,
-            "dist_pt_seg": dist_pt_seg,
-        }
+        return bool(
+            self._handle_mouse_press_moderngl_left_gizmo_translate_start(
+                e=e,
+                ctx=ctx,
+                p0=p0,
+                axis_dirs=axis_dirs,
+                axis_proj=axis_proj,
+                dist_pt_seg=dist_pt_seg,
+            )
+        )
 
     def _handle_mouse_press_moderngl_left_gizmo_translate_prepare(
         self,
@@ -6326,58 +6362,47 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self,
         *,
         e,
+        ctx,
         p0,
-        mode,
-        owner,
-        g,
         axis_dirs,
         axis_proj,
-        dpr,
-        vw,
-        vh,
-        P,
-        V,
-        M,
-        renderer,
-        px_dev,
-        py_dev,
         dist_pt_seg,
     ):
-        if p0 is None or mode != "translate":
+        if p0 is None or ctx["mode"] != "translate":
             return False
 
         dx0, dy0 = self._handle_mouse_press_moderngl_left_gizmo_translate_start_offsets(
             p0=p0,
-            px_dev=px_dev,
-            py_dev=py_dev,
+            px_dev=ctx["px_dev"],
+            py_dev=ctx["py_dev"],
         )
         if self._handle_mouse_press_moderngl_left_gizmo_translate_start_try_view(
             e=e,
-            owner=owner,
-            g=g,
-            dpr=dpr,
-            vw=vw,
-            vh=vh,
-            P=P,
-            V=V,
-            M=M,
-            renderer=renderer,
-            px_dev=px_dev,
-            py_dev=py_dev,
+            owner=ctx["owner"],
+            g=ctx["g"],
+            dpr=ctx["dpr"],
+            vw=ctx["vw"],
+            vh=ctx["vh"],
+            P=ctx["P"],
+            V=ctx["V"],
+            M=ctx["M"],
+            renderer=ctx["renderer"],
+            px_dev=ctx["px_dev"],
+            py_dev=ctx["py_dev"],
             dx0=dx0,
             dy0=dy0,
         ):
             return True
         return self._handle_mouse_press_moderngl_left_gizmo_translate_start_try_axis(
             e=e,
-            owner=owner,
-            g=g,
+            owner=ctx["owner"],
+            g=ctx["g"],
             p0=p0,
             axis_dirs=axis_dirs,
             axis_proj=axis_proj,
-            renderer=renderer,
-            px_dev=px_dev,
-            py_dev=py_dev,
+            renderer=ctx["renderer"],
+            px_dev=ctx["px_dev"],
+            py_dev=ctx["py_dev"],
             dist_pt_seg=dist_pt_seg,
         )
 
