@@ -54,3 +54,53 @@ def axis_proj_max_len(p0, axis_proj):
         if dist > max_axis_len:
             max_axis_len = dist
     return max_axis_len
+
+
+def plane_normal_from_vm(V, M):
+    try:
+        invVM = np.linalg.inv((np.asarray(V, dtype=np.float32) @ np.asarray(M, dtype=np.float32)).astype(np.float32))
+        n = -invVM[:3, 2]
+        nlen = float(np.linalg.norm(n))
+        if nlen > 1e-6:
+            return n / nlen
+    except Exception:
+        pass
+    return None
+
+
+def ray_from_screen(invPV, px, py, vw, vh):
+    try:
+        x = (2.0 * (px / max(1.0, vw))) - 1.0
+        y = 1.0 - (2.0 * (py / max(1.0, vh)))
+        near = np.array([x, y, -1.0, 1.0], dtype="f4")
+        far = np.array([x, y, 1.0, 1.0], dtype="f4")
+        pN = invPV @ near
+        pF = invPV @ far
+        pN = pN[:3] / pN[3]
+        pF = pF[:3] / pF[3]
+        ray_o = pN.astype("f4")
+        ray_d = (pF - pN).astype("f4")
+        rn = float(np.linalg.norm(ray_d))
+        if rn > 1e-8:
+            ray_d /= rn
+            return ray_o, ray_d
+    except Exception:
+        pass
+    return None
+
+
+def plane_hit(point_on_plane, plane_normal, ray_o, ray_d):
+    denom = float(np.dot(ray_d, plane_normal))
+    if abs(denom) <= 1e-6:
+        return None
+    t = float(np.dot((point_on_plane - ray_o), plane_normal)) / denom
+    return ray_o + (t * ray_d)
+
+
+def axis_line_ray_param(axis_world, g0, ray_o, ray_d):
+    w0 = ray_o - g0
+    ad = float(np.dot(axis_world, ray_d))
+    denom = 1.0 - ad * ad
+    if abs(denom) < 1e-6:
+        return float(np.dot(axis_world, w0))
+    return float((ad * float(np.dot(ray_d, w0)) - float(np.dot(axis_world, w0))) / denom)
