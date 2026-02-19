@@ -79,6 +79,12 @@ except Exception as e:
     ) from e
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Import core before Qt on Windows to avoid PySide/Torch DLL init conflicts.
+# ─────────────────────────────────────────────────────────────────────────────
+from librarian_core import Librarian  # now resolves because HERE is on sys.path
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Qt imports
 # ─────────────────────────────────────────────────────────────────────────────
 try:
@@ -118,12 +124,6 @@ def _current_docs_dir() -> str:
     if st.get("docs_dir"):
         return st["docs_dir"]
     return str((HERE / "docs").resolve())
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Import core (must live next to this file as nodes/librarian/librarian_core.py)
-# ─────────────────────────────────────────────────────────────────────────────
-from librarian_core import Librarian  # now resolves because HERE is on sys.path
 
 
 # ─────────────────────────────────────────────────────────────────────────────
