@@ -4927,10 +4927,10 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 return False
 
         try:
-            wire_seq = hotkeys_config.keyseq("gl_wireframe_toggle", "Shift+W")
+            wire_seq = hotkeys_config.keyseq("gl_wireframe_toggle", "H")
             grid_seq = hotkeys_config.keyseq("gl_grid_toggle", "G")
         except Exception:
-            wire_seq = "W"
+            wire_seq = "H"
             grid_seq = "G"
 
         if not (_matches_hotkey(wire_seq) or _matches_hotkey(grid_seq)):

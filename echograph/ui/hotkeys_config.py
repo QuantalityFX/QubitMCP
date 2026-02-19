@@ -27,7 +27,7 @@ DEFAULT_KEYMAP = {
     "gizmo_scale": "E",
     "app_undo": "Ctrl+Z",
     "app_redo": "Ctrl+Y",
-    "gl_wireframe_toggle": "W",
+    "gl_wireframe_toggle": "H",
     "gl_grid_toggle": "G",
     "app_fullscreen": "F11",
     "wire_add_pin": "Ctrl+LeftClick",
