@@ -35,3 +35,5 @@ __pycache__/
 
 # Debug logs
 /logs/
+
+scripts/GPT_5_Test_response_003.txt
