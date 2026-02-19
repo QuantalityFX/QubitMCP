@@ -77,7 +77,7 @@ def _log(*args):
     print("[HOTKEYS]", *args, flush=True)
 
 def keymap_path() -> Path:
-    # echograph/ui/hotkeys_config.py -> parents[2] should be your repo root (EchoMatrixMCP)
+    # echograph/ui/hotkeys_config.py -> parents[2] should be your repo root
     repo_root = Path(__file__).resolve().parents[2]
     p = repo_root / "hotkeys.json"
     _log("PATH:", str(p))

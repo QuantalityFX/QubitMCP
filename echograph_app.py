@@ -51,7 +51,7 @@ except ImportError:
 app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
 
 # App/window icon
-icon_path = Path(__file__).parent / "icons" / "EchoMatrixMCP_Icon_s.png"
+icon_path = Path(__file__).parent / "icons" / "QubitMCP_Icon_s.png"
 if icon_path.exists():
     app.setWindowIcon(QtGui.QIcon(str(icon_path)))
 else:

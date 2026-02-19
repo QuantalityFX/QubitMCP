@@ -64,12 +64,18 @@ if _site_dir.is_dir() and str(_site_dir) not in sys.path:
 try:
     import llama_index  # noqa: F401
 except Exception as e:
+    if os.name == "nt":
+        _venv_python = HERE / ".venv" / "Scripts" / "python.exe"
+    else:
+        _venv_python = HERE / ".venv" / "bin" / "python"
+    _requirements = HERE / "requirements.txt"
+    _install_cmd = f'  "{_venv_python}" -m pip install -r "{_requirements}"'
     raise RuntimeError(
         "llama_index is not available in the current interpreter.\n"
         "Either run your host with nodes\\librarian\\.venv, or install requirements into that venv.\n"
         f"Tried site-packages here:\n  {_site_dir}\n\n"
         "If missing, run:\n"
-        r'  V:\Source\Repos\EchoMatrixMCP\nodes\librarian\.venv\Scripts\python.exe -m pip install -r V:\Source\Repos\EchoMatrixMCP\nodes\librarian\requirements.txt'
+        f"{_install_cmd}"
     ) from e
 
 # ─────────────────────────────────────────────────────────────────────────────
