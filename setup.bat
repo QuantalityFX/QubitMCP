@@ -149,11 +149,15 @@ if errorlevel 1 (
   )
 )
 
-"%PY%" -m pip install --upgrade pip setuptools wheel >> "%LOG%" 2>&1
+echo [setup] Upgrading pip tooling in %LABEL% venv...
+echo [setup] Upgrading pip tooling in %LABEL% venv... >> "%LOG%"
+"%PY%" -m pip install --upgrade --progress-bar on pip setuptools wheel
 if errorlevel 1 (
   echo [setup] ERROR: Failed to upgrade tooling in %LABEL% venv. >> "%LOG%"
   exit /b 1
 )
+echo [setup] Tooling ready in %LABEL% venv.
+echo [setup] Tooling ready in %LABEL% venv. >> "%LOG%"
 exit /b 0
 
 :install_requirements
@@ -169,11 +173,15 @@ if not exist "%REQ%" (
 
 echo [setup] Installing %LABEL%...
 echo [setup] Installing %LABEL% from %REQ% >> "%LOG%"
-"%PY%" -m pip install -r "%REQ%" >> "%LOG%" 2>&1
+echo [setup] This step may take several minutes; live pip output follows.
+echo [setup] Live pip output follows for %LABEL%. >> "%LOG%"
+"%PY%" -m pip install --progress-bar on -r "%REQ%"
 if errorlevel 1 (
   echo [setup] ERROR: Failed to install %LABEL%. >> "%LOG%"
   exit /b 1
 )
+echo [setup] Completed %LABEL%.
+echo [setup] Completed %LABEL%. >> "%LOG%"
 exit /b 0
 
 :base_py
