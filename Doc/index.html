@@ -3,24 +3,25 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Qubit 1.0.0 Manual</title>
+    <title>QubitMCP 1.0.1 Manual</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <div class="layout">
       <aside class="sidebar">
         <div class="brand">
-          <div class="brand-title">Qubit 1.0.0</div>
+          <div class="brand-title">QubitMCP 1.0.1</div>
           <div class="brand-sub">User + Developer Manual</div>
         </div>
         <nav class="nav">
           <a href="#overview">Overview</a>
           <a href="#quick-start">Quick Start</a>
+          <a href="#setup-launch">Setup and Launch</a>
           <a href="#ui-tour">UI Tour</a>
           <a href="#workflows">Workflows</a>
           <a href="#graph-basics">Graph Basics</a>
           <a href="#viewport">3D Viewport</a>
-          <a href="#gizmos">Gizmos &amp; Transforms</a>
+          <a href="#gizmos">Gizmos and Transforms</a>
           <a href="#rendering">Viewport Controls</a>
           <a href="#hotkeys">Hotkeys</a>
           <a href="#settings">Settings</a>
@@ -33,38 +34,61 @@
 
       <main class="content">
         <header class="page-header">
-          <h1>Qubit Manual</h1>
+          <h1>QubitMCP Manual</h1>
           <p class="lead">
-            Qubit is a node‑based workflow tool with a built‑in 2D graph editor
-            and a 3D viewport for scene assembly and asset review. This manual
-            covers daily use and high‑level development concepts.
+            QubitMCP is a node based workflow tool with a graph canvas, a 3D viewport,
+            and AI plus librarian integrations. This manual covers setup, daily use,
+            and the current node ecosystem.
           </p>
         </header>
 
         <section id="overview" class="section">
           <h2>Overview</h2>
           <div class="callout">
-            <strong>What Qubit does:</strong> build workflows by connecting nodes,
-            preview assets, and run text / AI / 3D pipelines from a single canvas.
+            <strong>What QubitMCP does:</strong> connect nodes, process text and AI workflows,
+            assemble 3D scenes, and export results from a single graph.
           </div>
           <ul class="bullet">
-            <li>Node graph editor with wires, grouping, and info cards.</li>
-            <li>3D viewport with camera tools, grid, and transform gizmos.</li>
-            <li>AI/LLM nodes for prompt pipelines and chat workflows.</li>
-            <li>Scene nodes for assembling multiple imports into a 3D view.</li>
-            <li>Hotkeys and settings are fully configurable.</li>
+            <li>Node graph editor with links, grouping, and per node info cards.</li>
+            <li>3D viewport with camera controls, grid, wireframe, and gizmos.</li>
+            <li>AI stack with LLM Prompt, Chatbot, Database, and Librarian.</li>
+            <li>3D stack with import, primitive, texturing, split volume, transforms, scene, and FBX export.</li>
+            <li>Configurable hotkeys saved in <code>hotkeys.json</code>.</li>
           </ul>
         </section>
 
         <section id="quick-start" class="section">
           <h2>Quick Start</h2>
           <ol class="steps">
-            <li>Open Qubit and choose <strong>File → Open</strong> or <strong>Open Recent</strong>.</li>
-            <li>Create a node with <strong>Create → Node</strong> or press <strong>Tab</strong>.</li>
-            <li>Connect nodes by dragging from one node’s output to another’s input.</li>
-            <li>Select a node to view its details in the Info panel.</li>
-            <li>Use the 3D viewport buttons to frame, toggle grid, or capture snapshots.</li>
+            <li>Run setup once with <code>.\setup.bat</code>.</li>
+            <li>Launch with <code>.\run_QubitMCP.bat</code> or run <code>echograph_app.py</code> from the project venv.</li>
+            <li>Create nodes with <strong>Create - Node</strong> or press <strong>Tab</strong>.</li>
+            <li>Connect outputs to inputs by dragging from one port to another.</li>
+            <li>Select a node to edit parameters in the info panel and run its actions.</li>
           </ol>
+        </section>
+
+        <section id="setup-launch" class="section">
+          <h2>Setup and Launch</h2>
+          <p>Run from repository root: <code>V:\Source\Repos\QubitMCP</code>.</p>
+
+          <h3>One time setup</h3>
+          <pre><code>setup.bat</code></pre>
+          <ul class="bullet">
+            <li>Creates or repairs <code>.venv</code> for the app.</li>
+            <li>Creates or repairs <code>nodes\librarian\.venv</code> for librarian service dependencies.</li>
+            <li>Installs <code>requirements.txt</code> and <code>nodes\librarian\requirements.txt</code>.</li>
+            <li>Upgrades packaging tools in each venv (<code>pip</code>, <code>setuptools</code>, <code>wheel</code>).</li>
+          </ul>
+
+          <h3>Launch app</h3>
+          <pre><code>run_QubitMCP.bat</code></pre>
+          <p>or</p>
+          <pre><code>.\.venv\Scripts\python.exe .\echograph_app.py</code></pre>
+
+          <h3>Optional venv activation</h3>
+          <pre><code>.\.venv\Scripts\Activate.ps1</code></pre>
+          <p>Activation is optional because scripts call the venv python directly.</p>
         </section>
 
         <section id="ui-tour" class="section">
@@ -74,19 +98,19 @@
               <h3>Top Bar</h3>
               <ul class="bullet">
                 <li><strong>File</strong>: New, Open, Open Recent, Save, Save As.</li>
-                <li><strong>Create</strong>: Create new nodes.</li>
-                <li><strong>Settings</strong>: LLM scale and viewport tuning.</li>
-                <li><strong>Hotkeys</strong>: Edit keyboard and mouse bindings.</li>
-                <li><strong>2D/3D</strong>: Switch between 2D, 3D, and split views.</li>
-                <li><strong>Frame</strong> and <strong>Logs</strong> buttons.</li>
+                <li><strong>Create</strong>: Add nodes from the node kind list.</li>
+                <li><strong>Settings</strong>: viewport and UI tuning.</li>
+                <li><strong>Hotkeys</strong>: edit keyboard and mouse bindings.</li>
+                <li><strong>2D / 3D / Split</strong> view mode buttons.</li>
+                <li><strong>Frame</strong> and <strong>Logs</strong> utilities.</li>
               </ul>
             </div>
             <div class="card">
               <h3>Main Areas</h3>
               <ul class="bullet">
-                <li><strong>Graph Canvas</strong> (2D): nodes and wires.</li>
-                <li><strong>3D Viewport</strong>: assets, grid, gizmos.</li>
-                <li><strong>Info Panel</strong>: node details and controls.</li>
+                <li><strong>Graph Canvas</strong>: nodes, wires, and comment frames.</li>
+                <li><strong>3D Viewport</strong>: asset preview and scene assembly.</li>
+                <li><strong>Info Panel</strong>: parameters, buttons, previews, and node tools.</li>
               </ul>
             </div>
           </div>
@@ -95,9 +119,10 @@
         <section id="workflows" class="section">
           <h2>Workflows</h2>
           <ul class="bullet">
-            <li>Workflows are saved as JSON files.</li>
-            <li>Use <strong>Open Recent</strong> to quickly return to prior work.</li>
-            <li>Saving preserves node layout, parameters, and settings.</li>
+            <li>Workflows are saved as JSON.</li>
+            <li><strong>Open Recent</strong> provides quick access to recently edited workflow files.</li>
+            <li>Save preserves graph layout, parameters, links, and related state.</li>
+            <li>Hotkey overrides are stored in project root <code>hotkeys.json</code>.</li>
           </ul>
         </section>
 
@@ -107,18 +132,18 @@
             <div class="card">
               <h3>Mouse Controls</h3>
               <ul class="bullet">
-                <li><strong>Left‑click</strong>: select nodes / start wires.</li>
-                <li><strong>Middle‑drag</strong>: pan the canvas.</li>
-                <li><strong>Right‑drag</strong>: zoom.</li>
-                <li><strong>Alt + Left‑click</strong> on a wire: remove wire.</li>
+                <li><strong>Left click</strong>: select nodes and start links.</li>
+                <li><strong>Middle drag</strong>: pan graph.</li>
+                <li><strong>Right drag</strong>: zoom graph.</li>
+                <li><strong>Alt + Left click</strong> on a wire: remove wire.</li>
               </ul>
             </div>
             <div class="card">
-              <h3>Selection &amp; Editing</h3>
+              <h3>Editing</h3>
               <ul class="bullet">
-                <li>Click a node to open its Info Card.</li>
-                <li>Copy/paste nodes with standard shortcuts.</li>
-                <li>Group selections into comment frames.</li>
+                <li>Use <strong>Tab</strong> to open Create Node.</li>
+                <li>Copy and paste with standard shortcuts.</li>
+                <li>Use comment groups to organize complex graphs.</li>
               </ul>
             </div>
           </div>
@@ -127,36 +152,35 @@
         <section id="viewport" class="section">
           <h2>3D Viewport</h2>
           <ul class="bullet">
-            <li>Used for Import and Scene nodes.</li>
-            <li>Frame the view to fit assets.</li>
-            <li>Wireframe and grid toggles are available.</li>
-            <li>Camera orbits, pans, and zooms around a focus target.</li>
+            <li>Used by Import, Scene, and scene related processing nodes.</li>
+            <li>Supports camera frame, reset, fly mode, and focus workflows.</li>
+            <li>Displays mesh and splat assets through the active graph path.</li>
+            <li>Scene workflows support per asset transforms and visibility states.</li>
           </ul>
         </section>
 
         <section id="gizmos" class="section">
-          <h2>Gizmos &amp; Transforms</h2>
+          <h2>Gizmos and Transforms</h2>
           <ul class="bullet">
             <li>Translate (<strong>T</strong>), Rotate (<strong>R</strong>), Scale (<strong>E</strong>).</li>
-            <li>World/Local space toggle for transform orientation.</li>
-            <li>Scene Outliner drives which asset the gizmo controls.</li>
-            <li>Undo/redo for transform changes.</li>
+            <li>Applies to selected items in the viewport and scene workflows.</li>
+            <li>Transform data participates in scene assembly and export chains.</li>
           </ul>
         </section>
 
         <section id="rendering" class="section">
           <h2>Viewport Controls</h2>
           <ul class="bullet">
-            <li><strong>Grid</strong> and <strong>Grid FX</strong> toggles.</li>
-            <li><strong>Wireframe</strong> toggle (W).</li>
-            <li><strong>Gizmo</strong> visibility toggle for clean snapshots.</li>
-            <li><strong>Snapshot</strong> button for captures.</li>
+            <li><strong>Grid</strong> toggle for orientation and scale reference.</li>
+            <li><strong>Wireframe</strong> toggle, default hotkey <strong>H</strong>.</li>
+            <li><strong>Gizmo visibility</strong> toggle for clean previews.</li>
+            <li><strong>Snapshot</strong> capture tools for scene reviews.</li>
           </ul>
         </section>
 
         <section id="hotkeys" class="section">
-          <h2>Hotkeys (Defaults)</h2>
-          <p>All hotkeys are editable from the Hotkeys dialog.</p>
+          <h2>Hotkeys (Default)</h2>
+          <p>All bindings are editable in the Hotkeys dialog and persisted to <code>hotkeys.json</code>.</p>
           <div class="table-wrap">
             <table>
               <thead>
@@ -174,11 +198,11 @@
                 <tr><td>Frame View</td><td>F</td></tr>
                 <tr><td>Reset 3D View</td><td>Shift+R</td></tr>
                 <tr><td>Gizmo Translate / Rotate / Scale</td><td>T / R / E</td></tr>
-                <tr><td>Wireframe Toggle</td><td>W</td></tr>
+                <tr><td>Wireframe Toggle</td><td>H</td></tr>
                 <tr><td>Grid Toggle</td><td>G</td></tr>
                 <tr><td>View Mode 2D / Split / 3D</td><td>1 / 2 / 3</td></tr>
-                <tr><td>Add Wire Pin</td><td>Ctrl+Left Click</td></tr>
-                <tr><td>Remove Wire</td><td>Alt+Left Click</td></tr>
+                <tr><td>Add Wire Pin</td><td>Ctrl+LeftClick</td></tr>
+                <tr><td>Remove Wire</td><td>Alt+LeftClick</td></tr>
               </tbody>
             </table>
           </div>
@@ -187,55 +211,55 @@
         <section id="settings" class="section">
           <h2>Settings</h2>
           <ul class="bullet">
-            <li><strong>LLM Scale</strong>: scales LLM node UI footprint.</li>
-            <li><strong>Pan Base / Pan Exp / Pan Boost</strong>: viewport pan feel.</li>
-            <li><strong>Gizmo Zoom</strong>: zoom sensitivity in large scenes.</li>
-            <li><strong>Debug Log</strong>: enable/disable debug logging.</li>
+            <li><strong>LLM Scale</strong>: scales LLM node presentation.</li>
+            <li><strong>Pan Base / Pan Exp / Pan Boost</strong>: viewport panning response.</li>
+            <li><strong>Gizmo Zoom</strong>: transform tool sensitivity.</li>
+            <li><strong>Debug Log</strong>: diagnostic logging toggle.</li>
           </ul>
         </section>
 
         <section id="nodes" class="section">
           <h2>Node Catalog</h2>
-          <p class="muted">Grouped by purpose. Each node exposes inputs/parameters in its Info Card.</p>
+          <p class="muted">Current kinds available from Create Node and plugin registration.</p>
 
-          <h3>Core</h3>
+          <h3>Core and Utility</h3>
           <ul class="bullet">
-            <li><strong>Node</strong>: general‑purpose text node.</li>
-            <li><strong>Note</strong>: formatted note with inline display selection.</li>
-            <li><strong>Output</strong>: terminal node for collecting results.</li>
+            <li><strong>note</strong>: rich note node with display controls.</li>
+            <li><strong>node</strong>: general purpose text and parameter node.</li>
+            <li><strong>append</strong>: concatenate upstream text in graph order.</li>
+            <li><strong>switch</strong>: select active branch from multiple inputs.</li>
+            <li><strong>output</strong>: terminal output collector node.</li>
+            <li><strong>python</strong>: execute custom Python scripts from graph context.</li>
           </ul>
 
-          <h3>Logic</h3>
+          <h3>AI and Knowledge</h3>
           <ul class="bullet">
-            <li><strong>Append</strong>: merge upstream text in UI order; preview and save JSON.</li>
-            <li><strong>Switch</strong>: select active branch (toggle in Info Card).</li>
-          </ul>
-
-          <h3>AI / Knowledge</h3>
-          <ul class="bullet">
-            <li><strong>LLM Prompt</strong>: send prompts to OpenAI or Ollama; supports files and temperature.</li>
-            <li><strong>Chatbot</strong>: chat UI that uses LLM Prompt + Database history.</li>
-            <li><strong>Database</strong>: Mongo‑based project/history store.</li>
-            <li><strong>Librarian</strong>: document search and summarization (query, docs_dir, mode, top_k).</li>
+            <li><strong>llm</strong>: base LLM node configuration.</li>
+            <li><strong>llm_prompt</strong>: prompt execution with provider and model settings.</li>
+            <li><strong>chatbot</strong>: conversational interface using LLM plus history.</li>
+            <li><strong>database</strong>: persistent storage used by chatbot and workflows.</li>
+            <li><strong>librarian</strong>: indexed document search, summarize, and analysis service.</li>
           </ul>
 
           <h3>Media</h3>
           <ul class="bullet">
-            <li><strong>HTML Preview</strong>: display HTML content.</li>
-            <li><strong>Image Collection</strong>: build a tiled image mosaic.</li>
+            <li><strong>html_preview</strong>: render HTML content in node view.</li>
+            <li><strong>image_collection</strong>: assemble and preview image groups.</li>
           </ul>
 
-          <h3>3D / Scene</h3>
+          <h3>3D and Scene Processing</h3>
           <ul class="bullet">
-            <li><strong>Import</strong>: load 3D assets and preview in viewport.</li>
-            <li><strong>Scene</strong>: assemble multiple imports, manage visibility and transforms.</li>
-            <li><strong>Scene Outliner</strong>: view assets, rename, and toggle visibility.</li>
-          </ul>
-
-          <h3>Tools</h3>
-          <ul class="bullet">
-            <li><strong>Python</strong>: edit and run Python scripts with graph inputs.</li>
-            <li><strong>3DGen</strong>: optional generation workflow (external tool).</li>
+            <li><strong>import</strong>: load mesh or splat assets.</li>
+            <li><strong>instance</strong>: create additional scene instances from upstream assets.</li>
+            <li><strong>primitive</strong>: generate primitive geometry inputs.</li>
+            <li><strong>uv_unwrap</strong>: UV pipeline stage for texture workflows.</li>
+            <li><strong>texture</strong>: base texturing stage.</li>
+            <li><strong>texture_pro</strong>: extended texturing provider stage.</li>
+            <li><strong>texture_layer</strong>: layered texture composition stage.</li>
+            <li><strong>split_volume</strong>: split or select volume regions (volume selector).</li>
+            <li><strong>transforms</strong>: apply transform offsets in processing chains.</li>
+            <li><strong>scene</strong>: assemble and view multiple assets in one scene context.</li>
+            <li><strong>export_fbx</strong>: export scene or processed output to FBX.</li>
           </ul>
         </section>
 
@@ -243,21 +267,22 @@
           <h2>Common Pipelines</h2>
           <div class="grid two">
             <div class="card">
-              <h3>Scene Assembly</h3>
+              <h3>Scene Assembly and Export</h3>
               <ol class="steps">
-                <li>Create Import nodes for each asset.</li>
-                <li>Connect imports into a Scene node.</li>
-                <li>Click View Scene to load into the 3D viewport.</li>
-                <li>Use the Scene Outliner to select and transform assets.</li>
+                <li>Create <code>import</code> or <code>primitive</code> nodes.</li>
+                <li>Optional processing: <code>uv_unwrap</code>, <code>texture</code>/<code>texture_pro</code>/<code>texture_layer</code>, <code>split_volume</code>, <code>transforms</code>.</li>
+                <li>Use <code>instance</code> when you need repeated assets.</li>
+                <li>Connect into <code>scene</code> and review in 3D viewport.</li>
+                <li>Finish with <code>export_fbx</code> for DCC handoff.</li>
               </ol>
             </div>
             <div class="card">
-              <h3>LLM Workflow</h3>
+              <h3>Librarian and LLM Workflow</h3>
               <ol class="steps">
-                <li>Create LLM Prompt node and set provider/model.</li>
-                <li>Optional: connect Database to persist history.</li>
-                <li>Use Chatbot for interactive conversations.</li>
-                <li>Append + Output to merge and save responses.</li>
+                <li>Create <code>librarian</code> and set docs path.</li>
+                <li>Build or load librarian index and run search or summarize.</li>
+                <li>Use <code>llm_prompt</code> or <code>chatbot</code> for response generation.</li>
+                <li>Attach <code>database</code> for persistence and <code>append</code> plus <code>output</code> for final aggregation.</li>
               </ol>
             </div>
           </div>
@@ -266,20 +291,21 @@
         <section id="troubleshooting" class="section">
           <h2>Troubleshooting</h2>
           <ul class="bullet">
-            <li>If a hotkey doesn’t work, open Hotkeys and verify the binding.</li>
-            <li>If viewport feels slow, reduce Grid FX or Wireframe usage.</li>
-            <li>Use Logs for debugging and enable Debug Log only when needed.</li>
+            <li>Setup issues: check <code>setup.log</code> at repo root after running <code>setup.bat</code>.</li>
+            <li>Librarian launch issues: run <code>nodes\librarian\librarianSetup.bat</code> and review <code>nodes\librarian\librarian_child.log</code> and <code>nodes\librarian\librarian_crash.log</code>.</li>
+            <li>Hotkey mismatch: open Hotkeys dialog and confirm bindings, or regenerate <code>hotkeys.json</code>.</li>
+            <li>Wireframe default is <code>H</code>; if not, verify <code>gl_wireframe_toggle</code> in <code>hotkeys.json</code>.</li>
           </ul>
         </section>
 
         <section id="developer" class="section">
-          <h2>Developer Guide (High‑Level)</h2>
+          <h2>Developer Guide (High Level)</h2>
           <ul class="bullet">
-            <li><strong>Node system:</strong> Qubit loads node definitions at startup. Each node can define ports, UI, and Info Card actions.</li>
-            <li><strong>Extensibility:</strong> New nodes can be registered as plugins without modifying core UI.</li>
-            <li><strong>Hotkeys:</strong> Stored in a JSON file and editable in‑app.</li>
-            <li><strong>Workflows:</strong> Saved as JSON; include nodes, links, params, and viewport settings.</li>
-            <li><strong>Logs:</strong> Debug logs are written only when enabled.</li>
+            <li>Node specs are registered through <code>nodes/core</code> and plugin bootstrap in <code>nodes/loader.py</code>.</li>
+            <li>Create Node kinds are defined in <code>echograph/ui/dialogs.py</code>.</li>
+            <li>Hotkey defaults are in <code>echograph/ui/hotkeys_config.py</code> and merge with root <code>hotkeys.json</code>.</li>
+            <li>Workflow files persist graph structure and node parameters as JSON.</li>
+            <li>Librarian service runs out of <code>nodes/librarian/.venv</code> as a separate process.</li>
           </ul>
         </section>
       </main>
@@ -288,3 +314,4 @@
     <script src="app.js"></script>
   </body>
 </html>
+

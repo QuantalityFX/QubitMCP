@@ -85,6 +85,15 @@ body {
   max-width: 900px;
 }
 
+code {
+  background: #10151b;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 1px 6px;
+  font-family: "Consolas", "Cascadia Mono", monospace;
+  font-size: 0.93em;
+}
+
 .section {
   margin-top: 36px;
   padding-top: 12px;
@@ -139,7 +148,22 @@ body {
   border-radius: 10px;
   padding: 6px;
   overflow-x: auto;
-  max-width: 520px;
+  max-width: 960px;
+}
+
+pre {
+  background: #10151b;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  margin: 10px 0;
+}
+
+pre code {
+  border: 0;
+  background: transparent;
+  padding: 0;
 }
 
 table {

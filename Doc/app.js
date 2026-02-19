@@ -1,18 +1,62 @@
-/* Highlight active section in the sidebar */
+/* Keep sidebar highlight in sync with clicks and scroll position. */
 const links = Array.from(document.querySelectorAll(".nav a"));
-const sections = links
-  .map((l) => document.querySelector(l.getAttribute("href")))
+const pairs = links
+  .map((link) => {
+    const target = document.querySelector(link.getAttribute("href"));
+    return target ? { link, target } : null;
+  })
   .filter(Boolean);
 
-const observer = new IntersectionObserver(
-  (entries) => {
-    entries.forEach((entry) => {
-      if (!entry.isIntersecting) return;
-      const id = `#${entry.target.id}`;
-      links.forEach((l) => l.classList.toggle("active", l.getAttribute("href") === id));
-    });
-  },
-  { rootMargin: "-20% 0px -60% 0px", threshold: 0.1 }
-);
+function setActive(hash) {
+  links.forEach((link) => {
+    link.classList.toggle("active", link.getAttribute("href") === hash);
+  });
+}
 
-sections.forEach((s) => observer.observe(s));
+function updateActiveFromScroll() {
+  if (!pairs.length) return;
+  const offset = 24;
+  const y = window.scrollY + offset;
+  let current = pairs[0];
+
+  for (const pair of pairs) {
+    if (y >= pair.target.offsetTop) {
+      current = pair;
+    } else {
+      break;
+    }
+  }
+  setActive(current.link.getAttribute("href"));
+}
+
+let ticking = false;
+function onScroll() {
+  if (ticking) return;
+  ticking = true;
+  requestAnimationFrame(() => {
+    updateActiveFromScroll();
+    ticking = false;
+  });
+}
+
+links.forEach((link) => {
+  link.addEventListener("click", () => {
+    setActive(link.getAttribute("href"));
+  });
+});
+
+window.addEventListener("scroll", onScroll, { passive: true });
+window.addEventListener("resize", updateActiveFromScroll);
+window.addEventListener("hashchange", () => {
+  if (location.hash) {
+    setActive(location.hash);
+  } else {
+    updateActiveFromScroll();
+  }
+});
+
+if (location.hash && document.querySelector(location.hash)) {
+  setActive(location.hash);
+} else {
+  updateActiveFromScroll();
+}
