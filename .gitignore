@@ -43,3 +43,5 @@ nodes/librarian/storage/
 nodes/librarian/query_cache.json
 nodes/librarian/settings.json
 nodes/librarian/librarian_child.log
+
+nodes/librarian/docs/
