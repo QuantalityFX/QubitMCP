@@ -22,6 +22,10 @@ __pycache__/
 /nodes/librarian/librarian_child.log
 /nodes/librarian/docs/
 /nodes/librarian/setup.log
+/nodes/librarian/.env
+/nodes/librarian/launch.log
+/nodes/librarian/librarian_crash.log
+/nodes/librarian/response_text.txt
 
 # Script workspace (local/scratch)
 /scripts/
