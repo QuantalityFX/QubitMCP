@@ -20,6 +20,8 @@ __pycache__/
 /nodes/librarian/query_cache.json
 /nodes/librarian/settings.json
 /nodes/librarian/librarian_child.log
+/nodes/librarian/docs/
+/nodes/librarian/setup.log
 
 # Script workspace (local/scratch)
 /scripts/
@@ -35,15 +37,3 @@ __pycache__/
 
 # Debug logs
 /logs/
-
-scripts/GPT_5_Test_response_003.txt
-
-nodes/librarian/ipc/
-nodes/librarian/storage/
-nodes/librarian/query_cache.json
-nodes/librarian/settings.json
-nodes/librarian/librarian_child.log
-
-nodes/librarian/docs/
-
-nodes/librarian/setup.log
