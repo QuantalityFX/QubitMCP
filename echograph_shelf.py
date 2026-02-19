@@ -7,7 +7,8 @@
 # Delete/Backspace removes selected nodes with their links.
 # Clicking an Output node auto-fills Info pane with ordered branch cards (start → output).
 
-import sys, re, json, math, os, time, subprocess
+import sys, re, json, math, os, time, tempfile, subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Dict, Any
 
@@ -88,6 +89,32 @@ def _save_recent_graphs(paths: List[str]) -> None:
             json.dumps(list(paths), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+    except Exception:
+        pass
+
+
+_WORKFLOW_LOAD_PROFILE_PATH = Path(tempfile.gettempdir()) / "EchoGraph" / "workflow_load_profile.jsonl"
+
+
+def _workflow_load_profile_enabled() -> bool:
+    raw = str(os.environ.get("ECHOGRAPH_LOAD_PROFILE", "0") or "").strip().lower()
+    if not raw:
+        return False
+    return raw in ("1", "true", "yes", "on", "y")
+
+
+def _workflow_load_log(event: str, **fields) -> None:
+    if not _workflow_load_profile_enabled():
+        return
+    record = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "event": str(event or ""),
+    }
+    record.update(fields or {})
+    try:
+        _WORKFLOW_LOAD_PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _WORKFLOW_LOAD_PROFILE_PATH.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
     except Exception:
         pass
 
@@ -654,6 +681,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
         self._group_drag_active = False
         self._group_move_lock = False
         self._suppress_node_model_updates = False
+        self._bulk_loading = False
 
         try:
             self.setItemIndexMethod(QtWidgets.QGraphicsScene.NoIndex)
@@ -1033,7 +1061,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
     # --- in GraphScene.from_dict(self, data) ---
     def from_dict(self, data):
         # delegate; pass your ctor + scale setter
-        persistence.deserialize_scene(
+        return persistence.deserialize_scene(
             self,
             data,
             GraphNode_ctor=GraphNode,
@@ -1088,13 +1116,15 @@ class GraphScene(QtWidgets.QGraphicsScene):
         self.addItem(item)
         self._nodes_by_name[node.name] = node
         self._node_items[node.name] = item
-        self._reframe_to_nodes(margin=8000.0)
+        if not bool(getattr(self, "_bulk_loading", False)):
+            self._reframe_to_nodes(margin=8000.0)
         return item
 
     def add_edge(self, src_name, dst_name, dst_port_name=None):
         return self._add_edge_and_update_switch(src_name, dst_name, dst_port_name=dst_port_name)
 
     def _add_edge_and_update_switch(self, src_name, dst_name, dst_port_name=None):
+        bulk = bool(getattr(self, "_bulk_loading", False))
         src = self._node_items[src_name]; dst = self._node_items[dst_name]
         edge = EdgeItem(src, dst, dst_port_name=dst_port_name)
         self._edges.append(edge); self.addItem(edge)
@@ -1106,20 +1136,22 @@ class GraphScene(QtWidgets.QGraphicsScene):
             if dst_kind == "switch":
                 dst.model.switch_index = max(0, min(dst.model.switch_index,
                                                     max(0, len(dst.model.switch_inputs)-1)))
-            self.refresh_node_widget(dst.model.name)
+            if not bulk:
+                self.refresh_node_widget(dst.model.name)
 
             # Also refresh the Append card UI if the destination is an Append/Switch node with a list
-            try:
-                win = self.views()[0].window() if self.views() else None
-                if win:
-                    card = getattr(win, "_card_by_node", {}).get(dst.model.name)
-                    if card and hasattr(card, "refresh_append_ui_from_model"):
-                        card.refresh_append_ui_from_model()
-            except Exception:
-                pass
+            if not bulk:
+                try:
+                    win = self.views()[0].window() if self.views() else None
+                    if win:
+                        card = getattr(win, "_card_by_node", {}).get(dst.model.name)
+                        if card and hasattr(card, "refresh_append_ui_from_model"):
+                            card.refresh_append_ui_from_model()
+                except Exception:
+                    pass
 
         # NEW: keep Info panel + preview live when graph changes
-        if self._current_output_name:
+        if (not bulk) and self._current_output_name:
             try:
                 self.recompute_active_path(self._current_output_name)
                 if self.views() and hasattr(self.views()[0].window(), "populate_branch_info"):
@@ -1133,11 +1165,12 @@ class GraphScene(QtWidgets.QGraphicsScene):
             except Exception:
                 pass
 
-        try:
-            self.linksChanged.emit()
-        except Exception:
-            pass
-        self.refresh_node_widget(dst.model.name)
+        if not bulk:
+            try:
+                self.linksChanged.emit()
+            except Exception:
+                pass
+            self.refresh_node_widget(dst.model.name)
         return edge
 
     def _on_edge_removed(self, edge: 'EdgeItem'):
@@ -1684,9 +1717,11 @@ class GraphScene(QtWidgets.QGraphicsScene):
 
     def _refresh_all_switch_widgets(self):
         for it in self._node_items.values():
-            if (it.model.kind or "").lower()=="switch":
+            kind = (it.model.kind or "").lower()
+            if kind == "switch":
                 self._refresh_switch_widget(it)
-            self.refresh_node_widget(it.model.name)
+            if kind in ("switch", "append", "scene", "scene_assembly", "scene_outliner"):
+                self.refresh_node_widget(it.model.name)
 
     def _refresh_switch_widget(self, switch_item: 'NodeItem'):
         switch_item._recompute_height()
@@ -4124,21 +4159,55 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 pass
 
     def _load_graph_file(self, path: str) -> bool:
+        t_load_start = time.perf_counter()
         path = (path or "").strip()
         if not path:
             return False
+        json_ms = 0.0
+        deserialize_ms = 0.0
+        post_ms = 0.0
+        frame_ms = 0.0
+        data = {}
+        deserialize_profile = {}
         try:
+            t_json = time.perf_counter()
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
+            json_ms = (time.perf_counter() - t_json) * 1000.0
         except Exception as e:
-            QtWidgets.QMessageBox.critical(self, APP_TITLE, f"Failed to open:\n{e}")
-            return False
-        try:
-            self.scene.from_dict(data)
-        except Exception as e:
+            _workflow_load_log(
+                "workflow_load_failed",
+                path=path,
+                phase="read_json",
+                error=str(e),
+                total_ms=round((time.perf_counter() - t_load_start) * 1000.0, 3),
+            )
             QtWidgets.QMessageBox.critical(self, APP_TITLE, f"Failed to open:\n{e}")
             return False
 
+        counts = {
+            "nodes": len((data.get("nodes") if isinstance(data, dict) else []) or []),
+            "edges": len((data.get("edges") if isinstance(data, dict) else []) or []),
+            "comments": len((data.get("comments") if isinstance(data, dict) else []) or []),
+        }
+        try:
+            t_deserialize = time.perf_counter()
+            deserialize_profile = self.scene.from_dict(data) or {}
+            deserialize_ms = (time.perf_counter() - t_deserialize) * 1000.0
+        except Exception as e:
+            _workflow_load_log(
+                "workflow_load_failed",
+                path=path,
+                phase="deserialize_scene",
+                error=str(e),
+                counts=counts,
+                json_ms=round(json_ms, 3),
+                total_ms=round((time.perf_counter() - t_load_start) * 1000.0, 3),
+            )
+            QtWidgets.QMessageBox.critical(self, APP_TITLE, f"Failed to open:\n{e}")
+            return False
+
+        t_post = time.perf_counter()
         try:
             s = float(data.get("llm_scale", LLM_SCALE))
         except Exception as e:
@@ -4233,11 +4302,31 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                     gv._apply_mgl_light_intensity(light_intensity, sync_ui=True, sync_scene=False)
             except Exception:
                 pass
+        post_ms = (time.perf_counter() - t_post) * 1000.0
 
         self._current_path = path
         self._remember_recent(path)
         self._update_window_title()
+        t_frame = time.perf_counter()
         self._frame_all_nodes()
+        frame_ms = (time.perf_counter() - t_frame) * 1000.0
+        total_ms = (time.perf_counter() - t_load_start) * 1000.0
+        try:
+            file_size = int(os.path.getsize(path))
+        except Exception:
+            file_size = -1
+        _workflow_load_log(
+            "workflow_load_summary",
+            path=path,
+            file_size=file_size,
+            counts=counts,
+            total_ms=round(total_ms, 3),
+            json_ms=round(json_ms, 3),
+            deserialize_ms=round(deserialize_ms, 3),
+            post_ms=round(post_ms, 3),
+            frame_ms=round(frame_ms, 3),
+            deserialize_profile=deserialize_profile if isinstance(deserialize_profile, dict) else {},
+        )
         return True
 
     def _open_graph(self):

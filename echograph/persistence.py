@@ -1,4 +1,5 @@
 from __future__ import annotations
+import time
 from typing import Callable, Dict, Any
 from echograph.constants import LLM_SCALE_DEFAULT
 
@@ -155,142 +156,243 @@ def deserialize_scene(
     *,
     GraphNode_ctor: Callable[..., Any],
     set_scale_cb: Callable[[float], None],
-) -> None:
-    # 1) apply saved scale first
-    raw = (data.get("settings", {}) or {}).get("llm_scale", data.get("llm_scale", LLM_SCALE_DEFAULT))
+) -> Dict[str, Any]:
+    t_start = time.perf_counter()
+    phase_ms: Dict[str, float] = {}
+    node_timings = []
+    edge_timings = []
+    kind_totals: Dict[str, Dict[str, float]] = {}
+    edge_errors = 0
+    comment_errors = 0
+
+    def _mark(name: str, t0: float) -> None:
+        phase_ms[name] = (time.perf_counter() - t0) * 1000.0
+
+    def _node_top(entries, limit: int = 20):
+        return sorted(entries, key=lambda x: float(x.get("ms", 0.0)), reverse=True)[:limit]
+
+    def _edge_top(entries, limit: int = 15):
+        return sorted(entries, key=lambda x: float(x.get("ms", 0.0)), reverse=True)[:limit]
+
+    nodes_in = list(data.get("nodes", []) or [])
+    edges_in = list(data.get("edges", []) or [])
+    comments_in = list(data.get("comments", []) or [])
+    prev_bulk_loading = bool(getattr(scene, "_bulk_loading", False))
+    scene._bulk_loading = True
+
     try:
-        set_scale_cb(float(raw))
-    except Exception:
-        set_scale_cb(LLM_SCALE_DEFAULT)
-    try:
-        settings = data.get("settings", {}) or {}
-        if isinstance(settings, dict):
-            view_settings = {}
-            for key in ("pan_base", "pan_exp", "pan_boost", "gizmo_zoom_scale", "light_intensity", "fly_speed_mult"):
-                if key in settings:
-                    try:
-                        view_settings[key] = float(settings[key])
-                    except Exception:
-                        pass
-            if view_settings:
-                scene._view_settings = view_settings
-    except Exception:
-        pass
-
-    # 2) clear
-    scene.clear_scene()
-
-    # 3) rebuild nodes
-    for nd in data.get("nodes", []):
-        n = GraphNode_ctor(
-            nd.get("name",""),
-            kind=nd.get("kind","node"),
-            info=nd.get("info",""),
-            code=nd.get("code"),
-            params=nd.get("params", []),
-            switch_inputs=nd.get("switch_inputs", []),
-            switch_index=nd.get("switch_index", 0),
-        )
-
-        # featured params (Note)
-        if (n.kind or "").lower() == "note":
-            feat = nd.get("featured_params") or []
-            try:
-                setattr(n, "_featured_params", {str(x) for x in feat if x})
-            except Exception:
-                setattr(n, "_featured_params", set())
-            nsize = nd.get("note_size")
-            if isinstance(nsize, (list, tuple)) and len(nsize) >= 2:
-                try:
-                    setattr(n, "_note_size", (float(nsize[0]), float(nsize[1])))
-                except Exception:
-                    pass
-            fheights = nd.get("featured_heights")
-            if isinstance(fheights, dict):
-                clean = {}
-                for name, val in fheights.items():
-                    try:
-                        hv = float(val)
-                    except Exception:
-                        continue
-                    if hv > 0:
-                        clean[str(name)] = hv
-                if clean:
-                    try:
-                        setattr(n, "_featured_heights", clean)
-                    except Exception:
-                        pass
-        if (n.kind or "").lower() in ("chatbot", "chat bot", "chat_bot"):
-            csize = nd.get("chatbot_size")
-            if isinstance(csize, (list, tuple)) and len(csize) >= 2:
-                try:
-                    setattr(n, "_chatbot_size", (float(csize[0]), float(csize[1])))
-                except Exception:
-                    pass
-        if (n.kind or "").lower() in ("image_collection", "imagecollection"):
-            paths = nd.get("image_collection_paths") or []
-            try:
-                paths = [str(p) for p in paths if isinstance(p, str) and p.strip()]
-            except Exception:
-                paths = []
-            setattr(n, "_image_collection_state", {"paths": paths})
-        if (n.kind or "").lower() in ("scene", "scene_assembly", "scene_outliner"):
-            raw_hidden = nd.get("scene_hidden") or []
-            try:
-                hidden = {str(x) for x in raw_hidden if x}
-            except Exception:
-                hidden = set()
-            setattr(n, "_scene_hidden", hidden)
-            raw_xforms = nd.get("scene_xforms") or {}
-            if isinstance(raw_xforms, dict):
-                try:
-                    setattr(n, "_scene_xforms", raw_xforms)
-                except Exception:
-                    pass
-
-        # position (Qt-free)
-        pos = nd.get("pos", [0.0, 0.0])
+        # 1) apply saved scale first
+        t_phase = time.perf_counter()
+        raw = (data.get("settings", {}) or {}).get("llm_scale", data.get("llm_scale", LLM_SCALE_DEFAULT))
         try:
-            n.pos_xy = (float(pos[0]), float(pos[1]))
+            set_scale_cb(float(raw))
         except Exception:
-            n.pos_xy = (0.0, 0.0)
+            set_scale_cb(LLM_SCALE_DEFAULT)
+        _mark("apply_scale", t_phase)
+
+        t_phase = time.perf_counter()
         try:
-            n.pos_z = float(nd.get("pos_z", 0.0))
+            settings = data.get("settings", {}) or {}
+            if isinstance(settings, dict):
+                view_settings = {}
+                for key in ("pan_base", "pan_exp", "pan_boost", "gizmo_zoom_scale", "light_intensity", "fly_speed_mult"):
+                    if key in settings:
+                        try:
+                            view_settings[key] = float(settings[key])
+                        except Exception:
+                            pass
+                if view_settings:
+                    scene._view_settings = view_settings
         except Exception:
-            n.pos_z = 0.0
+            pass
+        _mark("apply_view_settings", t_phase)
 
-        # let GraphScene convert to QPointF as needed
-        scene.add_node(n, n.pos_xy)
+        # 2) clear
+        t_phase = time.perf_counter()
+        scene.clear_scene()
+        _mark("clear_scene", t_phase)
 
-    # 4) rebuild edges
-    for ed in data.get("edges", []):
-        try:
-            edge = scene._add_edge_and_update_switch(
-                ed["src"],
-                ed["dst"],
-                dst_port_name=ed.get("dst_port"),
+        # 3) rebuild nodes
+        t_phase = time.perf_counter()
+        for nd in nodes_in:
+            t_node = time.perf_counter()
+            node_name = str(nd.get("name", "") or "")
+            node_kind = str(nd.get("kind", "node") or "node")
+            n = GraphNode_ctor(
+                node_name,
+                kind=node_kind,
+                info=nd.get("info",""),
+                code=nd.get("code"),
+                params=nd.get("params", []),
+                switch_inputs=nd.get("switch_inputs", []),
+                switch_index=nd.get("switch_index", 0),
             )
-            if edge is not None:
+
+            # featured params (Note)
+            if (n.kind or "").lower() == "note":
+                feat = nd.get("featured_params") or []
                 try:
-                    pins = ed.get("pins") or []
-                    if pins and hasattr(edge, "add_pins_from_positions"):
-                        edge.add_pins_from_positions(pins)
+                    setattr(n, "_featured_params", {str(x) for x in feat if x})
                 except Exception:
-                    pass
-        except Exception:
-            pass
+                    setattr(n, "_featured_params", set())
+                nsize = nd.get("note_size")
+                if isinstance(nsize, (list, tuple)) and len(nsize) >= 2:
+                    try:
+                        setattr(n, "_note_size", (float(nsize[0]), float(nsize[1])))
+                    except Exception:
+                        pass
+                fheights = nd.get("featured_heights")
+                if isinstance(fheights, dict):
+                    clean = {}
+                    for name, val in fheights.items():
+                        try:
+                            hv = float(val)
+                        except Exception:
+                            continue
+                        if hv > 0:
+                            clean[str(name)] = hv
+                    if clean:
+                        try:
+                            setattr(n, "_featured_heights", clean)
+                        except Exception:
+                            pass
+            if (n.kind or "").lower() in ("chatbot", "chat bot", "chat_bot"):
+                csize = nd.get("chatbot_size")
+                if isinstance(csize, (list, tuple)) and len(csize) >= 2:
+                    try:
+                        setattr(n, "_chatbot_size", (float(csize[0]), float(csize[1])))
+                    except Exception:
+                        pass
+            if (n.kind or "").lower() in ("image_collection", "imagecollection"):
+                paths = nd.get("image_collection_paths") or []
+                try:
+                    paths = [str(p) for p in paths if isinstance(p, str) and p.strip()]
+                except Exception:
+                    paths = []
+                setattr(n, "_image_collection_state", {"paths": paths})
+            if (n.kind or "").lower() in ("scene", "scene_assembly", "scene_outliner"):
+                raw_hidden = nd.get("scene_hidden") or []
+                try:
+                    hidden = {str(x) for x in raw_hidden if x}
+                except Exception:
+                    hidden = set()
+                setattr(n, "_scene_hidden", hidden)
+                raw_xforms = nd.get("scene_xforms") or {}
+                if isinstance(raw_xforms, dict):
+                    try:
+                        setattr(n, "_scene_xforms", raw_xforms)
+                    except Exception:
+                        pass
 
-    # 5) rebuild comment groups
-    for cdata in data.get("comments", []):
+            # position (Qt-free)
+            pos = nd.get("pos", [0.0, 0.0])
+            try:
+                n.pos_xy = (float(pos[0]), float(pos[1]))
+            except Exception:
+                n.pos_xy = (0.0, 0.0)
+            try:
+                n.pos_z = float(nd.get("pos_z", 0.0))
+            except Exception:
+                n.pos_z = 0.0
+
+            # let GraphScene convert to QPointF as needed
+            scene.add_node(n, n.pos_xy)
+            dt_ms = (time.perf_counter() - t_node) * 1000.0
+            node_timings.append({
+                "name": node_name,
+                "kind": node_kind,
+                "ms": round(dt_ms, 3),
+            })
+            bucket = kind_totals.setdefault(node_kind.lower(), {"count": 0.0, "ms": 0.0})
+            bucket["count"] += 1.0
+            bucket["ms"] += dt_ms
+        _mark("rebuild_nodes", t_phase)
+
+        # 4) rebuild edges
+        t_phase = time.perf_counter()
+        for ed in edges_in:
+            t_edge = time.perf_counter()
+            src = str(ed.get("src", "") or "")
+            dst = str(ed.get("dst", "") or "")
+            ok = False
+            try:
+                edge = scene._add_edge_and_update_switch(
+                    ed["src"],
+                    ed["dst"],
+                    dst_port_name=ed.get("dst_port"),
+                )
+                ok = edge is not None
+                if edge is not None:
+                    try:
+                        pins = ed.get("pins") or []
+                        if pins and hasattr(edge, "add_pins_from_positions"):
+                            edge.add_pins_from_positions(pins)
+                    except Exception:
+                        pass
+            except Exception:
+                edge_errors += 1
+            dt_ms = (time.perf_counter() - t_edge) * 1000.0
+            edge_timings.append({
+                "src": src,
+                "dst": dst,
+                "ms": round(dt_ms, 3),
+                "ok": bool(ok),
+            })
+        _mark("rebuild_edges", t_phase)
+
+        # 5) rebuild comment groups
+        t_phase = time.perf_counter()
+        for cdata in comments_in:
+            try:
+                scene._add_comment_group_from_data(cdata)
+            except Exception:
+                comment_errors += 1
+        _mark("rebuild_comments", t_phase)
+
+        t_phase = time.perf_counter()
+        scene._refresh_all_switch_widgets()
+        scene._reframe_to_nodes(margin=8000.0)
+        _mark("finalize_scene", t_phase)
+
+        t_phase = time.perf_counter()
+        if getattr(scene, "_current_output_name", None) in scene._node_items:
+            scene.recompute_active_path(scene._current_output_name)
+        else:
+            scene._clear_path_highlight()
+        _mark("refresh_active_path", t_phase)
+    finally:
+        scene._bulk_loading = prev_bulk_loading
         try:
-            scene._add_comment_group_from_data(cdata)
+            scene.linksChanged.emit()
         except Exception:
             pass
 
-    scene._refresh_all_switch_widgets()
-    scene._reframe_to_nodes(margin=8000.0)
+    total_ms = (time.perf_counter() - t_start) * 1000.0
+    top_kinds = []
+    for kind, payload in kind_totals.items():
+        count = int(payload.get("count", 0.0))
+        ms = float(payload.get("ms", 0.0))
+        top_kinds.append({
+            "kind": kind,
+            "count": count,
+            "ms": round(ms, 3),
+            "avg_ms": round((ms / float(count)) if count > 0 else 0.0, 3),
+        })
+    top_kinds.sort(key=lambda x: float(x.get("ms", 0.0)), reverse=True)
 
-    if getattr(scene, "_current_output_name", None) in scene._node_items:
-        scene.recompute_active_path(scene._current_output_name)
-    else:
-        scene._clear_path_highlight()
+    return {
+        "total_ms": round(total_ms, 3),
+        "phase_ms": {k: round(v, 3) for k, v in phase_ms.items()},
+        "counts": {
+            "nodes": len(nodes_in),
+            "edges": len(edges_in),
+            "comments": len(comments_in),
+        },
+        "errors": {
+            "edge_errors": int(edge_errors),
+            "comment_errors": int(comment_errors),
+        },
+        "top_nodes": _node_top(node_timings, limit=25),
+        "top_edges": _edge_top(edge_timings, limit=20),
+        "top_node_kinds": top_kinds[:20],
+    }
