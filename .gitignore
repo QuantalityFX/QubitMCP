@@ -37,3 +37,9 @@ __pycache__/
 /logs/
 
 scripts/GPT_5_Test_response_003.txt
+
+nodes/librarian/ipc/
+nodes/librarian/storage/
+nodes/librarian/query_cache.json
+nodes/librarian/settings.json
+nodes/librarian/librarian_child.log
