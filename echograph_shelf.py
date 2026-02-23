@@ -3263,6 +3263,52 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             except Exception:
                 pass
 
+    def _reset_viewport_scene_state_for_workflow_load(self) -> None:
+        # Prevent per-owner xforms/gizmo state from leaking across workflow files.
+        try:
+            self.clear_scene_asset_selection()
+        except Exception:
+            pass
+        try:
+            gl_view = getattr(self, "gl_view", None)
+            if gl_view is None:
+                return
+            clear_fn = getattr(gl_view, "_clear_scene_asset_state", None)
+            if callable(clear_fn):
+                clear_fn()
+            else:
+                # Fallback for older GL view variants.
+                for name in (
+                    "_mgl_scene_visibility",
+                    "_mgl_scene_splats",
+                    "_mgl_scene_bounds_by_owner",
+                    "_mgl_scene_mesh_bounds_by_owner",
+                    "_mgl_scene_splats_world",
+                    "_mgl_scene_splats_bounds_local",
+                    "_mgl_scene_splat_bounds_by_owner",
+                    "_mgl_scene_xforms_by_owner",
+                    "_mgl_scene_splat_xforms_by_owner",
+                    "_mgl_scene_xform_offset_by_owner",
+                    "_mgl_scene_pivot_local_by_owner",
+                ):
+                    try:
+                        setattr(gl_view, name, {})
+                    except Exception:
+                        pass
+                try:
+                    gl_view._xform_gizmo_owner = None
+                    gl_view._xform_gizmo_owner_kind = None
+                    gl_view._xform_gizmo_pos_locked = False
+                    gl_view._xform_gizmo_pos = (0.0, 0.0, 0.0)
+                except Exception:
+                    pass
+            try:
+                gl_view.update()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
     def update_scene_asset_xform(self, owner: str) -> None:
         owner = (owner or "").strip()
         if not owner:
@@ -4207,6 +4253,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             "edges": len((data.get("edges") if isinstance(data, dict) else []) or []),
             "comments": len((data.get("comments") if isinstance(data, dict) else []) or []),
         }
+        try:
+            self._reset_viewport_scene_state_for_workflow_load()
+        except Exception:
+            pass
         try:
             t_deserialize = time.perf_counter()
             deserialize_profile = self.scene.from_dict(data) or {}

@@ -734,6 +734,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             xf = get_xf(owner) if callable(get_xf) else {}
             pos = tuple((xf or {}).get("pos", (0.0, 0.0, 0.0)))
             if all(abs(float(v)) < 1e-6 for v in pos):
+                resolved = False
                 bounds = None
                 try:
                     bounds = (
@@ -750,6 +751,17 @@ class NodeItem(QtWidgets.QGraphicsObject):
                             cy = (float(bmin[1]) + float(bmax[1])) * 0.5
                             cz = (float(bmin[2]) + float(bmax[2])) * 0.5
                             pos = (cx, cy, cz)
+                            resolved = True
+                    except Exception:
+                        pass
+                if not resolved:
+                    # Keep the active gizmo position if we cannot resolve owner pivot.
+                    # Avoid snapping to world origin during transient owner/xform states.
+                    try:
+                        cur_owner = getattr(glv, "_xform_gizmo_owner", None)
+                        cur_pos = tuple(getattr(glv, "_xform_gizmo_pos", (0.0, 0.0, 0.0)) or (0.0, 0.0, 0.0))
+                        if str(cur_owner or "") == owner and any(abs(float(v)) > 1e-6 for v in cur_pos):
+                            pos = cur_pos
                     except Exception:
                         pass
             glv._xform_gizmo_pos_locked = False

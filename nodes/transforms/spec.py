@@ -200,7 +200,11 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, "rot", "0,0,0")
     _ensure_param(node_item, "scl", "1,1,1")
     _ensure_param(node_item, "debug", "0")
-    _ensure_hidden_params(getattr(node_item, "model", None), ["source", "path", "pos", "rot", "scl", "debug"])
+    _ensure_param(node_item, "auto_bake", "0")
+    _ensure_hidden_params(
+        getattr(node_item, "model", None),
+        ["source", "path", "pos", "rot", "scl", "debug", "auto_bake"],
+    )
     if hasattr(node_item, "ensure_input"):
         node_item.ensure_input("mesh")
 
@@ -560,7 +564,7 @@ class TransformWidget(QtWidgets.QWidget):
         self._syncing_view = False
         self._defer_bake = False
         self._drag_pending_xform = None
-        self._auto_bake = False
+        self._auto_bake = _param_bool(getattr(node_item, "model", None), "auto_bake", False)
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(6, 4, 6, 4)
@@ -731,6 +735,12 @@ class TransformWidget(QtWidgets.QWidget):
         self._scene_connected = True
 
     def _on_scene_param_changed(self, name=None, _params=None):
+        # In deferred/manual mode, ignore this node's own paramChanged echo.
+        # We already synced local params and viewport directly.
+        node_name = (getattr(getattr(self._node_item, "model", None), "name", "") or "").strip()
+        changed_name = (name or "").strip() if isinstance(name, str) else str(name or "").strip()
+        if node_name and changed_name == node_name and (not self._should_auto_bake()):
+            return
         if _param_change_relevant(self._node_item, name):
             self._schedule_update()
 
@@ -751,25 +761,11 @@ class TransformWidget(QtWidgets.QWidget):
         except Exception:
             return False
 
-    def _has_downstream(self) -> bool:
-        sc = None
-        try:
-            sc = self._node_item.scene()
-        except Exception:
-            sc = None
-        if sc is None:
-            return False
-        try:
-            for edge in list(getattr(sc, "_edges", []) or []):
-                if getattr(edge, "src", None) is self._node_item:
-                    return True
-        except Exception:
-            return False
-        return False
-
     def _should_auto_bake(self) -> bool:
-        # Auto-bake only when explicitly enabled or when there is a downstream consumer.
-        return bool(self._auto_bake or self._has_downstream())
+        model = getattr(self._node_item, "model", None)
+        self._auto_bake = _param_bool(model, "auto_bake", self._auto_bake)
+        # Keep gizmo edits responsive by default; bake only when explicitly enabled.
+        return bool(self._auto_bake)
 
     def _owner_in_scene(self, renderer, owner: str) -> bool:
         if not owner or renderer is None:
@@ -902,7 +898,11 @@ class TransformWidget(QtWidgets.QWidget):
                     path=(_param_value(model, "path") if model is not None else ""),
                     auto_bake=bool(self._should_auto_bake()),
                 )
-                self._emit_param_changed()
+                # In deferred/manual mode we keep edits local to the node model.
+                # This avoids global paramChanged fan-out (scene outliner refresh, etc.)
+                # while still persisting values on workflow save.
+                if self._should_auto_bake():
+                    self._emit_param_changed()
             if self._should_auto_bake():
                 self._schedule_update()
         finally:
@@ -1172,8 +1172,8 @@ class TransformWidget(QtWidgets.QWidget):
                 path=(_param_value(model, "path") if model is not None else ""),
                 auto_bake=bool(self._should_auto_bake()),
             )
-            self._emit_param_changed()
             if self._should_auto_bake():
+                self._emit_param_changed()
                 self._schedule_update()
 
 
