@@ -4929,6 +4929,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "scene",
                 "scene_assembly",
                 "scene_outliner",
+                "camera",
+                "scene_camera",
                 "export_fbx",
                 "exportfbx",
                 "export fbx",

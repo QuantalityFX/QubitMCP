@@ -255,8 +255,23 @@ def _xform_tuple(xf: dict) -> tuple:
         return ()
 
 
-def record_scene_xform(win, scene_node, owner: str, before: dict, after: dict) -> None:
-    if win is None or scene_node is None:
+def _push_xform_history_entry(win, entry: dict) -> None:
+    undo = getattr(win, "_scene_xform_undo", None)
+    redo = getattr(win, "_scene_xform_redo", None)
+    if not isinstance(undo, list):
+        undo = []
+        setattr(win, "_scene_xform_undo", undo)
+    if not isinstance(redo, list):
+        redo = []
+        setattr(win, "_scene_xform_redo", redo)
+    undo.append(entry)
+    if len(undo) > _HISTORY_LIMIT:
+        del undo[:-_HISTORY_LIMIT]
+    redo.clear()
+
+
+def _record_xform_entry(win, history_node, owner: str, before: dict, after: dict, *, entry_type: str) -> None:
+    if win is None or history_node is None:
         return
     if not owner:
         return
@@ -272,28 +287,40 @@ def record_scene_xform(win, scene_node, owner: str, before: dict, after: dict) -
             return
     except Exception:
         pass
-    rev = _ensure_scene_rev(win, scene_node)
+    rev = _ensure_scene_rev(win, history_node)
     entry = {
         "ts": time.time(),
+        "entry_type": str(entry_type or "scene_asset_xform"),
         "scene_rev": rev,
-        "scene_name": getattr(scene_node, "name", None),
+        "scene_name": getattr(history_node, "name", None),
         "owner": str(owner),
         "before": before,
         "after": after,
     }
-    undo = getattr(win, "_scene_xform_undo", None)
-    redo = getattr(win, "_scene_xform_redo", None)
-    if not isinstance(undo, list):
-        undo = []
-        setattr(win, "_scene_xform_undo", undo)
-    if not isinstance(redo, list):
-        redo = []
-        setattr(win, "_scene_xform_redo", redo)
-    undo.append(entry)
-    if len(undo) > _HISTORY_LIMIT:
-        del undo[:-_HISTORY_LIMIT]
-    redo.clear()
+    _push_xform_history_entry(win, entry)
     _log_history({"action": "record", **entry})
+
+
+def record_scene_xform(win, scene_node, owner: str, before: dict, after: dict) -> None:
+    _record_xform_entry(
+        win,
+        scene_node,
+        owner,
+        before,
+        after,
+        entry_type="scene_asset_xform",
+    )
+
+
+def record_transforms_node_xform(win, transform_node, owner: str, before: dict, after: dict) -> None:
+    _record_xform_entry(
+        win,
+        transform_node,
+        owner,
+        before,
+        after,
+        entry_type="transforms_node_xform",
+    )
 
 
 def _find_scene_node_by_rev(win, scene_rev: int | None, scene_name: str | None):
@@ -322,8 +349,100 @@ def _find_scene_node_by_rev(win, scene_rev: int | None, scene_name: str | None):
     return None
 
 
+def _vec3_csv(vals, default):
+    try:
+        x, y, z = vals
+    except Exception:
+        x, y, z = default
+    try:
+        return f"{float(x):.6f},{float(y):.6f},{float(z):.6f}"
+    except Exception:
+        dx, dy, dz = default
+        return f"{float(dx):.6f},{float(dy):.6f},{float(dz):.6f}"
+
+
+def _set_param_value(params: list, name: str, value: str) -> list:
+    key = (name or "").strip().lower()
+    found = False
+    out = list(params or [])
+    for p in out:
+        try:
+            if (p.get("name", "") or "").strip().lower() == key:
+                p["value"] = value
+                found = True
+                break
+        except Exception:
+            continue
+    if not found:
+        out.append({"name": name, "value": value})
+    return out
+
+
+def _apply_transforms_node_xform_entry(win, node, owner: str, xf: dict) -> bool:
+    kind = (getattr(node, "kind", "") or "").strip().lower()
+    if kind != "transforms":
+        return False
+
+    clean = _clean_xform(xf or {})
+    try:
+        params = list(getattr(node, "params", None) or [])
+    except Exception:
+        params = []
+    params = _set_param_value(params, "pos", _vec3_csv(clean.get("pos", (0.0, 0.0, 0.0)), (0.0, 0.0, 0.0)))
+    params = _set_param_value(params, "rot", _vec3_csv(clean.get("rot", (0.0, 0.0, 0.0)), (0.0, 0.0, 0.0)))
+    params = _set_param_value(params, "scl", _vec3_csv(clean.get("scl", (1.0, 1.0, 1.0)), (1.0, 1.0, 1.0)))
+
+    try:
+        setattr(node, "params", params)
+    except Exception:
+        pass
+
+    try:
+        scene = getattr(win, "scene", None)
+        setp = getattr(scene, "set_node_params", None) if scene is not None else None
+        node_name = str(getattr(node, "name", "") or "")
+        if callable(setp) and node_name:
+            setp(node_name, params, rebuild=False, emit=False)
+    except Exception:
+        pass
+
+    glv = getattr(win, "gl_view", None)
+    if glv is None:
+        return True
+
+    try:
+        renderer = getattr(glv, "_mgl_renderer", None) or glv
+        setf = getattr(renderer, "_mgl_set_scene_asset_xform", None)
+        if callable(setf):
+            setf(
+                owner,
+                pos=clean.get("pos", (0.0, 0.0, 0.0)),
+                rot=clean.get("rot", (0.0, 0.0, 0.0)),
+                scl=clean.get("scl", (1.0, 1.0, 1.0)),
+                apply_to_scene_models=True,
+                use_splat_xform=False,
+            )
+        try:
+            if hasattr(win, "update_scene_asset_xform"):
+                win.update_scene_asset_xform(owner)
+        except Exception:
+            pass
+        glv._xform_gizmo_owner = owner
+        glv._xform_gizmo_owner_kind = "mesh"
+        glv._xform_gizmo_pos_locked = False
+        glv._xform_gizmo_pos = tuple(clean.get("pos", (0.0, 0.0, 0.0)))
+        try:
+            glv.update()
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return True
+
+
 def _apply_xform_entry(win, entry: dict, use_before: bool) -> bool:
     try:
+        entry_type = str(entry.get("entry_type", "scene_asset_xform") or "scene_asset_xform").strip().lower()
         scene_rev = entry.get("scene_rev")
         scene_name = entry.get("scene_name")
         owner = entry.get("owner")
@@ -335,6 +454,9 @@ def _apply_xform_entry(win, entry: dict, use_before: bool) -> bool:
     node = _find_scene_node_by_rev(win, scene_rev, scene_name)
     if node is None:
         return False
+
+    if entry_type in ("transforms_node_xform", "transform_node_xform", "transforms_node"):
+        return _apply_transforms_node_xform_entry(win, node, str(owner), xf)
 
     # Update the node model so workflow save matches undo/redo.
     try:

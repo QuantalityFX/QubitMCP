@@ -564,6 +564,7 @@ class TransformWidget(QtWidgets.QWidget):
         self._syncing_view = False
         self._defer_bake = False
         self._drag_pending_xform = None
+        self._history_drag_before = None
         self._auto_bake = _param_bool(getattr(node_item, "model", None), "auto_bake", False)
 
         layout = QtWidgets.QVBoxLayout(self)
@@ -828,24 +829,63 @@ class TransformWidget(QtWidgets.QWidget):
         except Exception:
             pass
 
+    def _record_history(self, before_pos, before_rot, before_scl, after_pos, after_rot, after_scl):
+        try:
+            win = _resolve_window(self._node_item)
+            if win is None:
+                return
+            if bool(getattr(win, "_xform_history_busy", False)):
+                return
+            model = getattr(self._node_item, "model", None)
+            if model is None:
+                return
+            owner = (getattr(model, "name", "") or "").strip()
+            if not owner:
+                return
+            try:
+                from echograph.ui import actions
+            except Exception:
+                return
+            fn = getattr(actions, "record_transforms_node_xform", None)
+            if not callable(fn):
+                return
+            before = {
+                "pos": [float(before_pos[0]), float(before_pos[1]), float(before_pos[2])],
+                "rot": [float(before_rot[0]), float(before_rot[1]), float(before_rot[2])],
+                "scl": [float(before_scl[0]), float(before_scl[1]), float(before_scl[2])],
+            }
+            after = {
+                "pos": [float(after_pos[0]), float(after_pos[1]), float(after_pos[2])],
+                "rot": [float(after_rot[0]), float(after_rot[1]), float(after_rot[2])],
+                "scl": [float(after_scl[0]), float(after_scl[1]), float(after_scl[2])],
+            }
+            fn(win, model, owner, before, after)
+        except Exception:
+            pass
+
     def _poll_view_xform(self):
         if self._syncing_view:
             return
         owner = (getattr(getattr(self._node_item, "model", None), "name", "") or "").strip()
         if not owner:
+            self._history_drag_before = None
             return
         win = _resolve_window(self._node_item)
         glv = getattr(win, "gl_view", None) if win is not None else None
         if glv is None:
+            self._history_drag_before = None
             return
         renderer = getattr(glv, "_mgl_renderer", None) or glv
         if not self._owner_in_scene(renderer, owner):
+            self._history_drag_before = None
             return
         get_xf = getattr(renderer, "_mgl_get_scene_asset_xform", None)
         if not callable(get_xf):
+            self._history_drag_before = None
             return
         xf = get_xf(owner)
         if not isinstance(xf, dict):
+            self._history_drag_before = None
             return
         pos = tuple(xf.get("pos", (0.0, 0.0, 0.0)))
         rot = tuple(xf.get("rot", (0.0, 0.0, 0.0)))
@@ -862,6 +902,8 @@ class TransformWidget(QtWidgets.QWidget):
         dragging = self._is_dragging()
         if dragging:
             if _diff(pos, cur_pos) or _diff(rot, cur_rot) or _diff(scl, cur_scl):
+                if self._history_drag_before is None:
+                    self._history_drag_before = (cur_pos, cur_rot, cur_scl)
                 self._drag_pending_xform = (pos, rot, scl)
                 self._defer_bake = True
             return
@@ -874,6 +916,7 @@ class TransformWidget(QtWidgets.QWidget):
             self._drag_pending_xform = None
 
         if not (_diff(pos, cur_pos) or _diff(rot, cur_rot) or _diff(scl, cur_scl)):
+            self._history_drag_before = None
             if self._defer_bake:
                 self._defer_bake = False
                 if self._should_auto_bake():
@@ -903,6 +946,13 @@ class TransformWidget(QtWidgets.QWidget):
                 # while still persisting values on workflow save.
                 if self._should_auto_bake():
                     self._emit_param_changed()
+                if self._history_drag_before is not None:
+                    try:
+                        before_pos, before_rot, before_scl = self._history_drag_before
+                        self._record_history(before_pos, before_rot, before_scl, pos, rot, scl)
+                    except Exception:
+                        pass
+                    self._history_drag_before = None
             if self._should_auto_bake():
                 self._schedule_update()
         finally:
@@ -1140,6 +1190,10 @@ class TransformWidget(QtWidgets.QWidget):
     def _on_xform_edit(self, kind: str):
         if self._xform_updating:
             return
+        model = getattr(self._node_item, "model", None)
+        before_pos = _param_vec3(model, "pos", (0.0, 0.0, 0.0))
+        before_rot = _param_vec3(model, "rot", (0.0, 0.0, 0.0))
+        before_scl = _param_vec3(model, "scl", (1.0, 1.0, 1.0))
         pos = tuple(sb.value() for sb in self._pos_spins)
         rot = tuple(sb.value() for sb in self._rot_spins)
         scl = tuple(sb.value() for sb in self._scl_spins)
@@ -1156,6 +1210,7 @@ class TransformWidget(QtWidgets.QWidget):
             changed = self._set_param("scl", _format_vec3(scl), notify_scene=False) or changed
         if changed:
             self._push_view_xform(pos, rot, scl)
+            self._record_history(before_pos, before_rot, before_scl, pos, rot, scl)
             try:
                 model = getattr(self._node_item, "model", None)
             except Exception:
