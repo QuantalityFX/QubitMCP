@@ -43,7 +43,7 @@ except Exception:
     _HAS_QT6 = False
 
 from .gl_arcball import _ArcBallUtil
-from .gl_debug_geo import debug_cube_wire_vertices
+from .gl_debug_geo import debug_camera_wire_vertices, debug_cube_wire_vertices
 from .gl_loaders import load_fbx_mesh_arrays_pyassimp
 from .gl_loaders import load_fbx_edge_vertices
 from .gl_loaders import load_gltf_mesh_arrays
@@ -465,6 +465,38 @@ class MGLRendererMixin:
             path_key=path_key,
         )
 
+    @staticmethod
+    def _mgl_casefold_get(mapping, key):
+        if not isinstance(mapping, dict):
+            return None
+        if key in mapping:
+            return mapping.get(key)
+        lk = str(key or "").strip().lower()
+        for k, v in mapping.items():
+            try:
+                if str(k).strip().lower() == lk:
+                    return v
+            except Exception:
+                continue
+        return None
+
+    def _mgl_owner_pivot_local(self, owner: str, bmin=None, bmax=None):
+        # Optional per-owner local pivot override (used by scene cameras).
+        try:
+            piv_map = getattr(self, "_mgl_scene_pivot_local_by_owner", None)
+            piv = self._mgl_casefold_get(piv_map, owner)
+            if isinstance(piv, (list, tuple)) and len(piv) >= 3:
+                return (float(piv[0]), float(piv[1]), float(piv[2]))
+        except Exception:
+            pass
+        try:
+            if bmin is not None and bmax is not None:
+                c = (np.array(bmin, dtype=np.float32) + np.array(bmax, dtype=np.float32)) * 0.5
+                return (float(c[0]), float(c[1]), float(c[2]))
+        except Exception:
+            pass
+        return (0.0, 0.0, 0.0)
+
     def _on_mgl_pick_model(self) -> None:
         if not self._use_moderngl:
             return
@@ -562,7 +594,7 @@ class MGLRendererMixin:
         scene = getattr(self, "_mgl_scene", None)
         if scene is None:
             return
-        for tag in ("model", "model-wire", "scene-model", "scene-wire", "scene-volume"):
+        for tag in ("model", "model-wire", "scene-model", "scene-wire", "scene-volume", "scene-camera"):
             scene.remove_by_tag(tag)
 
     def _mgl_disable_splats(self) -> None:
@@ -692,8 +724,7 @@ class MGLRendererMixin:
                                     px, py, pz = xf.get("pos", (0.0, 0.0, 0.0))
                                     rx, ry, rz = xf.get("rot", (0.0, 0.0, 0.0))
                                     sx, sy, sz = xf.get("scl", (1.0, 1.0, 1.0))
-                                    c = (bmin + bmax) * 0.5
-                                    cx, cy, cz = float(c[0]), float(c[1]), float(c[2])
+                                    cx, cy, cz = self._mgl_owner_pivot_local(xf_owner, bmin, bmax)
 
                                     # Match _mgl_set_scene_asset_xform rotation convention for scene meshes.
                                     try:
@@ -896,8 +927,7 @@ class MGLRendererMixin:
             b = (bounds_map or {}).get(owner) if isinstance(bounds_map, dict) else None
             if b is not None:
                 bmin, bmax = b
-                c = (bmin + bmax) * 0.5
-                cx, cy, cz = float(c[0]), float(c[1]), float(c[2])
+                cx, cy, cz = self._mgl_owner_pivot_local(owner, bmin, bmax)
         except Exception:
             pass
         try:
@@ -1002,7 +1032,7 @@ class MGLRendererMixin:
         # apply to matching scene items (solid + wire)
         if apply_to_scene_models:
             try:
-                for tag in ("scene-model", "scene-wire", "scene-volume"):
+                for tag in ("scene-model", "scene-wire", "scene-volume", "scene-camera"):
                     for item in scene.iter_by_tag(tag):
                         payload = getattr(item, "payload", None) or {}
                         if payload.get("owner") != owner:
@@ -1683,8 +1713,7 @@ class MGLRendererMixin:
                         px, py, pz = x.get("pos", (0.0, 0.0, 0.0))
                         rx, ry, rz = x.get("rot", (0.0, 0.0, 0.0))
                         sx, sy, sz = x.get("scl", (1.0, 1.0, 1.0))
-                        c = (bmin + bmax) * 0.5
-                        cx, cy, cz = float(c[0]), float(c[1]), float(c[2])
+                        cx, cy, cz = self._mgl_owner_pivot_local(vol_owner, bmin, bmax)
 
                         def T(tx, ty, tz):
                             m = np.eye(4, dtype=np.float32)
@@ -5497,6 +5526,7 @@ class MGLRendererMixin:
             self._mgl_scene_splats_bounds_local = {}
             self._mgl_scene_splat_bounds_by_owner = {}
             self._mgl_scene_mesh_bounds_by_owner = {}
+            self._mgl_scene_pivot_local_by_owner = {}
             # Preserve xforms loaded from workflow
             self._mgl_scene_xforms_by_owner = prev_mesh_xforms
             self._mgl_scene_splat_xforms_by_owner = prev_splat_xforms
@@ -5598,21 +5628,125 @@ class MGLRendererMixin:
                             pass
                     continue
 
+                kind = str(asset.get("kind") or "").strip().lower()
+                ext_hint = str(asset.get("ext") or "").strip().lower()
+                is_camera = kind == "camera" or ext_hint == ".camera"
                 path_str = str(asset.get("path", "") or "").strip()
-                if not path_str:
-                    continue
-                path = Path(path_str)
-                if not path.exists():
-                    continue
-                ext = path.suffix.lower()
+                path = None
+                ext = ext_hint
                 owner = str(asset.get("node") or "").strip()
+                if path_str:
+                    path = Path(path_str)
+                    if not path.exists():
+                        continue
+                    if not ext:
+                        ext = path.suffix.lower()
+                    if not owner:
+                        owner = path.name
+                elif not is_camera:
+                    continue
                 if not owner:
-                    owner = path.name
-                path_key = str(path)
+                    continue
+                path_key = str(path) if path is not None else f"camera://{owner}"
                 visibility_map = getattr(self, "_mgl_scene_visibility", {}) or {}
                 visible = bool(visibility_map.get(owner, True))
                 wire_only = bool(asset.get("wire_only"))
                 is_volume = bool(asset.get("volume"))
+
+                if is_camera:
+                    # Preferred camera proxy path: an OBJ generated from primitive cube+cone,
+                    # rendered with the same volume-wire pass used by split-volume guides.
+                    if path is not None and ext == ".obj":
+                        bmin = bmax = None
+                        try:
+                            model_data = load_model(path)
+                            if model_data is not None and model_data.vertices:
+                                points = np.array(model_data.vertices, dtype="f4").reshape(-1, 3)
+                                bmin = points.min(axis=0)
+                                bmax = points.max(axis=0)
+                        except Exception:
+                            bmin = bmax = None
+                        if bmin is not None and bmax is not None:
+                            try:
+                                self._mgl_scene_bounds_by_owner[owner] = (bmin.astype("f4"), bmax.astype("f4"))
+                                self._mgl_scene_mesh_bounds_by_owner[owner] = (bmin.astype("f4"), bmax.astype("f4"))
+                                try:
+                                    cx = (float(bmin[0]) + float(bmax[0])) * 0.5
+                                    cy = (float(bmin[1]) + float(bmax[1])) * 0.5
+                                    # Camera gizmo pivot: large lens ring center at front (min Z).
+                                    cz = float(bmin[2])
+                                    piv = getattr(self, "_mgl_scene_pivot_local_by_owner", None)
+                                    if not isinstance(piv, dict):
+                                        piv = {}
+                                        self._mgl_scene_pivot_local_by_owner = piv
+                                    piv[owner] = (cx, cy, cz)
+                                except Exception:
+                                    pass
+                                bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, bmin, bmax)
+                                has_mesh_bounds = True
+                            except Exception:
+                                pass
+
+                        wire_item = self._mgl_add_obj_wire_item(
+                            path,
+                            visible,
+                            tag="scene-volume",
+                            owner=owner,
+                            path_key=path_key,
+                            outline_only=True,
+                        )
+                        if wire_item is not None:
+                            payload = wire_item.payload or {}
+                            payload["color"] = (0.95, 0.82, 0.27, 1.0)
+                            wire_item.payload = payload
+                            scene.add(wire_item)
+                            if not first_mesh_path:
+                                first_mesh_path = str(path)
+                        continue
+
+                    # Fallback path for pathless camera proxies.
+                    try:
+                        line_points = np.array(debug_camera_wire_vertices(), dtype="f4").reshape(-1, 3)
+                    except Exception:
+                        line_points = None
+                    if line_points is None or line_points.size == 0:
+                        continue
+                    try:
+                        bmin = line_points.min(axis=0)
+                        bmax = line_points.max(axis=0)
+                        self._mgl_scene_bounds_by_owner[owner] = (bmin.astype("f4"), bmax.astype("f4"))
+                        self._mgl_scene_mesh_bounds_by_owner[owner] = (bmin.astype("f4"), bmax.astype("f4"))
+                        try:
+                            cx = (float(bmin[0]) + float(bmax[0])) * 0.5
+                            cy = (float(bmin[1]) + float(bmax[1])) * 0.5
+                            cz = float(bmin[2])
+                            piv = getattr(self, "_mgl_scene_pivot_local_by_owner", None)
+                            if not isinstance(piv, dict):
+                                piv = {}
+                                self._mgl_scene_pivot_local_by_owner = piv
+                            piv[owner] = (cx, cy, cz)
+                        except Exception:
+                            pass
+                        bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, bmin, bmax)
+                        has_mesh_bounds = True
+                    except Exception:
+                        pass
+                    camera_item = self._mgl_add_wire_item_from_points(
+                        name=f"{owner}-camera",
+                        line_points=line_points,
+                        visible=visible,
+                        tag="scene-camera",
+                        owner=owner,
+                        path_key=path_key,
+                    )
+                    if camera_item is not None:
+                        payload = camera_item.payload or {}
+                        payload["color"] = (0.95, 0.82, 0.27, 1.0)
+                        if "fov" in asset:
+                            payload["fov"] = asset.get("fov")
+                        camera_item.payload = payload
+                        scene.add(camera_item)
+                    continue
 
                 if wire_only:
                     bmin = bmax = None
@@ -6291,8 +6425,7 @@ class MGLRendererMixin:
                     px, py, pz = x.get("pos", (0.0, 0.0, 0.0))
                     rx, ry, rz = x.get("rot", (0.0, 0.0, 0.0))
                     sx, sy, sz = x.get("scl", (1.0, 1.0, 1.0))
-                    c = (bmin + bmax) * 0.5
-                    cx, cy, cz = float(c[0]), float(c[1]), float(c[2])
+                    cx, cy, cz = self._mgl_owner_pivot_local(owner, bmin, bmax)
                     rot_rx, rot_ry, rot_rz = -float(rx), -float(ry), -float(rz)
                     xform_space = str(getattr(self, "_mgl_xform_space", "world") or "world").lower()
                     if xform_space == "local":
@@ -6588,8 +6721,7 @@ def pick_hit_at(self, px: int, py: int, viewport_w: int, viewport_h: int):
                 px, py, pz = x.get("pos", (0.0, 0.0, 0.0))
                 rx, ry, rz = x.get("rot", (0.0, 0.0, 0.0))
                 sx, sy, sz = x.get("scl", (1.0, 1.0, 1.0))
-                c = (bmin + bmax) * 0.5
-                cx, cy, cz = float(c[0]), float(c[1]), float(c[2])
+                cx, cy, cz = self._mgl_owner_pivot_local(owner, bmin, bmax)
                 rot_rx, rot_ry, rot_rz = -float(rx), -float(ry), -float(rz)
                 xform_space = str(getattr(self, "_mgl_xform_space", "world") or "world").lower()
                 if xform_space == "local":

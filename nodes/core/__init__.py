@@ -80,6 +80,7 @@ def register_defaults() -> None:
     register("import",    stripe_color="#3b82f6")
     register("html_preview", stripe_color="#f97316")
     register("image_collection", stripe_color="#22c55e")
+    register("camera",    stripe_color="#f59e0b")
     register("output",    stripe_color="#a855f7")
     register("llm",       stripe_color="#14b8a6")
     register("database",  stripe_color="#16a34a")
@@ -109,6 +110,14 @@ def register_defaults() -> None:
             _img_col.register(core=sys.modules[__name__])
     except Exception as exc:  # pragma: no cover - optional plugin
         print("[EchoGraph] Image Collection auto-register failed:", exc)
+
+    # Auto-register Camera so scene camera nodes are available even if loader plugins fail later
+    try:
+        from nodes import camera as _camera  # type: ignore
+        if hasattr(_camera, "register"):
+            _camera.register(core=sys.modules[__name__])
+    except Exception as exc:  # pragma: no cover - optional plugin
+        print("[EchoGraph] Camera auto-register failed:", exc)
 
 
 def apply_spec_to_item(item: Any, kind: str | Spec, *, debug: bool = False) -> Any:

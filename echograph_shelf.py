@@ -3029,30 +3029,37 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 continue
             node_name = (entry.get("node") or "").strip()
             path = (entry.get("path") or "").strip()
-            _scene_log(f"raw[{idx}] node={node_name!r} path={path!r} ext={entry.get('ext')!r} visible={entry.get('visible')!r}")
-            if not path:
+            kind = str(entry.get("kind") or "").strip().lower()
+            ext_hint = str(entry.get("ext") or "").strip().lower()
+            is_camera = (kind == "camera") or (ext_hint == ".camera")
+            _scene_log(
+                f"raw[{idx}] node={node_name!r} path={path!r} kind={kind!r} "
+                f"ext={entry.get('ext')!r} visible={entry.get('visible')!r}"
+            )
+            if not path and not is_camera:
                 _scene_log(f"raw[{idx}] drop: missing path node={node_name!r}")
                 continue
-            try:
-                if not os.path.exists(path):
-                    if base_dir is not None:
-                        try:
-                            alt = (base_dir / path).resolve()
-                            _scene_log(f"raw[{idx}] resolve: path={path!r} alt={str(alt)!r} exists={alt.exists()}")
-                            if alt.exists():
-                                path = str(alt)
-                            else:
-                                _scene_log(f"raw[{idx}] drop: path not found after resolve")
+            if path:
+                try:
+                    if not os.path.exists(path):
+                        if base_dir is not None:
+                            try:
+                                alt = (base_dir / path).resolve()
+                                _scene_log(f"raw[{idx}] resolve: path={path!r} alt={str(alt)!r} exists={alt.exists()}")
+                                if alt.exists():
+                                    path = str(alt)
+                                else:
+                                    _scene_log(f"raw[{idx}] drop: path not found after resolve")
+                                    continue
+                            except Exception as exc:
+                                _scene_log(f"raw[{idx}] drop: resolve exception={exc!r}")
                                 continue
-                        except Exception as exc:
-                            _scene_log(f"raw[{idx}] drop: resolve exception={exc!r}")
+                        else:
+                            _scene_log(f"raw[{idx}] drop: path not found and no base_dir")
                             continue
-                    else:
-                        _scene_log(f"raw[{idx}] drop: path not found and no base_dir")
-                        continue
-            except Exception as exc:
-                _scene_log(f"raw[{idx}] drop: exists check failed err={exc!r}")
-                continue
+                except Exception as exc:
+                    _scene_log(f"raw[{idx}] drop: exists check failed err={exc!r}")
+                    continue
             node_name = (entry.get("node") or "").strip()
             raw_visible = entry.get("visible")
             visible = True if raw_visible is None else bool(raw_visible)
@@ -3062,6 +3069,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 "path": path,
                 "texture": entry.get("texture") or None,
                 "node": node_name,
+                "kind": kind or ("camera" if is_camera else ""),
                 "ext": entry.get("ext"),
                 "visible": visible,
                 "xform": entry.get("xform"),
@@ -3072,6 +3080,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 clean_entry["wire_only"] = bool(entry.get("wire_only"))
             if "volume" in entry:
                 clean_entry["volume"] = bool(entry.get("volume"))
+            if "fov" in entry:
+                clean_entry["fov"] = entry.get("fov")
             tex_provider = entry.get("texture_provider")
             if tex_provider is not None:
                 clean_entry["texture_provider"] = tex_provider
@@ -3079,8 +3089,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             _scene_log(f"clean[{len(clean)-1}] node={node_name!r} path={path!r} visible={visible}")
 
         if not clean:
-            _scene_log("open_scene_assets: no valid asset paths")
-            print("[open_scene_assets] no valid asset paths", flush=True)
+            _scene_log("open_scene_assets: no valid scene assets")
+            print("[open_scene_assets] no valid scene assets", flush=True)
             return
         _scene_log(f"open_scene_assets: clean_count={len(clean)}")
 
@@ -3096,6 +3106,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                         return tuple(default)
                 sig.append(
                     (
+                        str(entry.get("kind") or ""),
+                        str(entry.get("ext") or ""),
                         str(entry.get("path") or ""),
                         str(entry.get("node") or ""),
                         bool(entry.get("visible", True)),
@@ -3151,8 +3163,11 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             except Exception:
                 print("[open_scene_assets] loader error:\n" + traceback.format_exc(), flush=True)
 
-        # fallback: load first asset only
-        first = clean[0]
+        # fallback: load first path-backed asset only
+        first = next((e for e in clean if (e.get("path") or "").strip()), None)
+        if first is None:
+            _scene_log("open_scene_assets: no fallback path-backed asset")
+            return
         try:
             gl_view.load_model_path(first["path"], first.get("texture"), frame=frame)
             if frame and hasattr(gl_view, "_on_frame_clicked"):
@@ -3350,6 +3365,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                             # scene-assembly tags (this is what was sticking around)
                             scene.remove_by_tag("scene-model")
                             scene.remove_by_tag("scene-wire")
+                            scene.remove_by_tag("scene-volume")
+                            scene.remove_by_tag("scene-camera")
 
                     except Exception:
                         pass

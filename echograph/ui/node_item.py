@@ -266,6 +266,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     _scene.register()
             except Exception:
                 pass
+        # Ensure Camera spec is registered even if the loader was skipped.
+        if (self.model.kind or "").strip().lower() in ("camera", "scene_camera"):
+            try:
+                from nodes import camera as _camera  # type: ignore
+                if hasattr(_camera, "register"):
+                    _camera.register()
+            except Exception:
+                pass
         # Ensure Export FBX spec is registered even if the loader was skipped.
         if (self.model.kind or "").strip().lower() in ("export_fbx", "exportfbx", "export fbx"):
             try:
@@ -801,6 +809,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
             hidden.update({"source", "path", "invert"})
         elif kind == "transforms":
             hidden.update({"source", "path", "pos", "rot", "scl"})
+        elif kind in ("camera", "scene_camera"):
+            hidden.update({"pos", "rot", "scl", "near", "far"})
 
         return hidden
 
@@ -2617,6 +2627,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             _scene_log(f"collect_scene_assets start edges={len(in_edges)}")
         assets = []
         seen = set()
+        seen_camera = set()
         hidden = set()
         xforms = {}
         try:
@@ -2633,6 +2644,19 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 xforms = raw_xforms
         except Exception:
             xforms = {}
+        def _lookup_xform(name: str):
+            if not name:
+                return None
+            try:
+                if name in xforms:
+                    return xforms.get(name)
+                nl = str(name).strip().lower()
+                for k, v in xforms.items():
+                    if str(k).strip().lower() == nl:
+                        return v
+            except Exception:
+                return None
+            return None
         for edge_idx, edge in enumerate(in_edges):
             src_item = getattr(edge, "src", None)
             model = getattr(src_item, "model", None)
@@ -2647,6 +2671,51 @@ class NodeItem(QtWidgets.QGraphicsObject):
             kind = (getattr(model, "kind", "") or "").strip().lower()
             model_name = (getattr(model, "name", "") or "").strip()
             _scene_log(f"edge[{edge_idx}] kind={kind} name={model_name} path_param={path!r}")
+            if kind == "camera":
+                camera_name = model_name or "camera"
+                if camera_name in seen_camera:
+                    continue
+                seen_camera.add(camera_name)
+                cam_path = ""
+                try:
+                    from nodes.scene import spec as _scene_spec  # type: ignore
+                    builder = getattr(_scene_spec, "_camera_proxy_obj_path", None)
+                    if callable(builder):
+                        cam_path = str(builder(self, camera_name) or "").strip()
+                except Exception:
+                    cam_path = ""
+                if not cam_path:
+                    _scene_log(f"edge[{edge_idx}] camera skip: proxy build failed name={camera_name!r}")
+                    continue
+                xf = _lookup_xform(camera_name)
+                if not isinstance(xf, dict):
+                    xf = {
+                        "pos": [0.0, 0.0, 0.0],
+                        "rot": [0.0, 0.0, 0.0],
+                        "scl": [1.0, 1.0, 1.0],
+                    }
+                try:
+                    fov = float(_param_val(model, "fov") or 60.0)
+                except Exception:
+                    fov = 60.0
+                asset = {
+                    "path": cam_path,
+                    "texture": "",
+                    "ext": ".obj",
+                    "node": camera_name,
+                    "kind": "camera",
+                    "visible": camera_name not in hidden,
+                    "xform": xf,
+                    "wire_only": True,
+                    "volume": True,
+                    "fov": fov,
+                }
+                assets.append(asset)
+                _scene_log(
+                    f"edge[{edge_idx}] camera add asset node={camera_name!r} "
+                    f"path={cam_path!r} wire_only=True volume=True"
+                )
+                continue
             if kind == "instance":
                 count = _parse_int(_param_val(model, "count") or "1", default=1, min_val=1, max_val=200)
                 prefix = (_param_val(model, "prefix") or "").strip()
@@ -3109,11 +3178,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
             detail = "No 3D assets connected."
             btn_enabled = False
         else:
-            mesh_count = sum(1 for a in assets if a.get("ext") != ".ply")
-            splat_count = len(assets) - mesh_count
+            splat_count = sum(1 for a in assets if str(a.get("ext") or "").strip().lower() == ".ply")
+            camera_count = sum(1 for a in assets if str(a.get("kind") or "").strip().lower() == "camera")
+            mesh_count = max(0, len(assets) - splat_count - camera_count)
             detail = f"{len(assets)} connected (mesh {mesh_count}"
             if splat_count:
                 detail += f", splat {splat_count}"
+            if camera_count:
+                detail += f", camera {camera_count}"
             detail += ")"
             btn_enabled = True
 
@@ -4966,6 +5038,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 icon_pm = node_icons._chatbot_icon()
             elif kind_lower in ("scene", "scene_assembly", "scene_outliner"):
                 icon_pm = node_icons._scene_icon()
+            elif kind_lower in ("camera", "scene_camera"):
+                icon_pm = node_icons._screengrab_icon()
             elif kind_lower in ("export_fbx", "exportfbx", "export fbx"):
                 icon_pm = node_icons._fbx_icon() or node_icons._output_icon()
             elif kind_lower == "output":

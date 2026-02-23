@@ -252,6 +252,17 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Scene plugin import failed:", e)
 
+    # 13.5) Camera
+    try:
+        from nodes import camera as camera_node
+        if hasattr(camera_node, "register"):
+            camera_node.register()
+            _safe_probe("camera")
+        else:
+            print("[EchoGraph] Camera module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Camera plugin import failed:", e)
+
     # 14) Export FBX
     try:
         from nodes import export_fbx

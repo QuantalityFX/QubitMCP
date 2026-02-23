@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import math
+import tempfile
 import time
 from pathlib import Path
 from typing import Dict, List
@@ -80,6 +82,140 @@ def _set_param_value(model, name: str, value: str) -> None:
             entry["value"] = value
             return
     params.append({"name": name, "value": value})
+
+
+def _safe_name(name: str) -> str:
+    raw = str(name or "").strip()
+    if not raw:
+        return "camera"
+    out = []
+    for ch in raw:
+        if ch.isalnum() or ch in ("_", "-"):
+            out.append(ch)
+        else:
+            out.append("_")
+    cleaned = "".join(out).strip("_")
+    return cleaned or "camera"
+
+
+def _camera_proxy_obj_path(node_item, camera_name: str) -> str:
+    primitive_spec = None
+    try:
+        from nodes.primitive import spec as primitive_spec  # type: ignore
+    except Exception:
+        primitive_spec = None
+
+    base_dir = None
+    if primitive_spec is not None:
+        get_dir = getattr(primitive_spec, "_primitive_dir", None)
+        if callable(get_dir):
+            try:
+                base_dir = Path(get_dir(node_item))
+            except Exception:
+                base_dir = None
+    if base_dir is None:
+        base_dir = Path(tempfile.gettempdir()) / "EchoGraph" / "primitives"
+    out_dir = base_dir / "_scene_camera"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    out_path = out_dir / f"{_safe_name(camera_name)}_camera.obj"
+
+    cube_fn = getattr(primitive_spec, "_cube", None) if primitive_spec is not None else None
+    write_fn = getattr(primitive_spec, "_write_obj", None) if primitive_spec is not None else None
+
+    if callable(cube_fn):
+        cube_verts, cube_faces = cube_fn(size=0.6)
+        # Camera body should read as a rectangular block (narrower on X/Y, slightly shorter on Z).
+        cube_verts = [(float(x) * 0.57, float(y) * 0.72, float(z) * 1.45) for (x, y, z) in cube_verts]
+    else:
+        sx = 0.171
+        sy = 0.216
+        sz = 0.435
+        cube_verts = [
+            (-sx, -sy, -sz), (sx, -sy, -sz), (sx, sy, -sz), (-sx, sy, -sz),
+            (-sx, -sy, sz), (sx, -sy, sz), (sx, sy, sz), (-sx, sy, sz),
+        ]
+        cube_faces = [
+            [0, 3, 2, 1], [4, 5, 6, 7], [0, 4, 5, 1],
+            [3, 2, 6, 7], [1, 2, 6, 5], [0, 4, 7, 3],
+        ]
+
+    # Lens as a tapered tube (frustum): two radii, wide->narrow.
+    lens_r_wide = 0.22
+    lens_r_narrow = 0.09
+    lens_h = 0.325
+    segs = 18
+    y0 = -0.5 * lens_h
+    y1 = 0.5 * lens_h
+    cone_verts = []
+    for i in range(segs):
+        ang = 2.0 * math.pi * (float(i) / float(segs))
+        cone_verts.append((lens_r_wide * math.cos(ang), y0, lens_r_wide * math.sin(ang)))
+    for i in range(segs):
+        ang = 2.0 * math.pi * (float(i) / float(segs))
+        cone_verts.append((lens_r_narrow * math.cos(ang), y1, lens_r_narrow * math.sin(ang)))
+    cone_faces = []
+    for i in range(segs):
+        a = i
+        b = (i + 1) % segs
+        c = segs + ((i + 1) % segs)
+        d = segs + i
+        cone_faces.append([a, b, c, d])
+
+    verts = [(float(x), float(y), float(z)) for (x, y, z) in cube_verts]
+    faces = [[int(i) for i in face] for face in cube_faces if len(face) >= 3]
+
+    body_front_z = 0.0
+    try:
+        # Place the lens on the opposite face along Z (camera front side).
+        body_front_z = min(float(v[2]) for v in cube_verts)
+    except Exception:
+        body_front_z = 0.0
+    cone_base_y = 0.0
+    try:
+        cone_base_y = min(float(v[1]) for v in cone_verts)
+    except Exception:
+        cone_base_y = -0.325
+    cone_top_y = 0.0
+    try:
+        cone_top_y = max(float(v[1]) for v in cone_verts)
+    except Exception:
+        cone_top_y = 0.325
+    cone_height = max(0.0, cone_top_y - cone_base_y)
+    cone_shift_z = body_front_z - cone_base_y
+    # Keep the narrow end flush against the body face, with the frustum extending outward.
+    cone_outset_z = -cone_height
+
+    cone_xf = []
+    # Rotate cone so its axis points +Z and shift so the base touches
+    # the selected front face of the camera body.
+    for x, y, z in cone_verts:
+        xr = float(x)
+        yr = float(z)
+        zr = float(y) + cone_shift_z + cone_outset_z
+        cone_xf.append((xr, yr, zr))
+    offset = len(verts)
+    verts.extend(cone_xf)
+    for face in cone_faces:
+        if len(face) < 3:
+            continue
+        faces.append([int(i) + offset for i in face])
+
+    try:
+        if callable(write_fn):
+            write_fn(out_path, verts, faces)
+        else:
+            lines = ["# EchoGraph scene camera proxy"]
+            for x, y, z in verts:
+                lines.append(f"v {x:.6f} {y:.6f} {z:.6f}")
+            for face in faces:
+                idxs = " ".join(str(int(i) + 1) for i in face)
+                lines.append(f"f {idxs}")
+            out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except Exception:
+        return ""
+
+    return str(out_path)
 
 
 def _resolve_input_item(scene, node_item, port_names=None):
@@ -288,6 +424,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
     assets: List[Dict[str, str]] = []
     seen = set()
     seen_wire = set()
+    seen_camera = set()
     scene_owner_names = set()
     for edge in in_edges:
         src_item = getattr(edge, "src", None)
@@ -336,6 +473,41 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
         if model is None:
             continue
         kind = (getattr(model, "kind", "") or "").strip().lower()
+
+        if kind == "camera":
+            cam_name = (getattr(model, "name", "") or "").strip() or "camera"
+            if cam_name in seen_camera:
+                continue
+            seen_camera.add(cam_name)
+            cam_path = _camera_proxy_obj_path(node_item, cam_name)
+            if not cam_path:
+                continue
+            xf = _lookup_xform(xforms, cam_name)
+            if not isinstance(xf, dict):
+                xf = {
+                    "pos": [0.0, 0.0, 0.0],
+                    "rot": [0.0, 0.0, 0.0],
+                    "scl": [1.0, 1.0, 1.0],
+                }
+            try:
+                fov = float((_param_value(model, "fov") or "").strip() or 60.0)
+            except Exception:
+                fov = 60.0
+            assets.append(
+                {
+                    "path": cam_path,
+                    "texture": "",
+                    "node": cam_name,
+                    "ext": ".obj",
+                    "kind": "camera",
+                    "visible": cam_name not in hidden,
+                    "xform": xf,
+                    "wire_only": True,
+                    "volume": True,
+                    "fov": fov,
+                }
+            )
+            continue
 
         if kind == "instance":
             count = _parse_int(_param_value(model, "count") or "1", default=1, min_val=1, max_val=200)
@@ -648,11 +820,19 @@ class SceneAssemblyWidget(QtWidgets.QWidget):
         if not assets:
             self._status.setText("No 3D assets connected.")
             return
-        mesh_count = sum(1 for a in assets if a.get("ext") != ".ply")
-        splat_count = len(assets) - mesh_count
+        camera_count = sum(
+            1
+            for a in assets
+            if (str(a.get("kind", "")).strip().lower() == "camera")
+            or (str(a.get("ext", "")).strip().lower() == ".camera")
+        )
+        splat_count = sum(1 for a in assets if str(a.get("ext", "")).strip().lower() == ".ply")
+        mesh_count = max(0, len(assets) - splat_count - camera_count)
         label = f"{len(assets)} connected (mesh {mesh_count}"
         if splat_count:
             label += f", splat {splat_count}"
+        if camera_count:
+            label += f", camera {camera_count}"
         label += ")"
         self._status.setText(label)
 
@@ -662,7 +842,7 @@ class SceneAssemblyWidget(QtWidgets.QWidget):
             QtWidgets.QMessageBox.information(
                 self,
                 "Scene",
-            "Connect one or more 3D import, primitive, volume, UV unwrap, texture, texture layer, or texture pro nodes first.",
+            "Connect one or more 3D import, primitive, volume, UV unwrap, texture, texture layer, texture pro, or camera nodes first.",
             )
             return
         # Ensure splats start visible on open (avoid auto-hidden splats)
@@ -1022,6 +1202,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
 
         # --- Selection -> Transforms, and Transforms -> Viewport ---
         card._scene_selected_owner = None
+        card._scene_selected_kind = None
         card._xform_updating = False
         card._scene_outliner_user_selected = False
 
@@ -1259,8 +1440,12 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             owner = str(owner) if owner else None
             if not owner:
                 return
+            sel_kind = str(it.data(QtCore.Qt.UserRole + 1) or "").strip().lower()
+            if not sel_kind:
+                sel_kind = "mesh"
 
             card._scene_selected_owner = owner
+            card._scene_selected_kind = sel_kind
             card._scene_outliner_user_selected = True
             xform_panel.setEnabled(True)
             _load_xform_from_view(owner)
@@ -1501,6 +1686,13 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 if model is None:
                     continue
                 kind = (getattr(model, "kind", "") or "").strip().lower()
+                if kind == "camera":
+                    name = (getattr(model, "name", "") or "").strip()
+                    if not name or name in seen:
+                        continue
+                    seen.add(name)
+                    rows.append({"name": name, "path": "", "kind": "camera"})
+                    continue
                 if kind == "instance":
                     base_item, _base_kind, base_path = _resolve_input_item(scene, src_item, {"mesh", "path", "source"})
                     if not base_path:
@@ -1526,9 +1718,9 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                         if not name or name in seen:
                             continue
                         seen.add(name)
-                        rows.append({"name": name, "path": base_path})
+                        rows.append({"name": name, "path": base_path, "kind": "mesh"})
                     continue
-                if kind not in ("import", "primitive", "uv_unwrap", "texture", "texture_pro", "texture_layer", "volume_selector", "split_volume", "transforms"):
+                if kind not in ("import", "primitive", "uv_unwrap", "texture", "texture_pro", "texture_layer", "volume_selector", "split_volume", "transforms", "camera"):
                     continue
                 path = _param_value(model, "path")
                 owner_model = model
@@ -1560,10 +1752,10 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 if not name or name in seen:
                     continue
                 seen.add(name)
-                rows.append({"name": name, "path": path})
+                rows.append({"name": name, "path": path, "kind": "mesh"})
 
             if not rows:
-                empty = QtWidgets.QListWidgetItem("(no connected imports, primitives, volumes, UV unwraps, textures, texture layers, or texture pros)")
+                empty = QtWidgets.QListWidgetItem("(no connected imports, primitives, volumes, UV unwraps, textures, texture layers, texture pros, or cameras)")
                 empty.setFlags(QtCore.Qt.NoItemFlags)
                 outliner.addItem(empty)
                 try:
@@ -1702,6 +1894,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
 
                 row_item = QtWidgets.QListWidgetItem()
                 row_item.setData(QtCore.Qt.UserRole, name)
+                row_item.setData(QtCore.Qt.UserRole + 1, (entry.get("kind") or "mesh"))
                 if entry.get("path"):
                     row_item.setToolTip(entry["path"])
                 try:
@@ -1795,6 +1988,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                     outliner.setCurrentRow(-1)
                     outliner.clearSelection()
                     card._scene_selected_owner = None
+                    card._scene_selected_kind = None
                     card._scene_outliner_user_selected = False
                     try:
                         _update_row_highlight(None)

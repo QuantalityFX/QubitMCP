@@ -502,6 +502,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._mgl_scene_splats_bounds_local: Dict[str, NDArray] = {}
         self._mgl_scene_splat_bounds_by_owner: Dict[str, NDArray] = {}
         self._mgl_scene_mesh_bounds_by_owner: Dict[str, NDArray] = {}
+        self._mgl_scene_pivot_local_by_owner: Dict[str, Tuple[float, float, float]] = {}
         self._mgl_scene_uvs_by_owner: Dict[str, NDArray] = {}
         self._mgl_scene_splat_xforms_by_owner: Dict[str, Dict[str, Tuple[float, float, float]]] = {}
         self._mgl_splat_bbox_vao = None
@@ -2602,6 +2603,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             "_mgl_scene_xforms_by_owner",
             "_mgl_scene_splat_xforms_by_owner",
             "_mgl_scene_xform_offset_by_owner",
+            "_mgl_scene_pivot_local_by_owner",
         ):
             try:
                 setattr(self, name, {})
@@ -2635,6 +2637,10 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 pass
             try:
                 self._mgl_scene_xform_offset_by_owner = {}
+            except Exception:
+                pass
+            try:
+                self._mgl_scene_pivot_local_by_owner = {}
             except Exception:
                 pass
             # Reset visibility map from current assets (avoid persisting prior hides)
