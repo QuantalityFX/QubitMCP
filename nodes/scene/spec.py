@@ -165,6 +165,51 @@ def _camera_proxy_obj_path(node_item, camera_name: str) -> str:
     verts = [(float(x), float(y), float(z)) for (x, y, z) in cube_verts]
     faces = [[int(i) for i in face] for face in cube_faces if len(face) >= 3]
 
+    try:
+        body_min_x = min(float(v[0]) for v in cube_verts)
+        body_max_x = max(float(v[0]) for v in cube_verts)
+        body_min_y = min(float(v[1]) for v in cube_verts)
+        body_max_y = max(float(v[1]) for v in cube_verts)
+        body_min_z = min(float(v[2]) for v in cube_verts)
+        body_max_z = max(float(v[2]) for v in cube_verts)
+    except Exception:
+        body_min_x, body_max_x = -0.171, 0.171
+        body_min_y, body_max_y = -0.216, 0.216
+        body_min_z, body_max_z = -0.435, 0.435
+
+    body_cx = 0.5 * (body_min_x + body_max_x)
+    body_cz = 0.5 * (body_min_z + body_max_z)
+    body_half_x = max(1e-6, 0.5 * (body_max_x - body_min_x))
+    body_half_y = max(1e-6, 0.5 * (body_max_y - body_min_y))
+    body_half_z = max(1e-6, 0.5 * (body_max_z - body_min_z))
+
+    top_half_x = body_half_x * 0.62
+    top_half_y = body_half_y * 0.24
+    top_half_z = body_half_z * 0.82
+    top_gap_y = body_half_y * 0.04
+    top_cx = body_cx
+    top_cy = body_max_y + top_gap_y + top_half_y
+    top_cz = body_cz
+
+    top_verts = [
+        (top_cx - top_half_x, top_cy - top_half_y, top_cz - top_half_z),
+        (top_cx + top_half_x, top_cy - top_half_y, top_cz - top_half_z),
+        (top_cx + top_half_x, top_cy + top_half_y, top_cz - top_half_z),
+        (top_cx - top_half_x, top_cy + top_half_y, top_cz - top_half_z),
+        (top_cx - top_half_x, top_cy - top_half_y, top_cz + top_half_z),
+        (top_cx + top_half_x, top_cy - top_half_y, top_cz + top_half_z),
+        (top_cx + top_half_x, top_cy + top_half_y, top_cz + top_half_z),
+        (top_cx - top_half_x, top_cy + top_half_y, top_cz + top_half_z),
+    ]
+    top_faces = [
+        [0, 3, 2, 1], [4, 5, 6, 7], [0, 4, 5, 1],
+        [3, 2, 6, 7], [1, 2, 6, 5], [0, 4, 7, 3],
+    ]
+    top_offset = len(verts)
+    verts.extend(top_verts)
+    for face in top_faces:
+        faces.append([int(i) + top_offset for i in face])
+
     body_front_z = 0.0
     try:
         # Place the lens on the opposite face along Z (camera front side).

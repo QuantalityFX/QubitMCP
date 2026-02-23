@@ -88,6 +88,43 @@ def debug_camera_wire_vertices(segments: int = 12) -> List[float]:
     _line(p110, p111)
     _line(p010, p011)
 
+    # Top body: slimmer and slightly shorter than the main block.
+    top_half_x = half_x * 0.62
+    top_half_y = half_y * 0.24
+    top_half_z = half_z * 0.82
+    top_gap_y = half_y * 0.04
+    top_cy = half_y + top_gap_y + top_half_y
+    tx0 = -top_half_x
+    tx1 = top_half_x
+    ty0 = top_cy - top_half_y
+    ty1 = top_cy + top_half_y
+    tz0 = -top_half_z
+    tz1 = top_half_z
+
+    t000 = (tx0, ty0, tz0)
+    t100 = (tx1, ty0, tz0)
+    t110 = (tx1, ty1, tz0)
+    t010 = (tx0, ty1, tz0)
+    t001 = (tx0, ty0, tz1)
+    t101 = (tx1, ty0, tz1)
+    t111 = (tx1, ty1, tz1)
+    t011 = (tx0, ty1, tz1)
+
+    _line(t000, t100)
+    _line(t100, t110)
+    _line(t110, t010)
+    _line(t010, t000)
+
+    _line(t001, t101)
+    _line(t101, t111)
+    _line(t111, t011)
+    _line(t011, t001)
+
+    _line(t000, t001)
+    _line(t100, t101)
+    _line(t110, t111)
+    _line(t010, t011)
+
     # Lens: tapered tube (frustum) on the opposite Z face.
     lens_r_wide = 0.22
     lens_r_narrow = 0.09
