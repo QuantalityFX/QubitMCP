@@ -638,6 +638,13 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._side_btn_gap = 6
         self._side_btn_margin = 10
         self._side_btn_inner_pad = 2
+        self._camera_select_mode = "default"
+        self._camera_select_saved_default_state = None
+        self._scene_camera_entries: List[Dict[str, object]] = []
+        self._scene_camera_fov_by_owner: Dict[str, float] = {}
+        self._cam_select_frame = None
+        self._cam_select_combo = None
+        self._cam_select_syncing = False
 
         self._fps = 0.0
         self._fps_last_t = time.perf_counter()
@@ -680,6 +687,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._build_fly_mode_button()
         self._build_grid_button()
         self._build_zoom_mode_button()
+        self._build_camera_selector_dropdown()
         
 
 
@@ -782,6 +790,16 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         elif fly_btn is not None:
             fly_btn.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
             y += self._side_btn_size + self._side_btn_gap
+        cam_sel_frame = getattr(self, "_cam_select_frame", None)
+        cam_sel_combo = getattr(self, "_cam_select_combo", None)
+        if cam_sel_frame is not None and cam_sel_combo is not None:
+            base_w = int(max(120, min(220, self.width() - (2 * self._side_btn_margin))))
+            combo_w = int(max(84, round(base_w * 0.7)))
+            combo_h = 28
+            combo_x = max(self._side_btn_margin, self.width() - self._side_btn_margin - combo_w)
+            combo_y = self._side_btn_margin
+            cam_sel_frame.setGeometry(combo_x, combo_y, combo_w, combo_h)
+            cam_sel_combo.setGeometry(2, 2, max(10, combo_w - 4), max(10, combo_h - 4))
         if getattr(self, "_mgl_uv_cache", None) is not None:
             self._mgl_uv_cache = None
 
@@ -1829,6 +1847,341 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         btn.show()
         return frame
 
+    @staticmethod
+    def _camera_casefold_get(mapping, key):
+        if not isinstance(mapping, dict):
+            return None
+        if key in mapping:
+            return mapping.get(key)
+        lk = str(key or "").strip().lower()
+        for k, v in mapping.items():
+            try:
+                if str(k).strip().lower() == lk:
+                    return v
+            except Exception:
+                continue
+        return None
+
+    def _build_camera_selector_dropdown(self) -> None:
+        try:
+            frame = QtWidgets.QFrame(self)
+            frame.setObjectName("GLCamSelectFrame")
+            frame.setAttribute(QtCore.Qt.WA_StyledBackground, True)
+            frame.setStyleSheet(
+                "QFrame#GLCamSelectFrame{background:rgba(85,91,97,95);border:1px solid rgba(15,20,24,123);border-radius:4px;}"
+                "QComboBox{background:rgba(15,18,22,104);color:#e2e8f0;border:1px solid rgba(15,20,24,123);border-radius:3px;padding:2px 6px;}"
+                "QComboBox::drop-down{border:none;width:16px;}"
+                "QComboBox QAbstractItemView{background:rgba(15,18,22,180);color:#e6edf3;border:1px solid rgba(60,68,80,200);outline:0px;}"
+                "QComboBox QAbstractItemView::item:hover{background:rgba(31,41,55,200);}"
+                "QComboBox QAbstractItemView::item:selected{background:#22c55e;color:#0f1216;}"
+            )
+            combo = QtWidgets.QComboBox(frame)
+            combo.setObjectName("GLCamSelectCombo")
+            combo.setToolTip("Viewport camera")
+            combo.setMaxVisibleItems(8)
+            try:
+                lv = QtWidgets.QListView()
+                lv.setMouseTracking(True)
+                lv.setUniformItemSizes(True)
+                combo.setView(lv)
+            except Exception:
+                pass
+
+            # Force popup to anchor under the combo so it expands downward (same behavior as import versions).
+            class _CamPopupDownFilter(QtCore.QObject):
+                def __init__(self, cam_combo: QtWidgets.QComboBox):
+                    super().__init__(cam_combo)
+                    self._combo = cam_combo
+
+                def eventFilter(self, obj, ev):
+                    if ev.type() == QtCore.QEvent.Show:
+                        QtCore.QTimer.singleShot(0, self._apply)
+                    return False
+
+                def _apply(self):
+                    try:
+                        cam_combo = self._combo
+                        view = cam_combo.view()
+                        popup = view.window()
+                        pos = cam_combo.mapToGlobal(QtCore.QPoint(0, cam_combo.height()))
+                        popup.move(pos)
+                        popup.setFixedWidth(cam_combo.width())
+                        view.setMinimumWidth(cam_combo.width())
+                        popup.raise_()
+                    except Exception:
+                        pass
+
+            combo._popup_down_filter = _CamPopupDownFilter(combo)  # keep alive
+            try:
+                combo.view().installEventFilter(combo._popup_down_filter)
+            except Exception:
+                pass
+            combo.currentIndexChanged.connect(self._on_camera_selector_changed)
+            self._cam_select_frame = frame
+            self._cam_select_combo = combo
+            self._refresh_camera_selector_dropdown()
+            frame.show()
+            combo.show()
+        except Exception:
+            self._cam_select_frame = None
+            self._cam_select_combo = None
+
+    def _set_scene_camera_options(self, entries: List[Dict[str, object]] | None) -> None:
+        clean: List[Dict[str, object]] = []
+        fov_map: Dict[str, float] = {}
+        seen = set()
+        for raw in entries or []:
+            if not isinstance(raw, dict):
+                continue
+            owner = str(raw.get("owner") or "").strip()
+            if not owner:
+                continue
+            key = owner.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            label = str(raw.get("label") or owner).strip() or owner
+            fov_val = raw.get("fov", None)
+            fov = None
+            try:
+                if fov_val is not None:
+                    fov = float(fov_val)
+            except Exception:
+                fov = None
+            clean.append({"owner": owner, "label": label, "fov": fov})
+            if fov is not None:
+                fov_map[owner] = fov
+            # Keep UI to two options max: default + first scene camera.
+            if len(clean) >= 1:
+                break
+        self._scene_camera_entries = clean
+        self._scene_camera_fov_by_owner = fov_map
+        if (not clean) and str(getattr(self, "_camera_select_mode", "default")) != "default":
+            self._select_default_camera()
+        self._refresh_camera_selector_dropdown()
+
+    def _refresh_camera_selector_dropdown(self) -> None:
+        combo = getattr(self, "_cam_select_combo", None)
+        if combo is None:
+            return
+        self._cam_select_syncing = True
+        try:
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem("Default Camera", "default")
+            if self._scene_camera_entries:
+                ent = self._scene_camera_entries[0] or {}
+                owner = str(ent.get("owner") or "").strip()
+                if owner:
+                    label = str(ent.get("label") or owner).strip() or owner
+                    combo.addItem(label, owner)
+            target = str(getattr(self, "_camera_select_mode", "default") or "default").strip() or "default"
+            idx = 0
+            for i in range(combo.count()):
+                val = str(combo.itemData(i) or "").strip() or "default"
+                if val == target:
+                    idx = i
+                    break
+            combo.setCurrentIndex(idx)
+            combo.setEnabled(combo.count() > 0)
+        except Exception:
+            pass
+        finally:
+            try:
+                combo.blockSignals(False)
+            except Exception:
+                pass
+            self._cam_select_syncing = False
+
+    def _build_scene_camera_pose(self, owner: str):
+        if np is None:
+            return None
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        get_xf = getattr(renderer, "_mgl_get_scene_asset_xform", None)
+        if not callable(get_xf):
+            return None
+        try:
+            xf = get_xf(owner) or {}
+        except Exception:
+            return None
+        if not isinstance(xf, dict):
+            return None
+        try:
+            pos = np.array(
+                [
+                    float((xf.get("pos") or (0.0, 0.0, 0.0))[0]),
+                    float((xf.get("pos") or (0.0, 0.0, 0.0))[1]),
+                    float((xf.get("pos") or (0.0, 0.0, 0.0))[2]),
+                ],
+                dtype=np.float32,
+            )
+        except Exception:
+            pos = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+        try:
+            rx = float((xf.get("rot") or (0.0, 0.0, 0.0))[0])
+            ry = float((xf.get("rot") or (0.0, 0.0, 0.0))[1])
+            rz = float((xf.get("rot") or (0.0, 0.0, 0.0))[2])
+        except Exception:
+            rx = ry = rz = 0.0
+
+        # Match scene-model rotation convention from _mgl_set_scene_asset_xform.
+        rot_rx = -float(rx)
+        rot_ry = -float(ry)
+        rot_rz = -float(rz)
+
+        def _rx(a):
+            a = math.radians(a)
+            c, s = math.cos(a), math.sin(a)
+            m = np.eye(4, dtype=np.float32)
+            m[1, 1] = c
+            m[1, 2] = s
+            m[2, 1] = -s
+            m[2, 2] = c
+            return m
+
+        def _ry(a):
+            a = math.radians(a)
+            c, s = math.cos(a), math.sin(a)
+            m = np.eye(4, dtype=np.float32)
+            m[0, 0] = c
+            m[0, 2] = -s
+            m[2, 0] = s
+            m[2, 2] = c
+            return m
+
+        def _rz(a):
+            a = math.radians(a)
+            c, s = math.cos(a), math.sin(a)
+            m = np.eye(4, dtype=np.float32)
+            m[0, 0] = c
+            m[0, 1] = s
+            m[1, 0] = -s
+            m[1, 1] = c
+            return m
+
+        rmat = _rx(rot_rx) @ _ry(rot_ry) @ _rz(rot_rz)
+        fwd = (np.array([0.0, 0.0, -1.0, 0.0], dtype=np.float32) @ rmat)[:3]
+        up = (np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32) @ rmat)[:3]
+        try:
+            fn = float(np.linalg.norm(fwd))
+            if fn > 1e-6:
+                fwd = fwd / fn
+            else:
+                fwd = np.array([0.0, 0.0, -1.0], dtype=np.float32)
+        except Exception:
+            fwd = np.array([0.0, 0.0, -1.0], dtype=np.float32)
+        try:
+            un = float(np.linalg.norm(up))
+            if un > 1e-6:
+                up = up / un
+            else:
+                up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+        except Exception:
+            up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+        return pos, fwd, up
+
+    def _select_default_camera(self) -> None:
+        self._camera_select_mode = "default"
+        state = getattr(self, "_camera_select_saved_default_state", None)
+        if isinstance(state, dict):
+            try:
+                renderer = getattr(self, "_mgl_renderer", None) or self
+                apply_state = getattr(renderer, "_mgl_apply_camera_state", None)
+                if callable(apply_state):
+                    apply_state(dict(state))
+            except Exception:
+                pass
+        self._camera_select_saved_default_state = None
+        try:
+            if not bool(getattr(self, "_fly_mode_enabled", False)):
+                self._fps_camera_active = False
+                self._orbit_cam_enabled = True
+        except Exception:
+            pass
+        try:
+            self.update()
+        except Exception:
+            pass
+        self._refresh_camera_selector_dropdown()
+
+    def _select_scene_camera(self, owner: str) -> None:
+        owner_key = str(owner or "").strip()
+        if not owner_key:
+            self._select_default_camera()
+            return
+        if np is None:
+            return
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        if self._camera_select_saved_default_state is None:
+            try:
+                get_state = getattr(renderer, "_mgl_get_camera_state", None)
+                if callable(get_state):
+                    saved = get_state() or {}
+                    if isinstance(saved, dict):
+                        saved = dict(saved)
+                        saved.pop("scene_xforms", None)
+                        self._camera_select_saved_default_state = saved
+            except Exception:
+                pass
+        pose = self._build_scene_camera_pose(owner_key)
+        if pose is None:
+            self._select_default_camera()
+            return
+        pos, fwd, up = pose
+        cam = getattr(self, "_fps_camera", None)
+        if cam is None:
+            try:
+                cam = FpsCamera()
+            except Exception:
+                return
+        try:
+            cam.position = np.array(pos, dtype=np.float32)
+            cam.forward = np.array(fwd, dtype=np.float32)
+            cam.up = np.array(up, dtype=np.float32)
+            if hasattr(cam, "_orthonormalize"):
+                cam._orthonormalize()
+            self._fps_camera = cam
+        except Exception:
+            return
+
+        try:
+            fov = self._camera_casefold_get(getattr(self, "_scene_camera_fov_by_owner", {}), owner_key)
+            if fov is not None:
+                self._mgl_fov = max(5.0, min(170.0, float(fov)))
+        except Exception:
+            pass
+
+        try:
+            if bool(getattr(self, "_fly_mode_enabled", False)):
+                self._fps_camera_active = True
+            else:
+                self._fps_cam_sync_orbit_from_camera()
+                self._fps_camera_active = False
+        except Exception:
+            pass
+
+        self._camera_select_mode = owner_key
+        try:
+            self.update()
+        except Exception:
+            pass
+        self._refresh_camera_selector_dropdown()
+
+    def _on_camera_selector_changed(self, index: int) -> None:
+        if bool(getattr(self, "_cam_select_syncing", False)):
+            return
+        combo = getattr(self, "_cam_select_combo", None)
+        if combo is None:
+            return
+        try:
+            val = str(combo.itemData(index) or "").strip()
+        except Exception:
+            val = ""
+        if not val or val == "default":
+            self._select_default_camera()
+            return
+        self._select_scene_camera(val)
+
     def _build_camera_orbit_button(self) -> None:
         try:
             btn = QtWidgets.QToolButton(self)
@@ -2621,11 +2974,45 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             self._xform_gizmo_pos = (0.0, 0.0, 0.0)
         except Exception:
             pass
+        try:
+            self._set_scene_camera_options([])
+        except Exception:
+            pass
 
     def load_scene_assets(self, assets: List[Dict[str, str]], frame: bool = True) -> None:
         if not assets:
+            try:
+                self._set_scene_camera_options([])
+            except Exception:
+                pass
             return
         if self._use_moderngl:
+            try:
+                cam_entries: List[Dict[str, object]] = []
+                for entry in assets or []:
+                    if not isinstance(entry, dict):
+                        continue
+                    kind = str(entry.get("kind") or "").strip().lower()
+                    ext = str(entry.get("ext") or "").strip().lower()
+                    if kind != "camera" and ext != ".camera":
+                        continue
+                    owner = str(entry.get("node") or "").strip()
+                    if not owner:
+                        path_str = str(entry.get("path", "") or "").strip()
+                        if path_str:
+                            owner = Path(path_str).name
+                    if not owner:
+                        owner = "camera"
+                    fov = None
+                    try:
+                        if entry.get("fov", None) is not None:
+                            fov = float(entry.get("fov"))
+                    except Exception:
+                        fov = None
+                    cam_entries.append({"owner": owner, "label": owner, "fov": fov})
+                self._set_scene_camera_options(cam_entries)
+            except Exception:
+                pass
             # Reset per-owner xforms so reopen uses saved workflow values
             try:
                 self._mgl_scene_xforms_by_owner = {}
@@ -2739,6 +3126,12 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 pass
             try:
                 self._mgl_load_scene_assets(assets, frame=frame)
+            except Exception:
+                pass
+            try:
+                selected = str(getattr(self, "_camera_select_mode", "default") or "default").strip()
+                if selected and selected != "default":
+                    self._select_scene_camera(selected)
             except Exception:
                 pass
             # Clear selection/gizmo on fresh scene load
@@ -2931,17 +3324,54 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         new_key = str(new_name or "").strip()
         if not old_key or not new_key or old_key == new_key:
             return
+        old_lk = old_key.lower()
+
+        def _dict_contains_casefold(d, key: str) -> bool:
+            if not isinstance(d, dict):
+                return False
+            if key in d:
+                return True
+            lk = str(key or "").strip().lower()
+            for k in d.keys():
+                try:
+                    if str(k).strip().lower() == lk:
+                        return True
+                except Exception:
+                    continue
+            return False
+
+        def _dict_rename_casefold(d, src: str, dst: str) -> bool:
+            if not isinstance(d, dict):
+                return False
+            if src in d:
+                try:
+                    d[dst] = d.pop(src)
+                    return True
+                except Exception:
+                    return False
+            lk = str(src or "").strip().lower()
+            for k in list(d.keys()):
+                try:
+                    if str(k).strip().lower() != lk:
+                        continue
+                    d[dst] = d.pop(k)
+                    return True
+                except Exception:
+                    continue
+            return False
 
         # track whether this owner actually had splats
         had_splat = False
         try:
-            had_splat = old_key in self._mgl_scene_splats
+            had_splat = _dict_contains_casefold(getattr(self, "_mgl_scene_splats", None), old_key)
         except Exception:
             had_splat = False
 
         # rename visibility entry
-        if old_key in self._mgl_scene_visibility:
-            self._mgl_scene_visibility[new_key] = self._mgl_scene_visibility.pop(old_key)
+        try:
+            _dict_rename_casefold(getattr(self, "_mgl_scene_visibility", None), old_key, new_key)
+        except Exception:
+            pass
 
         # preserve per-owner transforms when renaming
         for attr in (
@@ -2951,15 +3381,48 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         ):
             try:
                 d = getattr(self, attr, None)
-                if isinstance(d, dict) and old_key in d:
-                    d[new_key] = d.pop(old_key)
+                _dict_rename_casefold(d, old_key, new_key)
             except Exception:
                 pass
 
         # rename splat storage only if needed
         if had_splat:
             try:
-                self._mgl_scene_splats[new_key] = self._mgl_scene_splats.pop(old_key)
+                _dict_rename_casefold(getattr(self, "_mgl_scene_splats", None), old_key, new_key)
+            except Exception:
+                pass
+
+        # Keep camera selector entries synchronized with owner renames.
+        changed_selector = False
+        try:
+            entries = getattr(self, "_scene_camera_entries", None)
+            if isinstance(entries, list):
+                for ent in entries:
+                    if not isinstance(ent, dict):
+                        continue
+                    owner = str(ent.get("owner") or "").strip()
+                    if owner and owner.lower() == old_lk:
+                        ent["owner"] = new_key
+                        ent["label"] = new_key
+                        changed_selector = True
+        except Exception:
+            pass
+        try:
+            fmap = getattr(self, "_scene_camera_fov_by_owner", None)
+            if _dict_rename_casefold(fmap, old_key, new_key):
+                changed_selector = True
+        except Exception:
+            pass
+        try:
+            mode = str(getattr(self, "_camera_select_mode", "default") or "default").strip()
+            if mode and mode.lower() == old_lk:
+                self._camera_select_mode = new_key
+                changed_selector = True
+        except Exception:
+            pass
+        if changed_selector:
+            try:
+                self._refresh_camera_selector_dropdown()
             except Exception:
                 pass
 
