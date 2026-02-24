@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import json
 import os
 from pathlib import Path
 import struct
@@ -645,6 +646,24 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._cam_select_frame = None
         self._cam_select_combo = None
         self._cam_select_syncing = False
+        self._timeline_panel = None
+        self._timeline_h = 72
+        self._timeline_enabled = False
+        self._timeline_ignore_ui = False
+        self._timeline_scene_name = "scene"
+        self._timeline_project_dir: Optional[Path] = None
+        self._timeline_anim_path: Optional[Path] = None
+        self._timeline_fps = 24.0
+        self._timeline_keys: Dict[int, Dict[str, object]] = {}
+        self._timeline_coord_x = None
+        self._timeline_coord_y = None
+        self._timeline_coord_z = None
+        self._timeline_frame_spin = None
+        self._timeline_frame_slider = None
+        self._timeline_key_count_label = None
+        self._timeline_ui_timer = QtCore.QTimer(self)
+        self._timeline_ui_timer.setInterval(250)
+        self._timeline_ui_timer.timeout.connect(self._timeline_refresh_coord_labels)
 
         self._fps = 0.0
         self._fps_last_t = time.perf_counter()
@@ -711,12 +730,20 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     self._apply_fly_speed_multiplier(float(speed_mult), sync_ui=True, sync_scene=False)
         except Exception:
             pass
+        try:
+            self.set_timeline_scene_context()
+        except Exception:
+            pass
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if getattr(self, "_controls", None) is not None:
             h = int(getattr(self, "_controls_h", 44))
             self._controls.setGeometry(0, max(0, self.height() - h), self.width(), h)
+        try:
+            self._layout_timeline_panel()
+        except Exception:
+            pass
         toggle_frame = getattr(self, "_debug_toggle_btn_frame", None)
         toggle = getattr(self, "_debug_toggle_btn", None)
         if toggle_frame is not None:
@@ -1231,9 +1258,599 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             self._controls = controls
             self._controls_h = 44
             self._controls.show()
+            self._build_timeline_panel()
         except Exception:
             self._controls = None
             self._controls_h = 0
+
+    @staticmethod
+    def _timeline_safe_name(name: str) -> str:
+        raw = str(name or "").strip()
+        if not raw:
+            return "scene"
+        out = []
+        for ch in raw:
+            if ch.isalnum() or ch in ("_", "-"):
+                out.append(ch)
+            else:
+                out.append("_")
+        cleaned = "".join(out).strip("_")
+        return cleaned or "scene"
+
+    def _bottom_overlay_height(self) -> float:
+        h = 0.0
+        controls = getattr(self, "_controls", None)
+        if controls is not None and controls.isVisible():
+            h += float(getattr(self, "_controls_h", 0) or 0)
+        panel = getattr(self, "_timeline_panel", None)
+        if panel is not None and panel.isVisible():
+            h += float(getattr(self, "_timeline_h", 0) or 0)
+        return h
+
+    def _timeline_current_frame(self) -> int:
+        spin = getattr(self, "_timeline_frame_spin", None)
+        if spin is None:
+            return 0
+        try:
+            return int(spin.value())
+        except Exception:
+            return 0
+
+    def _timeline_default_scene_name(self) -> str:
+        try:
+            win = self.window()
+            active = getattr(win, "_active_scene_node", None) if win is not None else None
+            nm = (getattr(active, "name", "") or "").strip() if active is not None else ""
+            if nm:
+                return nm
+        except Exception:
+            pass
+        current = str(getattr(self, "_timeline_scene_name", "scene") or "scene").strip()
+        return current or "scene"
+
+    def _timeline_default_project_dir(self, project_path: str | None = None) -> Path:
+        raw = (project_path or "").strip()
+        if not raw:
+            try:
+                win = self.window()
+                raw = str(getattr(win, "_current_path", "") or "").strip() if win is not None else ""
+            except Exception:
+                raw = ""
+        if not raw:
+            try:
+                raw = str(getattr(getattr(self, "_scene", None), "_filename", "") or "").strip()
+            except Exception:
+                raw = ""
+        if raw:
+            try:
+                p = Path(raw)
+                if p.suffix:
+                    p = p.parent
+                return p
+            except Exception:
+                pass
+        return Path(tempfile.gettempdir()) / "EchoGraph"
+
+    def _timeline_anim_file_path(self, scene_name: str, project_path: str | None = None) -> Path:
+        base_dir = self._timeline_default_project_dir(project_path=project_path)
+        out_dir = base_dir / "projects"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        safe = self._timeline_safe_name(scene_name)
+        return out_dir / f"{safe}_timeline.json"
+
+    def _timeline_json_safe(self, value):
+        if value is None:
+            return None
+        if isinstance(value, (str, bool)):
+            return value
+        if isinstance(value, int):
+            return int(value)
+        if isinstance(value, float):
+            if math.isfinite(value):
+                return float(value)
+            return 0.0
+        if isinstance(value, dict):
+            out = {}
+            for k, v in value.items():
+                out[str(k)] = self._timeline_json_safe(v)
+            return out
+        if isinstance(value, (list, tuple)):
+            return [self._timeline_json_safe(v) for v in value]
+        try:
+            return float(value)
+        except Exception:
+            return str(value)
+
+    def _timeline_capture_camera_state(self) -> dict:
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        get_state = getattr(renderer, "_mgl_get_camera_state", None)
+        if not callable(get_state):
+            return {}
+        try:
+            state = get_state() or {}
+        except Exception:
+            state = {}
+        if not isinstance(state, dict):
+            return {}
+        state = dict(state)
+        try:
+            state.pop("scene_xforms", None)
+        except Exception:
+            pass
+        return self._timeline_json_safe(state)
+
+    def _timeline_current_cam_xyz(self):
+        if np is None:
+            return None
+        try:
+            cam = getattr(self, "_fps_camera", None)
+            if cam is not None and bool(getattr(self, "_fps_camera_active", False)):
+                pos = np.array(getattr(cam, "position", (0.0, 0.0, 0.0)), dtype=np.float32)
+                return (float(pos[0]), float(pos[1]), float(pos[2]))
+        except Exception:
+            pass
+        try:
+            c = self._calc_camera_world_orbit()
+            if c is not None:
+                return (float(c[0]), float(c[1]), float(c[2]))
+        except Exception:
+            pass
+        try:
+            cw = getattr(self, "_mgl_cam_world", None)
+            if isinstance(cw, (list, tuple)) and len(cw) >= 3:
+                return (float(cw[0]), float(cw[1]), float(cw[2]))
+        except Exception:
+            pass
+        return None
+
+    def _timeline_format_coord(self, val) -> str:
+        try:
+            return f"{float(val):.3f}"
+        except Exception:
+            return "0.000"
+
+    def _timeline_update_key_count_label(self) -> None:
+        lbl = getattr(self, "_timeline_key_count_label", None)
+        if lbl is None:
+            return
+        try:
+            count = len(getattr(self, "_timeline_keys", {}) or {})
+        except Exception:
+            count = 0
+        lbl.setText(f"Keys: {int(count)}")
+
+    def _timeline_refresh_coord_labels(self) -> None:
+        x_lbl = getattr(self, "_timeline_coord_x", None)
+        y_lbl = getattr(self, "_timeline_coord_y", None)
+        z_lbl = getattr(self, "_timeline_coord_z", None)
+        if x_lbl is None or y_lbl is None or z_lbl is None:
+            return
+        xyz = None
+        try:
+            frame = int(self._timeline_current_frame())
+            entry = (getattr(self, "_timeline_keys", {}) or {}).get(frame)
+            if isinstance(entry, dict):
+                vals = entry.get("xyz")
+                if isinstance(vals, (list, tuple)) and len(vals) >= 3:
+                    xyz = (float(vals[0]), float(vals[1]), float(vals[2]))
+        except Exception:
+            xyz = None
+        if xyz is None:
+            xyz = self._timeline_current_cam_xyz()
+        if xyz is None:
+            xyz = (0.0, 0.0, 0.0)
+        x_lbl.setText(self._timeline_format_coord(xyz[0]))
+        y_lbl.setText(self._timeline_format_coord(xyz[1]))
+        z_lbl.setText(self._timeline_format_coord(xyz[2]))
+        self._timeline_update_key_count_label()
+
+    def _timeline_save_to_disk(self) -> None:
+        path = getattr(self, "_timeline_anim_path", None)
+        if path is None:
+            return
+        keys_out = []
+        try:
+            items = sorted((getattr(self, "_timeline_keys", {}) or {}).items(), key=lambda kv: int(kv[0]))
+        except Exception:
+            items = []
+        for frame, entry in items:
+            if not isinstance(entry, dict):
+                continue
+            row = {"frame": int(frame)}
+            xyz = entry.get("xyz", None)
+            if isinstance(xyz, (list, tuple)) and len(xyz) >= 3:
+                try:
+                    row["xyz"] = [float(xyz[0]), float(xyz[1]), float(xyz[2])]
+                except Exception:
+                    pass
+            st = entry.get("camera_state", None)
+            if isinstance(st, dict) and st:
+                row["camera_state"] = self._timeline_json_safe(st)
+            keys_out.append(row)
+        payload = {
+            "scene": str(getattr(self, "_timeline_scene_name", "scene") or "scene"),
+            "fps": float(getattr(self, "_timeline_fps", 24.0) or 24.0),
+            "keys": keys_out,
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _timeline_load_from_disk(self) -> None:
+        path = getattr(self, "_timeline_anim_path", None)
+        self._timeline_keys = {}
+        if path is None or not path.exists():
+            self._timeline_update_key_count_label()
+            self._timeline_refresh_coord_labels()
+            return
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            raw = {}
+        if not isinstance(raw, dict):
+            raw = {}
+        try:
+            fps = float(raw.get("fps", 24.0))
+            if fps > 0.0:
+                self._timeline_fps = fps
+        except Exception:
+            self._timeline_fps = 24.0
+        rows = raw.get("keys", []) or []
+        data: Dict[int, Dict[str, object]] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            try:
+                frame = int(row.get("frame", 0))
+            except Exception:
+                continue
+            if frame < 0:
+                continue
+            item: Dict[str, object] = {}
+            xyz = row.get("xyz", None)
+            if isinstance(xyz, (list, tuple)) and len(xyz) >= 3:
+                try:
+                    item["xyz"] = [float(xyz[0]), float(xyz[1]), float(xyz[2])]
+                except Exception:
+                    pass
+            st = row.get("camera_state", None)
+            if isinstance(st, dict):
+                item["camera_state"] = st
+            if item:
+                data[int(frame)] = item
+        self._timeline_keys = data
+        max_key = 240
+        try:
+            if data:
+                max_key = max(max_key, max(int(k) for k in data.keys()))
+        except Exception:
+            pass
+        slider = getattr(self, "_timeline_frame_slider", None)
+        if slider is not None:
+            try:
+                slider.setMaximum(max_key)
+            except Exception:
+                pass
+        self._timeline_update_key_count_label()
+        self._timeline_refresh_coord_labels()
+        try:
+            self._timeline_apply_frame_if_keyed(self._timeline_current_frame())
+        except Exception:
+            pass
+
+    def set_timeline_scene_context(self, scene_name: str | None = None, project_path: str | None = None) -> None:
+        name = str(scene_name or "").strip()
+        if not name:
+            name = self._timeline_default_scene_name()
+        if not name:
+            name = "scene"
+        anim_path = self._timeline_anim_file_path(name, project_path=project_path)
+        old_path = getattr(self, "_timeline_anim_path", None)
+        same = old_path is not None and str(old_path) == str(anim_path)
+        self._timeline_scene_name = name
+        self._timeline_project_dir = anim_path.parent
+        self._timeline_anim_path = anim_path
+        if not same:
+            self._timeline_load_from_disk()
+        else:
+            self._timeline_refresh_coord_labels()
+
+    def _timeline_apply_xyz_only(self, xyz) -> None:
+        if np is None:
+            return
+        if not isinstance(xyz, (list, tuple)) or len(xyz) < 3:
+            return
+        try:
+            cam = getattr(self, "_fps_camera", None)
+            if cam is None:
+                self._fps_cam_sync_from_orbit()
+                cam = getattr(self, "_fps_camera", None)
+            if cam is None:
+                cam = FpsCamera()
+                self._fps_camera = cam
+            cam.position = np.array([float(xyz[0]), float(xyz[1]), float(xyz[2])], dtype=np.float32)
+            if hasattr(cam, "_orthonormalize"):
+                cam._orthonormalize()
+            self._fps_camera = cam
+            if bool(getattr(self, "_fly_mode_enabled", False)):
+                self._fps_camera_active = True
+            else:
+                self._fps_cam_sync_orbit_from_camera()
+                self._fps_camera_active = False
+        except Exception:
+            pass
+
+    def _timeline_apply_frame_if_keyed(self, frame: int) -> None:
+        try:
+            entry = (getattr(self, "_timeline_keys", {}) or {}).get(int(frame))
+        except Exception:
+            entry = None
+        if not isinstance(entry, dict):
+            self._timeline_refresh_coord_labels()
+            return
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        state = entry.get("camera_state", None)
+        applied = False
+        if isinstance(state, dict) and state:
+            try:
+                apply_state = getattr(renderer, "_mgl_apply_camera_state", None)
+                if callable(apply_state):
+                    apply_state(dict(state))
+                    applied = True
+            except Exception:
+                applied = False
+        if not applied:
+            self._timeline_apply_xyz_only(entry.get("xyz", None))
+        try:
+            self.update()
+        except Exception:
+            pass
+        self._timeline_refresh_coord_labels()
+
+    def _timeline_set_frame_widgets(self, frame: int) -> None:
+        frame = max(0, int(frame))
+        spin = getattr(self, "_timeline_frame_spin", None)
+        slider = getattr(self, "_timeline_frame_slider", None)
+        if slider is not None:
+            try:
+                if frame > int(slider.maximum()):
+                    slider.setMaximum(frame)
+            except Exception:
+                pass
+        if spin is not None:
+            try:
+                spin.blockSignals(True)
+                spin.setValue(frame)
+            except Exception:
+                pass
+            finally:
+                try:
+                    spin.blockSignals(False)
+                except Exception:
+                    pass
+        if slider is not None:
+            try:
+                slider.blockSignals(True)
+                slider.setValue(frame)
+            except Exception:
+                pass
+            finally:
+                try:
+                    slider.blockSignals(False)
+                except Exception:
+                    pass
+
+    def _timeline_on_frame_spin_changed(self, value: int) -> None:
+        if bool(getattr(self, "_timeline_ignore_ui", False)):
+            return
+        frame = max(0, int(value))
+        slider = getattr(self, "_timeline_frame_slider", None)
+        if slider is not None:
+            try:
+                if frame > int(slider.maximum()):
+                    slider.setMaximum(frame)
+                slider.blockSignals(True)
+                slider.setValue(frame)
+            except Exception:
+                pass
+            finally:
+                try:
+                    slider.blockSignals(False)
+                except Exception:
+                    pass
+        self._timeline_apply_frame_if_keyed(frame)
+
+    def _timeline_on_frame_slider_changed(self, value: int) -> None:
+        if bool(getattr(self, "_timeline_ignore_ui", False)):
+            return
+        frame = max(0, int(value))
+        spin = getattr(self, "_timeline_frame_spin", None)
+        if spin is not None:
+            try:
+                spin.blockSignals(True)
+                spin.setValue(frame)
+            except Exception:
+                pass
+            finally:
+                try:
+                    spin.blockSignals(False)
+                except Exception:
+                    pass
+        self._timeline_apply_frame_if_keyed(frame)
+
+    def _timeline_on_set_key_clicked(self) -> None:
+        frame = self._timeline_current_frame()
+        xyz = self._timeline_current_cam_xyz()
+        if xyz is None:
+            xyz = (0.0, 0.0, 0.0)
+        state = self._timeline_capture_camera_state()
+        entry = {
+            "xyz": [float(xyz[0]), float(xyz[1]), float(xyz[2])],
+            "camera_state": state if isinstance(state, dict) else {},
+        }
+        try:
+            self._timeline_keys[int(frame)] = entry
+        except Exception:
+            pass
+        slider = getattr(self, "_timeline_frame_slider", None)
+        if slider is not None:
+            try:
+                if int(frame) > int(slider.maximum()):
+                    slider.setMaximum(int(frame))
+            except Exception:
+                pass
+        self._timeline_save_to_disk()
+        self._timeline_refresh_coord_labels()
+
+    def _timeline_on_delete_key_clicked(self) -> None:
+        frame = self._timeline_current_frame()
+        try:
+            if int(frame) in self._timeline_keys:
+                del self._timeline_keys[int(frame)]
+        except Exception:
+            pass
+        self._timeline_save_to_disk()
+        self._timeline_refresh_coord_labels()
+
+    def _layout_timeline_panel(self) -> None:
+        panel = getattr(self, "_timeline_panel", None)
+        if panel is None:
+            return
+        controls_h = 0
+        controls = getattr(self, "_controls", None)
+        if controls is not None and controls.isVisible():
+            try:
+                controls_h = int(getattr(self, "_controls_h", 44))
+            except Exception:
+                controls_h = 44
+        h = int(max(44, int(getattr(self, "_timeline_h", 72) or 72)))
+        y = max(0, self.height() - controls_h - h)
+        panel.setGeometry(0, y, max(1, self.width()), h)
+        panel.raise_()
+
+    def _build_timeline_panel(self) -> None:
+        if getattr(self, "_timeline_panel", None) is not None:
+            return
+        try:
+            panel = QtWidgets.QFrame(self)
+            panel.setObjectName("GLTimelinePanel")
+            panel.setAttribute(QtCore.Qt.WA_StyledBackground, True)
+            panel.setStyleSheet(
+                "#GLTimelinePanel{background:rgba(15,23,42,215);border-top:1px solid #334155;}"
+                "#GLTimelinePanel QLabel{color:#e2e8f0;font-size:11px;}"
+                "#GLTimelinePanel QSpinBox{background:#0f1216;color:#e2e8f0;border:1px solid #334155;border-radius:3px;padding:1px 4px;}"
+                "#GLTimelinePanel QSlider::groove:horizontal{height:4px;background:#334155;border-radius:2px;}"
+                "#GLTimelinePanel QSlider::handle:horizontal{background:#22c55e;border:1px solid #166534;width:12px;margin:-5px 0;border-radius:6px;}"
+                "#GLTimelinePanel QPushButton{padding:2px 8px;font-weight:600;color:#e2e8f0;background:#1f2937;border-radius:4px;}"
+                "#GLTimelinePanel QPushButton:hover{background:#334155;}"
+            )
+            layout = QtWidgets.QHBoxLayout(panel)
+            layout.setContentsMargins(10, 6, 10, 6)
+            layout.setSpacing(8)
+
+            title = QtWidgets.QLabel("Timeline")
+            title.setStyleSheet("font-weight:700;color:#f8fafc;")
+            layout.addWidget(title, 0)
+
+            frame_lbl = QtWidgets.QLabel("Frame")
+            layout.addWidget(frame_lbl, 0)
+
+            frame_spin = QtWidgets.QSpinBox(panel)
+            frame_spin.setRange(0, 100000)
+            frame_spin.setValue(0)
+            frame_spin.setFixedWidth(80)
+            frame_spin.valueChanged.connect(self._timeline_on_frame_spin_changed)
+            layout.addWidget(frame_spin, 0)
+            self._timeline_frame_spin = frame_spin
+
+            frame_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal, panel)
+            frame_slider.setRange(0, 240)
+            frame_slider.setValue(0)
+            frame_slider.setFixedWidth(260)
+            frame_slider.valueChanged.connect(self._timeline_on_frame_slider_changed)
+            layout.addWidget(frame_slider, 0)
+            self._timeline_frame_slider = frame_slider
+
+            key_btn = QtWidgets.QPushButton("Set Key", panel)
+            key_btn.clicked.connect(self._timeline_on_set_key_clicked)
+            layout.addWidget(key_btn, 0)
+
+            del_btn = QtWidgets.QPushButton("Delete Key", panel)
+            del_btn.clicked.connect(self._timeline_on_delete_key_clicked)
+            layout.addWidget(del_btn, 0)
+
+            key_count = QtWidgets.QLabel("Keys: 0")
+            layout.addWidget(key_count, 0)
+            self._timeline_key_count_label = key_count
+
+            layout.addSpacing(12)
+            layout.addWidget(QtWidgets.QLabel("X"), 0)
+            x_lbl = QtWidgets.QLabel("0.000")
+            x_lbl.setMinimumWidth(78)
+            layout.addWidget(x_lbl, 0)
+            self._timeline_coord_x = x_lbl
+
+            layout.addWidget(QtWidgets.QLabel("Y"), 0)
+            y_lbl = QtWidgets.QLabel("0.000")
+            y_lbl.setMinimumWidth(78)
+            layout.addWidget(y_lbl, 0)
+            self._timeline_coord_y = y_lbl
+
+            layout.addWidget(QtWidgets.QLabel("Z"), 0)
+            z_lbl = QtWidgets.QLabel("0.000")
+            z_lbl.setMinimumWidth(78)
+            layout.addWidget(z_lbl, 0)
+            self._timeline_coord_z = z_lbl
+
+            layout.addStretch(1)
+            panel.hide()
+            self._timeline_panel = panel
+            self._layout_timeline_panel()
+            self._timeline_refresh_coord_labels()
+        except Exception:
+            self._timeline_panel = None
+
+    def timeline_visible(self) -> bool:
+        return bool(getattr(self, "_timeline_enabled", False))
+
+    def set_timeline_visible(self, visible: bool) -> None:
+        want = bool(visible)
+        if want == bool(getattr(self, "_timeline_enabled", False)):
+            panel = getattr(self, "_timeline_panel", None)
+            if panel is not None:
+                panel.setVisible(want)
+                self._layout_timeline_panel()
+            return
+        self._timeline_enabled = want
+        self._build_timeline_panel()
+        panel = getattr(self, "_timeline_panel", None)
+        if panel is not None:
+            panel.setVisible(want)
+            self._layout_timeline_panel()
+        if want:
+            try:
+                self.set_timeline_scene_context()
+            except Exception:
+                pass
+            try:
+                self._timeline_refresh_coord_labels()
+            except Exception:
+                pass
+            try:
+                self._timeline_ui_timer.start()
+            except Exception:
+                pass
+        else:
+            try:
+                self._timeline_ui_timer.stop()
+            except Exception:
+                pass
+        try:
+            self.update()
+        except Exception:
+            pass
 
     def _on_fly_speed_mult_changed(self, value: int | None = None) -> None:
         if value is None:
@@ -4858,7 +5475,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
     def _draw_uv_overlay(self, painter: QtGui.QPainter) -> None:
         panel_size = 360.0
         margin = 12.0
-        controls_h = float(getattr(self, "_controls_h", 0) or 0)
+        controls_h = float(self._bottom_overlay_height() or 0.0)
         right = self.width() - margin
         bottom = self.height() - margin - controls_h
         panel = QtCore.QRectF(right - panel_size, bottom - panel_size, panel_size, panel_size)
@@ -4946,10 +5563,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         size = 46.0
         margin = 3.0
         radius = size * 0.405
-        controls_h = 0.0
-        controls = getattr(self, "_controls", None)
-        if controls is not None and controls.isVisible():
-            controls_h = float(getattr(self, "_controls_h", 0))
+        controls_h = float(self._bottom_overlay_height() or 0.0)
         origin = QtCore.QPointF(
             vp.left() + margin + radius,
             vp.bottom() - margin - radius - controls_h,

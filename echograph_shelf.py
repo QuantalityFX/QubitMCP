@@ -781,7 +781,8 @@ class GraphScene(QtWidgets.QGraphicsScene):
         node.name = new_name
         item.model.name = new_name
         item.update()
-        # Keep 3D viewport scene ownership in sync with node renames
+        # Keep 3D viewport scene ownership in sync with node renames.
+        rename_forwarded = False
         try:
             gv = (
                 getattr(self, "gl_view", None)
@@ -789,8 +790,39 @@ class GraphScene(QtWidgets.QGraphicsScene):
                 or getattr(self, "glView", None)
                 or getattr(self, "_glView", None)
             )
+            if gv is None:
+                try:
+                    for view in (self.views() or []):
+                        if view is None:
+                            continue
+                        win = view.window()
+                        gv = getattr(win, "gl_view", None) if win is not None else None
+                        if gv is not None:
+                            break
+                except Exception:
+                    gv = None
             if gv is not None and hasattr(gv, "rename_scene_asset_owner"):
                 gv.rename_scene_asset_owner(old_name, new_name)
+                rename_forwarded = True
+        except Exception:
+            pass
+        try:
+            win = None
+            for view in (self.views() or []):
+                if view is None:
+                    continue
+                cand = view.window()
+                if cand is not None:
+                    win = cand
+                    break
+            if win is not None:
+                if not rename_forwarded:
+                    handler = getattr(win, "rename_scene_asset_owner", None)
+                    if callable(handler):
+                        handler(old_name, new_name)
+                sync_timeline = getattr(win, "_sync_timeline_context", None)
+                if callable(sync_timeline):
+                    sync_timeline()
         except Exception:
             pass
 
@@ -2092,6 +2124,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._recent_files = _load_recent_graphs()
         self._hotkey_shortcuts = {}
         self._update_window_title()
+        self._timeline_btn = None
+        self._timeline_toggle_btn = None
 
         central = QtWidgets.QWidget(self)
         v = QtWidgets.QVBoxLayout(central)
@@ -2156,6 +2190,11 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
         self._init_info_dock()
         self._set_view_mode("2d")
+        try:
+            self._sync_timeline_context()
+            self._sync_timeline_menu_state()
+        except Exception:
+            pass
 
         # App-level Big Editor hotkey catcher (focus-only)
         self._bigedit_filter = _BigEditEventFilter(self)
@@ -2527,6 +2566,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             try:
                 sc = getattr(self, "scene", None)
                 gl_view.set_scene(sc)
+                self._sync_timeline_context()
 
                 # Only refresh when the scene object changes (prevents slow toggle stalls)
                 if getattr(gl_view, "_last_refresh_scene_obj", None) is not sc:
@@ -2596,6 +2636,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 except Exception:
                     self._frame_all_nodes()
         self._update_view_mode_button()
+        try:
+            self._sync_timeline_menu_state()
+        except Exception:
+            pass
 
     def _update_view_mode_button(self) -> None:
         btn = getattr(self, "_btn_3d", None)
@@ -3139,6 +3183,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             print("[open_scene_assets] gl_view is None", flush=True)
             return
         try:
+            self._sync_timeline_context()
+        except Exception:
+            pass
+        try:
             if hasattr(gl_view, "set_gizmo_visible"):
                 gl_view.set_gizmo_visible(True)
         except Exception:
@@ -3185,11 +3233,15 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
     def rename_scene_asset_owner(self, old_name: str, new_name: str) -> None:
         gl_view = getattr(self, "gl_view", None)
-        if gl_view is None:
-            return
-        handler = getattr(gl_view, "rename_scene_asset_owner", None)
-        if callable(handler):
-            handler(old_name, new_name)
+        if gl_view is not None:
+            handler = getattr(gl_view, "rename_scene_asset_owner", None)
+            if callable(handler):
+                handler(old_name, new_name)
+        try:
+            self._sync_timeline_context()
+            self._sync_timeline_menu_state()
+        except Exception:
+            pass
 
     def select_scene_asset(self, owner: str) -> None:
         owner = (owner or "").strip()
@@ -3617,6 +3669,58 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         h.addWidget(create_btn, 0)
         self._create_btn = create_btn
 
+        timeline_btn = QtWidgets.QToolButton(bar)
+        timeline_btn.setObjectName("PanelsButton")
+        timeline_btn.setText("Panels")
+        timeline_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        timeline_btn.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
+        timeline_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        timeline_btn.setFixedHeight(22)
+        timeline_btn.setStyleSheet(
+            "QToolButton#PanelsButton{border-radius:2px;text-align:center;}"
+        )
+
+        timeline_menu = QtWidgets.QMenu(timeline_btn)
+        timeline_menu.setObjectName("PanelsMenu")
+        timeline_menu.setStyleSheet(
+            "#PanelsMenu{background:#1b2026;border:1px solid #333;padding:0px;}"
+        )
+
+        timeline_panel = QtWidgets.QFrame(timeline_menu)
+        timeline_panel.setObjectName("PanelsPanel")
+        timeline_panel.setFixedWidth(96)
+        timeline_panel.setStyleSheet(
+            "#PanelsPanel{background:#1b2026;border:0px;border-radius:6px;}"
+            "#PanelsPanel QPushButton{color:#e5e7eb;background:transparent;border:0px;padding:0px 6px;text-align:left;}"
+            "#PanelsPanel QPushButton:hover{color:#e5e7eb;background:#1f7a45;}"
+        )
+        timeline_layout = QtWidgets.QVBoxLayout(timeline_panel)
+        timeline_layout.setContentsMargins(0, 0, 0, 0)
+        timeline_layout.setSpacing(0)
+
+        timeline_toggle = QtWidgets.QPushButton("Timeline", timeline_panel)
+        timeline_toggle.setToolTip("Show timeline panel in viewport")
+        timeline_toggle.setFixedHeight(22)
+        timeline_toggle.setCursor(QtCore.Qt.PointingHandCursor)
+        timeline_toggle.setFlat(True)
+        timeline_toggle.setCheckable(True)
+        timeline_toggle.setChecked(self._timeline_panel_enabled())
+        timeline_toggle.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        timeline_toggle.clicked.connect(self._toggle_timeline_panel_from_menu)
+        timeline_layout.addWidget(timeline_toggle, 0)
+
+        timeline_action = QtWidgets.QWidgetAction(timeline_menu)
+        timeline_action.setDefaultWidget(timeline_panel)
+        timeline_menu.addAction(timeline_action)
+
+        timeline_menu.aboutToShow.connect(self._sync_timeline_menu_state)
+        timeline_menu.aboutToShow.connect(lambda: self._set_timeline_menu_active(True))
+        timeline_menu.aboutToHide.connect(lambda: self._set_timeline_menu_active(False))
+        timeline_btn.setMenu(timeline_menu)
+        h.addWidget(timeline_btn, 0)
+        self._timeline_btn = timeline_btn
+        self._timeline_toggle_btn = timeline_toggle
+
         settings_btn = QtWidgets.QToolButton(bar)
         settings_btn.setObjectName("SettingsButton")
         settings_btn.setText("Settings")
@@ -3859,6 +3963,86 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             return
         try:
             btn.setProperty("active", bool(active))
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+            btn.update()
+        except Exception:
+            pass
+
+    def _timeline_panel_enabled(self) -> bool:
+        gl_view = getattr(self, "gl_view", None)
+        if gl_view is None or not hasattr(gl_view, "timeline_visible"):
+            return False
+        try:
+            return bool(gl_view.timeline_visible())
+        except Exception:
+            return False
+
+    def _sync_timeline_context(self) -> None:
+        gl_view = getattr(self, "gl_view", None)
+        if gl_view is None:
+            return
+        setter = getattr(gl_view, "set_timeline_scene_context", None)
+        if not callable(setter):
+            return
+        scene_name = ""
+        try:
+            active_scene = getattr(self, "_active_scene_node", None)
+            scene_name = str(getattr(active_scene, "name", "") or "").strip() if active_scene is not None else ""
+        except Exception:
+            scene_name = ""
+        project_path = None
+        try:
+            raw_path = str(getattr(self, "_current_path", "") or "").strip()
+            if raw_path:
+                project_path = raw_path
+        except Exception:
+            project_path = None
+        try:
+            setter(scene_name=scene_name or None, project_path=project_path)
+        except Exception:
+            pass
+
+    def _sync_timeline_menu_state(self) -> None:
+        btn = getattr(self, "_timeline_toggle_btn", None)
+        if btn is None:
+            return
+        enabled = self._timeline_panel_enabled()
+        try:
+            btn.blockSignals(True)
+            btn.setChecked(bool(enabled))
+        except Exception:
+            pass
+        finally:
+            try:
+                btn.blockSignals(False)
+            except Exception:
+                pass
+        self._set_timeline_menu_active(bool(enabled))
+
+    def _toggle_timeline_panel_from_menu(self, checked: bool) -> None:
+        want = bool(checked)
+        if want and str(getattr(self, "_view_mode", "2d")).lower() == "2d":
+            try:
+                self._set_view_mode("split")
+            except Exception:
+                pass
+        self._sync_timeline_context()
+        gl_view = getattr(self, "gl_view", None)
+        if gl_view is not None and hasattr(gl_view, "set_timeline_visible"):
+            try:
+                gl_view.set_timeline_visible(want)
+            except Exception:
+                pass
+        self._sync_timeline_menu_state()
+
+    def _set_timeline_menu_active(self, active: bool) -> None:
+        btn = getattr(self, "_timeline_btn", None)
+        if btn is None:
+            return
+        want = bool(active) or self._timeline_panel_enabled()
+        try:
+            btn.setProperty("active", bool(want))
             btn.style().unpolish(btn)
             btn.style().polish(btn)
             btn.update()
@@ -4374,6 +4558,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._current_path = path
         self._remember_recent(path)
         self._update_window_title()
+        try:
+            self._sync_timeline_context()
+        except Exception:
+            pass
         t_frame = time.perf_counter()
         self._frame_all_nodes()
         frame_ms = (time.perf_counter() - t_frame) * 1000.0
@@ -4411,6 +4599,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 json.dump(data, f, indent=2)
             self._remember_recent(self._current_path)
             self._update_window_title()
+            try:
+                self._sync_timeline_context()
+            except Exception:
+                pass
             try:
                 QtWidgets.QToolTip.showText(
                     QtGui.QCursor.pos(),
@@ -4451,6 +4643,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             self._current_path = path
             self._remember_recent(path)
             self._update_window_title()
+            try:
+                self._sync_timeline_context()
+            except Exception:
+                pass
             try:
                 QtWidgets.QToolTip.showText(
                     QtGui.QCursor.pos(),
