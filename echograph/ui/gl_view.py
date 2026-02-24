@@ -663,13 +663,23 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._timeline_coord_rz = None
         self._timeline_tracks_frame = None
         self._timeline_playhead = None
+        self._timeline_left_header_spacer = None
+        self._timeline_area_widget = None
+        self._timeline_scrollbar = None
         self._timeline_tick_labels: List[QtWidgets.QLabel] = []
+        self._timeline_total_max = 240
+        self._timeline_view_start = 0
+        self._timeline_view_span = 120
+        self._timeline_play_btn = None
         self._timeline_frame_spin = None
         self._timeline_frame_slider = None
         self._timeline_key_count_label = None
         self._timeline_ui_timer = QtCore.QTimer(self)
         self._timeline_ui_timer.setInterval(250)
         self._timeline_ui_timer.timeout.connect(self._timeline_refresh_coord_labels)
+        self._timeline_play_timer = QtCore.QTimer(self)
+        self._timeline_play_timer.setInterval(33)  # 30 FPS playback
+        self._timeline_play_timer.timeout.connect(self._timeline_on_play_tick)
 
         self._fps = 0.0
         self._fps_last_t = time.perf_counter()
@@ -1448,21 +1458,105 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             count = 0
         lbl.setText(f"Keys: {int(count)}")
 
+    def _timeline_max_known_frame(self) -> int:
+        max_key = 0
+        try:
+            keys = getattr(self, "_timeline_keys", {}) or {}
+            if keys:
+                max_key = max(int(k) for k in keys.keys())
+        except Exception:
+            max_key = 0
+        try:
+            cur = int(self._timeline_current_frame())
+        except Exception:
+            cur = 0
+        try:
+            base_total = int(getattr(self, "_timeline_total_max", 240) or 240)
+        except Exception:
+            base_total = 240
+        return max(240, base_total, max_key, cur)
+
+    def _timeline_sync_range_controls(self, *, keep_current_visible: bool = True) -> None:
+        slider = getattr(self, "_timeline_frame_slider", None)
+        if slider is None:
+            return
+        try:
+            frame = max(0, int(self._timeline_current_frame()))
+        except Exception:
+            frame = 0
+        total = int(max(0, self._timeline_max_known_frame()))
+        self._timeline_total_max = total
+        try:
+            span = int(getattr(self, "_timeline_view_span", 120) or 120)
+        except Exception:
+            span = 120
+        span = max(24, span)
+        span = min(span, total) if total > 0 else span
+        start_max = max(0, total - span)
+        try:
+            start = int(getattr(self, "_timeline_view_start", 0) or 0)
+        except Exception:
+            start = 0
+        if keep_current_visible:
+            if frame < start:
+                start = frame
+            elif frame > (start + span):
+                start = frame - span
+        start = max(0, min(start, start_max))
+        self._timeline_view_start = start
+
+        scroll = getattr(self, "_timeline_scrollbar", None)
+        if scroll is not None:
+            try:
+                scroll.blockSignals(True)
+                scroll.setRange(0, start_max)
+                scroll.setSingleStep(max(1, span // 20))
+                scroll.setPageStep(max(1, span))
+                scroll.setValue(start)
+            except Exception:
+                pass
+            finally:
+                try:
+                    scroll.blockSignals(False)
+                except Exception:
+                    pass
+
+        local_max = max(0, min(span, total - start))
+        local_val = max(0, min(local_max, frame - start))
+        try:
+            slider.blockSignals(True)
+            slider.setRange(0, local_max)
+            slider.setValue(local_val)
+        except Exception:
+            pass
+        finally:
+            try:
+                slider.blockSignals(False)
+            except Exception:
+                pass
+
+        self._timeline_update_tick_labels()
+        self._timeline_update_playhead()
+
     def _timeline_update_tick_labels(self) -> None:
         labels = getattr(self, "_timeline_tick_labels", None)
         slider = getattr(self, "_timeline_frame_slider", None)
         if not isinstance(labels, list) or not labels or slider is None:
             return
         try:
-            max_frame = int(max(0, int(slider.maximum())))
+            local_max = int(max(0, int(slider.maximum())))
         except Exception:
-            max_frame = 0
+            local_max = 0
+        try:
+            start = int(max(0, int(getattr(self, "_timeline_view_start", 0) or 0)))
+        except Exception:
+            start = 0
         steps = max(1, len(labels) - 1)
         for i, lb in enumerate(labels):
             if lb is None:
                 continue
             try:
-                frame_val = int(round((float(i) / float(steps)) * float(max_frame)))
+                frame_val = start + int(round((float(i) / float(steps)) * float(local_max)))
             except Exception:
                 frame_val = i
             try:
@@ -1470,27 +1564,137 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             except Exception:
                 pass
 
+    def _timeline_sync_row_alignment(self) -> None:
+        spacer = getattr(self, "_timeline_left_header_spacer", None)
+        tracks = getattr(self, "_timeline_tracks_frame", None)
+        if spacer is None or tracks is None:
+            return
+        try:
+            top = int(max(0, tracks.y()))
+        except Exception:
+            return
+        try:
+            if int(spacer.height()) != int(top):
+                spacer.setFixedHeight(int(top))
+        except Exception:
+            pass
+
     def _timeline_update_playhead(self) -> None:
         tracks = getattr(self, "_timeline_tracks_frame", None)
         playhead = getattr(self, "_timeline_playhead", None)
         slider = getattr(self, "_timeline_frame_slider", None)
         if tracks is None or playhead is None or slider is None:
             return
+        self._timeline_sync_row_alignment()
         try:
-            width = int(max(2, tracks.width()))
+            width = int(max(1, tracks.width()))
             height = int(max(1, tracks.height()))
-            frame = int(slider.value())
-            max_frame = int(slider.maximum())
-            if max_frame <= 0:
-                x = 0
-            else:
-                x = int(round((float(frame) / float(max_frame)) * float(width - 1)))
-            x = max(0, min(width - 2, x))
-            playhead.setGeometry(x, 0, 2, height)
+            x = None
+            try:
+                opt = QtWidgets.QStyleOptionSlider()
+                slider.initStyleOption(opt)
+                style = slider.style()
+                handle = style.subControlRect(
+                    QtWidgets.QStyle.CC_Slider,
+                    opt,
+                    QtWidgets.QStyle.SC_SliderHandle,
+                    slider,
+                )
+                if int(handle.width()) > 0:
+                    gx = slider.mapToGlobal(handle.center())
+                    x = int(tracks.mapFromGlobal(gx).x())
+                else:
+                    groove = style.subControlRect(
+                        QtWidgets.QStyle.CC_Slider,
+                        opt,
+                        QtWidgets.QStyle.SC_SliderGroove,
+                        slider,
+                    )
+                    min_frame = int(slider.minimum())
+                    max_frame = int(slider.maximum())
+                    frame = int(slider.value())
+                    span = int(
+                        max(
+                            1,
+                            style.pixelMetric(
+                                QtWidgets.QStyle.PM_SliderSpaceAvailable,
+                                opt,
+                                slider,
+                            ),
+                        )
+                    )
+                    pos = int(
+                        QtWidgets.QStyle.sliderPositionFromValue(
+                            min_frame,
+                            max_frame,
+                            frame,
+                            span,
+                            bool(getattr(opt, "upsideDown", False)),
+                        )
+                    )
+                    slider_len = int(
+                        max(
+                            1,
+                            style.pixelMetric(
+                                QtWidgets.QStyle.PM_SliderLength,
+                                opt,
+                                slider,
+                            ),
+                        )
+                    )
+                    x_slider = int(groove.left() + pos + (slider_len // 2))
+                    gx = slider.mapToGlobal(QtCore.QPoint(x_slider, groove.center().y()))
+                    x = int(tracks.mapFromGlobal(gx).x())
+            except Exception:
+                x = None
+            if x is None:
+                frame = int(slider.value()) - int(slider.minimum())
+                max_frame = int(slider.maximum()) - int(slider.minimum())
+                if frame < 0:
+                    frame = 0
+                if max_frame <= 0:
+                    x = 0
+                else:
+                    x = int(round((float(frame) / float(max_frame)) * float(width - 1)))
+            x = max(0, min(width - 1, int(x)))
+            playhead.setGeometry(x, 0, 1, height)
             playhead.raise_()
             playhead.show()
         except Exception:
             pass
+
+    def _timeline_on_scroll_changed(self, value: int) -> None:
+        try:
+            self._timeline_view_start = max(0, int(value))
+        except Exception:
+            self._timeline_view_start = 0
+        self._timeline_sync_range_controls(keep_current_visible=False)
+
+    def _timeline_on_play_toggled(self, checked: bool) -> None:
+        btn = getattr(self, "_timeline_play_btn", None)
+        if btn is not None:
+            try:
+                btn.setText("Pause" if bool(checked) else "Play")
+            except Exception:
+                pass
+        if bool(checked):
+            try:
+                self._timeline_play_timer.start()
+            except Exception:
+                pass
+        else:
+            try:
+                self._timeline_play_timer.stop()
+            except Exception:
+                pass
+
+    def _timeline_on_play_tick(self) -> None:
+        frame = int(self._timeline_current_frame()) + 1
+        max_frame = int(self._timeline_max_known_frame())
+        if frame > max_frame:
+            frame = 0
+        self._timeline_set_frame_widgets(frame)
+        self._timeline_apply_frame_if_keyed(frame)
 
     def _timeline_refresh_coord_labels(self) -> None:
         x_lbl = getattr(self, "_timeline_coord_x", None)
@@ -1577,6 +1781,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         path = getattr(self, "_timeline_anim_path", None)
         self._timeline_keys = {}
         if path is None or not path.exists():
+            self._timeline_total_max = max(240, int(self._timeline_current_frame()))
+            self._timeline_sync_range_controls(keep_current_visible=True)
             self._timeline_update_key_count_label()
             self._timeline_refresh_coord_labels()
             return
@@ -1622,19 +1828,14 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             if item:
                 data[int(frame)] = item
         self._timeline_keys = data
-        max_key = 7
+        max_key = 0
         try:
             if data:
-                max_key = max(max_key, max(int(k) for k in data.keys()))
+                max_key = max(int(k) for k in data.keys())
         except Exception:
-            pass
-        slider = getattr(self, "_timeline_frame_slider", None)
-        if slider is not None:
-            try:
-                slider.setMaximum(max_key)
-            except Exception:
-                pass
-        self._timeline_update_tick_labels()
+            max_key = 0
+        self._timeline_total_max = max(240, int(max_key))
+        self._timeline_sync_range_controls(keep_current_visible=True)
         self._timeline_update_key_count_label()
         self._timeline_refresh_coord_labels()
         try:
@@ -1714,14 +1915,6 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
     def _timeline_set_frame_widgets(self, frame: int) -> None:
         frame = max(0, int(frame))
         spin = getattr(self, "_timeline_frame_spin", None)
-        slider = getattr(self, "_timeline_frame_slider", None)
-        if slider is not None:
-            try:
-                if frame > int(slider.maximum()):
-                    slider.setMaximum(frame)
-                    self._timeline_update_tick_labels()
-            except Exception:
-                pass
         if spin is not None:
             try:
                 spin.blockSignals(True)
@@ -1733,44 +1926,23 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     spin.blockSignals(False)
                 except Exception:
                     pass
-        if slider is not None:
-            try:
-                slider.blockSignals(True)
-                slider.setValue(frame)
-            except Exception:
-                pass
-            finally:
-                try:
-                    slider.blockSignals(False)
-                except Exception:
-                    pass
-        self._timeline_update_playhead()
+        self._timeline_sync_range_controls(keep_current_visible=True)
 
     def _timeline_on_frame_spin_changed(self, value: int) -> None:
         if bool(getattr(self, "_timeline_ignore_ui", False)):
             return
         frame = max(0, int(value))
-        slider = getattr(self, "_timeline_frame_slider", None)
-        if slider is not None:
-            try:
-                if frame > int(slider.maximum()):
-                    slider.setMaximum(frame)
-                    self._timeline_update_tick_labels()
-                slider.blockSignals(True)
-                slider.setValue(frame)
-            except Exception:
-                pass
-            finally:
-                try:
-                    slider.blockSignals(False)
-                except Exception:
-                    pass
+        self._timeline_sync_range_controls(keep_current_visible=True)
         self._timeline_apply_frame_if_keyed(frame)
 
     def _timeline_on_frame_slider_changed(self, value: int) -> None:
         if bool(getattr(self, "_timeline_ignore_ui", False)):
             return
-        frame = max(0, int(value))
+        try:
+            start = int(getattr(self, "_timeline_view_start", 0) or 0)
+        except Exception:
+            start = 0
+        frame = max(0, start + int(value))
         spin = getattr(self, "_timeline_frame_spin", None)
         if spin is not None:
             try:
@@ -1803,14 +1975,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             self._timeline_keys[int(frame)] = entry
         except Exception:
             pass
-        slider = getattr(self, "_timeline_frame_slider", None)
-        if slider is not None:
-            try:
-                if int(frame) > int(slider.maximum()):
-                    slider.setMaximum(int(frame))
-                    self._timeline_update_tick_labels()
-            except Exception:
-                pass
+        self._timeline_total_max = max(int(getattr(self, "_timeline_total_max", 240) or 240), int(frame))
+        self._timeline_sync_range_controls(keep_current_visible=True)
         self._timeline_save_to_disk()
         self._timeline_refresh_coord_labels()
 
@@ -1845,11 +2011,33 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         y = max(0, self.height() - controls_h - h)
         panel.setGeometry(0, y, max(1, self.width()), h)
         panel.raise_()
+        self._timeline_sync_row_alignment()
         self._timeline_update_playhead()
 
     def _build_timeline_panel(self) -> None:
-        if getattr(self, "_timeline_panel", None) is not None:
-            return
+        existing = getattr(self, "_timeline_panel", None)
+        if existing is not None:
+            has_play = isinstance(getattr(self, "_timeline_play_btn", None), QtWidgets.QPushButton)
+            has_scroll = getattr(self, "_timeline_scrollbar", None) is not None
+            has_spacer = getattr(self, "_timeline_left_header_spacer", None) is not None
+            if has_play and has_scroll and has_spacer:
+                return
+            try:
+                existing.hide()
+                existing.deleteLater()
+            except Exception:
+                pass
+            self._timeline_panel = None
+            self._timeline_tracks_frame = None
+            self._timeline_playhead = None
+            self._timeline_left_header_spacer = None
+            self._timeline_area_widget = None
+            self._timeline_scrollbar = None
+            self._timeline_play_btn = None
+            self._timeline_frame_slider = None
+            self._timeline_frame_spin = None
+            self._timeline_key_count_label = None
+            self._timeline_tick_labels = []
         try:
             panel = QtWidgets.QFrame(self)
             panel.setObjectName("GLTimelinePanel")
@@ -1864,11 +2052,19 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 "#GLTimelinePanel QSlider#GLTimelineFrameSlider::handle:horizontal{background:#22c55e;border:1px solid #166534;width:12px;height:12px;margin:-6px 0;border-radius:6px;}"
                 "#GLTimelinePanel QPushButton{padding:2px 8px;font-weight:600;color:#e2e8f0;background:#1f2937;border-radius:4px;}"
                 "#GLTimelinePanel QPushButton:hover{background:#334155;}"
+                "#GLTimelinePanel QPushButton#GLTimelinePlayButton{padding:2px 10px;font-weight:700;color:#e2e8f0;background:#1f2937;border:1px solid #334155;border-radius:4px;}"
+                "#GLTimelinePanel QPushButton#GLTimelinePlayButton:hover{background:#334155;}"
+                "#GLTimelinePanel QPushButton#GLTimelinePlayButton:checked{background:#166534;border-color:#22c55e;color:#ecfdf5;}"
                 "#GLTimelinePanel QFrame#GLTimelineTracks{background:rgba(15,18,22,120);border:1px solid #334155;border-radius:4px;}"
-                "#GLTimelinePanel QFrame#GLTimelineTrackRow{background:rgba(15,18,22,45);border-radius:3px;}"
+                "#GLTimelinePanel QFrame#GLTimelineTrackRow{background:rgba(15,18,22,34);border-radius:3px;}"
+                "#GLTimelinePanel QFrame#GLTimelineTrackLine{background:rgba(148,163,184,80);border:0px;}"
                 "#GLTimelinePanel QFrame#GLTimelinePlayhead{background:#22c55e;border:0px;}"
                 "#GLTimelinePanel QLabel#GLTimelineValue{color:#f8fafc;}"
                 "#GLTimelinePanel QFrame#GLTimelineTicks QLabel{color:#94a3b8;font-size:10px;}"
+                "#GLTimelinePanel QScrollBar:horizontal{background:rgba(15,18,22,90);height:10px;border:1px solid rgba(51,65,85,150);border-radius:4px;}"
+                "#GLTimelinePanel QScrollBar::handle:horizontal{background:rgba(148,163,184,170);min-width:30px;border-radius:4px;}"
+                "#GLTimelinePanel QScrollBar::add-line:horizontal,#GLTimelinePanel QScrollBar::sub-line:horizontal{width:0px;height:0px;}"
+                "#GLTimelinePanel QScrollBar::add-page:horizontal,#GLTimelinePanel QScrollBar::sub-page:horizontal{background:transparent;}"
             )
             root = QtWidgets.QVBoxLayout(panel)
             root.setContentsMargins(10, 6, 10, 8)
@@ -1892,6 +2088,15 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             frame_spin.valueChanged.connect(self._timeline_on_frame_spin_changed)
             header.addWidget(frame_spin, 0)
             self._timeline_frame_spin = frame_spin
+
+            play_btn = QtWidgets.QPushButton(panel)
+            play_btn.setObjectName("GLTimelinePlayButton")
+            play_btn.setText("Play")
+            play_btn.setCheckable(True)
+            play_btn.setFixedWidth(64)
+            play_btn.toggled.connect(self._timeline_on_play_toggled)
+            header.addWidget(play_btn, 0)
+            self._timeline_play_btn = play_btn
 
             key_btn = QtWidgets.QPushButton("Set Key", panel)
             key_btn.clicked.connect(self._timeline_on_set_key_clicked)
@@ -1922,11 +2127,17 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 ("Rz", "_timeline_coord_rz", "#3b82f6"),
             )
 
-            for row, (label_text, attr_name, color_hex) in enumerate(channels):
+            left_header_spacer = QtWidgets.QWidget(panel)
+            left_header_spacer.setFixedHeight(34)
+            tracks_grid.addWidget(left_header_spacer, 0, 0, 1, 2)
+            self._timeline_left_header_spacer = left_header_spacer
+
+            for row, (label_text, attr_name, color_hex) in enumerate(channels, start=1):
                 ch_lbl = QtWidgets.QLabel(label_text, panel)
                 ch_lbl.setStyleSheet(f"color:{color_hex};font-weight:700;")
                 ch_lbl.setFixedHeight(22)
                 tracks_grid.addWidget(ch_lbl, row, 0, 1, 1)
+                tracks_grid.setRowMinimumHeight(row, 22)
 
                 val_lbl = QtWidgets.QLabel("0.000", panel)
                 val_lbl.setObjectName("GLTimelineValue")
@@ -1938,6 +2149,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 setattr(self, attr_name, val_lbl)
 
             timeline_area = QtWidgets.QWidget(panel)
+            self._timeline_area_widget = timeline_area
             timeline_area_layout = QtWidgets.QVBoxLayout(timeline_area)
             timeline_area_layout.setContentsMargins(0, 0, 0, 0)
             timeline_area_layout.setSpacing(4)
@@ -1968,12 +2180,21 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             tracks_frame.setObjectName("GLTimelineTracks")
             tracks_frame.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.MinimumExpanding)
             tracks_layout = QtWidgets.QVBoxLayout(tracks_frame)
-            tracks_layout.setContentsMargins(0, 2, 0, 2)
+            tracks_layout.setContentsMargins(0, 0, 0, 0)
             tracks_layout.setSpacing(4)
             for _ in channels:
                 row_frame = QtWidgets.QFrame(tracks_frame)
                 row_frame.setObjectName("GLTimelineTrackRow")
                 row_frame.setFixedHeight(22)
+                row_layout = QtWidgets.QVBoxLayout(row_frame)
+                row_layout.setContentsMargins(0, 0, 0, 0)
+                row_layout.setSpacing(0)
+                row_layout.addStretch(1)
+                row_line = QtWidgets.QFrame(row_frame)
+                row_line.setObjectName("GLTimelineTrackLine")
+                row_line.setFixedHeight(1)
+                row_layout.addWidget(row_line, 0)
+                row_layout.addStretch(1)
                 tracks_layout.addWidget(row_frame, 0)
             timeline_area_layout.addWidget(tracks_frame, 1)
 
@@ -1992,6 +2213,10 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 def eventFilter(self, obj, ev):
                     if ev.type() in (QtCore.QEvent.Resize, QtCore.QEvent.Show):
                         try:
+                            QtCore.QTimer.singleShot(0, self._view._timeline_sync_row_alignment)
+                        except Exception:
+                            pass
+                        try:
                             QtCore.QTimer.singleShot(0, self._view._timeline_update_playhead)
                         except Exception:
                             pass
@@ -1999,20 +2224,43 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
             tracks_frame._timeline_tracks_filter = _TimelineTracksFilter(self, tracks_frame)
             tracks_frame.installEventFilter(tracks_frame._timeline_tracks_filter)
+            frame_slider.installEventFilter(tracks_frame._timeline_tracks_filter)
+            timeline_area.installEventFilter(tracks_frame._timeline_tracks_filter)
 
-            tracks_grid.addWidget(timeline_area, 0, 2, len(channels), 1)
+            tracks_grid.addWidget(timeline_area, 0, 2, len(channels) + 1, 1)
             tracks_grid.setColumnStretch(2, 1)
             root.addLayout(tracks_grid, 1)
-            self._timeline_update_tick_labels()
+
+            scrollbar = QtWidgets.QScrollBar(QtCore.Qt.Horizontal, panel)
+            scrollbar.setRange(0, 0)
+            scrollbar.setSingleStep(1)
+            scrollbar.setPageStep(24)
+            scrollbar.valueChanged.connect(self._timeline_on_scroll_changed)
+            root.addWidget(scrollbar, 0)
+            self._timeline_scrollbar = scrollbar
+
+            self._timeline_sync_row_alignment()
+            self._timeline_sync_range_controls(keep_current_visible=True)
 
             panel.hide()
             self._timeline_panel = panel
             self._layout_timeline_panel()
             self._timeline_refresh_coord_labels()
+            try:
+                QtCore.QTimer.singleShot(0, self._timeline_sync_row_alignment)
+            except Exception:
+                pass
         except Exception:
             self._timeline_panel = None
             self._timeline_tracks_frame = None
             self._timeline_playhead = None
+            self._timeline_left_header_spacer = None
+            self._timeline_area_widget = None
+            self._timeline_scrollbar = None
+            self._timeline_play_btn = None
+            self._timeline_frame_slider = None
+            self._timeline_frame_spin = None
+            self._timeline_key_count_label = None
             self._timeline_tick_labels = []
 
     def timeline_visible(self) -> bool:
@@ -2020,14 +2268,36 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
     def set_timeline_visible(self, visible: bool) -> None:
         want = bool(visible)
+        self._build_timeline_panel()
         if want == bool(getattr(self, "_timeline_enabled", False)):
             panel = getattr(self, "_timeline_panel", None)
             if panel is not None:
                 panel.setVisible(want)
                 self._layout_timeline_panel()
+            if not want:
+                try:
+                    self._timeline_ui_timer.stop()
+                except Exception:
+                    pass
+                try:
+                    self._timeline_play_timer.stop()
+                except Exception:
+                    pass
+                btn = getattr(self, "_timeline_play_btn", None)
+                if btn is not None:
+                    try:
+                        btn.blockSignals(True)
+                        btn.setChecked(False)
+                        btn.setText("Play")
+                    except Exception:
+                        pass
+                    finally:
+                        try:
+                            btn.blockSignals(False)
+                        except Exception:
+                            pass
             return
         self._timeline_enabled = want
-        self._build_timeline_panel()
         panel = getattr(self, "_timeline_panel", None)
         if panel is not None:
             panel.setVisible(want)
@@ -2050,6 +2320,23 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 self._timeline_ui_timer.stop()
             except Exception:
                 pass
+            try:
+                self._timeline_play_timer.stop()
+            except Exception:
+                pass
+            btn = getattr(self, "_timeline_play_btn", None)
+            if btn is not None:
+                try:
+                    btn.blockSignals(True)
+                    btn.setChecked(False)
+                    btn.setText("Play")
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        btn.blockSignals(False)
+                    except Exception:
+                        pass
         try:
             self.update()
         except Exception:
