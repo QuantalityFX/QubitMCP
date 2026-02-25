@@ -497,6 +497,31 @@ class MGLRendererMixin:
             pass
         return (0.0, 0.0, 0.0)
 
+    def _mgl_camera_front_ring_pivot_local(self, points, bmin, bmax):
+        # Camera pivot should sit on the front (min-Z) wide lens ring center.
+        try:
+            if np is not None and points is not None:
+                arr = np.asarray(points, dtype=np.float32)
+                if arr.ndim == 2 and arr.shape[1] >= 3 and arr.shape[0] > 0:
+                    min_z = float(np.min(arr[:, 2]))
+                    max_z = float(np.max(arr[:, 2]))
+                    span_z = max(0.0, max_z - min_z)
+                    eps = max(1.0e-4, span_z * 0.02)
+                    front = arr[np.abs(arr[:, 2] - min_z) <= eps]
+                    if front.ndim == 2 and front.shape[0] >= 3:
+                        cx = float(np.mean(front[:, 0]))
+                        cy = float(np.mean(front[:, 1]))
+                        return (cx, cy, min_z)
+        except Exception:
+            pass
+        try:
+            cx = (float(bmin[0]) + float(bmax[0])) * 0.5
+            cy = (float(bmin[1]) + float(bmax[1])) * 0.5
+            cz = float(bmin[2])
+            return (cx, cy, cz)
+        except Exception:
+            return (0.0, 0.0, 0.0)
+
     def _on_mgl_pick_model(self) -> None:
         if not self._use_moderngl:
             return
@@ -5671,10 +5696,8 @@ class MGLRendererMixin:
                                 self._mgl_scene_bounds_by_owner[owner] = (bmin.astype("f4"), bmax.astype("f4"))
                                 self._mgl_scene_mesh_bounds_by_owner[owner] = (bmin.astype("f4"), bmax.astype("f4"))
                                 try:
-                                    cx = (float(bmin[0]) + float(bmax[0])) * 0.5
-                                    cy = (float(bmin[1]) + float(bmax[1])) * 0.5
                                     # Camera gizmo pivot: large lens ring center at front (min Z).
-                                    cz = float(bmin[2])
+                                    cx, cy, cz = self._mgl_camera_front_ring_pivot_local(points, bmin, bmax)
                                     piv = getattr(self, "_mgl_scene_pivot_local_by_owner", None)
                                     if not isinstance(piv, dict):
                                         piv = {}
@@ -5717,9 +5740,7 @@ class MGLRendererMixin:
                         self._mgl_scene_bounds_by_owner[owner] = (bmin.astype("f4"), bmax.astype("f4"))
                         self._mgl_scene_mesh_bounds_by_owner[owner] = (bmin.astype("f4"), bmax.astype("f4"))
                         try:
-                            cx = (float(bmin[0]) + float(bmax[0])) * 0.5
-                            cy = (float(bmin[1]) + float(bmax[1])) * 0.5
-                            cz = float(bmin[2])
+                            cx, cy, cz = self._mgl_camera_front_ring_pivot_local(line_points, bmin, bmax)
                             piv = getattr(self, "_mgl_scene_pivot_local_by_owner", None)
                             if not isinstance(piv, dict):
                                 piv = {}
