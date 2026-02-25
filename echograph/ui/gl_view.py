@@ -235,6 +235,122 @@ class _ViewportHotkeyFilter(QtCore.QObject):
             pass
         return False
 
+def _qt_shift_active(mods) -> bool:
+    try:
+        return bool(mods & QtCore.Qt.ShiftModifier)
+    except Exception:
+        pass
+    try:
+        return bool(mods & QtCore.Qt.KeyboardModifier.ShiftModifier)
+    except Exception:
+        pass
+    try:
+        return bool(int(mods) & int(QtCore.Qt.ShiftModifier))
+    except Exception:
+        return False
+
+class _TimelineAxisMouseFilter(QtCore.QObject):
+    def __init__(self, view):
+        super().__init__(view)
+        self._view = view
+
+    @staticmethod
+    def _global_pos(ev):
+        try:
+            if hasattr(ev, "globalPosition"):
+                gp = ev.globalPosition()
+                if gp is not None:
+                    return gp.toPoint()
+        except Exception:
+            pass
+        try:
+            if hasattr(ev, "globalPos"):
+                gp = ev.globalPos()
+                if gp is not None:
+                    return gp
+        except Exception:
+            pass
+        return None
+
+    def eventFilter(self, obj, ev):
+        try:
+            if ev.type() != QtCore.QEvent.MouseButtonPress:
+                return False
+            if ev.button() != QtCore.Qt.LeftButton:
+                return False
+        except Exception:
+            return False
+        view = self._view
+        if view is None:
+            return False
+        try:
+            if not bool(getattr(view, "_timeline_enabled", False)):
+                return False
+        except Exception:
+            return False
+        panel = getattr(view, "_timeline_panel", None)
+        if panel is None:
+            return False
+        try:
+            if not panel.isVisible():
+                return False
+        except Exception:
+            return False
+        gp = self._global_pos(ev)
+        if gp is None:
+            return False
+        try:
+            panel_rect = QtCore.QRect(panel.mapToGlobal(QtCore.QPoint(0, 0)), panel.size())
+            if not panel_rect.contains(gp):
+                return False
+        except Exception:
+            pass
+        labels = getattr(view, "_timeline_axis_labels", None)
+        if isinstance(labels, list):
+            for idx, lbl in enumerate(labels):
+                if lbl is None:
+                    continue
+                try:
+                    if not lbl.isVisible() or not lbl.isEnabled():
+                        continue
+                    rr = QtCore.QRect(lbl.mapToGlobal(QtCore.QPoint(0, 0)), lbl.size())
+                except Exception:
+                    continue
+                if not rr.contains(gp):
+                    continue
+                try:
+                    mods = QtWidgets.QApplication.keyboardModifiers()
+                except Exception:
+                    mods = QtCore.Qt.NoModifier
+                additive = bool(_qt_shift_active(mods))
+                try:
+                    view._timeline_axis_log(
+                        f"axis_global_hit axis={int(idx)} obj={type(obj).__name__} additive={int(bool(additive))}"
+                    )
+                except Exception:
+                    pass
+                try:
+                    view._timeline_on_axis_label_clicked(int(idx), additive=bool(additive))
+                except Exception as exc:
+                    try:
+                        view._timeline_axis_log(f"axis_global_error axis={int(idx)} err={exc!r}")
+                    except Exception:
+                        pass
+                try:
+                    ev.accept()
+                except Exception:
+                    pass
+                return True
+        try:
+            view._timeline_axis_log(
+                f"axis_global_miss obj={type(obj).__name__} x={int(gp.x())} y={int(gp.y())}",
+                throttle_key="axis_global_miss",
+                interval=0.35,
+            )
+        except Exception:
+            pass
+        return False
+
 class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None else QtWidgets.QWidget):
     def __init__(self, scene, parent=None):
         print("[GL_VIEW] INIT FROM:", __file__)
@@ -661,6 +777,11 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._timeline_coord_rx = None
         self._timeline_coord_ry = None
         self._timeline_coord_rz = None
+        self._timeline_axis_labels: List[QtWidgets.QLabel] = []
+        self._timeline_curve_axes_filter: set[int] = set()
+        self._timeline_axis_debug_logging = False
+        self._timeline_axis_log_path = None
+        self._timeline_axis_log_last: Dict[str, float] = {}
         self._timeline_coord_syncing = False
         self._timeline_tracks_frame = None
         self._timeline_playhead = None
@@ -728,13 +849,17 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._fps_camera = None
         self._fps_camera_active = False
         self._viewport_hotkey_filter = None
+        self._timeline_axis_mouse_filter = None
         try:
             app = QtWidgets.QApplication.instance()
             if app is not None:
                 self._viewport_hotkey_filter = _ViewportHotkeyFilter(self)
                 app.installEventFilter(self._viewport_hotkey_filter)
+                self._timeline_axis_mouse_filter = _TimelineAxisMouseFilter(self)
+                app.installEventFilter(self._timeline_axis_mouse_filter)
         except Exception:
             self._viewport_hotkey_filter = None
+            self._timeline_axis_mouse_filter = None
         self._build_scale_controls()
         self._build_debug_toggle_button()
         self._build_debug_copy_button()
@@ -2089,6 +2214,176 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             idx = 0
         return colors[idx]
 
+    def _timeline_axis_filter_set(self) -> set[int]:
+        out: set[int] = set()
+        try:
+            raw = getattr(self, "_timeline_curve_axes_filter", set()) or set()
+            for axis in raw:
+                idx = int(axis)
+                if 0 <= idx <= 5:
+                    out.add(int(idx))
+        except Exception:
+            out = set()
+        self._timeline_curve_axes_filter = set(out)
+        return out
+
+    def _timeline_axis_log(
+        self,
+        msg: str,
+        *,
+        throttle_key: str | None = None,
+        interval: float = 0.0,
+    ) -> None:
+        # Keep logging code available for future debugging, but disable it by default.
+        if not bool(getattr(self, "_timeline_axis_debug_logging", False)):
+            return
+        try:
+            if throttle_key:
+                now = time.time()
+                last = float((getattr(self, "_timeline_axis_log_last", {}) or {}).get(str(throttle_key), 0.0))
+                if float(interval) > 0.0 and (now - last) < float(interval):
+                    return
+                try:
+                    self._timeline_axis_log_last[str(throttle_key)] = float(now)
+                except Exception:
+                    pass
+            path = getattr(self, "_timeline_axis_log_path", None)
+            if path is None:
+                try:
+                    root = Path(__file__).resolve().parents[2]
+                    log_dir = root / "logs"
+                except Exception:
+                    log_dir = Path.cwd() / "logs"
+                try:
+                    log_dir.mkdir(parents=True, exist_ok=True)
+                except Exception:
+                    pass
+                path = log_dir / "timeline_axis_filter.log"
+                self._timeline_axis_log_path = path
+            ts = time.strftime("%Y-%m-%d %H:%M:%S")
+            with Path(path).open("a", encoding="utf-8") as f:
+                f.write(f"[{ts}] {str(msg)}\n")
+        except Exception:
+            pass
+
+    def _timeline_axis_is_visible(self, axis: int) -> bool:
+        try:
+            idx = int(axis)
+        except Exception:
+            return False
+        if idx < 0 or idx > 5:
+            return False
+        filt = self._timeline_axis_filter_set()
+        if not filt:
+            return True
+        return int(idx) in filt
+
+    def _timeline_update_axis_label_styles(self) -> None:
+        labels = getattr(self, "_timeline_axis_labels", None)
+        if not isinstance(labels, list) or not labels:
+            return
+        filt = self._timeline_axis_filter_set()
+        has_filter = bool(filt)
+        for idx, lbl in enumerate(labels):
+            if lbl is None:
+                continue
+            col = self._timeline_axis_color(int(idx))
+            try:
+                rr, gg, bb, _aa = col.getRgb()
+            except Exception:
+                rr, gg, bb = 226, 232, 240
+            active = (not has_filter) or (int(idx) in filt)
+            if has_filter and not active:
+                text_col = "rgba(203,213,225,235)"
+                bg_col = "transparent"
+                border_col = "transparent"
+            else:
+                text_col = f"rgba({rr},{gg},{bb},255)"
+                if has_filter:
+                    bg_col = f"rgba({rr},{gg},{bb},38)"
+                    border_col = f"rgba({rr},{gg},{bb},170)"
+                else:
+                    bg_col = "transparent"
+                    border_col = "transparent"
+            try:
+                lbl.setStyleSheet(
+                    f"color:{text_col};font-weight:700;padding:0px 4px;border-radius:3px;"
+                    f"background:{bg_col};border:1px solid {border_col};"
+                )
+            except Exception:
+                pass
+
+    def _timeline_on_axis_label_clicked(self, axis: int, *, additive: bool = False) -> None:
+        try:
+            idx = int(axis)
+        except Exception:
+            return
+        if idx < 0 or idx > 5:
+            return
+        self._timeline_axis_log(
+            f"axis_click axis={int(idx)} additive={int(bool(additive))} before={sorted(list(self._timeline_axis_filter_set()))}"
+        )
+        filt = self._timeline_axis_filter_set()
+        if bool(additive):
+            if idx in filt:
+                filt.discard(idx)
+            else:
+                filt.add(idx)
+        else:
+            if len(filt) == 1 and idx in filt:
+                filt.clear()
+            else:
+                filt = {int(idx)}
+        self._timeline_curve_axes_filter = {
+            int(a)
+            for a in filt
+            if 0 <= int(a) <= 5
+        }
+        try:
+            selected = {
+                (int(a), int(f))
+                for (a, f) in (getattr(self, "_timeline_curve_selected", set()) or set())
+            }
+        except Exception:
+            selected = set()
+        filt2 = self._timeline_axis_filter_set()
+        if filt2:
+            selected = {
+                (int(a), int(f))
+                for (a, f) in selected
+                if int(a) in filt2
+            }
+        self._timeline_curve_selected = selected
+        self._timeline_update_axis_label_styles()
+        self._timeline_update_key_markers()
+        canvas = getattr(self, "_timeline_curves_canvas", None)
+        if canvas is not None:
+            try:
+                canvas.update()
+            except Exception:
+                pass
+        self._timeline_axis_log(
+            f"axis_click_done axis={int(idx)} additive={int(bool(additive))} after={sorted(list(self._timeline_axis_filter_set()))} "
+            f"sel_count={int(len(getattr(self, '_timeline_curve_selected', set()) or set()))}"
+        )
+
+    def _timeline_on_axis_label_button_clicked(self, axis: int) -> None:
+        try:
+            idx = int(axis)
+        except Exception:
+            return
+        if idx < 0 or idx > 5:
+            return
+        try:
+            mods = QtWidgets.QApplication.keyboardModifiers()
+        except Exception:
+            mods = QtCore.Qt.NoModifier
+        additive = bool(_qt_shift_active(mods))
+        self._timeline_axis_log(
+            f"axis_label_clicked_signal axis={int(idx)} additive={int(bool(additive))}"
+        )
+        self._timeline_on_axis_label_clicked(int(idx), additive=bool(additive))
+
     def _load_timeline_button_icons(self) -> None:
         if bool(getattr(self, "_timeline_icons_loaded", False)):
             return
@@ -2576,6 +2871,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             if x is None:
                 continue
             for axis in self._timeline_axes_for_entry(entry):
+                if not bool(self._timeline_axis_is_visible(int(axis))):
+                    continue
                 if axis < 0 or axis >= len(row_frames):
                     continue
                 row_frame = row_frames[axis]
@@ -2755,6 +3052,17 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._timeline_apply_frame_if_keyed(frame)
 
     def _timeline_refresh_coord_labels(self) -> None:
+        try:
+            if bool(getattr(self, "_timeline_enabled", False)):
+                labels = getattr(self, "_timeline_axis_labels", None)
+                if not (
+                    isinstance(labels, list)
+                    and len(labels) == 6
+                    and all(isinstance(lb, QtWidgets.QPushButton) for lb in labels if lb is not None)
+                ):
+                    self._build_timeline_panel()
+        except Exception:
+            pass
         x_lbl = getattr(self, "_timeline_coord_x", None)
         y_lbl = getattr(self, "_timeline_coord_y", None)
         z_lbl = getattr(self, "_timeline_coord_z", None)
@@ -3211,7 +3519,17 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             has_rows = bool(getattr(self, "_timeline_track_rows", []))
             has_stack = getattr(self, "_timeline_tracks_stack", None) is not None
             has_canvas = getattr(self, "_timeline_curves_canvas", None) is not None
-            if has_play and has_curves_btn and has_scroll and has_spacer and has_rows and has_stack and has_canvas:
+            has_axis_labels = (
+                isinstance(getattr(self, "_timeline_axis_labels", None), list)
+                and len(getattr(self, "_timeline_axis_labels", [])) == 6
+                and all(
+                    isinstance(lb, QtWidgets.QPushButton)
+                    for lb in (getattr(self, "_timeline_axis_labels", []) or [])
+                    if lb is not None
+                )
+            )
+            if has_play and has_curves_btn and has_scroll and has_spacer and has_rows and has_stack and has_canvas and has_axis_labels:
+                self._timeline_update_axis_label_styles()
                 return
             try:
                 existing.hide()
@@ -3226,6 +3544,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             self._timeline_curves_canvas = None
             self._timeline_left_header_spacer = None
             self._timeline_area_widget = None
+            self._timeline_axis_labels = []
             self._timeline_track_rows = []
             self._timeline_key_markers = []
             self._timeline_scrollbar = None
@@ -3276,6 +3595,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     "#GLTimelinePanel QPushButton#GLTimelineCurvesButton{padding:0px;background:transparent;border:0px;}",
                     "#GLTimelinePanel QPushButton#GLTimelineCurvesButton:hover{background:transparent;border:0px;}",
                     "#GLTimelinePanel QPushButton#GLTimelineCurvesButton:checked{background:transparent;border:0px;}",
+                    "#GLTimelinePanel QPushButton#GLTimelineAxisButton{padding:0px 4px;text-align:left;background:transparent;border:0px;border-radius:3px;}",
                     "#GLTimelinePanel QPushButton#GLTimelineSetKeyButton{padding:0px;background:rgba(0,0,0,220);border:1px solid rgba(226,232,240,215);border-radius:15px;}",
                     "#GLTimelinePanel QPushButton#GLTimelineSetKeyButton:hover{background:rgba(34,211,238,65);border:1px solid rgba(34,211,238,240);}",
                     "#GLTimelinePanel QPushButton#GLTimelineSetKeyButton:pressed{background:rgba(34,211,238,90);border:1px solid rgba(125,211,252,255);}",
@@ -3384,13 +3704,55 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             left_header_spacer.setFixedHeight(34)
             tracks_grid.addWidget(left_header_spacer, 0, 0, 1, 2)
             self._timeline_left_header_spacer = left_header_spacer
+            self._timeline_axis_labels = []
+
+            class _TimelineAxisLabel(QtWidgets.QPushButton):
+                def __init__(self, view, axis: int, text: str, parent=None):
+                    super().__init__(text, parent)
+                    self._view = view
+                    self._axis = int(axis)
+                    self.setCursor(QtCore.Qt.PointingHandCursor)
+                    self.setObjectName("GLTimelineAxisButton")
+                    self.setFlat(True)
+                    self.setFocusPolicy(QtCore.Qt.NoFocus)
+
+                def mousePressEvent(self, ev):
+                    if ev.button() == QtCore.Qt.LeftButton:
+                        try:
+                            mods = ev.modifiers()
+                        except Exception:
+                            mods = QtCore.Qt.NoModifier
+                        additive = bool(_qt_shift_active(mods))
+                        try:
+                            self._view._timeline_axis_log(
+                                f"axis_label_mouse axis={int(self._axis)} additive={int(bool(additive))}"
+                            )
+                        except Exception:
+                            pass
+                        try:
+                            self._view._timeline_on_axis_label_clicked(int(self._axis), additive=bool(additive))
+                        except Exception:
+                            pass
+                        try:
+                            ev.accept()
+                        except Exception:
+                            pass
+                        return
+                    return super().mousePressEvent(ev)
 
             for row, (label_text, attr_name, color_hex) in enumerate(channels, start=1):
-                ch_lbl = QtWidgets.QLabel(label_text, panel)
-                ch_lbl.setStyleSheet(f"color:{color_hex};font-weight:700;")
+                axis_idx = int(row - 1)
+                ch_lbl = _TimelineAxisLabel(self, axis_idx, label_text, panel)
                 ch_lbl.setFixedHeight(22)
+                try:
+                    ch_lbl.clicked.connect(
+                        lambda _checked=False, axis=axis_idx: self._timeline_on_axis_label_button_clicked(int(axis))
+                    )
+                except Exception:
+                    pass
                 tracks_grid.addWidget(ch_lbl, row, 0, 1, 1)
                 tracks_grid.setRowMinimumHeight(row, 22)
+                self._timeline_axis_labels.append(ch_lbl)
 
                 val_input = QtWidgets.QDoubleSpinBox(panel)
                 val_input.setObjectName("GLTimelineValue")
@@ -3404,12 +3766,14 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 val_input.setMinimumWidth(86)
                 val_input.setValue(0.0)
                 val_input.setStyleSheet(f"color:{color_hex};font-weight:700;")
-                axis_idx = int(row - 1)
                 val_input.editingFinished.connect(
                     lambda axis=axis_idx, widget=val_input: self._timeline_on_coord_input_committed(axis, widget)
                 )
                 tracks_grid.addWidget(val_input, row, 1, 1, 1)
                 setattr(self, attr_name, val_input)
+
+            self._timeline_update_axis_label_styles()
+            self._timeline_axis_log("timeline_panel_ready axis_buttons=6")
 
             timeline_area = QtWidgets.QWidget(panel)
             self._timeline_area_widget = timeline_area
@@ -3584,10 +3948,28 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                         if x is None:
                             continue
                         for axis in self._view._timeline_axes_for_entry(entry):
+                            if not bool(self._view._timeline_axis_is_visible(int(axis))):
+                                continue
                             val = self._view._timeline_axis_value_for_entry(entry, axis)
                             if val is None:
                                 continue
                             out[axis].append((int(frame), float(val), float(x), float(self._value_to_y(val))))
+                    try:
+                        visible_axes = sorted(
+                            [
+                                int(a)
+                                for a in range(6)
+                                if bool(self._view._timeline_axis_is_visible(int(a)))
+                            ]
+                        )
+                        count_all = int(sum(len(v) for v in out.values()))
+                        self._view._timeline_axis_log(
+                            f"curve_axis_points visible_axes={visible_axes} points={count_all}",
+                            throttle_key="curve_axis_points",
+                            interval=1.0,
+                        )
+                    except Exception:
+                        pass
                     for axis in out.keys():
                         out[axis].sort(key=lambda r: int(r[0]))
                     return out
@@ -4174,6 +4556,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             self._timeline_curves_canvas = None
             self._timeline_left_header_spacer = None
             self._timeline_area_widget = None
+            self._timeline_axis_labels = []
             self._timeline_track_rows = []
             self._timeline_key_markers = []
             self._timeline_scrollbar = None
