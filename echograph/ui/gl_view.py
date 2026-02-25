@@ -661,6 +661,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._timeline_coord_rx = None
         self._timeline_coord_ry = None
         self._timeline_coord_rz = None
+        self._timeline_coord_syncing = False
         self._timeline_tracks_frame = None
         self._timeline_playhead = None
         self._timeline_tracks_stack = None
@@ -1466,6 +1467,46 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             return f"{float(val):.3f}"
         except Exception:
             return "0.000"
+
+    def _timeline_on_coord_input_committed(self, axis: int, widget=None) -> None:
+        if bool(getattr(self, "_timeline_coord_syncing", False)):
+            return
+        try:
+            idx = int(axis)
+        except Exception:
+            return
+        if idx < 0 or idx > 5:
+            return
+        if widget is None:
+            return
+        try:
+            value = float(widget.value())
+        except Exception:
+            try:
+                value = float(str(widget.text()).strip())
+            except Exception:
+                return
+        try:
+            frame = max(0, int(self._timeline_current_frame()))
+        except Exception:
+            frame = 0
+        keys = getattr(self, "_timeline_keys", {}) or {}
+        entry = keys.get(int(frame))
+        if not isinstance(entry, dict):
+            entry = {}
+        self._timeline_set_axis_value_for_entry(entry, int(idx), float(value))
+        entry["camera_state"] = {}
+        keys[int(frame)] = entry
+        self._timeline_keys = keys
+        self._timeline_total_max = max(int(getattr(self, "_timeline_total_max", 240) or 240), int(frame))
+        self._timeline_sync_range_controls(keep_current_visible=True, refresh_key_markers=True)
+        try:
+            self._timeline_apply_xyz_only(entry.get("xyz", None), entry.get("rxyz", None))
+            self.update()
+        except Exception:
+            pass
+        self._timeline_save_to_disk()
+        self._timeline_refresh_coord_labels()
 
     def _timeline_update_key_count_label(self) -> None:
         lbl = getattr(self, "_timeline_key_count_label", None)
@@ -2745,12 +2786,36 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             rxyz = self._timeline_current_cam_rxyz()
         if rxyz is None:
             rxyz = (0.0, 0.0, 0.0)
-        x_lbl.setText(self._timeline_format_coord(xyz[0]))
-        y_lbl.setText(self._timeline_format_coord(xyz[1]))
-        z_lbl.setText(self._timeline_format_coord(xyz[2]))
-        rx_lbl.setText(self._timeline_format_coord(rxyz[0]))
-        ry_lbl.setText(self._timeline_format_coord(rxyz[1]))
-        rz_lbl.setText(self._timeline_format_coord(rxyz[2]))
+        widgets = (x_lbl, y_lbl, z_lbl, rx_lbl, ry_lbl, rz_lbl)
+        values = (xyz[0], xyz[1], xyz[2], rxyz[0], rxyz[1], rxyz[2])
+        self._timeline_coord_syncing = True
+        try:
+            for ww, vv in zip(widgets, values):
+                if ww is None:
+                    continue
+                try:
+                    if ww.hasFocus():
+                        continue
+                except Exception:
+                    pass
+                try:
+                    ww.blockSignals(True)
+                except Exception:
+                    pass
+                try:
+                    if hasattr(ww, "setValue"):
+                        ww.setValue(float(vv))
+                    else:
+                        ww.setText(self._timeline_format_coord(vv))
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        ww.blockSignals(False)
+                    except Exception:
+                        pass
+        finally:
+            self._timeline_coord_syncing = False
         self._timeline_update_key_count_label()
         self._timeline_update_playhead()
 
@@ -3193,7 +3258,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 "".join((
                     "#GLTimelinePanel{background:rgba(15,23,42,215);border-top:1px solid #334155;}",
                     "#GLTimelinePanel QLabel{color:#e2e8f0;font-size:11px;}",
-                    "#GLTimelinePanel QSpinBox{background:#0f1216;color:#e2e8f0;border:1px solid #334155;border-radius:3px;padding:1px 4px;}",
+                    "#GLTimelinePanel QSpinBox,#GLTimelinePanel QDoubleSpinBox{background:#0f1216;color:#e2e8f0;border:1px solid #334155;border-radius:3px;padding:1px 4px;}",
                     "#GLTimelinePanel QSlider#GLTimelineFrameSlider::groove:horizontal{height:2px;background:#334155;border-radius:1px;}",
                     "#GLTimelinePanel QSlider#GLTimelineFrameSlider::sub-page:horizontal{background:#334155;border-radius:1px;}",
                     "#GLTimelinePanel QSlider#GLTimelineFrameSlider::add-page:horizontal{background:#334155;border-radius:1px;}",
@@ -3217,7 +3282,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     "#GLTimelinePanel QPushButton#GLTimelineDeleteKeyButton{padding:0px;background:transparent;border:0px;}",
                     "#GLTimelinePanel QPushButton#GLTimelineDeleteKeyButton:hover{background:transparent;border:0px;}",
                     "#GLTimelinePanel QWidget#GLTimelineCurveCanvas{background:rgba(15,18,22,34);border-radius:3px;}",
-                    "#GLTimelinePanel QLabel#GLTimelineValue{color:#f8fafc;}",
+                    "#GLTimelinePanel QDoubleSpinBox#GLTimelineValue{color:#f8fafc;}",
                     "#GLTimelinePanel QFrame#GLTimelineTicks QLabel{color:#94a3b8;font-size:10px;}",
                     "#GLTimelinePanel QScrollBar:horizontal{background:rgba(15,18,22,90);height:10px;border:1px solid rgba(51,65,85,150);border-radius:4px;}",
                     "#GLTimelinePanel QScrollBar::handle:horizontal{background:rgba(148,163,184,170);min-width:30px;border-radius:4px;}",
@@ -3327,14 +3392,24 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 tracks_grid.addWidget(ch_lbl, row, 0, 1, 1)
                 tracks_grid.setRowMinimumHeight(row, 22)
 
-                val_lbl = QtWidgets.QLabel("0.000", panel)
-                val_lbl.setObjectName("GLTimelineValue")
-                val_lbl.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
-                val_lbl.setFixedHeight(22)
-                val_lbl.setMinimumWidth(86)
-                val_lbl.setStyleSheet(f"color:{color_hex};font-weight:700;")
-                tracks_grid.addWidget(val_lbl, row, 1, 1, 1)
-                setattr(self, attr_name, val_lbl)
+                val_input = QtWidgets.QDoubleSpinBox(panel)
+                val_input.setObjectName("GLTimelineValue")
+                val_input.setDecimals(3)
+                val_input.setRange(-1000000.0, 1000000.0)
+                val_input.setSingleStep(0.1)
+                val_input.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
+                val_input.setKeyboardTracking(False)
+                val_input.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+                val_input.setFixedHeight(22)
+                val_input.setMinimumWidth(86)
+                val_input.setValue(0.0)
+                val_input.setStyleSheet(f"color:{color_hex};font-weight:700;")
+                axis_idx = int(row - 1)
+                val_input.editingFinished.connect(
+                    lambda axis=axis_idx, widget=val_input: self._timeline_on_coord_input_committed(axis, widget)
+                )
+                tracks_grid.addWidget(val_input, row, 1, 1, 1)
+                setattr(self, attr_name, val_input)
 
             timeline_area = QtWidgets.QWidget(panel)
             self._timeline_area_widget = timeline_area
