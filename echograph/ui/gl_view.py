@@ -672,6 +672,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._timeline_key_markers: List[List[QtWidgets.QFrame]] = []
         self._timeline_scrollbar = None
         self._timeline_tick_labels: List[QtWidgets.QLabel] = []
+        self._timeline_ticks_frame = None
         self._timeline_total_max = 240
         self._timeline_view_start = 0
         self._timeline_view_span = 120
@@ -681,6 +682,14 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._timeline_curve_min = -5.0
         self._timeline_curve_max = 5.0
         self._timeline_curve_selected = set()
+        self._timeline_icons_loaded = False
+        self._timeline_icon_play = None
+        self._timeline_icon_stop = None
+        self._timeline_icon_curve = None
+        self._timeline_icon_curve_active = None
+        self._timeline_icon_set_key = None
+        self._timeline_icon_remove_key = None
+        self._timeline_keyframe_handle_path = None
         self._timeline_frame_spin = None
         self._timeline_frame_slider = None
         self._timeline_key_count_label = None
@@ -1564,10 +1573,13 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._timeline_update_playhead()
 
     def _timeline_update_tick_labels(self) -> None:
-        labels = getattr(self, "_timeline_tick_labels", None)
         slider = getattr(self, "_timeline_frame_slider", None)
-        if not isinstance(labels, list) or not labels or slider is None:
+        ticks_frame = getattr(self, "_timeline_ticks_frame", None)
+        labels = getattr(self, "_timeline_tick_labels", None)
+        if slider is None or ticks_frame is None:
             return
+        if not isinstance(labels, list):
+            labels = []
         try:
             local_max = int(max(0, int(slider.maximum())))
         except Exception:
@@ -1576,18 +1588,54 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             start = int(max(0, int(getattr(self, "_timeline_view_start", 0) or 0)))
         except Exception:
             start = 0
-        steps = max(1, len(labels) - 1)
+        end = int(start + local_max)
+        first_major = int(((start + 14) // 15) * 15)
+        majors = []
+        for frame_val in range(first_major, end + 1, 15):
+            try:
+                local = int(frame_val - start)
+                x = self._timeline_slider_value_to_x(local, slider=slider)
+                if x is None:
+                    continue
+                majors.append((int(frame_val), int(x)))
+            except Exception:
+                continue
+
+        while len(labels) < len(majors):
+            try:
+                lb = QtWidgets.QLabel("", ticks_frame)
+                lb.setAlignment(QtCore.Qt.AlignHCenter | QtCore.Qt.AlignTop)
+                labels.append(lb)
+            except Exception:
+                pass
+
         for i, lb in enumerate(labels):
             if lb is None:
                 continue
+            if i >= len(majors):
+                try:
+                    lb.hide()
+                except Exception:
+                    pass
+                continue
+            frame_val, x = majors[i]
+            text = str(int(frame_val))
             try:
-                frame_val = start + int(round((float(i) / float(steps)) * float(local_max)))
+                fm = lb.fontMetrics()
+                width = max(16, int(fm.horizontalAdvance(text)) + 8)
             except Exception:
-                frame_val = i
+                width = max(16, (len(text) * 8) + 8)
             try:
-                lb.setText(str(frame_val))
+                height = int(max(12, ticks_frame.height()))
+            except Exception:
+                height = 14
+            try:
+                lb.setText(text)
+                lb.setGeometry(int(round(float(x) - (float(width) * 0.5))), 0, int(width), int(height))
+                lb.show()
             except Exception:
                 pass
+        self._timeline_tick_labels = labels
 
     def _timeline_sync_row_alignment(self) -> None:
         spacer = getattr(self, "_timeline_left_header_spacer", None)
@@ -1850,24 +1898,23 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             )
         return (xyz_out, rxyz_out)
 
-    def _timeline_slider_to_tracks_x(self, local_frame: int) -> Optional[int]:
-        tracks = getattr(self, "_timeline_tracks_frame", None)
-        slider = getattr(self, "_timeline_frame_slider", None)
-        if tracks is None or slider is None:
+    def _timeline_slider_value_to_x(self, value: int, *, slider=None) -> Optional[int]:
+        if slider is None:
+            slider = getattr(self, "_timeline_frame_slider", None)
+        if slider is None:
             return None
         try:
-            value = int(local_frame)
+            v = int(value)
             min_frame = int(slider.minimum())
             max_frame = int(slider.maximum())
-            if value < min_frame:
-                value = min_frame
-            if value > max_frame:
-                value = max_frame
-
+            if v < min_frame:
+                v = min_frame
+            if v > max_frame:
+                v = max_frame
             opt = QtWidgets.QStyleOptionSlider()
             slider.initStyleOption(opt)
-            opt.sliderPosition = int(value)
-            opt.sliderValue = int(value)
+            opt.sliderPosition = int(v)
+            opt.sliderValue = int(v)
             style = slider.style()
             handle = style.subControlRect(
                 QtWidgets.QStyle.CC_Slider,
@@ -1875,48 +1922,58 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 QtWidgets.QStyle.SC_SliderHandle,
                 slider,
             )
-            if int(handle.width()) > 0:
-                gx = slider.mapToGlobal(handle.center())
-                x = int(tracks.mapFromGlobal(gx).x())
-            else:
-                groove = style.subControlRect(
-                    QtWidgets.QStyle.CC_Slider,
-                    opt,
-                    QtWidgets.QStyle.SC_SliderGroove,
-                    slider,
+            if handle is not None and int(handle.width()) > 0:
+                return int(handle.center().x())
+            groove = style.subControlRect(
+                QtWidgets.QStyle.CC_Slider,
+                opt,
+                QtWidgets.QStyle.SC_SliderGroove,
+                slider,
+            )
+            span = int(
+                max(
+                    1,
+                    style.pixelMetric(
+                        QtWidgets.QStyle.PM_SliderSpaceAvailable,
+                        opt,
+                        slider,
+                    ),
                 )
-                span = int(
-                    max(
-                        1,
-                        style.pixelMetric(
-                            QtWidgets.QStyle.PM_SliderSpaceAvailable,
-                            opt,
-                            slider,
-                        ),
-                    )
+            )
+            pos = int(
+                QtWidgets.QStyle.sliderPositionFromValue(
+                    min_frame,
+                    max_frame,
+                    v,
+                    span,
+                    bool(getattr(opt, "upsideDown", False)),
                 )
-                pos = int(
-                    QtWidgets.QStyle.sliderPositionFromValue(
-                        min_frame,
-                        max_frame,
-                        value,
-                        span,
-                        bool(getattr(opt, "upsideDown", False)),
-                    )
+            )
+            slider_len = int(
+                max(
+                    1,
+                    style.pixelMetric(
+                        QtWidgets.QStyle.PM_SliderLength,
+                        opt,
+                        slider,
+                    ),
                 )
-                slider_len = int(
-                    max(
-                        1,
-                        style.pixelMetric(
-                            QtWidgets.QStyle.PM_SliderLength,
-                            opt,
-                            slider,
-                        ),
-                    )
-                )
-                x_slider = int(groove.left() + pos + (slider_len // 2))
-                gx = slider.mapToGlobal(QtCore.QPoint(x_slider, groove.center().y()))
-                x = int(tracks.mapFromGlobal(gx).x())
+            )
+            return int(groove.left() + pos + (slider_len // 2))
+        except Exception:
+            return None
+
+    def _timeline_slider_to_tracks_x(self, local_frame: int) -> Optional[int]:
+        tracks = getattr(self, "_timeline_tracks_frame", None)
+        slider = getattr(self, "_timeline_frame_slider", None)
+        if tracks is None or slider is None:
+            return None
+        try:
+            x_slider = self._timeline_slider_value_to_x(int(local_frame), slider=slider)
+            if x_slider is None:
+                return None
+            gx = slider.mapToGlobal(QtCore.QPoint(int(x_slider), 0))
+            x = int(tracks.mapFromGlobal(gx).x())
             width = int(max(1, tracks.width()))
             return max(0, min(width - 1, int(x)))
         except Exception:
@@ -1991,6 +2048,112 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             idx = 0
         return colors[idx]
 
+    def _load_timeline_button_icons(self) -> None:
+        if bool(getattr(self, "_timeline_icons_loaded", False)):
+            return
+        self._timeline_icons_loaded = True
+        icon_play = None
+        icon_stop = None
+        icon_curve = None
+        icon_curve_active = None
+        icon_set_key = None
+        icon_remove_key = None
+        keyframe_handle_path = None
+        try:
+            root = Path(__file__).resolve().parents[2]
+            play_path = root / "icons" / "PlayButton_icon.png"
+            stop_path = root / "icons" / "StopButton_icon.png"
+            curve_path = root / "icons" / "CurveEditor_Icon.png"
+            curve_active_path = root / "icons" / "CurveEditor_Active_Icon.png"
+            set_key_path = root / "icons" / "keyframe_Icon.png"
+            remove_key_path = root / "icons" / "RemoveKey_Icon.png"
+            handle_path = root / "icons" / "KeyframeHandle_Icon.png"
+            if play_path.exists():
+                icon_play = QtGui.QIcon(str(play_path))
+            if stop_path.exists():
+                icon_stop = QtGui.QIcon(str(stop_path))
+            if curve_path.exists():
+                icon_curve = QtGui.QIcon(str(curve_path))
+            if curve_active_path.exists():
+                icon_curve_active = QtGui.QIcon(str(curve_active_path))
+            if set_key_path.exists():
+                icon_set_key = QtGui.QIcon(str(set_key_path))
+            if remove_key_path.exists():
+                icon_remove_key = QtGui.QIcon(str(remove_key_path))
+            if handle_path.exists():
+                keyframe_handle_path = handle_path.as_posix()
+        except Exception:
+            icon_play = None
+            icon_stop = None
+            icon_curve = None
+            icon_curve_active = None
+            icon_set_key = None
+            icon_remove_key = None
+            keyframe_handle_path = None
+        self._timeline_icon_play = icon_play
+        self._timeline_icon_stop = icon_stop
+        self._timeline_icon_curve = icon_curve
+        self._timeline_icon_curve_active = icon_curve_active
+        self._timeline_icon_set_key = icon_set_key
+        self._timeline_icon_remove_key = icon_remove_key
+        self._timeline_keyframe_handle_path = keyframe_handle_path
+
+    def _update_timeline_play_button(self) -> None:
+        btn = getattr(self, "_timeline_play_btn", None)
+        if btn is None:
+            return
+        self._load_timeline_button_icons()
+        checked = bool(btn.isChecked())
+        icon_play = getattr(self, "_timeline_icon_play", None)
+        icon_stop = getattr(self, "_timeline_icon_stop", None)
+        icon = icon_stop if checked else icon_play
+        if icon is not None:
+            try:
+                btn.setIcon(icon)
+                btn.setText("")
+                inner = max(12, min(int(btn.width()), int(btn.height())) - 2)
+                btn.setIconSize(QtCore.QSize(inner, inner))
+            except Exception:
+                pass
+        else:
+            try:
+                btn.setIcon(QtGui.QIcon())
+                btn.setText("Stop" if checked else "Play")
+            except Exception:
+                pass
+        try:
+            btn.setToolTip("Stop Playback" if checked else "Play Timeline")
+        except Exception:
+            pass
+
+    def _update_timeline_curves_button(self) -> None:
+        btn = getattr(self, "_timeline_curves_btn", None)
+        if btn is None:
+            return
+        self._load_timeline_button_icons()
+        mode = bool(getattr(self, "_timeline_curves_mode", False))
+        icon_normal = getattr(self, "_timeline_icon_curve", None)
+        icon_active = getattr(self, "_timeline_icon_curve_active", None)
+        icon = icon_active if mode else icon_normal
+        if icon is not None:
+            try:
+                btn.setIcon(icon)
+                btn.setText("")
+                inner = max(12, min(int(btn.width()), int(btn.height())) - 2)
+                btn.setIconSize(QtCore.QSize(inner, inner))
+            except Exception:
+                pass
+        else:
+            try:
+                btn.setIcon(QtGui.QIcon())
+                btn.setText("Curves")
+            except Exception:
+                pass
+        try:
+            btn.setToolTip("Curve Editor")
+        except Exception:
+            pass
+
     def _timeline_set_curves_mode(self, enabled: bool, *, sync_button: bool = True) -> None:
         mode = bool(enabled)
         self._timeline_curves_mode = mode
@@ -2006,6 +2169,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     btn.blockSignals(False)
                 except Exception:
                     pass
+        self._update_timeline_curves_button()
         stack = getattr(self, "_timeline_tracks_stack", None)
         if stack is not None:
             try:
@@ -2238,12 +2402,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._timeline_sync_range_controls(keep_current_visible=False, refresh_key_markers=True)
 
     def _timeline_on_play_toggled(self, checked: bool) -> None:
-        btn = getattr(self, "_timeline_play_btn", None)
-        if btn is not None:
-            try:
-                btn.setText("Pause" if bool(checked) else "Play")
-            except Exception:
-                pass
+        self._update_timeline_play_button()
         if bool(checked):
             try:
                 self._timeline_play_timer.start()
@@ -2726,38 +2885,60 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             self._timeline_frame_spin = None
             self._timeline_key_count_label = None
             self._timeline_tick_labels = []
+            self._timeline_ticks_frame = None
         try:
+            self._load_timeline_button_icons()
+            slider_handle_css = (
+                "#GLTimelinePanel QSlider#GLTimelineFrameSlider::handle:horizontal{"
+                "background:#22c55e;border:1px solid #166534;width:24px;height:24px;margin:-11px 0;border-radius:12px;}"
+            )
+            handle_path = getattr(self, "_timeline_keyframe_handle_path", None)
+            if isinstance(handle_path, str) and handle_path:
+                handle_url = handle_path.replace("\\", "/").replace('"', '\\"')
+                slider_handle_css = (
+                    "#GLTimelinePanel QSlider#GLTimelineFrameSlider::handle:horizontal{"
+                    + "image:url(\""
+                    + handle_url
+                    + "\");background:transparent;border:0px;width:24px;height:24px;margin:-11px 0;}"
+                )
             panel = QtWidgets.QFrame(self)
             panel.setObjectName("GLTimelinePanel")
             panel.setAttribute(QtCore.Qt.WA_StyledBackground, True)
             panel.setStyleSheet(
-                "#GLTimelinePanel{background:rgba(15,23,42,215);border-top:1px solid #334155;}"
-                "#GLTimelinePanel QLabel{color:#e2e8f0;font-size:11px;}"
-                "#GLTimelinePanel QSpinBox{background:#0f1216;color:#e2e8f0;border:1px solid #334155;border-radius:3px;padding:1px 4px;}"
-                "#GLTimelinePanel QSlider#GLTimelineFrameSlider::groove:horizontal{height:2px;background:#334155;border-radius:1px;}"
-                "#GLTimelinePanel QSlider#GLTimelineFrameSlider::sub-page:horizontal{background:#22c55e;border-radius:1px;}"
-                "#GLTimelinePanel QSlider#GLTimelineFrameSlider::add-page:horizontal{background:#334155;border-radius:1px;}"
-                "#GLTimelinePanel QSlider#GLTimelineFrameSlider::handle:horizontal{background:#22c55e;border:1px solid #166534;width:12px;height:12px;margin:-6px 0;border-radius:6px;}"
-                "#GLTimelinePanel QPushButton{padding:2px 8px;font-weight:600;color:#e2e8f0;background:#1f2937;border-radius:4px;}"
-                "#GLTimelinePanel QPushButton:hover{background:#334155;}"
-                "#GLTimelinePanel QPushButton#GLTimelinePlayButton{padding:2px 10px;font-weight:700;color:#e2e8f0;background:#1f2937;border:1px solid #334155;border-radius:4px;}"
-                "#GLTimelinePanel QPushButton#GLTimelinePlayButton:hover{background:#334155;}"
-                "#GLTimelinePanel QPushButton#GLTimelinePlayButton:checked{background:#166534;border-color:#22c55e;color:#ecfdf5;}"
-                "#GLTimelinePanel QFrame#GLTimelineTracks{background:rgba(15,18,22,120);border:1px solid #334155;border-radius:4px;}"
-                "#GLTimelinePanel QFrame#GLTimelineTrackRow{background:rgba(15,18,22,34);border-radius:3px;}"
-                "#GLTimelinePanel QFrame#GLTimelineTrackLine{background:rgba(148,163,184,80);border:0px;}"
-                "#GLTimelinePanel QFrame#GLTimelineKeyDot{background:#ef4444;border:1px solid #991b1b;border-radius:4px;}"
-                "#GLTimelinePanel QFrame#GLTimelinePlayhead{background:#22c55e;border:0px;}"
-                "#GLTimelinePanel QPushButton#GLTimelineCurvesButton{padding:2px 10px;font-weight:700;color:#e2e8f0;background:#1f2937;border:1px solid #334155;border-radius:4px;}"
-                "#GLTimelinePanel QPushButton#GLTimelineCurvesButton:hover{background:#334155;}"
-                "#GLTimelinePanel QPushButton#GLTimelineCurvesButton:checked{background:#1e3a8a;border-color:#60a5fa;color:#eff6ff;}"
-                "#GLTimelinePanel QWidget#GLTimelineCurveCanvas{background:rgba(15,18,22,34);border-radius:3px;}"
-                "#GLTimelinePanel QLabel#GLTimelineValue{color:#f8fafc;}"
-                "#GLTimelinePanel QFrame#GLTimelineTicks QLabel{color:#94a3b8;font-size:10px;}"
-                "#GLTimelinePanel QScrollBar:horizontal{background:rgba(15,18,22,90);height:10px;border:1px solid rgba(51,65,85,150);border-radius:4px;}"
-                "#GLTimelinePanel QScrollBar::handle:horizontal{background:rgba(148,163,184,170);min-width:30px;border-radius:4px;}"
-                "#GLTimelinePanel QScrollBar::add-line:horizontal,#GLTimelinePanel QScrollBar::sub-line:horizontal{width:0px;height:0px;}"
-                "#GLTimelinePanel QScrollBar::add-page:horizontal,#GLTimelinePanel QScrollBar::sub-page:horizontal{background:transparent;}"
+                "".join((
+                    "#GLTimelinePanel{background:rgba(15,23,42,215);border-top:1px solid #334155;}",
+                    "#GLTimelinePanel QLabel{color:#e2e8f0;font-size:11px;}",
+                    "#GLTimelinePanel QSpinBox{background:#0f1216;color:#e2e8f0;border:1px solid #334155;border-radius:3px;padding:1px 4px;}",
+                    "#GLTimelinePanel QSlider#GLTimelineFrameSlider::groove:horizontal{height:2px;background:#334155;border-radius:1px;}",
+                    "#GLTimelinePanel QSlider#GLTimelineFrameSlider::sub-page:horizontal{background:#334155;border-radius:1px;}",
+                    "#GLTimelinePanel QSlider#GLTimelineFrameSlider::add-page:horizontal{background:#334155;border-radius:1px;}",
+                    slider_handle_css,
+                    "#GLTimelinePanel QPushButton{padding:2px 8px;font-weight:600;color:#e2e8f0;background:#1f2937;border-radius:4px;}",
+                    "#GLTimelinePanel QPushButton:hover{background:#334155;}",
+                    "#GLTimelinePanel QPushButton#GLTimelinePlayButton{padding:0px;background:transparent;border:0px;}",
+                    "#GLTimelinePanel QPushButton#GLTimelinePlayButton:hover{background:transparent;border:0px;}",
+                    "#GLTimelinePanel QPushButton#GLTimelinePlayButton:checked{background:transparent;border:0px;}",
+                    "#GLTimelinePanel QFrame#GLTimelineTracks{background:rgba(15,18,22,120);border:1px solid #334155;border-radius:4px;}",
+                    "#GLTimelinePanel QFrame#GLTimelineTrackRow{background:rgba(15,18,22,34);border-radius:3px;}",
+                    "#GLTimelinePanel QFrame#GLTimelineTrackLine{background:rgba(148,163,184,80);border:0px;}",
+                    "#GLTimelinePanel QFrame#GLTimelineKeyDot{background:#ef4444;border:1px solid #991b1b;border-radius:4px;}",
+                    "#GLTimelinePanel QFrame#GLTimelinePlayhead{background:#ffffff;border:0px;}",
+                    "#GLTimelinePanel QPushButton#GLTimelineCurvesButton{padding:0px;background:transparent;border:0px;}",
+                    "#GLTimelinePanel QPushButton#GLTimelineCurvesButton:hover{background:transparent;border:0px;}",
+                    "#GLTimelinePanel QPushButton#GLTimelineCurvesButton:checked{background:transparent;border:0px;}",
+                    "#GLTimelinePanel QPushButton#GLTimelineSetKeyButton{padding:0px;background:rgba(15,23,42,110);border:1px solid rgba(148,163,184,135);border-radius:15px;}",
+                    "#GLTimelinePanel QPushButton#GLTimelineSetKeyButton:hover{background:rgba(34,211,238,65);border:1px solid rgba(34,211,238,240);}",
+                    "#GLTimelinePanel QPushButton#GLTimelineSetKeyButton:pressed{background:rgba(34,211,238,90);border:1px solid rgba(125,211,252,255);}",
+                    "#GLTimelinePanel QPushButton#GLTimelineDeleteKeyButton{padding:0px;background:transparent;border:0px;}",
+                    "#GLTimelinePanel QPushButton#GLTimelineDeleteKeyButton:hover{background:transparent;border:0px;}",
+                    "#GLTimelinePanel QWidget#GLTimelineCurveCanvas{background:rgba(15,18,22,34);border-radius:3px;}",
+                    "#GLTimelinePanel QLabel#GLTimelineValue{color:#f8fafc;}",
+                    "#GLTimelinePanel QFrame#GLTimelineTicks QLabel{color:#94a3b8;font-size:10px;}",
+                    "#GLTimelinePanel QScrollBar:horizontal{background:rgba(15,18,22,90);height:10px;border:1px solid rgba(51,65,85,150);border-radius:4px;}",
+                    "#GLTimelinePanel QScrollBar::handle:horizontal{background:rgba(148,163,184,170);min-width:30px;border-radius:4px;}",
+                    "#GLTimelinePanel QScrollBar::add-line:horizontal,#GLTimelinePanel QScrollBar::sub-line:horizontal{width:0px;height:0px;}",
+                    "#GLTimelinePanel QScrollBar::add-page:horizontal,#GLTimelinePanel QScrollBar::sub-page:horizontal{background:transparent;}",
+                ))
             )
             root = QtWidgets.QVBoxLayout(panel)
             root.setContentsMargins(10, 6, 10, 8)
@@ -2766,10 +2947,6 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             header = QtWidgets.QHBoxLayout()
             header.setContentsMargins(0, 0, 0, 0)
             header.setSpacing(8)
-
-            title = QtWidgets.QLabel("Timeline")
-            title.setStyleSheet("font-weight:700;color:#f8fafc;")
-            header.addWidget(title, 0)
 
             frame_lbl = QtWidgets.QLabel("Frame")
             header.addWidget(frame_lbl, 0)
@@ -2786,32 +2963,57 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             play_btn.setObjectName("GLTimelinePlayButton")
             play_btn.setText("Play")
             play_btn.setCheckable(True)
-            play_btn.setFixedWidth(64)
+            play_btn.setFixedSize(26, 26)
+            play_btn.setFlat(True)
             play_btn.toggled.connect(self._timeline_on_play_toggled)
             header.addWidget(play_btn, 0)
             self._timeline_play_btn = play_btn
+            self._update_timeline_play_button()
 
             curves_btn = QtWidgets.QPushButton("Curves", panel)
             curves_btn.setObjectName("GLTimelineCurvesButton")
             curves_btn.setCheckable(True)
-            curves_btn.setFixedWidth(74)
+            curves_btn.setFixedSize(26, 26)
+            curves_btn.setFlat(True)
             curves_btn.toggled.connect(self._timeline_on_curves_toggled)
             header.addWidget(curves_btn, 0)
             self._timeline_curves_btn = curves_btn
+            self._update_timeline_curves_button()
 
-            key_btn = QtWidgets.QPushButton("Set Key", panel)
-            key_btn.clicked.connect(self._timeline_on_set_key_clicked)
-            header.addWidget(key_btn, 0)
-
-            del_btn = QtWidgets.QPushButton("Delete Key", panel)
+            del_btn = QtWidgets.QPushButton(panel)
+            del_btn.setObjectName("GLTimelineDeleteKeyButton")
+            del_btn.setText("")
+            del_btn.setFixedSize(30, 30)
+            del_btn.setFlat(True)
+            del_btn.setToolTip("Delete Selected Keys")
+            del_icon = getattr(self, "_timeline_icon_remove_key", None)
+            if del_icon is not None:
+                try:
+                    del_btn.setIcon(del_icon)
+                    del_btn.setIconSize(QtCore.QSize(22, 22))
+                except Exception:
+                    pass
             del_btn.clicked.connect(self._timeline_on_delete_key_clicked)
             header.addWidget(del_btn, 0)
-
-            key_count = QtWidgets.QLabel("Keys: 0")
-            header.addWidget(key_count, 0)
-            self._timeline_key_count_label = key_count
+            self._timeline_key_count_label = None
 
             header.addStretch(1)
+
+            key_btn = QtWidgets.QPushButton(panel)
+            key_btn.setObjectName("GLTimelineSetKeyButton")
+            key_btn.setText("")
+            key_btn.setFixedSize(30, 30)
+            key_btn.setFlat(True)
+            key_btn.setToolTip("Set Key")
+            key_icon = getattr(self, "_timeline_icon_set_key", None)
+            if key_icon is not None:
+                try:
+                    key_btn.setIcon(key_icon)
+                    key_btn.setIconSize(QtCore.QSize(22, 22))
+                except Exception:
+                    pass
+            key_btn.clicked.connect(self._timeline_on_set_key_clicked)
+            header.addWidget(key_btn, 0)
             root.addLayout(header, 0)
 
             tracks_grid = QtWidgets.QGridLayout()
@@ -2857,22 +3059,71 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
             ticks_frame = QtWidgets.QFrame(timeline_area)
             ticks_frame.setObjectName("GLTimelineTicks")
-            ticks_layout = QtWidgets.QHBoxLayout(ticks_frame)
-            ticks_layout.setContentsMargins(0, 0, 0, 0)
-            ticks_layout.setSpacing(0)
+            ticks_frame.setFixedHeight(16)
+            self._timeline_ticks_frame = ticks_frame
             self._timeline_tick_labels = []
-            for _ in range(8):
-                tick_lbl = QtWidgets.QLabel("0", ticks_frame)
-                tick_lbl.setAlignment(QtCore.Qt.AlignCenter)
-                ticks_layout.addWidget(tick_lbl, 1)
-                self._timeline_tick_labels.append(tick_lbl)
             timeline_area_layout.addWidget(ticks_frame, 0)
 
-            frame_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal, timeline_area)
+            class _TimelineFrameSlider(QtWidgets.QSlider):
+                def __init__(self, view, parent=None):
+                    super().__init__(QtCore.Qt.Horizontal, parent)
+                    self._view = view
+                    self.setMouseTracking(True)
+
+                def paintEvent(self, ev):
+                    super().paintEvent(ev)
+                    try:
+                        base_opt = QtWidgets.QStyleOptionSlider()
+                        self.initStyleOption(base_opt)
+                        style = self.style()
+                        groove = style.subControlRect(
+                            QtWidgets.QStyle.CC_Slider,
+                            base_opt,
+                            QtWidgets.QStyle.SC_SliderGroove,
+                            self,
+                        )
+                        if groove is None or not groove.isValid():
+                            return
+                        vmin = int(self.minimum())
+                        vmax = int(self.maximum())
+                        if vmax < vmin:
+                            return
+                        try:
+                            start = int(max(0, int(getattr(self._view, "_timeline_view_start", 0) or 0)))
+                        except Exception:
+                            start = 0
+                        y_mid = int(groove.center().y())
+                        p = QtGui.QPainter(self)
+                        try:
+                            p.setRenderHint(QtGui.QPainter.Antialiasing, False)
+                        except Exception:
+                            pass
+                        major_pen = QtGui.QPen(QtGui.QColor(226, 232, 240, 220), 1)
+                        minor_pen = QtGui.QPen(QtGui.QColor(148, 163, 184, 170), 1)
+                        for value in range(vmin, vmax + 1):
+                            x = self._view._timeline_slider_value_to_x(int(value), slider=self)
+                            if x is None:
+                                continue
+                            frame_val = int(start + value)
+                            if (frame_val % 15) == 0:
+                                p.setPen(major_pen)
+                                y_top = int(y_mid - 7)
+                                y_bot = int(y_mid + 7)
+                            else:
+                                p.setPen(minor_pen)
+                                y_top = int(y_mid - 4)
+                                y_bot = int(y_mid + 4)
+                            p.drawLine(int(x), int(y_top), int(x), int(y_bot))
+                        p.end()
+                    except Exception:
+                        return
+
+            frame_slider = _TimelineFrameSlider(self, timeline_area)
             frame_slider.setObjectName("GLTimelineFrameSlider")
             frame_slider.setRange(0, 7)
             frame_slider.setValue(0)
-            frame_slider.setMinimumHeight(18)
+            frame_slider.setMinimumHeight(28)
+            frame_slider.setTickPosition(QtWidgets.QSlider.NoTicks)
             frame_slider.valueChanged.connect(self._timeline_on_frame_slider_changed)
             timeline_area_layout.addWidget(frame_slider, 0)
             self._timeline_frame_slider = frame_slider
@@ -3247,6 +3498,10 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                             QtCore.QTimer.singleShot(0, self._view._timeline_update_playhead)
                         except Exception:
                             pass
+                        try:
+                            QtCore.QTimer.singleShot(0, self._view._timeline_update_tick_labels)
+                        except Exception:
+                            pass
                     return False
 
             tracks_frame._timeline_tracks_filter = _TimelineTracksFilter(self, tracks_frame)
@@ -3296,6 +3551,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             self._timeline_frame_spin = None
             self._timeline_key_count_label = None
             self._timeline_tick_labels = []
+            self._timeline_ticks_frame = None
 
     def timeline_visible(self) -> bool:
         return bool(getattr(self, "_timeline_enabled", False))
@@ -3322,7 +3578,6 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     try:
                         btn.blockSignals(True)
                         btn.setChecked(False)
-                        btn.setText("Play")
                     except Exception:
                         pass
                     finally:
@@ -3330,6 +3585,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                             btn.blockSignals(False)
                         except Exception:
                             pass
+                    self._update_timeline_play_button()
             return
         self._timeline_enabled = want
         panel = getattr(self, "_timeline_panel", None)
@@ -3363,7 +3619,6 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 try:
                     btn.blockSignals(True)
                     btn.setChecked(False)
-                    btn.setText("Play")
                 except Exception:
                     pass
                 finally:
@@ -3371,6 +3626,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                         btn.blockSignals(False)
                     except Exception:
                         pass
+                self._update_timeline_play_button()
         try:
             self.update()
         except Exception:
