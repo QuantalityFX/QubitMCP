@@ -2268,6 +2268,237 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             self._timeline_save_to_disk()
         return int(active_frame)
 
+    def _timeline_drag_selected_keys(self, frame_delta: int, *, commit: bool = False) -> int:
+        try:
+            delta = int(frame_delta)
+        except Exception:
+            return 0
+        if delta == 0:
+            return 0
+        try:
+            current_frame = int(self._timeline_current_frame())
+        except Exception:
+            current_frame = 0
+        try:
+            selected = {
+                (int(a), int(f))
+                for (a, f) in (getattr(self, "_timeline_curve_selected", set()) or set())
+            }
+        except Exception:
+            selected = set()
+        if not selected:
+            return 0
+
+        keys = getattr(self, "_timeline_keys", {}) or {}
+        moves: List[Tuple[int, int, float]] = []
+        min_src = None
+        for axis_raw, frame_raw in sorted(selected, key=lambda af: (int(af[1]), int(af[0]))):
+            try:
+                axis = int(axis_raw)
+                src = max(0, int(frame_raw))
+            except Exception:
+                continue
+            if axis < 0 or axis > 5:
+                continue
+            entry = keys.get(src)
+            if not isinstance(entry, dict):
+                continue
+            if not self._timeline_axis_is_keyed(entry, axis):
+                continue
+            val = self._timeline_axis_value_for_entry(entry, axis)
+            if val is None:
+                continue
+            moves.append((int(axis), int(src), float(val)))
+            if min_src is None or int(src) < int(min_src):
+                min_src = int(src)
+        if not moves:
+            return 0
+
+        applied = int(delta)
+        if min_src is not None and (int(min_src) + int(applied)) < 0:
+            applied = -int(min_src)
+        if applied == 0:
+            return 0
+
+        for axis, src, _val in moves:
+            entry = keys.get(int(src))
+            if not isinstance(entry, dict):
+                continue
+            if not self._timeline_axis_is_keyed(entry, int(axis)):
+                continue
+            self._timeline_set_axis_keyed(entry, int(axis), False)
+            entry["camera_state"] = {}
+            if self._timeline_entry_has_any_axis(entry):
+                keys[int(src)] = entry
+            else:
+                try:
+                    del keys[int(src)]
+                except Exception:
+                    pass
+
+        new_selected = set()
+        max_frame = 0
+        for axis, src, val in moves:
+            dst = max(0, int(src) + int(applied))
+            dst_entry = keys.get(int(dst))
+            if not isinstance(dst_entry, dict):
+                dst_entry = {}
+            self._timeline_set_axis_value_for_entry(dst_entry, int(axis), float(val))
+            dst_entry["camera_state"] = {}
+            keys[int(dst)] = dst_entry
+            new_selected.add((int(axis), int(dst)))
+            if int(dst) > int(max_frame):
+                max_frame = int(dst)
+
+        self._timeline_keys = keys
+        self._timeline_curve_selected = {
+            (int(a), int(f))
+            for (a, f) in new_selected
+        }
+        self._timeline_total_max = max(int(getattr(self, "_timeline_total_max", 240) or 240), int(max_frame))
+        self._timeline_sync_range_controls(keep_current_visible=False, refresh_key_markers=True)
+        self._timeline_apply_frame_if_keyed(int(current_frame))
+        canvas = getattr(self, "_timeline_curves_canvas", None)
+        if canvas is not None:
+            try:
+                canvas.update()
+            except Exception:
+                pass
+        if bool(commit):
+            self._timeline_save_to_disk()
+        return int(applied)
+
+    def _timeline_drag_selected_curve_keys(
+        self,
+        frame_delta: int,
+        value_delta: float,
+        *,
+        commit: bool = False,
+    ) -> Tuple[int, float]:
+        try:
+            delta_f = int(frame_delta)
+            delta_v = float(value_delta)
+        except Exception:
+            return (0, 0.0)
+        if delta_f == 0 and abs(delta_v) < 1.0e-9:
+            return (0, 0.0)
+        try:
+            current_frame = int(self._timeline_current_frame())
+        except Exception:
+            current_frame = 0
+        try:
+            selected = {
+                (int(a), int(f))
+                for (a, f) in (getattr(self, "_timeline_curve_selected", set()) or set())
+            }
+        except Exception:
+            selected = set()
+        if not selected:
+            return (0, 0.0)
+
+        keys = getattr(self, "_timeline_keys", {}) or {}
+        moves: List[Tuple[int, int, float]] = []
+        min_src = None
+        min_val = None
+        max_val = None
+        for axis_raw, frame_raw in sorted(selected, key=lambda af: (int(af[1]), int(af[0]))):
+            try:
+                axis = int(axis_raw)
+                src = max(0, int(frame_raw))
+            except Exception:
+                continue
+            if axis < 0 or axis > 5:
+                continue
+            entry = keys.get(src)
+            if not isinstance(entry, dict):
+                continue
+            if not self._timeline_axis_is_keyed(entry, axis):
+                continue
+            val = self._timeline_axis_value_for_entry(entry, axis)
+            if val is None:
+                continue
+            v = float(val)
+            moves.append((int(axis), int(src), v))
+            if min_src is None or int(src) < int(min_src):
+                min_src = int(src)
+            if min_val is None or v < float(min_val):
+                min_val = v
+            if max_val is None or v > float(max_val):
+                max_val = v
+        if not moves:
+            return (0, 0.0)
+
+        applied_f = int(delta_f)
+        if min_src is not None and (int(min_src) + int(applied_f)) < 0:
+            applied_f = -int(min_src)
+
+        applied_v = float(delta_v)
+        try:
+            vmin = float(getattr(self, "_timeline_curve_min", -5.0))
+            vmax = float(getattr(self, "_timeline_curve_max", 5.0))
+            if vmax < vmin:
+                vmin, vmax = vmax, vmin
+            if min_val is not None and max_val is not None:
+                low = float(vmin) - float(min_val)
+                high = float(vmax) - float(max_val)
+                if low > high:
+                    applied_v = 0.0
+                else:
+                    applied_v = max(float(low), min(float(high), float(applied_v)))
+        except Exception:
+            pass
+
+        if applied_f == 0 and abs(applied_v) < 1.0e-9:
+            return (0, 0.0)
+
+        for axis, src, _val in moves:
+            entry = keys.get(int(src))
+            if not isinstance(entry, dict):
+                continue
+            if not self._timeline_axis_is_keyed(entry, int(axis)):
+                continue
+            self._timeline_set_axis_keyed(entry, int(axis), False)
+            entry["camera_state"] = {}
+            if self._timeline_entry_has_any_axis(entry):
+                keys[int(src)] = entry
+            else:
+                try:
+                    del keys[int(src)]
+                except Exception:
+                    pass
+
+        new_selected = set()
+        max_frame = 0
+        for axis, src, val in moves:
+            dst = max(0, int(src) + int(applied_f))
+            dst_entry = keys.get(int(dst))
+            if not isinstance(dst_entry, dict):
+                dst_entry = {}
+            self._timeline_set_axis_value_for_entry(dst_entry, int(axis), float(val + float(applied_v)))
+            dst_entry["camera_state"] = {}
+            keys[int(dst)] = dst_entry
+            new_selected.add((int(axis), int(dst)))
+            if int(dst) > int(max_frame):
+                max_frame = int(dst)
+
+        self._timeline_keys = keys
+        self._timeline_curve_selected = {
+            (int(a), int(f))
+            for (a, f) in new_selected
+        }
+        self._timeline_total_max = max(int(getattr(self, "_timeline_total_max", 240) or 240), int(max_frame))
+        self._timeline_sync_range_controls(keep_current_visible=False, refresh_key_markers=True)
+        self._timeline_apply_frame_if_keyed(int(current_frame))
+        canvas = getattr(self, "_timeline_curves_canvas", None)
+        if canvas is not None:
+            try:
+                canvas.update()
+            except Exception:
+                pass
+        if bool(commit):
+            self._timeline_save_to_disk()
+        return (int(applied_f), float(applied_v))
+
     def _timeline_visible_row_key_points(self) -> List[Tuple[int, int, int, int, float]]:
         tracks = getattr(self, "_timeline_tracks_frame", None)
         slider = getattr(self, "_timeline_frame_slider", None)
@@ -2865,6 +3096,21 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             self._timeline_save_to_disk()
         self._timeline_refresh_coord_labels()
 
+    def _timeline_delete_selected_keys(self) -> bool:
+        if not bool(getattr(self, "_timeline_enabled", False)):
+            return False
+        try:
+            selected = getattr(self, "_timeline_curve_selected", set()) or set()
+        except Exception:
+            selected = set()
+        if not bool(selected):
+            return False
+        try:
+            self._timeline_on_delete_key_clicked()
+            return True
+        except Exception:
+            return False
+
     def _layout_timeline_panel(self) -> None:
         panel = getattr(self, "_timeline_panel", None)
         if panel is None:
@@ -3408,8 +3654,20 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                         return
                     axis, frame, _val = hit
                     self._selecting = False
-                    self._drag = {"axis": int(axis), "frame": int(frame)}
-                    self._set_selected_set({(int(axis), int(frame))})
+                    hit_key = (int(axis), int(frame))
+                    selected = self._selected_set()
+                    if hit_key in selected and len(selected) > 1:
+                        drag_sel = set(selected)
+                    else:
+                        drag_sel = {hit_key}
+                    self._drag = {
+                        "axis": int(axis),
+                        "frame": int(frame),
+                        "value": float(_val),
+                        "multi": bool(len(drag_sel) > 1),
+                        "dirty": False,
+                    }
+                    self._set_selected_set(drag_sel)
                     self.update()
                     ev.accept()
 
@@ -3434,14 +3692,30 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     target_frame = max(0, start + int(local))
                     target_value = self._y_to_value(float(posf.y()))
                     cur_frame = int(self._drag.get("frame", target_frame))
-                    new_frame = self._view._timeline_drag_axis_key(
-                        int(self._drag.get("axis", 0)),
-                        int(cur_frame),
-                        int(target_frame),
-                        float(target_value),
-                        commit=False,
-                    )
-                    self._drag["frame"] = int(new_frame)
+                    if bool(self._drag.get("multi", False)):
+                        cur_value = float(self._drag.get("value", target_value))
+                        delta_frame = int(target_frame) - int(cur_frame)
+                        delta_value = float(target_value) - float(cur_value)
+                        if delta_frame != 0 or abs(delta_value) > 1.0e-9:
+                            moved_f, moved_v = self._view._timeline_drag_selected_curve_keys(
+                                int(delta_frame),
+                                float(delta_value),
+                                commit=False,
+                            )
+                            self._drag["frame"] = int(cur_frame + int(moved_f))
+                            self._drag["value"] = float(cur_value + float(moved_v))
+                            if int(moved_f) != 0 or abs(float(moved_v)) > 1.0e-9:
+                                self._drag["dirty"] = True
+                    else:
+                        new_frame = self._view._timeline_drag_axis_key(
+                            int(self._drag.get("axis", 0)),
+                            int(cur_frame),
+                            int(target_frame),
+                            float(target_value),
+                            commit=False,
+                        )
+                        self._drag["frame"] = int(new_frame)
+                        self._drag["value"] = float(target_value)
                     self.update()
                     ev.accept()
 
@@ -3471,15 +3745,38 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                         target_frame = max(0, start + int(local))
                         target_value = self._y_to_value(float(posf.y()))
                         cur_frame = int(self._drag.get("frame", target_frame))
-                        new_frame = self._view._timeline_drag_axis_key(
-                            int(self._drag.get("axis", 0)),
-                            int(cur_frame),
-                            int(target_frame),
-                            float(target_value),
-                            commit=True,
-                        )
-                        self._drag["frame"] = int(new_frame)
-                        self._set_selected_set({(int(self._drag.get("axis", 0)), int(new_frame))})
+                        if bool(self._drag.get("multi", False)):
+                            committed = False
+                            cur_value = float(self._drag.get("value", target_value))
+                            delta_frame = int(target_frame) - int(cur_frame)
+                            delta_value = float(target_value) - float(cur_value)
+                            if delta_frame != 0 or abs(delta_value) > 1.0e-9:
+                                moved_f, moved_v = self._view._timeline_drag_selected_curve_keys(
+                                    int(delta_frame),
+                                    float(delta_value),
+                                    commit=True,
+                                )
+                                self._drag["frame"] = int(cur_frame + int(moved_f))
+                                self._drag["value"] = float(cur_value + float(moved_v))
+                                if int(moved_f) != 0 or abs(float(moved_v)) > 1.0e-9:
+                                    committed = True
+                                    self._drag["dirty"] = False
+                            if bool(self._drag.get("dirty", False)) and not bool(committed):
+                                try:
+                                    self._view._timeline_save_to_disk()
+                                    self._drag["dirty"] = False
+                                except Exception:
+                                    pass
+                        else:
+                            new_frame = self._view._timeline_drag_axis_key(
+                                int(self._drag.get("axis", 0)),
+                                int(cur_frame),
+                                int(target_frame),
+                                float(target_value),
+                                commit=True,
+                            )
+                            self._drag["frame"] = int(new_frame)
+                            self._set_selected_set({(int(self._drag.get("axis", 0)), int(new_frame))})
                     self._drag = None
                     self.update()
                     ev.accept()
@@ -3547,8 +3844,29 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                         return
                     axis, frame, value = hit
                     self._selecting = False
-                    self._drag = {"axis": int(axis), "frame": int(frame), "value": float(value)}
-                    self._view._timeline_curve_selected = {(int(axis), int(frame))}
+                    hit_key = (int(axis), int(frame))
+                    try:
+                        selected = {
+                            (int(a), int(f))
+                            for (a, f) in (getattr(self._view, "_timeline_curve_selected", set()) or set())
+                        }
+                    except Exception:
+                        selected = set()
+                    if hit_key in selected and len(selected) > 1:
+                        drag_sel = set(selected)
+                    else:
+                        drag_sel = {hit_key}
+                    self._drag = {
+                        "axis": int(axis),
+                        "frame": int(frame),
+                        "value": float(value),
+                        "multi": bool(len(drag_sel) > 1),
+                        "dirty": False,
+                    }
+                    self._view._timeline_curve_selected = {
+                        (int(a), int(f))
+                        for (a, f) in drag_sel
+                    }
                     self._view._timeline_update_key_markers()
                     self.update()
                     ev.accept()
@@ -3580,15 +3898,23 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     cur_frame = int(self._drag.get("frame", 0))
                     target_frame = max(0, start + int(local))
                     target_value = float(self._drag.get("value", 0.0))
-                    new_frame = self._view._timeline_drag_axis_key(
-                        int(axis),
-                        int(cur_frame),
-                        int(target_frame),
-                        float(target_value),
-                        commit=False,
-                    )
-                    self._drag["frame"] = int(new_frame)
-                    self._view._timeline_curve_selected = {(int(axis), int(new_frame))}
+                    if bool(self._drag.get("multi", False)):
+                        delta = int(target_frame) - int(cur_frame)
+                        if delta != 0:
+                            moved = self._view._timeline_drag_selected_keys(int(delta), commit=False)
+                            self._drag["frame"] = int(cur_frame + int(moved))
+                            if int(moved) != 0:
+                                self._drag["dirty"] = True
+                    else:
+                        new_frame = self._view._timeline_drag_axis_key(
+                            int(axis),
+                            int(cur_frame),
+                            int(target_frame),
+                            float(target_value),
+                            commit=False,
+                        )
+                        self._drag["frame"] = int(new_frame)
+                        self._view._timeline_curve_selected = {(int(axis), int(new_frame))}
                     self._view._timeline_update_key_markers()
                     self.update()
                     ev.accept()
@@ -3623,15 +3949,31 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                             start = 0
                         target_frame = max(0, start + int(local))
                         target_value = float(self._drag.get("value", 0.0))
-                        new_frame = self._view._timeline_drag_axis_key(
-                            int(axis),
-                            int(cur_frame),
-                            int(target_frame),
-                            float(target_value),
-                            commit=True,
-                        )
-                        self._drag["frame"] = int(new_frame)
-                        self._view._timeline_curve_selected = {(int(axis), int(new_frame))}
+                        if bool(self._drag.get("multi", False)):
+                            committed = False
+                            delta = int(target_frame) - int(cur_frame)
+                            if delta != 0:
+                                moved = self._view._timeline_drag_selected_keys(int(delta), commit=True)
+                                self._drag["frame"] = int(cur_frame + int(moved))
+                                if int(moved) != 0:
+                                    committed = True
+                                    self._drag["dirty"] = False
+                            if bool(self._drag.get("dirty", False)) and not bool(committed):
+                                try:
+                                    self._view._timeline_save_to_disk()
+                                    self._drag["dirty"] = False
+                                except Exception:
+                                    pass
+                        else:
+                            new_frame = self._view._timeline_drag_axis_key(
+                                int(axis),
+                                int(cur_frame),
+                                int(target_frame),
+                                float(target_value),
+                                commit=True,
+                            )
+                            self._drag["frame"] = int(new_frame)
+                            self._view._timeline_curve_selected = {(int(axis), int(new_frame))}
                     self._drag = None
                     self._view._timeline_update_key_markers()
                     self.update()
@@ -3690,6 +4032,14 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     self._view = view
 
                 def eventFilter(self, obj, ev):
+                    if ev.type() == QtCore.QEvent.MouseButtonPress:
+                        try:
+                            self._view.setFocus(QtCore.Qt.MouseFocusReason)
+                        except Exception:
+                            try:
+                                self._view.setFocus()
+                            except Exception:
+                                pass
                     if ev.type() in (QtCore.QEvent.Resize, QtCore.QEvent.Show):
                         try:
                             QtCore.QTimer.singleShot(0, self._view._timeline_sync_row_alignment)
@@ -3713,6 +4063,8 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             tracks_frame.installEventFilter(tracks_frame._timeline_tracks_filter)
             frame_slider.installEventFilter(tracks_frame._timeline_tracks_filter)
             timeline_area.installEventFilter(tracks_frame._timeline_tracks_filter)
+            rows_host.installEventFilter(tracks_frame._timeline_tracks_filter)
+            curves_canvas.installEventFilter(tracks_frame._timeline_tracks_filter)
 
             tracks_grid.addWidget(timeline_area, 0, 2, len(channels) + 1, 1)
             tracks_grid.setColumnStretch(2, 1)
@@ -8071,6 +8423,13 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     self._fps_nav_boost = True
                 except Exception:
                     pass
+                try:
+                    e.accept()
+                except Exception:
+                    pass
+                return
+        if key in (QtCore.Qt.Key_Delete, QtCore.Qt.Key_Backspace):
+            if self._timeline_delete_selected_keys():
                 try:
                     e.accept()
                 except Exception:

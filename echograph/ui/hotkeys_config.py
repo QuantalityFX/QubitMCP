@@ -29,6 +29,8 @@ DEFAULT_KEYMAP = {
     "app_redo": "Ctrl+Y",
     "gl_wireframe_toggle": "H",
     "gl_grid_toggle": "G",
+    "timeline_play_toggle": "Space",
+    "timeline_set_key": "K",
     "app_fullscreen": "F11",
     "wire_add_pin": "Ctrl+LeftClick",
     "wire_remove": "Alt+LeftClick",

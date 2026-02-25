@@ -2359,6 +2359,38 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             self._shortcut_gl_grid = None
 
         try:
+            self._shortcut_timeline_play_toggle = hotkeys.add_shortcut(
+                self,
+                "timeline_play_toggle",
+                "Space",
+                self._shortcut_timeline_play_toggle_action,
+                context=QtCore.Qt.ApplicationShortcut,
+            )
+            try:
+                self._shortcut_timeline_play_toggle.setAutoRepeat(False)
+            except Exception:
+                pass
+            self._register_shortcut("timeline_play_toggle", self._shortcut_timeline_play_toggle)
+        except Exception:
+            self._shortcut_timeline_play_toggle = None
+
+        try:
+            self._shortcut_timeline_set_key = hotkeys.add_shortcut(
+                self,
+                "timeline_set_key",
+                "K",
+                self._shortcut_timeline_set_key_action,
+                context=QtCore.Qt.ApplicationShortcut,
+            )
+            try:
+                self._shortcut_timeline_set_key.setAutoRepeat(False)
+            except Exception:
+                pass
+            self._register_shortcut("timeline_set_key", self._shortcut_timeline_set_key)
+        except Exception:
+            self._shortcut_timeline_set_key = None
+
+        try:
             self._shortcut_fullscreen = hotkeys.add_shortcut(
                 self,
                 "app_fullscreen",
@@ -2417,7 +2449,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 self.view,
                 "node_delete",
                 "Del",
-                lambda: actions.delete_selected_nodes_from_window(self),
+                self._shortcut_delete_selected_action,
                 context=QtCore.Qt.WidgetWithChildrenShortcut,
             )
             self._register_shortcut("node_delete", self._shortcut_node_delete)
@@ -2768,6 +2800,108 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             if btn is not None:
                 btn.setChecked(bool(checked))
             gv._on_grid_button_toggled(bool(checked))
+        except Exception:
+            pass
+
+    def _timeline_hotkey_target(self):
+        if not self._viewport_hotkey_ok():
+            return None
+        gv = getattr(self, "gl_view", None)
+        if gv is None:
+            return None
+        try:
+            fw = QtWidgets.QApplication.focusWidget()
+            if isinstance(
+                fw,
+                (
+                    QtWidgets.QLineEdit,
+                    QtWidgets.QTextEdit,
+                    QtWidgets.QPlainTextEdit,
+                    QtWidgets.QSpinBox,
+                    QtWidgets.QDoubleSpinBox,
+                ),
+            ):
+                return None
+        except Exception:
+            pass
+        try:
+            visible_fn = getattr(gv, "timeline_visible", None)
+            if callable(visible_fn):
+                if not bool(visible_fn()):
+                    return None
+            elif not bool(getattr(gv, "_timeline_enabled", False)):
+                return None
+        except Exception:
+            if not bool(getattr(gv, "_timeline_enabled", False)):
+                return None
+        return gv
+
+    def _shortcut_timeline_play_toggle_action(self) -> None:
+        gv = self._timeline_hotkey_target()
+        if gv is None:
+            return
+        try:
+            self._sync_timeline_context()
+        except Exception:
+            pass
+        try:
+            btn = getattr(gv, "_timeline_play_btn", None)
+            if btn is not None:
+                btn.setChecked(not bool(btn.isChecked()))
+                return
+        except Exception:
+            pass
+        try:
+            timer = getattr(gv, "_timeline_play_timer", None)
+            playing = bool(timer is not None and timer.isActive())
+        except Exception:
+            playing = False
+        try:
+            toggle = getattr(gv, "_timeline_on_play_toggled", None)
+            if callable(toggle):
+                toggle(not bool(playing))
+        except Exception:
+            pass
+
+    def _shortcut_timeline_set_key_action(self) -> None:
+        gv = self._timeline_hotkey_target()
+        if gv is None:
+            return
+        try:
+            self._sync_timeline_context()
+        except Exception:
+            pass
+        try:
+            add_key = getattr(gv, "_timeline_on_set_key_clicked", None)
+            if callable(add_key):
+                add_key()
+        except Exception:
+            pass
+
+    def _timeline_delete_selected_keys_action(self) -> bool:
+        gv = self._timeline_hotkey_target()
+        if gv is None:
+            return False
+        try:
+            selected = getattr(gv, "_timeline_curve_selected", set()) or set()
+            if not bool(selected):
+                return False
+        except Exception:
+            return False
+        try:
+            delete_fn = getattr(gv, "_timeline_on_delete_key_clicked", None)
+            if not callable(delete_fn):
+                return False
+            delete_fn()
+            return True
+        except Exception:
+            return False
+
+    def _shortcut_delete_selected_action(self) -> None:
+        if self._timeline_delete_selected_keys_action():
+            return
+        try:
+            actions.delete_selected_nodes_from_window(self)
         except Exception:
             pass
 
