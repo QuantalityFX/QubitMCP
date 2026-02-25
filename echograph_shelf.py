@@ -3572,7 +3572,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         file_new.setCursor(QtCore.Qt.PointingHandCursor)
         file_new.setFlat(True)
         file_new.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        file_new.clicked.connect(self._launch_new_instance)
+        file_new.clicked.connect(lambda: self._run_menu_action(self._launch_new_instance, "_file_btn"))
         file_layout.addWidget(file_new, 0)
 
         file_open = QtWidgets.QPushButton("Open", file_panel)
@@ -3581,7 +3581,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         file_open.setCursor(QtCore.Qt.PointingHandCursor)
         file_open.setFlat(True)
         file_open.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        file_open.clicked.connect(self._open_graph)
+        file_open.clicked.connect(lambda: self._run_menu_action(self._open_graph, "_file_btn"))
         file_layout.addWidget(file_open, 0)
 
         file_recent = QtWidgets.QPushButton("Open Recent", file_panel)
@@ -3590,7 +3590,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         file_recent.setCursor(QtCore.Qt.PointingHandCursor)
         file_recent.setFlat(True)
         file_recent.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        file_recent.clicked.connect(self._open_recent_dialog)
+        file_recent.clicked.connect(lambda: self._run_menu_action(self._open_recent_dialog, "_file_btn"))
         file_layout.addWidget(file_recent, 0)
 
         file_save = QtWidgets.QPushButton("Save", file_panel)
@@ -3599,7 +3599,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         file_save.setCursor(QtCore.Qt.PointingHandCursor)
         file_save.setFlat(True)
         file_save.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        file_save.clicked.connect(self._save_graph)
+        file_save.clicked.connect(lambda: self._run_menu_action(self._save_graph, "_file_btn"))
         file_layout.addWidget(file_save, 0)
 
         file_export = QtWidgets.QPushButton("Save As", file_panel)
@@ -3608,7 +3608,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         file_export.setCursor(QtCore.Qt.PointingHandCursor)
         file_export.setFlat(True)
         file_export.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        file_export.clicked.connect(self._export_graph)
+        file_export.clicked.connect(lambda: self._run_menu_action(self._export_graph, "_file_btn"))
         file_layout.addWidget(file_export, 0)
 
         file_action = QtWidgets.QWidgetAction(file_menu)
@@ -3969,6 +3969,61 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         except Exception:
             pass
 
+    def _close_menu_for_button(self, button_attr: str) -> None:
+        btn = getattr(self, button_attr, None)
+        if btn is None:
+            return
+        try:
+            menu = btn.menu()
+        except Exception:
+            menu = None
+        if menu is None:
+            return
+        try:
+            menu.close()
+        except Exception:
+            try:
+                menu.hide()
+            except Exception:
+                pass
+
+    def _reset_ui_cursor_arrow(self) -> None:
+        try:
+            app = QtWidgets.QApplication.instance()
+            if app is not None:
+                while app.overrideCursor() is not None:
+                    app.restoreOverrideCursor()
+        except Exception:
+            pass
+        for obj in (self, getattr(self, "view", None), getattr(self, "gl_view", None)):
+            if obj is None:
+                continue
+            try:
+                obj.setCursor(QtCore.Qt.ArrowCursor)
+            except Exception:
+                pass
+            try:
+                vp = obj.viewport() if hasattr(obj, "viewport") else None
+            except Exception:
+                vp = None
+            if vp is not None:
+                try:
+                    vp.setCursor(QtCore.Qt.ArrowCursor)
+                except Exception:
+                    pass
+
+    def _run_menu_action(self, callback, button_attr: str = "") -> None:
+        if button_attr:
+            self._close_menu_for_button(button_attr)
+        try:
+            if callable(callback):
+                callback()
+        finally:
+            try:
+                QtCore.QTimer.singleShot(0, self._reset_ui_cursor_arrow)
+            except Exception:
+                self._reset_ui_cursor_arrow()
+
     def _timeline_panel_enabled(self) -> bool:
         gl_view = getattr(self, "gl_view", None)
         if gl_view is None or not hasattr(gl_view, "timeline_visible"):
@@ -4035,6 +4090,11 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             except Exception:
                 pass
         self._sync_timeline_menu_state()
+        self._close_menu_for_button("_timeline_btn")
+        try:
+            QtCore.QTimer.singleShot(0, self._reset_ui_cursor_arrow)
+        except Exception:
+            self._reset_ui_cursor_arrow()
 
     def _set_timeline_menu_active(self, active: bool) -> None:
         btn = getattr(self, "_timeline_btn", None)

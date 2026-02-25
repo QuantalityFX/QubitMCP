@@ -2268,6 +2268,90 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             self._timeline_save_to_disk()
         return int(active_frame)
 
+    def _timeline_visible_row_key_points(self) -> List[Tuple[int, int, int, int, float]]:
+        tracks = getattr(self, "_timeline_tracks_frame", None)
+        slider = getattr(self, "_timeline_frame_slider", None)
+        row_frames = getattr(self, "_timeline_track_rows", None)
+        if tracks is None or slider is None or not isinstance(row_frames, list) or not row_frames:
+            return []
+
+        try:
+            start = int(max(0, int(getattr(self, "_timeline_view_start", 0) or 0)))
+        except Exception:
+            start = 0
+        try:
+            local_max = int(max(0, int(slider.maximum())))
+        except Exception:
+            local_max = 0
+        end = start + local_max
+
+        keys = getattr(self, "_timeline_keys", {}) or {}
+        try:
+            key_items = sorted(keys.items(), key=lambda kv: int(kv[0]))
+        except Exception:
+            key_items = list(keys.items())
+
+        out: List[Tuple[int, int, int, int, float]] = []
+        for frame_raw, entry in key_items:
+            try:
+                frame = int(frame_raw)
+            except Exception:
+                continue
+            if frame < start or frame > end:
+                continue
+            local = frame - start
+            x = self._timeline_slider_to_tracks_x(local)
+            if x is None:
+                continue
+            for axis in self._timeline_axes_for_entry(entry):
+                if axis < 0 or axis >= len(row_frames):
+                    continue
+                row_frame = row_frames[axis]
+                if row_frame is None:
+                    continue
+                val = self._timeline_axis_value_for_entry(entry, axis)
+                if val is None:
+                    continue
+                try:
+                    y = int(row_frame.y() + (row_frame.height() // 2))
+                except Exception:
+                    continue
+                out.append((int(axis), int(frame), int(x), int(y), float(val)))
+        return out
+
+    def _timeline_hit_row_key(self, x_tracks: int, y_tracks: int, radius: int = 8) -> Optional[Tuple[int, int, float]]:
+        try:
+            px = float(x_tracks)
+            py = float(y_tracks)
+            rr = float(max(1, int(radius)))
+        except Exception:
+            return None
+        best = None
+        best_d2 = None
+        for axis, frame, x, y, val in self._timeline_visible_row_key_points():
+            dx = float(x) - px
+            dy = float(y) - py
+            d2 = (dx * dx) + (dy * dy)
+            if d2 > (rr * rr):
+                continue
+            if best is None or best_d2 is None or d2 < best_d2:
+                best = (int(axis), int(frame), float(val))
+                best_d2 = d2
+        return best
+
+    def _timeline_keys_in_rows_rect(self, rectf) -> set[tuple[int, int]]:
+        try:
+            rr = QtCore.QRectF(rectf).normalized()
+        except Exception:
+            rr = QtCore.QRectF()
+        out: set[tuple[int, int]] = set()
+        if rr.isNull():
+            return out
+        for axis, frame, x, y, _val in self._timeline_visible_row_key_points():
+            if rr.contains(QtCore.QPointF(float(x), float(y))):
+                out.add((int(axis), int(frame)))
+        return out
+
     def _timeline_update_key_markers(self) -> None:
         tracks = getattr(self, "_timeline_tracks_frame", None)
         slider = getattr(self, "_timeline_frame_slider", None)
@@ -2287,24 +2371,15 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
         self._timeline_sync_row_alignment()
         self._timeline_clear_key_markers()
-
         try:
-            start = int(max(0, int(getattr(self, "_timeline_view_start", 0) or 0)))
+            selected = {
+                (int(a), int(f))
+                for (a, f) in (getattr(self, "_timeline_curve_selected", set()) or set())
+            }
         except Exception:
-            start = 0
-        try:
-            local_max = int(max(0, int(slider.maximum())))
-        except Exception:
-            local_max = 0
-        end = start + local_max
+            selected = set()
 
-        keys = getattr(self, "_timeline_keys", {}) or {}
-        try:
-            key_items = sorted(keys.items(), key=lambda kv: int(kv[0]))
-        except Exception:
-            key_items = list(keys.items())
-
-        per_row: List[List[QtWidgets.QFrame]] = [[] for _ in row_frames]
+        per_row: List[List[QtWidgets.QFrame]] = [[] for _ in range(len(row_frames))]
         axis_fill = (
             "#ef4444",  # Px
             "#22c55e",  # Py
@@ -2324,39 +2399,24 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         dot_size = 8
         half = dot_size // 2
 
-        for frame_raw, entry in key_items:
+        for axis, frame, x, y, _val in self._timeline_visible_row_key_points():
+            if axis < 0 or axis >= len(row_frames):
+                continue
+            dot = QtWidgets.QFrame(tracks)
+            dot.setObjectName("GLTimelineKeyDot")
+            dot.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
             try:
-                frame = int(frame_raw)
-            except Exception:
-                continue
-            if frame < start or frame > end:
-                continue
-            local = frame - start
-            x = self._timeline_slider_to_tracks_x(local)
-            if x is None:
-                continue
-            for axis in self._timeline_axes_for_entry(entry):
-                if axis < 0 or axis >= len(row_frames):
-                    continue
-                row_frame = row_frames[axis]
-                if row_frame is None:
-                    continue
-                try:
-                    y = int(row_frame.y() + (row_frame.height() // 2))
-                except Exception:
-                    continue
-                dot = QtWidgets.QFrame(tracks)
-                dot.setObjectName("GLTimelineKeyDot")
-                dot.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
-                try:
+                if (int(axis), int(frame)) in selected:
+                    dot.setStyleSheet("background:#fde047;border:1px solid #f59e0b;border-radius:4px;")
+                else:
                     dot.setStyleSheet(
                         f"background:{axis_fill[axis]};border:1px solid {axis_border[axis]};border-radius:4px;"
                     )
-                except Exception:
-                    pass
-                dot.setGeometry(int(x - half), int(y - half), dot_size, dot_size)
-                dot.show()
-                per_row[axis].append(dot)
+            except Exception:
+                pass
+            dot.setGeometry(int(x - half), int(y - half), dot_size, dot_size)
+            dot.show()
+            per_row[axis].append(dot)
 
         self._timeline_key_markers = per_row
 
@@ -2641,19 +2701,18 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             pass
 
     def _timeline_apply_frame_if_keyed(self, frame: int) -> None:
-        if bool(getattr(self, "_timeline_curves_mode", False)):
-            xyz_eval, rxyz_eval = self._timeline_eval_frame_values(int(frame))
-            if xyz_eval is not None or rxyz_eval is not None:
-                if xyz_eval is None:
-                    xyz_eval = self._timeline_current_cam_xyz()
-                if xyz_eval is not None:
-                    self._timeline_apply_xyz_only(xyz_eval, rxyz_eval)
-                    try:
-                        self.update()
-                    except Exception:
-                        pass
-                    self._timeline_refresh_coord_labels()
-                    return
+        xyz_eval, rxyz_eval = self._timeline_eval_frame_values(int(frame))
+        if xyz_eval is not None or rxyz_eval is not None:
+            if xyz_eval is None:
+                xyz_eval = self._timeline_current_cam_xyz()
+            if xyz_eval is not None:
+                self._timeline_apply_xyz_only(xyz_eval, rxyz_eval)
+                try:
+                    self.update()
+                except Exception:
+                    pass
+                self._timeline_refresh_coord_labels()
+                return
         try:
             entry = (getattr(self, "_timeline_keys", {}) or {}).get(int(frame))
         except Exception:
@@ -2798,26 +2857,6 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             }
             selection_changed = kept != selected
             self._timeline_curve_selected = kept
-        elif not bool(getattr(self, "_timeline_curves_mode", False)):
-            frame = self._timeline_current_frame()
-            try:
-                if int(frame) in self._timeline_keys:
-                    del self._timeline_keys[int(frame)]
-                    deleted_any = True
-            except Exception:
-                pass
-            try:
-                sel = getattr(self, "_timeline_curve_selected", set()) or set()
-                new_sel = {
-                    (int(a), int(f))
-                    for (a, f) in sel
-                    if int(f) != int(frame)
-                }
-                selection_changed = new_sel != sel
-                self._timeline_curve_selected = new_sel
-            except Exception:
-                self._timeline_curve_selected = set()
-                selection_changed = True
 
         if not deleted_any and not selection_changed:
             return
@@ -2926,7 +2965,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     "#GLTimelinePanel QPushButton#GLTimelineCurvesButton{padding:0px;background:transparent;border:0px;}",
                     "#GLTimelinePanel QPushButton#GLTimelineCurvesButton:hover{background:transparent;border:0px;}",
                     "#GLTimelinePanel QPushButton#GLTimelineCurvesButton:checked{background:transparent;border:0px;}",
-                    "#GLTimelinePanel QPushButton#GLTimelineSetKeyButton{padding:0px;background:rgba(15,23,42,110);border:1px solid rgba(148,163,184,135);border-radius:15px;}",
+                    "#GLTimelinePanel QPushButton#GLTimelineSetKeyButton{padding:0px;background:rgba(0,0,0,220);border:1px solid rgba(226,232,240,215);border-radius:15px;}",
                     "#GLTimelinePanel QPushButton#GLTimelineSetKeyButton:hover{background:rgba(34,211,238,65);border:1px solid rgba(34,211,238,240);}",
                     "#GLTimelinePanel QPushButton#GLTimelineSetKeyButton:pressed{background:rgba(34,211,238,90);border:1px solid rgba(125,211,252,255);}",
                     "#GLTimelinePanel QPushButton#GLTimelineDeleteKeyButton{padding:0px;background:transparent;border:0px;}",
@@ -3114,6 +3153,17 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                                 y_top = int(y_mid - 4)
                                 y_bot = int(y_mid + 4)
                             p.drawLine(int(x), int(y_top), int(x), int(y_bot))
+                        # Keep the custom keyframe handle icon above frame dashes.
+                        handle_opt = QtWidgets.QStyleOptionSlider()
+                        self.initStyleOption(handle_opt)
+                        handle_opt.subControls = QtWidgets.QStyle.SC_SliderHandle
+                        handle_opt.activeSubControls = QtWidgets.QStyle.SC_SliderHandle
+                        style.drawComplexControl(
+                            QtWidgets.QStyle.CC_Slider,
+                            handle_opt,
+                            p,
+                            self,
+                        )
                         p.end()
                     except Exception:
                         return
@@ -3434,6 +3484,159 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     self.update()
                     ev.accept()
 
+            class _TimelineRowsHost(QtWidgets.QWidget):
+                def __init__(self, view, host):
+                    super().__init__(host)
+                    self._view = view
+                    self._drag = None
+                    self._selecting = False
+                    self._select_origin = QtCore.QPointF()
+                    self._selection_rect = QtCore.QRectF()
+                    self.setMouseTracking(True)
+
+                @staticmethod
+                def _event_pos(ev):
+                    try:
+                        if hasattr(ev, "position"):
+                            return ev.position()
+                    except Exception:
+                        pass
+                    return ev.pos()
+
+                @staticmethod
+                def _norm_rect(rf):
+                    try:
+                        return QtCore.QRectF(rf).normalized()
+                    except Exception:
+                        return QtCore.QRectF()
+
+                def paintEvent(self, ev):
+                    super().paintEvent(ev)
+                    _ = ev
+                    if not bool(self._selecting):
+                        return
+                    rr = self._norm_rect(self._selection_rect)
+                    if rr.isNull():
+                        return
+                    p = QtGui.QPainter(self)
+                    try:
+                        p.setRenderHint(QtGui.QPainter.Antialiasing, True)
+                    except Exception:
+                        pass
+                    p.setPen(QtGui.QPen(QtGui.QColor("#fde047"), 1, QtCore.Qt.DashLine))
+                    p.setBrush(QtGui.QBrush(QtGui.QColor(253, 224, 71, 35)))
+                    p.drawRect(rr)
+                    p.end()
+
+                def mousePressEvent(self, ev):
+                    if ev.button() != QtCore.Qt.LeftButton:
+                        return super().mousePressEvent(ev)
+                    if bool(getattr(self._view, "_timeline_curves_mode", False)):
+                        return super().mousePressEvent(ev)
+                    posf = self._event_pos(ev)
+                    hit = self._view._timeline_hit_row_key(int(round(float(posf.x()))), int(round(float(posf.y()))))
+                    if hit is None:
+                        self._drag = None
+                        self._selecting = True
+                        self._select_origin = QtCore.QPointF(float(posf.x()), float(posf.y()))
+                        self._selection_rect = QtCore.QRectF(self._select_origin, self._select_origin)
+                        self._view._timeline_curve_selected = set()
+                        self._view._timeline_update_key_markers()
+                        self.update()
+                        ev.accept()
+                        return
+                    axis, frame, value = hit
+                    self._selecting = False
+                    self._drag = {"axis": int(axis), "frame": int(frame), "value": float(value)}
+                    self._view._timeline_curve_selected = {(int(axis), int(frame))}
+                    self._view._timeline_update_key_markers()
+                    self.update()
+                    ev.accept()
+
+                def mouseMoveEvent(self, ev):
+                    if bool(getattr(self._view, "_timeline_curves_mode", False)):
+                        return super().mouseMoveEvent(ev)
+                    posf = self._event_pos(ev)
+                    if bool(self._selecting):
+                        self._selection_rect = QtCore.QRectF(
+                            self._select_origin,
+                            QtCore.QPointF(float(posf.x()), float(posf.y())),
+                        )
+                        self._view._timeline_curve_selected = self._view._timeline_keys_in_rows_rect(self._selection_rect)
+                        self._view._timeline_update_key_markers()
+                        self.update()
+                        ev.accept()
+                        return
+                    if not isinstance(self._drag, dict):
+                        return super().mouseMoveEvent(ev)
+                    local = self._view._timeline_tracks_x_to_slider_value(int(round(float(posf.x()))))
+                    if local is None:
+                        return
+                    try:
+                        start = int(max(0, int(getattr(self._view, "_timeline_view_start", 0) or 0)))
+                    except Exception:
+                        start = 0
+                    axis = int(self._drag.get("axis", 0))
+                    cur_frame = int(self._drag.get("frame", 0))
+                    target_frame = max(0, start + int(local))
+                    target_value = float(self._drag.get("value", 0.0))
+                    new_frame = self._view._timeline_drag_axis_key(
+                        int(axis),
+                        int(cur_frame),
+                        int(target_frame),
+                        float(target_value),
+                        commit=False,
+                    )
+                    self._drag["frame"] = int(new_frame)
+                    self._view._timeline_curve_selected = {(int(axis), int(new_frame))}
+                    self._view._timeline_update_key_markers()
+                    self.update()
+                    ev.accept()
+
+                def mouseReleaseEvent(self, ev):
+                    if ev.button() != QtCore.Qt.LeftButton:
+                        return super().mouseReleaseEvent(ev)
+                    if bool(getattr(self._view, "_timeline_curves_mode", False)):
+                        return super().mouseReleaseEvent(ev)
+                    if bool(self._selecting):
+                        self._selecting = False
+                        rr = self._norm_rect(self._selection_rect)
+                        if rr.width() <= 2.0 and rr.height() <= 2.0:
+                            self._view._timeline_curve_selected = set()
+                        else:
+                            self._view._timeline_curve_selected = self._view._timeline_keys_in_rows_rect(rr)
+                        self._selection_rect = QtCore.QRectF()
+                        self._view._timeline_update_key_markers()
+                        self.update()
+                        ev.accept()
+                        return
+                    if not isinstance(self._drag, dict):
+                        return super().mouseReleaseEvent(ev)
+                    posf = self._event_pos(ev)
+                    local = self._view._timeline_tracks_x_to_slider_value(int(round(float(posf.x()))))
+                    axis = int(self._drag.get("axis", 0))
+                    cur_frame = int(self._drag.get("frame", 0))
+                    if local is not None:
+                        try:
+                            start = int(max(0, int(getattr(self._view, "_timeline_view_start", 0) or 0)))
+                        except Exception:
+                            start = 0
+                        target_frame = max(0, start + int(local))
+                        target_value = float(self._drag.get("value", 0.0))
+                        new_frame = self._view._timeline_drag_axis_key(
+                            int(axis),
+                            int(cur_frame),
+                            int(target_frame),
+                            float(target_value),
+                            commit=True,
+                        )
+                        self._drag["frame"] = int(new_frame)
+                        self._view._timeline_curve_selected = {(int(axis), int(new_frame))}
+                    self._drag = None
+                    self._view._timeline_update_key_markers()
+                    self.update()
+                    ev.accept()
+
             tracks_frame = QtWidgets.QFrame(timeline_area)
             tracks_frame.setObjectName("GLTimelineTracks")
             tracks_frame.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.MinimumExpanding)
@@ -3442,7 +3645,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             tracks_stack.setSpacing(0)
             self._timeline_tracks_stack = tracks_stack
 
-            rows_host = QtWidgets.QWidget(tracks_frame)
+            rows_host = _TimelineRowsHost(self, tracks_frame)
             self._timeline_rows_host = rows_host
             tracks_layout = QtWidgets.QVBoxLayout(rows_host)
             tracks_layout.setContentsMargins(0, 0, 0, 0)
@@ -3452,6 +3655,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 row_frame = QtWidgets.QFrame(rows_host)
                 row_frame.setObjectName("GLTimelineTrackRow")
                 row_frame.setFixedHeight(22)
+                row_frame.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
                 row_layout = QtWidgets.QVBoxLayout(row_frame)
                 row_layout.setContentsMargins(0, 0, 0, 0)
                 row_layout.setSpacing(0)
@@ -3459,6 +3663,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 row_line = QtWidgets.QFrame(row_frame)
                 row_line.setObjectName("GLTimelineTrackLine")
                 row_line.setFixedHeight(1)
+                row_line.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
                 row_layout.addWidget(row_line, 0)
                 row_layout.addStretch(1)
                 tracks_layout.addWidget(row_frame, 0)
