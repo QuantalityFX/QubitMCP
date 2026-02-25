@@ -3792,7 +3792,171 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 def __init__(self, view, parent=None):
                     super().__init__(QtCore.Qt.Horizontal, parent)
                     self._view = view
+                    self._jump_drag_active = False
                     self.setMouseTracking(True)
+
+                @staticmethod
+                def _event_pos(ev) -> QtCore.QPoint:
+                    try:
+                        if hasattr(ev, "position"):
+                            pp = ev.position()
+                            if pp is not None:
+                                return pp.toPoint()
+                    except Exception:
+                        pass
+                    try:
+                        if hasattr(ev, "pos"):
+                            pp = ev.pos()
+                            if pp is not None:
+                                return pp
+                    except Exception:
+                        pass
+                    return QtCore.QPoint(0, 0)
+
+                def _pixel_x_to_value(self, x_pos: int) -> Optional[int]:
+                    try:
+                        opt = QtWidgets.QStyleOptionSlider()
+                        self.initStyleOption(opt)
+                        style = self.style()
+                        groove = style.subControlRect(
+                            QtWidgets.QStyle.CC_Slider,
+                            opt,
+                            QtWidgets.QStyle.SC_SliderGroove,
+                            self,
+                        )
+                        span = int(
+                            max(
+                                1,
+                                style.pixelMetric(
+                                    QtWidgets.QStyle.PM_SliderSpaceAvailable,
+                                    opt,
+                                    self,
+                                ),
+                            )
+                        )
+                        slider_len = int(
+                            max(
+                                1,
+                                style.pixelMetric(
+                                    QtWidgets.QStyle.PM_SliderLength,
+                                    opt,
+                                    self,
+                                ),
+                            )
+                        )
+                        pos = int(round(float(x_pos) - float(groove.left()) - (float(slider_len) * 0.5)))
+                        pos = max(0, min(span, pos))
+                        val = int(
+                            QtWidgets.QStyle.sliderValueFromPosition(
+                                int(self.minimum()),
+                                int(self.maximum()),
+                                int(pos),
+                                int(span),
+                                bool(getattr(opt, "upsideDown", False)),
+                            )
+                        )
+                        return max(int(self.minimum()), min(int(self.maximum()), int(val)))
+                    except Exception:
+                        return None
+
+                def mousePressEvent(self, ev):
+                    if ev.button() != QtCore.Qt.LeftButton:
+                        return super().mousePressEvent(ev)
+                    pt = self._event_pos(ev)
+                    try:
+                        opt = QtWidgets.QStyleOptionSlider()
+                        self.initStyleOption(opt)
+                        style = self.style()
+                        handle = style.subControlRect(
+                            QtWidgets.QStyle.CC_Slider,
+                            opt,
+                            QtWidgets.QStyle.SC_SliderHandle,
+                            self,
+                        )
+                        if handle is not None and handle.contains(pt):
+                            self._jump_drag_active = False
+                            return super().mousePressEvent(ev)
+                    except Exception:
+                        pass
+                    target = self._pixel_x_to_value(int(pt.x()))
+                    if target is None:
+                        self._jump_drag_active = False
+                        return super().mousePressEvent(ev)
+                    try:
+                        self.setSliderPosition(int(target))
+                    except Exception:
+                        pass
+                    try:
+                        self.setValue(int(target))
+                    except Exception:
+                        pass
+                    self._jump_drag_active = True
+                    try:
+                        self.setSliderDown(True)
+                    except Exception:
+                        pass
+                    try:
+                        ev.accept()
+                    except Exception:
+                        pass
+                    return
+
+                def mouseMoveEvent(self, ev):
+                    if not bool(getattr(self, "_jump_drag_active", False)):
+                        return super().mouseMoveEvent(ev)
+                    try:
+                        if not bool(ev.buttons() & QtCore.Qt.LeftButton):
+                            self._jump_drag_active = False
+                            try:
+                                self.setSliderDown(False)
+                            except Exception:
+                                pass
+                            return super().mouseMoveEvent(ev)
+                    except Exception:
+                        pass
+                    pt = self._event_pos(ev)
+                    target = self._pixel_x_to_value(int(pt.x()))
+                    if target is not None:
+                        try:
+                            self.setSliderPosition(int(target))
+                        except Exception:
+                            pass
+                        try:
+                            self.setValue(int(target))
+                        except Exception:
+                            pass
+                    try:
+                        ev.accept()
+                    except Exception:
+                        pass
+                    return
+
+                def mouseReleaseEvent(self, ev):
+                    if ev.button() != QtCore.Qt.LeftButton:
+                        return super().mouseReleaseEvent(ev)
+                    if not bool(getattr(self, "_jump_drag_active", False)):
+                        return super().mouseReleaseEvent(ev)
+                    pt = self._event_pos(ev)
+                    target = self._pixel_x_to_value(int(pt.x()))
+                    if target is not None:
+                        try:
+                            self.setSliderPosition(int(target))
+                        except Exception:
+                            pass
+                        try:
+                            self.setValue(int(target))
+                        except Exception:
+                            pass
+                    self._jump_drag_active = False
+                    try:
+                        self.setSliderDown(False)
+                    except Exception:
+                        pass
+                    try:
+                        ev.accept()
+                    except Exception:
+                        pass
+                    return
 
                 def paintEvent(self, ev):
                     super().paintEvent(ev)
