@@ -663,6 +663,9 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._timeline_coord_rz = None
         self._timeline_tracks_frame = None
         self._timeline_playhead = None
+        self._timeline_tracks_stack = None
+        self._timeline_rows_host = None
+        self._timeline_curves_canvas = None
         self._timeline_left_header_spacer = None
         self._timeline_area_widget = None
         self._timeline_track_rows: List[QtWidgets.QFrame] = []
@@ -673,6 +676,11 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._timeline_view_start = 0
         self._timeline_view_span = 120
         self._timeline_play_btn = None
+        self._timeline_curves_btn = None
+        self._timeline_curves_mode = False
+        self._timeline_curve_min = -5.0
+        self._timeline_curve_max = 5.0
+        self._timeline_curve_selected = set()
         self._timeline_frame_spin = None
         self._timeline_frame_slider = None
         self._timeline_key_count_label = None
@@ -1614,17 +1622,233 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                     pass
         self._timeline_key_markers = []
 
+    def _timeline_entry_axis_mask(self, entry) -> List[bool]:
+        if not isinstance(entry, dict):
+            return [False, False, False, False, False, False]
+        raw = entry.get("axis_mask", None)
+        if isinstance(raw, (list, tuple)) and len(raw) >= 6:
+            try:
+                return [bool(raw[i]) for i in range(6)]
+            except Exception:
+                pass
+        mask = [False, False, False, False, False, False]
+        xyz = entry.get("xyz", None)
+        if isinstance(xyz, (list, tuple)) and len(xyz) >= 3:
+            mask[0] = True
+            mask[1] = True
+            mask[2] = True
+        rxyz = entry.get("rxyz", None)
+        if isinstance(rxyz, (list, tuple)) and len(rxyz) >= 3:
+            mask[3] = True
+            mask[4] = True
+            mask[5] = True
+        return mask
+
+    def _timeline_entry_has_any_axis(self, entry) -> bool:
+        try:
+            return any(self._timeline_entry_axis_mask(entry))
+        except Exception:
+            return False
+
+    def _timeline_axis_is_keyed(self, entry, axis: int) -> bool:
+        try:
+            idx = int(axis)
+        except Exception:
+            return False
+        if idx < 0 or idx > 5:
+            return False
+        try:
+            return bool(self._timeline_entry_axis_mask(entry)[idx])
+        except Exception:
+            return False
+
+    def _timeline_set_axis_keyed(self, entry, axis: int, keyed: bool) -> None:
+        if not isinstance(entry, dict):
+            return
+        try:
+            idx = int(axis)
+        except Exception:
+            return
+        if idx < 0 or idx > 5:
+            return
+        mask = self._timeline_entry_axis_mask(entry)
+        mask[idx] = bool(keyed)
+        entry["axis_mask"] = mask
+
+    def _timeline_axis_value_for_entry(self, entry, axis: int) -> Optional[float]:
+        if not isinstance(entry, dict):
+            return None
+        try:
+            idx = int(axis)
+        except Exception:
+            return None
+        if idx < 0 or idx > 5:
+            return None
+        try:
+            if idx < 3:
+                arr = entry.get("xyz", None)
+                if isinstance(arr, (list, tuple)) and len(arr) >= 3:
+                    return float(arr[idx])
+            else:
+                arr = entry.get("rxyz", None)
+                if isinstance(arr, (list, tuple)) and len(arr) >= 3:
+                    return float(arr[idx - 3])
+        except Exception:
+            return None
+        return None
+
+    def _timeline_set_axis_value_for_entry(self, entry, axis: int, value: float) -> None:
+        if not isinstance(entry, dict):
+            return
+        try:
+            idx = int(axis)
+            val = float(value)
+        except Exception:
+            return
+        if idx < 0 or idx > 5:
+            return
+        # Ensure edits on a single axis do not implicitly key other axes when
+        # creating/patching sparse entries during curve dragging.
+        raw_mask = entry.get("axis_mask", None)
+        if not (isinstance(raw_mask, (list, tuple)) and len(raw_mask) >= 6):
+            has_xyz = isinstance(entry.get("xyz", None), (list, tuple)) and len(entry.get("xyz", None)) >= 3
+            has_rxyz = isinstance(entry.get("rxyz", None), (list, tuple)) and len(entry.get("rxyz", None)) >= 3
+            if has_xyz or has_rxyz:
+                entry["axis_mask"] = self._timeline_entry_axis_mask(entry)
+            else:
+                entry["axis_mask"] = [False, False, False, False, False, False]
+        if idx < 3:
+            arr = entry.get("xyz", None)
+            if not (isinstance(arr, (list, tuple)) and len(arr) >= 3):
+                xyz0 = self._timeline_current_cam_xyz()
+                if xyz0 is None:
+                    arr = [0.0, 0.0, 0.0]
+                else:
+                    arr = [float(xyz0[0]), float(xyz0[1]), float(xyz0[2])]
+            else:
+                try:
+                    arr = [float(arr[0]), float(arr[1]), float(arr[2])]
+                except Exception:
+                    arr = [0.0, 0.0, 0.0]
+            arr[idx] = val
+            entry["xyz"] = arr
+        else:
+            ridx = idx - 3
+            arr = entry.get("rxyz", None)
+            if not (isinstance(arr, (list, tuple)) and len(arr) >= 3):
+                rxyz0 = self._timeline_current_cam_rxyz()
+                if rxyz0 is None:
+                    arr = [0.0, 0.0, 0.0]
+                else:
+                    arr = [float(rxyz0[0]), float(rxyz0[1]), float(rxyz0[2])]
+            else:
+                try:
+                    arr = [float(arr[0]), float(arr[1]), float(arr[2])]
+                except Exception:
+                    arr = [0.0, 0.0, 0.0]
+            arr[ridx] = val
+            entry["rxyz"] = arr
+        self._timeline_set_axis_keyed(entry, idx, True)
+        entry["camera_state"] = {}
+
     def _timeline_axes_for_entry(self, entry) -> Tuple[int, ...]:
         if not isinstance(entry, dict):
             return ()
-        axes: List[int] = []
-        xyz = entry.get("xyz", None)
-        if isinstance(xyz, (list, tuple)) and len(xyz) >= 3:
-            axes.extend((0, 1, 2))
-        rxyz = entry.get("rxyz", None)
-        if isinstance(rxyz, (list, tuple)) and len(rxyz) >= 3:
-            axes.extend((3, 4, 5))
+        mask = self._timeline_entry_axis_mask(entry)
+        axes = [i for i in range(6) if bool(mask[i])]
         return tuple(axes)
+
+    def _timeline_axis_key_points(self, axis: int) -> List[Tuple[int, float]]:
+        try:
+            idx = int(axis)
+        except Exception:
+            return []
+        if idx < 0 or idx > 5:
+            return []
+        keys = getattr(self, "_timeline_keys", {}) or {}
+        try:
+            items = sorted(keys.items(), key=lambda kv: int(kv[0]))
+        except Exception:
+            items = list(keys.items())
+        out: List[Tuple[int, float]] = []
+        for frame_raw, entry in items:
+            try:
+                frame = int(frame_raw)
+            except Exception:
+                continue
+            if not self._timeline_axis_is_keyed(entry, idx):
+                continue
+            val = self._timeline_axis_value_for_entry(entry, idx)
+            if val is None:
+                continue
+            out.append((frame, float(val)))
+        return out
+
+    def _timeline_eval_axis_curve(self, axis: int, frame: float) -> Optional[float]:
+        pts = self._timeline_axis_key_points(axis)
+        if not pts:
+            return None
+        if len(pts) == 1:
+            return float(pts[0][1])
+        tframe = float(frame)
+        if tframe <= float(pts[0][0]):
+            return float(pts[0][1])
+        if tframe >= float(pts[-1][0]):
+            return float(pts[-1][1])
+        for i in range(len(pts) - 1):
+            f1, v1 = pts[i]
+            f2, v2 = pts[i + 1]
+            if tframe < float(f1) or tframe > float(f2):
+                continue
+            span = float(f2 - f1)
+            if span <= 1e-6:
+                return float(v2)
+            t = (tframe - float(f1)) / span
+            p0 = float(pts[i - 1][1]) if i > 0 else float(v1)
+            p1 = float(v1)
+            p2 = float(v2)
+            p3 = float(pts[i + 2][1]) if (i + 2) < len(pts) else float(v2)
+            t2 = t * t
+            t3 = t2 * t
+            return 0.5 * (
+                (2.0 * p1)
+                + ((-p0 + p2) * t)
+                + ((2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2)
+                + ((-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3)
+            )
+        return None
+
+    def _timeline_eval_frame_values(self, frame: int) -> Tuple[Optional[Tuple[float, float, float]], Optional[Tuple[float, float, float]]]:
+        try:
+            f = int(frame)
+        except Exception:
+            f = 0
+        vals: List[Optional[float]] = [self._timeline_eval_axis_curve(axis, f) for axis in range(6)]
+        any_pos = any(vals[i] is not None for i in (0, 1, 2))
+        any_rot = any(vals[i] is not None for i in (3, 4, 5))
+        if not any_pos and not any_rot:
+            return (None, None)
+        xyz_out = None
+        rxyz_out = None
+        if any_pos:
+            base_xyz = self._timeline_current_cam_xyz()
+            if base_xyz is None:
+                base_xyz = (0.0, 0.0, 0.0)
+            xyz_out = (
+                float(vals[0] if vals[0] is not None else base_xyz[0]),
+                float(vals[1] if vals[1] is not None else base_xyz[1]),
+                float(vals[2] if vals[2] is not None else base_xyz[2]),
+            )
+        if any_rot:
+            base_rxyz = self._timeline_current_cam_rxyz()
+            if base_rxyz is None:
+                base_rxyz = (0.0, 0.0, 0.0)
+            rxyz_out = (
+                float(vals[3] if vals[3] is not None else base_rxyz[0]),
+                float(vals[4] if vals[4] is not None else base_rxyz[1]),
+                float(vals[5] if vals[5] is not None else base_rxyz[2]),
+            )
+        return (xyz_out, rxyz_out)
 
     def _timeline_slider_to_tracks_x(self, local_frame: int) -> Optional[int]:
         tracks = getattr(self, "_timeline_tracks_frame", None)
@@ -1698,10 +1922,201 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         except Exception:
             return None
 
+    def _timeline_tracks_x_to_slider_value(self, x_tracks: int) -> Optional[int]:
+        tracks = getattr(self, "_timeline_tracks_frame", None)
+        slider = getattr(self, "_timeline_frame_slider", None)
+        if tracks is None or slider is None:
+            return None
+        try:
+            gx = tracks.mapToGlobal(QtCore.QPoint(int(x_tracks), 0))
+            sx = int(slider.mapFromGlobal(gx).x())
+            opt = QtWidgets.QStyleOptionSlider()
+            slider.initStyleOption(opt)
+            style = slider.style()
+            groove = style.subControlRect(
+                QtWidgets.QStyle.CC_Slider,
+                opt,
+                QtWidgets.QStyle.SC_SliderGroove,
+                slider,
+            )
+            span = int(
+                max(
+                    1,
+                    style.pixelMetric(
+                        QtWidgets.QStyle.PM_SliderSpaceAvailable,
+                        opt,
+                        slider,
+                    ),
+                )
+            )
+            slider_len = int(
+                max(
+                    1,
+                    style.pixelMetric(
+                        QtWidgets.QStyle.PM_SliderLength,
+                        opt,
+                        slider,
+                    ),
+                )
+            )
+            pos = int(round(float(sx) - float(groove.left()) - (float(slider_len) * 0.5)))
+            pos = max(0, min(span, pos))
+            value = int(
+                QtWidgets.QStyle.sliderValueFromPosition(
+                    int(slider.minimum()),
+                    int(slider.maximum()),
+                    int(pos),
+                    int(span),
+                    bool(getattr(opt, "upsideDown", False)),
+                )
+            )
+            return max(int(slider.minimum()), min(int(slider.maximum()), value))
+        except Exception:
+            return None
+
+    def _timeline_axis_color(self, axis: int) -> QtGui.QColor:
+        colors = (
+            QtGui.QColor("#ef4444"),
+            QtGui.QColor("#22c55e"),
+            QtGui.QColor("#3b82f6"),
+            QtGui.QColor("#ef4444"),
+            QtGui.QColor("#22c55e"),
+            QtGui.QColor("#3b82f6"),
+        )
+        try:
+            idx = int(axis)
+        except Exception:
+            idx = 0
+        if idx < 0 or idx >= len(colors):
+            idx = 0
+        return colors[idx]
+
+    def _timeline_set_curves_mode(self, enabled: bool, *, sync_button: bool = True) -> None:
+        mode = bool(enabled)
+        self._timeline_curves_mode = mode
+        btn = getattr(self, "_timeline_curves_btn", None)
+        if sync_button and btn is not None:
+            try:
+                btn.blockSignals(True)
+                btn.setChecked(mode)
+            except Exception:
+                pass
+            finally:
+                try:
+                    btn.blockSignals(False)
+                except Exception:
+                    pass
+        stack = getattr(self, "_timeline_tracks_stack", None)
+        if stack is not None:
+            try:
+                stack.setCurrentIndex(1 if mode else 0)
+            except Exception:
+                pass
+        if mode:
+            self._timeline_clear_key_markers()
+        else:
+            self._timeline_update_key_markers()
+        canvas = getattr(self, "_timeline_curves_canvas", None)
+        if canvas is not None:
+            try:
+                canvas.update()
+            except Exception:
+                pass
+        self._timeline_update_playhead()
+
+    def _timeline_on_curves_toggled(self, checked: bool) -> None:
+        self._timeline_set_curves_mode(bool(checked), sync_button=False)
+
+    def _timeline_drag_axis_key(
+        self,
+        axis: int,
+        source_frame: int,
+        target_frame: int,
+        target_value: float,
+        *,
+        commit: bool = False,
+    ) -> int:
+        try:
+            idx = int(axis)
+            src = max(0, int(source_frame))
+            dst = max(0, int(target_frame))
+            val = float(target_value)
+        except Exception:
+            return int(source_frame) if isinstance(source_frame, int) else 0
+        if idx < 0 or idx > 5:
+            return src
+        try:
+            current_frame = int(self._timeline_current_frame())
+        except Exception:
+            current_frame = 0
+        keys = getattr(self, "_timeline_keys", {}) or {}
+        src_entry = keys.get(src)
+        if not isinstance(src_entry, dict):
+            return src
+        if not self._timeline_axis_is_keyed(src_entry, idx):
+            return src
+        if dst != src:
+            self._timeline_set_axis_keyed(src_entry, idx, False)
+            src_entry["camera_state"] = {}
+            if self._timeline_entry_has_any_axis(src_entry):
+                keys[src] = src_entry
+            else:
+                try:
+                    del keys[src]
+                except Exception:
+                    pass
+            dst_entry = keys.get(dst)
+            if not isinstance(dst_entry, dict):
+                dst_entry = {}
+            self._timeline_set_axis_value_for_entry(dst_entry, idx, val)
+            dst_entry["camera_state"] = {}
+            keys[dst] = dst_entry
+            active_frame = dst
+        else:
+            self._timeline_set_axis_value_for_entry(src_entry, idx, val)
+            src_entry["camera_state"] = {}
+            keys[src] = src_entry
+            active_frame = src
+        self._timeline_keys = keys
+        try:
+            sel = getattr(self, "_timeline_curve_selected", set()) or set()
+            old_item = (int(idx), int(src))
+            new_item = (int(idx), int(active_frame))
+            if old_item in sel:
+                sel.discard(old_item)
+                sel.add(new_item)
+            self._timeline_curve_selected = {
+                (int(a), int(f))
+                for (a, f) in sel
+            }
+        except Exception:
+            self._timeline_curve_selected = set()
+        self._timeline_total_max = max(int(getattr(self, "_timeline_total_max", 240) or 240), int(active_frame))
+        self._timeline_sync_range_controls(keep_current_visible=False, refresh_key_markers=True)
+        self._timeline_apply_frame_if_keyed(int(current_frame))
+        canvas = getattr(self, "_timeline_curves_canvas", None)
+        if canvas is not None:
+            try:
+                canvas.update()
+            except Exception:
+                pass
+        if bool(commit):
+            self._timeline_save_to_disk()
+        return int(active_frame)
+
     def _timeline_update_key_markers(self) -> None:
         tracks = getattr(self, "_timeline_tracks_frame", None)
         slider = getattr(self, "_timeline_frame_slider", None)
         row_frames = getattr(self, "_timeline_track_rows", None)
+        if bool(getattr(self, "_timeline_curves_mode", False)):
+            self._timeline_clear_key_markers()
+            canvas = getattr(self, "_timeline_curves_canvas", None)
+            if canvas is not None:
+                try:
+                    canvas.update()
+                except Exception:
+                    pass
+            return
         if tracks is None or slider is None or not isinstance(row_frames, list) or not row_frames:
             self._timeline_clear_key_markers()
             return
@@ -1917,6 +2332,12 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             st = entry.get("camera_state", None)
             if isinstance(st, dict) and st:
                 row["camera_state"] = self._timeline_json_safe(st)
+            mask = entry.get("axis_mask", None)
+            if isinstance(mask, (list, tuple)) and len(mask) >= 6:
+                try:
+                    row["axis_mask"] = [bool(mask[i]) for i in range(6)]
+                except Exception:
+                    pass
             keys_out.append(row)
         payload = {
             "scene": str(getattr(self, "_timeline_scene_name", "scene") or "scene"),
@@ -1932,6 +2353,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
     def _timeline_load_from_disk(self) -> None:
         path = getattr(self, "_timeline_anim_path", None)
         self._timeline_keys = {}
+        self._timeline_curve_selected = set()
         if path is None or not path.exists():
             self._timeline_total_max = max(240, int(self._timeline_current_frame()))
             self._timeline_sync_range_controls(keep_current_visible=True, refresh_key_markers=True)
@@ -1977,6 +2399,12 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             st = row.get("camera_state", None)
             if isinstance(st, dict):
                 item["camera_state"] = st
+            mask = row.get("axis_mask", None)
+            if isinstance(mask, (list, tuple)) and len(mask) >= 6:
+                try:
+                    item["axis_mask"] = [bool(mask[i]) for i in range(6)]
+                except Exception:
+                    pass
             if item:
                 data[int(frame)] = item
         self._timeline_keys = data
@@ -2012,7 +2440,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         else:
             self._timeline_refresh_coord_labels()
 
-    def _timeline_apply_xyz_only(self, xyz) -> None:
+    def _timeline_apply_xyz_only(self, xyz, rxyz=None) -> None:
         if np is None:
             return
         if not isinstance(xyz, (list, tuple)) or len(xyz) < 3:
@@ -2026,6 +2454,22 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 cam = FpsCamera()
                 self._fps_camera = cam
             cam.position = np.array([float(xyz[0]), float(xyz[1]), float(xyz[2])], dtype=np.float32)
+            if isinstance(rxyz, (list, tuple)) and len(rxyz) >= 2:
+                try:
+                    pitch = math.radians(float(rxyz[0]))
+                    yaw = math.radians(float(rxyz[1]))
+                    cp = math.cos(pitch)
+                    sp = math.sin(pitch)
+                    sy = math.sin(yaw)
+                    cy = math.cos(yaw)
+                    fwd = np.array([sy * cp, sp, -cy * cp], dtype=np.float32)
+                    fn = float(np.linalg.norm(fwd))
+                    if fn > 1e-6:
+                        cam.forward = (fwd / fn).astype(np.float32)
+                        if hasattr(cam, "lock_roll"):
+                            cam.lock_roll()
+                except Exception:
+                    pass
             if hasattr(cam, "_orthonormalize"):
                 cam._orthonormalize()
             self._fps_camera = cam
@@ -2038,11 +2482,24 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             pass
 
     def _timeline_apply_frame_if_keyed(self, frame: int) -> None:
+        if bool(getattr(self, "_timeline_curves_mode", False)):
+            xyz_eval, rxyz_eval = self._timeline_eval_frame_values(int(frame))
+            if xyz_eval is not None or rxyz_eval is not None:
+                if xyz_eval is None:
+                    xyz_eval = self._timeline_current_cam_xyz()
+                if xyz_eval is not None:
+                    self._timeline_apply_xyz_only(xyz_eval, rxyz_eval)
+                    try:
+                        self.update()
+                    except Exception:
+                        pass
+                    self._timeline_refresh_coord_labels()
+                    return
         try:
             entry = (getattr(self, "_timeline_keys", {}) or {}).get(int(frame))
         except Exception:
             entry = None
-        if not isinstance(entry, dict):
+        if not isinstance(entry, dict) or not self._timeline_entry_has_any_axis(entry):
             self._timeline_refresh_coord_labels()
             return
         renderer = getattr(self, "_mgl_renderer", None) or self
@@ -2057,7 +2514,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             except Exception:
                 applied = False
         if not applied:
-            self._timeline_apply_xyz_only(entry.get("xyz", None))
+            self._timeline_apply_xyz_only(entry.get("xyz", None), entry.get("rxyz", None))
         try:
             self.update()
         except Exception:
@@ -2121,6 +2578,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         entry = {
             "xyz": [float(xyz[0]), float(xyz[1]), float(xyz[2])],
             "rxyz": [float(rxyz[0]), float(rxyz[1]), float(rxyz[2])],
+            "axis_mask": [True, True, True, True, True, True],
             "camera_state": state if isinstance(state, dict) else {},
         }
         try:
@@ -2133,14 +2591,80 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         self._timeline_refresh_coord_labels()
 
     def _timeline_on_delete_key_clicked(self) -> None:
-        frame = self._timeline_current_frame()
+        deleted_any = False
+        selection_changed = False
         try:
-            if int(frame) in self._timeline_keys:
-                del self._timeline_keys[int(frame)]
+            raw_sel = getattr(self, "_timeline_curve_selected", set()) or set()
+            selected = {(int(a), int(f)) for (a, f) in raw_sel}
         except Exception:
-            pass
+            selected = set()
+
+        if selected:
+            keys = getattr(self, "_timeline_keys", {}) or {}
+            by_frame: Dict[int, set[int]] = {}
+            for axis, frame in selected:
+                if int(axis) < 0 or int(axis) > 5:
+                    continue
+                if int(frame) < 0:
+                    continue
+                by_frame.setdefault(int(frame), set()).add(int(axis))
+
+            for frame, axes in by_frame.items():
+                entry = keys.get(int(frame))
+                if not isinstance(entry, dict):
+                    continue
+                changed = False
+                for axis in axes:
+                    if self._timeline_axis_is_keyed(entry, int(axis)):
+                        self._timeline_set_axis_keyed(entry, int(axis), False)
+                        changed = True
+                if not changed:
+                    continue
+                entry["camera_state"] = {}
+                if self._timeline_entry_has_any_axis(entry):
+                    keys[int(frame)] = entry
+                else:
+                    try:
+                        del keys[int(frame)]
+                    except Exception:
+                        pass
+                deleted_any = True
+
+            self._timeline_keys = keys
+            kept = {
+                (int(axis), int(frame))
+                for (axis, frame) in selected
+                if isinstance((self._timeline_keys or {}).get(int(frame)), dict)
+                and self._timeline_axis_is_keyed((self._timeline_keys or {}).get(int(frame)), int(axis))
+            }
+            selection_changed = kept != selected
+            self._timeline_curve_selected = kept
+        elif not bool(getattr(self, "_timeline_curves_mode", False)):
+            frame = self._timeline_current_frame()
+            try:
+                if int(frame) in self._timeline_keys:
+                    del self._timeline_keys[int(frame)]
+                    deleted_any = True
+            except Exception:
+                pass
+            try:
+                sel = getattr(self, "_timeline_curve_selected", set()) or set()
+                new_sel = {
+                    (int(a), int(f))
+                    for (a, f) in sel
+                    if int(f) != int(frame)
+                }
+                selection_changed = new_sel != sel
+                self._timeline_curve_selected = new_sel
+            except Exception:
+                self._timeline_curve_selected = set()
+                selection_changed = True
+
+        if not deleted_any and not selection_changed:
+            return
         self._timeline_sync_range_controls(keep_current_visible=True, refresh_key_markers=True)
-        self._timeline_save_to_disk()
+        if deleted_any:
+            self._timeline_save_to_disk()
         self._timeline_refresh_coord_labels()
 
     def _layout_timeline_panel(self) -> None:
@@ -2172,10 +2696,13 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
         existing = getattr(self, "_timeline_panel", None)
         if existing is not None:
             has_play = isinstance(getattr(self, "_timeline_play_btn", None), QtWidgets.QPushButton)
+            has_curves_btn = isinstance(getattr(self, "_timeline_curves_btn", None), QtWidgets.QPushButton)
             has_scroll = getattr(self, "_timeline_scrollbar", None) is not None
             has_spacer = getattr(self, "_timeline_left_header_spacer", None) is not None
             has_rows = bool(getattr(self, "_timeline_track_rows", []))
-            if has_play and has_scroll and has_spacer and has_rows:
+            has_stack = getattr(self, "_timeline_tracks_stack", None) is not None
+            has_canvas = getattr(self, "_timeline_curves_canvas", None) is not None
+            if has_play and has_curves_btn and has_scroll and has_spacer and has_rows and has_stack and has_canvas:
                 return
             try:
                 existing.hide()
@@ -2185,12 +2712,16 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             self._timeline_panel = None
             self._timeline_tracks_frame = None
             self._timeline_playhead = None
+            self._timeline_tracks_stack = None
+            self._timeline_rows_host = None
+            self._timeline_curves_canvas = None
             self._timeline_left_header_spacer = None
             self._timeline_area_widget = None
             self._timeline_track_rows = []
             self._timeline_key_markers = []
             self._timeline_scrollbar = None
             self._timeline_play_btn = None
+            self._timeline_curves_btn = None
             self._timeline_frame_slider = None
             self._timeline_frame_spin = None
             self._timeline_key_count_label = None
@@ -2217,6 +2748,10 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 "#GLTimelinePanel QFrame#GLTimelineTrackLine{background:rgba(148,163,184,80);border:0px;}"
                 "#GLTimelinePanel QFrame#GLTimelineKeyDot{background:#ef4444;border:1px solid #991b1b;border-radius:4px;}"
                 "#GLTimelinePanel QFrame#GLTimelinePlayhead{background:#22c55e;border:0px;}"
+                "#GLTimelinePanel QPushButton#GLTimelineCurvesButton{padding:2px 10px;font-weight:700;color:#e2e8f0;background:#1f2937;border:1px solid #334155;border-radius:4px;}"
+                "#GLTimelinePanel QPushButton#GLTimelineCurvesButton:hover{background:#334155;}"
+                "#GLTimelinePanel QPushButton#GLTimelineCurvesButton:checked{background:#1e3a8a;border-color:#60a5fa;color:#eff6ff;}"
+                "#GLTimelinePanel QWidget#GLTimelineCurveCanvas{background:rgba(15,18,22,34);border-radius:3px;}"
                 "#GLTimelinePanel QLabel#GLTimelineValue{color:#f8fafc;}"
                 "#GLTimelinePanel QFrame#GLTimelineTicks QLabel{color:#94a3b8;font-size:10px;}"
                 "#GLTimelinePanel QScrollBar:horizontal{background:rgba(15,18,22,90);height:10px;border:1px solid rgba(51,65,85,150);border-radius:4px;}"
@@ -2255,6 +2790,14 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             play_btn.toggled.connect(self._timeline_on_play_toggled)
             header.addWidget(play_btn, 0)
             self._timeline_play_btn = play_btn
+
+            curves_btn = QtWidgets.QPushButton("Curves", panel)
+            curves_btn.setObjectName("GLTimelineCurvesButton")
+            curves_btn.setCheckable(True)
+            curves_btn.setFixedWidth(74)
+            curves_btn.toggled.connect(self._timeline_on_curves_toggled)
+            header.addWidget(curves_btn, 0)
+            self._timeline_curves_btn = curves_btn
 
             key_btn = QtWidgets.QPushButton("Set Key", panel)
             key_btn.clicked.connect(self._timeline_on_set_key_clicked)
@@ -2334,15 +2877,328 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             timeline_area_layout.addWidget(frame_slider, 0)
             self._timeline_frame_slider = frame_slider
 
+            class _TimelineCurveCanvas(QtWidgets.QWidget):
+                def __init__(self, view, host):
+                    super().__init__(host)
+                    self._view = view
+                    self._drag = None
+                    self._selecting = False
+                    self._select_origin = QtCore.QPointF()
+                    self._selection_rect = QtCore.QRectF()
+                    self.setObjectName("GLTimelineCurveCanvas")
+                    self.setMouseTracking(True)
+                    self.setAttribute(QtCore.Qt.WA_StyledBackground, True)
+
+                @staticmethod
+                def _event_pos(ev):
+                    try:
+                        if hasattr(ev, "position"):
+                            return ev.position()
+                    except Exception:
+                        pass
+                    return ev.pos()
+
+                def _graph_rect(self):
+                    left = 30
+                    top = 8
+                    right = 8
+                    bottom = 8
+                    return QtCore.QRect(
+                        int(left),
+                        int(top),
+                        int(max(1, self.width() - left - right)),
+                        int(max(1, self.height() - top - bottom)),
+                    )
+
+                def _value_to_y(self, value: float) -> float:
+                    rect = self._graph_rect()
+                    vmin = float(getattr(self._view, "_timeline_curve_min", -5.0))
+                    vmax = float(getattr(self._view, "_timeline_curve_max", 5.0))
+                    if vmax <= vmin:
+                        return float(rect.center().y())
+                    vv = max(vmin, min(vmax, float(value)))
+                    t = (vmax - vv) / (vmax - vmin)
+                    return float(rect.top()) + (t * float(max(1, rect.height())))
+
+                def _y_to_value(self, y_pos: float) -> float:
+                    rect = self._graph_rect()
+                    vmin = float(getattr(self._view, "_timeline_curve_min", -5.0))
+                    vmax = float(getattr(self._view, "_timeline_curve_max", 5.0))
+                    if vmax <= vmin:
+                        return 0.0
+                    yy = max(float(rect.top()), min(float(rect.bottom()), float(y_pos)))
+                    t = (yy - float(rect.top())) / float(max(1, rect.height()))
+                    vv = vmax - (t * (vmax - vmin))
+                    return float(max(vmin, min(vmax, vv)))
+
+                def _axis_points(self):
+                    out = {i: [] for i in range(6)}
+                    slider = getattr(self._view, "_timeline_frame_slider", None)
+                    if slider is None:
+                        return out
+                    try:
+                        start = int(max(0, int(getattr(self._view, "_timeline_view_start", 0) or 0)))
+                    except Exception:
+                        start = 0
+                    try:
+                        local_max = int(max(0, int(slider.maximum())))
+                    except Exception:
+                        local_max = 0
+                    end = start + local_max
+                    keys = getattr(self._view, "_timeline_keys", {}) or {}
+                    try:
+                        items = sorted(keys.items(), key=lambda kv: int(kv[0]))
+                    except Exception:
+                        items = list(keys.items())
+                    for frame_raw, entry in items:
+                        try:
+                            frame = int(frame_raw)
+                        except Exception:
+                            continue
+                        if frame < start or frame > end:
+                            continue
+                        local = frame - start
+                        x = self._view._timeline_slider_to_tracks_x(local)
+                        if x is None:
+                            continue
+                        for axis in self._view._timeline_axes_for_entry(entry):
+                            val = self._view._timeline_axis_value_for_entry(entry, axis)
+                            if val is None:
+                                continue
+                            out[axis].append((int(frame), float(val), float(x), float(self._value_to_y(val))))
+                    for axis in out.keys():
+                        out[axis].sort(key=lambda r: int(r[0]))
+                    return out
+
+                def _nearest_point(self, posf):
+                    pts_by_axis = self._axis_points()
+                    best = None
+                    best_d2 = None
+                    px = float(posf.x())
+                    py = float(posf.y())
+                    for axis, rows in pts_by_axis.items():
+                        for frame, val, x, y in rows:
+                            dx = float(x) - px
+                            dy = float(y) - py
+                            d2 = (dx * dx) + (dy * dy)
+                            if d2 > 64.0:
+                                continue
+                            if best is None or best_d2 is None or d2 < best_d2:
+                                best = (int(axis), int(frame), float(val))
+                                best_d2 = d2
+                    return best
+
+                def _selected_set(self):
+                    sel = getattr(self._view, "_timeline_curve_selected", None)
+                    if isinstance(sel, set):
+                        return set((int(a), int(f)) for (a, f) in sel)
+                    return set()
+
+                def _set_selected_set(self, items):
+                    try:
+                        self._view._timeline_curve_selected = {
+                            (int(a), int(f)) for (a, f) in items
+                        }
+                    except Exception:
+                        self._view._timeline_curve_selected = set()
+
+                @staticmethod
+                def _norm_rect(rf):
+                    try:
+                        return QtCore.QRectF(rf).normalized()
+                    except Exception:
+                        return QtCore.QRectF()
+
+                def _keys_in_rect(self, rectf):
+                    rr = self._norm_rect(rectf)
+                    out = set()
+                    pts_by_axis = self._axis_points()
+                    for axis, rows in pts_by_axis.items():
+                        for frame, _val, x, y in rows:
+                            if rr.contains(QtCore.QPointF(float(x), float(y))):
+                                out.add((int(axis), int(frame)))
+                    return out
+
+                def paintEvent(self, ev):
+                    _ = ev
+                    p = QtGui.QPainter(self)
+                    try:
+                        p.setRenderHint(QtGui.QPainter.Antialiasing, True)
+                    except Exception:
+                        pass
+                    rect = self._graph_rect()
+                    p.fillRect(self.rect(), QtGui.QColor(0, 0, 0, 0))
+                    p.setPen(QtGui.QPen(QtGui.QColor("#334155"), 1))
+                    p.drawLine(rect.left(), rect.top(), rect.left(), rect.bottom())
+                    p.drawLine(rect.left(), rect.bottom(), rect.right(), rect.bottom())
+
+                    vmin = int(round(float(getattr(self._view, "_timeline_curve_min", -5.0))))
+                    vmax = int(round(float(getattr(self._view, "_timeline_curve_max", 5.0))))
+                    if vmax < vmin:
+                        vmin, vmax = vmax, vmin
+                    for vv in range(vmax, vmin - 1, -1):
+                        y = int(round(self._value_to_y(float(vv))))
+                        line_col = QtGui.QColor(148, 163, 184, 70)
+                        if vv == 0:
+                            line_col = QtGui.QColor(148, 163, 184, 115)
+                        p.setPen(QtGui.QPen(line_col, 1))
+                        p.drawLine(rect.left(), y, rect.right(), y)
+                        p.setPen(QtGui.QPen(QtGui.QColor("#cbd5e1"), 1))
+                        p.drawText(2, y - 2, f"{vv}")
+
+                    pts_by_axis = self._axis_points()
+                    selected = self._selected_set()
+                    for axis in range(6):
+                        rows = pts_by_axis.get(axis, [])
+                        if not rows:
+                            continue
+                        col = self._view._timeline_axis_color(axis)
+                        path = QtGui.QPainterPath()
+                        path.moveTo(float(rows[0][2]), float(rows[0][3]))
+                        if len(rows) > 1:
+                            qpts = [QtCore.QPointF(float(r[2]), float(r[3])) for r in rows]
+                            for i in range(len(qpts) - 1):
+                                p0 = qpts[i - 1] if i > 0 else qpts[i]
+                                p1 = qpts[i]
+                                p2 = qpts[i + 1]
+                                p3 = qpts[i + 2] if (i + 2) < len(qpts) else qpts[i + 1]
+                                c1 = QtCore.QPointF(
+                                    p1.x() + ((p2.x() - p0.x()) / 6.0),
+                                    p1.y() + ((p2.y() - p0.y()) / 6.0),
+                                )
+                                c2 = QtCore.QPointF(
+                                    p2.x() - ((p3.x() - p1.x()) / 6.0),
+                                    p2.y() - ((p3.y() - p1.y()) / 6.0),
+                                )
+                                path.cubicTo(c1, c2, p2)
+                        p.setBrush(QtCore.Qt.NoBrush)
+                        p.setPen(QtGui.QPen(col, 2))
+                        p.drawPath(path)
+                        for frame, _val, x, y in rows:
+                            key = (int(axis), int(frame))
+                            if key in selected:
+                                p.setPen(QtGui.QPen(QtGui.QColor("#f59e0b"), 1.2))
+                                p.setBrush(QtGui.QBrush(QtGui.QColor("#fde047")))
+                                p.drawEllipse(QtCore.QPointF(float(x), float(y)), 5.0, 5.0)
+                            else:
+                                p.setPen(QtGui.QPen(QtGui.QColor(15, 23, 42, 210), 1))
+                                p.setBrush(QtGui.QBrush(col))
+                                p.drawEllipse(QtCore.QPointF(float(x), float(y)), 4.0, 4.0)
+                    if bool(self._selecting):
+                        rr = self._norm_rect(self._selection_rect)
+                        p.setPen(QtGui.QPen(QtGui.QColor("#fde047"), 1, QtCore.Qt.DashLine))
+                        p.setBrush(QtGui.QBrush(QtGui.QColor(253, 224, 71, 35)))
+                        p.drawRect(rr)
+                    p.end()
+
+                def mousePressEvent(self, ev):
+                    if ev.button() != QtCore.Qt.LeftButton:
+                        return super().mousePressEvent(ev)
+                    posf = self._event_pos(ev)
+                    hit = self._nearest_point(posf)
+                    if hit is None:
+                        self._drag = None
+                        self._selecting = True
+                        self._select_origin = QtCore.QPointF(float(posf.x()), float(posf.y()))
+                        self._selection_rect = QtCore.QRectF(self._select_origin, self._select_origin)
+                        self._set_selected_set(set())
+                        self.update()
+                        ev.accept()
+                        return
+                    axis, frame, _val = hit
+                    self._selecting = False
+                    self._drag = {"axis": int(axis), "frame": int(frame)}
+                    self._set_selected_set({(int(axis), int(frame))})
+                    self.update()
+                    ev.accept()
+
+                def mouseMoveEvent(self, ev):
+                    if bool(self._selecting):
+                        posf = self._event_pos(ev)
+                        self._selection_rect = QtCore.QRectF(self._select_origin, QtCore.QPointF(float(posf.x()), float(posf.y())))
+                        self._set_selected_set(self._keys_in_rect(self._selection_rect))
+                        self.update()
+                        ev.accept()
+                        return
+                    if not isinstance(self._drag, dict):
+                        return super().mouseMoveEvent(ev)
+                    posf = self._event_pos(ev)
+                    local = self._view._timeline_tracks_x_to_slider_value(int(round(float(posf.x()))))
+                    if local is None:
+                        return
+                    try:
+                        start = int(max(0, int(getattr(self._view, "_timeline_view_start", 0) or 0)))
+                    except Exception:
+                        start = 0
+                    target_frame = max(0, start + int(local))
+                    target_value = self._y_to_value(float(posf.y()))
+                    cur_frame = int(self._drag.get("frame", target_frame))
+                    new_frame = self._view._timeline_drag_axis_key(
+                        int(self._drag.get("axis", 0)),
+                        int(cur_frame),
+                        int(target_frame),
+                        float(target_value),
+                        commit=False,
+                    )
+                    self._drag["frame"] = int(new_frame)
+                    self.update()
+                    ev.accept()
+
+                def mouseReleaseEvent(self, ev):
+                    if ev.button() != QtCore.Qt.LeftButton:
+                        return super().mouseReleaseEvent(ev)
+                    if bool(self._selecting):
+                        self._selecting = False
+                        rr = self._norm_rect(self._selection_rect)
+                        if rr.width() <= 2.0 and rr.height() <= 2.0:
+                            self._set_selected_set(set())
+                        else:
+                            self._set_selected_set(self._keys_in_rect(rr))
+                        self._selection_rect = QtCore.QRectF()
+                        self.update()
+                        ev.accept()
+                        return
+                    if not isinstance(self._drag, dict):
+                        return super().mouseReleaseEvent(ev)
+                    posf = self._event_pos(ev)
+                    local = self._view._timeline_tracks_x_to_slider_value(int(round(float(posf.x()))))
+                    if local is not None:
+                        try:
+                            start = int(max(0, int(getattr(self._view, "_timeline_view_start", 0) or 0)))
+                        except Exception:
+                            start = 0
+                        target_frame = max(0, start + int(local))
+                        target_value = self._y_to_value(float(posf.y()))
+                        cur_frame = int(self._drag.get("frame", target_frame))
+                        new_frame = self._view._timeline_drag_axis_key(
+                            int(self._drag.get("axis", 0)),
+                            int(cur_frame),
+                            int(target_frame),
+                            float(target_value),
+                            commit=True,
+                        )
+                        self._drag["frame"] = int(new_frame)
+                        self._set_selected_set({(int(self._drag.get("axis", 0)), int(new_frame))})
+                    self._drag = None
+                    self.update()
+                    ev.accept()
+
             tracks_frame = QtWidgets.QFrame(timeline_area)
             tracks_frame.setObjectName("GLTimelineTracks")
             tracks_frame.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.MinimumExpanding)
-            tracks_layout = QtWidgets.QVBoxLayout(tracks_frame)
+            tracks_stack = QtWidgets.QStackedLayout(tracks_frame)
+            tracks_stack.setContentsMargins(0, 0, 0, 0)
+            tracks_stack.setSpacing(0)
+            self._timeline_tracks_stack = tracks_stack
+
+            rows_host = QtWidgets.QWidget(tracks_frame)
+            self._timeline_rows_host = rows_host
+            tracks_layout = QtWidgets.QVBoxLayout(rows_host)
             tracks_layout.setContentsMargins(0, 0, 0, 0)
             tracks_layout.setSpacing(4)
             track_rows: List[QtWidgets.QFrame] = []
             for _ in channels:
-                row_frame = QtWidgets.QFrame(tracks_frame)
+                row_frame = QtWidgets.QFrame(rows_host)
                 row_frame.setObjectName("GLTimelineTrackRow")
                 row_frame.setFixedHeight(22)
                 row_layout = QtWidgets.QVBoxLayout(row_frame)
@@ -2356,6 +3212,11 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
                 row_layout.addStretch(1)
                 tracks_layout.addWidget(row_frame, 0)
                 track_rows.append(row_frame)
+            tracks_stack.addWidget(rows_host)
+
+            curves_canvas = _TimelineCurveCanvas(self, tracks_frame)
+            self._timeline_curves_canvas = curves_canvas
+            tracks_stack.addWidget(curves_canvas)
             timeline_area_layout.addWidget(tracks_frame, 1)
 
             playhead = QtWidgets.QFrame(tracks_frame)
@@ -2407,6 +3268,7 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
 
             self._timeline_sync_row_alignment()
             self._timeline_sync_range_controls(keep_current_visible=True, refresh_key_markers=True)
+            self._timeline_set_curves_mode(bool(getattr(self, "_timeline_curves_mode", False)))
 
             panel.hide()
             self._timeline_panel = panel
@@ -2420,12 +3282,16 @@ class GraphGLView(MGLRendererMixin, QOpenGLWidget if QOpenGLWidget is not None e
             self._timeline_panel = None
             self._timeline_tracks_frame = None
             self._timeline_playhead = None
+            self._timeline_tracks_stack = None
+            self._timeline_rows_host = None
+            self._timeline_curves_canvas = None
             self._timeline_left_header_spacer = None
             self._timeline_area_widget = None
             self._timeline_track_rows = []
             self._timeline_key_markers = []
             self._timeline_scrollbar = None
             self._timeline_play_btn = None
+            self._timeline_curves_btn = None
             self._timeline_frame_slider = None
             self._timeline_frame_spin = None
             self._timeline_key_count_label = None
