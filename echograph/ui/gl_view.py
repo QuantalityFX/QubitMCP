@@ -2274,6 +2274,51 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
         return pos, fwd, up
 
+    def _sync_selected_scene_camera_view(self, owner: str | None = None) -> bool:
+        owner_key = str(owner or getattr(self, "_camera_select_mode", "default") or "").strip()
+        if not owner_key or owner_key.lower() == "default":
+            return False
+        if np is None:
+            return False
+        pose = self._build_scene_camera_pose(owner_key)
+        if pose is None:
+            return False
+        pos, fwd, up = pose
+        cam = getattr(self, "_fps_camera", None)
+        if cam is None:
+            try:
+                cam = FpsCamera()
+            except Exception:
+                return False
+        try:
+            cam.position = np.array(pos, dtype=np.float32)
+            cam.forward = np.array(fwd, dtype=np.float32)
+            cam.up = np.array(up, dtype=np.float32)
+            if hasattr(cam, "_orthonormalize"):
+                cam._orthonormalize()
+            self._fps_camera = cam
+        except Exception:
+            return False
+        try:
+            fov = self._camera_casefold_get(getattr(self, "_scene_camera_fov_by_owner", {}), owner_key)
+            if fov is not None:
+                self._mgl_fov = max(5.0, min(170.0, float(fov)))
+        except Exception:
+            pass
+        try:
+            if bool(getattr(self, "_fly_mode_enabled", False)):
+                self._fps_camera_active = True
+            else:
+                self._fps_cam_sync_orbit_from_camera()
+                self._fps_camera_active = False
+        except Exception:
+            pass
+        try:
+            self.update()
+        except Exception:
+            pass
+        return True
+
     def _select_default_camera(self) -> None:
         self._camera_select_mode = "default"
         state = getattr(self, "_camera_select_saved_default_state", None)
@@ -2317,42 +2362,9 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                         self._camera_select_saved_default_state = saved
             except Exception:
                 pass
-        pose = self._build_scene_camera_pose(owner_key)
-        if pose is None:
+        if not bool(self._sync_selected_scene_camera_view(owner_key)):
             self._select_default_camera()
             return
-        pos, fwd, up = pose
-        cam = getattr(self, "_fps_camera", None)
-        if cam is None:
-            try:
-                cam = FpsCamera()
-            except Exception:
-                return
-        try:
-            cam.position = np.array(pos, dtype=np.float32)
-            cam.forward = np.array(fwd, dtype=np.float32)
-            cam.up = np.array(up, dtype=np.float32)
-            if hasattr(cam, "_orthonormalize"):
-                cam._orthonormalize()
-            self._fps_camera = cam
-        except Exception:
-            return
-
-        try:
-            fov = self._camera_casefold_get(getattr(self, "_scene_camera_fov_by_owner", {}), owner_key)
-            if fov is not None:
-                self._mgl_fov = max(5.0, min(170.0, float(fov)))
-        except Exception:
-            pass
-
-        try:
-            if bool(getattr(self, "_fly_mode_enabled", False)):
-                self._fps_camera_active = True
-            else:
-                self._fps_cam_sync_orbit_from_camera()
-                self._fps_camera_active = False
-        except Exception:
-            pass
 
         self._camera_select_mode = owner_key
         try:

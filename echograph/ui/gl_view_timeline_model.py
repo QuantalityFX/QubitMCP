@@ -1761,6 +1761,14 @@ class GraphGLTimelineModelMixin:
         except Exception:
             pass
         try:
+            mode = str(getattr(self, "_camera_select_mode", "default") or "").strip()
+            if mode and mode.lower() != "default" and mode.lower() == key.lower():
+                sync_fn = getattr(self, "_sync_selected_scene_camera_view", None)
+                if callable(sync_fn):
+                    sync_fn(key)
+        except Exception:
+            pass
+        try:
             self.update()
         except Exception:
             pass
