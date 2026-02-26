@@ -152,6 +152,44 @@ class GraphGLTimelineIOMixin:
                     row["axis_mask"] = [bool(mask[i]) for i in range(6)]
                 except Exception:
                     pass
+            ch = entry.get("curve_handles", None)
+            if isinstance(ch, dict) and ch:
+                ch_out = {}
+                for ak, av in ch.items():
+                    try:
+                        axis_idx = int(str(ak).strip())
+                    except Exception:
+                        continue
+                    if axis_idx < 0 or axis_idx > 5:
+                        continue
+                    if not isinstance(av, dict):
+                        continue
+                    mode_raw = str(av.get("mode", "tied") or "tied").strip().lower()
+                    if mode_raw == "straight":
+                        mode = "straight"
+                    elif mode_raw == "untied":
+                        mode = "untied"
+                    else:
+                        mode = "tied"
+                    if mode == "straight":
+                        ch_out[str(axis_idx)] = {"mode": "straight"}
+                        continue
+                    in_raw = av.get("in", None)
+                    out_raw = av.get("out", None)
+                    if not (isinstance(in_raw, (list, tuple)) and len(in_raw) >= 2):
+                        continue
+                    if not (isinstance(out_raw, (list, tuple)) and len(out_raw) >= 2):
+                        continue
+                    try:
+                        ch_out[str(axis_idx)] = {
+                            "mode": mode,
+                            "in": [float(in_raw[0]), float(in_raw[1])],
+                            "out": [float(out_raw[0]), float(out_raw[1])],
+                        }
+                    except Exception:
+                        continue
+                if ch_out:
+                    row["curve_handles"] = ch_out
             keys_out.append(row)
         payload = {
             "scene": str(getattr(self, "_timeline_scene_name", "scene") or "scene"),
@@ -220,6 +258,44 @@ class GraphGLTimelineIOMixin:
                     item["axis_mask"] = [bool(mask[i]) for i in range(6)]
                 except Exception:
                     pass
+            ch = row.get("curve_handles", None)
+            if isinstance(ch, dict) and ch:
+                ch_out = {}
+                for ak, av in ch.items():
+                    try:
+                        axis_idx = int(str(ak).strip())
+                    except Exception:
+                        continue
+                    if axis_idx < 0 or axis_idx > 5:
+                        continue
+                    if not isinstance(av, dict):
+                        continue
+                    mode_raw = str(av.get("mode", "tied") or "tied").strip().lower()
+                    if mode_raw == "straight":
+                        mode = "straight"
+                    elif mode_raw == "untied":
+                        mode = "untied"
+                    else:
+                        mode = "tied"
+                    if mode == "straight":
+                        ch_out[str(axis_idx)] = {"mode": "straight"}
+                        continue
+                    in_raw = av.get("in", None)
+                    out_raw = av.get("out", None)
+                    if not (isinstance(in_raw, (list, tuple)) and len(in_raw) >= 2):
+                        continue
+                    if not (isinstance(out_raw, (list, tuple)) and len(out_raw) >= 2):
+                        continue
+                    try:
+                        ch_out[str(axis_idx)] = {
+                            "mode": mode,
+                            "in": [float(in_raw[0]), float(in_raw[1])],
+                            "out": [float(out_raw[0]), float(out_raw[1])],
+                        }
+                    except Exception:
+                        continue
+                if ch_out:
+                    item["curve_handles"] = ch_out
             if item:
                 data[int(frame)] = item
         self._timeline_keys = data

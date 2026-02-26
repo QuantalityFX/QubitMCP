@@ -61,6 +61,9 @@ class GraphGLTimelineWidgetsMixin:
         if existing is not None:
             has_play = isinstance(getattr(self, "_timeline_play_btn", None), QtWidgets.QPushButton)
             has_curves_btn = isinstance(getattr(self, "_timeline_curves_btn", None), QtWidgets.QPushButton)
+            has_handle_straight_btn = isinstance(getattr(self, "_timeline_handle_straight_btn", None), QtWidgets.QPushButton)
+            has_handle_tied_btn = isinstance(getattr(self, "_timeline_handle_tied_btn", None), QtWidgets.QPushButton)
+            has_handle_untied_btn = isinstance(getattr(self, "_timeline_handle_untied_btn", None), QtWidgets.QPushButton)
             has_scroll = getattr(self, "_timeline_scrollbar", None) is not None
             has_spacer = getattr(self, "_timeline_left_header_spacer", None) is not None
             has_rows = bool(getattr(self, "_timeline_track_rows", []))
@@ -76,8 +79,25 @@ class GraphGLTimelineWidgetsMixin:
                     if lb is not None
                 )
             )
-            if has_play and has_curves_btn and has_scroll and has_spacer and has_rows and has_stack and has_canvas and has_target_label and has_axis_labels:
+            if (
+                has_play
+                and has_curves_btn
+                and has_handle_straight_btn
+                and has_handle_tied_btn
+                and has_handle_untied_btn
+                and has_scroll
+                and has_spacer
+                and has_rows
+                and has_stack
+                and has_canvas
+                and has_target_label
+                and has_axis_labels
+            ):
                 self._timeline_update_axis_label_styles()
+                try:
+                    self._timeline_update_handle_mode_buttons()
+                except Exception:
+                    pass
                 return
             try:
                 existing.hide()
@@ -98,6 +118,9 @@ class GraphGLTimelineWidgetsMixin:
             self._timeline_scrollbar = None
             self._timeline_play_btn = None
             self._timeline_curves_btn = None
+            self._timeline_handle_straight_btn = None
+            self._timeline_handle_tied_btn = None
+            self._timeline_handle_untied_btn = None
             self._timeline_frame_slider = None
             self._timeline_frame_spin = None
             self._timeline_key_count_label = None
@@ -144,6 +167,15 @@ class GraphGLTimelineWidgetsMixin:
                     "#GLTimelinePanel QPushButton#GLTimelineCurvesButton{padding:0px;background:transparent;border:0px;}",
                     "#GLTimelinePanel QPushButton#GLTimelineCurvesButton:hover{background:transparent;border:0px;}",
                     "#GLTimelinePanel QPushButton#GLTimelineCurvesButton:checked{background:transparent;border:0px;}",
+                    "#GLTimelinePanel QPushButton#GLTimelineHandleStraightButton{padding:0px;background:transparent;border:0px;}",
+                    "#GLTimelinePanel QPushButton#GLTimelineHandleStraightButton:hover{background:transparent;border:0px;}",
+                    "#GLTimelinePanel QPushButton#GLTimelineHandleStraightButton:checked{background:transparent;border:0px;}",
+                    "#GLTimelinePanel QPushButton#GLTimelineHandleTiedButton{padding:0px;background:transparent;border:0px;}",
+                    "#GLTimelinePanel QPushButton#GLTimelineHandleTiedButton:hover{background:transparent;border:0px;}",
+                    "#GLTimelinePanel QPushButton#GLTimelineHandleTiedButton:checked{background:transparent;border:0px;}",
+                    "#GLTimelinePanel QPushButton#GLTimelineHandleUntiedButton{padding:0px;background:transparent;border:0px;}",
+                    "#GLTimelinePanel QPushButton#GLTimelineHandleUntiedButton:hover{background:transparent;border:0px;}",
+                    "#GLTimelinePanel QPushButton#GLTimelineHandleUntiedButton:checked{background:transparent;border:0px;}",
                     "#GLTimelinePanel QPushButton#GLTimelineAxisButton{padding:0px 4px;text-align:left;background:transparent;border:0px;border-radius:3px;}",
                     "#GLTimelinePanel QPushButton#GLTimelineSetKeyButton{padding:0px;background:rgba(0,0,0,220);border:1px solid rgba(226,232,240,215);border-radius:15px;}",
                     "#GLTimelinePanel QPushButton#GLTimelineSetKeyButton:hover{background:rgba(34,211,238,65);border:1px solid rgba(34,211,238,240);}",
@@ -198,6 +230,34 @@ class GraphGLTimelineWidgetsMixin:
             header.addWidget(curves_btn, 0)
             self._timeline_curves_btn = curves_btn
             self._update_timeline_curves_button()
+
+            straight_btn = QtWidgets.QPushButton(panel)
+            straight_btn.setObjectName("GLTimelineHandleStraightButton")
+            straight_btn.setCheckable(True)
+            straight_btn.setFixedSize(26, 26)
+            straight_btn.setFlat(True)
+            straight_btn.clicked.connect(self._timeline_on_handle_straight_clicked)
+            header.addWidget(straight_btn, 0)
+            self._timeline_handle_straight_btn = straight_btn
+
+            tied_btn = QtWidgets.QPushButton(panel)
+            tied_btn.setObjectName("GLTimelineHandleTiedButton")
+            tied_btn.setCheckable(True)
+            tied_btn.setFixedSize(26, 26)
+            tied_btn.setFlat(True)
+            tied_btn.clicked.connect(self._timeline_on_handle_tied_clicked)
+            header.addWidget(tied_btn, 0)
+            self._timeline_handle_tied_btn = tied_btn
+
+            untied_btn = QtWidgets.QPushButton(panel)
+            untied_btn.setObjectName("GLTimelineHandleUntiedButton")
+            untied_btn.setCheckable(True)
+            untied_btn.setFixedSize(26, 26)
+            untied_btn.setFlat(True)
+            untied_btn.clicked.connect(self._timeline_on_handle_untied_clicked)
+            header.addWidget(untied_btn, 0)
+            self._timeline_handle_untied_btn = untied_btn
+            self._timeline_update_handle_mode_buttons()
 
             del_btn = QtWidgets.QPushButton(panel)
             del_btn.setObjectName("GLTimelineDeleteKeyButton")
@@ -594,6 +654,7 @@ class GraphGLTimelineWidgetsMixin:
                     super().__init__(host)
                     self._view = view
                     self._drag = None
+                    self._handle_drag = None
                     self._selecting = False
                     self._select_origin = QtCore.QPointF()
                     self._selection_rect = QtCore.QRectF()
@@ -731,6 +792,10 @@ class GraphGLTimelineWidgetsMixin:
                         }
                     except Exception:
                         self._view._timeline_curve_selected = set()
+                    try:
+                        self._view._timeline_update_handle_mode_buttons()
+                    except Exception:
+                        pass
 
                 @staticmethod
                 def _norm_rect(rf):
@@ -748,6 +813,94 @@ class GraphGLTimelineWidgetsMixin:
                             if rr.contains(QtCore.QPointF(float(x), float(y))):
                                 out.add((int(axis), int(frame)))
                     return out
+
+                def _selected_handle_points(self, pts_by_axis):
+                    out = []
+                    try:
+                        start = int(max(0, int(getattr(self._view, "_timeline_view_start", 0) or 0)))
+                    except Exception:
+                        start = 0
+                    selected = self._selected_set()
+                    if not selected:
+                        return out
+                    by_key = {}
+                    for axis, rows in pts_by_axis.items():
+                        for frame, val, x, y in rows:
+                            by_key[(int(axis), int(frame))] = (float(val), float(x), float(y))
+                    for axis, frame in sorted(selected, key=lambda af: (int(af[0]), int(af[1]))):
+                        if not bool(self._view._timeline_axis_is_visible(int(axis))):
+                            continue
+                        key = (int(axis), int(frame))
+                        if key not in by_key:
+                            continue
+                        val, xk, yk = by_key[key]
+                        h = self._view._timeline_axis_handles_for_key(int(axis), int(frame), create=False)
+                        if not isinstance(h, dict):
+                            h = self._view._timeline_default_axis_handles(
+                                int(axis),
+                                int(frame),
+                                key_value=float(val),
+                            )
+                        try:
+                            mode = str(h.get("mode", "tied") or "tied").strip().lower()
+                        except Exception:
+                            mode = "tied"
+                        if mode == "straight":
+                            continue
+                        try:
+                            in_dx, in_dy = tuple(h.get("in", (-3.0, 0.0)))
+                        except Exception:
+                            in_dx, in_dy = (-3.0, 0.0)
+                        try:
+                            out_dx, out_dy = tuple(h.get("out", (3.0, 0.0)))
+                        except Exception:
+                            out_dx, out_dy = (3.0, 0.0)
+                        xin = self._view._timeline_local_frame_to_tracks_x_float((float(frame) - float(start)) + float(in_dx))
+                        xout = self._view._timeline_local_frame_to_tracks_x_float((float(frame) - float(start)) + float(out_dx))
+                        if xin is None or xout is None:
+                            continue
+                        yin = self._value_to_y(float(val) + float(in_dy))
+                        yout = self._value_to_y(float(val) + float(out_dy))
+                        out.append(
+                            {
+                                "axis": int(axis),
+                                "frame": int(frame),
+                                "value": float(val),
+                                "key": (float(xk), float(yk)),
+                                "in": (float(xin), float(yin)),
+                                "out": (float(xout), float(yout)),
+                            }
+                        )
+                    return out
+
+                def _nearest_handle(self, posf):
+                    pts_by_axis = self._axis_points()
+                    handles = self._selected_handle_points(pts_by_axis)
+                    if not handles:
+                        return None
+                    px = float(posf.x())
+                    py = float(posf.y())
+                    best = None
+                    best_d2 = None
+                    for item in handles:
+                        for side in ("in", "out"):
+                            hx, hy = item.get(side, (None, None))
+                            if hx is None or hy is None:
+                                continue
+                            dx = float(hx) - px
+                            dy = float(hy) - py
+                            d2 = (dx * dx) + (dy * dy)
+                            if d2 > 64.0:
+                                continue
+                            if best is None or best_d2 is None or d2 < best_d2:
+                                best = (
+                                    int(item.get("axis", 0)),
+                                    int(item.get("frame", 0)),
+                                    str(side),
+                                    float(item.get("value", 0.0)),
+                                )
+                                best_d2 = d2
+                    return best
 
                 def paintEvent(self, ev):
                     _ = ev
@@ -777,6 +930,10 @@ class GraphGLTimelineWidgetsMixin:
                         p.drawText(2, y - 2, f"{vv}")
 
                     pts_by_axis = self._axis_points()
+                    try:
+                        start = int(max(0, int(getattr(self._view, "_timeline_view_start", 0) or 0)))
+                    except Exception:
+                        start = 0
                     selected = self._selected_set()
                     for axis in range(6):
                         rows = pts_by_axis.get(axis, [])
@@ -786,21 +943,55 @@ class GraphGLTimelineWidgetsMixin:
                         path = QtGui.QPainterPath()
                         path.moveTo(float(rows[0][2]), float(rows[0][3]))
                         if len(rows) > 1:
-                            qpts = [QtCore.QPointF(float(r[2]), float(r[3])) for r in rows]
-                            for i in range(len(qpts) - 1):
-                                p0 = qpts[i - 1] if i > 0 else qpts[i]
-                                p1 = qpts[i]
-                                p2 = qpts[i + 1]
-                                p3 = qpts[i + 2] if (i + 2) < len(qpts) else qpts[i + 1]
-                                c1 = QtCore.QPointF(
-                                    p1.x() + ((p2.x() - p0.x()) / 6.0),
-                                    p1.y() + ((p2.y() - p0.y()) / 6.0),
+                            for i in range(len(rows) - 1):
+                                f1, v1, x1, y1 = rows[i]
+                                f2, v2, x2, y2 = rows[i + 1]
+                                h1 = self._view._timeline_axis_handles_for_key(int(axis), int(f1), create=False)
+                                if not isinstance(h1, dict):
+                                    h1 = self._view._timeline_default_axis_handles(
+                                        int(axis),
+                                        int(f1),
+                                        key_value=float(v1),
+                                    )
+                                h2 = self._view._timeline_axis_handles_for_key(int(axis), int(f2), create=False)
+                                if not isinstance(h2, dict):
+                                    h2 = self._view._timeline_default_axis_handles(
+                                        int(axis),
+                                        int(f2),
+                                        key_value=float(v2),
+                                    )
+                                try:
+                                    mode1 = str(h1.get("mode", "tied") or "tied").strip().lower()
+                                except Exception:
+                                    mode1 = "tied"
+                                try:
+                                    mode2 = str(h2.get("mode", "tied") or "tied").strip().lower()
+                                except Exception:
+                                    mode2 = "tied"
+                                if mode1 == "straight" or mode2 == "straight":
+                                    path.lineTo(QtCore.QPointF(float(x2), float(y2)))
+                                    continue
+                                try:
+                                    out_dx, out_dy = tuple(h1.get("out", (3.0, 0.0)))
+                                except Exception:
+                                    out_dx, out_dy = (3.0, 0.0)
+                                try:
+                                    in_dx, in_dy = tuple(h2.get("in", (-3.0, 0.0)))
+                                except Exception:
+                                    in_dx, in_dy = (-3.0, 0.0)
+                                c1x = self._view._timeline_local_frame_to_tracks_x_float((float(f1) - float(start)) + float(out_dx))
+                                c2x = self._view._timeline_local_frame_to_tracks_x_float((float(f2) - float(start)) + float(in_dx))
+                                if c1x is None:
+                                    c1x = float(x1)
+                                if c2x is None:
+                                    c2x = float(x2)
+                                c1y = self._value_to_y(float(v1) + float(out_dy))
+                                c2y = self._value_to_y(float(v2) + float(in_dy))
+                                path.cubicTo(
+                                    QtCore.QPointF(float(c1x), float(c1y)),
+                                    QtCore.QPointF(float(c2x), float(c2y)),
+                                    QtCore.QPointF(float(x2), float(y2)),
                                 )
-                                c2 = QtCore.QPointF(
-                                    p2.x() - ((p3.x() - p1.x()) / 6.0),
-                                    p2.y() - ((p3.y() - p1.y()) / 6.0),
-                                )
-                                path.cubicTo(c1, c2, p2)
                         p.setBrush(QtCore.Qt.NoBrush)
                         p.setPen(QtGui.QPen(col, 2))
                         p.drawPath(path)
@@ -814,6 +1005,28 @@ class GraphGLTimelineWidgetsMixin:
                                 p.setPen(QtGui.QPen(QtGui.QColor(15, 23, 42, 210), 1))
                                 p.setBrush(QtGui.QBrush(col))
                                 p.drawEllipse(QtCore.QPointF(float(x), float(y)), 4.0, 4.0)
+                    try:
+                        handle_items = self._selected_handle_points(pts_by_axis)
+                    except Exception:
+                        handle_items = []
+                    if handle_items:
+                        for item in handle_items:
+                            kx, ky = item.get("key", (0.0, 0.0))
+                            axis_idx = int(item.get("axis", 0))
+                            hcol = self._view._timeline_axis_color(axis_idx)
+                            for side in ("in", "out"):
+                                hx, hy = item.get(side, (None, None))
+                                if hx is None or hy is None:
+                                    continue
+                                p.setPen(QtGui.QPen(QtGui.QColor(148, 163, 184, 220), 1))
+                                p.setBrush(QtCore.Qt.NoBrush)
+                                p.drawLine(
+                                    QtCore.QPointF(float(kx), float(ky)),
+                                    QtCore.QPointF(float(hx), float(hy)),
+                                )
+                                p.setPen(QtGui.QPen(QtGui.QColor(15, 23, 42, 220), 1))
+                                p.setBrush(QtGui.QBrush(hcol))
+                                p.drawEllipse(QtCore.QPointF(float(hx), float(hy)), 3.4, 3.4)
                     if bool(self._selecting):
                         rr = self._norm_rect(self._selection_rect)
                         p.setPen(QtGui.QPen(QtGui.QColor("#fde047"), 1, QtCore.Qt.DashLine))
@@ -825,8 +1038,24 @@ class GraphGLTimelineWidgetsMixin:
                     if ev.button() != QtCore.Qt.LeftButton:
                         return super().mousePressEvent(ev)
                     posf = self._event_pos(ev)
+                    handle_hit = self._nearest_handle(posf)
+                    if handle_hit is not None:
+                        axis, frame, side, value = handle_hit
+                        self._selecting = False
+                        self._drag = None
+                        self._handle_drag = {
+                            "axis": int(axis),
+                            "frame": int(frame),
+                            "side": str(side),
+                            "value": float(value),
+                            "dirty": False,
+                        }
+                        self.update()
+                        ev.accept()
+                        return
                     hit = self._nearest_point(posf)
                     if hit is None:
+                        self._handle_drag = None
                         self._drag = None
                         self._selecting = True
                         self._select_origin = QtCore.QPointF(float(posf.x()), float(posf.y()))
@@ -850,11 +1079,51 @@ class GraphGLTimelineWidgetsMixin:
                         "multi": bool(len(drag_sel) > 1),
                         "dirty": False,
                     }
+                    self._handle_drag = None
                     self._set_selected_set(drag_sel)
                     self.update()
                     ev.accept()
 
                 def mouseMoveEvent(self, ev):
+                    if isinstance(self._handle_drag, dict):
+                        posf = self._event_pos(ev)
+                        axis = int(self._handle_drag.get("axis", 0))
+                        frame = int(self._handle_drag.get("frame", 0))
+                        side = str(self._handle_drag.get("side", "out"))
+                        value = float(self._handle_drag.get("value", 0.0))
+                        try:
+                            start = int(max(0, int(getattr(self._view, "_timeline_view_start", 0) or 0)))
+                        except Exception:
+                            start = 0
+                        local_frame = float(frame) - float(start)
+                        kx = self._view._timeline_local_frame_to_tracks_x_float(local_frame)
+                        if kx is None:
+                            return
+                        ky = self._value_to_y(float(value))
+                        px_per_frame = self._view._timeline_tracks_pixels_per_frame(local_frame)
+                        if abs(float(px_per_frame)) <= 1.0e-6:
+                            px_per_frame = 1.0
+                        dx_frame = (float(posf.x()) - float(kx)) / float(px_per_frame)
+                        dy_value = self._y_to_value(float(posf.y())) - float(value)
+                        if side == "in":
+                            dx_frame = -abs(float(dx_frame))
+                        else:
+                            dx_frame = abs(float(dx_frame))
+                        changed = bool(
+                            self._view._timeline_set_axis_handle_value(
+                                int(axis),
+                                int(frame),
+                                str(side),
+                                float(dx_frame),
+                                float(dy_value),
+                                commit=False,
+                            )
+                        )
+                        if changed:
+                            self._handle_drag["dirty"] = True
+                        self.update()
+                        ev.accept()
+                        return
                     if bool(self._selecting):
                         posf = self._event_pos(ev)
                         self._selection_rect = QtCore.QRectF(self._select_origin, QtCore.QPointF(float(posf.x()), float(posf.y())))
@@ -905,6 +1174,20 @@ class GraphGLTimelineWidgetsMixin:
                 def mouseReleaseEvent(self, ev):
                     if ev.button() != QtCore.Qt.LeftButton:
                         return super().mouseReleaseEvent(ev)
+                    if isinstance(self._handle_drag, dict):
+                        try:
+                            if bool(self._handle_drag.get("dirty", False)):
+                                self._view._timeline_save_to_disk()
+                        except Exception:
+                            pass
+                        self._handle_drag = None
+                        try:
+                            self._view._timeline_apply_frame_if_keyed(int(self._view._timeline_current_frame()))
+                        except Exception:
+                            pass
+                        self.update()
+                        ev.accept()
+                        return
                     if bool(self._selecting):
                         self._selecting = False
                         rr = self._norm_rect(self._selection_rect)
@@ -1288,6 +1571,9 @@ class GraphGLTimelineWidgetsMixin:
             self._timeline_scrollbar = None
             self._timeline_play_btn = None
             self._timeline_curves_btn = None
+            self._timeline_handle_straight_btn = None
+            self._timeline_handle_tied_btn = None
+            self._timeline_handle_untied_btn = None
             self._timeline_frame_slider = None
             self._timeline_frame_spin = None
             self._timeline_key_count_label = None

@@ -174,7 +174,12 @@ class GraphGLTimelineModelMixin:
         entry = keys.get(int(frame))
         if not isinstance(entry, dict):
             entry = {}
-        self._timeline_set_axis_value_for_entry(entry, int(idx), float(value))
+        self._timeline_set_axis_value_for_entry(
+            entry,
+            int(idx),
+            float(value),
+            frame=int(frame),
+        )
         entry["camera_state"] = {}
         keys[int(frame)] = entry
         self._timeline_keys = keys
@@ -468,6 +473,11 @@ class GraphGLTimelineModelMixin:
         mask = self._timeline_entry_axis_mask(entry)
         mask[idx] = bool(keyed)
         entry["axis_mask"] = mask
+        if not bool(keyed):
+            try:
+                self._timeline_remove_entry_axis_handles(entry, int(idx))
+            except Exception:
+                pass
 
     def _timeline_axis_value_for_entry(self, entry, axis: int) -> Optional[float]:
         if not isinstance(entry, dict):
@@ -491,7 +501,14 @@ class GraphGLTimelineModelMixin:
             return None
         return None
 
-    def _timeline_set_axis_value_for_entry(self, entry, axis: int, value: float) -> None:
+    def _timeline_set_axis_value_for_entry(
+        self,
+        entry,
+        axis: int,
+        value: float,
+        *,
+        frame: Optional[int] = None,
+    ) -> None:
         if not isinstance(entry, dict):
             return
         try:
@@ -543,6 +560,20 @@ class GraphGLTimelineModelMixin:
             arr[ridx] = val
             entry["rxyz"] = arr
         self._timeline_set_axis_keyed(entry, idx, True)
+        try:
+            frm = int(frame) if frame is not None else None
+        except Exception:
+            frm = None
+        if frm is not None and int(frm) >= 0:
+            try:
+                self._timeline_initialize_entry_axis_handle_if_missing(
+                    entry,
+                    int(idx),
+                    int(frm),
+                    key_value=float(val),
+                )
+            except Exception:
+                pass
         entry["camera_state"] = {}
 
     def _timeline_axes_for_entry(self, entry) -> Tuple[int, ...]:
@@ -578,8 +609,640 @@ class GraphGLTimelineModelMixin:
             out.append((frame, float(val)))
         return out
 
+    def _timeline_axis_neighbor_frames(self, axis: int, frame: int) -> Tuple[Optional[int], Optional[int]]:
+        prev_pt, next_pt = self._timeline_axis_neighbor_points(axis, frame)
+        prev_frame = None
+        next_frame = None
+        try:
+            if isinstance(prev_pt, tuple) and len(prev_pt) >= 1:
+                prev_frame = int(prev_pt[0])
+        except Exception:
+            prev_frame = None
+        try:
+            if isinstance(next_pt, tuple) and len(next_pt) >= 1:
+                next_frame = int(next_pt[0])
+        except Exception:
+            next_frame = None
+        return (prev_frame, next_frame)
+
+    def _timeline_axis_neighbor_points(
+        self,
+        axis: int,
+        frame: int,
+    ) -> Tuple[Optional[Tuple[int, float]], Optional[Tuple[int, float]]]:
+        try:
+            idx = int(axis)
+            cur = int(frame)
+        except Exception:
+            return (None, None)
+        prev_pt = None
+        next_pt = None
+        for ff, vv in self._timeline_axis_key_points(idx):
+            if int(ff) < int(cur):
+                prev_pt = (int(ff), float(vv))
+                continue
+            if int(ff) > int(cur):
+                next_pt = (int(ff), float(vv))
+                break
+        return (prev_pt, next_pt)
+
+    def _timeline_default_axis_handles(
+        self,
+        axis: int,
+        frame: int,
+        *,
+        key_value: Optional[float] = None,
+    ) -> Dict[str, object]:
+        try:
+            idx = int(axis)
+            cur = int(frame)
+        except Exception:
+            return {"mode": "tied", "in": (-3.0, 0.0), "out": (3.0, 0.0)}
+        prev_pt, next_pt = self._timeline_axis_neighbor_points(idx, cur)
+        prev_frame = int(prev_pt[0]) if isinstance(prev_pt, tuple) and len(prev_pt) >= 2 else None
+        next_frame = int(next_pt[0]) if isinstance(next_pt, tuple) and len(next_pt) >= 2 else None
+        prev_val = float(prev_pt[1]) if isinstance(prev_pt, tuple) and len(prev_pt) >= 2 else None
+        next_val = float(next_pt[1]) if isinstance(next_pt, tuple) and len(next_pt) >= 2 else None
+
+        cur_val = None
+        if key_value is not None:
+            try:
+                cur_val = float(key_value)
+            except Exception:
+                cur_val = None
+        if cur_val is None:
+            try:
+                entry = (getattr(self, "_timeline_keys", {}) or {}).get(int(cur))
+                cur_val = self._timeline_axis_value_for_entry(entry, int(idx))
+            except Exception:
+                cur_val = None
+        if cur_val is None:
+            if prev_val is not None and next_val is not None:
+                cur_val = (float(prev_val) + float(next_val)) * 0.5
+            elif next_val is not None:
+                cur_val = float(next_val)
+            elif prev_val is not None:
+                cur_val = float(prev_val)
+            else:
+                cur_val = 0.0
+
+        tangent = 0.0
+        try:
+            if (
+                prev_frame is not None
+                and next_frame is not None
+                and int(next_frame) != int(prev_frame)
+                and prev_val is not None
+                and next_val is not None
+            ):
+                tangent = (float(next_val) - float(prev_val)) / float(int(next_frame) - int(prev_frame))
+            elif (
+                next_frame is not None
+                and int(next_frame) != int(cur)
+                and next_val is not None
+            ):
+                tangent = (float(next_val) - float(cur_val)) / float(int(next_frame) - int(cur))
+            elif (
+                prev_frame is not None
+                and int(cur) != int(prev_frame)
+                and prev_val is not None
+            ):
+                tangent = (float(cur_val) - float(prev_val)) / float(int(cur) - int(prev_frame))
+        except Exception:
+            tangent = 0.0
+
+        base = 3.0
+        try:
+            gaps = []
+            if prev_frame is not None:
+                gaps.append(max(1.0, float(cur - int(prev_frame))))
+            if next_frame is not None:
+                gaps.append(max(1.0, float(int(next_frame) - cur)))
+            if gaps:
+                base = min(gaps) * 0.33
+        except Exception:
+            base = 3.0
+        base = max(0.6, min(4.0, float(base)))
+        out_dy = float(tangent) * float(base)
+        max_dy = 4.0
+        try:
+            vmin = float(getattr(self, "_timeline_curve_min", -5.0))
+            vmax = float(getattr(self, "_timeline_curve_max", 5.0))
+            if vmax < vmin:
+                vmin, vmax = vmax, vmin
+            vspan = max(1.0, float(vmax) - float(vmin))
+            max_dy = max(1.0, min(6.0, float(vspan) * 0.45))
+        except Exception:
+            max_dy = 4.0
+        out_dy = max(-float(max_dy), min(float(max_dy), float(out_dy)))
+        return {"mode": "tied", "in": (-float(base), -float(out_dy)), "out": (float(base), float(out_dy))}
+
+    def _timeline_clamp_axis_handle_pair(
+        self,
+        axis: int,
+        frame: int,
+        in_vec: Tuple[float, float],
+        out_vec: Tuple[float, float],
+        mode: str,
+    ) -> Tuple[Tuple[float, float], Tuple[float, float]]:
+        try:
+            idx = int(axis)
+            cur = int(frame)
+            inx = float(in_vec[0])
+            iny = float(in_vec[1])
+            outx = float(out_vec[0])
+            outy = float(out_vec[1])
+        except Exception:
+            return ((-3.0, 0.0), (3.0, 0.0))
+        prev_frame, next_frame = self._timeline_axis_neighbor_frames(idx, cur)
+        min_len = 0.05
+        max_len = 8.0
+        in_limit = max_len
+        out_limit = max_len
+        try:
+            if prev_frame is not None:
+                in_limit = min(float(max_len), max(float(min_len), float(cur - int(prev_frame)) * 0.49))
+            if next_frame is not None:
+                out_limit = min(float(max_len), max(float(min_len), float(int(next_frame) - cur) * 0.49))
+        except Exception:
+            in_limit = max_len
+            out_limit = max_len
+        if str(mode or "tied").strip().lower() != "untied":
+            src_x = abs(float(outx))
+            src_y = float(outy)
+            if src_x <= 1.0e-6:
+                src_x = abs(float(inx))
+                src_y = -float(iny)
+            lim = min(float(in_limit), float(out_limit))
+            src_x = max(float(min_len), min(float(lim), float(src_x)))
+            outx = float(src_x)
+            outy = float(src_y)
+            inx = -float(src_x)
+            iny = -float(src_y)
+        else:
+            in_mag = abs(float(inx))
+            out_mag = abs(float(outx))
+            in_mag = max(float(min_len), min(float(in_limit), float(in_mag)))
+            out_mag = max(float(min_len), min(float(out_limit), float(out_mag)))
+            inx = -float(in_mag)
+            outx = float(out_mag)
+        return ((float(inx), float(iny)), (float(outx), float(outy)))
+
+    def _timeline_entry_curve_handles_dict(self, entry, *, create: bool = False):
+        if not isinstance(entry, dict):
+            return None
+        raw = entry.get("curve_handles", None)
+        if isinstance(raw, dict):
+            return raw
+        if not bool(create):
+            return None
+        out = {}
+        entry["curve_handles"] = out
+        return out
+
+    def _timeline_remove_entry_axis_handles(self, entry, axis: int) -> None:
+        if not isinstance(entry, dict):
+            return
+        try:
+            idx = int(axis)
+        except Exception:
+            return
+        cmap = self._timeline_entry_curve_handles_dict(entry, create=False)
+        if not isinstance(cmap, dict):
+            return
+        try:
+            cmap.pop(str(idx), None)
+        except Exception:
+            pass
+        if not cmap:
+            try:
+                entry.pop("curve_handles", None)
+            except Exception:
+                pass
+
+    def _timeline_copy_entry_axis_handles(self, entry, axis: int):
+        if not isinstance(entry, dict):
+            return None
+        try:
+            idx = int(axis)
+        except Exception:
+            return None
+        cmap = self._timeline_entry_curve_handles_dict(entry, create=False)
+        if not isinstance(cmap, dict):
+            return None
+        raw = cmap.get(str(idx))
+        if not isinstance(raw, dict):
+            return None
+        mode = str(raw.get("mode", "tied") or "tied").strip().lower()
+        if mode == "straight":
+            return {"mode": "straight"}
+        mode = "untied" if mode == "untied" else "tied"
+        in_raw = raw.get("in", None)
+        out_raw = raw.get("out", None)
+        if not (isinstance(in_raw, (list, tuple)) and len(in_raw) >= 2):
+            return None
+        if not (isinstance(out_raw, (list, tuple)) and len(out_raw) >= 2):
+            return None
+        try:
+            return {
+                "mode": mode,
+                "in": [float(in_raw[0]), float(in_raw[1])],
+                "out": [float(out_raw[0]), float(out_raw[1])],
+            }
+        except Exception:
+            return None
+
+    def _timeline_set_entry_axis_handles(
+        self,
+        entry,
+        axis: int,
+        frame: int,
+        mode: str,
+        in_vec: Tuple[float, float],
+        out_vec: Tuple[float, float],
+    ) -> Dict[str, object]:
+        if not isinstance(entry, dict):
+            return {"mode": "tied", "in": (-3.0, 0.0), "out": (3.0, 0.0)}
+        try:
+            idx = int(axis)
+        except Exception:
+            return {"mode": "tied", "in": (-3.0, 0.0), "out": (3.0, 0.0)}
+        mode_raw = str(mode or "tied").strip().lower()
+        mode_norm = "straight" if mode_raw == "straight" else ("untied" if mode_raw == "untied" else "tied")
+        if mode_norm == "straight":
+            cmap = self._timeline_entry_curve_handles_dict(entry, create=True)
+            if not isinstance(cmap, dict):
+                return {"mode": "straight", "in": (0.0, 0.0), "out": (0.0, 0.0)}
+            cmap[str(idx)] = {"mode": "straight"}
+            return {"mode": "straight", "in": (0.0, 0.0), "out": (0.0, 0.0)}
+        in_v, out_v = self._timeline_clamp_axis_handle_pair(int(idx), int(frame), in_vec, out_vec, mode_norm)
+        cmap = self._timeline_entry_curve_handles_dict(entry, create=True)
+        if not isinstance(cmap, dict):
+            return {"mode": mode_norm, "in": in_v, "out": out_v}
+        cmap[str(idx)] = {
+            "mode": str(mode_norm),
+            "in": [float(in_v[0]), float(in_v[1])],
+            "out": [float(out_v[0]), float(out_v[1])],
+        }
+        return {"mode": str(mode_norm), "in": in_v, "out": out_v}
+
+    def _timeline_initialize_entry_axis_handle_if_missing(
+        self,
+        entry,
+        axis: int,
+        frame: int,
+        *,
+        key_value: Optional[float] = None,
+    ) -> None:
+        if not isinstance(entry, dict):
+            return
+        try:
+            idx = int(axis)
+            frm = int(frame)
+        except Exception:
+            return
+        if idx < 0 or idx > 5:
+            return
+        if not self._timeline_axis_is_keyed(entry, idx):
+            return
+        has_valid = False
+        cmap = self._timeline_entry_curve_handles_dict(entry, create=False)
+        if isinstance(cmap, dict):
+            raw = cmap.get(str(idx))
+            if isinstance(raw, dict):
+                mode_raw = str(raw.get("mode", "tied") or "tied").strip().lower()
+                if mode_raw == "straight":
+                    has_valid = True
+                else:
+                    in_raw = raw.get("in", None)
+                    out_raw = raw.get("out", None)
+                    has_valid = (
+                        isinstance(in_raw, (list, tuple))
+                        and len(in_raw) >= 2
+                        and isinstance(out_raw, (list, tuple))
+                        and len(out_raw) >= 2
+                    )
+        if bool(has_valid):
+            return
+        val = key_value
+        if val is None:
+            val = self._timeline_axis_value_for_entry(entry, idx)
+        if val is not None:
+            try:
+                val = float(val)
+            except Exception:
+                val = None
+        default_pair = self._timeline_default_axis_handles(idx, frm, key_value=val)
+        try:
+            mode = str(default_pair.get("mode", "tied") or "tied")
+            in_v = tuple(default_pair.get("in", (-3.0, 0.0)))
+            out_v = tuple(default_pair.get("out", (3.0, 0.0)))
+            self._timeline_set_entry_axis_handles(
+                entry,
+                idx,
+                frm,
+                mode,
+                (float(in_v[0]), float(in_v[1])),
+                (float(out_v[0]), float(out_v[1])),
+            )
+        except Exception:
+            pass
+
+    def _timeline_entry_axis_handles(self, entry, axis: int, frame: int, *, create: bool = False):
+        if not isinstance(entry, dict):
+            return None
+        try:
+            idx = int(axis)
+            frm = int(frame)
+        except Exception:
+            return None
+        if not self._timeline_axis_is_keyed(entry, idx):
+            return None
+        mode = "tied"
+        in_vec = None
+        out_vec = None
+        cmap = self._timeline_entry_curve_handles_dict(entry, create=False)
+        if isinstance(cmap, dict):
+            raw = cmap.get(str(idx))
+            if isinstance(raw, dict):
+                mode_raw = str(raw.get("mode", "tied") or "tied").strip().lower()
+                if mode_raw == "straight":
+                    mode = "straight"
+                else:
+                    mode = "untied" if mode_raw == "untied" else "tied"
+                    in_raw = raw.get("in", None)
+                    out_raw = raw.get("out", None)
+                    if isinstance(in_raw, (list, tuple)) and len(in_raw) >= 2:
+                        try:
+                            in_vec = (float(in_raw[0]), float(in_raw[1]))
+                        except Exception:
+                            in_vec = None
+                    if isinstance(out_raw, (list, tuple)) and len(out_raw) >= 2:
+                        try:
+                            out_vec = (float(out_raw[0]), float(out_raw[1]))
+                        except Exception:
+                            out_vec = None
+        if mode == "straight":
+            if create:
+                return self._timeline_set_entry_axis_handles(
+                    entry,
+                    idx,
+                    frm,
+                    "straight",
+                    (0.0, 0.0),
+                    (0.0, 0.0),
+                )
+            return {"mode": "straight", "in": (0.0, 0.0), "out": (0.0, 0.0)}
+        key_val = self._timeline_axis_value_for_entry(entry, idx)
+        default_pair = self._timeline_default_axis_handles(idx, frm, key_value=key_val)
+        if in_vec is None:
+            in_vec = tuple(default_pair.get("in", (-3.0, 0.0)))
+        if out_vec is None:
+            out_vec = tuple(default_pair.get("out", (3.0, 0.0)))
+        if create:
+            return self._timeline_set_entry_axis_handles(entry, idx, frm, mode, in_vec, out_vec)
+        in_v, out_v = self._timeline_clamp_axis_handle_pair(idx, frm, in_vec, out_vec, mode)
+        return {"mode": mode, "in": in_v, "out": out_v}
+
+    def _timeline_axis_handles_for_key(self, axis: int, frame: int, *, create: bool = False):
+        try:
+            idx = int(axis)
+            frm = int(frame)
+        except Exception:
+            return None
+        entry = (getattr(self, "_timeline_keys", {}) or {}).get(int(frm))
+        if not isinstance(entry, dict):
+            return None
+        return self._timeline_entry_axis_handles(entry, idx, frm, create=bool(create))
+
+    def _timeline_axis_handle_mode_for_key(self, axis: int, frame: int) -> str:
+        h = self._timeline_axis_handles_for_key(axis, frame, create=False)
+        if not isinstance(h, dict):
+            return "tied"
+        mode = str(h.get("mode", "tied") or "tied").strip().lower()
+        if mode == "straight":
+            return "straight"
+        if mode == "untied":
+            return "untied"
+        return "tied"
+
+    def _timeline_set_axis_handle_value(
+        self,
+        axis: int,
+        frame: int,
+        side: str,
+        dx: float,
+        dy: float,
+        *,
+        commit: bool = False,
+    ) -> bool:
+        try:
+            idx = int(axis)
+            frm = max(0, int(frame))
+            side_norm = str(side or "").strip().lower()
+            hx = float(dx)
+            hy = float(dy)
+        except Exception:
+            return False
+        if idx < 0 or idx > 5:
+            return False
+        if side_norm not in {"in", "out"}:
+            return False
+        keys = getattr(self, "_timeline_keys", {}) or {}
+        entry = keys.get(int(frm))
+        if not isinstance(entry, dict):
+            return False
+        if not self._timeline_axis_is_keyed(entry, idx):
+            return False
+        prev = self._timeline_entry_axis_handles(entry, idx, frm, create=True)
+        if not isinstance(prev, dict):
+            return False
+        mode = str(prev.get("mode", "tied") or "tied").strip().lower()
+        if mode not in {"tied", "untied", "straight"}:
+            mode = "tied"
+        if mode == "straight":
+            mode = "tied"
+        in_v = tuple(prev.get("in", (-3.0, 0.0)))
+        out_v = tuple(prev.get("out", (3.0, 0.0)))
+        if side_norm == "in":
+            in_v = (float(hx), float(hy))
+            if mode == "tied":
+                out_v = (-float(hx), -float(hy))
+        else:
+            out_v = (float(hx), float(hy))
+            if mode == "tied":
+                in_v = (-float(hx), -float(hy))
+        newv = self._timeline_set_entry_axis_handles(entry, idx, frm, mode, in_v, out_v)
+        keys[int(frm)] = entry
+        self._timeline_keys = keys
+        changed = True
+        try:
+            old_in = tuple(prev.get("in", (0.0, 0.0)))
+            old_out = tuple(prev.get("out", (0.0, 0.0)))
+            new_in = tuple(newv.get("in", (0.0, 0.0)))
+            new_out = tuple(newv.get("out", (0.0, 0.0)))
+            old_mode = str(prev.get("mode", "tied") or "tied")
+            new_mode = str(newv.get("mode", "tied") or "tied")
+            changed = (
+                old_mode != new_mode
+                or abs(float(old_in[0]) - float(new_in[0])) > 1.0e-6
+                or abs(float(old_in[1]) - float(new_in[1])) > 1.0e-6
+                or abs(float(old_out[0]) - float(new_out[0])) > 1.0e-6
+                or abs(float(old_out[1]) - float(new_out[1])) > 1.0e-6
+            )
+        except Exception:
+            changed = True
+        if not changed:
+            return False
+        entry["camera_state"] = {}
+        try:
+            self._timeline_apply_frame_if_keyed(int(self._timeline_current_frame()))
+        except Exception:
+            pass
+        canvas = getattr(self, "_timeline_curves_canvas", None)
+        if canvas is not None:
+            try:
+                canvas.update()
+            except Exception:
+                pass
+        if bool(commit):
+            self._timeline_save_to_disk()
+        return True
+
+    def _timeline_set_selected_handles_mode(self, mode: str) -> None:
+        mode_raw = str(mode or "").strip().lower()
+        if mode_raw == "straight":
+            mode_norm = "straight"
+        elif mode_raw == "untied":
+            mode_norm = "untied"
+        else:
+            mode_norm = "tied"
+        try:
+            selected = {
+                (int(a), int(f))
+                for (a, f) in (getattr(self, "_timeline_curve_selected", set()) or set())
+            }
+        except Exception:
+            selected = set()
+        if not selected:
+            self._update_timeline_handle_mode_buttons()
+            return
+        keys = getattr(self, "_timeline_keys", {}) or {}
+        applied = False
+        for axis, frame in selected:
+            entry = keys.get(int(frame))
+            if not isinstance(entry, dict):
+                continue
+            if not self._timeline_axis_is_keyed(entry, int(axis)):
+                continue
+            key_val = self._timeline_axis_value_for_entry(entry, int(axis))
+            if mode_norm == "straight":
+                in_v = (0.0, 0.0)
+                out_v = (0.0, 0.0)
+            elif mode_norm == "tied":
+                def_pair = self._timeline_default_axis_handles(
+                    int(axis),
+                    int(frame),
+                    key_value=key_val,
+                )
+                in_v = tuple(def_pair.get("in", (-3.0, 0.0)))
+                out_v = tuple(def_pair.get("out", (3.0, 0.0)))
+            else:
+                h = self._timeline_entry_axis_handles(entry, int(axis), int(frame), create=True)
+                if not isinstance(h, dict):
+                    continue
+                in_v = tuple(h.get("in", (-3.0, 0.0)))
+                out_v = tuple(h.get("out", (3.0, 0.0)))
+            self._timeline_set_entry_axis_handles(
+                entry,
+                int(axis),
+                int(frame),
+                mode_norm,
+                in_v,
+                out_v,
+            )
+            entry["camera_state"] = {}
+            keys[int(frame)] = entry
+            applied = True
+        if not applied:
+            self._update_timeline_handle_mode_buttons()
+            return
+        self._timeline_keys = keys
+        try:
+            self._timeline_apply_frame_if_keyed(int(self._timeline_current_frame()))
+        except Exception:
+            pass
+        self._timeline_save_to_disk()
+        canvas = getattr(self, "_timeline_curves_canvas", None)
+        if canvas is not None:
+            try:
+                canvas.update()
+            except Exception:
+                pass
+        self._update_timeline_handle_mode_buttons()
+
+    def _timeline_local_frame_to_tracks_x_float(self, local_frame: float) -> Optional[float]:
+        try:
+            lf = float(local_frame)
+        except Exception:
+            return None
+        slider = getattr(self, "_timeline_frame_slider", None)
+        if slider is None:
+            return None
+        try:
+            minv = int(slider.minimum())
+            maxv = int(slider.maximum())
+        except Exception:
+            return None
+        if maxv < minv:
+            return None
+        if lf < float(minv):
+            lf = float(minv)
+        if lf > float(maxv):
+            lf = float(maxv)
+        lo = int(math.floor(lf))
+        hi = int(math.ceil(lf))
+        x_lo = self._timeline_slider_to_tracks_x(int(lo))
+        if hi == lo:
+            return float(x_lo) if x_lo is not None else None
+        x_hi = self._timeline_slider_to_tracks_x(int(hi))
+        if x_lo is None and x_hi is None:
+            return None
+        if x_lo is None:
+            return float(x_hi)
+        if x_hi is None:
+            return float(x_lo)
+        t = float(lf - float(lo)) / float(max(1, hi - lo))
+        return float(x_lo) + ((float(x_hi) - float(x_lo)) * float(t))
+
+    def _timeline_tracks_pixels_per_frame(self, local_frame: float) -> float:
+        try:
+            lf = float(local_frame)
+        except Exception:
+            lf = 0.0
+        x0 = self._timeline_local_frame_to_tracks_x_float(float(lf))
+        x1 = self._timeline_local_frame_to_tracks_x_float(float(lf) + 1.0)
+        if x0 is not None and x1 is not None:
+            step = abs(float(x1) - float(x0))
+            if step > 1.0e-6:
+                return float(step)
+        tracks = getattr(self, "_timeline_tracks_frame", None)
+        slider = getattr(self, "_timeline_frame_slider", None)
+        if tracks is None or slider is None:
+            return 1.0
+        try:
+            w = float(max(1, int(tracks.width())))
+            span = float(max(1, int(slider.maximum()) - int(slider.minimum())))
+            return max(1.0, w / span)
+        except Exception:
+            return 1.0
+
     def _timeline_eval_axis_curve(self, axis: int, frame: float) -> Optional[float]:
-        pts = self._timeline_axis_key_points(axis)
+        try:
+            idx = int(axis)
+        except Exception:
+            return None
+        pts = self._timeline_axis_key_points(idx)
         if not pts:
             return None
         if len(pts) == 1:
@@ -597,18 +1260,58 @@ class GraphGLTimelineModelMixin:
             span = float(f2 - f1)
             if span <= 1e-6:
                 return float(v2)
-            t = (tframe - float(f1)) / span
-            p0 = float(pts[i - 1][1]) if i > 0 else float(v1)
-            p1 = float(v1)
-            p2 = float(v2)
-            p3 = float(pts[i + 2][1]) if (i + 2) < len(pts) else float(v2)
-            t2 = t * t
-            t3 = t2 * t
-            return 0.5 * (
-                (2.0 * p1)
-                + ((-p0 + p2) * t)
-                + ((2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2)
-                + ((-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3)
+            u = (tframe - float(f1)) / span
+            if u <= 0.0:
+                return float(v1)
+            if u >= 1.0:
+                return float(v2)
+            try:
+                m1 = str(self._timeline_axis_handle_mode_for_key(int(idx), int(f1)) or "tied").strip().lower()
+            except Exception:
+                m1 = "tied"
+            try:
+                m2 = str(self._timeline_axis_handle_mode_for_key(int(idx), int(f2)) or "tied").strip().lower()
+            except Exception:
+                m2 = "tied"
+            if m1 == "straight" or m2 == "straight":
+                return float(v1) + ((float(v2) - float(v1)) * float(u))
+            h1 = self._timeline_axis_handles_for_key(int(idx), int(f1), create=False) or self._timeline_default_axis_handles(
+                int(idx),
+                int(f1),
+                key_value=float(v1),
+            )
+            h2 = self._timeline_axis_handles_for_key(int(idx), int(f2), create=False) or self._timeline_default_axis_handles(
+                int(idx),
+                int(f2),
+                key_value=float(v2),
+            )
+            try:
+                out_dx, out_dy = tuple(h1.get("out", (3.0, 0.0)))
+            except Exception:
+                out_dx, out_dy = (3.0, 0.0)
+            try:
+                in_dx, in_dy = tuple(h2.get("in", (-3.0, 0.0)))
+            except Exception:
+                in_dx, in_dy = (-3.0, 0.0)
+            try:
+                m1 = float(out_dy) / float(out_dx) if abs(float(out_dx)) > 1.0e-6 else 0.0
+            except Exception:
+                m1 = 0.0
+            try:
+                m2 = float(in_dy) / float(in_dx) if abs(float(in_dx)) > 1.0e-6 else 0.0
+            except Exception:
+                m2 = 0.0
+            u2 = u * u
+            u3 = u2 * u
+            h00 = (2.0 * u3) - (3.0 * u2) + 1.0
+            h10 = u3 - (2.0 * u2) + u
+            h01 = (-2.0 * u3) + (3.0 * u2)
+            h11 = u3 - u2
+            return (
+                (h00 * float(v1))
+                + (h10 * span * float(m1))
+                + (h01 * float(v2))
+                + (h11 * span * float(m2))
             )
         return None
 
@@ -972,6 +1675,9 @@ class GraphGLTimelineModelMixin:
         icon_stop = None
         icon_curve = None
         icon_curve_active = None
+        icon_handle_straight = None
+        icon_handle_tied = None
+        icon_handle_untied = None
         icon_set_key = None
         icon_remove_key = None
         keyframe_handle_path = None
@@ -981,6 +1687,9 @@ class GraphGLTimelineModelMixin:
             stop_path = root / "icons" / "StopButton_icon.png"
             curve_path = root / "icons" / "CurveEditor_Icon.png"
             curve_active_path = root / "icons" / "CurveEditor_Active_Icon.png"
+            handle_straight_path = root / "icons" / "StreightCurve_Icon.png"
+            handle_tied_path = root / "icons" / "Tiehandles_Icon.png"
+            handle_untied_path = root / "icons" / "Untiedhandle_Icon.png"
             set_key_path = root / "icons" / "keyframe_Icon.png"
             remove_key_path = root / "icons" / "RemoveKey_Icon.png"
             handle_path = root / "icons" / "KeyframeHandle_Icon.png"
@@ -992,6 +1701,12 @@ class GraphGLTimelineModelMixin:
                 icon_curve = QtGui.QIcon(str(curve_path))
             if curve_active_path.exists():
                 icon_curve_active = QtGui.QIcon(str(curve_active_path))
+            if handle_straight_path.exists():
+                icon_handle_straight = QtGui.QIcon(str(handle_straight_path))
+            if handle_tied_path.exists():
+                icon_handle_tied = QtGui.QIcon(str(handle_tied_path))
+            if handle_untied_path.exists():
+                icon_handle_untied = QtGui.QIcon(str(handle_untied_path))
             if set_key_path.exists():
                 icon_set_key = QtGui.QIcon(str(set_key_path))
             if remove_key_path.exists():
@@ -1003,6 +1718,9 @@ class GraphGLTimelineModelMixin:
             icon_stop = None
             icon_curve = None
             icon_curve_active = None
+            icon_handle_straight = None
+            icon_handle_tied = None
+            icon_handle_untied = None
             icon_set_key = None
             icon_remove_key = None
             keyframe_handle_path = None
@@ -1010,6 +1728,9 @@ class GraphGLTimelineModelMixin:
         self._timeline_icon_stop = icon_stop
         self._timeline_icon_curve = icon_curve
         self._timeline_icon_curve_active = icon_curve_active
+        self._timeline_icon_handle_straight = icon_handle_straight
+        self._timeline_icon_handle_tied = icon_handle_tied
+        self._timeline_icon_handle_untied = icon_handle_untied
         self._timeline_icon_set_key = icon_set_key
         self._timeline_icon_remove_key = icon_remove_key
         self._timeline_keyframe_handle_path = keyframe_handle_path
@@ -1070,6 +1791,120 @@ class GraphGLTimelineModelMixin:
         except Exception:
             pass
 
+    def _timeline_selected_handle_mode(self) -> str:
+        try:
+            selected = {
+                (int(a), int(f))
+                for (a, f) in (getattr(self, "_timeline_curve_selected", set()) or set())
+            }
+        except Exception:
+            selected = set()
+        if not selected:
+            return "tied"
+        modes = set()
+        for axis, frame in selected:
+            h = self._timeline_axis_handles_for_key(int(axis), int(frame), create=False)
+            if not isinstance(h, dict):
+                continue
+            mode = str(h.get("mode", "tied") or "tied").strip().lower()
+            if mode == "straight":
+                modes.add("straight")
+            elif mode == "untied":
+                modes.add("untied")
+            else:
+                modes.add("tied")
+        if not modes:
+            return "tied"
+        if len(modes) == 1:
+            return next(iter(modes))
+        return "mixed"
+
+    def _update_timeline_handle_mode_buttons(self) -> None:
+        straight_btn = getattr(self, "_timeline_handle_straight_btn", None)
+        tied_btn = getattr(self, "_timeline_handle_tied_btn", None)
+        untied_btn = getattr(self, "_timeline_handle_untied_btn", None)
+        if straight_btn is None and tied_btn is None and untied_btn is None:
+            return
+        self._load_timeline_button_icons()
+        mode = self._timeline_selected_handle_mode()
+        try:
+            selected = {
+                (int(a), int(f))
+                for (a, f) in (getattr(self, "_timeline_curve_selected", set()) or set())
+            }
+        except Exception:
+            selected = set()
+        enabled = bool(getattr(self, "_timeline_curves_mode", False)) and bool(selected)
+
+        icon_straight = getattr(self, "_timeline_icon_handle_straight", None)
+        if straight_btn is not None:
+            try:
+                straight_btn.setEnabled(bool(enabled))
+                if icon_straight is not None:
+                    straight_btn.setIcon(icon_straight)
+                    straight_btn.setText("")
+                    inner = max(12, min(int(straight_btn.width()), int(straight_btn.height())) - 2)
+                    straight_btn.setIconSize(QtCore.QSize(inner, inner))
+                else:
+                    straight_btn.setIcon(QtGui.QIcon())
+                    straight_btn.setText("S")
+                straight_btn.blockSignals(True)
+                straight_btn.setChecked(mode == "straight")
+                straight_btn.blockSignals(False)
+                straight_btn.setToolTip("Set Selected Keys To Straight Segments")
+            except Exception:
+                pass
+
+        icon_tied = getattr(self, "_timeline_icon_handle_tied", None)
+        if tied_btn is not None:
+            try:
+                tied_btn.setEnabled(bool(enabled))
+                if icon_tied is not None:
+                    tied_btn.setIcon(icon_tied)
+                    tied_btn.setText("")
+                    inner = max(12, min(int(tied_btn.width()), int(tied_btn.height())) - 2)
+                    tied_btn.setIconSize(QtCore.QSize(inner, inner))
+                else:
+                    tied_btn.setIcon(QtGui.QIcon())
+                    tied_btn.setText("T")
+                tied_btn.blockSignals(True)
+                tied_btn.setChecked(mode == "tied")
+                tied_btn.blockSignals(False)
+                tied_btn.setToolTip("Set Selected Keys To Tied Handles")
+            except Exception:
+                pass
+
+        icon_untied = getattr(self, "_timeline_icon_handle_untied", None)
+        if untied_btn is not None:
+            try:
+                untied_btn.setEnabled(bool(enabled))
+                if icon_untied is not None:
+                    untied_btn.setIcon(icon_untied)
+                    untied_btn.setText("")
+                    inner = max(12, min(int(untied_btn.width()), int(untied_btn.height())) - 2)
+                    untied_btn.setIconSize(QtCore.QSize(inner, inner))
+                else:
+                    untied_btn.setIcon(QtGui.QIcon())
+                    untied_btn.setText("U")
+                untied_btn.blockSignals(True)
+                untied_btn.setChecked(mode == "untied")
+                untied_btn.blockSignals(False)
+                untied_btn.setToolTip("Set Selected Keys To Untied Handles")
+            except Exception:
+                pass
+
+    def _timeline_update_handle_mode_buttons(self) -> None:
+        self._update_timeline_handle_mode_buttons()
+
+    def _timeline_on_handle_tied_clicked(self, _checked: bool = False) -> None:
+        self._timeline_set_selected_handles_mode("tied")
+
+    def _timeline_on_handle_straight_clicked(self, _checked: bool = False) -> None:
+        self._timeline_set_selected_handles_mode("straight")
+
+    def _timeline_on_handle_untied_clicked(self, _checked: bool = False) -> None:
+        self._timeline_set_selected_handles_mode("untied")
+
     def _timeline_set_curves_mode(self, enabled: bool, *, sync_button: bool = True) -> None:
         mode = bool(enabled)
         self._timeline_curves_mode = mode
@@ -1102,6 +1937,7 @@ class GraphGLTimelineModelMixin:
                 canvas.update()
             except Exception:
                 pass
+        self._update_timeline_handle_mode_buttons()
         self._timeline_update_playhead()
 
     def _timeline_on_curves_toggled(self, checked: bool) -> None:
@@ -1135,6 +1971,7 @@ class GraphGLTimelineModelMixin:
             return src
         if not self._timeline_axis_is_keyed(src_entry, idx):
             return src
+        handle_copy = self._timeline_copy_entry_axis_handles(src_entry, idx)
         if dst != src:
             self._timeline_set_axis_keyed(src_entry, idx, False)
             src_entry["camera_state"] = {}
@@ -1148,12 +1985,47 @@ class GraphGLTimelineModelMixin:
             dst_entry = keys.get(dst)
             if not isinstance(dst_entry, dict):
                 dst_entry = {}
-            self._timeline_set_axis_value_for_entry(dst_entry, idx, val)
+            self._timeline_set_axis_value_for_entry(
+                dst_entry,
+                idx,
+                val,
+                frame=int(dst),
+            )
+            if isinstance(handle_copy, dict):
+                try:
+                    mode = str(handle_copy.get("mode", "tied") or "tied").strip().lower()
+                    if mode == "straight":
+                        self._timeline_set_entry_axis_handles(
+                            dst_entry,
+                            int(idx),
+                            int(dst),
+                            "straight",
+                            (0.0, 0.0),
+                            (0.0, 0.0),
+                        )
+                    else:
+                        in_raw = handle_copy.get("in", (-3.0, 0.0))
+                        out_raw = handle_copy.get("out", (3.0, 0.0))
+                        self._timeline_set_entry_axis_handles(
+                            dst_entry,
+                            int(idx),
+                            int(dst),
+                            mode,
+                            (float(in_raw[0]), float(in_raw[1])),
+                            (float(out_raw[0]), float(out_raw[1])),
+                        )
+                except Exception:
+                    pass
             dst_entry["camera_state"] = {}
             keys[dst] = dst_entry
             active_frame = dst
         else:
-            self._timeline_set_axis_value_for_entry(src_entry, idx, val)
+            self._timeline_set_axis_value_for_entry(
+                src_entry,
+                idx,
+                val,
+                frame=int(src),
+            )
             src_entry["camera_state"] = {}
             keys[src] = src_entry
             active_frame = src
@@ -1206,7 +2078,7 @@ class GraphGLTimelineModelMixin:
             return 0
 
         keys = getattr(self, "_timeline_keys", {}) or {}
-        moves: List[Tuple[int, int, float]] = []
+        moves: List[Tuple[int, int, float, Optional[dict]]] = []
         min_src = None
         for axis_raw, frame_raw in sorted(selected, key=lambda af: (int(af[1]), int(af[0]))):
             try:
@@ -1224,7 +2096,8 @@ class GraphGLTimelineModelMixin:
             val = self._timeline_axis_value_for_entry(entry, axis)
             if val is None:
                 continue
-            moves.append((int(axis), int(src), float(val)))
+            hcopy = self._timeline_copy_entry_axis_handles(entry, int(axis))
+            moves.append((int(axis), int(src), float(val), hcopy if isinstance(hcopy, dict) else None))
             if min_src is None or int(src) < int(min_src):
                 min_src = int(src)
         if not moves:
@@ -1236,7 +2109,7 @@ class GraphGLTimelineModelMixin:
         if applied == 0:
             return 0
 
-        for axis, src, _val in moves:
+        for axis, src, _val, _hcopy in moves:
             entry = keys.get(int(src))
             if not isinstance(entry, dict):
                 continue
@@ -1254,12 +2127,42 @@ class GraphGLTimelineModelMixin:
 
         new_selected = set()
         max_frame = 0
-        for axis, src, val in moves:
+        for axis, src, val, hcopy in moves:
             dst = max(0, int(src) + int(applied))
             dst_entry = keys.get(int(dst))
             if not isinstance(dst_entry, dict):
                 dst_entry = {}
-            self._timeline_set_axis_value_for_entry(dst_entry, int(axis), float(val))
+            self._timeline_set_axis_value_for_entry(
+                dst_entry,
+                int(axis),
+                float(val),
+                frame=int(dst),
+            )
+            if isinstance(hcopy, dict):
+                try:
+                    mode = str(hcopy.get("mode", "tied") or "tied").strip().lower()
+                    if mode == "straight":
+                        self._timeline_set_entry_axis_handles(
+                            dst_entry,
+                            int(axis),
+                            int(dst),
+                            "straight",
+                            (0.0, 0.0),
+                            (0.0, 0.0),
+                        )
+                    else:
+                        in_raw = hcopy.get("in", (-3.0, 0.0))
+                        out_raw = hcopy.get("out", (3.0, 0.0))
+                        self._timeline_set_entry_axis_handles(
+                            dst_entry,
+                            int(axis),
+                            int(dst),
+                            mode,
+                            (float(in_raw[0]), float(in_raw[1])),
+                            (float(out_raw[0]), float(out_raw[1])),
+                        )
+                except Exception:
+                    pass
             dst_entry["camera_state"] = {}
             keys[int(dst)] = dst_entry
             new_selected.add((int(axis), int(dst)))
@@ -1313,7 +2216,7 @@ class GraphGLTimelineModelMixin:
             return (0, 0.0)
 
         keys = getattr(self, "_timeline_keys", {}) or {}
-        moves: List[Tuple[int, int, float]] = []
+        moves: List[Tuple[int, int, float, Optional[dict]]] = []
         min_src = None
         min_val = None
         max_val = None
@@ -1334,7 +2237,8 @@ class GraphGLTimelineModelMixin:
             if val is None:
                 continue
             v = float(val)
-            moves.append((int(axis), int(src), v))
+            hcopy = self._timeline_copy_entry_axis_handles(entry, int(axis))
+            moves.append((int(axis), int(src), v, hcopy if isinstance(hcopy, dict) else None))
             if min_src is None or int(src) < int(min_src):
                 min_src = int(src)
             if min_val is None or v < float(min_val):
@@ -1367,7 +2271,7 @@ class GraphGLTimelineModelMixin:
         if applied_f == 0 and abs(applied_v) < 1.0e-9:
             return (0, 0.0)
 
-        for axis, src, _val in moves:
+        for axis, src, _val, _hcopy in moves:
             entry = keys.get(int(src))
             if not isinstance(entry, dict):
                 continue
@@ -1385,12 +2289,42 @@ class GraphGLTimelineModelMixin:
 
         new_selected = set()
         max_frame = 0
-        for axis, src, val in moves:
+        for axis, src, val, hcopy in moves:
             dst = max(0, int(src) + int(applied_f))
             dst_entry = keys.get(int(dst))
             if not isinstance(dst_entry, dict):
                 dst_entry = {}
-            self._timeline_set_axis_value_for_entry(dst_entry, int(axis), float(val + float(applied_v)))
+            self._timeline_set_axis_value_for_entry(
+                dst_entry,
+                int(axis),
+                float(val + float(applied_v)),
+                frame=int(dst),
+            )
+            if isinstance(hcopy, dict):
+                try:
+                    mode = str(hcopy.get("mode", "tied") or "tied").strip().lower()
+                    if mode == "straight":
+                        self._timeline_set_entry_axis_handles(
+                            dst_entry,
+                            int(axis),
+                            int(dst),
+                            "straight",
+                            (0.0, 0.0),
+                            (0.0, 0.0),
+                        )
+                    else:
+                        in_raw = hcopy.get("in", (-3.0, 0.0))
+                        out_raw = hcopy.get("out", (3.0, 0.0))
+                        self._timeline_set_entry_axis_handles(
+                            dst_entry,
+                            int(axis),
+                            int(dst),
+                            mode,
+                            (float(in_raw[0]), float(in_raw[1])),
+                            (float(out_raw[0]), float(out_raw[1])),
+                        )
+                except Exception:
+                    pass
             dst_entry["camera_state"] = {}
             keys[int(dst)] = dst_entry
             new_selected.add((int(axis), int(dst)))
@@ -1513,6 +2447,10 @@ class GraphGLTimelineModelMixin:
                     canvas.update()
                 except Exception:
                     pass
+            try:
+                self._timeline_update_handle_mode_buttons()
+            except Exception:
+                pass
             return
         if tracks is None or slider is None or not isinstance(row_frames, list) or not row_frames:
             self._timeline_clear_key_markers()
@@ -1568,6 +2506,10 @@ class GraphGLTimelineModelMixin:
             per_row[axis].append(dot)
 
         self._timeline_key_markers = per_row
+        try:
+            self._timeline_update_handle_mode_buttons()
+        except Exception:
+            pass
 
         playhead = getattr(self, "_timeline_playhead", None)
         if playhead is not None:
@@ -1912,14 +2854,29 @@ class GraphGLTimelineModelMixin:
         if rxyz is None:
             rxyz = (0.0, 0.0, 0.0)
         state = self._timeline_capture_camera_state()
-        entry = {
-            "xyz": [float(xyz[0]), float(xyz[1]), float(xyz[2])],
-            "rxyz": [float(rxyz[0]), float(rxyz[1]), float(rxyz[2])],
-            "axis_mask": [True, True, True, True, True, True],
-            "camera_state": state if isinstance(state, dict) else {},
-        }
+        keys = getattr(self, "_timeline_keys", {}) or {}
+        entry = keys.get(int(frame))
+        if not isinstance(entry, dict):
+            entry = {}
+        values = (
+            float(xyz[0]),
+            float(xyz[1]),
+            float(xyz[2]),
+            float(rxyz[0]),
+            float(rxyz[1]),
+            float(rxyz[2]),
+        )
+        for axis, value in enumerate(values):
+            self._timeline_set_axis_value_for_entry(
+                entry,
+                int(axis),
+                float(value),
+                frame=int(frame),
+            )
+        entry["camera_state"] = state if isinstance(state, dict) else {}
         try:
-            self._timeline_keys[int(frame)] = entry
+            keys[int(frame)] = entry
+            self._timeline_keys = keys
         except Exception:
             pass
         self._timeline_total_max = max(int(getattr(self, "_timeline_total_max", 240) or 240), int(frame))
