@@ -3,87 +3,47 @@ from __future__ import annotations
 from echograph.qt_compat import QtCore, QtWidgets
 
 
-def _controller_method(window, method_name: str):
+def _controller(window):
     try:
-        controller = getattr(window, "_timeline_controller", None)
-        method = getattr(controller, method_name, None) if controller is not None else None
-        if callable(method):
-            return method
-    except Exception:
-        pass
-    return None
-
-
-def _window_method(window, method_name: str):
-    try:
-        method = getattr(window, method_name, None)
-        if callable(method):
-            return method
+        return getattr(window, "_timeline_controller", None)
     except Exception:
         pass
     return None
 
 
 def _timeline_panel_enabled(window) -> bool:
-    method = _controller_method(window, "timeline_panel_enabled")
-    if method is not None:
+    ctl = _controller(window)
+    if ctl is not None:
         try:
-            return bool(method())
-        except Exception:
-            return False
-    method = _window_method(window, "_timeline_panel_enabled")
-    if method is not None:
-        try:
-            return bool(method())
+            return bool(ctl.timeline_panel_enabled())
         except Exception:
             return False
     return False
 
 
 def _toggle_timeline_panel(window, checked: bool) -> None:
-    method = _controller_method(window, "toggle_timeline_panel_from_menu")
-    if method is not None:
+    ctl = _controller(window)
+    if ctl is not None:
         try:
-            method(bool(checked))
-        except Exception:
-            pass
-        return
-    method = _window_method(window, "_toggle_timeline_panel_from_menu")
-    if method is not None:
-        try:
-            method(bool(checked))
+            ctl.toggle_timeline_panel_from_menu(bool(checked))
         except Exception:
             pass
 
 
 def _sync_timeline_menu_state(window) -> None:
-    method = _controller_method(window, "sync_timeline_menu_state")
-    if method is not None:
+    ctl = _controller(window)
+    if ctl is not None:
         try:
-            method()
-        except Exception:
-            pass
-        return
-    method = _window_method(window, "_sync_timeline_menu_state")
-    if method is not None:
-        try:
-            method()
+            ctl.sync_timeline_menu_state()
         except Exception:
             pass
 
 
 def _set_timeline_menu_active(window, active: bool) -> None:
-    method = _controller_method(window, "set_timeline_menu_active")
-    if method is not None:
+    ctl = _controller(window)
+    if ctl is not None:
         try:
-            method(bool(active))
-        except Exception:
-            pass
-        return
-    method = _window_method(window, "_set_timeline_menu_active")
-    if method is not None:
-        try:
-            method(bool(active))
+            ctl.set_timeline_menu_active(bool(active))
         except Exception:
             pass
 
@@ -138,4 +98,10 @@ def build_timeline_panels_menu(window, bar, layout) -> tuple[QtWidgets.QToolButt
     timeline_menu.aboutToHide.connect(lambda: _set_timeline_menu_active(window, False))
     timeline_btn.setMenu(timeline_menu)
     layout.addWidget(timeline_btn, 0)
+    ctl = _controller(window)
+    if ctl is not None:
+        try:
+            ctl.bind_menu_widgets(timeline_btn, timeline_toggle)
+        except Exception:
+            pass
     return timeline_btn, timeline_toggle

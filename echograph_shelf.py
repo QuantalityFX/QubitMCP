@@ -822,9 +822,12 @@ class GraphScene(QtWidgets.QGraphicsScene):
                     handler = getattr(win, "rename_scene_asset_owner", None)
                     if callable(handler):
                         handler(old_name, new_name)
-                sync_timeline = getattr(win, "_sync_timeline_context", None)
-                if callable(sync_timeline):
-                    sync_timeline()
+                try:
+                    ctl = getattr(win, "_timeline_controller", None)
+                    if ctl is not None:
+                        ctl.sync_timeline_context()
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -2126,8 +2129,6 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._recent_files = _load_recent_graphs()
         self._hotkey_shortcuts = {}
         self._update_window_title()
-        self._timeline_btn = None
-        self._timeline_toggle_btn = None
         self._timeline_controller = TimelineController(self)
 
         central = QtWidgets.QWidget(self)
@@ -2194,8 +2195,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._init_info_dock()
         self._set_view_mode("2d")
         try:
-            self._sync_timeline_context()
-            self._sync_timeline_menu_state()
+            self._timeline_controller.sync_timeline_context()
+            self._timeline_controller.sync_timeline_menu_state()
         except Exception:
             pass
 
@@ -2366,7 +2367,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 self,
                 "timeline_play_toggle",
                 "Space",
-                self._shortcut_timeline_play_toggle_action,
+                self._timeline_controller.shortcut_timeline_play_toggle_action,
                 context=QtCore.Qt.ApplicationShortcut,
             )
             try:
@@ -2382,7 +2383,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 self,
                 "timeline_set_key",
                 "K",
-                self._shortcut_timeline_set_key_action,
+                self._timeline_controller.shortcut_timeline_set_key_action,
                 context=QtCore.Qt.ApplicationShortcut,
             )
             try:
@@ -2601,7 +2602,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             try:
                 sc = getattr(self, "scene", None)
                 gl_view.set_scene(sc)
-                self._sync_timeline_context()
+                self._timeline_controller.sync_timeline_context()
 
                 # Only refresh when the scene object changes (prevents slow toggle stalls)
                 if getattr(gl_view, "_last_refresh_scene_obj", None) is not sc:
@@ -2672,7 +2673,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                     self._frame_all_nodes()
         self._update_view_mode_button()
         try:
-            self._sync_timeline_menu_state()
+            self._timeline_controller.sync_timeline_menu_state()
         except Exception:
             pass
 
@@ -2806,43 +2807,12 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         except Exception:
             pass
 
-    def _timeline_hotkey_target(self):
-        try:
-            ctl = getattr(self, "_timeline_controller", None)
-            if ctl is not None:
-                return ctl.timeline_hotkey_target()
-        except Exception:
-            pass
-        return None
-
-    def _shortcut_timeline_play_toggle_action(self) -> None:
-        try:
-            ctl = getattr(self, "_timeline_controller", None)
-            if ctl is not None:
-                ctl.shortcut_timeline_play_toggle_action()
-        except Exception:
-            pass
-
-    def _shortcut_timeline_set_key_action(self) -> None:
-        try:
-            ctl = getattr(self, "_timeline_controller", None)
-            if ctl is not None:
-                ctl.shortcut_timeline_set_key_action()
-        except Exception:
-            pass
-
-    def _timeline_delete_selected_keys_action(self) -> bool:
-        try:
-            ctl = getattr(self, "_timeline_controller", None)
-            if ctl is not None:
-                return bool(ctl.timeline_delete_selected_keys_action())
-        except Exception:
-            pass
-        return False
-
     def _shortcut_delete_selected_action(self) -> None:
-        if self._timeline_delete_selected_keys_action():
-            return
+        try:
+            if bool(self._timeline_controller.timeline_delete_selected_keys_action()):
+                return
+        except Exception:
+            pass
         try:
             actions.delete_selected_nodes_from_window(self)
         except Exception:
@@ -3260,7 +3230,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             print("[open_scene_assets] gl_view is None", flush=True)
             return
         try:
-            self._sync_timeline_context()
+            self._timeline_controller.sync_timeline_context()
         except Exception:
             pass
         try:
@@ -3315,8 +3285,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             if callable(handler):
                 handler(old_name, new_name)
         try:
-            self._sync_timeline_context()
-            self._sync_timeline_menu_state()
+            self._timeline_controller.sync_timeline_context()
+            self._timeline_controller.sync_timeline_menu_state()
         except Exception:
             pass
 
@@ -3746,9 +3716,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         h.addWidget(create_btn, 0)
         self._create_btn = create_btn
 
-        timeline_btn, timeline_toggle = build_timeline_panels_menu(self, bar, h)
-        self._timeline_btn = timeline_btn
-        self._timeline_toggle_btn = timeline_toggle
+        build_timeline_panels_menu(self, bar, h)
 
         settings_btn = QtWidgets.QToolButton(bar)
         settings_btn.setObjectName("SettingsButton")
@@ -4052,47 +4020,6 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 QtCore.QTimer.singleShot(0, self._reset_ui_cursor_arrow)
             except Exception:
                 self._reset_ui_cursor_arrow()
-
-    def _timeline_panel_enabled(self) -> bool:
-        try:
-            ctl = getattr(self, "_timeline_controller", None)
-            if ctl is not None:
-                return bool(ctl.timeline_panel_enabled())
-        except Exception:
-            pass
-        return False
-
-    def _sync_timeline_context(self) -> None:
-        try:
-            ctl = getattr(self, "_timeline_controller", None)
-            if ctl is not None:
-                ctl.sync_timeline_context()
-        except Exception:
-            pass
-
-    def _sync_timeline_menu_state(self) -> None:
-        try:
-            ctl = getattr(self, "_timeline_controller", None)
-            if ctl is not None:
-                ctl.sync_timeline_menu_state()
-        except Exception:
-            pass
-
-    def _toggle_timeline_panel_from_menu(self, checked: bool) -> None:
-        try:
-            ctl = getattr(self, "_timeline_controller", None)
-            if ctl is not None:
-                ctl.toggle_timeline_panel_from_menu(bool(checked))
-        except Exception:
-            pass
-
-    def _set_timeline_menu_active(self, active: bool) -> None:
-        try:
-            ctl = getattr(self, "_timeline_controller", None)
-            if ctl is not None:
-                ctl.set_timeline_menu_active(bool(active))
-        except Exception:
-            pass
 
     def _update_window_title(self) -> None:
         try:
@@ -4604,7 +4531,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._remember_recent(path)
         self._update_window_title()
         try:
-            self._sync_timeline_context()
+            self._timeline_controller.sync_timeline_context()
         except Exception:
             pass
         t_frame = time.perf_counter()
@@ -4645,7 +4572,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             self._remember_recent(self._current_path)
             self._update_window_title()
             try:
-                self._sync_timeline_context()
+                self._timeline_controller.sync_timeline_context()
             except Exception:
                 pass
             try:
@@ -4689,7 +4616,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             self._remember_recent(path)
             self._update_window_title()
             try:
-                self._sync_timeline_context()
+                self._timeline_controller.sync_timeline_context()
             except Exception:
                 pass
             try:

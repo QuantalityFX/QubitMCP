@@ -6,9 +6,39 @@ from echograph.qt_compat import QtCore, QtWidgets
 class TimelineController:
     def __init__(self, window):
         self._window = window
+        self._timeline_menu_button = None
+        self._timeline_toggle_button = None
 
     def _win(self):
         return self._window
+
+    def bind_menu_widgets(self, menu_button, toggle_button) -> None:
+        self._timeline_menu_button = menu_button
+        self._timeline_toggle_button = toggle_button
+
+    def _menu_button(self):
+        return self._timeline_menu_button
+
+    def _toggle_button(self):
+        return self._timeline_toggle_button
+
+    def _close_menu(self) -> None:
+        btn = self._menu_button()
+        if btn is None:
+            return
+        try:
+            menu = btn.menu()
+        except Exception:
+            menu = None
+        if menu is None:
+            return
+        try:
+            menu.close()
+        except Exception:
+            try:
+                menu.hide()
+            except Exception:
+                pass
 
     def _gl_view(self):
         win = self._win()
@@ -53,8 +83,7 @@ class TimelineController:
             pass
 
     def set_timeline_menu_active(self, active: bool) -> None:
-        win = self._win()
-        btn = getattr(win, "_timeline_btn", None)
+        btn = self._menu_button()
         if btn is None:
             return
         want = bool(active) or self.timeline_panel_enabled()
@@ -67,8 +96,7 @@ class TimelineController:
             pass
 
     def sync_timeline_menu_state(self) -> None:
-        win = self._win()
-        btn = getattr(win, "_timeline_toggle_btn", None)
+        btn = self._toggle_button()
         if btn is None:
             return
         enabled = self.timeline_panel_enabled()
@@ -103,7 +131,7 @@ class TimelineController:
                 pass
         self.sync_timeline_menu_state()
         try:
-            win._close_menu_for_button("_timeline_btn")
+            self._close_menu()
         except Exception:
             pass
         try:
