@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import time
 from pathlib import Path
@@ -30,6 +31,215 @@ class GraphGLTimelineModelMixin:
             return str(getattr(self, "_timeline_owner_name", "") or "").strip()
         except Exception:
             return ""
+
+    def _timeline_owner_file_paths(self) -> List[Path]:
+        scene_name = str(getattr(self, "_timeline_scene_name", "") or "").strip()
+        if not scene_name:
+            scene_name = self._timeline_default_scene_name()
+        if not scene_name:
+            scene_name = "scene"
+        try:
+            base_dir = self._timeline_default_project_dir()
+        except Exception:
+            return []
+        out_dir = Path(base_dir) / "projects"
+        if not out_dir.exists():
+            return []
+        try:
+            safe_scene = self._timeline_safe_name(scene_name)
+        except Exception:
+            return []
+        try:
+            return sorted(out_dir.glob(f"{safe_scene}__owner_*_timeline.json"))
+        except Exception:
+            return []
+
+    def _timeline_parse_keys_rows(self, rows) -> Dict[int, Dict[str, object]]:
+        data: Dict[int, Dict[str, object]] = {}
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            try:
+                frame = int(row.get("frame", 0))
+            except Exception:
+                continue
+            if frame < 0:
+                continue
+            item: Dict[str, object] = {}
+            xyz = row.get("xyz", None)
+            if isinstance(xyz, (list, tuple)) and len(xyz) >= 3:
+                try:
+                    item["xyz"] = [float(xyz[0]), float(xyz[1]), float(xyz[2])]
+                except Exception:
+                    pass
+            rxyz = row.get("rxyz", None)
+            if isinstance(rxyz, (list, tuple)) and len(rxyz) >= 3:
+                try:
+                    item["rxyz"] = [float(rxyz[0]), float(rxyz[1]), float(rxyz[2])]
+                except Exception:
+                    pass
+            st = row.get("camera_state", None)
+            if isinstance(st, dict):
+                item["camera_state"] = st
+            mask = row.get("axis_mask", None)
+            if isinstance(mask, (list, tuple)) and len(mask) >= 6:
+                try:
+                    item["axis_mask"] = [bool(mask[i]) for i in range(6)]
+                except Exception:
+                    pass
+            ch = row.get("curve_handles", None)
+            if isinstance(ch, dict) and ch:
+                ch_out = {}
+                for ak, av in ch.items():
+                    try:
+                        axis_idx = int(str(ak).strip())
+                    except Exception:
+                        continue
+                    if axis_idx < 0 or axis_idx > 5:
+                        continue
+                    if not isinstance(av, dict):
+                        continue
+                    mode_raw = str(av.get("mode", "tied") or "tied").strip().lower()
+                    if mode_raw == "straight":
+                        mode = "straight"
+                    elif mode_raw == "untied":
+                        mode = "untied"
+                    else:
+                        mode = "tied"
+                    if mode == "straight":
+                        ch_out[str(axis_idx)] = {"mode": "straight"}
+                        continue
+                    in_raw = av.get("in", None)
+                    out_raw = av.get("out", None)
+                    if not (isinstance(in_raw, (list, tuple)) and len(in_raw) >= 2):
+                        continue
+                    if not (isinstance(out_raw, (list, tuple)) and len(out_raw) >= 2):
+                        continue
+                    try:
+                        ch_out[str(axis_idx)] = {
+                            "mode": mode,
+                            "in": [float(in_raw[0]), float(in_raw[1])],
+                            "out": [float(out_raw[0]), float(out_raw[1])],
+                        }
+                    except Exception:
+                        continue
+                if ch_out:
+                    item["curve_handles"] = ch_out
+            if item:
+                data[int(frame)] = item
+        return data
+
+    def _timeline_read_owner_keys_file(self, path: Path) -> Tuple[str, Dict[int, Dict[str, object]]]:
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return ("", {})
+        if not isinstance(raw, dict):
+            return ("", {})
+        owner = str(raw.get("owner", "") or "").strip()
+        if not owner:
+            return ("", {})
+        rows = raw.get("keys", []) or []
+        data = self._timeline_parse_keys_rows(rows)
+        return (owner, data)
+
+    def _timeline_collect_other_owner_keys(self) -> List[Tuple[str, Dict[int, Dict[str, object]]]]:
+        cur_owner_norm = self._timeline_owner_norm(self._timeline_target_owner())
+        file_paths = self._timeline_owner_file_paths()
+        cache = getattr(self, "_timeline_owner_keys_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+        file_set = {str(p) for p in file_paths}
+        for stale_key in [k for k in list(cache.keys()) if str(k) not in file_set]:
+            try:
+                del cache[stale_key]
+            except Exception:
+                pass
+        out: List[Tuple[str, Dict[int, Dict[str, object]]]] = []
+        seen_owner_norm = set()
+        for path in file_paths:
+            path_key = str(path)
+            mtime = None
+            try:
+                mtime = float(path.stat().st_mtime)
+            except Exception:
+                mtime = None
+            entry = cache.get(path_key) if isinstance(cache, dict) else None
+            owner = ""
+            keys_map: Dict[int, Dict[str, object]] = {}
+            if isinstance(entry, dict) and entry.get("mtime", None) == mtime:
+                owner = str(entry.get("owner", "") or "").strip()
+                cached_keys = entry.get("keys", None)
+                if isinstance(cached_keys, dict):
+                    keys_map = cached_keys
+            else:
+                owner, keys_map = self._timeline_read_owner_keys_file(path)
+                cache[path_key] = {
+                    "mtime": mtime,
+                    "owner": str(owner or ""),
+                    "keys": keys_map if isinstance(keys_map, dict) else {},
+                }
+            owner_norm = self._timeline_owner_norm(owner)
+            if not owner_norm or owner_norm == cur_owner_norm:
+                continue
+            if owner_norm in seen_owner_norm:
+                continue
+            seen_owner_norm.add(owner_norm)
+            if isinstance(keys_map, dict) and keys_map:
+                out.append((str(owner), keys_map))
+        self._timeline_owner_keys_cache = cache
+        return out
+
+    def _timeline_owner_current_xyz(self, owner: str) -> Tuple[float, float, float]:
+        try:
+            xf, _is_splat = self._timeline_get_owner_xform(str(owner or "").strip())
+            if isinstance(xf, dict):
+                pos = xf.get("pos", None)
+                if isinstance(pos, (list, tuple)) and len(pos) >= 3:
+                    return (float(pos[0]), float(pos[1]), float(pos[2]))
+        except Exception:
+            pass
+        return (0.0, 0.0, 0.0)
+
+    def _timeline_eval_frame_values_for_owner_keys(
+        self,
+        owner: str,
+        keys_map: Dict[int, Dict[str, object]],
+        frame: int,
+    ) -> Tuple[Optional[Tuple[float, float, float]], Optional[Tuple[float, float, float]]]:
+        old_owner = getattr(self, "_timeline_owner_name", None)
+        old_keys = getattr(self, "_timeline_keys", None)
+        try:
+            self._timeline_owner_name = str(owner or "").strip() or None
+            self._timeline_keys = keys_map if isinstance(keys_map, dict) else {}
+            return self._timeline_eval_frame_values(int(frame))
+        except Exception:
+            return (None, None)
+        finally:
+            self._timeline_owner_name = old_owner
+            self._timeline_keys = old_keys if isinstance(old_keys, dict) else {}
+
+    def _timeline_apply_other_owner_frames(self, frame: int) -> None:
+        try:
+            f = int(frame)
+        except Exception:
+            f = 0
+        for owner, keys_map in self._timeline_collect_other_owner_keys():
+            if not owner or not isinstance(keys_map, dict) or not keys_map:
+                continue
+            xyz_eval, rxyz_eval = self._timeline_eval_frame_values_for_owner_keys(owner, keys_map, f)
+            if xyz_eval is None and rxyz_eval is None:
+                continue
+            if xyz_eval is None:
+                xyz_eval = self._timeline_owner_current_xyz(owner)
+            try:
+                self._timeline_clear_manual_override(owner)
+            except Exception:
+                pass
+            try:
+                self._timeline_apply_owner_xyz_only(owner, xyz_eval, rxyz=rxyz_eval)
+            except Exception:
+                continue
 
     def _timeline_owner_norm(self, owner: str) -> str:
         try:
@@ -2606,6 +2816,10 @@ class GraphGLTimelineModelMixin:
             frame = 0
         self._timeline_set_frame_widgets(frame)
         self._timeline_apply_frame_if_keyed(frame, force=True)
+        try:
+            self._timeline_apply_other_owner_frames(frame)
+        except Exception:
+            pass
 
     def _timeline_refresh_coord_labels(self) -> None:
         try:
@@ -2869,6 +3083,10 @@ class GraphGLTimelineModelMixin:
         frame = max(0, int(value))
         self._timeline_sync_range_controls(keep_current_visible=True)
         self._timeline_apply_frame_if_keyed(frame, force=True)
+        try:
+            self._timeline_apply_other_owner_frames(frame)
+        except Exception:
+            pass
 
     def _timeline_on_frame_slider_changed(self, value: int) -> None:
         if bool(getattr(self, "_timeline_ignore_ui", False)):
@@ -2891,6 +3109,10 @@ class GraphGLTimelineModelMixin:
                 except Exception:
                     pass
         self._timeline_apply_frame_if_keyed(frame, force=True)
+        try:
+            self._timeline_apply_other_owner_frames(frame)
+        except Exception:
+            pass
 
     def _timeline_on_set_key_clicked(self) -> None:
         frame = self._timeline_current_frame()

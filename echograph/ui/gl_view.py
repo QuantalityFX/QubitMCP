@@ -774,6 +774,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._timeline_scene_name = "scene"
         self._timeline_owner_name = None
         self._timeline_manual_override_owners = set()
+        self._timeline_owner_keys_cache = {}
         self._timeline_project_dir: Optional[Path] = None
         self._timeline_anim_path: Optional[Path] = None
         self._timeline_fps = 24.0
