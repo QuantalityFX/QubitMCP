@@ -25,7 +25,66 @@ class GraphGLTimelineModelMixin:
         except Exception:
             return 0
 
+    def _timeline_target_owner(self) -> str:
+        try:
+            return str(getattr(self, "_timeline_owner_name", "") or "").strip()
+        except Exception:
+            return ""
+
+    def _timeline_owner_is_splat(self, owner: str) -> bool:
+        key = str(owner or "").strip()
+        if not key:
+            return False
+        try:
+            renderer = getattr(self, "_mgl_renderer", None) or self
+            splat_map = getattr(renderer, "_mgl_scene_splats", None)
+            if not isinstance(splat_map, dict) or not splat_map:
+                splat_map = getattr(renderer, "_mgl_scene_splats_world", None)
+            if not isinstance(splat_map, dict):
+                return False
+            if key in splat_map:
+                return True
+            lk = key.lower()
+            for k in splat_map.keys():
+                if str(k).strip().lower() == lk:
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _timeline_get_owner_xform(self, owner: str):
+        key = str(owner or "").strip()
+        if not key:
+            return None, False
+        try:
+            renderer = getattr(self, "_mgl_renderer", None) or self
+            is_splat = self._timeline_owner_is_splat(key)
+            getf = (
+                getattr(renderer, "_mgl_get_scene_splat_xform", None)
+                if is_splat
+                else getattr(renderer, "_mgl_get_scene_asset_xform", None)
+            )
+            if not callable(getf):
+                return None, is_splat
+            xf = getf(key)
+            if not isinstance(xf, dict):
+                return None, is_splat
+            return xf, is_splat
+        except Exception:
+            return None, False
+
     def _timeline_current_cam_xyz(self):
+        owner = self._timeline_target_owner()
+        if owner:
+            xf, _is_splat = self._timeline_get_owner_xform(owner)
+            if isinstance(xf, dict):
+                pos = xf.get("pos", None)
+                if isinstance(pos, (list, tuple)) and len(pos) >= 3:
+                    try:
+                        return (float(pos[0]), float(pos[1]), float(pos[2]))
+                    except Exception:
+                        pass
+            return (0.0, 0.0, 0.0)
         if np is None:
             return None
         try:
@@ -50,6 +109,17 @@ class GraphGLTimelineModelMixin:
         return None
 
     def _timeline_current_cam_rxyz(self):
+        owner = self._timeline_target_owner()
+        if owner:
+            xf, _is_splat = self._timeline_get_owner_xform(owner)
+            if isinstance(xf, dict):
+                rot = xf.get("rot", None)
+                if isinstance(rot, (list, tuple)) and len(rot) >= 3:
+                    try:
+                        return (float(rot[0]), float(rot[1]), float(rot[2]))
+                    except Exception:
+                        pass
+            return (0.0, 0.0, 0.0)
         try:
             cam = getattr(self, "_fps_camera", None)
             if cam is not None and bool(getattr(self, "_fps_camera_active", False)):
@@ -223,6 +293,30 @@ class GraphGLTimelineModelMixin:
             self._timeline_update_key_markers()
         self._timeline_update_playhead()
 
+    def _timeline_target_label_text(self) -> str:
+        owner = self._timeline_target_owner()
+        if owner:
+            return owner
+        try:
+            mode = str(getattr(self, "_camera_select_mode", "default") or "default").strip()
+        except Exception:
+            mode = "default"
+        if mode and mode.lower() != "default":
+            return mode
+        return "Default Camera"
+
+    def _timeline_update_target_label(self) -> None:
+        lbl = getattr(self, "_timeline_target_label", None)
+        if lbl is None:
+            return
+        text = str(self._timeline_target_label_text() or "").strip()
+        try:
+            lbl.setText(text)
+            lbl.setToolTip(text)
+            lbl.setVisible(bool(text))
+        except Exception:
+            pass
+
     def _timeline_update_tick_labels(self) -> None:
         slider = getattr(self, "_timeline_frame_slider", None)
         ticks_frame = getattr(self, "_timeline_ticks_frame", None)
@@ -287,6 +381,7 @@ class GraphGLTimelineModelMixin:
             except Exception:
                 pass
         self._timeline_tick_labels = labels
+        self._timeline_update_target_label()
 
     def _timeline_sync_row_alignment(self) -> None:
         spacer = getattr(self, "_timeline_left_header_spacer", None)
@@ -1610,9 +1705,71 @@ class GraphGLTimelineModelMixin:
         finally:
             self._timeline_coord_syncing = False
         self._timeline_update_key_count_label()
+        self._timeline_update_target_label()
         self._timeline_update_playhead()
 
+    def _timeline_apply_owner_xyz_only(self, owner: str, xyz, rxyz=None) -> None:
+        key = str(owner or "").strip()
+        if not key:
+            return
+        if not isinstance(xyz, (list, tuple)) or len(xyz) < 3:
+            return
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        setf = getattr(renderer, "_mgl_set_scene_asset_xform", None)
+        if not callable(setf):
+            return
+        try:
+            pos = (float(xyz[0]), float(xyz[1]), float(xyz[2]))
+        except Exception:
+            return
+        rot = None
+        if isinstance(rxyz, (list, tuple)) and len(rxyz) >= 3:
+            try:
+                rot = (float(rxyz[0]), float(rxyz[1]), float(rxyz[2]))
+            except Exception:
+                rot = None
+        is_splat = bool(self._timeline_owner_is_splat(key))
+        try:
+            if rot is None:
+                setf(
+                    key,
+                    pos=pos,
+                    apply_to_scene_models=not is_splat,
+                    use_splat_xform=bool(is_splat),
+                )
+            else:
+                setf(
+                    key,
+                    pos=pos,
+                    rot=rot,
+                    apply_to_scene_models=not is_splat,
+                    use_splat_xform=bool(is_splat),
+                )
+        except Exception:
+            return
+        try:
+            gizmo_owner = str(getattr(self, "_xform_gizmo_owner", "") or "").strip()
+            if gizmo_owner.lower() == key.lower():
+                self._xform_gizmo_pos_locked = False
+                self._xform_gizmo_pos = pos
+        except Exception:
+            pass
+        try:
+            win = self.window()
+            if win is not None and hasattr(win, "update_scene_asset_xform"):
+                win.update_scene_asset_xform(key)
+        except Exception:
+            pass
+        try:
+            self.update()
+        except Exception:
+            pass
+
     def _timeline_apply_xyz_only(self, xyz, rxyz=None) -> None:
+        owner = self._timeline_target_owner()
+        if owner:
+            self._timeline_apply_owner_xyz_only(owner, xyz, rxyz=rxyz)
+            return
         if np is None:
             return
         if not isinstance(xyz, (list, tuple)) or len(xyz) < 3:
@@ -1675,8 +1832,9 @@ class GraphGLTimelineModelMixin:
             return
         renderer = getattr(self, "_mgl_renderer", None) or self
         state = entry.get("camera_state", None)
+        use_camera_state = not bool(self._timeline_target_owner())
         applied = False
-        if isinstance(state, dict) and state:
+        if use_camera_state and isinstance(state, dict) and state:
             try:
                 apply_state = getattr(renderer, "_mgl_apply_camera_state", None)
                 if callable(apply_state):

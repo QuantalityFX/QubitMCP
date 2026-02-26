@@ -1492,6 +1492,13 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             card._scene_selected_owner = owner
             card._scene_selected_kind = sel_kind
             card._scene_outliner_user_selected = True
+            try:
+                win = card.window()
+                ctl = getattr(win, "_timeline_controller", None) if win is not None else None
+                if ctl is not None:
+                    ctl.sync_timeline_context()
+            except Exception:
+                pass
             xform_panel.setEnabled(True)
             _load_xform_from_view(owner)
             _update_row_highlight(it)
@@ -2035,6 +2042,13 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                     card._scene_selected_owner = None
                     card._scene_selected_kind = None
                     card._scene_outliner_user_selected = False
+                    try:
+                        win = card.window()
+                        ctl = getattr(win, "_timeline_controller", None) if win is not None else None
+                        if ctl is not None:
+                            ctl.sync_timeline_context()
+                    except Exception:
+                        pass
                     try:
                         _update_row_highlight(None)
                     except Exception:

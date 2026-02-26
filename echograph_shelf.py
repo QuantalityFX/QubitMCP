@@ -3361,6 +3361,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                     panel.setEnabled(False)
             except Exception:
                 pass
+        try:
+            self._timeline_controller.sync_timeline_context()
+        except Exception:
+            pass
 
     def _reset_viewport_scene_state_for_workflow_load(self) -> None:
         # Prevent per-owner xforms/gizmo state from leaking across workflow files.

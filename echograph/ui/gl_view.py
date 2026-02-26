@@ -768,6 +768,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._timeline_enabled = False
         self._timeline_ignore_ui = False
         self._timeline_scene_name = "scene"
+        self._timeline_owner_name = None
         self._timeline_project_dir: Optional[Path] = None
         self._timeline_anim_path: Optional[Path] = None
         self._timeline_fps = 24.0
@@ -795,6 +796,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._timeline_key_markers: List[List[QtWidgets.QFrame]] = []
         self._timeline_scrollbar = None
         self._timeline_tick_labels: List[QtWidgets.QLabel] = []
+        self._timeline_target_label = None
         self._timeline_ticks_frame = None
         self._timeline_total_max = 240
         self._timeline_view_start = 0

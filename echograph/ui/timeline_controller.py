@@ -77,8 +77,39 @@ class TimelineController:
                 project_path = raw_path
         except Exception:
             project_path = None
+        owner_name = None
         try:
-            setter(scene_name=scene_name or None, project_path=project_path)
+            active_name = str(scene_name or "").strip()
+            card = None
+            cards = getattr(win, "_card_by_node", None)
+            if isinstance(cards, dict):
+                if active_name:
+                    card = cards.get(active_name)
+                if card is None:
+                    active_scene = getattr(win, "_active_scene_node", None)
+                    for maybe in cards.values():
+                        if getattr(maybe, "_node_ref", None) is active_scene:
+                            card = maybe
+                            break
+            if card is not None and bool(getattr(card, "_scene_outliner_user_selected", False)):
+                raw_owner = str(getattr(card, "_scene_selected_owner", "") or "").strip()
+                if raw_owner:
+                    owner_name = raw_owner
+        except Exception:
+            owner_name = None
+        if owner_name is None:
+            try:
+                raw_owner = str(getattr(gv, "_xform_gizmo_owner", "") or "").strip()
+                if raw_owner:
+                    owner_name = raw_owner
+            except Exception:
+                owner_name = None
+        try:
+            setter(
+                scene_name=scene_name or None,
+                project_path=project_path,
+                owner_name=owner_name or None,
+            )
         except Exception:
             pass
 

@@ -66,6 +66,7 @@ class GraphGLTimelineWidgetsMixin:
             has_rows = bool(getattr(self, "_timeline_track_rows", []))
             has_stack = getattr(self, "_timeline_tracks_stack", None) is not None
             has_canvas = getattr(self, "_timeline_curves_canvas", None) is not None
+            has_target_label = getattr(self, "_timeline_target_label", None) is not None
             has_axis_labels = (
                 isinstance(getattr(self, "_timeline_axis_labels", None), list)
                 and len(getattr(self, "_timeline_axis_labels", [])) == 6
@@ -75,7 +76,7 @@ class GraphGLTimelineWidgetsMixin:
                     if lb is not None
                 )
             )
-            if has_play and has_curves_btn and has_scroll and has_spacer and has_rows and has_stack and has_canvas and has_axis_labels:
+            if has_play and has_curves_btn and has_scroll and has_spacer and has_rows and has_stack and has_canvas and has_target_label and has_axis_labels:
                 self._timeline_update_axis_label_styles()
                 return
             try:
@@ -101,6 +102,7 @@ class GraphGLTimelineWidgetsMixin:
             self._timeline_frame_spin = None
             self._timeline_key_count_label = None
             self._timeline_tick_labels = []
+            self._timeline_target_label = None
             self._timeline_ticks_frame = None
         try:
             self._load_timeline_button_icons()
@@ -249,8 +251,21 @@ class GraphGLTimelineWidgetsMixin:
 
             left_header_spacer = QtWidgets.QWidget(panel)
             left_header_spacer.setFixedHeight(34)
+            left_header_layout = QtWidgets.QHBoxLayout(left_header_spacer)
+            left_header_layout.setContentsMargins(0, 0, 6, 0)
+            left_header_layout.setSpacing(0)
+            left_header_layout.addStretch(1)
+            target_lbl = QtWidgets.QLabel("", left_header_spacer)
+            target_lbl.setObjectName("GLTimelineTargetLabel")
+            target_lbl.setStyleSheet(
+                "QLabel#GLTimelineTargetLabel{color:#94a3b8;font-size:10px;font-weight:600;background:transparent;}"
+            )
+            target_lbl.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+            target_lbl.setToolTip("")
+            left_header_layout.addWidget(target_lbl, 0, QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
             tracks_grid.addWidget(left_header_spacer, 0, 0, 1, 2)
             self._timeline_left_header_spacer = left_header_spacer
+            self._timeline_target_label = target_lbl
             self._timeline_axis_labels = []
 
             class _TimelineAxisLabel(QtWidgets.QPushButton):
@@ -1277,6 +1292,7 @@ class GraphGLTimelineWidgetsMixin:
             self._timeline_frame_spin = None
             self._timeline_key_count_label = None
             self._timeline_tick_labels = []
+            self._timeline_target_label = None
             self._timeline_ticks_frame = None
 
     def timeline_visible(self) -> bool:

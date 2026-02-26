@@ -57,12 +57,20 @@ class GraphGLTimelineIOMixin:
                 pass
         return Path(tempfile.gettempdir()) / "EchoGraph"
 
-    def _timeline_anim_file_path(self, scene_name: str, project_path: str | None = None) -> Path:
+    def _timeline_anim_file_path(
+        self,
+        scene_name: str,
+        project_path: str | None = None,
+        owner_name: str | None = None,
+    ) -> Path:
         base_dir = self._timeline_default_project_dir(project_path=project_path)
         out_dir = base_dir / "projects"
         out_dir.mkdir(parents=True, exist_ok=True)
-        safe = self._timeline_safe_name(scene_name)
-        return out_dir / f"{safe}_timeline.json"
+        safe_scene = self._timeline_safe_name(scene_name)
+        safe_owner = self._timeline_safe_name(owner_name) if str(owner_name or "").strip() else ""
+        if safe_owner:
+            return out_dir / f"{safe_scene}__owner_{safe_owner}_timeline.json"
+        return out_dir / f"{safe_scene}_timeline.json"
 
     def _timeline_json_safe(self, value):
         if value is None:
@@ -88,6 +96,11 @@ class GraphGLTimelineIOMixin:
             return str(value)
 
     def _timeline_capture_camera_state(self) -> dict:
+        try:
+            if str(getattr(self, "_timeline_owner_name", "") or "").strip():
+                return {}
+        except Exception:
+            pass
         renderer = getattr(self, "_mgl_renderer", None) or self
         get_state = getattr(renderer, "_mgl_get_camera_state", None)
         if not callable(get_state):
@@ -142,6 +155,7 @@ class GraphGLTimelineIOMixin:
             keys_out.append(row)
         payload = {
             "scene": str(getattr(self, "_timeline_scene_name", "scene") or "scene"),
+            "owner": str(getattr(self, "_timeline_owner_name", "") or ""),
             "fps": float(getattr(self, "_timeline_fps", 24.0) or 24.0),
             "keys": keys_out,
         }
@@ -224,20 +238,37 @@ class GraphGLTimelineIOMixin:
         except Exception:
             pass
 
-    def set_timeline_scene_context(self, scene_name: str | None = None, project_path: str | None = None) -> None:
+    def set_timeline_scene_context(
+        self,
+        scene_name: str | None = None,
+        project_path: str | None = None,
+        owner_name: str | None = None,
+    ) -> None:
         name = str(scene_name or "").strip()
         if not name:
             name = self._timeline_default_scene_name()
         if not name:
             name = "scene"
-        anim_path = self._timeline_anim_file_path(name, project_path=project_path)
+        owner = str(owner_name or "").strip()
+        if not owner:
+            owner = ""
+        anim_path = self._timeline_anim_file_path(
+            name,
+            project_path=project_path,
+            owner_name=owner or None,
+        )
         old_path = getattr(self, "_timeline_anim_path", None)
         same = old_path is not None and str(old_path) == str(anim_path)
         self._timeline_scene_name = name
+        self._timeline_owner_name = owner or None
         self._timeline_project_dir = anim_path.parent
         self._timeline_anim_path = anim_path
         if not same:
             self._timeline_load_from_disk()
         else:
             self._timeline_refresh_coord_labels()
+        try:
+            self._timeline_update_target_label()
+        except Exception:
+            pass
 
