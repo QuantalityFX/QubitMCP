@@ -31,6 +31,40 @@ class GraphGLTimelineModelMixin:
         except Exception:
             return ""
 
+    def _timeline_owner_norm(self, owner: str) -> str:
+        try:
+            return str(owner or "").strip().lower()
+        except Exception:
+            return ""
+
+    def _timeline_mark_manual_override(self, owner: str) -> None:
+        key = self._timeline_owner_norm(owner)
+        if not key:
+            return
+        overrides = getattr(self, "_timeline_manual_override_owners", None)
+        if not isinstance(overrides, set):
+            overrides = set()
+        overrides.add(key)
+        self._timeline_manual_override_owners = overrides
+
+    def _timeline_clear_manual_override(self, owner: Optional[str] = None) -> None:
+        overrides = getattr(self, "_timeline_manual_override_owners", None)
+        if not isinstance(overrides, set):
+            self._timeline_manual_override_owners = set()
+            return
+        if owner is None:
+            overrides.clear()
+            self._timeline_manual_override_owners = overrides
+            return
+        key = self._timeline_owner_norm(owner)
+        if not key:
+            return
+        try:
+            overrides.discard(key)
+        except Exception:
+            pass
+        self._timeline_manual_override_owners = overrides
+
     def _timeline_owner_is_splat(self, owner: str) -> bool:
         key = str(owner or "").strip()
         if not key:
@@ -1096,7 +1130,7 @@ class GraphGLTimelineModelMixin:
             return False
         entry["camera_state"] = {}
         try:
-            self._timeline_apply_frame_if_keyed(int(self._timeline_current_frame()))
+            self._timeline_apply_frame_if_keyed(int(self._timeline_current_frame()), force=True)
         except Exception:
             pass
         canvas = getattr(self, "_timeline_curves_canvas", None)
@@ -1169,7 +1203,7 @@ class GraphGLTimelineModelMixin:
             return
         self._timeline_keys = keys
         try:
-            self._timeline_apply_frame_if_keyed(int(self._timeline_current_frame()))
+            self._timeline_apply_frame_if_keyed(int(self._timeline_current_frame()), force=True)
         except Exception:
             pass
         self._timeline_save_to_disk()
@@ -2045,7 +2079,7 @@ class GraphGLTimelineModelMixin:
             self._timeline_curve_selected = set()
         self._timeline_total_max = max(int(getattr(self, "_timeline_total_max", 240) or 240), int(active_frame))
         self._timeline_sync_range_controls(keep_current_visible=False, refresh_key_markers=True)
-        self._timeline_apply_frame_if_keyed(int(current_frame))
+        self._timeline_apply_frame_if_keyed(int(current_frame), force=True)
         canvas = getattr(self, "_timeline_curves_canvas", None)
         if canvas is not None:
             try:
@@ -2176,7 +2210,7 @@ class GraphGLTimelineModelMixin:
         }
         self._timeline_total_max = max(int(getattr(self, "_timeline_total_max", 240) or 240), int(max_frame))
         self._timeline_sync_range_controls(keep_current_visible=False, refresh_key_markers=True)
-        self._timeline_apply_frame_if_keyed(int(current_frame))
+        self._timeline_apply_frame_if_keyed(int(current_frame), force=True)
         canvas = getattr(self, "_timeline_curves_canvas", None)
         if canvas is not None:
             try:
@@ -2338,7 +2372,7 @@ class GraphGLTimelineModelMixin:
         }
         self._timeline_total_max = max(int(getattr(self, "_timeline_total_max", 240) or 240), int(max_frame))
         self._timeline_sync_range_controls(keep_current_visible=False, refresh_key_markers=True)
-        self._timeline_apply_frame_if_keyed(int(current_frame))
+        self._timeline_apply_frame_if_keyed(int(current_frame), force=True)
         canvas = getattr(self, "_timeline_curves_canvas", None)
         if canvas is not None:
             try:
@@ -2571,7 +2605,7 @@ class GraphGLTimelineModelMixin:
         if frame > max_frame:
             frame = 0
         self._timeline_set_frame_widgets(frame)
-        self._timeline_apply_frame_if_keyed(frame)
+        self._timeline_apply_frame_if_keyed(frame, force=True)
 
     def _timeline_refresh_coord_labels(self) -> None:
         try:
@@ -2760,7 +2794,20 @@ class GraphGLTimelineModelMixin:
         except Exception:
             pass
 
-    def _timeline_apply_frame_if_keyed(self, frame: int) -> None:
+    def _timeline_apply_frame_if_keyed(self, frame: int, *, force: bool = False) -> None:
+        owner = self._timeline_target_owner()
+        owner_key = self._timeline_owner_norm(owner)
+        if owner_key:
+            if bool(force):
+                self._timeline_clear_manual_override(owner)
+            else:
+                try:
+                    overrides = getattr(self, "_timeline_manual_override_owners", None)
+                    if isinstance(overrides, set) and owner_key in overrides:
+                        self._timeline_refresh_coord_labels()
+                        return
+                except Exception:
+                    pass
         xyz_eval, rxyz_eval = self._timeline_eval_frame_values(int(frame))
         if xyz_eval is not None or rxyz_eval is not None:
             if xyz_eval is None:
@@ -2821,7 +2868,7 @@ class GraphGLTimelineModelMixin:
             return
         frame = max(0, int(value))
         self._timeline_sync_range_controls(keep_current_visible=True)
-        self._timeline_apply_frame_if_keyed(frame)
+        self._timeline_apply_frame_if_keyed(frame, force=True)
 
     def _timeline_on_frame_slider_changed(self, value: int) -> None:
         if bool(getattr(self, "_timeline_ignore_ui", False)):
@@ -2843,7 +2890,7 @@ class GraphGLTimelineModelMixin:
                     spin.blockSignals(False)
                 except Exception:
                     pass
-        self._timeline_apply_frame_if_keyed(frame)
+        self._timeline_apply_frame_if_keyed(frame, force=True)
 
     def _timeline_on_set_key_clicked(self) -> None:
         frame = self._timeline_current_frame()

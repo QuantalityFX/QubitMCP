@@ -1436,6 +1436,14 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             else:
                 setf(owner, pos=pos, rot=rot, scl=scl, apply_to_scene_models=not is_splat, use_splat_xform=bool(is_splat))
 
+            # Outliner edits are temporary overrides while timeline is idle.
+            try:
+                mark_override = getattr(glv, "_timeline_mark_manual_override", None)
+                if callable(mark_override):
+                    mark_override(owner)
+            except Exception:
+                pass
+
             try:
                 win = card.window()
                 scene_node = getattr(card, "_node_ref", None)
@@ -1451,6 +1459,19 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                     glv._xform_gizmo_pos_locked = False
                     glv._xform_gizmo_pos = pos
                     glv.update()
+            except Exception:
+                pass
+            # If this owner is the camera currently driving the viewport, push the
+            # edited outliner transform back into the active view immediately.
+            try:
+                win = card.window()
+                glv = getattr(win, "gl_view", None) if win is not None else None
+                if glv is not None:
+                    mode = str(getattr(glv, "_camera_select_mode", "default") or "default").strip()
+                    if mode and mode.lower() != "default" and mode.lower() == str(owner).strip().lower():
+                        sync_view = getattr(glv, "_sync_selected_scene_camera_view", None)
+                        if callable(sync_view):
+                            sync_view(owner)
             except Exception:
                 pass
             # Persist updated xform back to the scene node model (for workflow save)

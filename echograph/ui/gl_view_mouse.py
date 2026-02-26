@@ -2270,8 +2270,15 @@ def _handle_mouse_press_moderngl_right_start_fly_anchor_from_event(self, e):
 def _handle_mouse_press_moderngl_right_start_fly_camera_state(self):
     try:
         self._fps_camera_active = True
+        locked_synced = False
+        try:
+            sync_locked = getattr(self, "_camera_selector_sync_fps_from_locked_owner", None)
+            if callable(sync_locked):
+                locked_synced = bool(sync_locked())
+        except Exception:
+            locked_synced = False
         orbit_enabled = bool(getattr(self, "_orbit_cam_enabled", True))
-        if orbit_enabled or getattr(self, "_fps_camera", None) is None:
+        if (not bool(locked_synced)) and (orbit_enabled or getattr(self, "_fps_camera", None) is None):
             self._fps_cam_sync_from_orbit()
     except Exception:
         pass
@@ -4085,6 +4092,12 @@ def _handle_mouse_release_moderngl_right_button_nav(self):
                 pass
             self._fps_nav_cursor_anchor = None
             self._fps_nav_warping = False
+        try:
+            apply_locked = getattr(self, "_camera_selector_apply_fps_to_locked_owner", None)
+            if callable(apply_locked):
+                apply_locked(sync_ui=True)
+        except Exception:
+            pass
         if orbit_enabled:
             self._fps_camera_active = False
     except Exception:

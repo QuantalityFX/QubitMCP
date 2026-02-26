@@ -1182,7 +1182,10 @@ class GraphGLTimelineWidgetsMixin:
                             pass
                         self._handle_drag = None
                         try:
-                            self._view._timeline_apply_frame_if_keyed(int(self._view._timeline_current_frame()))
+                            self._view._timeline_apply_frame_if_keyed(
+                                int(self._view._timeline_current_frame()),
+                                force=True,
+                            )
                         except Exception:
                             pass
                         self.update()

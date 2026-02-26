@@ -745,6 +745,8 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._debug_overlay_cache_key = None
         self._cam_orbit_icon_locked = None
         self._cam_orbit_icon_free = None
+        self._cam_select_lock_icon_locked = None
+        self._cam_select_lock_icon_unlocked = None
         self._grid_icon_on = None
         self._grid_icon_off = None
         self._zoom_mode_icon_on = None
@@ -757,11 +759,13 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._side_btn_margin = 10
         self._side_btn_inner_pad = 2
         self._camera_select_mode = "default"
+        self._camera_select_lock_enabled = False
         self._camera_select_saved_default_state = None
         self._scene_camera_entries: List[Dict[str, object]] = []
         self._scene_camera_fov_by_owner: Dict[str, float] = {}
         self._cam_select_frame = None
         self._cam_select_combo = None
+        self._cam_select_lock_btn = None
         self._cam_select_syncing = False
         self._timeline_panel = None
         self._timeline_h = 220
@@ -769,6 +773,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._timeline_ignore_ui = False
         self._timeline_scene_name = "scene"
         self._timeline_owner_name = None
+        self._timeline_manual_override_owners = set()
         self._timeline_project_dir: Optional[Path] = None
         self._timeline_anim_path: Optional[Path] = None
         self._timeline_fps = 24.0
@@ -991,12 +996,23 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         cam_sel_combo = getattr(self, "_cam_select_combo", None)
         if cam_sel_frame is not None and cam_sel_combo is not None:
             base_w = int(max(120, min(220, self.width() - (2 * self._side_btn_margin))))
-            combo_w = int(max(84, round(base_w * 0.7)))
             combo_h = 28
-            combo_x = max(self._side_btn_margin, self.width() - self._side_btn_margin - combo_w)
+            ctrl_h = max(10, combo_h - 4)
+            lock_btn = getattr(self, "_cam_select_lock_btn", None)
+            lock_w = int(ctrl_h) if lock_btn is not None else 0
+            gap = 2 if lock_w > 0 else 0
+            combo_w = int(max(64, round(base_w * 0.5)))
+            frame_w = int(combo_w + lock_w + gap + 4)
+            combo_x = max(self._side_btn_margin, self.width() - self._side_btn_margin - frame_w)
             combo_y = self._side_btn_margin
-            cam_sel_frame.setGeometry(combo_x, combo_y, combo_w, combo_h)
-            cam_sel_combo.setGeometry(2, 2, max(10, combo_w - 4), max(10, combo_h - 4))
+            cam_sel_frame.setGeometry(combo_x, combo_y, frame_w, combo_h)
+            cam_sel_combo.setGeometry(2, 2, combo_w, ctrl_h)
+            if lock_btn is not None:
+                lock_btn.setGeometry(2 + combo_w + gap, 2, lock_w, ctrl_h)
+            try:
+                self._update_camera_selector_lock_button()
+            except Exception:
+                pass
         if getattr(self, "_mgl_uv_cache", None) is not None:
             self._mgl_uv_cache = None
 
@@ -1035,6 +1051,10 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             cam.apply_look(dx, dy, sens=sens, roll_locked=roll_locked)
         except Exception:
             return
+        try:
+            self._camera_selector_apply_fps_to_locked_owner(sync_ui=True)
+        except Exception:
+            pass
 
     def _fps_cam_sync_from_orbit(self) -> None:
         if np is None or Matrix44 is None:
@@ -1219,6 +1239,10 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             roll_locked = bool(getattr(self, "_mgl_orbit_locked", True))
             try:
                 cam.move(forward_amt * delta, right_amt * delta, 0.0, roll_locked=roll_locked)
+            except Exception:
+                pass
+            try:
+                self._camera_selector_apply_fps_to_locked_owner(sync_ui=True)
             except Exception:
                 pass
             return
@@ -2062,6 +2086,196 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 continue
         return None
 
+    def _load_camera_selector_lock_icons(self) -> None:
+        if (
+            getattr(self, "_cam_select_lock_icon_locked", None) is not None
+            or getattr(self, "_cam_select_lock_icon_unlocked", None) is not None
+        ):
+            return
+        icon_locked = None
+        icon_unlocked = None
+        try:
+            root = Path(__file__).resolve().parents[2]
+            locked_path = root / "icons" / "Locked_Icon.png"
+            unlocked_path = root / "icons" / "Unlocked_Icon.png"
+            if locked_path.exists():
+                icon_locked = QtGui.QIcon(str(locked_path))
+            if unlocked_path.exists():
+                icon_unlocked = QtGui.QIcon(str(unlocked_path))
+        except Exception:
+            icon_locked = None
+            icon_unlocked = None
+        self._cam_select_lock_icon_locked = icon_locked
+        self._cam_select_lock_icon_unlocked = icon_unlocked
+
+    def _camera_selector_locked_owner(self) -> str:
+        if not bool(getattr(self, "_camera_select_lock_enabled", False)):
+            return ""
+        owner = str(getattr(self, "_camera_select_mode", "default") or "").strip()
+        if not owner or owner.lower() == "default":
+            return ""
+        return owner
+
+    def _camera_selector_sync_fps_from_owner_pose(self, owner: str) -> bool:
+        owner_key = str(owner or "").strip()
+        if not owner_key or owner_key.lower() == "default":
+            return False
+        if np is None:
+            return False
+        pose = self._build_scene_camera_pose(owner_key)
+        if pose is None:
+            return False
+        pos, fwd, up = pose
+        cam = getattr(self, "_fps_camera", None)
+        if cam is None:
+            try:
+                cam = FpsCamera()
+            except Exception:
+                return False
+        try:
+            cam.position = np.array(pos, dtype=np.float32)
+            cam.forward = np.array(fwd, dtype=np.float32)
+            cam.up = np.array(up, dtype=np.float32)
+            if hasattr(cam, "_orthonormalize"):
+                cam._orthonormalize()
+            self._fps_camera = cam
+        except Exception:
+            return False
+        try:
+            fov = self._camera_casefold_get(getattr(self, "_scene_camera_fov_by_owner", {}), owner_key)
+            if fov is not None:
+                self._mgl_fov = max(5.0, min(170.0, float(fov)))
+        except Exception:
+            pass
+        return True
+
+    def _camera_selector_sync_fps_from_locked_owner(self) -> bool:
+        owner = self._camera_selector_locked_owner()
+        if not owner:
+            return False
+        return bool(self._camera_selector_sync_fps_from_owner_pose(owner))
+
+    def _camera_selector_apply_fps_to_locked_owner(self, *, sync_ui: bool = False) -> bool:
+        owner = self._camera_selector_locked_owner()
+        if not owner:
+            return False
+        if np is None:
+            return False
+        cam = getattr(self, "_fps_camera", None)
+        if cam is None:
+            return False
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        setf = getattr(renderer, "_mgl_set_scene_asset_xform", None)
+        if not callable(setf):
+            return False
+        try:
+            pos_v = np.array(getattr(cam, "position", (0.0, 0.0, 0.0)), dtype=np.float32).reshape(3)
+        except Exception:
+            return False
+        try:
+            fwd_v = np.array(getattr(cam, "forward", (0.0, 0.0, -1.0)), dtype=np.float32).reshape(3)
+            fn = float(np.linalg.norm(fwd_v))
+            if fn > 1.0e-6:
+                fwd_v = fwd_v / fn
+            else:
+                fwd_v = np.array([0.0, 0.0, -1.0], dtype=np.float32)
+        except Exception:
+            fwd_v = np.array([0.0, 0.0, -1.0], dtype=np.float32)
+        try:
+            pitch = math.degrees(math.asin(max(-1.0, min(1.0, float(fwd_v[1])))))
+            yaw = math.degrees(math.atan2(float(fwd_v[0]), float(-fwd_v[2])))
+        except Exception:
+            pitch = 0.0
+            yaw = 0.0
+        is_splat = False
+        try:
+            splat_map = getattr(renderer, "_mgl_scene_splats", None)
+            if not isinstance(splat_map, dict) or not splat_map:
+                splat_map = getattr(renderer, "_mgl_scene_splats_world", None)
+            if isinstance(splat_map, dict):
+                if owner in splat_map:
+                    is_splat = True
+                else:
+                    ol = owner.lower()
+                    for k in splat_map.keys():
+                        if str(k).strip().lower() == ol:
+                            is_splat = True
+                            break
+        except Exception:
+            is_splat = False
+        try:
+            setf(
+                owner,
+                pos=(float(pos_v[0]), float(pos_v[1]), float(pos_v[2])),
+                # Match _build_scene_camera_pose inversion (pitch sign is flipped in scene xform convention).
+                rot=(float(-pitch), float(yaw), 0.0),
+                apply_to_scene_models=not bool(is_splat),
+                use_splat_xform=bool(is_splat),
+            )
+        except Exception:
+            return False
+        if bool(sync_ui):
+            try:
+                w = self.window()
+                if w is not None and hasattr(w, "update_scene_asset_xform"):
+                    w.update_scene_asset_xform(owner)
+            except Exception:
+                pass
+        return True
+
+    def _update_camera_selector_lock_button(self) -> None:
+        btn = getattr(self, "_cam_select_lock_btn", None)
+        if btn is None:
+            return
+        mode = str(getattr(self, "_camera_select_mode", "default") or "default").strip()
+        has_scene = bool(mode and mode.lower() != "default")
+        locked = bool(getattr(self, "_camera_select_lock_enabled", False)) and bool(has_scene)
+        if not has_scene:
+            self._camera_select_lock_enabled = False
+            locked = False
+        self._load_camera_selector_lock_icons()
+        icon = (
+            getattr(self, "_cam_select_lock_icon_locked", None)
+            if locked
+            else getattr(self, "_cam_select_lock_icon_unlocked", None)
+        )
+        tooltip = (
+            "Camera Lock: On (fly controls selected scene camera)"
+            if locked
+            else ("Camera Lock: Off (fly controls default camera)" if has_scene else "Select a scene camera to enable lock")
+        )
+        try:
+            btn.blockSignals(True)
+            btn.setEnabled(bool(has_scene))
+            btn.setChecked(bool(locked))
+            if icon is not None:
+                btn.setIcon(icon)
+                btn.setText("")
+                inner = max(10, min(int(btn.width()), int(btn.height())) - 4)
+                btn.setIconSize(QtCore.QSize(inner, inner))
+            else:
+                btn.setIcon(QtGui.QIcon())
+                btn.setText("L")
+            btn.setToolTip(tooltip)
+        except Exception:
+            pass
+        finally:
+            try:
+                btn.blockSignals(False)
+            except Exception:
+                pass
+
+    def _on_camera_selector_lock_toggled(self, checked: bool) -> None:
+        mode = str(getattr(self, "_camera_select_mode", "default") or "default").strip()
+        has_scene = bool(mode and mode.lower() != "default")
+        self._camera_select_lock_enabled = bool(checked) and bool(has_scene)
+        if bool(self._camera_select_lock_enabled):
+            try:
+                self._camera_selector_sync_fps_from_locked_owner()
+            except Exception:
+                pass
+        self._update_camera_selector_lock_button()
+
     def _build_camera_selector_dropdown(self) -> None:
         try:
             frame = QtWidgets.QFrame(self)
@@ -2074,6 +2288,9 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 "QComboBox QAbstractItemView{background:rgba(15,18,22,180);color:#e6edf3;border:1px solid rgba(60,68,80,200);outline:0px;}"
                 "QComboBox QAbstractItemView::item:hover{background:rgba(31,41,55,200);}"
                 "QComboBox QAbstractItemView::item:selected{background:#22c55e;color:#0f1216;}"
+                "QToolButton#GLCamSelectLockButton{background:transparent;border:0px;}"
+                "QToolButton#GLCamSelectLockButton:hover{background:transparent;border:0px;}"
+                "QToolButton#GLCamSelectLockButton:checked{background:transparent;border:0px;}"
             )
             combo = QtWidgets.QComboBox(frame)
             combo.setObjectName("GLCamSelectCombo")
@@ -2116,15 +2333,26 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 combo.view().installEventFilter(combo._popup_down_filter)
             except Exception:
                 pass
+
+            lock_btn = QtWidgets.QToolButton(frame)
+            lock_btn.setObjectName("GLCamSelectLockButton")
+            lock_btn.setCheckable(True)
+            lock_btn.setAutoRaise(True)
+            lock_btn.setCursor(QtCore.Qt.PointingHandCursor)
+            lock_btn.clicked.connect(self._on_camera_selector_lock_toggled)
+
             combo.currentIndexChanged.connect(self._on_camera_selector_changed)
             self._cam_select_frame = frame
             self._cam_select_combo = combo
+            self._cam_select_lock_btn = lock_btn
             self._refresh_camera_selector_dropdown()
             frame.show()
             combo.show()
+            lock_btn.show()
         except Exception:
             self._cam_select_frame = None
             self._cam_select_combo = None
+            self._cam_select_lock_btn = None
 
     def _set_scene_camera_options(self, entries: List[Dict[str, object]] | None) -> None:
         clean: List[Dict[str, object]] = []
@@ -2192,6 +2420,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             except Exception:
                 pass
             self._cam_select_syncing = False
+        self._update_camera_selector_lock_button()
 
     def _build_scene_camera_pose(self, owner: str):
         if np is None:
@@ -2284,33 +2513,8 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         owner_key = str(owner or getattr(self, "_camera_select_mode", "default") or "").strip()
         if not owner_key or owner_key.lower() == "default":
             return False
-        if np is None:
+        if not bool(self._camera_selector_sync_fps_from_owner_pose(owner_key)):
             return False
-        pose = self._build_scene_camera_pose(owner_key)
-        if pose is None:
-            return False
-        pos, fwd, up = pose
-        cam = getattr(self, "_fps_camera", None)
-        if cam is None:
-            try:
-                cam = FpsCamera()
-            except Exception:
-                return False
-        try:
-            cam.position = np.array(pos, dtype=np.float32)
-            cam.forward = np.array(fwd, dtype=np.float32)
-            cam.up = np.array(up, dtype=np.float32)
-            if hasattr(cam, "_orthonormalize"):
-                cam._orthonormalize()
-            self._fps_camera = cam
-        except Exception:
-            return False
-        try:
-            fov = self._camera_casefold_get(getattr(self, "_scene_camera_fov_by_owner", {}), owner_key)
-            if fov is not None:
-                self._mgl_fov = max(5.0, min(170.0, float(fov)))
-        except Exception:
-            pass
         try:
             if bool(getattr(self, "_fly_mode_enabled", False)):
                 self._fps_camera_active = True
@@ -2327,6 +2531,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
 
     def _select_default_camera(self) -> None:
         self._camera_select_mode = "default"
+        self._camera_select_lock_enabled = False
         state = getattr(self, "_camera_select_saved_default_state", None)
         if isinstance(state, dict):
             try:
@@ -2393,6 +2598,13 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             self._select_default_camera()
             return
         self._select_scene_camera(val)
+        # Selecting a scene camera should enter fly navigation immediately.
+        try:
+            mode = str(getattr(self, "_camera_select_mode", "default") or "default").strip().lower()
+            if mode != "default" and not bool(getattr(self, "_fly_mode_enabled", False)):
+                self._on_fly_mode_toggled(True)
+        except Exception:
+            pass
 
     def _build_camera_orbit_button(self) -> None:
         try:
@@ -2539,7 +2751,13 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             self._fps_nav_keys = set()
             self._fps_nav_look_last_pos = None
             try:
-                self._fps_cam_sync_from_orbit()
+                synced = bool(self._camera_selector_sync_fps_from_locked_owner())
+                if not synced:
+                    mode = str(getattr(self, "_camera_select_mode", "default") or "default").strip()
+                    if mode and mode.lower() != "default":
+                        synced = bool(self._camera_selector_sync_fps_from_owner_pose(mode))
+                if not synced:
+                    self._fps_cam_sync_from_orbit()
             except Exception:
                 pass
         else:
