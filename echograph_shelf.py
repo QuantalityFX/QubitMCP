@@ -3173,6 +3173,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 clean_entry["volume"] = bool(entry.get("volume"))
             if "fov" in entry:
                 clean_entry["fov"] = entry.get("fov")
+            if "aspect_width" in entry:
+                clean_entry["aspect_width"] = entry.get("aspect_width")
+            if "aspect_height" in entry:
+                clean_entry["aspect_height"] = entry.get("aspect_height")
             tex_provider = entry.get("texture_provider")
             if tex_provider is not None:
                 clean_entry["texture_provider"] = tex_provider

@@ -24,6 +24,7 @@ _CHATBOT_ICON = None
 _OUTPUT_ICON = None
 _PYTHON_ICON = None
 _SCREENGRAB_ICON = None
+_RENDER_NODE_ICON = None
 
 
 def _load_pm(rel_icon_name: str):
@@ -172,3 +173,11 @@ def _screengrab_icon():
         return _SCREENGRAB_ICON
     _SCREENGRAB_ICON = _load_pm("screengrab _Icon_s_001.png")
     return _SCREENGRAB_ICON
+
+
+def _render_node_icon():
+    global _RENDER_NODE_ICON
+    if _RENDER_NODE_ICON is not None:
+        return _RENDER_NODE_ICON
+    _RENDER_NODE_ICON = _load_pm("RenderNode_Icon.png")
+    return _RENDER_NODE_ICON

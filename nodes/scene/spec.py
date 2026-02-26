@@ -538,6 +538,18 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                 fov = float((_param_value(model, "fov") or "").strip() or 60.0)
             except Exception:
                 fov = 60.0
+            try:
+                aspect_width = int(float((_param_value(model, "aspect_width") or "").strip() or 1920.0))
+            except Exception:
+                aspect_width = 1920
+            try:
+                aspect_height = int(float((_param_value(model, "aspect_height") or "").strip() or 1080.0))
+            except Exception:
+                aspect_height = 1080
+            if aspect_width <= 0:
+                aspect_width = 1920
+            if aspect_height <= 0:
+                aspect_height = 1080
             assets.append(
                 {
                     "path": cam_path,
@@ -550,6 +562,8 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                     "wire_only": True,
                     "volume": True,
                     "fov": fov,
+                    "aspect_width": int(aspect_width),
+                    "aspect_height": int(aspect_height),
                 }
             )
             continue

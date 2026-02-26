@@ -282,6 +282,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     _export_fbx.register()
             except Exception:
                 pass
+        # Ensure Render spec is registered even if the loader was skipped.
+        if (self.model.kind or "").strip().lower() in ("render", "render_sequence", "render node"):
+            try:
+                from nodes import render as _render_node  # type: ignore
+                if hasattr(_render_node, "register"):
+                    _render_node.register()
+            except Exception:
+                pass
         # Ensure Primitive spec is registered even if the loader was skipped.
         if (self.model.kind or "").strip().lower() == "primitive":
             try:
@@ -807,6 +815,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
             hidden.update({"thumbnail", "thumbnail_rev", "thumbnail_choice", "splat_depth_test"})
         elif kind in ("export_fbx", "exportfbx", "export fbx"):
             hidden.update({"output", "include_hidden"})
+        elif kind in ("render", "render_sequence", "render node"):
+            hidden.update({"output", "camera", "frame_rate", "format", "start_frame", "end_frame"})
         elif kind == "primitive":
             hidden.update({"primitive", "path"})
         elif kind == "uv_unwrap":
@@ -1334,6 +1344,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
         elif kind in ("export_fbx", "exportfbx", "export fbx"):
             # Keep extra bottom frame space for Export FBX node controls.
             body_h = 105
+            node_w = self._BASE_W
+        elif kind in ("render", "render_sequence", "render node"):
+            # Keep extra bottom frame space for Render node controls.
+            body_h = 198
             node_w = self._BASE_W
         elif kind in ("image_collection", "imagecollection"):
             body_h = self._IMG_CTRL_H + self._IMG_CANVAS_H
@@ -2710,6 +2724,18 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     fov = float(_param_val(model, "fov") or 60.0)
                 except Exception:
                     fov = 60.0
+                try:
+                    aspect_width = int(float(_param_val(model, "aspect_width") or 1920.0))
+                except Exception:
+                    aspect_width = 1920
+                try:
+                    aspect_height = int(float(_param_val(model, "aspect_height") or 1080.0))
+                except Exception:
+                    aspect_height = 1080
+                if aspect_width <= 0:
+                    aspect_width = 1920
+                if aspect_height <= 0:
+                    aspect_height = 1080
                 asset = {
                     "path": cam_path,
                     "texture": "",
@@ -2721,6 +2747,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     "wire_only": True,
                     "volume": True,
                     "fov": fov,
+                    "aspect_width": int(aspect_width),
+                    "aspect_height": int(aspect_height),
                 }
                 assets.append(asset)
                 _scene_log(
@@ -4931,6 +4959,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "scene_outliner",
                 "camera",
                 "scene_camera",
+                "render",
+                "render_sequence",
+                "render node",
                 "export_fbx",
                 "exportfbx",
                 "export fbx",
@@ -5054,6 +5085,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 icon_pm = node_icons._scene_icon()
             elif kind_lower in ("camera", "scene_camera"):
                 icon_pm = node_icons._screengrab_icon()
+            elif kind_lower in ("render", "render_sequence", "render node"):
+                icon_pm = node_icons._render_node_icon() or node_icons._output_icon()
             elif kind_lower in ("export_fbx", "exportfbx", "export fbx"):
                 icon_pm = node_icons._fbx_icon() or node_icons._output_icon()
             elif kind_lower == "output":
@@ -5070,6 +5103,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     scale = 1.0
                 # Grow when zoomed out; clamp with larger max
                 size = int(max(40, min(128, 38 / max(scale, 0.001))))
+                if kind_lower in ("render", "render_sequence", "render node"):
+                    size = int(size * 1.30)
                 if kind_lower in ("chatbot", "chat bot", "chat_bot"):
                     size = int(size * 1.13)
                 pm_scaled = icon_pm.scaled(size, size, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)

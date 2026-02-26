@@ -273,3 +273,14 @@ def bootstrap_plugins():
             print("[EchoGraph] Export FBX module has no 'register' function.")
     except Exception as e:
         print("[EchoGraph] Export FBX plugin import failed:", e)
+
+    # 15) Render Sequence
+    try:
+        from nodes import render as render_node
+        if hasattr(render_node, "register"):
+            render_node.register()
+            _safe_probe("render")
+        else:
+            print("[EchoGraph] Render module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Render plugin import failed:", e)

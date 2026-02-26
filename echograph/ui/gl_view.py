@@ -763,6 +763,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._camera_select_saved_default_state = None
         self._scene_camera_entries: List[Dict[str, object]] = []
         self._scene_camera_fov_by_owner: Dict[str, float] = {}
+        self._scene_camera_aspect_by_owner: Dict[str, Tuple[int, int]] = {}
         self._cam_select_frame = None
         self._cam_select_combo = None
         self._cam_select_lock_btn = None
@@ -2358,6 +2359,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
     def _set_scene_camera_options(self, entries: List[Dict[str, object]] | None) -> None:
         clean: List[Dict[str, object]] = []
         fov_map: Dict[str, float] = {}
+        aspect_map: Dict[str, Tuple[int, int]] = {}
         seen = set()
         for raw in entries or []:
             if not isinstance(raw, dict):
@@ -2377,14 +2379,43 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                     fov = float(fov_val)
             except Exception:
                 fov = None
-            clean.append({"owner": owner, "label": label, "fov": fov})
+            aspect_width = None
+            aspect_height = None
+            try:
+                aw = raw.get("aspect_width", None)
+                if aw is not None:
+                    aspect_width = int(float(aw))
+            except Exception:
+                aspect_width = None
+            try:
+                ah = raw.get("aspect_height", None)
+                if ah is not None:
+                    aspect_height = int(float(ah))
+            except Exception:
+                aspect_height = None
+            if aspect_width is not None and aspect_width <= 0:
+                aspect_width = None
+            if aspect_height is not None and aspect_height <= 0:
+                aspect_height = None
+            clean.append(
+                {
+                    "owner": owner,
+                    "label": label,
+                    "fov": fov,
+                    "aspect_width": aspect_width,
+                    "aspect_height": aspect_height,
+                }
+            )
             if fov is not None:
                 fov_map[owner] = fov
+            if aspect_width is not None and aspect_height is not None:
+                aspect_map[owner] = (int(aspect_width), int(aspect_height))
             # Keep UI to two options max: default + first scene camera.
             if len(clean) >= 1:
                 break
         self._scene_camera_entries = clean
         self._scene_camera_fov_by_owner = fov_map
+        self._scene_camera_aspect_by_owner = aspect_map
         if (not clean) and str(getattr(self, "_camera_select_mode", "default")) != "default":
             self._select_default_camera()
         self._refresh_camera_selector_dropdown()
@@ -3440,7 +3471,33 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                             fov = float(entry.get("fov"))
                     except Exception:
                         fov = None
-                    cam_entries.append({"owner": owner, "label": owner, "fov": fov})
+                    aspect_width = None
+                    aspect_height = None
+                    try:
+                        aw = entry.get("aspect_width", None)
+                        if aw is not None:
+                            aspect_width = int(float(aw))
+                    except Exception:
+                        aspect_width = None
+                    try:
+                        ah = entry.get("aspect_height", None)
+                        if ah is not None:
+                            aspect_height = int(float(ah))
+                    except Exception:
+                        aspect_height = None
+                    if aspect_width is not None and aspect_width <= 0:
+                        aspect_width = None
+                    if aspect_height is not None and aspect_height <= 0:
+                        aspect_height = None
+                    cam_entries.append(
+                        {
+                            "owner": owner,
+                            "label": owner,
+                            "fov": fov,
+                            "aspect_width": aspect_width,
+                            "aspect_height": aspect_height,
+                        }
+                    )
                 self._set_scene_camera_options(cam_entries)
             except Exception:
                 pass

@@ -78,6 +78,8 @@ def _ensure_hidden_params(node_item, names: list[str]) -> None:
 
 def build_ports(node_item) -> None:
     _ensure_param(node_item, "fov", "60")
+    _ensure_param(node_item, "aspect_width", "1920")
+    _ensure_param(node_item, "aspect_height", "1080")
     # Camera transforms live on the Scene node outliner, not on the camera node.
     _remove_param(node_item, "pos")
     _remove_param(node_item, "rot")
