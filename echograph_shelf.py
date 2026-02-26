@@ -22,6 +22,8 @@ from echograph.model import GraphNode
 from echograph.ui import hotkeys
 from echograph.ui import actions
 from echograph.ui import hotkeys_config
+from echograph.ui.timeline_controller import TimelineController
+from echograph.ui.timeline_menu import build_timeline_panels_menu
 
 
 from echograph.qt_compat import (
@@ -2126,6 +2128,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._update_window_title()
         self._timeline_btn = None
         self._timeline_toggle_btn = None
+        self._timeline_controller = TimelineController(self)
 
         central = QtWidgets.QWidget(self)
         v = QtWidgets.QVBoxLayout(central)
@@ -2804,98 +2807,38 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             pass
 
     def _timeline_hotkey_target(self):
-        if not self._viewport_hotkey_ok():
-            return None
-        gv = getattr(self, "gl_view", None)
-        if gv is None:
-            return None
         try:
-            fw = QtWidgets.QApplication.focusWidget()
-            if isinstance(
-                fw,
-                (
-                    QtWidgets.QLineEdit,
-                    QtWidgets.QTextEdit,
-                    QtWidgets.QPlainTextEdit,
-                    QtWidgets.QSpinBox,
-                    QtWidgets.QDoubleSpinBox,
-                ),
-            ):
-                return None
+            ctl = getattr(self, "_timeline_controller", None)
+            if ctl is not None:
+                return ctl.timeline_hotkey_target()
         except Exception:
             pass
-        try:
-            visible_fn = getattr(gv, "timeline_visible", None)
-            if callable(visible_fn):
-                if not bool(visible_fn()):
-                    return None
-            elif not bool(getattr(gv, "_timeline_enabled", False)):
-                return None
-        except Exception:
-            if not bool(getattr(gv, "_timeline_enabled", False)):
-                return None
-        return gv
+        return None
 
     def _shortcut_timeline_play_toggle_action(self) -> None:
-        gv = self._timeline_hotkey_target()
-        if gv is None:
-            return
         try:
-            self._sync_timeline_context()
-        except Exception:
-            pass
-        try:
-            btn = getattr(gv, "_timeline_play_btn", None)
-            if btn is not None:
-                btn.setChecked(not bool(btn.isChecked()))
-                return
-        except Exception:
-            pass
-        try:
-            timer = getattr(gv, "_timeline_play_timer", None)
-            playing = bool(timer is not None and timer.isActive())
-        except Exception:
-            playing = False
-        try:
-            toggle = getattr(gv, "_timeline_on_play_toggled", None)
-            if callable(toggle):
-                toggle(not bool(playing))
+            ctl = getattr(self, "_timeline_controller", None)
+            if ctl is not None:
+                ctl.shortcut_timeline_play_toggle_action()
         except Exception:
             pass
 
     def _shortcut_timeline_set_key_action(self) -> None:
-        gv = self._timeline_hotkey_target()
-        if gv is None:
-            return
         try:
-            self._sync_timeline_context()
-        except Exception:
-            pass
-        try:
-            add_key = getattr(gv, "_timeline_on_set_key_clicked", None)
-            if callable(add_key):
-                add_key()
+            ctl = getattr(self, "_timeline_controller", None)
+            if ctl is not None:
+                ctl.shortcut_timeline_set_key_action()
         except Exception:
             pass
 
     def _timeline_delete_selected_keys_action(self) -> bool:
-        gv = self._timeline_hotkey_target()
-        if gv is None:
-            return False
         try:
-            selected = getattr(gv, "_timeline_curve_selected", set()) or set()
-            if not bool(selected):
-                return False
+            ctl = getattr(self, "_timeline_controller", None)
+            if ctl is not None:
+                return bool(ctl.timeline_delete_selected_keys_action())
         except Exception:
-            return False
-        try:
-            delete_fn = getattr(gv, "_timeline_on_delete_key_clicked", None)
-            if not callable(delete_fn):
-                return False
-            delete_fn()
-            return True
-        except Exception:
-            return False
+            pass
+        return False
 
     def _shortcut_delete_selected_action(self) -> None:
         if self._timeline_delete_selected_keys_action():
@@ -3803,55 +3746,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         h.addWidget(create_btn, 0)
         self._create_btn = create_btn
 
-        timeline_btn = QtWidgets.QToolButton(bar)
-        timeline_btn.setObjectName("PanelsButton")
-        timeline_btn.setText("Panels")
-        timeline_btn.setCursor(QtCore.Qt.PointingHandCursor)
-        timeline_btn.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
-        timeline_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
-        timeline_btn.setFixedHeight(22)
-        timeline_btn.setStyleSheet(
-            "QToolButton#PanelsButton{border-radius:2px;text-align:center;}"
-        )
-
-        timeline_menu = QtWidgets.QMenu(timeline_btn)
-        timeline_menu.setObjectName("PanelsMenu")
-        timeline_menu.setStyleSheet(
-            "#PanelsMenu{background:#1b2026;border:1px solid #333;padding:0px;}"
-        )
-
-        timeline_panel = QtWidgets.QFrame(timeline_menu)
-        timeline_panel.setObjectName("PanelsPanel")
-        timeline_panel.setFixedWidth(96)
-        timeline_panel.setStyleSheet(
-            "#PanelsPanel{background:#1b2026;border:0px;border-radius:6px;}"
-            "#PanelsPanel QPushButton{color:#e5e7eb;background:transparent;border:0px;padding:0px 6px;text-align:left;}"
-            "#PanelsPanel QPushButton:hover{color:#e5e7eb;background:#1f7a45;}"
-        )
-        timeline_layout = QtWidgets.QVBoxLayout(timeline_panel)
-        timeline_layout.setContentsMargins(0, 0, 0, 0)
-        timeline_layout.setSpacing(0)
-
-        timeline_toggle = QtWidgets.QPushButton("Timeline", timeline_panel)
-        timeline_toggle.setToolTip("Show timeline panel in viewport")
-        timeline_toggle.setFixedHeight(22)
-        timeline_toggle.setCursor(QtCore.Qt.PointingHandCursor)
-        timeline_toggle.setFlat(True)
-        timeline_toggle.setCheckable(True)
-        timeline_toggle.setChecked(self._timeline_panel_enabled())
-        timeline_toggle.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        timeline_toggle.clicked.connect(self._toggle_timeline_panel_from_menu)
-        timeline_layout.addWidget(timeline_toggle, 0)
-
-        timeline_action = QtWidgets.QWidgetAction(timeline_menu)
-        timeline_action.setDefaultWidget(timeline_panel)
-        timeline_menu.addAction(timeline_action)
-
-        timeline_menu.aboutToShow.connect(self._sync_timeline_menu_state)
-        timeline_menu.aboutToShow.connect(lambda: self._set_timeline_menu_active(True))
-        timeline_menu.aboutToHide.connect(lambda: self._set_timeline_menu_active(False))
-        timeline_btn.setMenu(timeline_menu)
-        h.addWidget(timeline_btn, 0)
+        timeline_btn, timeline_toggle = build_timeline_panels_menu(self, bar, h)
         self._timeline_btn = timeline_btn
         self._timeline_toggle_btn = timeline_toggle
 
@@ -4159,87 +4054,43 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 self._reset_ui_cursor_arrow()
 
     def _timeline_panel_enabled(self) -> bool:
-        gl_view = getattr(self, "gl_view", None)
-        if gl_view is None or not hasattr(gl_view, "timeline_visible"):
-            return False
         try:
-            return bool(gl_view.timeline_visible())
+            ctl = getattr(self, "_timeline_controller", None)
+            if ctl is not None:
+                return bool(ctl.timeline_panel_enabled())
         except Exception:
-            return False
+            pass
+        return False
 
     def _sync_timeline_context(self) -> None:
-        gl_view = getattr(self, "gl_view", None)
-        if gl_view is None:
-            return
-        setter = getattr(gl_view, "set_timeline_scene_context", None)
-        if not callable(setter):
-            return
-        scene_name = ""
         try:
-            active_scene = getattr(self, "_active_scene_node", None)
-            scene_name = str(getattr(active_scene, "name", "") or "").strip() if active_scene is not None else ""
-        except Exception:
-            scene_name = ""
-        project_path = None
-        try:
-            raw_path = str(getattr(self, "_current_path", "") or "").strip()
-            if raw_path:
-                project_path = raw_path
-        except Exception:
-            project_path = None
-        try:
-            setter(scene_name=scene_name or None, project_path=project_path)
+            ctl = getattr(self, "_timeline_controller", None)
+            if ctl is not None:
+                ctl.sync_timeline_context()
         except Exception:
             pass
 
     def _sync_timeline_menu_state(self) -> None:
-        btn = getattr(self, "_timeline_toggle_btn", None)
-        if btn is None:
-            return
-        enabled = self._timeline_panel_enabled()
         try:
-            btn.blockSignals(True)
-            btn.setChecked(bool(enabled))
+            ctl = getattr(self, "_timeline_controller", None)
+            if ctl is not None:
+                ctl.sync_timeline_menu_state()
         except Exception:
             pass
-        finally:
-            try:
-                btn.blockSignals(False)
-            except Exception:
-                pass
-        self._set_timeline_menu_active(bool(enabled))
 
     def _toggle_timeline_panel_from_menu(self, checked: bool) -> None:
-        want = bool(checked)
-        if want and str(getattr(self, "_view_mode", "2d")).lower() == "2d":
-            try:
-                self._set_view_mode("split")
-            except Exception:
-                pass
-        self._sync_timeline_context()
-        gl_view = getattr(self, "gl_view", None)
-        if gl_view is not None and hasattr(gl_view, "set_timeline_visible"):
-            try:
-                gl_view.set_timeline_visible(want)
-            except Exception:
-                pass
-        self._sync_timeline_menu_state()
-        self._close_menu_for_button("_timeline_btn")
         try:
-            QtCore.QTimer.singleShot(0, self._reset_ui_cursor_arrow)
+            ctl = getattr(self, "_timeline_controller", None)
+            if ctl is not None:
+                ctl.toggle_timeline_panel_from_menu(bool(checked))
         except Exception:
-            self._reset_ui_cursor_arrow()
+            pass
 
     def _set_timeline_menu_active(self, active: bool) -> None:
-        btn = getattr(self, "_timeline_btn", None)
-        if btn is None:
-            return
-        want = bool(active) or self._timeline_panel_enabled()
         try:
-            btn.setProperty("active", bool(want))
-            btn.style().unpolish(btn)
-            btn.style().polish(btn)
-            btn.update()
+            ctl = getattr(self, "_timeline_controller", None)
+            if ctl is not None:
+                ctl.set_timeline_menu_active(bool(active))
         except Exception:
             pass
 

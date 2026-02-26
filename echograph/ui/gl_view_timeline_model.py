@@ -1833,3 +1833,45 @@ class GraphGLTimelineModelMixin:
         except Exception:
             return False
 
+    # Public timeline actions used by shelf/controller integration.
+    def timeline_has_selected_keys(self) -> bool:
+        try:
+            selected = getattr(self, "_timeline_curve_selected", set()) or set()
+            return bool(selected)
+        except Exception:
+            return False
+
+    def timeline_delete_selected_keys(self) -> bool:
+        try:
+            return bool(self._timeline_delete_selected_keys())
+        except Exception:
+            return False
+
+    def timeline_set_key(self) -> bool:
+        try:
+            self._timeline_on_set_key_clicked()
+            return True
+        except Exception:
+            return False
+
+    def timeline_toggle_playback(self) -> bool:
+        if not bool(getattr(self, "_timeline_enabled", False)):
+            return False
+        btn = getattr(self, "_timeline_play_btn", None)
+        if btn is not None:
+            try:
+                btn.setChecked(not bool(btn.isChecked()))
+                return True
+            except Exception:
+                pass
+        try:
+            timer = getattr(self, "_timeline_play_timer", None)
+            playing = bool(timer is not None and timer.isActive())
+        except Exception:
+            playing = False
+        try:
+            self._timeline_on_play_toggled(not bool(playing))
+            return True
+        except Exception:
+            return False
+
