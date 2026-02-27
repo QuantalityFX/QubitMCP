@@ -35,6 +35,187 @@ def _load_icon(name: str) -> QtGui.QIcon:
     return QtGui.QIcon()
 
 
+class _JumpScrubSlider(QtWidgets.QSlider):
+    jumpDragStarted = QtCore.Signal()
+    jumpDragFinished = QtCore.Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(QtCore.Qt.Horizontal, parent)
+        self._jump_drag_active = False
+        self.setMouseTracking(True)
+
+    @staticmethod
+    def _event_pos(ev) -> QtCore.QPoint:
+        try:
+            if hasattr(ev, "position"):
+                pos = ev.position()
+                if pos is not None:
+                    return pos.toPoint()
+        except Exception:
+            pass
+        try:
+            if hasattr(ev, "pos"):
+                pos = ev.pos()
+                if pos is not None:
+                    return pos
+        except Exception:
+            pass
+        return QtCore.QPoint(0, 0)
+
+    def _pixel_x_to_value(self, x_pos: int) -> int | None:
+        try:
+            opt = QtWidgets.QStyleOptionSlider()
+            self.initStyleOption(opt)
+            style = self.style()
+            groove = style.subControlRect(
+                QtWidgets.QStyle.CC_Slider,
+                opt,
+                QtWidgets.QStyle.SC_SliderGroove,
+                self,
+            )
+            span = int(
+                max(
+                    1,
+                    style.pixelMetric(
+                        QtWidgets.QStyle.PM_SliderSpaceAvailable,
+                        opt,
+                        self,
+                    ),
+                )
+            )
+            slider_len = int(
+                max(
+                    1,
+                    style.pixelMetric(
+                        QtWidgets.QStyle.PM_SliderLength,
+                        opt,
+                        self,
+                    ),
+                )
+            )
+            pos = int(round(float(x_pos) - float(groove.left()) - (float(slider_len) * 0.5)))
+            pos = max(0, min(span, pos))
+            val = int(
+                QtWidgets.QStyle.sliderValueFromPosition(
+                    int(self.minimum()),
+                    int(self.maximum()),
+                    int(pos),
+                    int(span),
+                    bool(getattr(opt, "upsideDown", False)),
+                )
+            )
+            return max(int(self.minimum()), min(int(self.maximum()), int(val)))
+        except Exception:
+            return None
+
+    def mousePressEvent(self, ev):
+        if ev.button() != QtCore.Qt.LeftButton:
+            return super().mousePressEvent(ev)
+        pt = self._event_pos(ev)
+        try:
+            opt = QtWidgets.QStyleOptionSlider()
+            self.initStyleOption(opt)
+            style = self.style()
+            handle = style.subControlRect(
+                QtWidgets.QStyle.CC_Slider,
+                opt,
+                QtWidgets.QStyle.SC_SliderHandle,
+                self,
+            )
+            if handle is not None and handle.contains(pt):
+                self._jump_drag_active = False
+                return super().mousePressEvent(ev)
+        except Exception:
+            pass
+        target = self._pixel_x_to_value(int(pt.x()))
+        if target is None:
+            self._jump_drag_active = False
+            return super().mousePressEvent(ev)
+        try:
+            self.setSliderPosition(int(target))
+        except Exception:
+            pass
+        try:
+            self.setValue(int(target))
+        except Exception:
+            pass
+        self._jump_drag_active = True
+        try:
+            self.setSliderDown(True)
+        except Exception:
+            pass
+        try:
+            self.jumpDragStarted.emit()
+        except Exception:
+            pass
+        try:
+            ev.accept()
+        except Exception:
+            pass
+        return
+
+    def mouseMoveEvent(self, ev):
+        if not bool(getattr(self, "_jump_drag_active", False)):
+            return super().mouseMoveEvent(ev)
+        try:
+            if not bool(ev.buttons() & QtCore.Qt.LeftButton):
+                self._jump_drag_active = False
+                try:
+                    self.setSliderDown(False)
+                except Exception:
+                    pass
+                return super().mouseMoveEvent(ev)
+        except Exception:
+            pass
+        pt = self._event_pos(ev)
+        target = self._pixel_x_to_value(int(pt.x()))
+        if target is not None:
+            try:
+                self.setSliderPosition(int(target))
+            except Exception:
+                pass
+            try:
+                self.setValue(int(target))
+            except Exception:
+                pass
+        try:
+            ev.accept()
+        except Exception:
+            pass
+        return
+
+    def mouseReleaseEvent(self, ev):
+        if ev.button() != QtCore.Qt.LeftButton:
+            return super().mouseReleaseEvent(ev)
+        if not bool(getattr(self, "_jump_drag_active", False)):
+            return super().mouseReleaseEvent(ev)
+        pt = self._event_pos(ev)
+        target = self._pixel_x_to_value(int(pt.x()))
+        if target is not None:
+            try:
+                self.setSliderPosition(int(target))
+            except Exception:
+                pass
+            try:
+                self.setValue(int(target))
+            except Exception:
+                pass
+        self._jump_drag_active = False
+        try:
+            self.setSliderDown(False)
+        except Exception:
+            pass
+        try:
+            self.jumpDragFinished.emit()
+        except Exception:
+            pass
+        try:
+            ev.accept()
+        except Exception:
+            pass
+        return
+
+
 def _param_value(model, name: str) -> str:
     key = (name or "").strip().lower()
     for p in (getattr(model, "params", None) or []):
@@ -270,6 +451,9 @@ class VideoPlayerWidget(QtWidgets.QWidget):
         self._video_loop_set = False
         self._video_playing = False
         self._audio_muted = False
+        self._scrub_dragging = False
+        self._scrub_updating = False
+        self._resume_after_scrub = False
         self._play_icon = _load_icon("PlayButton_icon.png")
         self._stop_icon = _load_icon("StopButton_icon.png")
         self._sound_on_icon = _load_icon("Sound_On_Icon.png")
@@ -318,7 +502,20 @@ class VideoPlayerWidget(QtWidgets.QWidget):
         self._sound_btn.setEnabled(False)
         self._sound_btn.clicked.connect(self._on_sound_clicked)
         row2.addWidget(self._sound_btn, 0)
-        row2.addStretch(1)
+        self._scrub_slider = _JumpScrubSlider(self)
+        self._scrub_slider.setRange(0, 0)
+        self._scrub_slider.setEnabled(False)
+        self._scrub_slider.setTracking(True)
+        self._scrub_slider.sliderPressed.connect(self._on_scrub_pressed)
+        self._scrub_slider.sliderMoved.connect(self._on_scrub_moved)
+        self._scrub_slider.sliderReleased.connect(self._on_scrub_released)
+        self._scrub_slider.valueChanged.connect(self._on_scrub_value_changed)
+        if hasattr(self._scrub_slider, "jumpDragStarted"):
+            self._scrub_slider.jumpDragStarted.connect(self._on_scrub_pressed)
+        if hasattr(self._scrub_slider, "jumpDragFinished"):
+            self._scrub_slider.jumpDragFinished.connect(self._on_scrub_released)
+        self._apply_scrub_slider_style()
+        row2.addWidget(self._scrub_slider, 1)
         layout.addLayout(row2, 0)
 
         self._set_play_button(False)
@@ -405,6 +602,9 @@ class VideoPlayerWidget(QtWidgets.QWidget):
         self._seq_index = 0
         self._play_btn.setEnabled(False)
         self._sound_btn.setEnabled(False)
+        self._scrub_slider.setEnabled(False)
+        self._set_scrub_range(0, 0)
+        self._set_scrub_value(0)
         self._set_play_button(False)
         self._set_sound_button(self._audio_muted)
         self._preview_image = QtGui.QImage()
@@ -424,8 +624,10 @@ class VideoPlayerWidget(QtWidgets.QWidget):
                 self._mode = "video"
                 self._play_btn.setEnabled(True)
                 self._sound_btn.setEnabled(True)
+                self._scrub_slider.setEnabled(True)
                 self._preview.setText("Press Play")
                 self._set_status(f"Video loaded: {source.name}")
+                self._sync_video_scrub_range()
             else:
                 self._preview.setText("MP4 preview unavailable")
                 self._set_status("This Qt build cannot preview .mp4 files in-node.")
@@ -440,6 +642,9 @@ class VideoPlayerWidget(QtWidgets.QWidget):
         self._mode = "sequence"
         self._seq_paths = seq
         self._seq_index = 0
+        self._set_scrub_range(0, max(0, len(seq) - 1))
+        self._set_scrub_value(0)
+        self._scrub_slider.setEnabled(True)
         self._show_sequence_frame(0)
         self._play_btn.setEnabled(True)
         self._set_status(f"Sequence loaded: {len(seq)} frame(s)")
@@ -463,6 +668,56 @@ class VideoPlayerWidget(QtWidgets.QWidget):
         else:
             self._sound_btn.setText("Off" if self._audio_muted else "On")
         self._sound_btn.setToolTip("Sound Off" if self._audio_muted else "Sound On")
+
+    def _apply_scrub_slider_style(self):
+        try:
+            self._scrub_slider.setMinimumHeight(20)
+        except Exception:
+            pass
+        self._scrub_slider.setStyleSheet(
+            "QSlider{min-height:20px;}"
+            "QSlider:focus{outline:none;}"
+            "QSlider::groove:horizontal{"
+            "height:4px;border-radius:2px;background:#3f4752;}"
+            "QSlider::sub-page:horizontal{"
+            "background:#b8c0cc;border-radius:2px;}"
+            "QSlider::add-page:horizontal{"
+            "background:#4b5563;border-radius:2px;}"
+            "QSlider::handle:horizontal{"
+            "background:#d8e0eb;border:1px solid #9ba4b3;border-radius:1px;"
+            "width:4px;height:16px;margin:-6px 0;}"
+            "QSlider::handle:horizontal:hover{background:#e2e8f0;}"
+            "QSlider::handle:horizontal:pressed{background:#f1f5f9;}"
+        )
+
+    def _set_scrub_value(self, value: int):
+        try:
+            self._scrub_updating = True
+            self._scrub_slider.setValue(int(value))
+        except Exception:
+            pass
+        finally:
+            self._scrub_updating = False
+
+    def _set_scrub_range(self, minimum: int, maximum: int):
+        mn = int(min(minimum, maximum))
+        mx = int(max(minimum, maximum))
+        try:
+            self._scrub_updating = True
+            self._scrub_slider.setRange(mn, mx)
+        except Exception:
+            pass
+        finally:
+            self._scrub_updating = False
+
+    def _format_time(self, ms: int) -> str:
+        total_sec = max(0, int(ms) // 1000)
+        hh = total_sec // 3600
+        mm = (total_sec % 3600) // 60
+        ss = total_sec % 60
+        if hh > 0:
+            return f"{hh}:{mm:02d}:{ss:02d}"
+        return f"{mm}:{ss:02d}"
 
     def _apply_audio_mute(self):
         if self._audio_output is not None:
@@ -526,6 +781,92 @@ class VideoPlayerWidget(QtWidgets.QWidget):
         self._audio_muted = not bool(self._audio_muted)
         self._apply_audio_mute()
 
+    def _sync_video_scrub_range(self):
+        if self._player is None:
+            self._set_scrub_range(0, 0)
+            self._set_scrub_value(0)
+            return
+        try:
+            duration = int(self._player.duration() or 0)
+        except Exception:
+            duration = 0
+        try:
+            position = int(self._player.position() or 0)
+        except Exception:
+            position = 0
+        self._set_scrub_range(0, max(0, duration))
+        if not self._scrub_dragging:
+            self._set_scrub_value(max(0, min(position, max(0, duration))))
+
+    def _on_scrub_pressed(self):
+        if self._scrub_dragging:
+            return
+        self._scrub_dragging = True
+        self._resume_after_scrub = False
+        if self._mode == "sequence" and self._seq_timer.isActive():
+            try:
+                self._seq_timer.stop()
+                self._resume_after_scrub = True
+                self._set_play_button(False)
+            except Exception:
+                self._resume_after_scrub = False
+        elif self._mode == "video" and self._video_playing and self._player is not None:
+            try:
+                self._player.pause()
+                self._resume_after_scrub = True
+                self._set_play_button(False)
+            except Exception:
+                self._resume_after_scrub = False
+
+    def _seek_to_scrub(self, value: int):
+        if self._mode == "sequence":
+            if not self._seq_paths:
+                return
+            idx = max(0, min(int(value), len(self._seq_paths) - 1))
+            self._seq_index = idx
+            self._show_sequence_frame(idx)
+            return
+        if self._mode == "video" and self._player is not None:
+            pos = max(0, int(value))
+            try:
+                self._player.setPosition(pos)
+            except Exception:
+                pass
+
+    def _on_scrub_moved(self, value: int):
+        self._seek_to_scrub(int(value))
+
+    def _on_scrub_value_changed(self, value: int):
+        if self._scrub_updating:
+            return
+        if self._scrub_dragging:
+            return
+        self._seek_to_scrub(int(value))
+
+    def _on_scrub_released(self):
+        if not self._scrub_dragging:
+            return
+        value = int(self._scrub_slider.value() or 0)
+        self._seek_to_scrub(value)
+        resume = bool(self._resume_after_scrub)
+        self._scrub_dragging = False
+        self._resume_after_scrub = False
+        if not resume:
+            return
+        if self._mode == "sequence":
+            try:
+                self._seq_timer.start(self._frame_interval_ms())
+                self._set_play_button(True)
+            except Exception:
+                pass
+            return
+        if self._mode == "video" and self._player is not None:
+            try:
+                self._player.play()
+                self._set_play_button(True)
+            except Exception:
+                self._set_play_button(False)
+
     def _on_sequence_tick(self):
         if not self._seq_paths:
             self._seq_timer.stop()
@@ -538,12 +879,15 @@ class VideoPlayerWidget(QtWidgets.QWidget):
         if not self._seq_paths:
             return
         idx = max(0, min(int(index), len(self._seq_paths) - 1))
+        self._seq_index = idx
         frame_path = self._seq_paths[idx]
         image = QtGui.QImage(str(frame_path))
         if image.isNull():
             self._set_status(f"Failed to read frame: {frame_path.name}")
             return
         self._preview_image = image
+        if not self._scrub_dragging:
+            self._set_scrub_value(idx)
         self._refresh_preview_pixmap()
         self._set_status(f"Frame {idx + 1}/{len(self._seq_paths)}: {frame_path.name}")
 
@@ -584,6 +928,12 @@ class VideoPlayerWidget(QtWidgets.QWidget):
                 self._player.mediaStatusChanged.connect(self._on_media_status_changed)
             if hasattr(self._player, "errorOccurred"):
                 self._player.errorOccurred.connect(self._on_player_error)
+            elif hasattr(self._player, "error"):
+                self._player.error.connect(self._on_player_error)
+            if hasattr(self._player, "durationChanged"):
+                self._player.durationChanged.connect(self._on_video_duration_changed)
+            if hasattr(self._player, "positionChanged"):
+                self._player.positionChanged.connect(self._on_video_position_changed)
             self._apply_audio_mute()
             return True
         except Exception:
@@ -632,6 +982,7 @@ class VideoPlayerWidget(QtWidgets.QWidget):
         except Exception:
             pass
         self._apply_audio_mute()
+        self._sync_video_scrub_range()
         return True
 
     def _state_is_playing(self, state) -> bool:
@@ -692,6 +1043,37 @@ class VideoPlayerWidget(QtWidgets.QWidget):
             self._set_play_button(self._player_is_playing())
             return
         self._set_play_button(self._state_is_playing(state))
+
+    def _on_video_duration_changed(self, duration):
+        try:
+            dur = max(0, int(duration))
+        except Exception:
+            dur = 0
+        self._set_scrub_range(0, dur)
+        if dur <= 0:
+            self._set_scrub_value(0)
+            return
+        if self._player is not None and (not self._scrub_dragging):
+            try:
+                pos = int(self._player.position() or 0)
+            except Exception:
+                pos = 0
+            self._set_scrub_value(max(0, min(pos, dur)))
+
+    def _on_video_position_changed(self, position):
+        try:
+            pos = max(0, int(position))
+        except Exception:
+            pos = 0
+        if not self._scrub_dragging:
+            self._set_scrub_value(pos)
+        if self._mode == "video":
+            try:
+                dur = int(self._player.duration() or 0) if self._player is not None else 0
+            except Exception:
+                dur = 0
+            if dur > 0:
+                self._set_status(f"{self._format_time(pos)} / {self._format_time(dur)}")
 
     def _on_media_status_changed(self, status):
         if self._player is None or self._video_loop_set:
