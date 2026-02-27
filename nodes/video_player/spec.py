@@ -269,8 +269,11 @@ class VideoPlayerWidget(QtWidgets.QWidget):
         self._audio_output = None
         self._video_loop_set = False
         self._video_playing = False
+        self._audio_muted = False
         self._play_icon = _load_icon("PlayButton_icon.png")
         self._stop_icon = _load_icon("StopButton_icon.png")
+        self._sound_on_icon = _load_icon("Sound_On_Icon.png")
+        self._sound_off_icon = _load_icon("Sound_Off_Icon.png")
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(6, 4, 6, 4)
@@ -309,10 +312,17 @@ class VideoPlayerWidget(QtWidgets.QWidget):
         self._play_btn.setEnabled(False)
         self._play_btn.clicked.connect(self._on_play_clicked)
         row2.addWidget(self._play_btn, 0)
+        self._sound_btn = QtWidgets.QToolButton()
+        self._sound_btn.setFixedSize(28, 28)
+        self._sound_btn.setIconSize(QtCore.QSize(18, 18))
+        self._sound_btn.setEnabled(False)
+        self._sound_btn.clicked.connect(self._on_sound_clicked)
+        row2.addWidget(self._sound_btn, 0)
         row2.addStretch(1)
         layout.addLayout(row2, 0)
 
         self._set_play_button(False)
+        self._set_sound_button(self._audio_muted)
         self._ensure_scene()
         self._sync_from_params(force=True)
 
@@ -394,7 +404,9 @@ class VideoPlayerWidget(QtWidgets.QWidget):
         self._seq_paths = []
         self._seq_index = 0
         self._play_btn.setEnabled(False)
+        self._sound_btn.setEnabled(False)
         self._set_play_button(False)
+        self._set_sound_button(self._audio_muted)
         self._preview_image = QtGui.QImage()
         self._preview.setPixmap(QtGui.QPixmap())
         if not key:
@@ -411,6 +423,7 @@ class VideoPlayerWidget(QtWidgets.QWidget):
             if self._load_video_source(source):
                 self._mode = "video"
                 self._play_btn.setEnabled(True)
+                self._sound_btn.setEnabled(True)
                 self._preview.setText("Press Play")
                 self._set_status(f"Video loaded: {source.name}")
             else:
@@ -440,6 +453,40 @@ class VideoPlayerWidget(QtWidgets.QWidget):
         else:
             self._play_btn.setText("Pause" if self._video_playing else "Play")
         self._play_btn.setToolTip("Pause" if self._video_playing else "Play")
+
+    def _set_sound_button(self, muted: bool):
+        self._audio_muted = bool(muted)
+        icon = self._sound_off_icon if self._audio_muted else self._sound_on_icon
+        if not icon.isNull():
+            self._sound_btn.setIcon(icon)
+            self._sound_btn.setText("")
+        else:
+            self._sound_btn.setText("Off" if self._audio_muted else "On")
+        self._sound_btn.setToolTip("Sound Off" if self._audio_muted else "Sound On")
+
+    def _apply_audio_mute(self):
+        if self._audio_output is not None:
+            try:
+                self._audio_output.setMuted(bool(self._audio_muted))
+            except Exception:
+                pass
+            try:
+                if hasattr(self._audio_output, "setVolume"):
+                    self._audio_output.setVolume(1.0)
+            except Exception:
+                pass
+        if self._player is not None:
+            try:
+                if hasattr(self._player, "setMuted"):
+                    self._player.setMuted(bool(self._audio_muted))
+            except Exception:
+                pass
+            try:
+                if hasattr(self._player, "setVolume"):
+                    self._player.setVolume(0 if self._audio_muted else 100)
+            except Exception:
+                pass
+        self._set_sound_button(self._audio_muted)
 
     def _stop_playback(self):
         try:
@@ -474,6 +521,10 @@ class VideoPlayerWidget(QtWidgets.QWidget):
             return
         if self._mode == "video":
             self._toggle_video_playback()
+
+    def _on_sound_clicked(self):
+        self._audio_muted = not bool(self._audio_muted)
+        self._apply_audio_mute()
 
     def _on_sequence_tick(self):
         if not self._seq_paths:
@@ -519,10 +570,6 @@ class VideoPlayerWidget(QtWidgets.QWidget):
             if hasattr(QtMultimedia, "QAudioOutput"):
                 self._audio_output = QtMultimedia.QAudioOutput(self)
                 try:
-                    self._audio_output.setMuted(True)
-                except Exception:
-                    pass
-                try:
                     self._player.setAudioOutput(self._audio_output)
                 except Exception:
                     pass
@@ -537,6 +584,7 @@ class VideoPlayerWidget(QtWidgets.QWidget):
                 self._player.mediaStatusChanged.connect(self._on_media_status_changed)
             if hasattr(self._player, "errorOccurred"):
                 self._player.errorOccurred.connect(self._on_player_error)
+            self._apply_audio_mute()
             return True
         except Exception:
             self._player = None
@@ -583,6 +631,7 @@ class VideoPlayerWidget(QtWidgets.QWidget):
             self._player.pause()
         except Exception:
             pass
+        self._apply_audio_mute()
         return True
 
     def _state_is_playing(self, state) -> bool:
