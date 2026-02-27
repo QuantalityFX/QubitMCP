@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import tempfile
+import time
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -19,6 +20,8 @@ _FORMAT_EXT = {"png": ".png", "jpg": ".jpg", "tiff": ".tiff", "exr": ".exr"}
 _FORMAT_QT = {"png": "PNG", "jpg": "JPEG", "tiff": "TIFF", "exr": "EXR"}
 _FORMAT_LABEL = {"png": "PNG", "jpg": "JPG", "tiff": "TIFF", "exr": "EXR"}
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".exr"}
+_RENDER_SUPERSAMPLE = 2.0
+_RENDER_MAX_DIM = 8192
 
 
 def _norm_fmt(fmt: str) -> str:
@@ -792,6 +795,95 @@ class RenderNodeWidget(QtWidgets.QWidget):
             return None
         return image
 
+    def _image_is_invalid_capture(self, image: QtGui.QImage, threshold: int = 2) -> bool:
+        if image is None or image.isNull():
+            return True
+        w = max(1, int(image.width()))
+        h = max(1, int(image.height()))
+        step_x = max(1, w // 8)
+        step_y = max(1, h // 8)
+        min_r = 255
+        min_g = 255
+        min_b = 255
+        min_a = 255
+        max_r = 0
+        max_g = 0
+        max_b = 0
+        max_a = 0
+        samples = 0
+        for y in range(0, h, step_y):
+            for x in range(0, w, step_x):
+                try:
+                    c = image.pixelColor(int(x), int(y))
+                    samples += 1
+                    rr = int(c.red())
+                    gg = int(c.green())
+                    bb = int(c.blue())
+                    aa = int(c.alpha())
+                    min_r = min(min_r, rr)
+                    min_g = min(min_g, gg)
+                    min_b = min(min_b, bb)
+                    min_a = min(min_a, aa)
+                    max_r = max(max_r, rr)
+                    max_g = max(max_g, gg)
+                    max_b = max(max_b, bb)
+                    max_a = max(max_a, aa)
+                except Exception:
+                    continue
+        if samples <= 0:
+            return True
+        # Uniform flat-color captures are usually failed offscreen renders.
+        if (
+            abs(max_r - min_r) <= 1
+            and abs(max_g - min_g) <= 1
+            and abs(max_b - min_b) <= 1
+            and abs(max_a - min_a) <= 1
+        ):
+            return True
+        # Explicit black-clear capture.
+        if max_r <= int(threshold) and max_g <= int(threshold) and max_b <= int(threshold):
+            return True
+        return False
+
+    def _grab_frame_supersampled(self, glv, target_w: int, target_h: int):
+        w = max(1, int(target_w))
+        h = max(1, int(target_h))
+        render_offscreen = getattr(glv, "_mgl_render_to_image", None)
+        if callable(render_offscreen):
+            factors = []
+            try:
+                factors.append(max(1.0, float(_RENDER_SUPERSAMPLE)))
+            except Exception:
+                factors.append(2.0)
+            factors.extend([1.5, 1.0])
+            seen = set()
+            factors = [ff for ff in factors if not (ff in seen or seen.add(ff))]
+            for factor in factors:
+                src_w = max(w, int(round(float(w) * float(factor))))
+                src_h = max(h, int(round(float(h) * float(factor))))
+                src_w = max(2, min(int(_RENDER_MAX_DIM), int(src_w)))
+                src_h = max(2, min(int(_RENDER_MAX_DIM), int(src_h)))
+                for _attempt in range(4):
+                    try:
+                        self._process_ui_events(8)
+                        glv.update()
+                        glv.repaint()
+                    except Exception:
+                        pass
+                    self._process_ui_events(12)
+                    try:
+                        image = render_offscreen(src_w, src_h)
+                    except Exception:
+                        image = None
+                    if image is not None and (not image.isNull()):
+                        if not self._image_is_invalid_capture(image):
+                            return image
+                    try:
+                        time.sleep(0.012)
+                    except Exception:
+                        pass
+        return self._grab_frame(glv)
+
     def _timeline_max_frame(self, glv, scene_name: str, project_path: str | None) -> int:
         paths = []
         seen = set()
@@ -873,14 +965,14 @@ class RenderNodeWidget(QtWidgets.QWidget):
         project_path = str(getattr(win, "_current_path", "") or "").strip() if win is not None else None
 
         old_view_mode = str(getattr(win, "_view_mode", "") or "").strip().lower() if win is not None else ""
-        forced_split = False
-        if win is not None and old_view_mode == "2d":
+        forced_view_restore = False
+        if win is not None and hasattr(win, "_set_view_mode"):
             try:
-                if hasattr(win, "_set_view_mode"):
-                    win._set_view_mode("split")
-                    forced_split = True
+                if old_view_mode != "3d":
+                    win._set_view_mode("3d")
+                    forced_view_restore = True
             except Exception:
-                forced_split = False
+                forced_view_restore = False
 
         old_frame = 0
         try:
@@ -969,7 +1061,7 @@ class RenderNodeWidget(QtWidgets.QWidget):
                         sync_view(owner)
                 except Exception:
                     pass
-                image = self._grab_frame(glv)
+                image = self._grab_frame_supersampled(glv, target_w, target_h)
                 if image is None:
                     failures.append(f"Frame {frame}: capture failed.")
                     continue
@@ -1029,10 +1121,11 @@ class RenderNodeWidget(QtWidgets.QWidget):
                     glv._mgl_bg_color = old_mgl_bg_color
             except Exception:
                 pass
-            if forced_split and win is not None and old_view_mode == "2d":
+            if forced_view_restore and win is not None:
                 try:
                     if hasattr(win, "_set_view_mode"):
-                        win._set_view_mode("2d")
+                        restore = old_view_mode if old_view_mode in {"2d", "3d", "split"} else "2d"
+                        win._set_view_mode(restore)
                 except Exception:
                     pass
             self._set_busy(False)

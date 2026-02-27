@@ -284,3 +284,14 @@ def bootstrap_plugins():
             print("[EchoGraph] Render module has no 'register' function.")
     except Exception as e:
         print("[EchoGraph] Render plugin import failed:", e)
+
+    # 16) Video Player
+    try:
+        from nodes import video_player as video_player_node
+        if hasattr(video_player_node, "register"):
+            video_player_node.register()
+            _safe_probe("video_player")
+        else:
+            print("[EchoGraph] Video Player module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Video Player plugin import failed:", e)

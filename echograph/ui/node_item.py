@@ -290,6 +290,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     _render_node.register()
             except Exception:
                 pass
+        # Ensure Video Player spec is registered even if the loader was skipped.
+        if (self.model.kind or "").strip().lower() in ("video_player", "video player", "videoplayer"):
+            try:
+                from nodes import video_player as _video_player  # type: ignore
+                if hasattr(_video_player, "register"):
+                    _video_player.register()
+            except Exception:
+                pass
         # Ensure Primitive spec is registered even if the loader was skipped.
         if (self.model.kind or "").strip().lower() == "primitive":
             try:
@@ -817,6 +825,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
             hidden.update({"output", "include_hidden"})
         elif kind in ("render", "render_sequence", "render node"):
             hidden.update({"output", "camera", "frame_rate", "format", "start_frame", "end_frame"})
+        elif kind in ("video_player", "video player", "videoplayer"):
+            hidden.update({"path"})
         elif kind == "primitive":
             hidden.update({"primitive", "path"})
         elif kind == "uv_unwrap":
@@ -1348,6 +1358,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
         elif kind in ("render", "render_sequence", "render node"):
             # Keep extra bottom frame space for Render node controls.
             body_h = 198
+            node_w = self._BASE_W
+        elif kind in ("video_player", "video player", "videoplayer"):
+            # Keep extra bottom frame space for the Video Player preview controls.
+            body_h = 188
             node_w = self._BASE_W
         elif kind in ("image_collection", "imagecollection"):
             body_h = self._IMG_CTRL_H + self._IMG_CANVAS_H
@@ -5087,6 +5101,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 icon_pm = node_icons._screengrab_icon()
             elif kind_lower in ("render", "render_sequence", "render node"):
                 icon_pm = node_icons._render_node_icon() or node_icons._output_icon()
+            elif kind_lower in ("video_player", "video player", "videoplayer"):
+                icon_pm = node_icons._video_player_icon() or node_icons._render_node_icon() or node_icons._output_icon()
             elif kind_lower in ("export_fbx", "exportfbx", "export fbx"):
                 icon_pm = node_icons._fbx_icon() or node_icons._output_icon()
             elif kind_lower == "output":
@@ -5105,6 +5121,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 size = int(max(40, min(128, 38 / max(scale, 0.001))))
                 if kind_lower in ("render", "render_sequence", "render node"):
                     size = int(size * 1.20)
+                if kind_lower in ("video_player", "video player", "videoplayer"):
+                    size = int(size * 1.15)
                 if kind_lower in ("chatbot", "chat bot", "chat_bot"):
                     size = int(size * 1.13)
                 pm_scaled = icon_pm.scaled(size, size, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)

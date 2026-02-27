@@ -25,6 +25,7 @@ _OUTPUT_ICON = None
 _PYTHON_ICON = None
 _SCREENGRAB_ICON = None
 _RENDER_NODE_ICON = None
+_VIDEO_PLAYER_ICON = None
 
 
 def _load_pm(rel_icon_name: str):
@@ -181,3 +182,11 @@ def _render_node_icon():
         return _RENDER_NODE_ICON
     _RENDER_NODE_ICON = _load_pm("RenderNode_Icon.png")
     return _RENDER_NODE_ICON
+
+
+def _video_player_icon():
+    global _VIDEO_PLAYER_ICON
+    if _VIDEO_PLAYER_ICON is not None:
+        return _VIDEO_PLAYER_ICON
+    _VIDEO_PLAYER_ICON = _load_pm("PlayButton_icon.png")
+    return _VIDEO_PLAYER_ICON

@@ -2961,12 +2961,181 @@ class MGLRendererMixin:
             except Exception:
                 pass
 
+    def _mgl_target_framebuffer_id(self) -> int:
+        try:
+            target = int(getattr(self, "_mgl_render_target_fbo_id", 0) or 0)
+            if target > 0:
+                return target
+        except Exception:
+            pass
+        try:
+            return int(self.defaultFramebufferObject())
+        except Exception:
+            return 0
+
     def _mgl_bind_default_fbo(self) -> None:
         try:
             if self._gl is not None and hasattr(self, "defaultFramebufferObject"):
-                self._gl.glBindFramebuffer(0x8D40, int(self.defaultFramebufferObject()))  # GL_FRAMEBUFFER
+                fbo = int(self._mgl_target_framebuffer_id())
+                if fbo > 0:
+                    self._gl.glBindFramebuffer(0x8D40, fbo)  # GL_FRAMEBUFFER
         except Exception:
             pass
+
+    def _mgl_render_size(self) -> Tuple[int, int]:
+        override = getattr(self, "_mgl_render_size_override", None)
+        if isinstance(override, (list, tuple)) and len(override) >= 2:
+            try:
+                w = max(2, int(override[0]))
+                h = max(2, int(override[1]))
+                return w, h
+            except Exception:
+                pass
+        try:
+            return max(2, int(self.width())), max(2, int(self.height()))
+        except Exception:
+            return 2, 2
+
+    def _mgl_render_to_image(self, width: int, height: int) -> Optional[QtGui.QImage]:
+        if (not _HAS_MGL) or getattr(self, "_mgl_ctx", None) is None:
+            return None
+        w = max(2, int(width))
+        h = max(2, int(height))
+        fbo = None
+        prev_size_override = getattr(self, "_mgl_render_size_override", None)
+        prev_target_fbo = int(getattr(self, "_mgl_render_target_fbo_id", 0) or 0)
+        prev_render_paused = bool(getattr(self, "_render_paused", False))
+        try:
+            prev_splat_min_dt = float(getattr(self, "_mgl_splats_rebuild_min_dt", 0.05) or 0.05)
+        except Exception:
+            prev_splat_min_dt = 0.05
+        try:
+            try:
+                if hasattr(self, "makeCurrent"):
+                    self.makeCurrent()
+            except Exception:
+                pass
+
+            fbo = self._mgl_get_render_offscreen_fbo(w, h)
+            if fbo is None:
+                return None
+            self._mgl_render_size_override = (w, h)
+            try:
+                self._mgl_render_target_fbo_id = int(getattr(fbo, "glo", 0) or 0)
+            except Exception:
+                self._mgl_render_target_fbo_id = 0
+            if int(getattr(self, "_mgl_render_target_fbo_id", 0) or 0) <= 0:
+                return None
+
+            # Reuse the normal render path, but redirect framebuffer binding
+            # to the offscreen target to keep behavior consistent across frames.
+            try:
+                fbo.use()
+            except Exception:
+                pass
+            self._render_paused = False
+            try:
+                self._mgl_splats_rebuild_min_dt = 0.0
+            except Exception:
+                pass
+            self._paint_mgl()
+            self._paint_mgl()
+            try:
+                if hasattr(self._mgl_ctx, "finish"):
+                    self._mgl_ctx.finish()
+            except Exception:
+                pass
+
+            data = fbo.read(components=4, alignment=1)
+            if not data:
+                return None
+            if hasattr(QtGui.QImage, "Format_RGBA8888"):
+                fmt = QtGui.QImage.Format_RGBA8888
+            else:
+                fmt = QtGui.QImage.Format_ARGB32
+            image = QtGui.QImage(data, w, h, w * 4, fmt)
+            if image.isNull():
+                return None
+            return image.mirrored(False, True).copy()
+        except Exception:
+            return None
+        finally:
+            try:
+                self._mgl_render_size_override = prev_size_override
+            except Exception:
+                pass
+            try:
+                self._mgl_render_target_fbo_id = int(prev_target_fbo)
+            except Exception:
+                self._mgl_render_target_fbo_id = 0
+            try:
+                self._render_paused = bool(prev_render_paused)
+            except Exception:
+                self._render_paused = False
+            try:
+                self._mgl_splats_rebuild_min_dt = float(prev_splat_min_dt)
+            except Exception:
+                self._mgl_splats_rebuild_min_dt = 0.05
+            try:
+                self._mgl_bind_default_fbo()
+            except Exception:
+                pass
+            try:
+                if hasattr(self._mgl_ctx, "screen"):
+                    self._mgl_ctx.screen.use()
+            except Exception:
+                pass
+            try:
+                if hasattr(self, "doneCurrent"):
+                    self.doneCurrent()
+            except Exception:
+                pass
+
+    def _mgl_get_render_offscreen_fbo(self, width: int, height: int):
+        if (not _HAS_MGL) or getattr(self, "_mgl_ctx", None) is None:
+            return None
+        w = max(2, int(width))
+        h = max(2, int(height))
+        cur_size = getattr(self, "_mgl_render_offscreen_size", None)
+        fbo = getattr(self, "_mgl_render_offscreen_fbo", None)
+        tex = getattr(self, "_mgl_render_offscreen_tex", None)
+        depth = getattr(self, "_mgl_render_offscreen_depth", None)
+        if (
+            isinstance(cur_size, (list, tuple))
+            and len(cur_size) >= 2
+            and int(cur_size[0]) == w
+            and int(cur_size[1]) == h
+            and fbo is not None
+            and tex is not None
+            and depth is not None
+        ):
+            return fbo
+        try:
+            if fbo is not None:
+                fbo.release()
+        except Exception:
+            pass
+        try:
+            if depth is not None:
+                depth.release()
+        except Exception:
+            pass
+        try:
+            if tex is not None:
+                tex.release()
+        except Exception:
+            pass
+        try:
+            tex = self._mgl_ctx.texture((w, h), 4)
+            depth = self._mgl_ctx.depth_renderbuffer((w, h))
+            fbo = self._mgl_ctx.framebuffer(color_attachments=[tex], depth_attachment=depth)
+        except Exception:
+            return None
+        self._mgl_render_offscreen_size = (w, h)
+        self._mgl_render_offscreen_tex = tex
+        self._mgl_render_offscreen_depth = depth
+        self._mgl_render_offscreen_fbo = fbo
+        return fbo
 
     def _paint_mgl_draw_grid_pass(self, *, mvp) -> None:
         try:
@@ -3577,11 +3746,12 @@ class MGLRendererMixin:
                 pass
             return False
         try:
+            vp_w, vp_h = self._mgl_render_size()
             self._mgl_bind_default_fbo()
             # QOpenGLWidget already has the correct default framebuffer bound.
             # Avoid Framebuffer.clear() because it may bind/use() internally and can hard-crash some drivers.
             self._dbgprint(dbg, "[MGL] set viewport", flush=True)
-            self._mgl_ctx.viewport = (0, 0, max(2, self.width()), max(2, self.height()))
+            self._mgl_ctx.viewport = (0, 0, max(2, int(vp_w)), max(2, int(vp_h)))
             self._dbgprint(dbg, "[MGL] after viewport assign", flush=True)
 
             col = self._mgl_bg_color or (0.15, 0.15, 0.15, 1.0)
@@ -3593,8 +3763,8 @@ class MGLRendererMixin:
 
             try:
                 if self._gl is not None:
-                    w = max(2, self.width())
-                    h = max(2, self.height())
+                    w = max(2, int(vp_w))
+                    h = max(2, int(vp_h))
                     self._dbgprint(dbg, "[MGL] before glViewport", flush=True)
                     self._gl.glViewport(0, 0, w, h)
                     self._dbgprint(dbg, "[MGL] after glViewport", flush=True)
@@ -3603,9 +3773,9 @@ class MGLRendererMixin:
                     self._gl.glClearColor(r, g, b, a)
                     self._dbgprint(dbg, "[MGL] after glClearColor", flush=True)
 
-                    # bind Qt's default FBO (snapshot/grab can change the bound framebuffer)
+                    # bind active target FBO (default widget FBO or render override target)
                     try:
-                        fbo = int(self.defaultFramebufferObject())
+                        fbo = int(self._mgl_target_framebuffer_id())
                         self._gl.glBindFramebuffer(0x8D40, fbo)  # GL_FRAMEBUFFER
                     except Exception:
                         pass
@@ -3623,7 +3793,7 @@ class MGLRendererMixin:
                 try:
                     if self._gl is not None:
                         try:
-                            fbo = int(self.defaultFramebufferObject())
+                            fbo = int(self._mgl_target_framebuffer_id())
                             self._gl.glBindFramebuffer(0x8D40, fbo)  # GL_FRAMEBUFFER
                         except Exception:
                             pass
@@ -3639,10 +3809,10 @@ class MGLRendererMixin:
 
             self._dbgprint(dbg, "[MGL] after raw gl clear block", flush=True)
 
-            # Ensure Qt's default framebuffer is bound (snapshot/grab can change FBO binding)
+            # Ensure target framebuffer is bound (snapshot/grab can change FBO binding)
             try:
                 if self._gl is not None and hasattr(self, "defaultFramebufferObject"):
-                    fbo = int(self.defaultFramebufferObject())
+                    fbo = int(self._mgl_target_framebuffer_id())
                     self._gl.glBindFramebuffer(0x8D40, fbo)  # GL_FRAMEBUFFER
             except Exception:
                 pass
@@ -3685,7 +3855,8 @@ class MGLRendererMixin:
         return True
 
     def _paint_mgl_build_matrices(self, *, dbg):
-        aspect = self.width() / max(1.0, self.height())
+        vp_w, vp_h = self._mgl_render_size()
+        aspect = float(vp_w) / max(1.0, float(vp_h))
         try:
             zoom = float(getattr(self, "_mgl_camera_zoom", 1.0))
         except Exception:
