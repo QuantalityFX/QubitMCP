@@ -72,6 +72,116 @@ class GraphGLTimelineIOMixin:
             return out_dir / f"{safe_scene}__owner_{safe_owner}_timeline.json"
         return out_dir / f"{safe_scene}_timeline.json"
 
+    def _timeline_audio_context_scene_name(self, scene_name: str | None = None) -> str:
+        raw = str(scene_name or "").strip()
+        if raw:
+            return raw
+        try:
+            win = self.window()
+            active = getattr(win, "_active_scene_node", None) if win is not None else None
+            if active is not None:
+                name = str(getattr(active, "name", "") or "").strip()
+                if name:
+                    return name
+        except Exception:
+            pass
+        return "viewport"
+
+    def _timeline_audio_file_path(
+        self,
+        scene_name: str,
+        project_path: str | None = None,
+    ) -> Path:
+        base_dir = self._timeline_default_project_dir(project_path=project_path)
+        out_dir = base_dir / "projects"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        safe_scene = self._timeline_safe_name(scene_name or "viewport")
+        return out_dir / f"{safe_scene}_audio.json"
+
+    def _timeline_audio_store_path(self, raw_path: str) -> str:
+        raw = str(raw_path or "").strip()
+        if not raw:
+            return ""
+        try:
+            p = Path(raw).expanduser()
+        except Exception:
+            return raw
+        if not p.is_absolute():
+            try:
+                return p.as_posix()
+            except Exception:
+                return str(p)
+        try:
+            base = self._timeline_default_project_dir()
+            rel = p.relative_to(base)
+            return rel.as_posix()
+        except Exception:
+            pass
+        try:
+            return p.as_posix()
+        except Exception:
+            return str(p)
+
+    def _timeline_audio_resolve_path(self, stored_path: str) -> str:
+        raw = str(stored_path or "").strip()
+        if not raw:
+            return ""
+        try:
+            p = Path(raw).expanduser()
+        except Exception:
+            return raw
+        if p.is_absolute():
+            try:
+                return p.as_posix()
+            except Exception:
+                return str(p)
+        try:
+            base = self._timeline_default_project_dir()
+            return (base / p).resolve().as_posix()
+        except Exception:
+            try:
+                return (Path.cwd() / p).resolve().as_posix()
+            except Exception:
+                return raw
+
+    def _timeline_audio_save_to_disk(self) -> None:
+        path = getattr(self, "_timeline_audio_cfg_path", None)
+        if path is None:
+            return
+        payload = {
+            "scene": str(getattr(self, "_timeline_audio_scene_name", "viewport") or "viewport"),
+            "audio_path": self._timeline_audio_store_path(str(getattr(self, "_timeline_audio_path", "") or "")),
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _timeline_audio_load_from_disk(self) -> None:
+        path = getattr(self, "_timeline_audio_cfg_path", None)
+        raw = {}
+        if path is not None and path.exists():
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                raw = {}
+        if not isinstance(raw, dict):
+            raw = {}
+        stored = str(raw.get("audio_path", "") or "").strip()
+        resolved = self._timeline_audio_resolve_path(stored)
+        setter = getattr(self, "_timeline_audio_set_path", None)
+        if callable(setter):
+            try:
+                setter(resolved, save=False)
+                return
+            except Exception:
+                pass
+        try:
+            self._timeline_audio_path = resolved
+        except Exception:
+            pass
+
     def _timeline_json_safe(self, value):
         if value is None:
             return None
@@ -320,7 +430,8 @@ class GraphGLTimelineIOMixin:
         project_path: str | None = None,
         owner_name: str | None = None,
     ) -> None:
-        name = str(scene_name or "").strip()
+        scene_arg = str(scene_name or "").strip()
+        name = str(scene_arg).strip()
         if not name:
             name = self._timeline_default_scene_name()
         if not name:
@@ -335,14 +446,25 @@ class GraphGLTimelineIOMixin:
         )
         old_path = getattr(self, "_timeline_anim_path", None)
         same = old_path is not None and str(old_path) == str(anim_path)
+        audio_scene_name = self._timeline_audio_context_scene_name(scene_arg)
+        audio_cfg_path = self._timeline_audio_file_path(
+            audio_scene_name,
+            project_path=project_path,
+        )
+        old_audio_path = getattr(self, "_timeline_audio_cfg_path", None)
+        same_audio = old_audio_path is not None and str(old_audio_path) == str(audio_cfg_path)
         self._timeline_scene_name = name
         self._timeline_owner_name = owner or None
         self._timeline_project_dir = anim_path.parent
         self._timeline_anim_path = anim_path
+        self._timeline_audio_scene_name = audio_scene_name
+        self._timeline_audio_cfg_path = audio_cfg_path
         if not same:
             self._timeline_load_from_disk()
         else:
             self._timeline_refresh_coord_labels()
+        if not same_audio:
+            self._timeline_audio_load_from_disk()
         try:
             self._timeline_update_target_label()
         except Exception:

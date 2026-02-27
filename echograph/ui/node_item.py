@@ -5017,6 +5017,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "scene_outliner",
                 "camera",
                 "scene_camera",
+                "instance",
+                "uv_unwrap",
+                "uv unwrap",
+                "texture",
+                "texture_pro",
+                "texture pro",
+                "texture_layer",
+                "texture layer",
+                "transforms",
                 "export_fbx",
                 "exportfbx",
                 "export fbx",
@@ -5144,6 +5153,16 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 icon_pm = node_icons._render_node_icon() or node_icons._output_icon()
             elif kind_lower in ("video_player", "video player", "videoplayer"):
                 icon_pm = node_icons._video_player_icon() or node_icons._render_node_icon() or node_icons._output_icon()
+            elif kind_lower == "instance":
+                icon_pm = node_icons._instance_icon() or node_icons._output_icon()
+            elif kind_lower in ("uv_unwrap", "uv unwrap"):
+                icon_pm = node_icons._uv_unwrap_icon() or node_icons._output_icon()
+            elif kind_lower in ("texture", "texture_pro", "texture pro"):
+                icon_pm = node_icons._texture_node_icon() or node_icons._output_icon()
+            elif kind_lower in ("texture_layer", "texture layer"):
+                icon_pm = node_icons._texture_layer_icon() or node_icons._output_icon()
+            elif kind_lower == "transforms":
+                icon_pm = node_icons._transforms_icon() or node_icons._output_icon()
             elif kind_lower in ("export_fbx", "exportfbx", "export fbx"):
                 icon_pm = node_icons._fbx_icon() or node_icons._output_icon()
             elif kind_lower == "output":
@@ -5166,6 +5185,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     # 10% smaller than the previous video-player icon size.
                     size = int(size * 1.55)
                     size = int(min(320, max(80, size)))
+                if kind_lower in ("uv_unwrap", "uv unwrap"):
+                    size = int(max(34, size * 0.792))
+                if kind_lower in ("texture", "texture_pro", "texture pro"):
+                    size = int(max(34, size * 0.792))
+                if kind_lower in ("texture_layer", "texture layer"):
+                    size = int(max(36, size * 0.855))
                 if kind_lower in ("chatbot", "chat bot", "chat_bot"):
                     size = int(size * 1.13)
                 pm_scaled = icon_pm.scaled(size, size, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)

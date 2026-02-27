@@ -8,19 +8,24 @@ class TimelineController:
         self._window = window
         self._timeline_menu_button = None
         self._timeline_toggle_button = None
+        self._audio_toggle_button = None
 
     def _win(self):
         return self._window
 
-    def bind_menu_widgets(self, menu_button, toggle_button) -> None:
+    def bind_menu_widgets(self, menu_button, timeline_toggle_button, audio_toggle_button=None) -> None:
         self._timeline_menu_button = menu_button
-        self._timeline_toggle_button = toggle_button
+        self._timeline_toggle_button = timeline_toggle_button
+        self._audio_toggle_button = audio_toggle_button
 
     def _menu_button(self):
         return self._timeline_menu_button
 
     def _toggle_button(self):
         return self._timeline_toggle_button
+
+    def _audio_button(self):
+        return self._audio_toggle_button
 
     def _menu_visible(self) -> bool:
         btn = self._menu_button()
@@ -65,6 +70,18 @@ class TimelineController:
             return False
         try:
             visible_fn = getattr(gv, "timeline_visible", None)
+            if callable(visible_fn):
+                return bool(visible_fn())
+        except Exception:
+            pass
+        return False
+
+    def audio_panel_enabled(self) -> bool:
+        gv = self._gl_view()
+        if gv is None:
+            return False
+        try:
+            visible_fn = getattr(gv, "timeline_audio_visible", None)
             if callable(visible_fn):
                 return bool(visible_fn())
         except Exception:
@@ -142,20 +159,32 @@ class TimelineController:
             pass
 
     def sync_timeline_menu_state(self) -> None:
-        btn = self._toggle_button()
-        if btn is None:
-            return
-        enabled = self.timeline_panel_enabled()
-        try:
-            btn.blockSignals(True)
-            btn.setChecked(bool(enabled))
-        except Exception:
-            pass
-        finally:
+        timeline_btn = self._toggle_button()
+        audio_btn = self._audio_button()
+        if timeline_btn is not None:
+            enabled = self.timeline_panel_enabled()
             try:
-                btn.blockSignals(False)
+                timeline_btn.blockSignals(True)
+                timeline_btn.setChecked(bool(enabled))
             except Exception:
                 pass
+            finally:
+                try:
+                    timeline_btn.blockSignals(False)
+                except Exception:
+                    pass
+        if audio_btn is not None:
+            enabled = self.audio_panel_enabled()
+            try:
+                audio_btn.blockSignals(True)
+                audio_btn.setChecked(bool(enabled))
+            except Exception:
+                pass
+            finally:
+                try:
+                    audio_btn.blockSignals(False)
+                except Exception:
+                    pass
         self.set_timeline_menu_active(self._menu_visible())
 
     def toggle_timeline_panel_from_menu(self, checked: bool) -> None:
@@ -171,6 +200,50 @@ class TimelineController:
         if gv is not None:
             try:
                 set_visible = getattr(gv, "set_timeline_visible", None)
+                if callable(set_visible):
+                    set_visible(want)
+            except Exception:
+                pass
+            if not want:
+                try:
+                    set_audio_visible = getattr(gv, "set_timeline_audio_visible", None)
+                    if callable(set_audio_visible):
+                        set_audio_visible(False)
+                except Exception:
+                    pass
+        self.sync_timeline_menu_state()
+        try:
+            self._close_menu()
+        except Exception:
+            pass
+        try:
+            QtCore.QTimer.singleShot(0, win._reset_ui_cursor_arrow)
+        except Exception:
+            try:
+                win._reset_ui_cursor_arrow()
+            except Exception:
+                pass
+
+    def toggle_audio_panel_from_menu(self, checked: bool) -> None:
+        win = self._win()
+        want = bool(checked)
+        if want and str(getattr(win, "_view_mode", "2d")).lower() == "2d":
+            try:
+                win._set_view_mode("split")
+            except Exception:
+                pass
+        self.sync_timeline_context()
+        gv = self._gl_view()
+        if gv is not None:
+            try:
+                if want:
+                    set_timeline_visible = getattr(gv, "set_timeline_visible", None)
+                    if callable(set_timeline_visible):
+                        set_timeline_visible(True)
+            except Exception:
+                pass
+            try:
+                set_visible = getattr(gv, "set_timeline_audio_visible", None)
                 if callable(set_visible):
                     set_visible(want)
             except Exception:

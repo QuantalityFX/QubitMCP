@@ -771,6 +771,9 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._timeline_panel = None
         self._timeline_h = 220
         self._timeline_enabled = False
+        self._timeline_audio_panel = None
+        self._timeline_audio_h = 108
+        self._timeline_audio_enabled = False
         self._timeline_ignore_ui = False
         self._timeline_scene_name = "scene"
         self._timeline_owner_name = None
@@ -778,6 +781,17 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._timeline_owner_keys_cache = {}
         self._timeline_project_dir: Optional[Path] = None
         self._timeline_anim_path: Optional[Path] = None
+        self._timeline_audio_scene_name = "viewport"
+        self._timeline_audio_cfg_path: Optional[Path] = None
+        self._timeline_audio_path = ""
+        self._timeline_audio_duration_ms = 0
+        self._timeline_audio_wave_samples: List[float] = []
+        self._timeline_audio_loaded_key = None
+        self._timeline_audio_player = None
+        self._timeline_audio_output = None
+        self._timeline_audio_file_label = None
+        self._timeline_audio_wave_widget = None
+        self._timeline_audio_status_label = None
         self._timeline_fps = 24.0
         self._timeline_keys: Dict[int, Dict[str, object]] = {}
         self._timeline_coord_x = None

@@ -21,11 +21,30 @@ def _timeline_panel_enabled(window) -> bool:
     return False
 
 
+def _audio_panel_enabled(window) -> bool:
+    ctl = _controller(window)
+    if ctl is not None:
+        try:
+            return bool(ctl.audio_panel_enabled())
+        except Exception:
+            return False
+    return False
+
+
 def _toggle_timeline_panel(window, checked: bool) -> None:
     ctl = _controller(window)
     if ctl is not None:
         try:
             ctl.toggle_timeline_panel_from_menu(bool(checked))
+        except Exception:
+            pass
+
+
+def _toggle_audio_panel(window, checked: bool) -> None:
+    ctl = _controller(window)
+    if ctl is not None:
+        try:
+            ctl.toggle_audio_panel_from_menu(bool(checked))
         except Exception:
             pass
 
@@ -48,7 +67,7 @@ def _set_timeline_menu_active(window, active: bool) -> None:
             pass
 
 
-def build_timeline_panels_menu(window, bar, layout) -> tuple[QtWidgets.QToolButton, QtWidgets.QPushButton]:
+def build_timeline_panels_menu(window, bar, layout) -> tuple[QtWidgets.QToolButton, QtWidgets.QPushButton, QtWidgets.QPushButton]:
     timeline_btn = QtWidgets.QToolButton(bar)
     timeline_btn.setObjectName("PanelsButton")
     timeline_btn.setText("Panels")
@@ -68,7 +87,7 @@ def build_timeline_panels_menu(window, bar, layout) -> tuple[QtWidgets.QToolButt
 
     timeline_panel = QtWidgets.QFrame(timeline_menu)
     timeline_panel.setObjectName("PanelsPanel")
-    timeline_panel.setFixedWidth(96)
+    timeline_panel.setFixedWidth(112)
     timeline_panel.setStyleSheet(
         "#PanelsPanel{background:#1b2026;border:0px;border-radius:6px;}"
         "#PanelsPanel QPushButton{color:#e5e7eb;background:transparent;border:0px;padding:0px 6px;text-align:left;}"
@@ -89,6 +108,17 @@ def build_timeline_panels_menu(window, bar, layout) -> tuple[QtWidgets.QToolButt
     timeline_toggle.clicked.connect(lambda checked=False: _toggle_timeline_panel(window, bool(checked)))
     timeline_layout.addWidget(timeline_toggle, 0)
 
+    audio_toggle = QtWidgets.QPushButton("Audio", timeline_panel)
+    audio_toggle.setToolTip("Show audio panel above timeline")
+    audio_toggle.setFixedHeight(22)
+    audio_toggle.setCursor(QtCore.Qt.PointingHandCursor)
+    audio_toggle.setFlat(True)
+    audio_toggle.setCheckable(True)
+    audio_toggle.setChecked(_audio_panel_enabled(window))
+    audio_toggle.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+    audio_toggle.clicked.connect(lambda checked=False: _toggle_audio_panel(window, bool(checked)))
+    timeline_layout.addWidget(audio_toggle, 0)
+
     timeline_action = QtWidgets.QWidgetAction(timeline_menu)
     timeline_action.setDefaultWidget(timeline_panel)
     timeline_menu.addAction(timeline_action)
@@ -101,7 +131,7 @@ def build_timeline_panels_menu(window, bar, layout) -> tuple[QtWidgets.QToolButt
     ctl = _controller(window)
     if ctl is not None:
         try:
-            ctl.bind_menu_widgets(timeline_btn, timeline_toggle)
+            ctl.bind_menu_widgets(timeline_btn, timeline_toggle, audio_toggle)
         except Exception:
             pass
-    return timeline_btn, timeline_toggle
+    return timeline_btn, timeline_toggle, audio_toggle

@@ -26,6 +26,11 @@ _PYTHON_ICON = None
 _SCREENGRAB_ICON = None
 _RENDER_NODE_ICON = None
 _VIDEO_PLAYER_ICON = None
+_INSTANCE_ICON = None
+_TEXTURE_LAYER_ICON = None
+_TEXTURE_NODE_ICON = None
+_UV_UNWRAP_ICON = None
+_TRANSFORMS_ICON = None
 
 
 def _load_pm(rel_icon_name: str):
@@ -190,3 +195,43 @@ def _video_player_icon():
         return _VIDEO_PLAYER_ICON
     _VIDEO_PLAYER_ICON = _load_pm("ReelVideo_Icon.png") or _load_pm("PlayButton_icon.png")
     return _VIDEO_PLAYER_ICON
+
+
+def _instance_icon():
+    global _INSTANCE_ICON
+    if _INSTANCE_ICON is not None:
+        return _INSTANCE_ICON
+    _INSTANCE_ICON = _load_pm("instance_icon.png")
+    return _INSTANCE_ICON
+
+
+def _texture_layer_icon():
+    global _TEXTURE_LAYER_ICON
+    if _TEXTURE_LAYER_ICON is not None:
+        return _TEXTURE_LAYER_ICON
+    _TEXTURE_LAYER_ICON = _load_pm("layer_Texture_Icon.png")
+    return _TEXTURE_LAYER_ICON
+
+
+def _texture_node_icon():
+    global _TEXTURE_NODE_ICON
+    if _TEXTURE_NODE_ICON is not None:
+        return _TEXTURE_NODE_ICON
+    _TEXTURE_NODE_ICON = _load_pm("TextureNode_Icon.png")
+    return _TEXTURE_NODE_ICON
+
+
+def _uv_unwrap_icon():
+    global _UV_UNWRAP_ICON
+    if _UV_UNWRAP_ICON is not None:
+        return _UV_UNWRAP_ICON
+    _UV_UNWRAP_ICON = _load_pm("UvUnwrapNode_Icon.png")
+    return _UV_UNWRAP_ICON
+
+
+def _transforms_icon():
+    global _TRANSFORMS_ICON
+    if _TRANSFORMS_ICON is not None:
+        return _TRANSFORMS_ICON
+    _TRANSFORMS_ICON = _load_pm("TranformNode_Icon.png") or _load_pm("WorldGizmoOn_Icon.png")
+    return _TRANSFORMS_ICON

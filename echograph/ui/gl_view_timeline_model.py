@@ -2958,6 +2958,12 @@ class GraphGLTimelineModelMixin:
                 self._timeline_play_timer.stop()
             except Exception:
                 pass
+        try:
+            hook = getattr(self, "_timeline_audio_on_timeline_play_toggled", None)
+            if callable(hook):
+                hook(bool(checked))
+        except Exception:
+            pass
 
     def _timeline_on_play_tick(self) -> None:
         frame = int(self._timeline_current_frame()) + 1
@@ -2968,6 +2974,12 @@ class GraphGLTimelineModelMixin:
         self._timeline_apply_frame_if_keyed(frame, force=True)
         try:
             self._timeline_apply_other_owner_frames(frame)
+        except Exception:
+            pass
+        try:
+            hook = getattr(self, "_timeline_audio_on_timeline_frame_changed", None)
+            if callable(hook):
+                hook(int(frame), playing=True)
         except Exception:
             pass
 
@@ -3237,6 +3249,12 @@ class GraphGLTimelineModelMixin:
             self._timeline_apply_other_owner_frames(frame)
         except Exception:
             pass
+        try:
+            hook = getattr(self, "_timeline_audio_on_timeline_frame_changed", None)
+            if callable(hook):
+                hook(int(frame), playing=False)
+        except Exception:
+            pass
 
     def _timeline_on_frame_slider_changed(self, value: int) -> None:
         if bool(getattr(self, "_timeline_ignore_ui", False)):
@@ -3261,6 +3279,12 @@ class GraphGLTimelineModelMixin:
         self._timeline_apply_frame_if_keyed(frame, force=True)
         try:
             self._timeline_apply_other_owner_frames(frame)
+        except Exception:
+            pass
+        try:
+            hook = getattr(self, "_timeline_audio_on_timeline_frame_changed", None)
+            if callable(hook):
+                hook(int(frame), playing=False)
         except Exception:
             pass
 

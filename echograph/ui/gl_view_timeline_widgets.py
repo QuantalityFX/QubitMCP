@@ -1,8 +1,20 @@
 from __future__ import annotations
 
+import math
+import struct
+import wave
+from pathlib import Path
 from typing import List, Optional
 
 from echograph.qt_compat import QtCore, QtGui, QtWidgets
+
+try:
+    from PySide6 import QtMultimedia
+except Exception:
+    try:
+        from PySide2 import QtMultimedia  # type: ignore
+    except Exception:
+        QtMultimedia = None  # type: ignore
 
 
 def _qt_shift_active(mods) -> bool:
@@ -20,6 +32,171 @@ def _qt_shift_active(mods) -> bool:
         return False
 
 
+def _audio_waveform_from_wav(path: Path, bins: int = 1024) -> tuple[list[float], int]:
+    p = Path(path)
+    if not p.is_file():
+        return ([], 0)
+    try:
+        wf = wave.open(str(p), "rb")
+    except Exception:
+        return ([], 0)
+    with wf:
+        try:
+            rate = int(max(1, wf.getframerate()))
+            frame_count = int(max(0, wf.getnframes()))
+            sampwidth = int(max(1, wf.getsampwidth()))
+        except Exception:
+            return ([], 0)
+        if frame_count <= 0:
+            return ([], 0)
+        duration_ms = int(round((float(frame_count) / float(rate)) * 1000.0))
+        target_bins = int(max(64, min(4096, int(bins))))
+        frames_per_bin = int(max(1, math.ceil(float(frame_count) / float(target_bins))))
+        peaks: list[float] = []
+        for _ in range(target_bins):
+            try:
+                raw = wf.readframes(frames_per_bin)
+            except Exception:
+                raw = b""
+            if not raw:
+                break
+            peak = 0.0
+            if sampwidth == 1:
+                for bb in raw:
+                    vv = abs(float(int(bb) - 128) / 128.0)
+                    if vv > peak:
+                        peak = vv
+            elif sampwidth == 2:
+                usable = len(raw) - (len(raw) % 2)
+                if usable > 0:
+                    for (sv,) in struct.iter_unpack("<h", raw[:usable]):
+                        vv = abs(float(sv) / 32768.0)
+                        if vv > peak:
+                            peak = vv
+            elif sampwidth == 3:
+                usable = len(raw) - (len(raw) % 3)
+                data = raw[:usable]
+                for i in range(0, len(data), 3):
+                    iv = int(data[i]) | (int(data[i + 1]) << 8) | (int(data[i + 2]) << 16)
+                    if iv & 0x800000:
+                        iv -= 0x1000000
+                    vv = abs(float(iv) / 8388608.0)
+                    if vv > peak:
+                        peak = vv
+            else:
+                usable = len(raw) - (len(raw) % 4)
+                if usable > 0:
+                    for (sv,) in struct.iter_unpack("<i", raw[:usable]):
+                        vv = abs(float(sv) / 2147483648.0)
+                        if vv > peak:
+                            peak = vv
+            peaks.append(max(0.0, min(1.0, float(peak))))
+        if not peaks:
+            peaks = [0.0]
+        return (peaks, int(max(0, duration_ms)))
+
+
+def _audio_waveform_from_file_bytes(path: Path, bins: int = 1024) -> list[float]:
+    p = Path(path)
+    if not p.is_file():
+        return []
+    try:
+        file_size = int(max(0, p.stat().st_size))
+    except Exception:
+        return []
+    if file_size <= 0:
+        return []
+    target_bins = int(max(64, min(4096, int(bins))))
+    chunk = int(max(1, math.ceil(float(file_size) / float(target_bins))))
+    peaks: list[float] = []
+    try:
+        with p.open("rb") as f:
+            while True:
+                block = f.read(chunk)
+                if not block:
+                    break
+                peak = 0.0
+                for bb in block:
+                    vv = abs(float(int(bb) - 128) / 128.0)
+                    if vv > peak:
+                        peak = vv
+                peaks.append(max(0.0, min(1.0, peak)))
+    except Exception:
+        return []
+    if not peaks:
+        return [0.0]
+    return peaks
+
+
+class _TimelineAudioWaveformWidget(QtWidgets.QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._samples: list[float] = []
+        self._playhead = 0.0
+        self.setMinimumHeight(56)
+        self.setAttribute(QtCore.Qt.WA_StyledBackground, True)
+
+    def setWaveform(self, samples) -> None:
+        out: list[float] = []
+        try:
+            for val in (samples or []):
+                out.append(max(0.0, min(1.0, float(val))))
+        except Exception:
+            out = []
+        self._samples = out
+        self.update()
+
+    def setPlayhead(self, norm: float) -> None:
+        try:
+            nv = max(0.0, min(1.0, float(norm)))
+        except Exception:
+            nv = 0.0
+        if abs(nv - float(self._playhead)) < 1.0e-4:
+            return
+        self._playhead = nv
+        self.update()
+
+    def paintEvent(self, ev):
+        super().paintEvent(ev)
+        rect = self.rect().adjusted(1, 1, -1, -1)
+        if rect.width() <= 2 or rect.height() <= 2:
+            return
+        p = QtGui.QPainter(self)
+        try:
+            p.setRenderHint(QtGui.QPainter.Antialiasing, False)
+        except Exception:
+            pass
+        p.fillRect(rect, QtGui.QColor(15, 23, 42, 180))
+        p.setPen(QtGui.QPen(QtGui.QColor(51, 65, 85, 230), 1))
+        p.drawRect(rect)
+        samples = list(getattr(self, "_samples", []) or [])
+        if not samples:
+            p.setPen(QtGui.QPen(QtGui.QColor(148, 163, 184, 220), 1))
+            p.drawText(rect, int(QtCore.Qt.AlignCenter), "No audio loaded")
+            p.end()
+            return
+        mid_y = int(rect.center().y())
+        amp_h = int(max(4, (rect.height() // 2) - 3))
+        wave_pen = QtGui.QPen(QtGui.QColor(186, 203, 222, 220), 1)
+        p.setPen(wave_pen)
+        n = int(max(1, len(samples)))
+        if n == 1:
+            x = int(rect.left() + (rect.width() // 2))
+            hh = int(max(1, float(samples[0]) * float(amp_h)))
+            p.drawLine(x, int(mid_y - hh), x, int(mid_y + hh))
+        else:
+            span = float(max(1, rect.width() - 1))
+            for i, amp in enumerate(samples):
+                x = int(round(float(rect.left()) + (float(i) / float(n - 1)) * span))
+                hh = int(max(1, float(amp) * float(amp_h)))
+                p.drawLine(x, int(mid_y - hh), x, int(mid_y + hh))
+        playhead_norm = max(0.0, min(1.0, float(getattr(self, "_playhead", 0.0))))
+        play_x = int(round(float(rect.left()) + (playhead_norm * float(max(1, rect.width() - 1)))))
+        p.setPen(QtGui.QPen(QtGui.QColor(248, 250, 252, 245), 1))
+        p.drawLine(play_x, int(rect.top()), play_x, int(rect.bottom()))
+        p.end()
+
+
 class GraphGLTimelineWidgetsMixin:
     def _bottom_overlay_height(self) -> float:
         h = 0.0
@@ -29,12 +206,12 @@ class GraphGLTimelineWidgetsMixin:
         panel = getattr(self, "_timeline_panel", None)
         if panel is not None and panel.isVisible():
             h += float(getattr(self, "_timeline_h", 0) or 0)
+        audio_panel = getattr(self, "_timeline_audio_panel", None)
+        if audio_panel is not None and audio_panel.isVisible():
+            h += float(getattr(self, "_timeline_audio_h", 0) or 0)
         return h
 
     def _layout_timeline_panel(self) -> None:
-        panel = getattr(self, "_timeline_panel", None)
-        if panel is None:
-            return
         controls_h = 0
         controls = getattr(self, "_controls", None)
         if controls is not None and controls.isVisible():
@@ -42,19 +219,38 @@ class GraphGLTimelineWidgetsMixin:
                 controls_h = int(getattr(self, "_controls_h", 44))
             except Exception:
                 controls_h = 44
-        pref_h = 0
-        try:
-            pref_h = int(panel.sizeHint().height())
-        except Exception:
+        view_w = max(1, int(self.width()))
+        y_cursor = max(0, int(self.height()) - int(controls_h))
+
+        panel = getattr(self, "_timeline_panel", None)
+        if panel is not None and panel.isVisible():
             pref_h = 0
-        h = int(max(88, int(getattr(self, "_timeline_h", 72) or 72), pref_h))
-        self._timeline_h = h
-        y = max(0, self.height() - controls_h - h)
-        panel.setGeometry(0, y, max(1, self.width()), h)
-        panel.raise_()
-        self._timeline_sync_row_alignment()
-        self._timeline_update_key_markers()
-        self._timeline_update_playhead()
+            try:
+                pref_h = int(panel.sizeHint().height())
+            except Exception:
+                pref_h = 0
+            h = int(max(88, int(getattr(self, "_timeline_h", 72) or 72), pref_h))
+            self._timeline_h = h
+            y = max(0, int(y_cursor) - int(h))
+            panel.setGeometry(0, y, view_w, h)
+            panel.raise_()
+            y_cursor = y
+            self._timeline_sync_row_alignment()
+            self._timeline_update_key_markers()
+            self._timeline_update_playhead()
+
+        audio_panel = getattr(self, "_timeline_audio_panel", None)
+        if audio_panel is not None and audio_panel.isVisible():
+            pref_ah = 0
+            try:
+                pref_ah = int(audio_panel.sizeHint().height())
+            except Exception:
+                pref_ah = 0
+            ah = int(max(72, int(getattr(self, "_timeline_audio_h", 96) or 96), pref_ah))
+            self._timeline_audio_h = ah
+            ay = max(0, int(y_cursor) - int(ah))
+            audio_panel.setGeometry(0, ay, view_w, ah)
+            audio_panel.raise_()
 
     def _build_timeline_panel(self) -> None:
         existing = getattr(self, "_timeline_panel", None)
@@ -1573,6 +1769,10 @@ class GraphGLTimelineWidgetsMixin:
 
             panel.hide()
             self._timeline_panel = panel
+            try:
+                self._build_timeline_audio_panel()
+            except Exception:
+                pass
             self._layout_timeline_panel()
             self._timeline_refresh_coord_labels()
             try:
@@ -1611,6 +1811,10 @@ class GraphGLTimelineWidgetsMixin:
     def set_timeline_visible(self, visible: bool) -> None:
         want = bool(visible)
         self._build_timeline_panel()
+        try:
+            self._build_timeline_audio_panel()
+        except Exception:
+            pass
         if want == bool(getattr(self, "_timeline_enabled", False)):
             panel = getattr(self, "_timeline_panel", None)
             if panel is not None:
@@ -1638,6 +1842,12 @@ class GraphGLTimelineWidgetsMixin:
                         except Exception:
                             pass
                     self._update_timeline_play_button()
+                try:
+                    hook = getattr(self, "_timeline_audio_on_timeline_play_toggled", None)
+                    if callable(hook):
+                        hook(False)
+                except Exception:
+                    pass
             return
         self._timeline_enabled = want
         panel = getattr(self, "_timeline_panel", None)
@@ -1679,9 +1889,477 @@ class GraphGLTimelineWidgetsMixin:
                     except Exception:
                         pass
                 self._update_timeline_play_button()
+            try:
+                hook = getattr(self, "_timeline_audio_on_timeline_play_toggled", None)
+                if callable(hook):
+                    hook(False)
+            except Exception:
+                pass
         try:
             self.update()
         except Exception:
             pass
+
+    def timeline_audio_visible(self) -> bool:
+        return bool(getattr(self, "_timeline_audio_enabled", False))
+
+    def set_timeline_audio_visible(self, visible: bool) -> None:
+        want = bool(visible)
+        try:
+            self._build_timeline_audio_panel()
+        except Exception:
+            pass
+        if want == bool(getattr(self, "_timeline_audio_enabled", False)):
+            panel = getattr(self, "_timeline_audio_panel", None)
+            if panel is not None:
+                panel.setVisible(want)
+                self._layout_timeline_panel()
+            if not want:
+                try:
+                    self._timeline_audio_on_timeline_play_toggled(False)
+                except Exception:
+                    pass
+            return
+        self._timeline_audio_enabled = want
+        panel = getattr(self, "_timeline_audio_panel", None)
+        if panel is not None:
+            panel.setVisible(want)
+        if want:
+            try:
+                self.set_timeline_scene_context()
+            except Exception:
+                pass
+            try:
+                timer = getattr(self, "_timeline_play_timer", None)
+                playing = bool(timer is not None and timer.isActive())
+                if bool(getattr(self, "_timeline_enabled", False)) and playing:
+                    self._timeline_audio_on_timeline_play_toggled(True)
+            except Exception:
+                pass
+            self._timeline_audio_update_playhead()
+        else:
+            try:
+                self._timeline_audio_on_timeline_play_toggled(False)
+            except Exception:
+                pass
+        self._layout_timeline_panel()
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    def _timeline_audio_format_ms(self, ms: int) -> str:
+        try:
+            total = max(0, int(ms) // 1000)
+        except Exception:
+            total = 0
+        hh = total // 3600
+        mm = (total % 3600) // 60
+        ss = total % 60
+        if hh > 0:
+            return f"{hh}:{mm:02d}:{ss:02d}"
+        return f"{mm}:{ss:02d}"
+
+    def _timeline_audio_status(self, text: str) -> None:
+        lbl = getattr(self, "_timeline_audio_status_label", None)
+        if lbl is None:
+            return
+        try:
+            lbl.setText(str(text or ""))
+        except Exception:
+            pass
+
+    def _timeline_audio_update_file_label(self) -> None:
+        lbl = getattr(self, "_timeline_audio_file_label", None)
+        if lbl is None:
+            return
+        path_text = str(getattr(self, "_timeline_audio_path", "") or "").strip()
+        if not path_text:
+            try:
+                lbl.setText("No audio selected")
+                lbl.setToolTip("")
+            except Exception:
+                pass
+            return
+        try:
+            name = Path(path_text).name
+        except Exception:
+            name = path_text
+        try:
+            duration_ms = int(getattr(self, "_timeline_audio_duration_ms", 0) or 0)
+        except Exception:
+            duration_ms = 0
+        suffix = f" ({self._timeline_audio_format_ms(duration_ms)})" if duration_ms > 0 else ""
+        try:
+            lbl.setText(f"{name}{suffix}")
+            lbl.setToolTip(path_text)
+        except Exception:
+            pass
+
+    def _timeline_audio_init_player(self) -> bool:
+        if getattr(self, "_timeline_audio_player", None) is not None:
+            return True
+        if QtMultimedia is None or not hasattr(QtMultimedia, "QMediaPlayer"):
+            return False
+        try:
+            player = QtMultimedia.QMediaPlayer(self)
+        except Exception:
+            player = None
+        if player is None:
+            return False
+        output = None
+        try:
+            if hasattr(QtMultimedia, "QAudioOutput"):
+                output = QtMultimedia.QAudioOutput(self)
+                try:
+                    output.setVolume(1.0)
+                except Exception:
+                    pass
+                try:
+                    player.setAudioOutput(output)
+                except Exception:
+                    pass
+        except Exception:
+            output = None
+        try:
+            if hasattr(player, "durationChanged"):
+                player.durationChanged.connect(self._timeline_audio_on_media_duration_changed)
+            if hasattr(player, "errorOccurred"):
+                player.errorOccurred.connect(self._timeline_audio_on_player_error)
+            elif hasattr(player, "error"):
+                player.error.connect(self._timeline_audio_on_player_error)
+        except Exception:
+            pass
+        self._timeline_audio_player = player
+        self._timeline_audio_output = output
+        return True
+
+    def _timeline_audio_set_media_source(self, path: Path) -> bool:
+        if not self._timeline_audio_init_player():
+            return False
+        player = getattr(self, "_timeline_audio_player", None)
+        if player is None:
+            return False
+        url = QtCore.QUrl.fromLocalFile(str(path))
+        loaded = False
+        try:
+            player.stop()
+        except Exception:
+            pass
+        try:
+            player.setSource(url)
+            loaded = True
+        except Exception:
+            try:
+                media_content = QtMultimedia.QMediaContent(url)
+                player.setMedia(media_content)
+                loaded = True
+            except Exception:
+                loaded = False
+        if loaded:
+            try:
+                player.pause()
+            except Exception:
+                pass
+            try:
+                self._timeline_audio_on_media_duration_changed(int(player.duration() or 0))
+            except Exception:
+                pass
+        return bool(loaded)
+
+    def _timeline_audio_load_waveform(self, path: Path) -> tuple[list[float], int]:
+        ext = str(path.suffix or "").strip().lower()
+        if ext == ".wav":
+            return _audio_waveform_from_wav(path, bins=1200)
+        return (_audio_waveform_from_file_bytes(path, bins=1200), 0)
+
+    def _timeline_audio_seek_ms(self, ms: int) -> None:
+        player = getattr(self, "_timeline_audio_player", None)
+        if player is None:
+            return
+        target = max(0, int(ms))
+        try:
+            dur = int(getattr(self, "_timeline_audio_duration_ms", 0) or 0)
+        except Exception:
+            dur = 0
+        if dur > 0:
+            target = max(0, min(int(dur), int(target)))
+        try:
+            player.setPosition(int(target))
+        except Exception:
+            pass
+
+    def _timeline_audio_target_ms_from_frame(self, frame: int) -> int:
+        try:
+            fps = float(getattr(self, "_timeline_fps", 24.0) or 24.0)
+        except Exception:
+            fps = 24.0
+        if fps <= 1.0e-6:
+            fps = 24.0
+        try:
+            ff = max(0.0, float(frame))
+        except Exception:
+            ff = 0.0
+        return int(round((ff / fps) * 1000.0))
+
+    def _timeline_audio_update_playhead(self, frame: int | None = None) -> None:
+        wave = getattr(self, "_timeline_audio_wave_widget", None)
+        if wave is None:
+            return
+        if frame is None:
+            try:
+                frame = int(self._timeline_current_frame())
+            except Exception:
+                frame = 0
+        ms = self._timeline_audio_target_ms_from_frame(int(frame))
+        try:
+            dur = int(getattr(self, "_timeline_audio_duration_ms", 0) or 0)
+        except Exception:
+            dur = 0
+        norm = 0.0 if dur <= 0 else float(ms) / float(max(1, dur))
+        try:
+            wave.setPlayhead(max(0.0, min(1.0, norm)))
+        except Exception:
+            pass
+
+    def _timeline_audio_set_path(self, path: str, save: bool = True) -> None:
+        raw = str(path or "").strip()
+        norm = ""
+        missing = False
+        if raw:
+            try:
+                p = Path(raw).expanduser()
+            except Exception:
+                p = None
+            if p is not None:
+                if not p.is_absolute():
+                    try:
+                        p = self._timeline_default_project_dir() / p
+                    except Exception:
+                        p = Path(raw)
+                try:
+                    p = p.resolve()
+                except Exception:
+                    pass
+                if p.is_file():
+                    norm = p.as_posix()
+                else:
+                    missing = True
+            else:
+                missing = True
+        self._timeline_audio_path = norm
+        self._timeline_audio_loaded_key = norm or None
+        samples: list[float] = []
+        duration_ms = 0
+        if norm:
+            try:
+                samples, duration_ms = self._timeline_audio_load_waveform(Path(norm))
+            except Exception:
+                samples, duration_ms = ([], 0)
+        self._timeline_audio_wave_samples = list(samples or [])
+        self._timeline_audio_duration_ms = int(max(0, duration_ms))
+        wave = getattr(self, "_timeline_audio_wave_widget", None)
+        if wave is not None:
+            try:
+                wave.setWaveform(self._timeline_audio_wave_samples)
+            except Exception:
+                pass
+        if not norm:
+            try:
+                player = getattr(self, "_timeline_audio_player", None)
+                if player is not None:
+                    player.stop()
+            except Exception:
+                pass
+            self._timeline_audio_status("Audio file not found." if missing else "")
+            self._timeline_audio_update_file_label()
+            self._timeline_audio_update_playhead()
+            if bool(save):
+                try:
+                    self._timeline_audio_save_to_disk()
+                except Exception:
+                    pass
+            return
+        loaded = self._timeline_audio_set_media_source(Path(norm))
+        if not loaded:
+            self._timeline_audio_status("Audio playback backend unavailable for this file.")
+        else:
+            self._timeline_audio_status("")
+        self._timeline_audio_update_file_label()
+        self._timeline_audio_update_playhead()
+        try:
+            self._timeline_audio_on_timeline_frame_changed(int(self._timeline_current_frame()), playing=False)
+        except Exception:
+            pass
+        if bool(save):
+            try:
+                self._timeline_audio_save_to_disk()
+            except Exception:
+                pass
+
+    def _timeline_audio_on_media_duration_changed(self, duration) -> None:
+        try:
+            dur = max(0, int(duration))
+        except Exception:
+            dur = 0
+        if dur > 0:
+            self._timeline_audio_duration_ms = int(dur)
+        self._timeline_audio_update_file_label()
+        self._timeline_audio_update_playhead()
+
+    def _timeline_audio_on_player_error(self, *_args) -> None:
+        player = getattr(self, "_timeline_audio_player", None)
+        msg = ""
+        if player is not None:
+            try:
+                msg = str(player.errorString() or "")
+            except Exception:
+                msg = ""
+        self._timeline_audio_status(msg or "Failed to load audio file.")
+
+    def _timeline_audio_on_browse_clicked(self) -> None:
+        current = str(getattr(self, "_timeline_audio_path", "") or "").strip()
+        start = None
+        if current:
+            try:
+                cp = Path(current)
+                start = cp.parent if cp.is_file() else cp
+            except Exception:
+                start = None
+        if start is None:
+            try:
+                start = self._timeline_default_project_dir()
+            except Exception:
+                start = Path.home()
+        chosen, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Load Timeline Audio",
+            str(start),
+            "Audio Files (*.wav *.mp3 *.ogg *.flac *.aac *.m4a);;All Files (*.*)",
+        )
+        if not chosen:
+            return
+        self._timeline_audio_set_path(chosen, save=True)
+
+    def _timeline_audio_on_clear_clicked(self) -> None:
+        self._timeline_audio_set_path("", save=True)
+
+    def _timeline_audio_on_timeline_play_toggled(self, playing: bool) -> None:
+        if (not bool(getattr(self, "_timeline_audio_enabled", False))) and bool(playing):
+            return
+        player = getattr(self, "_timeline_audio_player", None)
+        if player is None:
+            return
+        path_text = str(getattr(self, "_timeline_audio_path", "") or "").strip()
+        if not path_text:
+            return
+        frame = 0
+        try:
+            frame = int(self._timeline_current_frame())
+        except Exception:
+            frame = 0
+        target_ms = self._timeline_audio_target_ms_from_frame(int(frame))
+        if bool(playing):
+            self._timeline_audio_seek_ms(target_ms)
+            try:
+                player.play()
+            except Exception:
+                pass
+        else:
+            try:
+                player.pause()
+            except Exception:
+                pass
+        self._timeline_audio_update_playhead(frame)
+
+    def _timeline_audio_on_timeline_frame_changed(self, frame: int, playing: bool = False) -> None:
+        if not bool(getattr(self, "_timeline_audio_enabled", False)):
+            return
+        target_ms = self._timeline_audio_target_ms_from_frame(int(frame))
+        player = getattr(self, "_timeline_audio_player", None)
+        if player is not None and str(getattr(self, "_timeline_audio_path", "") or "").strip():
+            if bool(playing):
+                cur = None
+                try:
+                    cur = int(player.position() or 0)
+                except Exception:
+                    cur = None
+                if cur is None or abs(int(cur) - int(target_ms)) > 90:
+                    self._timeline_audio_seek_ms(target_ms)
+            else:
+                self._timeline_audio_seek_ms(target_ms)
+        self._timeline_audio_update_playhead(int(frame))
+
+    def _build_timeline_audio_panel(self) -> None:
+        existing = getattr(self, "_timeline_audio_panel", None)
+        if existing is not None:
+            has_wave = isinstance(getattr(self, "_timeline_audio_wave_widget", None), _TimelineAudioWaveformWidget)
+            has_label = isinstance(getattr(self, "_timeline_audio_file_label", None), QtWidgets.QLabel)
+            has_status = isinstance(getattr(self, "_timeline_audio_status_label", None), QtWidgets.QLabel)
+            if has_wave and has_label and has_status:
+                return
+            try:
+                existing.hide()
+                existing.deleteLater()
+            except Exception:
+                pass
+        panel = QtWidgets.QFrame(self)
+        panel.setObjectName("GLTimelineAudioPanel")
+        panel.setAttribute(QtCore.Qt.WA_StyledBackground, True)
+        panel.setStyleSheet(
+            "".join((
+                "#GLTimelineAudioPanel{background:rgba(9,14,24,225);border-top:1px solid #334155;}",
+                "#GLTimelineAudioPanel QLabel{color:#e2e8f0;font-size:11px;}",
+                "#GLTimelineAudioPanel QPushButton{padding:2px 8px;font-weight:600;color:#e2e8f0;background:#1f2937;border-radius:4px;}",
+                "#GLTimelineAudioPanel QPushButton:hover{background:#334155;}",
+                "#GLTimelineAudioPanel QLabel#GLTimelineAudioStatus{color:#94a3b8;font-size:10px;}",
+            ))
+        )
+        root = QtWidgets.QVBoxLayout(panel)
+        root.setContentsMargins(10, 6, 10, 8)
+        root.setSpacing(4)
+
+        row = QtWidgets.QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+
+        title = QtWidgets.QLabel("Audio", panel)
+        row.addWidget(title, 0)
+
+        load_btn = QtWidgets.QPushButton("Load Audio", panel)
+        load_btn.setFixedHeight(22)
+        load_btn.clicked.connect(self._timeline_audio_on_browse_clicked)
+        row.addWidget(load_btn, 0)
+
+        clear_btn = QtWidgets.QPushButton("Clear", panel)
+        clear_btn.setFixedHeight(22)
+        clear_btn.clicked.connect(self._timeline_audio_on_clear_clicked)
+        row.addWidget(clear_btn, 0)
+
+        file_lbl = QtWidgets.QLabel("No audio selected", panel)
+        file_lbl.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
+        file_lbl.setAlignment(QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft)
+        row.addWidget(file_lbl, 1)
+
+        root.addLayout(row, 0)
+
+        wave = _TimelineAudioWaveformWidget(panel)
+        root.addWidget(wave, 1)
+
+        status = QtWidgets.QLabel("", panel)
+        status.setObjectName("GLTimelineAudioStatus")
+        root.addWidget(status, 0)
+
+        panel.setVisible(bool(getattr(self, "_timeline_audio_enabled", False)))
+        self._timeline_audio_panel = panel
+        self._timeline_audio_file_label = file_lbl
+        self._timeline_audio_wave_widget = wave
+        self._timeline_audio_status_label = status
+        try:
+            wave.setWaveform(getattr(self, "_timeline_audio_wave_samples", []) or [])
+        except Exception:
+            pass
+        self._timeline_audio_update_file_label()
+        self._timeline_audio_update_playhead()
 
 
