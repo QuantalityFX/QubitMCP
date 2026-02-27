@@ -1197,9 +1197,13 @@ class ExportFBXWidget(QtWidgets.QWidget):
         self._ensure_scene()
         self._sync_controls_from_params()
         self._refresh_status()
+        try:
+            QtCore.QTimer.singleShot(0, self._deferred_refresh_from_scene)
+        except Exception:
+            pass
 
     def sizeHint(self):
-        return QtCore.QSize(240, 116)
+        return QtCore.QSize(240, 124)
 
     def _ensure_scene(self):
         if self._scene is None:
@@ -1208,7 +1212,7 @@ class ExportFBXWidget(QtWidgets.QWidget):
             return
         if hasattr(self._scene, "linksChanged"):
             try:
-                self._scene.linksChanged.connect(self._refresh_status)
+                self._scene.linksChanged.connect(self._on_scene_links_changed)
             except Exception:
                 pass
         if hasattr(self._scene, "paramChanged"):
@@ -1217,6 +1221,16 @@ class ExportFBXWidget(QtWidgets.QWidget):
             except Exception:
                 pass
         self._scene_connected = True
+
+    def _on_scene_links_changed(self, *_args):
+        self._refresh_status()
+
+    def _deferred_refresh_from_scene(self):
+        try:
+            self._ensure_scene()
+        except Exception:
+            pass
+        self._refresh_status()
 
     def _on_scene_param_changed(self, name=None, _params=None):
         if _param_change_relevant(self._node_item, name):
@@ -1277,7 +1291,7 @@ class ExportFBXWidget(QtWidgets.QWidget):
         if err:
             self._status.setText(err)
             if not self._busy:
-                self._export_btn.setEnabled(False)
+                self._export_btn.setEnabled(True)
             return
 
         count = len(assets)
@@ -1286,7 +1300,7 @@ class ExportFBXWidget(QtWidgets.QWidget):
         else:
             self._status.setText(f"{count} visible exportable object(s).")
         if not self._busy:
-            self._export_btn.setEnabled(count > 0)
+            self._export_btn.setEnabled(True)
 
     def _resolved_output_path(self) -> Path:
         raw = (self._output_edit.text() or "").strip()

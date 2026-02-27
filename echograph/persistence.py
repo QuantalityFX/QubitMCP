@@ -69,6 +69,16 @@ def _node_to_dict(node) -> Dict[str, Any]:
                 w = h = None
             if w is not None and h is not None:
                 d["chatbot_size"] = [w, h]
+    if k in ("video_player", "video player", "videoplayer"):
+        size = getattr(node, "_video_player_size", None)
+        if isinstance(size, (list, tuple)) and len(size) >= 2:
+            try:
+                w = float(size[0])
+                h = float(size[1])
+            except Exception:
+                w = h = None
+            if w is not None and h is not None:
+                d["video_player_size"] = [w, h]
 
     if k in ("image_collection", "imagecollection"):
         st = getattr(node, "_image_collection_state", None) or {}
@@ -261,6 +271,13 @@ def deserialize_scene(
                 if isinstance(csize, (list, tuple)) and len(csize) >= 2:
                     try:
                         setattr(n, "_chatbot_size", (float(csize[0]), float(csize[1])))
+                    except Exception:
+                        pass
+            if (n.kind or "").lower() in ("video_player", "video player", "videoplayer"):
+                vsize = nd.get("video_player_size")
+                if isinstance(vsize, (list, tuple)) and len(vsize) >= 2:
+                    try:
+                        setattr(n, "_video_player_size", (float(vsize[0]), float(vsize[1])))
                     except Exception:
                         pass
             if (n.kind or "").lower() in ("image_collection", "imagecollection"):

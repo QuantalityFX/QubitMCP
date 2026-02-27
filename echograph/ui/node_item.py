@@ -1352,8 +1352,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 inner_w = max(40, int(node_w) - 12)
                 body_h += inner_w + self._PADDING
         elif kind in ("export_fbx", "exportfbx", "export fbx"):
-            # Keep extra bottom frame space for Export FBX node controls.
-            body_h = 105
+            # Match embedded Export FBX controls and leave extra bottom frame room.
+            body_h = 124
             node_w = self._BASE_W
         elif kind in ("render", "render_sequence", "render node"):
             # Keep extra bottom frame space for Render node controls.
@@ -1428,6 +1428,23 @@ class NodeItem(QtWidgets.QGraphicsObject):
             except Exception:
                 pass
             custom_size = getattr(self.model, "_chatbot_size", None)
+            if isinstance(custom_size, (list, tuple)) and len(custom_size) >= 2:
+                try:
+                    custom_w = float(custom_size[0])
+                    custom_h = float(custom_size[1])
+                except Exception:
+                    custom_w = custom_h = None
+                if custom_w is not None and custom_w > 0:
+                    new_w = max(new_w, max(self._BASE_W, custom_w))
+                if custom_h is not None and custom_h > 0:
+                    new_h = max(new_h, max(self._BASE_H, custom_h))
+        elif kind in ("video_player", "video player", "videoplayer"):
+            try:
+                self._video_player_min_w = float(new_w)
+                self._video_player_min_h = float(new_h)
+            except Exception:
+                pass
+            custom_size = getattr(self.model, "_video_player_size", None)
             if isinstance(custom_size, (list, tuple)) and len(custom_size) >= 2:
                 try:
                     custom_w = float(custom_size[0])
@@ -4692,7 +4709,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
     def _note_resize_available(self) -> bool:
         kind = (self.model.kind or "").lower()
-        if kind not in ("note", "chatbot", "chat bot", "chat_bot"):
+        if kind not in ("note", "chatbot", "chat bot", "chat_bot", "video_player", "video player", "videoplayer"):
             return False
         if self._note_resize_mode:
             return True
@@ -4709,6 +4726,20 @@ class NodeItem(QtWidgets.QGraphicsObject):
         near_right = abs(x - r.right()) <= margin
         near_top = abs(y - r.top()) <= margin
         near_bottom = abs(y - r.bottom()) <= margin
+        kind = (self.model.kind or "").lower()
+
+        if kind in ("video_player", "video player", "videoplayer"):
+            if near_left and near_bottom:
+                return "bottom-left"
+            if near_right and near_bottom:
+                return "bottom-right"
+            if near_left:
+                return "left"
+            if near_right:
+                return "right"
+            if near_bottom:
+                return "bottom"
+            return None
 
         if near_left and near_top:
             return "top-left"
@@ -4768,6 +4799,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
         if kind in ("chatbot", "chat bot", "chat_bot"):
             min_w = float(getattr(self, "_chatbot_min_w", self._BASE_W))
             min_h = float(getattr(self, "_chatbot_min_h", self._BASE_H))
+        elif kind in ("video_player", "video player", "videoplayer"):
+            min_w = float(getattr(self, "_video_player_min_w", self._BASE_W))
+            min_h = float(getattr(self, "_video_player_min_h", self._BASE_H))
         else:
             min_w = float(self._BASE_W)
             min_h = float(self._BASE_H)
@@ -4814,6 +4848,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 self.model._note_size = (float(self.width), float(self.height))
             elif kind in ("chatbot", "chat bot", "chat_bot"):
                 self.model._chatbot_size = (float(self.width), float(self.height))
+            elif kind in ("video_player", "video player", "videoplayer"):
+                self.model._video_player_size = (float(self.width), float(self.height))
         except Exception:
             pass
         try:
@@ -4839,6 +4875,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     self.model._note_size = (float(self.width), float(self.height))
                 elif kind in ("chatbot", "chat bot", "chat_bot"):
                     self.model._chatbot_size = (float(self.width), float(self.height))
+                elif kind in ("video_player", "video player", "videoplayer"):
+                    self.model._video_player_size = (float(self.width), float(self.height))
             except Exception:
                 pass
             self._schedule_rebuild()
@@ -4954,7 +4992,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
         extra_top = 0.0
         try:
             kind_lower = (self.model.kind or "").lower()
-            if kind_lower in (
+            if kind_lower in ("video_player", "video player", "videoplayer"):
+                # Video icon is intentionally oversized and floats above the node.
+                extra_top = 220.0
+            elif kind_lower in ("render", "render_sequence", "render node"):
+                # Render icon is larger than default and floats above the node.
+                extra_top = 120.0
+            elif kind_lower in (
                 "database",
                 "llm",
                 "llm_prompt",
@@ -4973,9 +5017,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "scene_outliner",
                 "camera",
                 "scene_camera",
-                "render",
-                "render_sequence",
-                "render node",
                 "export_fbx",
                 "exportfbx",
                 "export fbx",
@@ -5120,15 +5161,19 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 # Grow when zoomed out; clamp with larger max
                 size = int(max(40, min(128, 38 / max(scale, 0.001))))
                 if kind_lower in ("render", "render_sequence", "render node"):
-                    size = int(size * 1.20)
+                    size = int(size * 1.40)
                 if kind_lower in ("video_player", "video player", "videoplayer"):
-                    size = int(size * 1.15)
+                    # 10% smaller than the previous video-player icon size.
+                    size = int(size * 1.55)
+                    size = int(min(320, max(80, size)))
                 if kind_lower in ("chatbot", "chat bot", "chat_bot"):
                     size = int(size * 1.13)
                 pm_scaled = icon_pm.scaled(size, size, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
                 x = (self.width - pm_scaled.width()) / 2.0
                 # float above the top bar
                 y = -pm_scaled.height() * 0.6
+                if kind_lower in ("video_player", "video player", "videoplayer"):
+                    y = -pm_scaled.height() * 0.5
                 if kind_lower in ("chatbot", "chat bot", "chat_bot"):
                     y = -pm_scaled.height() * 0.7
                 p.drawPixmap(QtCore.QPointF(x, y), pm_scaled)

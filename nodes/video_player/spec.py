@@ -25,6 +25,16 @@ _VIDEO_EXTS = {".mp4"}
 _DEFAULT_FPS = 24.0
 
 
+def _load_icon(name: str) -> QtGui.QIcon:
+    try:
+        path = Path(__file__).resolve().parents[2] / "icons" / name
+        if path.is_file():
+            return QtGui.QIcon(str(path))
+    except Exception:
+        pass
+    return QtGui.QIcon()
+
+
 def _param_value(model, name: str) -> str:
     key = (name or "").strip().lower()
     for p in (getattr(model, "params", None) or []):
@@ -258,6 +268,9 @@ class VideoPlayerWidget(QtWidgets.QWidget):
         self._video_sink = None
         self._audio_output = None
         self._video_loop_set = False
+        self._video_playing = False
+        self._play_icon = _load_icon("PlayButton_icon.png")
+        self._stop_icon = _load_icon("StopButton_icon.png")
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(6, 4, 6, 4)
@@ -281,23 +294,25 @@ class VideoPlayerWidget(QtWidgets.QWidget):
 
         self._preview = QtWidgets.QLabel("No media loaded")
         self._preview.setAlignment(QtCore.Qt.AlignCenter)
-        self._preview.setMinimumHeight(self._PREVIEW_H)
-        self._preview.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        self._preview.setMinimumHeight(72)
+        self._preview.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         self._preview.setStyleSheet(
             "QLabel{background:#0b1220;color:#94a3b8;border:1px solid #334155;border-radius:4px;}"
         )
-        layout.addWidget(self._preview, 0)
+        layout.addWidget(self._preview, 1)
 
         row2 = QtWidgets.QHBoxLayout()
         row2.setContentsMargins(0, 0, 0, 0)
-        self._play_btn = QtWidgets.QPushButton("Play")
-        self._play_btn.setFixedWidth(70)
+        self._play_btn = QtWidgets.QToolButton()
+        self._play_btn.setFixedSize(28, 28)
+        self._play_btn.setIconSize(QtCore.QSize(18, 18))
         self._play_btn.setEnabled(False)
         self._play_btn.clicked.connect(self._on_play_clicked)
         row2.addWidget(self._play_btn, 0)
         row2.addStretch(1)
         layout.addLayout(row2, 0)
 
+        self._set_play_button(False)
         self._ensure_scene()
         self._sync_from_params(force=True)
 
@@ -417,13 +432,21 @@ class VideoPlayerWidget(QtWidgets.QWidget):
         self._set_status(f"Sequence loaded: {len(seq)} frame(s)")
 
     def _set_play_button(self, playing: bool):
-        self._play_btn.setText("Pause" if playing else "Play")
+        self._video_playing = bool(playing)
+        icon = self._stop_icon if self._video_playing else self._play_icon
+        if not icon.isNull():
+            self._play_btn.setIcon(icon)
+            self._play_btn.setText("")
+        else:
+            self._play_btn.setText("Pause" if self._video_playing else "Play")
+        self._play_btn.setToolTip("Pause" if self._video_playing else "Play")
 
     def _stop_playback(self):
         try:
             self._seq_timer.stop()
         except Exception:
             pass
+        self._video_playing = False
         if self._player is not None:
             try:
                 self._player.pause()
@@ -562,6 +585,31 @@ class VideoPlayerWidget(QtWidgets.QWidget):
             pass
         return True
 
+    def _state_is_playing(self, state) -> bool:
+        if state is None:
+            return False
+        try:
+            if state == getattr(QtMultimedia.QMediaPlayer, "PlayingState"):
+                return True
+        except Exception:
+            pass
+        try:
+            if int(state) == int(getattr(QtMultimedia.QMediaPlayer, "PlayingState")):
+                return True
+        except Exception:
+            pass
+        name = ""
+        try:
+            name = str(getattr(state, "name", "") or "").strip().lower()
+        except Exception:
+            name = ""
+        if not name:
+            try:
+                name = str(state).strip().lower()
+            except Exception:
+                name = ""
+        return "playingstate" in name or name.endswith(".playing") or name == "playing"
+
     def _player_is_playing(self) -> bool:
         if self._player is None:
             return False
@@ -572,15 +620,12 @@ class VideoPlayerWidget(QtWidgets.QWidget):
                 state = self._player.state()
             except Exception:
                 return False
-        try:
-            return int(state) == int(QtMultimedia.QMediaPlayer.PlayingState)
-        except Exception:
-            return False
+        return self._state_is_playing(state)
 
     def _toggle_video_playback(self):
         if self._player is None:
             return
-        if self._player_is_playing():
+        if self._video_playing:
             try:
                 self._player.pause()
             except Exception:
@@ -593,8 +638,11 @@ class VideoPlayerWidget(QtWidgets.QWidget):
         except Exception:
             self._set_play_button(False)
 
-    def _on_player_state_changed(self, *_args):
-        self._set_play_button(self._player_is_playing())
+    def _on_player_state_changed(self, state=None, *_args):
+        if state is None:
+            self._set_play_button(self._player_is_playing())
+            return
+        self._set_play_button(self._state_is_playing(state))
 
     def _on_media_status_changed(self, status):
         if self._player is None or self._video_loop_set:
@@ -603,6 +651,7 @@ class VideoPlayerWidget(QtWidgets.QWidget):
             if int(status) == int(QtMultimedia.QMediaPlayer.EndOfMedia):
                 self._player.setPosition(0)
                 self._player.play()
+                self._set_play_button(True)
         except Exception:
             pass
 
@@ -641,6 +690,17 @@ def render_node_body(node_item, y_cursor: int) -> int:
     proxy.setZValue(node_item.zValue() + 0.1)
     proxy.setPos(0, y_cursor)
     w = int(getattr(node_item, "width", 220))
+    base_h = int(body.sizeHint().height())
+    try:
+        node_h = int(getattr(node_item, "height", 0) or 0)
+    except Exception:
+        node_h = 0
+    try:
+        pad = int(getattr(node_item, "_PADDING", 8))
+    except Exception:
+        pad = 8
+    available_h = node_h - int(y_cursor) - max(0, pad)
+    h = max(base_h, int(available_h)) if available_h > 0 else base_h
     try:
         body.setMinimumWidth(w)
         body.setMaximumWidth(w)
@@ -648,7 +708,6 @@ def render_node_body(node_item, y_cursor: int) -> int:
         proxy.setMaximumWidth(w)
     except Exception:
         pass
-    h = body.sizeHint().height()
     proxy.resize(w, h)
     try:
         node_item._plugin_proxies.append(proxy)
@@ -662,4 +721,3 @@ VIDEO_PLAYER_SPEC = Spec(
     render_node_body=render_node_body,
     build_ports=build_ports,
 )
-

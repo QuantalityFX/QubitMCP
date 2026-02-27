@@ -983,8 +983,21 @@ class RenderNodeWidget(QtWidgets.QWidget):
         old_fly_mode_enabled = bool(getattr(glv, "_fly_mode_enabled", False))
         old_orbit_locked = bool(getattr(glv, "_mgl_orbit_locked", True))
         old_lock_enabled = bool(getattr(glv, "_camera_select_lock_enabled", False))
+        old_material_live_mode = bool(getattr(glv, "_timeline_material_live_mode", True))
+        try:
+            old_material_fps_override = float(getattr(glv, "_timeline_material_fps_override", 0.0) or 0.0)
+        except Exception:
+            old_material_fps_override = 0.0
+        set_material_live_mode = getattr(glv, "_timeline_set_material_live_mode", None)
+        set_material_fps_override = getattr(glv, "_timeline_set_material_fps_override", None)
         old_viewport_bg = getattr(glv, "_viewport_bg", None)
         old_mgl_bg_color = getattr(glv, "_mgl_bg_color", None)
+        old_gizmo_visible = bool(getattr(glv, "_mgl_gizmo_visible", True))
+        set_gizmo_visible = getattr(glv, "set_gizmo_visible", None)
+        try:
+            render_fps = max(1.0, float(self._fps_spin.value()))
+        except Exception:
+            render_fps = 30.0
 
         self._set_busy(True)
         failures = []
@@ -1034,6 +1047,48 @@ class RenderNodeWidget(QtWidgets.QWidget):
                     sync_view(owner)
             except Exception:
                 pass
+            # Keep viewport gizmo hidden while rendering to avoid accidental capture.
+            try:
+                if callable(set_gizmo_visible):
+                    set_gizmo_visible(False)
+                else:
+                    glv._mgl_gizmo_visible = False
+                    gizmo_toggle = getattr(glv, "_mgl_gizmo_toggle", None)
+                    if gizmo_toggle is not None:
+                        try:
+                            gizmo_toggle.blockSignals(True)
+                            gizmo_toggle.setChecked(False)
+                        except Exception:
+                            pass
+                        finally:
+                            try:
+                                gizmo_toggle.blockSignals(False)
+                            except Exception:
+                                pass
+                    try:
+                        glv.update()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            # Sequence renders must be timeline-driven for deterministic procedural materials.
+            try:
+                if callable(set_material_fps_override):
+                    set_material_fps_override(float(render_fps))
+                else:
+                    glv._timeline_material_fps_override = float(render_fps)
+            except Exception:
+                pass
+            try:
+                if callable(set_material_live_mode):
+                    set_material_live_mode(False)
+                else:
+                    glv._timeline_material_live_mode = False
+                    upd = getattr(glv, "_update_timeline_material_live_button", None)
+                    if callable(upd):
+                        upd()
+            except Exception:
+                pass
             # Keep intermediate viewport flashes darker while rendering.
             try:
                 glv._viewport_bg = QtGui.QColor("#000000")
@@ -1061,7 +1116,16 @@ class RenderNodeWidget(QtWidgets.QWidget):
                         sync_view(owner)
                 except Exception:
                     pass
-                image = self._grab_frame_supersampled(glv, target_w, target_h)
+                image = None
+                for _capture_attempt in range(3):
+                    image = self._grab_frame_supersampled(glv, target_w, target_h)
+                    if image is not None and (not image.isNull()) and (not self._image_is_invalid_capture(image)):
+                        break
+                    image = None
+                    try:
+                        self._process_ui_events(12)
+                    except Exception:
+                        pass
                 if image is None:
                     failures.append(f"Frame {frame}: capture failed.")
                     continue
@@ -1105,6 +1169,26 @@ class RenderNodeWidget(QtWidgets.QWidget):
             except Exception:
                 pass
             try:
+                if callable(set_material_fps_override):
+                    if old_material_fps_override > 1.0:
+                        set_material_fps_override(float(old_material_fps_override))
+                    else:
+                        set_material_fps_override(None)
+                else:
+                    glv._timeline_material_fps_override = float(old_material_fps_override)
+            except Exception:
+                pass
+            try:
+                if callable(set_material_live_mode):
+                    set_material_live_mode(bool(old_material_live_mode))
+                else:
+                    glv._timeline_material_live_mode = bool(old_material_live_mode)
+                    upd = getattr(glv, "_update_timeline_material_live_button", None)
+                    if callable(upd):
+                        upd()
+            except Exception:
+                pass
+            try:
                 glv._camera_select_lock_enabled = bool(old_lock_enabled)
                 upd_lock_btn = getattr(glv, "_update_camera_selector_lock_button", None)
                 if callable(upd_lock_btn):
@@ -1119,6 +1203,29 @@ class RenderNodeWidget(QtWidgets.QWidget):
             try:
                 if old_mgl_bg_color is not None:
                     glv._mgl_bg_color = old_mgl_bg_color
+            except Exception:
+                pass
+            try:
+                if callable(set_gizmo_visible):
+                    set_gizmo_visible(bool(old_gizmo_visible))
+                else:
+                    glv._mgl_gizmo_visible = bool(old_gizmo_visible)
+                    gizmo_toggle = getattr(glv, "_mgl_gizmo_toggle", None)
+                    if gizmo_toggle is not None:
+                        try:
+                            gizmo_toggle.blockSignals(True)
+                            gizmo_toggle.setChecked(bool(old_gizmo_visible))
+                        except Exception:
+                            pass
+                        finally:
+                            try:
+                                gizmo_toggle.blockSignals(False)
+                            except Exception:
+                                pass
+                    try:
+                        glv.update()
+                    except Exception:
+                        pass
             except Exception:
                 pass
             if forced_view_restore and win is not None:
@@ -1137,7 +1244,7 @@ class RenderNodeWidget(QtWidgets.QWidget):
         _set_param_value(
             self._node_item,
             "frame_rate",
-            f"{max(1.0, float(self._fps_spin.value())):.3f}".rstrip("0").rstrip("."),
+            f"{float(render_fps):.3f}".rstrip("0").rstrip("."),
             notify_scene=True,
         )
         _set_param_value(

@@ -2710,19 +2710,33 @@ class MGLRendererMixin:
         except Exception:
             return None
 
-    def _mgl_update_procedural_textures(self, step: float, frame_id: int) -> None:
-        if self._mgl_ctx is None or step <= 0.0:
+    def _mgl_update_procedural_textures(
+        self,
+        step: float,
+        frame_id: int,
+        *,
+        proc_time_override: Optional[float] = None,
+    ) -> None:
+        if self._mgl_ctx is None:
             return
-        try:
-            self._mgl_proc_time = float(getattr(self, "_mgl_proc_time", 0.0) or 0.0) + float(step)
-        except Exception:
-            self._mgl_proc_time = float(step)
+        if proc_time_override is not None:
+            try:
+                self._mgl_proc_time = max(0.0, float(proc_time_override))
+            except Exception:
+                self._mgl_proc_time = 0.0
+        else:
+            try:
+                self._mgl_proc_time = float(getattr(self, "_mgl_proc_time", 0.0) or 0.0) + float(step)
+            except Exception:
+                self._mgl_proc_time = float(step)
         # Prevent huge ProcTime values causing hash precision collapse in shaders.
         try:
             if self._mgl_proc_time > 10000.0:
                 self._mgl_proc_time = math.fmod(self._mgl_proc_time, 10000.0)
         except Exception:
             pass
+        if step <= 0.0:
+            return
 
         def _advance(provider) -> bool:
             if provider is None:
@@ -3732,8 +3746,18 @@ class MGLRendererMixin:
             dt = 0.0
         # Clamp large gaps so procedural animations don't "jump" on first frame.
         step = min(max(float(dt), 0.0), 0.1)
+        proc_time_override = None
         try:
-            self._mgl_update_procedural_textures(step, frame_id)
+            timeline_timing = getattr(self, "_timeline_material_timing", None)
+            if callable(timeline_timing):
+                resolved_step, resolved_time = timeline_timing(step)
+                step = max(0.0, float(resolved_step))
+                if resolved_time is not None:
+                    proc_time_override = max(0.0, float(resolved_time))
+        except Exception:
+            proc_time_override = None
+        try:
+            self._mgl_update_procedural_textures(step, frame_id, proc_time_override=proc_time_override)
         except Exception:
             pass
 

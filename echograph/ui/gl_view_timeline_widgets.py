@@ -61,6 +61,7 @@ class GraphGLTimelineWidgetsMixin:
         if existing is not None:
             has_play = isinstance(getattr(self, "_timeline_play_btn", None), QtWidgets.QPushButton)
             has_curves_btn = isinstance(getattr(self, "_timeline_curves_btn", None), QtWidgets.QPushButton)
+            has_material_btn = isinstance(getattr(self, "_timeline_material_live_btn", None), QtWidgets.QPushButton)
             has_handle_straight_btn = isinstance(getattr(self, "_timeline_handle_straight_btn", None), QtWidgets.QPushButton)
             has_handle_tied_btn = isinstance(getattr(self, "_timeline_handle_tied_btn", None), QtWidgets.QPushButton)
             has_handle_untied_btn = isinstance(getattr(self, "_timeline_handle_untied_btn", None), QtWidgets.QPushButton)
@@ -82,6 +83,7 @@ class GraphGLTimelineWidgetsMixin:
             if (
                 has_play
                 and has_curves_btn
+                and has_material_btn
                 and has_handle_straight_btn
                 and has_handle_tied_btn
                 and has_handle_untied_btn
@@ -94,6 +96,10 @@ class GraphGLTimelineWidgetsMixin:
                 and has_axis_labels
             ):
                 self._timeline_update_axis_label_styles()
+                try:
+                    self._update_timeline_material_live_button()
+                except Exception:
+                    pass
                 try:
                     self._timeline_update_handle_mode_buttons()
                 except Exception:
@@ -118,6 +124,7 @@ class GraphGLTimelineWidgetsMixin:
             self._timeline_scrollbar = None
             self._timeline_play_btn = None
             self._timeline_curves_btn = None
+            self._timeline_material_live_btn = None
             self._timeline_handle_straight_btn = None
             self._timeline_handle_tied_btn = None
             self._timeline_handle_untied_btn = None
@@ -167,6 +174,9 @@ class GraphGLTimelineWidgetsMixin:
                     "#GLTimelinePanel QPushButton#GLTimelineCurvesButton{padding:0px;background:transparent;border:0px;}",
                     "#GLTimelinePanel QPushButton#GLTimelineCurvesButton:hover{background:transparent;border:0px;}",
                     "#GLTimelinePanel QPushButton#GLTimelineCurvesButton:checked{background:transparent;border:0px;}",
+                    "#GLTimelinePanel QPushButton#GLTimelineMaterialLiveButton{padding:0px;background:transparent;border:0px;}",
+                    "#GLTimelinePanel QPushButton#GLTimelineMaterialLiveButton:hover{background:transparent;border:0px;}",
+                    "#GLTimelinePanel QPushButton#GLTimelineMaterialLiveButton:checked{background:transparent;border:0px;}",
                     "#GLTimelinePanel QPushButton#GLTimelineHandleStraightButton{padding:0px;background:transparent;border:0px;}",
                     "#GLTimelinePanel QPushButton#GLTimelineHandleStraightButton:hover{background:transparent;border:0px;}",
                     "#GLTimelinePanel QPushButton#GLTimelineHandleStraightButton:checked{background:transparent;border:0px;}",
@@ -230,6 +240,16 @@ class GraphGLTimelineWidgetsMixin:
             header.addWidget(curves_btn, 0)
             self._timeline_curves_btn = curves_btn
             self._update_timeline_curves_button()
+
+            material_btn = QtWidgets.QPushButton(panel)
+            material_btn.setObjectName("GLTimelineMaterialLiveButton")
+            material_btn.setCheckable(True)
+            material_btn.setFixedSize(26, 26)
+            material_btn.setFlat(True)
+            material_btn.toggled.connect(self._timeline_on_material_live_toggled)
+            header.addWidget(material_btn, 0)
+            self._timeline_material_live_btn = material_btn
+            self._update_timeline_material_live_button()
 
             straight_btn = QtWidgets.QPushButton(panel)
             straight_btn.setObjectName("GLTimelineHandleStraightButton")
@@ -1574,6 +1594,7 @@ class GraphGLTimelineWidgetsMixin:
             self._timeline_scrollbar = None
             self._timeline_play_btn = None
             self._timeline_curves_btn = None
+            self._timeline_material_live_btn = None
             self._timeline_handle_straight_btn = None
             self._timeline_handle_tied_btn = None
             self._timeline_handle_untied_btn = None

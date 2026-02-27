@@ -1919,6 +1919,7 @@ class GraphGLTimelineModelMixin:
         icon_stop = None
         icon_curve = None
         icon_curve_active = None
+        icon_material_live = None
         icon_handle_straight = None
         icon_handle_tied = None
         icon_handle_untied = None
@@ -1931,6 +1932,7 @@ class GraphGLTimelineModelMixin:
             stop_path = root / "icons" / "StopButton_icon.png"
             curve_path = root / "icons" / "CurveEditor_Icon.png"
             curve_active_path = root / "icons" / "CurveEditor_Active_Icon.png"
+            material_live_path = root / "icons" / "MaterialGenerator_Icon_S.png"
             handle_straight_path = root / "icons" / "StreightCurve_Icon.png"
             handle_tied_path = root / "icons" / "Tiehandles_Icon.png"
             handle_untied_path = root / "icons" / "Untiedhandle_Icon.png"
@@ -1945,6 +1947,8 @@ class GraphGLTimelineModelMixin:
                 icon_curve = QtGui.QIcon(str(curve_path))
             if curve_active_path.exists():
                 icon_curve_active = QtGui.QIcon(str(curve_active_path))
+            if material_live_path.exists():
+                icon_material_live = QtGui.QIcon(str(material_live_path))
             if handle_straight_path.exists():
                 icon_handle_straight = QtGui.QIcon(str(handle_straight_path))
             if handle_tied_path.exists():
@@ -1962,6 +1966,7 @@ class GraphGLTimelineModelMixin:
             icon_stop = None
             icon_curve = None
             icon_curve_active = None
+            icon_material_live = None
             icon_handle_straight = None
             icon_handle_tied = None
             icon_handle_untied = None
@@ -1972,6 +1977,7 @@ class GraphGLTimelineModelMixin:
         self._timeline_icon_stop = icon_stop
         self._timeline_icon_curve = icon_curve
         self._timeline_icon_curve_active = icon_curve_active
+        self._timeline_icon_material_live = icon_material_live
         self._timeline_icon_handle_straight = icon_handle_straight
         self._timeline_icon_handle_tied = icon_handle_tied
         self._timeline_icon_handle_untied = icon_handle_untied
@@ -2032,6 +2038,150 @@ class GraphGLTimelineModelMixin:
                 pass
         try:
             btn.setToolTip("Curve Editor")
+        except Exception:
+            pass
+
+    def _timeline_material_live_enabled(self) -> bool:
+        try:
+            return bool(getattr(self, "_timeline_material_live_mode", True))
+        except Exception:
+            return True
+
+    def _timeline_material_target_fps(self) -> float:
+        fps = 0.0
+        try:
+            fps = float(getattr(self, "_timeline_material_fps_override", 0.0) or 0.0)
+        except Exception:
+            fps = 0.0
+        if fps > 1.0:
+            return fps
+        try:
+            fps = float(getattr(self, "_timeline_fps", 0.0) or 0.0)
+        except Exception:
+            fps = 0.0
+        if fps > 1.0:
+            return fps
+        timer = getattr(self, "_timeline_play_timer", None)
+        if timer is not None:
+            try:
+                interval = float(timer.interval())
+                if interval > 0.0:
+                    cand = 1000.0 / interval
+                    if cand > 1.0:
+                        return cand
+            except Exception:
+                pass
+        return 30.0
+
+    def _timeline_set_material_fps_override(self, fps: Optional[float]) -> None:
+        val = 0.0
+        try:
+            if fps is not None:
+                cand = float(fps)
+                if cand > 1.0:
+                    val = cand
+        except Exception:
+            val = 0.0
+        self._timeline_material_fps_override = float(val)
+        try:
+            self._timeline_material_last_frame = None
+        except Exception:
+            pass
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    def _timeline_material_timing(self, fallback_step: float) -> Tuple[float, Optional[float]]:
+        try:
+            step = max(0.0, float(fallback_step))
+        except Exception:
+            step = 0.0
+        if self._timeline_material_live_enabled():
+            try:
+                self._timeline_material_last_frame = None
+            except Exception:
+                pass
+            return (step, None)
+        fps = max(1.0, float(self._timeline_material_target_fps()))
+        try:
+            frame = max(0, int(self._timeline_current_frame()))
+        except Exception:
+            frame = 0
+        proc_time = float(frame) / float(fps)
+        prev = getattr(self, "_timeline_material_last_frame", None)
+        if isinstance(prev, int):
+            delta = int(frame) - int(prev)
+            step = float(delta) / float(fps) if delta > 0 else 0.0
+        else:
+            step = 0.0
+        self._timeline_material_last_frame = int(frame)
+        return (max(0.0, float(step)), max(0.0, float(proc_time)))
+
+    def _timeline_set_material_live_mode(self, enabled: bool, *, sync_button: bool = True) -> None:
+        live = bool(enabled)
+        self._timeline_material_live_mode = live
+        try:
+            self._timeline_material_last_frame = None
+        except Exception:
+            pass
+        btn = getattr(self, "_timeline_material_live_btn", None)
+        if sync_button and btn is not None:
+            try:
+                btn.blockSignals(True)
+                btn.setChecked(live)
+            except Exception:
+                pass
+            finally:
+                try:
+                    btn.blockSignals(False)
+                except Exception:
+                    pass
+        self._update_timeline_material_live_button()
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    def _timeline_on_material_live_toggled(self, checked: bool) -> None:
+        self._timeline_set_material_live_mode(bool(checked), sync_button=False)
+
+    def _update_timeline_material_live_button(self) -> None:
+        btn = getattr(self, "_timeline_material_live_btn", None)
+        if btn is None:
+            return
+        self._load_timeline_button_icons()
+        live = self._timeline_material_live_enabled()
+        icon = getattr(self, "_timeline_icon_material_live", None)
+        if icon is not None:
+            try:
+                btn.setIcon(icon)
+                btn.setText("")
+                inner = max(12, min(int(btn.width()), int(btn.height())) - 2)
+                btn.setIconSize(QtCore.QSize(inner, inner))
+            except Exception:
+                pass
+        else:
+            try:
+                btn.setIcon(QtGui.QIcon())
+                btn.setText("L" if live else "T")
+            except Exception:
+                pass
+        try:
+            btn.blockSignals(True)
+            btn.setChecked(bool(live))
+        except Exception:
+            pass
+        finally:
+            try:
+                btn.blockSignals(False)
+            except Exception:
+                pass
+        try:
+            if live:
+                btn.setToolTip("Live Material Time (Viewport FPS)")
+            else:
+                btn.setToolTip("Timeline Material Time (Frame Locked)")
         except Exception:
             pass
 

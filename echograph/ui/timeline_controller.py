@@ -22,6 +22,21 @@ class TimelineController:
     def _toggle_button(self):
         return self._timeline_toggle_button
 
+    def _menu_visible(self) -> bool:
+        btn = self._menu_button()
+        if btn is None:
+            return False
+        try:
+            menu = btn.menu()
+        except Exception:
+            menu = None
+        if menu is None:
+            return False
+        try:
+            return bool(menu.isVisible())
+        except Exception:
+            return False
+
     def _close_menu(self) -> None:
         btn = self._menu_button()
         if btn is None:
@@ -117,7 +132,7 @@ class TimelineController:
         btn = self._menu_button()
         if btn is None:
             return
-        want = bool(active) or self.timeline_panel_enabled()
+        want = bool(active)
         try:
             btn.setProperty("active", bool(want))
             btn.style().unpolish(btn)
@@ -141,7 +156,7 @@ class TimelineController:
                 btn.blockSignals(False)
             except Exception:
                 pass
-        self.set_timeline_menu_active(bool(enabled))
+        self.set_timeline_menu_active(self._menu_visible())
 
     def toggle_timeline_panel_from_menu(self, checked: bool) -> None:
         win = self._win()

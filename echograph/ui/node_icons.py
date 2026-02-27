@@ -188,5 +188,5 @@ def _video_player_icon():
     global _VIDEO_PLAYER_ICON
     if _VIDEO_PLAYER_ICON is not None:
         return _VIDEO_PLAYER_ICON
-    _VIDEO_PLAYER_ICON = _load_pm("PlayButton_icon.png")
+    _VIDEO_PLAYER_ICON = _load_pm("ReelVideo_Icon.png") or _load_pm("PlayButton_icon.png")
     return _VIDEO_PLAYER_ICON
