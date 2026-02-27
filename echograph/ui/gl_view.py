@@ -772,7 +772,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._timeline_h = 220
         self._timeline_enabled = False
         self._timeline_audio_panel = None
-        self._timeline_audio_h = 108
+        self._timeline_audio_h = 88
         self._timeline_audio_enabled = False
         self._timeline_ignore_ui = False
         self._timeline_scene_name = "scene"
@@ -841,15 +841,24 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._timeline_icon_curve = None
         self._timeline_icon_curve_active = None
         self._timeline_icon_material_live = None
+        self._timeline_icon_material_live_on = None
+        self._timeline_icon_material_live_off = None
         self._timeline_icon_handle_straight = None
         self._timeline_icon_handle_tied = None
         self._timeline_icon_handle_untied = None
         self._timeline_icon_set_key = None
         self._timeline_icon_remove_key = None
+        self._timeline_icon_loop = None
         self._timeline_keyframe_handle_path = None
         self._timeline_frame_spin = None
         self._timeline_frame_slider = None
         self._timeline_key_count_label = None
+        self._timeline_mark_in_btn = None
+        self._timeline_mark_out_btn = None
+        self._timeline_loop_btn = None
+        self._timeline_in_frame = None
+        self._timeline_out_frame = None
+        self._timeline_loop_enabled = True
         self._timeline_ui_timer = QtCore.QTimer(self)
         self._timeline_ui_timer.setInterval(250)
         self._timeline_ui_timer.timeout.connect(self._timeline_refresh_coord_labels)
@@ -1048,6 +1057,10 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             self._fps_timer.stop()
 
     def _on_fps_tick(self) -> None:
+        try:
+            self._camera_selector_release_unlocked_selection_on_navigation()
+        except Exception:
+            pass
         try:
             self._tick_fps_nav()
         except Exception:
@@ -2286,6 +2299,76 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             except Exception:
                 pass
 
+    def _camera_selector_release_unlocked_selection_on_navigation(self) -> bool:
+        try:
+            if bool(getattr(self, "_camera_select_lock_enabled", False)):
+                return False
+        except Exception:
+            return False
+        try:
+            mode = str(getattr(self, "_camera_select_mode", "default") or "default").strip().lower()
+        except Exception:
+            mode = "default"
+        if not mode or mode == "default":
+            return False
+        interacting = False
+        try:
+            interacting = bool(getattr(self, "_fps_nav_active", False))
+        except Exception:
+            interacting = False
+        if not interacting:
+            try:
+                keys = getattr(self, "_fps_nav_keys", None)
+                if isinstance(keys, (set, list, tuple)) and len(keys) > 0:
+                    interacting = True
+            except Exception:
+                pass
+        if not interacting:
+            try:
+                interacting = bool(getattr(self, "_mgl_orbit_dragging", False))
+            except Exception:
+                interacting = False
+        if not interacting:
+            try:
+                interacting = getattr(self, "_mgl_zoom_press_pos", None) is not None
+            except Exception:
+                interacting = False
+        if not interacting:
+            try:
+                interacting = bool(getattr(self, "_orbit_dragging", False))
+            except Exception:
+                interacting = False
+        if not interacting:
+            try:
+                interacting = bool(getattr(self, "_pan_dragging", False))
+            except Exception:
+                interacting = False
+        if not interacting:
+            try:
+                interacting = bool(getattr(self, "_dolly_dragging", False))
+            except Exception:
+                interacting = False
+        if not interacting:
+            return False
+        # Manual navigation while unlocked means the user left camera look-through.
+        try:
+            self._camera_select_mode = "default"
+        except Exception:
+            pass
+        try:
+            self._camera_select_lock_enabled = False
+        except Exception:
+            pass
+        try:
+            self._camera_select_saved_default_state = None
+        except Exception:
+            pass
+        try:
+            self._refresh_camera_selector_dropdown()
+        except Exception:
+            pass
+        return True
+
     def _on_camera_selector_lock_toggled(self, checked: bool) -> None:
         mode = str(getattr(self, "_camera_select_mode", "default") or "default").strip()
         has_scene = bool(mode and mode.lower() != "default")
@@ -2624,9 +2707,20 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                         self._camera_select_saved_default_state = saved
             except Exception:
                 pass
-        if not bool(self._sync_selected_scene_camera_view(owner_key)):
-            self._select_default_camera()
-            return
+        should_sync_view = bool(getattr(self, "_camera_select_lock_enabled", False))
+        if should_sync_view:
+            if not bool(self._sync_selected_scene_camera_view(owner_key)):
+                self._select_default_camera()
+                return
+        else:
+            # Keep unlocked camera selection non-invasive: validate owner without forcing viewport jump.
+            try:
+                if self._build_scene_camera_pose(owner_key) is None:
+                    self._select_default_camera()
+                    return
+            except Exception:
+                self._select_default_camera()
+                return
 
         self._camera_select_mode = owner_key
         try:
@@ -2803,10 +2897,6 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             self._fps_nav_look_last_pos = None
             try:
                 synced = bool(self._camera_selector_sync_fps_from_locked_owner())
-                if not synced:
-                    mode = str(getattr(self, "_camera_select_mode", "default") or "default").strip()
-                    if mode and mode.lower() != "default":
-                        synced = bool(self._camera_selector_sync_fps_from_owner_pose(mode))
                 if not synced:
                     self._fps_cam_sync_from_orbit()
             except Exception:

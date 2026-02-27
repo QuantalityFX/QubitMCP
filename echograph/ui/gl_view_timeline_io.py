@@ -305,6 +305,17 @@ class GraphGLTimelineIOMixin:
             "scene": str(getattr(self, "_timeline_scene_name", "scene") or "scene"),
             "owner": str(getattr(self, "_timeline_owner_name", "") or ""),
             "fps": float(getattr(self, "_timeline_fps", 24.0) or 24.0),
+            "in_frame": (
+                int(getattr(self, "_timeline_in_frame", 0))
+                if getattr(self, "_timeline_in_frame", None) is not None
+                else None
+            ),
+            "out_frame": (
+                int(getattr(self, "_timeline_out_frame", 0))
+                if getattr(self, "_timeline_out_frame", None) is not None
+                else None
+            ),
+            "loop_enabled": bool(getattr(self, "_timeline_loop_enabled", True)),
             "keys": keys_out,
         }
         try:
@@ -317,11 +328,26 @@ class GraphGLTimelineIOMixin:
         path = getattr(self, "_timeline_anim_path", None)
         self._timeline_keys = {}
         self._timeline_curve_selected = set()
+        self._timeline_in_frame = None
+        self._timeline_out_frame = None
+        self._timeline_loop_enabled = True
         if path is None or not path.exists():
             self._timeline_total_max = max(240, int(self._timeline_current_frame()))
             self._timeline_sync_range_controls(keep_current_visible=True, refresh_key_markers=True)
             self._timeline_update_key_count_label()
             self._timeline_refresh_coord_labels()
+            try:
+                self._update_timeline_loop_button()
+            except Exception:
+                pass
+            try:
+                self._timeline_update_range_button_tooltips()
+            except Exception:
+                pass
+            try:
+                self._timeline_update_range_marker_visuals()
+            except Exception:
+                pass
             return
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
@@ -335,6 +361,32 @@ class GraphGLTimelineIOMixin:
                 self._timeline_fps = fps
         except Exception:
             self._timeline_fps = 24.0
+        in_frame = None
+        out_frame = None
+        try:
+            raw_in = raw.get("in_frame", None)
+            if raw_in is not None:
+                cand = int(raw_in)
+                if cand >= 0:
+                    in_frame = int(cand)
+        except Exception:
+            in_frame = None
+        try:
+            raw_out = raw.get("out_frame", None)
+            if raw_out is not None:
+                cand = int(raw_out)
+                if cand >= 0:
+                    out_frame = int(cand)
+        except Exception:
+            out_frame = None
+        if in_frame is not None and out_frame is not None and out_frame < in_frame:
+            out_frame = in_frame
+        self._timeline_in_frame = in_frame
+        self._timeline_out_frame = out_frame
+        try:
+            self._timeline_loop_enabled = bool(raw.get("loop_enabled", True))
+        except Exception:
+            self._timeline_loop_enabled = True
         rows = raw.get("keys", []) or []
         data: Dict[int, Dict[str, object]] = {}
         for row in rows:
@@ -419,6 +471,18 @@ class GraphGLTimelineIOMixin:
         self._timeline_sync_range_controls(keep_current_visible=True, refresh_key_markers=True)
         self._timeline_update_key_count_label()
         self._timeline_refresh_coord_labels()
+        try:
+            self._update_timeline_loop_button()
+        except Exception:
+            pass
+        try:
+            self._timeline_update_range_button_tooltips()
+        except Exception:
+            pass
+        try:
+            self._timeline_update_range_marker_visuals()
+        except Exception:
+            pass
         try:
             self._timeline_apply_frame_if_keyed(self._timeline_current_frame())
         except Exception:

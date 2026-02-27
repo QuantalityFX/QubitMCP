@@ -455,6 +455,14 @@ class GraphGLTimelineModelMixin:
                 max_key = max(int(k) for k in keys.keys())
         except Exception:
             max_key = 0
+        marker_max = 0
+        try:
+            in_frame, out_frame = self._timeline_in_out_frames()
+            vals = [int(v) for v in (in_frame, out_frame) if v is not None]
+            if vals:
+                marker_max = max(vals)
+        except Exception:
+            marker_max = 0
         try:
             cur = int(self._timeline_current_frame())
         except Exception:
@@ -463,7 +471,7 @@ class GraphGLTimelineModelMixin:
             base_total = int(getattr(self, "_timeline_total_max", 240) or 240)
         except Exception:
             base_total = 240
-        return max(240, base_total, max_key, cur)
+        return max(240, base_total, max_key, marker_max, cur)
 
     def _timeline_sync_range_controls(
         self,
@@ -1920,11 +1928,14 @@ class GraphGLTimelineModelMixin:
         icon_curve = None
         icon_curve_active = None
         icon_material_live = None
+        icon_material_live_on = None
+        icon_material_live_off = None
         icon_handle_straight = None
         icon_handle_tied = None
         icon_handle_untied = None
         icon_set_key = None
         icon_remove_key = None
+        icon_loop = None
         keyframe_handle_path = None
         try:
             root = Path(__file__).resolve().parents[2]
@@ -1932,12 +1943,15 @@ class GraphGLTimelineModelMixin:
             stop_path = root / "icons" / "StopButton_icon.png"
             curve_path = root / "icons" / "CurveEditor_Icon.png"
             curve_active_path = root / "icons" / "CurveEditor_Active_Icon.png"
-            material_live_path = root / "icons" / "MaterialGenerator_Icon_S.png"
+            material_live_on_path = root / "icons" / "LiveMaterial_Icon.png"
+            material_live_off_path = root / "icons" / "LiveMaterial_Off_Icon.png"
+            material_live_legacy_path = root / "icons" / "MaterialGenerator_Icon_S.png"
             handle_straight_path = root / "icons" / "StreightCurve_Icon.png"
             handle_tied_path = root / "icons" / "Tiehandles_Icon.png"
             handle_untied_path = root / "icons" / "Untiedhandle_Icon.png"
             set_key_path = root / "icons" / "keyframe_Icon.png"
             remove_key_path = root / "icons" / "RemoveKey_Icon.png"
+            loop_path = root / "icons" / "Refresh_Icon.png"
             handle_path = root / "icons" / "KeyframeHandle_Icon.png"
             if play_path.exists():
                 icon_play = QtGui.QIcon(str(play_path))
@@ -1947,8 +1961,15 @@ class GraphGLTimelineModelMixin:
                 icon_curve = QtGui.QIcon(str(curve_path))
             if curve_active_path.exists():
                 icon_curve_active = QtGui.QIcon(str(curve_active_path))
-            if material_live_path.exists():
-                icon_material_live = QtGui.QIcon(str(material_live_path))
+            if material_live_on_path.exists():
+                icon_material_live_on = QtGui.QIcon(str(material_live_on_path))
+            if material_live_off_path.exists():
+                icon_material_live_off = QtGui.QIcon(str(material_live_off_path))
+            if icon_material_live_on is None and material_live_legacy_path.exists():
+                icon_material_live_on = QtGui.QIcon(str(material_live_legacy_path))
+            if icon_material_live_off is None:
+                icon_material_live_off = icon_material_live_on
+            icon_material_live = icon_material_live_on
             if handle_straight_path.exists():
                 icon_handle_straight = QtGui.QIcon(str(handle_straight_path))
             if handle_tied_path.exists():
@@ -1959,6 +1980,8 @@ class GraphGLTimelineModelMixin:
                 icon_set_key = QtGui.QIcon(str(set_key_path))
             if remove_key_path.exists():
                 icon_remove_key = QtGui.QIcon(str(remove_key_path))
+            if loop_path.exists():
+                icon_loop = QtGui.QIcon(str(loop_path))
             if handle_path.exists():
                 keyframe_handle_path = handle_path.as_posix()
         except Exception:
@@ -1967,22 +1990,28 @@ class GraphGLTimelineModelMixin:
             icon_curve = None
             icon_curve_active = None
             icon_material_live = None
+            icon_material_live_on = None
+            icon_material_live_off = None
             icon_handle_straight = None
             icon_handle_tied = None
             icon_handle_untied = None
             icon_set_key = None
             icon_remove_key = None
+            icon_loop = None
             keyframe_handle_path = None
         self._timeline_icon_play = icon_play
         self._timeline_icon_stop = icon_stop
         self._timeline_icon_curve = icon_curve
         self._timeline_icon_curve_active = icon_curve_active
         self._timeline_icon_material_live = icon_material_live
+        self._timeline_icon_material_live_on = icon_material_live_on
+        self._timeline_icon_material_live_off = icon_material_live_off
         self._timeline_icon_handle_straight = icon_handle_straight
         self._timeline_icon_handle_tied = icon_handle_tied
         self._timeline_icon_handle_untied = icon_handle_untied
         self._timeline_icon_set_key = icon_set_key
         self._timeline_icon_remove_key = icon_remove_key
+        self._timeline_icon_loop = icon_loop
         self._timeline_keyframe_handle_path = keyframe_handle_path
 
     def _update_timeline_play_button(self) -> None:
@@ -2010,6 +2039,220 @@ class GraphGLTimelineModelMixin:
                 pass
         try:
             btn.setToolTip("Stop Playback" if checked else "Play Timeline")
+        except Exception:
+            pass
+
+    @staticmethod
+    def _timeline_marker_frame(value) -> Optional[int]:
+        try:
+            vv = int(value)
+        except Exception:
+            return None
+        if vv < 0:
+            return None
+        return int(vv)
+
+    def _timeline_in_out_frames(self) -> Tuple[Optional[int], Optional[int]]:
+        in_frame = self._timeline_marker_frame(getattr(self, "_timeline_in_frame", None))
+        out_frame = self._timeline_marker_frame(getattr(self, "_timeline_out_frame", None))
+        if in_frame is not None and out_frame is not None and out_frame < in_frame:
+            out_frame = in_frame
+        self._timeline_in_frame = in_frame
+        self._timeline_out_frame = out_frame
+        return (in_frame, out_frame)
+
+    def _timeline_loop_is_enabled(self) -> bool:
+        return bool(getattr(self, "_timeline_loop_enabled", True))
+
+    def _timeline_playback_bounds(self, *, max_frame: Optional[int] = None) -> Tuple[int, int]:
+        if max_frame is None:
+            try:
+                max_frame = int(max(0, self._timeline_max_known_frame()))
+            except Exception:
+                max_frame = 0
+        else:
+            try:
+                max_frame = int(max(0, int(max_frame)))
+            except Exception:
+                max_frame = 0
+        in_frame, out_frame = self._timeline_in_out_frames()
+        if in_frame is None:
+            start = 0
+        else:
+            start = max(0, min(int(max_frame), int(in_frame)))
+        if out_frame is None:
+            end = int(max_frame)
+        else:
+            end = max(0, min(int(max_frame), int(out_frame)))
+        if end < start:
+            end = start
+        return (int(start), int(end))
+
+    def _timeline_stop_playback(self) -> None:
+        btn = getattr(self, "_timeline_play_btn", None)
+        if btn is not None:
+            try:
+                if bool(btn.isChecked()):
+                    btn.setChecked(False)
+                    return
+            except Exception:
+                pass
+        try:
+            self._timeline_play_timer.stop()
+        except Exception:
+            pass
+        self._update_timeline_play_button()
+        try:
+            hook = getattr(self, "_timeline_audio_on_timeline_play_toggled", None)
+            if callable(hook):
+                hook(False)
+        except Exception:
+            pass
+
+    def _timeline_update_range_marker_visuals(self) -> None:
+        slider = getattr(self, "_timeline_frame_slider", None)
+        if slider is not None:
+            try:
+                slider.update()
+            except Exception:
+                pass
+        try:
+            self._timeline_update_tick_labels()
+        except Exception:
+            pass
+        try:
+            self._timeline_update_playhead()
+        except Exception:
+            pass
+
+    def _timeline_update_range_button_tooltips(self) -> None:
+        in_frame, out_frame = self._timeline_in_out_frames()
+        in_btn = getattr(self, "_timeline_mark_in_btn", None)
+        if in_btn is not None:
+            try:
+                if in_frame is None:
+                    in_btn.setToolTip("Set Start Frame ([)")
+                else:
+                    in_btn.setToolTip(f"Start Frame: {int(in_frame)} (click on same frame to clear)")
+            except Exception:
+                pass
+        out_btn = getattr(self, "_timeline_mark_out_btn", None)
+        if out_btn is not None:
+            try:
+                if out_frame is None:
+                    out_btn.setToolTip("Set End Frame (])")
+                else:
+                    out_btn.setToolTip(f"End Frame: {int(out_frame)} (click on same frame to clear)")
+            except Exception:
+                pass
+
+    def _update_timeline_loop_button(self) -> None:
+        btn = getattr(self, "_timeline_loop_btn", None)
+        if btn is None:
+            return
+        self._load_timeline_button_icons()
+        enabled = self._timeline_loop_is_enabled()
+        icon_loop = getattr(self, "_timeline_icon_loop", None)
+        try:
+            if bool(btn.isChecked()) != bool(enabled):
+                btn.blockSignals(True)
+                btn.setChecked(bool(enabled))
+                btn.blockSignals(False)
+        except Exception:
+            try:
+                btn.blockSignals(False)
+            except Exception:
+                pass
+        if icon_loop is not None:
+            try:
+                btn.setIcon(icon_loop)
+                btn.setText("")
+                inner = max(12, min(int(btn.width()), int(btn.height())) - 4)
+                btn.setIconSize(QtCore.QSize(inner, inner))
+            except Exception:
+                pass
+        else:
+            try:
+                btn.setIcon(QtGui.QIcon())
+                btn.setText("Loop")
+            except Exception:
+                pass
+        try:
+            btn.setToolTip("Loop Timeline Range" if enabled else "Loop Disabled")
+        except Exception:
+            pass
+
+    def _timeline_set_loop_enabled(self, enabled: bool, *, save: bool = True) -> None:
+        self._timeline_loop_enabled = bool(enabled)
+        self._update_timeline_loop_button()
+        if bool(save):
+            try:
+                self._timeline_save_to_disk()
+            except Exception:
+                pass
+
+    def _timeline_on_loop_toggled(self, checked: bool) -> None:
+        self._timeline_set_loop_enabled(bool(checked), save=True)
+        if not bool(checked):
+            try:
+                _start, end = self._timeline_playback_bounds()
+                cur = int(self._timeline_current_frame())
+            except Exception:
+                end = 0
+                cur = 0
+            if cur > int(end):
+                self._timeline_set_frame_widgets(int(end))
+                self._timeline_apply_frame_if_keyed(int(end), force=True)
+                try:
+                    self._timeline_apply_other_owner_frames(int(end))
+                except Exception:
+                    pass
+            timer = getattr(self, "_timeline_play_timer", None)
+            if timer is not None and timer.isActive() and int(cur) >= int(end):
+                self._timeline_stop_playback()
+        self._timeline_update_range_marker_visuals()
+
+    def _timeline_on_mark_in_clicked(self) -> None:
+        frame = max(0, int(self._timeline_current_frame()))
+        in_frame, out_frame = self._timeline_in_out_frames()
+        if in_frame is not None and int(in_frame) == int(frame):
+            self._timeline_in_frame = None
+        else:
+            if out_frame is not None and int(frame) > int(out_frame):
+                self._timeline_update_range_button_tooltips()
+                return
+            self._timeline_in_frame = int(frame)
+            try:
+                self._timeline_total_max = max(int(getattr(self, "_timeline_total_max", 240) or 240), int(frame))
+            except Exception:
+                pass
+        self._timeline_sync_range_controls(keep_current_visible=True, refresh_key_markers=False)
+        self._timeline_update_range_button_tooltips()
+        self._timeline_update_range_marker_visuals()
+        try:
+            self._timeline_save_to_disk()
+        except Exception:
+            pass
+
+    def _timeline_on_mark_out_clicked(self) -> None:
+        frame = max(0, int(self._timeline_current_frame()))
+        in_frame, out_frame = self._timeline_in_out_frames()
+        if out_frame is not None and int(out_frame) == int(frame):
+            self._timeline_out_frame = None
+        else:
+            if in_frame is not None and int(frame) < int(in_frame):
+                self._timeline_update_range_button_tooltips()
+                return
+            self._timeline_out_frame = int(frame)
+            try:
+                self._timeline_total_max = max(int(getattr(self, "_timeline_total_max", 240) or 240), int(frame))
+            except Exception:
+                pass
+        self._timeline_sync_range_controls(keep_current_visible=True, refresh_key_markers=False)
+        self._timeline_update_range_button_tooltips()
+        self._timeline_update_range_marker_visuals()
+        try:
+            self._timeline_save_to_disk()
         except Exception:
             pass
 
@@ -2152,7 +2395,11 @@ class GraphGLTimelineModelMixin:
             return
         self._load_timeline_button_icons()
         live = self._timeline_material_live_enabled()
-        icon = getattr(self, "_timeline_icon_material_live", None)
+        icon_on = getattr(self, "_timeline_icon_material_live_on", None)
+        icon_off = getattr(self, "_timeline_icon_material_live_off", None)
+        icon = icon_on if live else icon_off
+        if icon is None:
+            icon = getattr(self, "_timeline_icon_material_live", None)
         if icon is not None:
             try:
                 btn.setIcon(icon)
@@ -2950,6 +3197,57 @@ class GraphGLTimelineModelMixin:
         self._update_timeline_play_button()
         if bool(checked):
             try:
+                max_frame = int(max(0, self._timeline_max_known_frame()))
+            except Exception:
+                max_frame = 0
+            try:
+                loop_enabled = self._timeline_loop_is_enabled()
+            except Exception:
+                loop_enabled = True
+            start, end = self._timeline_playback_bounds(max_frame=max_frame)
+            try:
+                cur = int(self._timeline_current_frame())
+            except Exception:
+                cur = 0
+            if not bool(loop_enabled) and int(cur) >= int(end):
+                btn = getattr(self, "_timeline_play_btn", None)
+                if btn is not None:
+                    try:
+                        btn.blockSignals(True)
+                        btn.setChecked(False)
+                    except Exception:
+                        pass
+                    finally:
+                        try:
+                            btn.blockSignals(False)
+                        except Exception:
+                            pass
+                try:
+                    self._timeline_play_timer.stop()
+                except Exception:
+                    pass
+                self._update_timeline_play_button()
+                try:
+                    hook = getattr(self, "_timeline_audio_on_timeline_play_toggled", None)
+                    if callable(hook):
+                        hook(False)
+                except Exception:
+                    pass
+                return
+            if bool(loop_enabled) and (int(cur) < int(start) or int(cur) > int(end)):
+                self._timeline_set_frame_widgets(int(start))
+                self._timeline_apply_frame_if_keyed(int(start), force=True)
+                try:
+                    self._timeline_apply_other_owner_frames(int(start))
+                except Exception:
+                    pass
+                try:
+                    hook = getattr(self, "_timeline_audio_on_timeline_frame_changed", None)
+                    if callable(hook):
+                        hook(int(start), playing=False)
+                except Exception:
+                    pass
+            try:
                 self._timeline_play_timer.start()
             except Exception:
                 pass
@@ -2966,10 +3264,33 @@ class GraphGLTimelineModelMixin:
             pass
 
     def _timeline_on_play_tick(self) -> None:
-        frame = int(self._timeline_current_frame()) + 1
-        max_frame = int(self._timeline_max_known_frame())
-        if frame > max_frame:
-            frame = 0
+        try:
+            cur = int(self._timeline_current_frame())
+        except Exception:
+            cur = 0
+        try:
+            max_frame = int(max(0, self._timeline_max_known_frame()))
+        except Exception:
+            max_frame = 0
+        try:
+            loop_enabled = self._timeline_loop_is_enabled()
+        except Exception:
+            loop_enabled = True
+        start, end = self._timeline_playback_bounds(max_frame=max_frame)
+        frame = int(cur) + 1
+        stop_after = False
+        if bool(loop_enabled):
+            if int(cur) < int(start) or int(cur) > int(end):
+                frame = int(start)
+            elif int(frame) > int(end):
+                frame = int(start)
+        else:
+            if int(cur) >= int(end):
+                self._timeline_stop_playback()
+                return
+            if int(frame) >= int(end):
+                frame = int(end)
+                stop_after = True
         self._timeline_set_frame_widgets(frame)
         self._timeline_apply_frame_if_keyed(frame, force=True)
         try:
@@ -2982,6 +3303,8 @@ class GraphGLTimelineModelMixin:
                 hook(int(frame), playing=True)
         except Exception:
             pass
+        if bool(stop_after):
+            self._timeline_stop_playback()
 
     def _timeline_refresh_coord_labels(self) -> None:
         try:

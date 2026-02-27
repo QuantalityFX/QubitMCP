@@ -1523,6 +1523,25 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             sel_kind = str(it.data(QtCore.Qt.UserRole + 1) or "").strip().lower()
             if not sel_kind:
                 sel_kind = "mesh"
+            preserve_glv = None
+            preserve_view_state = None
+            if sel_kind == "camera":
+                # Do not force a camera look-through on plain outliner selection when lock is off.
+                try:
+                    win = card.window()
+                    preserve_glv = getattr(win, "gl_view", None) if win is not None else None
+                    if preserve_glv is not None and not bool(getattr(preserve_glv, "_camera_select_lock_enabled", False)):
+                        renderer = getattr(preserve_glv, "_mgl_renderer", None) or preserve_glv
+                        get_state = getattr(renderer, "_mgl_get_camera_state", None)
+                        if callable(get_state):
+                            st = get_state() or {}
+                            if isinstance(st, dict):
+                                st = dict(st)
+                                st.pop("scene_xforms", None)
+                                preserve_view_state = st
+                except Exception:
+                    preserve_glv = None
+                    preserve_view_state = None
 
             card._scene_selected_owner = owner
             card._scene_selected_kind = sel_kind
@@ -1623,6 +1642,17 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 pass
 
             _load_xform_from_view(owner)
+            if preserve_glv is not None and isinstance(preserve_view_state, dict):
+                try:
+                    renderer = getattr(preserve_glv, "_mgl_renderer", None) or preserve_glv
+                    apply_state = getattr(renderer, "_mgl_apply_camera_state", None)
+                    if callable(apply_state):
+                        apply_state(dict(preserve_view_state))
+                    if not bool(getattr(preserve_glv, "_fly_mode_enabled", False)):
+                        preserve_glv._fps_camera_active = False
+                    preserve_glv.update()
+                except Exception:
+                    pass
 
 
         outliner.currentItemChanged.connect(lambda *_: _on_outliner_select())

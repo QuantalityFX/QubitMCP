@@ -133,7 +133,8 @@ class _TimelineAudioWaveformWidget(QtWidgets.QWidget):
         super().__init__(parent)
         self._samples: list[float] = []
         self._playhead = 0.0
-        self.setMinimumHeight(56)
+        self.setMinimumHeight(48)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         self.setAttribute(QtCore.Qt.WA_StyledBackground, True)
 
     def setWaveform(self, samples) -> None:
@@ -158,42 +159,45 @@ class _TimelineAudioWaveformWidget(QtWidgets.QWidget):
 
     def paintEvent(self, ev):
         super().paintEvent(ev)
-        rect = self.rect().adjusted(1, 1, -1, -1)
-        if rect.width() <= 2 or rect.height() <= 2:
+        outer = self.rect().adjusted(1, 1, -1, -1)
+        if outer.width() <= 2 or outer.height() <= 2:
             return
+        draw = outer.adjusted(2, 3, -2, -3)
+        if draw.width() <= 2 or draw.height() <= 2:
+            draw = outer
         p = QtGui.QPainter(self)
         try:
             p.setRenderHint(QtGui.QPainter.Antialiasing, False)
         except Exception:
             pass
-        p.fillRect(rect, QtGui.QColor(15, 23, 42, 180))
+        p.fillRect(outer, QtGui.QColor(15, 23, 42, 180))
         p.setPen(QtGui.QPen(QtGui.QColor(51, 65, 85, 230), 1))
-        p.drawRect(rect)
+        p.drawRect(outer)
         samples = list(getattr(self, "_samples", []) or [])
         if not samples:
             p.setPen(QtGui.QPen(QtGui.QColor(148, 163, 184, 220), 1))
-            p.drawText(rect, int(QtCore.Qt.AlignCenter), "No audio loaded")
+            p.drawText(draw, int(QtCore.Qt.AlignCenter), "No audio loaded")
             p.end()
             return
-        mid_y = int(rect.center().y())
-        amp_h = int(max(4, (rect.height() // 2) - 3))
+        mid_y = int(draw.center().y())
+        amp_h = int(max(3, (draw.height() // 2) - 2))
         wave_pen = QtGui.QPen(QtGui.QColor(186, 203, 222, 220), 1)
         p.setPen(wave_pen)
         n = int(max(1, len(samples)))
         if n == 1:
-            x = int(rect.left() + (rect.width() // 2))
-            hh = int(max(1, float(samples[0]) * float(amp_h)))
+            x = int(draw.left() + (draw.width() // 2))
+            hh = int(max(1, min(float(amp_h), float(samples[0]) * float(amp_h))))
             p.drawLine(x, int(mid_y - hh), x, int(mid_y + hh))
         else:
-            span = float(max(1, rect.width() - 1))
+            span = float(max(1, draw.width() - 1))
             for i, amp in enumerate(samples):
-                x = int(round(float(rect.left()) + (float(i) / float(n - 1)) * span))
-                hh = int(max(1, float(amp) * float(amp_h)))
+                x = int(round(float(draw.left()) + (float(i) / float(n - 1)) * span))
+                hh = int(max(1, min(float(amp_h), float(amp) * float(amp_h))))
                 p.drawLine(x, int(mid_y - hh), x, int(mid_y + hh))
         playhead_norm = max(0.0, min(1.0, float(getattr(self, "_playhead", 0.0))))
-        play_x = int(round(float(rect.left()) + (playhead_norm * float(max(1, rect.width() - 1)))))
+        play_x = int(round(float(draw.left()) + (playhead_norm * float(max(1, draw.width() - 1)))))
         p.setPen(QtGui.QPen(QtGui.QColor(248, 250, 252, 245), 1))
-        p.drawLine(play_x, int(rect.top()), play_x, int(rect.bottom()))
+        p.drawLine(play_x, int(draw.top()), play_x, int(draw.bottom()))
         p.end()
 
 
@@ -246,7 +250,7 @@ class GraphGLTimelineWidgetsMixin:
                 pref_ah = int(audio_panel.sizeHint().height())
             except Exception:
                 pref_ah = 0
-            ah = int(max(72, int(getattr(self, "_timeline_audio_h", 96) or 96), pref_ah))
+            ah = int(max(64, int(getattr(self, "_timeline_audio_h", 88) or 88), pref_ah))
             self._timeline_audio_h = ah
             ay = max(0, int(y_cursor) - int(ah))
             audio_panel.setGeometry(0, ay, view_w, ah)
@@ -261,6 +265,9 @@ class GraphGLTimelineWidgetsMixin:
             has_handle_straight_btn = isinstance(getattr(self, "_timeline_handle_straight_btn", None), QtWidgets.QPushButton)
             has_handle_tied_btn = isinstance(getattr(self, "_timeline_handle_tied_btn", None), QtWidgets.QPushButton)
             has_handle_untied_btn = isinstance(getattr(self, "_timeline_handle_untied_btn", None), QtWidgets.QPushButton)
+            has_mark_in_btn = isinstance(getattr(self, "_timeline_mark_in_btn", None), QtWidgets.QPushButton)
+            has_mark_out_btn = isinstance(getattr(self, "_timeline_mark_out_btn", None), QtWidgets.QPushButton)
+            has_loop_btn = isinstance(getattr(self, "_timeline_loop_btn", None), QtWidgets.QPushButton)
             has_scroll = getattr(self, "_timeline_scrollbar", None) is not None
             has_spacer = getattr(self, "_timeline_left_header_spacer", None) is not None
             has_rows = bool(getattr(self, "_timeline_track_rows", []))
@@ -283,6 +290,9 @@ class GraphGLTimelineWidgetsMixin:
                 and has_handle_straight_btn
                 and has_handle_tied_btn
                 and has_handle_untied_btn
+                and has_mark_in_btn
+                and has_mark_out_btn
+                and has_loop_btn
                 and has_scroll
                 and has_spacer
                 and has_rows
@@ -298,6 +308,14 @@ class GraphGLTimelineWidgetsMixin:
                     pass
                 try:
                     self._timeline_update_handle_mode_buttons()
+                except Exception:
+                    pass
+                try:
+                    self._update_timeline_loop_button()
+                except Exception:
+                    pass
+                try:
+                    self._timeline_update_range_button_tooltips()
                 except Exception:
                     pass
                 return
@@ -319,6 +337,9 @@ class GraphGLTimelineWidgetsMixin:
             self._timeline_key_markers = []
             self._timeline_scrollbar = None
             self._timeline_play_btn = None
+            self._timeline_mark_in_btn = None
+            self._timeline_mark_out_btn = None
+            self._timeline_loop_btn = None
             self._timeline_curves_btn = None
             self._timeline_material_live_btn = None
             self._timeline_handle_straight_btn = None
@@ -362,6 +383,9 @@ class GraphGLTimelineWidgetsMixin:
                     "#GLTimelinePanel QPushButton#GLTimelinePlayButton{padding:0px;background:transparent;border:0px;}",
                     "#GLTimelinePanel QPushButton#GLTimelinePlayButton:hover{background:transparent;border:0px;}",
                     "#GLTimelinePanel QPushButton#GLTimelinePlayButton:checked{background:transparent;border:0px;}",
+                    "#GLTimelinePanel QPushButton#GLTimelineLoopButton{padding:0px;background:transparent;border:0px;}",
+                    "#GLTimelinePanel QPushButton#GLTimelineLoopButton:hover{background:rgba(148,163,184,55);border:1px solid rgba(148,163,184,120);border-radius:4px;}",
+                    "#GLTimelinePanel QPushButton#GLTimelineLoopButton:checked{background:rgba(34,197,94,70);border:1px solid rgba(74,222,128,170);border-radius:4px;}",
                     "#GLTimelinePanel QFrame#GLTimelineTracks{background:rgba(15,18,22,120);border:1px solid #334155;border-radius:4px;}",
                     "#GLTimelinePanel QFrame#GLTimelineTrackRow{background:rgba(15,18,22,34);border-radius:3px;}",
                     "#GLTimelinePanel QFrame#GLTimelineTrackLine{background:rgba(148,163,184,80);border:0px;}",
@@ -427,15 +451,32 @@ class GraphGLTimelineWidgetsMixin:
             self._timeline_play_btn = play_btn
             self._update_timeline_play_button()
 
-            curves_btn = QtWidgets.QPushButton("Curves", panel)
-            curves_btn.setObjectName("GLTimelineCurvesButton")
-            curves_btn.setCheckable(True)
-            curves_btn.setFixedSize(26, 26)
-            curves_btn.setFlat(True)
-            curves_btn.toggled.connect(self._timeline_on_curves_toggled)
-            header.addWidget(curves_btn, 0)
-            self._timeline_curves_btn = curves_btn
-            self._update_timeline_curves_button()
+            mark_in_btn = QtWidgets.QPushButton("[", panel)
+            mark_in_btn.setObjectName("GLTimelineMarkInButton")
+            mark_in_btn.setFixedSize(24, 24)
+            mark_in_btn.setToolTip("Set Start Frame ([)")
+            mark_in_btn.clicked.connect(self._timeline_on_mark_in_clicked)
+            header.addWidget(mark_in_btn, 0)
+            self._timeline_mark_in_btn = mark_in_btn
+
+            mark_out_btn = QtWidgets.QPushButton("]", panel)
+            mark_out_btn.setObjectName("GLTimelineMarkOutButton")
+            mark_out_btn.setFixedSize(24, 24)
+            mark_out_btn.setToolTip("Set End Frame (])")
+            mark_out_btn.clicked.connect(self._timeline_on_mark_out_clicked)
+            header.addWidget(mark_out_btn, 0)
+            self._timeline_mark_out_btn = mark_out_btn
+
+            loop_btn = QtWidgets.QPushButton(panel)
+            loop_btn.setObjectName("GLTimelineLoopButton")
+            loop_btn.setCheckable(True)
+            loop_btn.setFixedSize(26, 26)
+            loop_btn.setFlat(True)
+            loop_btn.toggled.connect(self._timeline_on_loop_toggled)
+            header.addWidget(loop_btn, 0)
+            self._timeline_loop_btn = loop_btn
+            self._timeline_set_loop_enabled(bool(getattr(self, "_timeline_loop_enabled", True)), save=False)
+            self._timeline_update_range_button_tooltips()
 
             material_btn = QtWidgets.QPushButton(panel)
             material_btn.setObjectName("GLTimelineMaterialLiveButton")
@@ -446,6 +487,16 @@ class GraphGLTimelineWidgetsMixin:
             header.addWidget(material_btn, 0)
             self._timeline_material_live_btn = material_btn
             self._update_timeline_material_live_button()
+
+            curves_btn = QtWidgets.QPushButton("Curves", panel)
+            curves_btn.setObjectName("GLTimelineCurvesButton")
+            curves_btn.setCheckable(True)
+            curves_btn.setFixedSize(26, 26)
+            curves_btn.setFlat(True)
+            curves_btn.toggled.connect(self._timeline_on_curves_toggled)
+            header.addWidget(curves_btn, 0)
+            self._timeline_curves_btn = curves_btn
+            self._update_timeline_curves_button()
 
             straight_btn = QtWidgets.QPushButton(panel)
             straight_btn.setObjectName("GLTimelineHandleStraightButton")
@@ -840,6 +891,36 @@ class GraphGLTimelineWidgetsMixin:
                                 y_top = int(y_mid - 4)
                                 y_bot = int(y_mid + 4)
                             p.drawLine(int(x), int(y_top), int(x), int(y_bot))
+                        in_frame = getattr(self._view, "_timeline_in_frame", None)
+                        out_frame = getattr(self._view, "_timeline_out_frame", None)
+                        try:
+                            marker_font = QtGui.QFont(p.font())
+                            marker_font.setPointSize(max(8, int(marker_font.pointSize())))
+                            marker_font.setBold(True)
+                            p.setFont(marker_font)
+                        except Exception:
+                            pass
+
+                        def _draw_range_marker(abs_frame, label: str, color: QtGui.QColor):
+                            try:
+                                if abs_frame is None:
+                                    return
+                                frame_abs = int(abs_frame)
+                                local = int(frame_abs - start)
+                                if local < int(vmin) or local > int(vmax):
+                                    return
+                                xx = self._view._timeline_slider_value_to_x(int(local), slider=self)
+                                if xx is None:
+                                    return
+                                p.setPen(QtGui.QPen(color, 1))
+                                p.drawLine(int(xx), int(y_mid - 9), int(xx), int(y_mid + 9))
+                                txt_rect = QtCore.QRect(int(xx - 8), int(max(0, y_mid - 13)), 16, 10)
+                                p.drawText(txt_rect, int(QtCore.Qt.AlignCenter), str(label))
+                            except Exception:
+                                return
+
+                        _draw_range_marker(in_frame, "[", QtGui.QColor(56, 189, 248, 240))
+                        _draw_range_marker(out_frame, "]", QtGui.QColor(250, 204, 21, 240))
                         # Keep the custom keyframe handle icon above frame dashes.
                         handle_opt = QtWidgets.QStyleOptionSlider()
                         self.initStyleOption(handle_opt)
@@ -1793,6 +1874,9 @@ class GraphGLTimelineWidgetsMixin:
             self._timeline_key_markers = []
             self._timeline_scrollbar = None
             self._timeline_play_btn = None
+            self._timeline_mark_in_btn = None
+            self._timeline_mark_out_btn = None
+            self._timeline_loop_btn = None
             self._timeline_curves_btn = None
             self._timeline_material_live_btn = None
             self._timeline_handle_straight_btn = None
@@ -1865,6 +1949,18 @@ class GraphGLTimelineWidgetsMixin:
                 pass
             try:
                 self._timeline_ui_timer.start()
+            except Exception:
+                pass
+            try:
+                self._update_timeline_loop_button()
+            except Exception:
+                pass
+            try:
+                self._timeline_update_range_button_tooltips()
+            except Exception:
+                pass
+            try:
+                self._timeline_update_range_marker_visuals()
             except Exception:
                 pass
         else:
@@ -1964,10 +2060,22 @@ class GraphGLTimelineWidgetsMixin:
         lbl = getattr(self, "_timeline_audio_status_label", None)
         if lbl is None:
             return
+        raw = str(text or "").strip()
+        changed = False
         try:
-            lbl.setText(str(text or ""))
+            changed = bool(lbl.isVisible()) != bool(raw)
+        except Exception:
+            changed = False
+        try:
+            lbl.setText(raw)
+            lbl.setVisible(bool(raw))
         except Exception:
             pass
+        if changed:
+            try:
+                self._layout_timeline_panel()
+            except Exception:
+                pass
 
     def _timeline_audio_update_file_label(self) -> None:
         lbl = getattr(self, "_timeline_audio_file_label", None)
@@ -2316,12 +2424,12 @@ class GraphGLTimelineWidgetsMixin:
             ))
         )
         root = QtWidgets.QVBoxLayout(panel)
-        root.setContentsMargins(10, 6, 10, 8)
-        root.setSpacing(4)
+        root.setContentsMargins(10, 4, 10, 4)
+        root.setSpacing(2)
 
         row = QtWidgets.QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(6)
+        row.setSpacing(4)
 
         title = QtWidgets.QLabel("Audio", panel)
         row.addWidget(title, 0)
@@ -2348,6 +2456,7 @@ class GraphGLTimelineWidgetsMixin:
 
         status = QtWidgets.QLabel("", panel)
         status.setObjectName("GLTimelineAudioStatus")
+        status.setVisible(False)
         root.addWidget(status, 0)
 
         panel.setVisible(bool(getattr(self, "_timeline_audio_enabled", False)))
