@@ -1936,6 +1936,8 @@ class GraphGLTimelineModelMixin:
         icon_set_key = None
         icon_remove_key = None
         icon_loop = None
+        icon_loop_on = None
+        icon_loop_off = None
         keyframe_handle_path = None
         try:
             root = Path(__file__).resolve().parents[2]
@@ -1951,7 +1953,8 @@ class GraphGLTimelineModelMixin:
             handle_untied_path = root / "icons" / "Untiedhandle_Icon.png"
             set_key_path = root / "icons" / "keyframe_Icon.png"
             remove_key_path = root / "icons" / "RemoveKey_Icon.png"
-            loop_path = root / "icons" / "Refresh_Icon.png"
+            loop_on_path = root / "icons" / "Refresh_Icon.png"
+            loop_off_path = root / "icons" / "StreightArrow_Icon.png"
             handle_path = root / "icons" / "KeyframeHandle_Icon.png"
             if play_path.exists():
                 icon_play = QtGui.QIcon(str(play_path))
@@ -1980,8 +1983,15 @@ class GraphGLTimelineModelMixin:
                 icon_set_key = QtGui.QIcon(str(set_key_path))
             if remove_key_path.exists():
                 icon_remove_key = QtGui.QIcon(str(remove_key_path))
-            if loop_path.exists():
-                icon_loop = QtGui.QIcon(str(loop_path))
+            if loop_on_path.exists():
+                icon_loop_on = QtGui.QIcon(str(loop_on_path))
+            if loop_off_path.exists():
+                icon_loop_off = QtGui.QIcon(str(loop_off_path))
+            if icon_loop_on is None:
+                icon_loop_on = icon_loop_off
+            if icon_loop_off is None:
+                icon_loop_off = icon_loop_on
+            icon_loop = icon_loop_on
             if handle_path.exists():
                 keyframe_handle_path = handle_path.as_posix()
         except Exception:
@@ -1998,6 +2008,8 @@ class GraphGLTimelineModelMixin:
             icon_set_key = None
             icon_remove_key = None
             icon_loop = None
+            icon_loop_on = None
+            icon_loop_off = None
             keyframe_handle_path = None
         self._timeline_icon_play = icon_play
         self._timeline_icon_stop = icon_stop
@@ -2012,6 +2024,8 @@ class GraphGLTimelineModelMixin:
         self._timeline_icon_set_key = icon_set_key
         self._timeline_icon_remove_key = icon_remove_key
         self._timeline_icon_loop = icon_loop
+        self._timeline_icon_loop_on = icon_loop_on
+        self._timeline_icon_loop_off = icon_loop_off
         self._timeline_keyframe_handle_path = keyframe_handle_path
 
     def _update_timeline_play_button(self) -> None:
@@ -2152,7 +2166,11 @@ class GraphGLTimelineModelMixin:
             return
         self._load_timeline_button_icons()
         enabled = self._timeline_loop_is_enabled()
-        icon_loop = getattr(self, "_timeline_icon_loop", None)
+        icon_on = getattr(self, "_timeline_icon_loop_on", None)
+        icon_off = getattr(self, "_timeline_icon_loop_off", None)
+        icon_loop = icon_on if enabled else icon_off
+        if icon_loop is None:
+            icon_loop = getattr(self, "_timeline_icon_loop", None)
         try:
             if bool(btn.isChecked()) != bool(enabled):
                 btn.blockSignals(True)
@@ -2187,7 +2205,7 @@ class GraphGLTimelineModelMixin:
         self._update_timeline_loop_button()
         if bool(save):
             try:
-                self._timeline_save_to_disk()
+                self._timeline_range_save_to_disk()
             except Exception:
                 pass
 
@@ -2230,7 +2248,7 @@ class GraphGLTimelineModelMixin:
         self._timeline_update_range_button_tooltips()
         self._timeline_update_range_marker_visuals()
         try:
-            self._timeline_save_to_disk()
+            self._timeline_range_save_to_disk()
         except Exception:
             pass
 
@@ -2252,7 +2270,7 @@ class GraphGLTimelineModelMixin:
         self._timeline_update_range_button_tooltips()
         self._timeline_update_range_marker_visuals()
         try:
-            self._timeline_save_to_disk()
+            self._timeline_range_save_to_disk()
         except Exception:
             pass
 

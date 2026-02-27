@@ -781,6 +781,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._timeline_owner_keys_cache = {}
         self._timeline_project_dir: Optional[Path] = None
         self._timeline_anim_path: Optional[Path] = None
+        self._timeline_range_cfg_path: Optional[Path] = None
         self._timeline_audio_scene_name = "viewport"
         self._timeline_audio_cfg_path: Optional[Path] = None
         self._timeline_audio_path = ""
@@ -849,6 +850,8 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._timeline_icon_set_key = None
         self._timeline_icon_remove_key = None
         self._timeline_icon_loop = None
+        self._timeline_icon_loop_on = None
+        self._timeline_icon_loop_off = None
         self._timeline_keyframe_handle_path = None
         self._timeline_frame_spin = None
         self._timeline_frame_slider = None

@@ -72,6 +72,17 @@ class GraphGLTimelineIOMixin:
             return out_dir / f"{safe_scene}__owner_{safe_owner}_timeline.json"
         return out_dir / f"{safe_scene}_timeline.json"
 
+    def _timeline_range_file_path(
+        self,
+        scene_name: str,
+        project_path: str | None = None,
+    ) -> Path:
+        base_dir = self._timeline_default_project_dir(project_path=project_path)
+        out_dir = base_dir / "projects"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        safe_scene = self._timeline_safe_name(scene_name or "scene")
+        return out_dir / f"{safe_scene}_timeline_range.json"
+
     def _timeline_audio_context_scene_name(self, scene_name: str | None = None) -> str:
         raw = str(scene_name or "").strip()
         if raw:
@@ -97,6 +108,140 @@ class GraphGLTimelineIOMixin:
         out_dir.mkdir(parents=True, exist_ok=True)
         safe_scene = self._timeline_safe_name(scene_name or "viewport")
         return out_dir / f"{safe_scene}_audio.json"
+
+    @staticmethod
+    def _timeline_parse_range_payload(raw) -> tuple[object, object, bool]:
+        if not isinstance(raw, dict):
+            return (None, None, True)
+        in_frame = None
+        out_frame = None
+        loop_enabled = True
+        try:
+            raw_in = raw.get("in_frame", None)
+            if raw_in is not None:
+                cand = int(raw_in)
+                if cand >= 0:
+                    in_frame = int(cand)
+        except Exception:
+            in_frame = None
+        try:
+            raw_out = raw.get("out_frame", None)
+            if raw_out is not None:
+                cand = int(raw_out)
+                if cand >= 0:
+                    out_frame = int(cand)
+        except Exception:
+            out_frame = None
+        if in_frame is not None and out_frame is not None and out_frame < in_frame:
+            out_frame = in_frame
+        try:
+            loop_enabled = bool(raw.get("loop_enabled", True))
+        except Exception:
+            loop_enabled = True
+        return (in_frame, out_frame, loop_enabled)
+
+    def _timeline_range_save_to_disk(self) -> None:
+        path = getattr(self, "_timeline_range_cfg_path", None)
+        if path is None:
+            return
+        payload = {
+            "scene": str(getattr(self, "_timeline_scene_name", "scene") or "scene"),
+            "in_frame": (
+                int(getattr(self, "_timeline_in_frame", 0))
+                if getattr(self, "_timeline_in_frame", None) is not None
+                else None
+            ),
+            "out_frame": (
+                int(getattr(self, "_timeline_out_frame", 0))
+                if getattr(self, "_timeline_out_frame", None) is not None
+                else None
+            ),
+            "loop_enabled": bool(getattr(self, "_timeline_loop_enabled", True)),
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _timeline_range_load_from_disk(self) -> None:
+        path = getattr(self, "_timeline_range_cfg_path", None)
+        raw = None
+        migrated_from_legacy = False
+        if path is not None and path.exists():
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                loaded = None
+            if isinstance(loaded, dict):
+                raw = loaded
+        if raw is None:
+            legacy_candidates = []
+            seen = set()
+            legacy_path = getattr(self, "_timeline_anim_path", None)
+            if legacy_path is not None:
+                try:
+                    pkey = str(Path(legacy_path).resolve())
+                except Exception:
+                    pkey = str(legacy_path)
+                seen.add(pkey)
+                legacy_candidates.append(Path(legacy_path))
+            try:
+                scene_name = str(getattr(self, "_timeline_scene_name", "") or "").strip() or "scene"
+                base_dir = self._timeline_default_project_dir()
+                out_dir = Path(base_dir) / "projects"
+                safe_scene = self._timeline_safe_name(scene_name)
+                extra = [out_dir / f"{safe_scene}_timeline.json"]
+                extra.extend(sorted(out_dir.glob(f"{safe_scene}__owner_*_timeline.json")))
+                for item in extra:
+                    try:
+                        pkey = str(Path(item).resolve())
+                    except Exception:
+                        pkey = str(item)
+                    if pkey in seen:
+                        continue
+                    seen.add(pkey)
+                    legacy_candidates.append(Path(item))
+            except Exception:
+                pass
+            for legacy_path in legacy_candidates:
+                if legacy_path is None or not legacy_path.exists():
+                    continue
+                try:
+                    legacy = json.loads(legacy_path.read_text(encoding="utf-8"))
+                except Exception:
+                    legacy = None
+                if isinstance(legacy, dict) and any(
+                    k in legacy for k in ("in_frame", "out_frame", "loop_enabled")
+                ):
+                    raw = legacy
+                    migrated_from_legacy = True
+                    break
+        in_frame, out_frame, loop_enabled = self._timeline_parse_range_payload(raw or {})
+        self._timeline_in_frame = in_frame
+        self._timeline_out_frame = out_frame
+        self._timeline_loop_enabled = bool(loop_enabled)
+        if migrated_from_legacy:
+            try:
+                self._timeline_range_save_to_disk()
+            except Exception:
+                pass
+        try:
+            self._timeline_sync_range_controls(keep_current_visible=True, refresh_key_markers=True)
+        except Exception:
+            pass
+        try:
+            self._update_timeline_loop_button()
+        except Exception:
+            pass
+        try:
+            self._timeline_update_range_button_tooltips()
+        except Exception:
+            pass
+        try:
+            self._timeline_update_range_marker_visuals()
+        except Exception:
+            pass
 
     def _timeline_audio_store_path(self, raw_path: str) -> str:
         raw = str(raw_path or "").strip()
@@ -328,9 +473,6 @@ class GraphGLTimelineIOMixin:
         path = getattr(self, "_timeline_anim_path", None)
         self._timeline_keys = {}
         self._timeline_curve_selected = set()
-        self._timeline_in_frame = None
-        self._timeline_out_frame = None
-        self._timeline_loop_enabled = True
         if path is None or not path.exists():
             self._timeline_total_max = max(240, int(self._timeline_current_frame()))
             self._timeline_sync_range_controls(keep_current_visible=True, refresh_key_markers=True)
@@ -361,32 +503,6 @@ class GraphGLTimelineIOMixin:
                 self._timeline_fps = fps
         except Exception:
             self._timeline_fps = 24.0
-        in_frame = None
-        out_frame = None
-        try:
-            raw_in = raw.get("in_frame", None)
-            if raw_in is not None:
-                cand = int(raw_in)
-                if cand >= 0:
-                    in_frame = int(cand)
-        except Exception:
-            in_frame = None
-        try:
-            raw_out = raw.get("out_frame", None)
-            if raw_out is not None:
-                cand = int(raw_out)
-                if cand >= 0:
-                    out_frame = int(cand)
-        except Exception:
-            out_frame = None
-        if in_frame is not None and out_frame is not None and out_frame < in_frame:
-            out_frame = in_frame
-        self._timeline_in_frame = in_frame
-        self._timeline_out_frame = out_frame
-        try:
-            self._timeline_loop_enabled = bool(raw.get("loop_enabled", True))
-        except Exception:
-            self._timeline_loop_enabled = True
         rows = raw.get("keys", []) or []
         data: Dict[int, Dict[str, object]] = {}
         for row in rows:
@@ -508,6 +624,10 @@ class GraphGLTimelineIOMixin:
             project_path=project_path,
             owner_name=owner or None,
         )
+        range_cfg_path = self._timeline_range_file_path(
+            name,
+            project_path=project_path,
+        )
         old_path = getattr(self, "_timeline_anim_path", None)
         same = old_path is not None and str(old_path) == str(anim_path)
         audio_scene_name = self._timeline_audio_context_scene_name(scene_arg)
@@ -521,8 +641,12 @@ class GraphGLTimelineIOMixin:
         self._timeline_owner_name = owner or None
         self._timeline_project_dir = anim_path.parent
         self._timeline_anim_path = anim_path
+        self._timeline_range_cfg_path = range_cfg_path
         self._timeline_audio_scene_name = audio_scene_name
         self._timeline_audio_cfg_path = audio_cfg_path
+        # Range markers are scene-level settings; reload on every context switch
+        # so owner/outliner timeline changes inherit the same in/out + loop state.
+        self._timeline_range_load_from_disk()
         if not same:
             self._timeline_load_from_disk()
         else:

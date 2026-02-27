@@ -384,8 +384,8 @@ class GraphGLTimelineWidgetsMixin:
                     "#GLTimelinePanel QPushButton#GLTimelinePlayButton:hover{background:transparent;border:0px;}",
                     "#GLTimelinePanel QPushButton#GLTimelinePlayButton:checked{background:transparent;border:0px;}",
                     "#GLTimelinePanel QPushButton#GLTimelineLoopButton{padding:0px;background:transparent;border:0px;}",
-                    "#GLTimelinePanel QPushButton#GLTimelineLoopButton:hover{background:rgba(148,163,184,55);border:1px solid rgba(148,163,184,120);border-radius:4px;}",
-                    "#GLTimelinePanel QPushButton#GLTimelineLoopButton:checked{background:rgba(34,197,94,70);border:1px solid rgba(74,222,128,170);border-radius:4px;}",
+                    "#GLTimelinePanel QPushButton#GLTimelineLoopButton:hover{background:transparent;border:0px;}",
+                    "#GLTimelinePanel QPushButton#GLTimelineLoopButton:checked{background:transparent;border:0px;}",
                     "#GLTimelinePanel QFrame#GLTimelineTracks{background:rgba(15,18,22,120);border:1px solid #334155;border-radius:4px;}",
                     "#GLTimelinePanel QFrame#GLTimelineTrackRow{background:rgba(15,18,22,34);border-radius:3px;}",
                     "#GLTimelinePanel QFrame#GLTimelineTrackLine{background:rgba(148,163,184,80);border:0px;}",
@@ -877,7 +877,27 @@ class GraphGLTimelineWidgetsMixin:
                             pass
                         major_pen = QtGui.QPen(QtGui.QColor(226, 232, 240, 220), 1)
                         minor_pen = QtGui.QPen(QtGui.QColor(148, 163, 184, 170), 1)
+                        in_frame = getattr(self._view, "_timeline_in_frame", None)
+                        out_frame = getattr(self._view, "_timeline_out_frame", None)
+                        in_local = None
+                        out_local = None
+                        try:
+                            if in_frame is not None:
+                                in_local = int(int(in_frame) - int(start))
+                        except Exception:
+                            in_local = None
+                        try:
+                            if out_frame is not None:
+                                out_local = int(int(out_frame) - int(start))
+                        except Exception:
+                            out_local = None
                         for value in range(vmin, vmax + 1):
+                            vv = int(value)
+                            if (in_local is not None and vv == int(in_local)) or (
+                                out_local is not None and vv == int(out_local)
+                            ):
+                                # Range markers own this column; skip dash to avoid a doubled "|" look.
+                                continue
                             x = self._view._timeline_slider_value_to_x(int(value), slider=self)
                             if x is None:
                                 continue
@@ -891,17 +911,7 @@ class GraphGLTimelineWidgetsMixin:
                                 y_top = int(y_mid - 4)
                                 y_bot = int(y_mid + 4)
                             p.drawLine(int(x), int(y_top), int(x), int(y_bot))
-                        in_frame = getattr(self._view, "_timeline_in_frame", None)
-                        out_frame = getattr(self._view, "_timeline_out_frame", None)
-                        try:
-                            marker_font = QtGui.QFont(p.font())
-                            marker_font.setPointSize(max(8, int(marker_font.pointSize())))
-                            marker_font.setBold(True)
-                            p.setFont(marker_font)
-                        except Exception:
-                            pass
-
-                        def _draw_range_marker(abs_frame, label: str, color: QtGui.QColor):
+                        def _draw_range_marker(abs_frame, is_in: bool, color: QtGui.QColor):
                             try:
                                 if abs_frame is None:
                                     return
@@ -912,16 +922,39 @@ class GraphGLTimelineWidgetsMixin:
                                 xx = self._view._timeline_slider_value_to_x(int(local), slider=self)
                                 if xx is None:
                                     return
-                                p.setPen(QtGui.QPen(color, 1))
-                                p.drawLine(int(xx), int(y_mid - 9), int(xx), int(y_mid + 9))
-                                txt_rect = QtCore.QRect(int(xx - 8), int(max(0, y_mid - 13)), 16, 10)
-                                p.drawText(txt_rect, int(QtCore.Qt.AlignCenter), str(label))
+                                x_line = int(round(float(xx)))
+                                half_h = int(max(6, min(9, int((self.height() - 6) * 0.5))))
+                                arm_len = int(max(4, min(8, half_h - 1)))
+                                y_top = int(max(2, y_mid - half_h))
+                                y_bot = int(min(self.height() - 3, y_mid + half_h))
+                                x_line = int(max(1, min(x_line, self.width() - 2)))
+                                if y_bot <= y_top:
+                                    return
+                                p.save()
+                                try:
+                                    p.setRenderHint(QtGui.QPainter.Antialiasing, True)
+                                except Exception:
+                                    pass
+                                pen = QtGui.QPen(color, 2.2, QtCore.Qt.SolidLine, QtCore.Qt.FlatCap, QtCore.Qt.MiterJoin)
+                                p.setPen(pen)
+                                if bool(is_in):
+                                    x_arm = int(min(self.width() - 2, x_line + arm_len))
+                                    p.drawLine(int(x_line), int(y_top), int(x_line), int(y_bot))
+                                    p.drawLine(int(x_line), int(y_top), int(x_arm), int(y_top))
+                                    p.drawLine(int(x_line), int(y_bot), int(x_arm), int(y_bot))
+                                else:
+                                    x_arm = int(max(1, x_line - arm_len))
+                                    p.drawLine(int(x_line), int(y_top), int(x_line), int(y_bot))
+                                    p.drawLine(int(x_arm), int(y_top), int(x_line), int(y_top))
+                                    p.drawLine(int(x_arm), int(y_bot), int(x_line), int(y_bot))
+                                p.restore()
                             except Exception:
                                 return
 
-                        _draw_range_marker(in_frame, "[", QtGui.QColor(56, 189, 248, 240))
-                        _draw_range_marker(out_frame, "]", QtGui.QColor(250, 204, 21, 240))
-                        # Keep the custom keyframe handle icon above frame dashes.
+                        # Draw range brackets above frame dashes.
+                        _draw_range_marker(in_frame, True, QtGui.QColor(56, 189, 248, 240))
+                        _draw_range_marker(out_frame, False, QtGui.QColor(250, 204, 21, 240))
+                        # Keep the custom keyframe handle icon above dashes and range brackets.
                         handle_opt = QtWidgets.QStyleOptionSlider()
                         self.initStyleOption(handle_opt)
                         handle_opt.subControls = QtWidgets.QStyle.SC_SliderHandle
