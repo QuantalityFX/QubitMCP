@@ -5104,7 +5104,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 # Grow when zoomed out; clamp with larger max
                 size = int(max(40, min(128, 38 / max(scale, 0.001))))
                 if kind_lower in ("render", "render_sequence", "render node"):
-                    size = int(size * 1.30)
+                    size = int(size * 1.20)
                 if kind_lower in ("chatbot", "chat bot", "chat_bot"):
                     size = int(size * 1.13)
                 pm_scaled = icon_pm.scaled(size, size, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)

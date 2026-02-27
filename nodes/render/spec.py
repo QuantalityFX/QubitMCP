@@ -349,6 +349,7 @@ class RenderNodeWidget(QtWidgets.QWidget):
         self._scene_connected = False
         self._busy = False
         self._camera_meta: Dict[str, Dict[str, object]] = {}
+        self._camera_preferred = ""
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(6, 4, 6, 4)
@@ -421,6 +422,10 @@ class RenderNodeWidget(QtWidgets.QWidget):
         self._ensure_scene()
         self._sync_controls_from_params()
         self._refresh_status()
+        try:
+            QtCore.QTimer.singleShot(0, self._deferred_refresh_from_scene)
+        except Exception:
+            pass
 
     def sizeHint(self):
         return QtCore.QSize(240, 198)
@@ -432,7 +437,7 @@ class RenderNodeWidget(QtWidgets.QWidget):
             return
         if hasattr(self._scene, "linksChanged"):
             try:
-                self._scene.linksChanged.connect(self._refresh_status)
+                self._scene.linksChanged.connect(self._on_scene_links_changed)
             except Exception:
                 pass
         if hasattr(self._scene, "paramChanged"):
@@ -441,6 +446,28 @@ class RenderNodeWidget(QtWidgets.QWidget):
             except Exception:
                 pass
         self._scene_connected = True
+
+    def _saved_camera_value(self) -> str:
+        model = getattr(self._node_item, "model", None)
+        raw = (_param_value(model, "camera") if model is not None else "") or ""
+        val = str(raw).strip()
+        if val:
+            return val
+        return str(getattr(self, "_camera_preferred", "") or "").strip()
+
+    def _on_scene_links_changed(self, *_args):
+        preferred = self._saved_camera_value()
+        self._refresh_camera_combo(preferred=preferred)
+        self._refresh_status()
+
+    def _deferred_refresh_from_scene(self):
+        try:
+            self._ensure_scene()
+        except Exception:
+            pass
+        preferred = self._saved_camera_value()
+        self._refresh_camera_combo(preferred=preferred)
+        self._refresh_status()
 
     def _on_scene_param_changed(self, name=None, _params=None):
         if _param_change_relevant(self._node_item, name):
@@ -520,7 +547,10 @@ class RenderNodeWidget(QtWidgets.QWidget):
                 self._end_spin.blockSignals(False)
             except Exception:
                 pass
-        self._refresh_camera_combo(preferred=(_param_value(model, "camera") or "").strip())
+        saved_camera = (_param_value(model, "camera") or "").strip()
+        if saved_camera:
+            self._camera_preferred = str(saved_camera)
+        self._refresh_camera_combo(preferred=saved_camera)
 
     def _refresh_camera_combo(self, preferred: str = ""):
         cams, _err = _collect_scene_cameras(self._node_item)
@@ -536,13 +566,20 @@ class RenderNodeWidget(QtWidgets.QWidget):
             self._camera_combo.addItem(owner, owner)
             self._camera_meta[owner.lower()] = dict(cam)
         idx = 0
-        want = preferred.strip().lower()
+        saved = self._saved_camera_value()
+        want = preferred.strip().lower() or saved.lower()
         if want:
             for i in range(self._camera_combo.count()):
                 if str(self._camera_combo.itemData(i) or "").strip().lower() == want:
                     idx = i
                     break
         self._camera_combo.setCurrentIndex(idx)
+        try:
+            selected = str(self._camera_combo.itemData(idx) or "").strip()
+            if selected:
+                self._camera_preferred = selected
+        except Exception:
+            pass
         self._camera_combo.blockSignals(False)
 
     def _on_camera_combo_popup(self):
@@ -553,9 +590,7 @@ class RenderNodeWidget(QtWidgets.QWidget):
         except Exception:
             preferred = ""
         if not preferred:
-            model = getattr(self._node_item, "model", None)
-            preferred = (_param_value(model, "camera") if model is not None else "") or ""
-            preferred = str(preferred).strip()
+            preferred = self._saved_camera_value()
         self._refresh_camera_combo(preferred=preferred)
         self._refresh_status()
 
@@ -575,13 +610,13 @@ class RenderNodeWidget(QtWidgets.QWidget):
         if err:
             self._status.setText(err)
             if not self._busy:
-                self._render_btn.setEnabled(False)
+                self._render_btn.setEnabled(True)
             return
         cams, cam_err = _collect_scene_cameras(self._node_item)
         if cam_err:
             self._status.setText(cam_err)
             if not self._busy:
-                self._render_btn.setEnabled(False)
+                self._render_btn.setEnabled(True)
             return
         self._status.setText(f"Connected: {len(assets)} asset(s), {len(cams)} camera(s).")
         if not self._busy:
@@ -605,7 +640,15 @@ class RenderNodeWidget(QtWidgets.QWidget):
         return out, fmt
 
     def _on_camera_changed(self, _index: int):
-        _set_param_value(self._node_item, "camera", str(self._camera_combo.currentData() or ""), notify_scene=True)
+        selected = str(self._camera_combo.currentData() or "").strip()
+        if selected:
+            self._camera_preferred = selected
+            _set_param_value(self._node_item, "camera", selected, notify_scene=True)
+            return
+        # Keep previously saved camera when UI is in temporary "(No scene cameras)" state.
+        if self._saved_camera_value():
+            return
+        _set_param_value(self._node_item, "camera", "", notify_scene=True)
 
     def _on_fps_changed(self, value: float):
         fps = max(1.0, float(value))
