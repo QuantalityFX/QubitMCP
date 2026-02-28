@@ -149,6 +149,16 @@ def serialize_scene(scene) -> Dict[str, Any]:
                         settings[key] = float(view_settings[key])
                     except Exception:
                         pass
+            if "wire_color" in view_settings:
+                try:
+                    raw = view_settings.get("wire_color")
+                    if isinstance(raw, (list, tuple)) and len(raw) >= 3:
+                        vals = [float(v) for v in raw[:4]]
+                        if len(vals) < 4:
+                            vals.append(1.0)
+                        settings["wire_color"] = [min(1.0, max(0.0, v)) for v in vals[:4]]
+                except Exception:
+                    pass
     except Exception:
         pass
     return {
@@ -211,6 +221,15 @@ def deserialize_scene(
                             view_settings[key] = float(settings[key])
                         except Exception:
                             pass
+                raw_wire_color = settings.get("wire_color", None)
+                if isinstance(raw_wire_color, (list, tuple)) and len(raw_wire_color) >= 3:
+                    try:
+                        vals = [float(v) for v in raw_wire_color[:4]]
+                        if len(vals) < 4:
+                            vals.append(1.0)
+                        view_settings["wire_color"] = [min(1.0, max(0.0, v)) for v in vals[:4]]
+                    except Exception:
+                        pass
                 if view_settings:
                     scene._view_settings = view_settings
         except Exception:

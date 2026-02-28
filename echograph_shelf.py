@@ -1298,12 +1298,47 @@ class GraphScene(QtWidgets.QGraphicsScene):
         self.nodeDeleted.emit(name)
         self._reframe_to_nodes(margin=8000.0)
 
+    def delete_pin_item(self, pin):
+        if pin is None:
+            return
+        edge = getattr(pin, "_edge", None)
+        if edge is not None and hasattr(edge, "remove_pin"):
+            try:
+                edge.remove_pin(pin)
+                return
+            except Exception:
+                pass
+        try:
+            self.removeItem(pin)
+        except Exception:
+            pass
+
     def delete_selected_nodes(self):
-        for it in list(self.selectedItems()):
+        selected = list(self.selectedItems())
+        selected_pins = []
+        for it in selected:
             if isinstance(it, NodeItem):
                 self.delete_node_by_name(it.model.name)
             elif isinstance(it, CommentGroup):
                 self.delete_comment_group(it)
+            elif getattr(it, "__class__", type(it)).__name__ == "EdgePin":
+                selected_pins.append(it)
+
+        for it in selected_pins:
+            try:
+                if it.scene() is not self:
+                    continue
+            except Exception:
+                continue
+            self.delete_pin_item(it)
+        try:
+            self._clear_edge_click_highlight()
+        except Exception:
+            pass
+        try:
+            self._group_drag_active = False
+        except Exception:
+            pass
 
     # --- copy/paste helpers ---------------------------------------------------
     def _node_payload_for_clipboard(self, node: GraphNode) -> dict:
@@ -3750,6 +3785,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             "#SettingsPanel QLabel{color:#e5e7eb;}"
             "#SettingsPanel QToolButton{background:transparent;border:0px;padding:0px;}"
             "#SettingsPanel QToolButton:hover{background:#2b313a;}"
+            "#SettingsPanel QPushButton#WireframeColorSwatch{border:1px solid #4b5563;border-radius:3px;padding:0px;min-width:18px;max-width:18px;min-height:18px;max-height:18px;}"
+            "#SettingsPanel QPushButton#WireframeColorSwatch:hover{border-color:#cbd5e1;}"
         )
         grid = QtWidgets.QGridLayout(panel)
         grid.setContentsMargins(10, 10, 10, 10)
@@ -3843,13 +3880,23 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         grid.addWidget(self._fly_speed_slider, 5, 1)
         grid.addWidget(self._fly_speed_value_lbl, 5, 2)
 
+        wire_color_label = QtWidgets.QLabel("Wire Color")
+        self._wireframe_color_btn = QtWidgets.QPushButton(panel)
+        self._wireframe_color_btn.setObjectName("WireframeColorSwatch")
+        self._wireframe_color_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        self._wireframe_color_btn.setToolTip("Pick wireframe color")
+        self._wireframe_color_btn.clicked.connect(self._pick_wireframe_color)
+        grid.addWidget(wire_color_label, 6, 0, 1, 1, QtCore.Qt.AlignVCenter)
+        grid.addWidget(self._wireframe_color_btn, 6, 1, 1, 1, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        self._update_wireframe_color_swatch()
+
         self._splat_log_enabled = bool(getattr(self, "_splat_log_enabled", False))
         splat_log_label = QtWidgets.QLabel("Debug Log")
         self._splat_log_toggle = QtWidgets.QCheckBox()
         self._splat_log_toggle.setChecked(self._splat_log_enabled)
         self._splat_log_toggle.toggled.connect(self._on_splat_log_toggled)
-        grid.addWidget(splat_log_label, 6, 0, 1, 1, QtCore.Qt.AlignVCenter)
-        grid.addWidget(self._splat_log_toggle, 6, 1, 1, 1, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        grid.addWidget(splat_log_label, 7, 0, 1, 1, QtCore.Qt.AlignVCenter)
+        grid.addWidget(self._splat_log_toggle, 7, 1, 1, 1, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
 
         panel_action = QtWidgets.QWidgetAction(settings_menu)
         panel_action.setDefaultWidget(panel)
@@ -4136,6 +4183,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             except Exception:
                 pass
         self._apply_pan_settings_to_gl_view()
+        self._apply_wireframe_color(self._default_wireframe_color(), sync_scene=True)
 
     def _apply_pan_settings_to_gl_view(self) -> None:
         gv = getattr(self, "gl_view", None)
@@ -4171,6 +4219,105 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 sc._view_settings = settings
             except Exception:
                 pass
+
+    @staticmethod
+    def _default_wireframe_color():
+        return (0.25, 0.25, 0.25, 1.0)
+
+    @classmethod
+    def _normalize_wireframe_color(cls, color):
+        rgba = cls._default_wireframe_color()
+        try:
+            if isinstance(color, QtGui.QColor):
+                if color.isValid():
+                    rgba = (
+                        float(color.redF()),
+                        float(color.greenF()),
+                        float(color.blueF()),
+                        float(color.alphaF()),
+                    )
+            elif isinstance(color, (list, tuple)):
+                vals = [float(v) for v in color[:4]]
+                if len(vals) >= 3:
+                    if len(vals) < 4:
+                        vals.append(1.0)
+                    rgba = tuple(min(1.0, max(0.0, float(v))) for v in vals[:4])
+        except Exception:
+            rgba = cls._default_wireframe_color()
+        return rgba
+
+    def _update_wireframe_color_swatch(self) -> None:
+        btn = getattr(self, "_wireframe_color_btn", None)
+        if btn is None:
+            return
+        gv = getattr(self, "gl_view", None)
+        rgba = self._default_wireframe_color()
+        if gv is not None:
+            try:
+                rgba = self._normalize_wireframe_color(getattr(gv, "_mgl_wire_color", rgba))
+            except Exception:
+                rgba = self._default_wireframe_color()
+        qcolor = QtGui.QColor.fromRgbF(float(rgba[0]), float(rgba[1]), float(rgba[2]), 1.0)
+        hex_color = str(qcolor.name() or "#404040")
+        try:
+            btn.setStyleSheet(
+                "QPushButton#WireframeColorSwatch{"
+                f"background:{hex_color};"
+                "border:1px solid #4b5563;border-radius:3px;padding:0px;"
+                "min-width:18px;max-width:18px;min-height:18px;max-height:18px;}"
+                "QPushButton#WireframeColorSwatch:hover{border-color:#cbd5e1;}"
+            )
+        except Exception:
+            pass
+        try:
+            btn.setToolTip(f"Wireframe color: {hex_color}\nClick to change")
+        except Exception:
+            pass
+
+    def _apply_wireframe_color(self, color, *, sync_scene: bool = True) -> None:
+        rgba = self._normalize_wireframe_color(color)
+        gv = getattr(self, "gl_view", None)
+        applied = False
+        if gv is not None and bool(getattr(gv, "_use_moderngl", False)) and hasattr(gv, "_apply_mgl_wire_color"):
+            try:
+                gv._apply_mgl_wire_color(rgba, sync_scene=sync_scene)
+                applied = True
+            except Exception:
+                applied = False
+        if not applied:
+            if gv is not None:
+                try:
+                    gv._mgl_wire_color = rgba
+                    gv.update()
+                except Exception:
+                    pass
+            if sync_scene:
+                sc = getattr(self, "scene", None)
+                if sc is not None:
+                    try:
+                        settings = getattr(sc, "_view_settings", None)
+                        if not isinstance(settings, dict):
+                            settings = {}
+                        settings = dict(settings)
+                        settings["wire_color"] = [float(c) for c in rgba]
+                        sc._view_settings = settings
+                    except Exception:
+                        pass
+        self._update_wireframe_color_swatch()
+
+    def _pick_wireframe_color(self) -> None:
+        gv = getattr(self, "gl_view", None)
+        current = self._default_wireframe_color()
+        if gv is not None:
+            try:
+                current = self._normalize_wireframe_color(getattr(gv, "_mgl_wire_color", current))
+            except Exception:
+                current = self._default_wireframe_color()
+        qcolor = QtGui.QColor.fromRgbF(float(current[0]), float(current[1]), float(current[2]), 1.0)
+        chosen = QtWidgets.QColorDialog.getColor(qcolor, self, "Wireframe Color")
+        if not chosen.isValid():
+            return
+        self._apply_wireframe_color(chosen, sync_scene=True)
 
     def _on_pan_base_changed(self, value: int) -> None:
         try:
@@ -4531,6 +4678,20 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 gv = getattr(self, "gl_view", None)
                 if gv is not None and hasattr(gv, "_apply_mgl_light_intensity"):
                     gv._apply_mgl_light_intensity(light_intensity, sync_ui=True, sync_scene=False)
+            except Exception:
+                pass
+        try:
+            wire_color = settings.get("wire_color", None)
+        except Exception:
+            wire_color = None
+        if wire_color is not None:
+            try:
+                self._apply_wireframe_color(wire_color, sync_scene=False)
+            except Exception:
+                pass
+        else:
+            try:
+                self._update_wireframe_color_swatch()
             except Exception:
                 pass
         post_ms = (time.perf_counter() - t_post) * 1000.0

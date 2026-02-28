@@ -1548,13 +1548,16 @@ class MGLRendererMixin:
             and (not is_fbx_payload)
             and (submeshes or vao is not None)
         )
+        explicit_edge_wire = bool(
+            self._mgl_wireframe
+            and edge_wire
+            and (submeshes or vao is not None)
+        )
 
-        def _render_wire_overlay(draw_geometry) -> None:
+        def _render_depth_prepass(draw_geometry) -> None:
             prev_depth_mask = None
             prev_depth_func = None
             prev_wireframe = None
-            prev_line_width = None
-            restore_cull = not bool(getattr(self, "_mgl_cull_enabled", False))
             raw_gl = getattr(self, "_gl", None)
             color_mask_disabled = False
             try:
@@ -1569,10 +1572,6 @@ class MGLRendererMixin:
                 prev_wireframe = bool(getattr(self._mgl_ctx, "wireframe", False))
             except Exception:
                 prev_wireframe = False
-            try:
-                prev_line_width = float(getattr(self._mgl_ctx, "line_width", 1.0))
-            except Exception:
-                prev_line_width = None
 
             try:
                 self._mgl_ctx.depth_mask = True
@@ -1596,7 +1595,7 @@ class MGLRendererMixin:
 
             try:
                 if color_mask_disabled:
-                    # Depth-only prepass so alpha-varying procedural materials still occlude hidden wire.
+                    # Stamp full mesh depth even if the visible material has alpha/discard.
                     self._mgl_apply_procedural_uniforms(None)
                     self._mgl_prog["UseTexture"].value = 0
                     self._mgl_prog["UseLighting"].value = 0
@@ -1608,9 +1607,60 @@ class MGLRendererMixin:
                         raw_gl.glColorMask(True, True, True, True)
                     except Exception:
                         pass
+                try:
+                    self._mgl_ctx.wireframe = prev_wireframe
+                except Exception:
+                    pass
+                if prev_depth_mask is not None:
+                    try:
+                        self._mgl_ctx.depth_mask = prev_depth_mask
+                    except Exception:
+                        pass
+                if prev_depth_func is not None:
+                    try:
+                        self._mgl_ctx.depth_func = prev_depth_func
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        self._mgl_ctx.depth_func = "<="
+                    except Exception:
+                        pass
+
+        def _render_wire_overlay(draw_geometry) -> None:
+            prev_depth_mask = None
+            prev_depth_func = None
+            prev_wireframe = None
+            prev_line_width = None
+            restore_cull = not bool(getattr(self, "_mgl_cull_enabled", False))
+            try:
+                prev_depth_mask = getattr(self._mgl_ctx, "depth_mask", None)
+            except Exception:
+                prev_depth_mask = None
+            try:
+                prev_depth_func = getattr(self._mgl_ctx, "depth_func", None)
+            except Exception:
+                prev_depth_func = None
+            try:
+                prev_wireframe = bool(getattr(self._mgl_ctx, "wireframe", False))
+            except Exception:
+                prev_wireframe = False
+            try:
+                prev_line_width = float(getattr(self._mgl_ctx, "line_width", 1.0))
+            except Exception:
+                prev_line_width = None
+
+            try:
+                _render_depth_prepass(draw_geometry)
+            except Exception:
+                pass
 
             try:
                 self._mgl_ctx.depth_mask = False
+            except Exception:
+                pass
+            try:
+                self._mgl_ctx.depth_func = "<="
             except Exception:
                 pass
             if restore_cull:
@@ -1670,6 +1720,15 @@ class MGLRendererMixin:
                 pass
 
         if submeshes:
+            if explicit_edge_wire:
+                def _draw_submeshes_depth() -> None:
+                    for sub in submeshes:
+                        sub_vao = sub.get("vao")
+                        if sub_vao is not None:
+                            sub_vao.render()
+
+                _render_depth_prepass(_draw_submeshes_depth)
+                self._mgl_apply_procedural_uniforms(proc_state)
             for sub in submeshes:
                 color = sub.get("color") or self._mgl_mesh_color
                 tex = manual_texture or sub.get("texture")
@@ -1702,6 +1761,9 @@ class MGLRendererMixin:
 
                 _render_wire_overlay(_draw_submeshes)
         else:
+            if explicit_edge_wire and vao is not None:
+                _render_depth_prepass(vao.render)
+                self._mgl_apply_procedural_uniforms(proc_state)
             color = payload.get("color") or self._mgl_mesh_color
             tex = manual_texture or payload.get("texture")
             use_texture = tex is not None
@@ -2069,15 +2131,6 @@ class MGLRendererMixin:
             else:
                 vao.render(mode)
 
-        if not is_volume:
-            color = _as_rgba(payload.get("color") or self._mgl_wire_color)
-            _apply_uniforms(color)
-            try:
-                _render()
-            except Exception as exc:
-                self._mgl_error = f"Scene wire draw failed: {exc}"
-            return
-
         prev_depth_test = None
         prev_depth_func = None
         prev_depth_mask = None
@@ -2098,6 +2151,43 @@ class MGLRendererMixin:
             self._mgl_ctx.enable(moderngl.DEPTH_TEST)
         except Exception:
             pass
+
+        if not is_volume:
+            try:
+                self._mgl_ctx.depth_func = "<="
+            except Exception:
+                pass
+            try:
+                self._mgl_ctx.depth_mask = False
+            except Exception:
+                pass
+            color = _as_rgba(payload.get("color") or self._mgl_wire_color)
+            _apply_uniforms(color)
+            try:
+                _render()
+            except Exception as exc:
+                self._mgl_error = f"Scene wire draw failed: {exc}"
+            finally:
+                if prev_depth_mask is not None:
+                    try:
+                        self._mgl_ctx.depth_mask = prev_depth_mask
+                    except Exception:
+                        pass
+                if prev_depth_func is not None:
+                    try:
+                        self._mgl_ctx.depth_func = prev_depth_func
+                    except Exception:
+                        pass
+                if prev_depth_test is not None:
+                    try:
+                        if prev_depth_test:
+                            self._mgl_ctx.enable(moderngl.DEPTH_TEST)
+                        else:
+                            self._mgl_ctx.disable(moderngl.DEPTH_TEST)
+                    except Exception:
+                        pass
+            return
+
         try:
             self._mgl_ctx.depth_mask = False
         except Exception:
@@ -4731,6 +4821,60 @@ class MGLRendererMixin:
                         settings = {}
                     settings = dict(settings)
                     settings["light_intensity"] = float(intensity)
+                    scene._view_settings = settings
+                except Exception:
+                    pass
+        self.update()
+
+    def _apply_mgl_wire_color(self, color, *, sync_scene: bool = True) -> None:
+        if not self._use_moderngl:
+            return
+        rgba = (0.25, 0.25, 0.25, 1.0)
+        try:
+            if isinstance(color, QtGui.QColor):
+                if color.isValid():
+                    rgba = (
+                        float(color.redF()),
+                        float(color.greenF()),
+                        float(color.blueF()),
+                        float(color.alphaF()),
+                    )
+            elif isinstance(color, (list, tuple)):
+                vals = [float(v) for v in color[:4]]
+                if len(vals) >= 3:
+                    if len(vals) < 4:
+                        vals.append(1.0)
+                    rgba = tuple(min(1.0, max(0.0, float(v))) for v in vals[:4])
+        except Exception:
+            rgba = (0.25, 0.25, 0.25, 1.0)
+
+        self._mgl_wire_color = rgba
+        try:
+            if self._mgl_wire_prog is not None:
+                self._mgl_wire_prog["Color"].value = rgba
+        except Exception:
+            pass
+        try:
+            scene_items = getattr(self, "_mgl_scene", None)
+            if scene_items is not None:
+                for item in scene_items.items():
+                    tag = str(getattr(item, "tag", "") or "")
+                    if tag not in ("model-wire", "scene-wire", "scene-volume", "scene-camera"):
+                        continue
+                    payload = getattr(item, "payload", None)
+                    if isinstance(payload, dict):
+                        payload["color"] = rgba
+        except Exception:
+            pass
+        if sync_scene:
+            scene = getattr(self, "_scene", None)
+            if scene is not None:
+                try:
+                    settings = getattr(scene, "_view_settings", None)
+                    if not isinstance(settings, dict):
+                        settings = {}
+                    settings = dict(settings)
+                    settings["wire_color"] = [float(c) for c in rgba]
                     scene._view_settings = settings
                 except Exception:
                     pass
