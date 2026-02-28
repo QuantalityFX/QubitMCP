@@ -2117,7 +2117,12 @@ class MGLRendererMixin:
                         mvp_to_use = mvp
                 self._mgl_wire_prog["Mvp"].write(mvp_to_use.astype("f4").tobytes())
                 self._mgl_wire_prog["Color"].value = color_rgba
-                self._mgl_wire_prog["Viewport"].value = (float(max(1, self.width())), float(max(1, self.height())))
+                try:
+                    vp_w, vp_h = self._mgl_render_size()
+                except Exception:
+                    vp_w = max(1, int(self.width()))
+                    vp_h = max(1, int(self.height()))
+                self._mgl_wire_prog["Viewport"].value = (float(max(1, vp_w)), float(max(1, vp_h)))
                 self._mgl_wire_prog["LineWidth"].value = float(
                     getattr(self, "_mgl_wire_edge_width", getattr(self, "_mgl_wire_line_width", 1.0))
                 )
@@ -3183,6 +3188,7 @@ class MGLRendererMixin:
         w = max(2, int(width))
         h = max(2, int(height))
         fbo = None
+        saved_cam_state = None
         prev_size_override = getattr(self, "_mgl_render_size_override", None)
         prev_target_fbo = int(getattr(self, "_mgl_render_target_fbo_id", 0) or 0)
         prev_render_paused = bool(getattr(self, "_render_paused", False))
@@ -3200,6 +3206,15 @@ class MGLRendererMixin:
             fbo = self._mgl_get_render_offscreen_fbo(w, h)
             if fbo is None:
                 return None
+            try:
+                saved_cam_state = self._mgl_get_camera_state()
+                if isinstance(saved_cam_state, dict):
+                    saved_cam_state = dict(saved_cam_state)
+                    saved_cam_state.pop("scene_xforms", None)
+                else:
+                    saved_cam_state = None
+            except Exception:
+                saved_cam_state = None
             self._mgl_render_size_override = (w, h)
             try:
                 self._mgl_render_target_fbo_id = int(getattr(fbo, "glo", 0) or 0)
@@ -3219,8 +3234,23 @@ class MGLRendererMixin:
                 self._mgl_splats_rebuild_min_dt = 0.0
             except Exception:
                 pass
+            if isinstance(saved_cam_state, dict):
+                try:
+                    self._mgl_apply_camera_state(dict(saved_cam_state))
+                except Exception:
+                    pass
             self._paint_mgl()
+            if isinstance(saved_cam_state, dict):
+                try:
+                    self._mgl_apply_camera_state(dict(saved_cam_state))
+                except Exception:
+                    pass
             self._paint_mgl()
+            if isinstance(saved_cam_state, dict):
+                try:
+                    self._mgl_apply_camera_state(dict(saved_cam_state))
+                except Exception:
+                    pass
             try:
                 if hasattr(self._mgl_ctx, "finish"):
                     self._mgl_ctx.finish()
@@ -4330,6 +4360,24 @@ class MGLRendererMixin:
             state["splat_scale"] = float(getattr(self, "_splat_scale", 1.0))
         except Exception:
             state["splat_scale"] = 1.0
+        try:
+            state["fps_camera_active"] = bool(getattr(self, "_fps_camera_active", False))
+        except Exception:
+            state["fps_camera_active"] = False
+        try:
+            state["fps_roll_locked"] = bool(getattr(self, "_mgl_orbit_locked", True))
+        except Exception:
+            state["fps_roll_locked"] = True
+        try:
+            fps_cam = getattr(self, "_fps_camera", None)
+            if fps_cam is not None:
+                state["fps_camera"] = {
+                    "position": [float(v) for v in getattr(fps_cam, "position", (0.0, 0.0, 0.0))],
+                    "forward": [float(v) for v in getattr(fps_cam, "forward", (0.0, 0.0, -1.0))],
+                    "up": [float(v) for v in getattr(fps_cam, "up", (0.0, 1.0, 0.0))],
+                }
+        except Exception:
+            pass
 
         # scene xforms (mesh + splat) for snapshot persistence
         try:
@@ -4665,6 +4713,36 @@ class MGLRendererMixin:
                 self._mgl_clip_far = float(clip_far)
                 if hasattr(self, "_mgl_clip_input") and self._mgl_clip_input is not None:
                     self._mgl_clip_input.setText(str(int(self._mgl_clip_far)))
+        except Exception:
+            pass
+        try:
+            if "fps_roll_locked" in state:
+                self._mgl_orbit_locked = bool(state.get("fps_roll_locked", True))
+        except Exception:
+            pass
+        try:
+            fps_state = state.get("fps_camera", None)
+            if isinstance(fps_state, dict) and np is not None:
+                fps_cam = getattr(self, "_fps_camera", None)
+                if fps_cam is None:
+                    try:
+                        from echograph.ui.fps_camera import FpsCamera
+
+                        fps_cam = FpsCamera()
+                        self._fps_camera = fps_cam
+                    except Exception:
+                        fps_cam = None
+                if fps_cam is not None:
+                    try:
+                        fps_cam.position = np.array(fps_state.get("position", (0.0, 0.0, 0.0)), dtype=np.float32)
+                        fps_cam.forward = np.array(fps_state.get("forward", (0.0, 0.0, -1.0)), dtype=np.float32)
+                        fps_cam.up = np.array(fps_state.get("up", (0.0, 1.0, 0.0)), dtype=np.float32)
+                        if hasattr(fps_cam, "_orthonormalize"):
+                            fps_cam._orthonormalize()
+                    except Exception:
+                        pass
+            if "fps_camera_active" in state:
+                self._fps_camera_active = bool(state.get("fps_camera_active", False))
         except Exception:
             pass
 

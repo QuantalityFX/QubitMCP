@@ -882,6 +882,7 @@ class RenderNodeWidget(QtWidgets.QWidget):
                         time.sleep(0.012)
                     except Exception:
                         pass
+            return None
         return self._grab_frame(glv)
 
     def _timeline_max_frame(self, glv, scene_name: str, project_path: str | None) -> int:
