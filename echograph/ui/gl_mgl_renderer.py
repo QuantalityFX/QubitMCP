@@ -1548,6 +1548,121 @@ class MGLRendererMixin:
             and (not is_fbx_payload)
             and (submeshes or vao is not None)
         )
+
+        def _render_wire_overlay(draw_geometry) -> None:
+            prev_depth_mask = None
+            prev_depth_func = None
+            prev_wireframe = None
+            prev_line_width = None
+            restore_cull = not bool(getattr(self, "_mgl_cull_enabled", False))
+            raw_gl = getattr(self, "_gl", None)
+            color_mask_disabled = False
+            try:
+                prev_depth_mask = getattr(self._mgl_ctx, "depth_mask", None)
+            except Exception:
+                prev_depth_mask = None
+            try:
+                prev_depth_func = getattr(self._mgl_ctx, "depth_func", None)
+            except Exception:
+                prev_depth_func = None
+            try:
+                prev_wireframe = bool(getattr(self._mgl_ctx, "wireframe", False))
+            except Exception:
+                prev_wireframe = False
+            try:
+                prev_line_width = float(getattr(self._mgl_ctx, "line_width", 1.0))
+            except Exception:
+                prev_line_width = None
+
+            try:
+                self._mgl_ctx.depth_mask = True
+            except Exception:
+                pass
+            try:
+                self._mgl_ctx.depth_func = "<="
+            except Exception:
+                pass
+            try:
+                self._mgl_ctx.wireframe = False
+            except Exception:
+                pass
+
+            try:
+                if raw_gl is not None and hasattr(raw_gl, "glColorMask"):
+                    raw_gl.glColorMask(False, False, False, False)
+                    color_mask_disabled = True
+            except Exception:
+                color_mask_disabled = False
+
+            try:
+                if color_mask_disabled:
+                    # Depth-only prepass so alpha-varying procedural materials still occlude hidden wire.
+                    self._mgl_apply_procedural_uniforms(None)
+                    self._mgl_prog["UseTexture"].value = 0
+                    self._mgl_prog["UseLighting"].value = 0
+                    self._mgl_prog["Color"].value = (0.0, 0.0, 0.0, 1.0)
+                    draw_geometry()
+            finally:
+                if color_mask_disabled:
+                    try:
+                        raw_gl.glColorMask(True, True, True, True)
+                    except Exception:
+                        pass
+
+            try:
+                self._mgl_ctx.depth_mask = False
+            except Exception:
+                pass
+            if restore_cull:
+                try:
+                    self._mgl_ctx.enable(moderngl.CULL_FACE)
+                except Exception:
+                    pass
+            try:
+                self._mgl_ctx.line_width = float(self._mgl_wire_line_width)
+            except Exception:
+                pass
+            try:
+                self._mgl_ctx.wireframe = True
+            except Exception:
+                pass
+            try:
+                self._mgl_prog["Color"].value = self._mgl_wire_color
+            except Exception:
+                pass
+            try:
+                draw_geometry()
+            finally:
+                try:
+                    self._mgl_ctx.wireframe = prev_wireframe
+                except Exception:
+                    pass
+                if prev_line_width is not None:
+                    try:
+                        self._mgl_ctx.line_width = prev_line_width
+                    except Exception:
+                        pass
+                if prev_depth_mask is not None:
+                    try:
+                        self._mgl_ctx.depth_mask = prev_depth_mask
+                    except Exception:
+                        pass
+                if prev_depth_func is not None:
+                    try:
+                        self._mgl_ctx.depth_func = prev_depth_func
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        self._mgl_ctx.depth_func = "<="
+                    except Exception:
+                        pass
+                if restore_cull:
+                    try:
+                        self._mgl_ctx.disable(moderngl.CULL_FACE)
+                    except Exception:
+                        pass
+
         if wire_overlay:
             try:
                 self._mgl_ctx.polygon_offset = (1.0, 1.0)
@@ -1579,27 +1694,13 @@ class MGLRendererMixin:
                     self._mgl_ctx.polygon_offset = (0.0, 0.0)
                 except Exception:
                     pass
-                try:
-                    self._mgl_ctx.line_width = float(self._mgl_wire_line_width)
-                except Exception:
-                    pass
-                self._mgl_ctx.wireframe = True
-                try:
-                    self._mgl_apply_procedural_uniforms(None)
-                    self._mgl_prog["UseTexture"].value = 0
-                    self._mgl_prog["UseLighting"].value = 0
-                    self._mgl_prog["Color"].value = self._mgl_wire_color
-                except Exception:
-                    pass
-                for sub in submeshes:
-                    sub_vao = sub.get("vao")
-                    if sub_vao is not None:
-                        sub_vao.render()
-                self._mgl_ctx.wireframe = False
-                try:
-                    self._mgl_ctx.line_width = 1.0
-                except Exception:
-                    pass
+                def _draw_submeshes() -> None:
+                    for sub in submeshes:
+                        sub_vao = sub.get("vao")
+                        if sub_vao is not None:
+                            sub_vao.render()
+
+                _render_wire_overlay(_draw_submeshes)
         else:
             color = payload.get("color") or self._mgl_mesh_color
             tex = manual_texture or payload.get("texture")
@@ -1623,24 +1724,7 @@ class MGLRendererMixin:
                     self._mgl_ctx.polygon_offset = (0.0, 0.0)
                 except Exception:
                     pass
-                try:
-                    self._mgl_ctx.line_width = float(self._mgl_wire_line_width)
-                except Exception:
-                    pass
-                self._mgl_ctx.wireframe = True
-                try:
-                    self._mgl_apply_procedural_uniforms(None)
-                    self._mgl_prog["UseTexture"].value = 0
-                    self._mgl_prog["UseLighting"].value = 0
-                    self._mgl_prog["Color"].value = self._mgl_wire_color
-                except Exception:
-                    pass
-                vao.render()
-                self._mgl_ctx.wireframe = False
-                try:
-                    self._mgl_ctx.line_width = 1.0
-                except Exception:
-                    pass
+                _render_wire_overlay(vao.render)
 
         overrides = None
         if owner:
@@ -2056,13 +2140,6 @@ class MGLRendererMixin:
                         self._mgl_ctx.enable(moderngl.DEPTH_TEST)
                     else:
                         self._mgl_ctx.disable(moderngl.DEPTH_TEST)
-                except Exception:
-                    pass
-                try:
-                    if _prev_depth_func is not None:
-                        self._mgl_ctx.depth_func = _prev_depth_func
-                    else:
-                        self._mgl_ctx.depth_func = "<="
                 except Exception:
                     pass
 
