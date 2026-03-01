@@ -654,6 +654,36 @@ class FxTrailWidget(QtWidgets.QWidget):
         if scene is None:
             return None, "", ""
 
+        def _choose_edge(item, prefer_ports=None):
+            try:
+                edges = list(scene._ordered_in_edges(item))
+            except Exception:
+                try:
+                    edges = list(scene._in_edges(item))
+                except Exception:
+                    edges = []
+            if not edges:
+                return None
+            preferred = {str(name).strip().lower() for name in (prefer_ports or []) if str(name).strip()}
+            if preferred:
+                for edge in edges:
+                    name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
+                    if (name or "").strip().lower() in preferred:
+                        return edge
+            for edge in edges:
+                name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
+                edge_name = (name or "").strip().lower()
+                if not preferred and edge_name == "instance":
+                    continue
+                if edge_name in {"mesh", "path", "source"}:
+                    return edge
+            for edge in edges:
+                name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
+                edge_name = (name or "").strip().lower()
+                if edge_name != "instance":
+                    return edge
+            return edges[0]
+
         def _trace(item, depth=0, visited=None):
             if item is None or depth > 8:
                 return None, "", ""
@@ -666,17 +696,13 @@ class FxTrailWidget(QtWidgets.QWidget):
             if model is None:
                 return None, "", ""
             kind = (getattr(model, "kind", "") or "").strip().lower()
-            if kind in {"switch", "fx", "fx_trail", "transforms", "mnaterial", "material", "texture", "texture_pro", "texture_layer", "uv_unwrap"}:
-                try:
-                    edges = list(scene._ordered_in_edges(item))
-                except Exception:
-                    try:
-                        edges = list(scene._in_edges(item))
-                    except Exception:
-                        edges = []
-                if edges:
-                    return _trace(getattr(edges[0], "src", None), depth + 1, visited)
+            if kind in {"switch", "fx", "fx_trail", "transforms", "mnaterial", "material", "texture", "texture_pro", "texture_layer", "uv_unwrap", "instance"}:
+                edge = _choose_edge(item, {"mesh", "path", "source"} if kind == "instance" else None)
+                if edge is not None:
+                    return _trace(getattr(edge, "src", None), depth + 1, visited)
             path = _param_value(model, "path")
+            if not path:
+                path = _param_value(model, "mesh") or _param_value(model, "source")
             return item, kind, path
 
         try:

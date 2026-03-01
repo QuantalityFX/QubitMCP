@@ -492,6 +492,17 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                     return edge
         return edges[0] if edges else None
 
+    def _pick_input_edge_strict(item, port_names=None):
+        edges = _ordered_in_edges(item)
+        wanted = {str(n).strip().lower() for n in (port_names or []) if str(n).strip()}
+        if not wanted:
+            return None
+        for edge in edges:
+            name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
+            if (name or "").strip().lower() in wanted:
+                return edge
+        return None
+
     def _parse_vec3(value: str, default):
         try:
             parts = [p.strip() for p in str(value or "").split(",")]
@@ -698,6 +709,153 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             xforms = raw_xforms
     except Exception:
         xforms = {}
+
+    def _build_instance_assets(instance_item, instance_model):
+        entries = []
+        instance_names = []
+        if instance_item is None or instance_model is None:
+            return entries, instance_names
+
+        count = _parse_int(_param_value(instance_model, "count") or "1", default=1, min_val=1, max_val=200)
+        prefix = (_param_value(instance_model, "prefix") or "").strip()
+        base_item, base_kind, base_path = _resolve_input_item(scene, instance_item, {"mesh", "path", "source"})
+        if not base_path:
+            return entries, instance_names
+
+        _set_param_value(instance_model, "path", base_path)
+        if not prefix:
+            base_name = ""
+            try:
+                base_model = getattr(base_item, "model", None) if base_item is not None else None
+                base_name = (getattr(base_model, "name", "") or "").strip()
+            except Exception:
+                base_name = ""
+            if not base_name:
+                base_name = "instance"
+            prefix = f"instance_{base_name}" if base_name else "instance"
+            _set_param_value(instance_model, "prefix", prefix)
+
+        owner_model = getattr(base_item, "model", None)
+        owner_kind = (base_kind or getattr(owner_model, "kind", "") or "").strip().lower()
+        owner_item = base_item
+        material_model = owner_model if owner_kind in _MATERIAL_KINDS else None
+        texture_model = owner_model
+        texture_kind = owner_kind
+        path = base_path
+
+        if owner_kind in _MATERIAL_KINDS:
+            upstream_item, upstream_kind, upstream_path = _resolve_input_item(scene, base_item)
+            if upstream_item is not None and getattr(upstream_item, "model", None) is not None:
+                owner_item = upstream_item
+                owner_model = getattr(upstream_item, "model", owner_model)
+                owner_kind = upstream_kind or owner_kind
+                texture_model = owner_model
+                texture_kind = owner_kind
+                if upstream_path:
+                    path = upstream_path
+
+        if owner_kind in _TEXTURE_KINDS:
+            upstream_item, upstream_kind, upstream_path = _resolve_input_item(scene, owner_item)
+            if upstream_item is not None and getattr(upstream_item, "model", None) is not None:
+                if upstream_kind == "uv_unwrap":
+                    if upstream_path:
+                        path = upstream_path
+                    upstream2_item, upstream2_kind, _ = _resolve_input_item(scene, upstream_item)
+                    if upstream2_item is not None and getattr(upstream2_item, "model", None) is not None:
+                        owner_model = getattr(upstream2_item, "model", owner_model)
+                        owner_kind = upstream2_kind or owner_kind
+                else:
+                    owner_item = upstream_item
+                    owner_model = getattr(upstream_item, "model", owner_model)
+                    owner_kind = upstream_kind or owner_kind
+                    if upstream_path:
+                        path = upstream_path
+        elif owner_kind == "uv_unwrap":
+            upstream_item, upstream_kind, upstream_path = _resolve_input_item(scene, owner_item)
+            if upstream_item is not None and getattr(upstream_item, "model", None) is not None:
+                owner_item = upstream_item
+                owner_model = getattr(upstream_item, "model", owner_model)
+                owner_kind = upstream_kind or owner_kind
+                if not path and upstream_path:
+                    path = upstream_path
+        elif owner_kind == "transforms":
+            upstream_item, upstream_kind, upstream_path = _resolve_input_item(scene, owner_item)
+            if upstream_path:
+                path = upstream_path
+
+        if not path:
+            return entries, instance_names
+        ext = Path(path).suffix.lower()
+        if ext not in SUPPORTED_EXTS:
+            return entries, instance_names
+
+        texture_provider = None
+        if texture_kind == "texture_pro":
+            try:
+                texture_provider = getattr(texture_model, "_texture_pro_provider", None)
+            except Exception:
+                texture_provider = None
+        elif texture_kind == "texture_layer":
+            try:
+                texture_provider = getattr(texture_model, "_texture_layer_provider", None)
+            except Exception:
+                texture_provider = None
+
+        if texture_kind in ("texture", "texture_pro"):
+            texture = _param_value(texture_model, "texture")
+        elif texture_kind == "texture_layer":
+            texture = _param_value(texture_model, "texture") if ext == ".obj" else ""
+        else:
+            texture = _param_value(owner_model, "texture") if ext == ".obj" else ""
+
+        xform_offset = owner_kind in ("split_volume", "volume_selector")
+        if not xform_offset:
+            try:
+                if _chain_has_kind(base_item, {"split_volume", "volume_selector"}):
+                    xform_offset = True
+            except Exception:
+                pass
+        transform_model = _find_upstream_transform(base_item)
+        if transform_model is not None and path:
+            src_path = _param_value(transform_model, "source")
+            out_path = _param_value(transform_model, "path")
+            norm_path = _norm_path(path)
+            if norm_path == _norm_path(src_path) and norm_path != _norm_path(out_path):
+                pos = _parse_vec3(_param_value(transform_model, "pos"), (0.0, 0.0, 0.0))
+                rot = _parse_vec3(_param_value(transform_model, "rot"), (0.0, 0.0, 0.0))
+                scl = _parse_vec3(_param_value(transform_model, "scl"), (1.0, 1.0, 1.0))
+                base_xf = {"pos": list(pos), "rot": list(rot), "scl": list(scl)}
+            else:
+                base_xf = None
+                xform_offset = True
+        else:
+            base_xf = None
+
+        material = _material_payload(material_model)
+        material_debug_on = bool(material_model is not None and _material_debug_enabled(material_model))
+
+        for idx in range(int(count)):
+            inst_name = f"{prefix}_{idx + 1}"
+            xf = _lookup_xform(xforms, inst_name)
+            entry = {
+                "path": path,
+                "texture": texture,
+                "node": inst_name,
+                "ext": ext,
+                "visible": inst_name not in hidden,
+                "xform": xf if isinstance(xf, dict) else base_xf,
+            }
+            if material is not None:
+                entry["material"] = dict(material)
+            if material_debug_on:
+                entry["debug_log"] = True
+            if xform_offset:
+                entry["xform_offset"] = True
+            if texture_provider is not None:
+                entry["texture_provider"] = texture_provider
+            entries.append(entry)
+            instance_names.append(inst_name)
+        return entries, instance_names
     try:
         in_edges = list(scene._ordered_in_edges(node_item))
     except Exception:
@@ -833,148 +991,8 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             continue
 
         if kind == "instance":
-            count = _parse_int(_param_value(model, "count") or "1", default=1, min_val=1, max_val=200)
-            prefix = (_param_value(model, "prefix") or "").strip()
-            base_item, base_kind, base_path = _resolve_input_item(scene, src_item, {"mesh", "path", "source"})
-            if not base_path:
-                continue
-            # stash resolved path on the instance node for compatibility/debugging
-            _set_param_value(model, "path", base_path)
-            if not prefix:
-                base_name = ""
-                try:
-                    base_model = getattr(base_item, "model", None) if base_item is not None else None
-                    base_name = (getattr(base_model, "name", "") or "").strip()
-                except Exception:
-                    base_name = ""
-                if not base_name:
-                    base_name = "instance"
-                prefix = f"instance_{base_name}" if base_name else "instance"
-                _set_param_value(model, "prefix", prefix)
-
-            owner_model = getattr(base_item, "model", None)
-            owner_kind = (base_kind or getattr(owner_model, "kind", "") or "").strip().lower()
-            owner_item = base_item
-            material_model = owner_model if owner_kind in _MATERIAL_KINDS else None
-            texture_model = owner_model
-            texture_kind = owner_kind
-            path = base_path
-
-            if owner_kind in _MATERIAL_KINDS:
-                upstream_item, upstream_kind, upstream_path = _resolve_input_item(scene, base_item)
-                if upstream_item is not None and getattr(upstream_item, "model", None) is not None:
-                    owner_item = upstream_item
-                    owner_model = getattr(upstream_item, "model", owner_model)
-                    owner_kind = upstream_kind or owner_kind
-                    texture_model = owner_model
-                    texture_kind = owner_kind
-                    if upstream_path:
-                        path = upstream_path
-
-            if owner_kind in _TEXTURE_KINDS:
-                upstream_item, upstream_kind, upstream_path = _resolve_input_item(scene, owner_item)
-                if upstream_item is not None and getattr(upstream_item, "model", None) is not None:
-                    if upstream_kind == "uv_unwrap":
-                        if upstream_path:
-                            path = upstream_path
-                        upstream2_item, upstream2_kind, _ = _resolve_input_item(scene, upstream_item)
-                        if upstream2_item is not None and getattr(upstream2_item, "model", None) is not None:
-                            owner_model = getattr(upstream2_item, "model", owner_model)
-                            owner_kind = upstream2_kind or owner_kind
-                    else:
-                        owner_item = upstream_item
-                        owner_model = getattr(upstream_item, "model", owner_model)
-                        owner_kind = upstream_kind or owner_kind
-                        if upstream_path:
-                            path = upstream_path
-            elif owner_kind == "uv_unwrap":
-                upstream_item, upstream_kind, upstream_path = _resolve_input_item(scene, owner_item)
-                if upstream_item is not None and getattr(upstream_item, "model", None) is not None:
-                    owner_item = upstream_item
-                    owner_model = getattr(upstream_item, "model", owner_model)
-                    owner_kind = upstream_kind or owner_kind
-                    if not path and upstream_path:
-                        path = upstream_path
-            elif owner_kind == "transforms":
-                upstream_item, upstream_kind, upstream_path = _resolve_input_item(scene, owner_item)
-                if upstream_path:
-                    path = upstream_path
-
-            if not path:
-                continue
-            ext = Path(path).suffix.lower()
-            if ext not in SUPPORTED_EXTS:
-                continue
-
-            texture_provider = None
-            if texture_kind == "texture_pro":
-                try:
-                    texture_provider = getattr(texture_model, "_texture_pro_provider", None)
-                except Exception:
-                    texture_provider = None
-            elif texture_kind == "texture_layer":
-                try:
-                    texture_provider = getattr(texture_model, "_texture_layer_provider", None)
-                except Exception:
-                    texture_provider = None
-
-            if texture_kind in ("texture", "texture_pro"):
-                texture = _param_value(texture_model, "texture")
-            elif texture_kind == "texture_layer":
-                texture = _param_value(texture_model, "texture") if ext == ".obj" else ""
-            else:
-                texture = _param_value(owner_model, "texture") if ext == ".obj" else ""
-
-            wire_only = False
-            is_volume = False
-            xform_offset = owner_kind in ("split_volume", "volume_selector")
-            if not xform_offset:
-                try:
-                    if _chain_has_kind(base_item, {"split_volume", "volume_selector"}):
-                        xform_offset = True
-                except Exception:
-                    pass
-            transform_model = _find_upstream_transform(base_item)
-            if transform_model is not None and path:
-                src_path = _param_value(transform_model, "source")
-                out_path = _param_value(transform_model, "path")
-                norm_path = _norm_path(path)
-                if norm_path == _norm_path(src_path) and norm_path != _norm_path(out_path):
-                    # use transforms node params as base xform
-                    pos = _parse_vec3(_param_value(transform_model, "pos"), (0.0, 0.0, 0.0))
-                    rot = _parse_vec3(_param_value(transform_model, "rot"), (0.0, 0.0, 0.0))
-                    scl = _parse_vec3(_param_value(transform_model, "scl"), (1.0, 1.0, 1.0))
-                    base_xf = {"pos": list(pos), "rot": list(rot), "scl": list(scl)}
-                else:
-                    base_xf = None
-                    xform_offset = True
-            else:
-                base_xf = None
-
-            for idx in range(int(count)):
-                inst_name = f"{prefix}_{idx + 1}"
-                xf = _lookup_xform(xforms, inst_name)
-                entry = {
-                    "path": path,
-                    "texture": texture,
-                    "node": inst_name,
-                    "ext": ext,
-                    "visible": inst_name not in hidden,
-                    "xform": xf if isinstance(xf, dict) else base_xf,
-                }
-                material = _material_payload(material_model)
-                if material is not None:
-                    entry["material"] = material
-                if material_model is not None and _material_debug_enabled(material_model):
-                    entry["debug_log"] = True
-                if xform_offset:
-                    entry["xform_offset"] = True
-                if wire_only:
-                    entry["wire_only"] = True
-                    entry["volume"] = is_volume
-                if texture_provider is not None:
-                    entry["texture_provider"] = texture_provider
-                assets.append(entry)
+            inst_entries, _inst_names = _build_instance_assets(src_item, model)
+            assets.extend(inst_entries)
             continue
 
         path = _param_value(model, "path")
@@ -1029,7 +1047,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                 try:
                     from nodes.fx import spec as _fx_spec  # type: ignore
                     fx_asset = _fx_spec.trail_asset_config_from_model(model)
-                    inst_edge = _pick_input_edge(src_item, {"instance"})
+                    inst_edge = _pick_input_edge_strict(src_item, {"instance"})
                     inst_info = _resolve_fx_instance_asset(getattr(inst_edge, "src", None) if inst_edge is not None else None)
                     inst_path = str((inst_info or {}).get("path") or "").strip()
                     if inst_path:
@@ -1056,6 +1074,42 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                     fx_asset = None
                     if fx_debug_on:
                         _fx_log(f"[scene_spec] config error node={src_name or kind} err={exc!r}")
+        if kind in ("fx", "fx_trail") and owner_kind == "instance" and owner_item is not None:
+            inst_entries, inst_names = _build_instance_assets(owner_item, owner_model)
+            if not inst_entries:
+                continue
+            assets.extend(inst_entries)
+            if isinstance(fx_asset, dict):
+                base_aliases = []
+                seen_aliases = set()
+                for alias in [str(getattr(owner_model, "name", "") or "").strip()]:
+                    if alias and alias.lower() not in seen_aliases:
+                        seen_aliases.add(alias.lower())
+                        base_aliases.append(alias)
+                for idx, inst_name in enumerate(inst_names):
+                    aliases = [inst_name]
+                    for alias in base_aliases:
+                        if alias.lower() != inst_name.lower():
+                            aliases.append(alias)
+                    fx_entry = dict(fx_asset)
+                    fx_entry.update(
+                        {
+                            "kind": "fx_trail",
+                            "node": f"{(src_name or inst_name)}_fx_{idx + 1}",
+                            "instance_path": str(fx_entry.get("instance_path") or "").strip(),
+                            "target_owner": inst_name,
+                            "target_owner_aliases": aliases,
+                            "visible": inst_name not in hidden,
+                        }
+                    )
+                    assets.append(fx_entry)
+                    if fx_debug_on:
+                        _fx_log(
+                            f"[scene_spec] append instance trail node={fx_entry['node']} target_owner={inst_name} "
+                            f"source_instance={str(getattr(owner_model, 'name', '') or '').strip() or '<instance>'} "
+                            f"enabled={bool(fx_entry.get('enabled', True))} global={bool(fx_entry.get('global_space', False))}"
+                        )
+            continue
         if kind in _MATERIAL_KINDS and owner_kind in _TEXTURE_KINDS:
             upstream_item, upstream_kind, upstream_path = _resolve_input_item(scene, owner_item)
             if upstream_item is not None and getattr(upstream_item, "model", None) is not None:
