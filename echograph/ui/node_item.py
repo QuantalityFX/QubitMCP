@@ -1490,8 +1490,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
             node_w = self._BASE_W
         elif kind == "fx":
             # Match the FX embedded widget and leave frame margin so rounded corners stay visible.
-            body_h = 522
-            node_w = max(self._BASE_W, 308)
+            body_h = 506
+            node_w = max(self._BASE_W, 296)
         elif kind in ("mnaterial", "material"):
             # Match the material embedded widget and keep visible border around it.
             body_h = 170
@@ -2783,7 +2783,22 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         except Exception:
                             edges = []
                     if edges:
-                        return _trace(getattr(edges[0], "src", None), depth + 1, visited)
+                        chosen = None
+                        for edge in edges:
+                            name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
+                            if (name or "").strip().lower() in {"mesh", "path", "source"}:
+                                chosen = edge
+                                break
+                        if chosen is None:
+                            for edge in edges:
+                                name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
+                                edge_name = (name or "").strip().lower()
+                                if edge_name != "instance":
+                                    chosen = edge
+                                    break
+                        if chosen is None:
+                            chosen = edges[0]
+                        return _trace(getattr(chosen, "src", None), depth + 1, visited)
                 path = ""
                 for p in (m.params or []):
                     if (p.get("name") or "").strip().lower() == "path":

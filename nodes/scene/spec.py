@@ -370,7 +370,22 @@ def _resolve_input_item(scene, node_item, port_names=None):
                 except Exception:
                     edges = []
             if edges:
-                return _trace(getattr(edges[0], "src", None), depth + 1, visited)
+                chosen = None
+                for edge in edges:
+                    name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
+                    if (name or "").strip().lower() in {"mesh", "path", "source"}:
+                        chosen = edge
+                        break
+                if chosen is None:
+                    for edge in edges:
+                        name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
+                        edge_name = (name or "").strip().lower()
+                        if edge_name != "instance":
+                            chosen = edge
+                            break
+                if chosen is None:
+                    chosen = edges[0]
+                return _trace(getattr(chosen, "src", None), depth + 1, visited)
         path = _param_value(m, "path")
         if not path:
             path = _param_value(m, "mesh") or _param_value(m, "source")
