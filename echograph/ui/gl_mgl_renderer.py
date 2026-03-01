@@ -1265,18 +1265,29 @@ class MGLRendererMixin:
             lifespan = max(1, int(payload.get("lifespan", int(samples) * int(frame_step))))
         except Exception:
             lifespan = max(1, int(samples) * int(frame_step))
-        sample_limit = max(int(samples), int(math.ceil(float(max(1, lifespan)) / float(max(1, frame_step)))))
+        age_values = []
+        seen_ages = set()
+        if int(samples) <= 1:
+            age_values = [0]
+        else:
+            denom = float(max(1, int(samples) - 1))
+            for idx in range(int(samples)):
+                raw_age = (float(idx) * float(max(0, int(lifespan) - 1))) / denom
+                quant_age = int(round(raw_age / float(max(1, frame_step)))) * int(frame_step)
+                quant_age = max(0, min(int(lifespan) - 1, int(quant_age)))
+                if quant_age in seen_ages:
+                    continue
+                seen_ages.add(quant_age)
+                age_values.append(int(quant_age))
+        age_values.sort()
         entries = []
-        for idx in range(int(sample_limit)):
-            sample_age = idx * int(frame_step)
-            if sample_age >= int(lifespan):
-                break
+        for sample_age in age_values:
             sample_frame = int(frame) - sample_age
             if sample_frame < 0:
-                break
+                continue
             pos = self._mgl_fx_eval_owner_pos(active_owner, sample_frame)
             if pos is None:
-                if idx == 0:
+                if not entries:
                     continue
                 break
             vec = np.array(pos, dtype=np.float32)

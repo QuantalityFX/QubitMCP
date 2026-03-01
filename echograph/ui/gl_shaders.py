@@ -387,9 +387,9 @@ void main() {
             vec3 scene_rgb0 = texture(SceneColorTex, warped_uv0).rgb;
             vec3 scene_rgb1 = texture(SceneColorTex, warped_uv1).rgb;
             vec3 scene_rgb = mix(scene_rgb0, scene_rgb1, 0.35);
-            vec3 scene_delta = scene_rgb - scene_center;
-            material_rgb = clamp(material_rgb + scene_delta * (0.55 * refraction), 0.0, 1.0);
-            material_rgb = mix(material_rgb, clamp(material_rgb * mix(vec3(1.0), tint, 0.22), 0.0, 1.0), 0.12 + edge * 0.08);
+            vec3 transmitted_rgb = mix(scene_center, scene_rgb, clamp(0.72 + refraction * 0.28, 0.0, 1.0));
+            transmitted_rgb *= mix(vec3(1.0), tint, 0.24 + transmission * 0.26);
+            material_rgb = mix(material_rgb, clamp(transmitted_rgb, 0.0, 1.0), clamp(transmission * (0.82 + refraction * 0.12), 0.0, 0.92));
         }
         vec3 edge_rgb = clamp(mix(material_rgb, tint, 0.30), 0.0, 1.0);
         material_rgb = mix(material_rgb, edge_rgb, clamp(edge * (0.22 + refraction * 0.14), 0.0, 0.34));
