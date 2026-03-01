@@ -853,7 +853,9 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._timeline_icon_loop_on = None
         self._timeline_icon_loop_off = None
         self._timeline_keyframe_handle_path = None
+        self._timeline_texture_seed = 0
         self._timeline_frame_spin = None
+        self._timeline_texture_seed_spin = None
         self._timeline_frame_slider = None
         self._timeline_key_count_label = None
         self._timeline_mark_in_btn = None
@@ -936,6 +938,9 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 speed_mult = settings.get("fly_speed_mult", None)
                 if speed_mult is not None:
                     self._apply_fly_speed_multiplier(float(speed_mult), sync_ui=True, sync_scene=False)
+                texture_seed = settings.get("timeline_texture_seed", None)
+                if texture_seed is not None:
+                    self._apply_timeline_texture_seed(int(texture_seed), sync_ui=True, sync_scene=False)
         except Exception:
             pass
         try:
@@ -1544,6 +1549,55 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                         settings = {}
                     settings = dict(settings)
                     settings["fly_speed_mult"] = float(mult)
+                    scene._view_settings = settings
+                except Exception:
+                    pass
+        self.update()
+
+    def _timeline_on_texture_seed_changed(self, value: int | None = None) -> None:
+        if value is None:
+            spin = getattr(self, "_timeline_texture_seed_spin", None)
+            if spin is not None:
+                try:
+                    value = int(spin.value())
+                except Exception:
+                    value = None
+        if value is None:
+            return
+        self._apply_timeline_texture_seed(int(value), sync_ui=False, sync_scene=True)
+
+    def _apply_timeline_texture_seed(
+        self,
+        seed: int,
+        *,
+        sync_ui: bool = True,
+        sync_scene: bool = True,
+    ) -> None:
+        try:
+            seed = max(0, min(999999, int(seed)))
+        except Exception:
+            seed = 0
+        self._timeline_texture_seed = int(seed)
+        if sync_ui:
+            spin = getattr(self, "_timeline_texture_seed_spin", None)
+            if spin is not None:
+                try:
+                    spin.blockSignals(True)
+                    spin.setValue(int(seed))
+                finally:
+                    try:
+                        spin.blockSignals(False)
+                    except Exception:
+                        pass
+        if sync_scene:
+            scene = getattr(self, "_scene", None)
+            if scene is not None:
+                try:
+                    settings = getattr(scene, "_view_settings", None)
+                    if not isinstance(settings, dict):
+                        settings = {}
+                    settings = dict(settings)
+                    settings["timeline_texture_seed"] = int(seed)
                     scene._view_settings = settings
                 except Exception:
                     pass

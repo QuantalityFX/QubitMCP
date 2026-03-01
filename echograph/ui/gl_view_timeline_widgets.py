@@ -268,6 +268,7 @@ class GraphGLTimelineWidgetsMixin:
             has_mark_in_btn = isinstance(getattr(self, "_timeline_mark_in_btn", None), QtWidgets.QPushButton)
             has_mark_out_btn = isinstance(getattr(self, "_timeline_mark_out_btn", None), QtWidgets.QPushButton)
             has_loop_btn = isinstance(getattr(self, "_timeline_loop_btn", None), QtWidgets.QPushButton)
+            has_seed_spin = isinstance(getattr(self, "_timeline_texture_seed_spin", None), QtWidgets.QSpinBox)
             has_scroll = getattr(self, "_timeline_scrollbar", None) is not None
             has_spacer = getattr(self, "_timeline_left_header_spacer", None) is not None
             has_rows = bool(getattr(self, "_timeline_track_rows", []))
@@ -293,6 +294,7 @@ class GraphGLTimelineWidgetsMixin:
                 and has_mark_in_btn
                 and has_mark_out_btn
                 and has_loop_btn
+                and has_seed_spin
                 and has_scroll
                 and has_spacer
                 and has_rows
@@ -347,6 +349,7 @@ class GraphGLTimelineWidgetsMixin:
             self._timeline_handle_untied_btn = None
             self._timeline_frame_slider = None
             self._timeline_frame_spin = None
+            self._timeline_texture_seed_spin = None
             self._timeline_key_count_label = None
             self._timeline_tick_labels = []
             self._timeline_target_label = None
@@ -487,6 +490,18 @@ class GraphGLTimelineWidgetsMixin:
             header.addWidget(material_btn, 0)
             self._timeline_material_live_btn = material_btn
             self._update_timeline_material_live_button()
+
+            seed_lbl = QtWidgets.QLabel("Seed", panel)
+            header.addWidget(seed_lbl, 0)
+
+            seed_spin = QtWidgets.QSpinBox(panel)
+            seed_spin.setRange(0, 999999)
+            seed_spin.setValue(int(getattr(self, "_timeline_texture_seed", 0) or 0))
+            seed_spin.setFixedWidth(92)
+            seed_spin.setToolTip("Shared procedural texture seed for the scene view.")
+            seed_spin.valueChanged.connect(self._timeline_on_texture_seed_changed)
+            header.addWidget(seed_spin, 0)
+            self._timeline_texture_seed_spin = seed_spin
 
             curves_btn = QtWidgets.QPushButton("Curves", panel)
             curves_btn.setObjectName("GLTimelineCurvesButton")

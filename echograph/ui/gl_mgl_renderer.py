@@ -245,6 +245,83 @@ class MGLRendererMixin:
         return item
 
     @staticmethod
+    def _mgl_edge_vertices_from_mesh(
+        points: NDArray,
+        indices: Optional[NDArray] = None,
+        weld_eps: float = 1.0e-5,
+    ) -> Optional[NDArray]:
+        if np is None or points is None:
+            return None
+        try:
+            pos_np = np.asarray(points, dtype="f4").reshape(-1, 3)
+        except Exception:
+            return None
+        if pos_np.size == 0 or pos_np.shape[0] < 3:
+            return np.zeros((0, 3), dtype="f4")
+
+        if indices is None or not getattr(indices, "size", 0):
+            tri_idx = np.arange(pos_np.shape[0], dtype="i4")
+        else:
+            try:
+                tri_idx = np.asarray(indices, dtype="i4").ravel()
+            except Exception:
+                tri_idx = np.arange(pos_np.shape[0], dtype="i4")
+        tri_count = int((tri_idx.size // 3) * 3)
+        if tri_count < 3:
+            return np.zeros((0, 3), dtype="f4")
+        tri_idx = tri_idx[:tri_count].reshape(-1, 3)
+
+        scale = 1.0 / max(abs(float(weld_eps)), 1.0e-8)
+        canon_root: Dict[Tuple[int, int, int], int] = {}
+        canon_idx = np.empty(pos_np.shape[0], dtype="i4")
+        for idx, pos in enumerate(pos_np):
+            key = (
+                int(round(float(pos[0]) * scale)),
+                int(round(float(pos[1]) * scale)),
+                int(round(float(pos[2]) * scale)),
+            )
+            root = canon_root.get(key)
+            if root is None:
+                root = int(idx)
+                canon_root[key] = root
+            canon_idx[idx] = int(root)
+
+        edge_keys = set()
+        line_pos: List[float] = []
+        for tri in tri_idx:
+            try:
+                a0 = int(canon_idx[int(tri[0])])
+                b0 = int(canon_idx[int(tri[1])])
+                c0 = int(canon_idx[int(tri[2])])
+            except Exception:
+                continue
+            for a, b in ((a0, b0), (b0, c0), (c0, a0)):
+                if a == b:
+                    continue
+                key = (a, b) if a < b else (b, a)
+                if key in edge_keys:
+                    continue
+                edge_keys.add(key)
+                try:
+                    pa = pos_np[key[0]]
+                    pb = pos_np[key[1]]
+                except Exception:
+                    continue
+                line_pos.extend(
+                    [
+                        float(pa[0]),
+                        float(pa[1]),
+                        float(pa[2]),
+                        float(pb[0]),
+                        float(pb[1]),
+                        float(pb[2]),
+                    ]
+                )
+        if not line_pos:
+            return np.zeros((0, 3), dtype="f4")
+        return np.asarray(line_pos, dtype="f4").reshape(-1, 3)
+
+    @staticmethod
     def _mgl_load_obj_edge_vertices(path: Path) -> NDArray:
         if np is None:
             raise RuntimeError("numpy unavailable")
@@ -4161,6 +4238,21 @@ class MGLRendererMixin:
             return None
         return None
 
+    def _mgl_proc_seed_value(self, proc_state: Optional[dict]) -> float:
+        base_seed = 0.0
+        if isinstance(proc_state, dict):
+            try:
+                base_seed = float(proc_state.get("seed", 0.0) or 0.0)
+            except Exception:
+                base_seed = 0.0
+        try:
+            override_seed = int(getattr(self, "_timeline_texture_seed", 0) or 0)
+        except Exception:
+            override_seed = 0
+        if override_seed != 0:
+            return float(override_seed)
+        return float(base_seed)
+
     def _mgl_ensure_proc_glyph(self, state: dict) -> Optional[object]:
         if self._mgl_ctx is None or not isinstance(state, dict):
             return None
@@ -4264,7 +4356,7 @@ class MGLRendererMixin:
             except Exception:
                 off_y = 0.0
             _set_uniform(f"ProcOffset{suffix}", (float(off_x), float(off_y)))
-            _set_uniform(f"ProcSeed{suffix}", float(proc_state.get("seed", 0.0) or 0.0))
+            _set_uniform(f"ProcSeed{suffix}", float(self._mgl_proc_seed_value(proc_state)))
             speed_val = proc_state.get("speed", 1.0)
             if speed_val is None:
                 speed_val = 1.0
@@ -8571,11 +8663,13 @@ class MGLRendererMixin:
                             normals[i:i + 3] = n
 
                 model_item = None
+                wire_points = None
                 if mesh is not None:
                     mesh.update_normals()
                     points = np.array(mesh.points(), dtype="f4")
                     normals = np.array(mesh.vertex_normals(), dtype="f4")
                     indices = np.array(mesh.face_vertex_indices(), dtype="u4").ravel()
+                    wire_points = self._mgl_edge_vertices_from_mesh(points, indices)
                     entry = self._mgl_build_mesh_entry(points, normals, None, indices)
                     if entry is None:
                         if material is not None:
@@ -8691,7 +8785,21 @@ class MGLRendererMixin:
                                     pass
                                 bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, mins, maxs)
                                 has_mesh_bounds = True
+                        wire_sets = []
+                        for sub in mesh_arrays.submeshes:
+                            sub_points = getattr(sub, "points", None)
+                            if sub_points is None or not getattr(sub_points, "size", 0):
+                                continue
+                            sub_lines = self._mgl_edge_vertices_from_mesh(sub_points)
+                            if sub_lines is not None and getattr(sub_lines, "size", 0):
+                                wire_sets.append(sub_lines)
+                        if wire_sets:
+                            try:
+                                wire_points = np.concatenate(wire_sets, axis=0).astype("f4", copy=False)
+                            except Exception:
+                                wire_points = wire_sets[0]
                     else:
+                        wire_points = self._mgl_edge_vertices_from_mesh(points)
                         entry = self._mgl_build_mesh_entry(points, normals, uvs)
                         if entry is None:
                             if material is not None:
@@ -8777,6 +8885,7 @@ class MGLRendererMixin:
                             pass
                         bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, mins, maxs)
                         has_mesh_bounds = True
+                    wire_item = None
                     if ext in (".obj", ".fbx"):
                         if ext == ".obj":
                             wire_item = self._mgl_add_obj_wire_item(
@@ -8794,9 +8903,18 @@ class MGLRendererMixin:
                                 owner=owner,
                                 path_key=path_key,
                             )
-                        if wire_item is not None:
-                            scene.add(wire_item)
-                            model_item.payload["edge_wire"] = True
+                    elif wire_points is not None and getattr(wire_points, "size", 0):
+                        wire_item = self._mgl_add_wire_item_from_points(
+                            name=f"{path.name}-wire",
+                            line_points=wire_points,
+                            visible=bool(self._mgl_wireframe) and visible,
+                            tag="scene-wire",
+                            owner=owner,
+                            path_key=path_key,
+                        )
+                    if wire_item is not None:
+                        scene.add(wire_item)
+                        model_item.payload["edge_wire"] = True
 
             self._mgl_mesh_vertex_count = int(total_indices)
             if first_mesh_path:
