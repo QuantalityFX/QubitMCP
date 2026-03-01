@@ -1407,28 +1407,6 @@ class MGLRendererMixin:
             return center_vec - np.asarray(prev_center, dtype=np.float32)
         return np.array([0.0, 0.0, 1.0], dtype=np.float32)
 
-    def _mgl_fx_mesh_orient_from_tangent(self, tangent):
-        if np is None:
-            return None
-        axis_u, axis_v = self._mgl_fx_ring_axes_from_tangent(tangent)
-        if axis_u is None or axis_v is None:
-            return None
-        try:
-            axis_w = np.asarray(tangent, dtype=np.float32)
-            wlen = float(np.linalg.norm(axis_w))
-        except Exception:
-            axis_w = np.array([0.0, 0.0, 1.0], dtype=np.float32)
-            wlen = 0.0
-        if wlen <= 1.0e-6:
-            axis_w = np.array([0.0, 0.0, 1.0], dtype=np.float32)
-        else:
-            axis_w = axis_w / float(wlen)
-        orient = np.eye(4, dtype=np.float32)
-        orient[0, 0:3] = np.asarray(axis_u, dtype=np.float32)
-        orient[1, 0:3] = np.asarray(axis_v, dtype=np.float32)
-        orient[2, 0:3] = np.asarray(axis_w, dtype=np.float32)
-        return orient
-
     def _mgl_timeline_owner_keys_map(self, owner: str):
         key = str(owner or "").strip()
         if not key:
@@ -2233,9 +2211,8 @@ class MGLRendererMixin:
             return m
 
         base_rot_mat = _rx(-float(base_rot[0])) @ _ry(-float(base_rot[1])) @ _rz(-float(base_rot[2]))
-        count = len(entries)
 
-        for idx, entry in enumerate(entries):
+        for entry in entries:
             phase_t = self._mgl_fx_profile_phase(
                 payload,
                 int(entry.get("emit_index", 0)),
@@ -2248,41 +2225,10 @@ class MGLRendererMixin:
             if uniform_scale <= 1.0e-5:
                 continue
             center = entry["center"]
-            prev_center = entries[idx - 1]["center"] if idx > 0 else None
-            next_center = entries[idx + 1]["center"] if idx < (count - 1) else None
-            if global_space:
-                tangent = self._mgl_fx_tangent_for_sample(
-                    payload,
-                    active_owner,
-                    float(entry.get("frame", frame)),
-                    prev_center,
-                    next_center,
-                )
-            else:
-                if count == 1:
-                    tangent = np.array([0.0, 0.0, 1.0], dtype=np.float32)
-                elif idx == 0:
-                    tangent = (
-                        np.asarray(next_center, dtype=np.float32) - np.asarray(center, dtype=np.float32)
-                        if next_center is not None
-                        else np.array([0.0, 0.0, 1.0], dtype=np.float32)
-                    )
-                elif idx == (count - 1):
-                    tangent = (
-                        np.asarray(center, dtype=np.float32) - np.asarray(prev_center, dtype=np.float32)
-                        if prev_center is not None
-                        else np.array([0.0, 0.0, 1.0], dtype=np.float32)
-                    )
-                else:
-                    tangent = np.asarray(next_center, dtype=np.float32) - np.asarray(prev_center, dtype=np.float32)
-            orient_mat = self._mgl_fx_mesh_orient_from_tangent(tangent)
-            if orient_mat is None:
-                orient_mat = np.eye(4, dtype=np.float32)
-            rot_mat = base_rot_mat @ orient_mat
             normalized_scale = float(uniform_scale) / float(pivot_radius)
             model = (
                 _t(-float(pivot_center[0]), -float(pivot_center[1]), -float(pivot_center[2]))
-                @ rot_mat
+                @ base_rot_mat
                 @ _s(
                     float(base_scl[0]) * normalized_scale,
                     float(base_scl[1]) * normalized_scale,
@@ -2336,7 +2282,6 @@ class MGLRendererMixin:
             repr(payload.get("age_scale_points")),
             tuple(self._mgl_fx_owner_candidates(payload)),
             instance_path,
-            repr(dict(payload.get("instance_xform") or {})),
             repr(dict(payload.get("instance_material") or {})),
             str(payload.get("instance_texture") or ""),
             id(payload.get("instance_texture_provider")) if payload.get("instance_texture_provider") is not None else None,
