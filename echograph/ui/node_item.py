@@ -2515,6 +2515,16 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     f.write(f"{ts} {msg}\n")
             except Exception:
                 pass
+        def _fx_log(msg: str) -> None:
+            try:
+                root = Path(__file__).resolve().parents[2]
+                log_dir = root / "logs"
+                log_dir.mkdir(parents=True, exist_ok=True)
+                ts = time.strftime("%Y-%m-%d %H:%M:%S")
+                with (log_dir / "fx_trail_debug.log").open("a", encoding="utf-8") as f:
+                    f.write(f"{ts} {msg}\n")
+            except Exception:
+                pass
         sc = self.scene()
         if sc is None:
             _scene_log("collect_scene_assets abort: no scene")
@@ -2690,6 +2700,30 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 src_item = getattr(chosen, "src", None)
                 return _trace(src_item, 0, set())
             return None, "", ""
+
+        def _fx_target_owner_aliases(owner_item, owner_model, owner_kind):
+            aliases = []
+            seen = set()
+
+            def _add(name):
+                text = str(name or "").strip()
+                if not text:
+                    return
+                key = text.lower()
+                if key in seen:
+                    return
+                seen.add(key)
+                aliases.append(text)
+
+            _add(getattr(owner_model, "name", "") if owner_model is not None else "")
+            if (owner_kind or "").strip().lower() == "transforms" and owner_item is not None:
+                try:
+                    base_item, _base_kind, _base_path = _resolve_input_item(owner_item)
+                except Exception:
+                    base_item = None
+                base_model = getattr(base_item, "model", None) if base_item is not None else None
+                _add(getattr(base_model, "name", "") if base_model is not None else "")
+            return aliases
         try:
             in_edges = list(sc._ordered_in_edges(self))
         except Exception:
@@ -2940,6 +2974,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     assets.append(asset)
                     _scene_log(f"edge[{edge_idx}] instance add asset node={inst_name} path={inst_path!r}")
                 continue
+            owner_item = src_item
             owner_model = model
             owner_kind = kind
             fx_asset = None
@@ -2954,11 +2989,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
                             owner_model = getattr(upstream2_item, "model", owner_model)
                             owner_kind = _up2_kind or owner_kind
                     elif kind in ("fx", "fx_trail"):
+                        owner_item = upstream_item
                         owner_model = getattr(upstream_item, "model", owner_model)
                         owner_kind = upstream_kind or owner_kind
                         if upstream_path:
                             path = upstream_path
                     else:
+                        owner_item = upstream_item
                         owner_model = getattr(upstream_item, "model", owner_model)
                         owner_kind = upstream_kind or owner_kind
                         if upstream_path:
@@ -2967,8 +3004,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     try:
                         from nodes.fx import spec as _fx_spec  # type: ignore
                         fx_asset = _fx_spec.trail_asset_config_from_model(model)
-                    except Exception:
+                    except Exception as exc:
                         fx_asset = None
+                        _fx_log(f"[node_item] config error node={src_name or kind} err={exc!r}")
             elif kind == "uv_unwrap":
                 upstream_item, _up_kind, upstream_path = _resolve_input_item(src_item)
                 if upstream_item is not None and getattr(upstream_item, "model", None) is not None:
@@ -2979,24 +3017,42 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
             model_name = (getattr(owner_model, "name", "") or "").strip()
             if not path:
+                if kind in ("fx", "fx_trail"):
+                    _fx_log(
+                        f"[node_item] skip unresolved-path node={src_name or kind} "
+                        f"target_owner={model_name or '<none>'} owner_kind={owner_kind or '<none>'}"
+                    )
                 _scene_log(f"edge[{edge_idx}] skip: empty path after resolve kind={kind} owner={model_name}")
                 continue
             ext = os.path.splitext(path)[1].lower()
             if ext not in supported:
+                if kind in ("fx", "fx_trail"):
+                    _fx_log(
+                        f"[node_item] skip unsupported-ext node={src_name or kind} "
+                        f"target_owner={model_name or '<none>'} ext={ext!r} path={path!r}"
+                    )
                 _scene_log(f"edge[{edge_idx}] skip: unsupported ext={ext} path={path!r}")
                 continue
             if path in seen:
                 if isinstance(fx_asset, dict) and model_name:
+                    aliases = _fx_target_owner_aliases(owner_item, owner_model, owner_kind)
                     fx_entry = dict(fx_asset)
                     fx_entry.update(
                         {
                             "kind": "fx_trail",
                             "node": src_name or f"{model_name}_fx",
                             "target_owner": model_name,
+                            "target_owner_aliases": list(aliases),
                             "visible": model_name not in hidden,
                         }
                     )
                     assets.append(fx_entry)
+                    _fx_log(
+                        f"[node_item] append duplicate-base trail node={fx_entry['node']} "
+                        f"target_owner={model_name} path={path!r} enabled={bool(fx_entry.get('enabled', True))} "
+                        f"samples={int(fx_entry.get('samples', 28) or 28)} frame_step={int(fx_entry.get('frame_step', 1) or 1)} "
+                        f"radius={float(fx_entry.get('radius', 0.35) or 0.35):.4f} aliases={aliases!r}"
+                    )
                 _scene_log(f"edge[{edge_idx}] skip: duplicate path={path!r}")
                 continue
             seen.add(path)
@@ -3072,16 +3128,25 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 asset["texture_provider"] = texture_provider
             assets.append(asset)
             if isinstance(fx_asset, dict) and model_name:
+                aliases = _fx_target_owner_aliases(owner_item, owner_model, owner_kind)
                 fx_entry = dict(fx_asset)
                 fx_entry.update(
                     {
                         "kind": "fx_trail",
                         "node": src_name or f"{model_name}_fx",
                         "target_owner": model_name,
+                        "target_owner_aliases": list(aliases),
                         "visible": model_name not in hidden,
                     }
                 )
                 assets.append(fx_entry)
+                _fx_log(
+                    f"[node_item] append trail node={fx_entry['node']} target_owner={model_name} "
+                    f"path={path!r} enabled={bool(fx_entry.get('enabled', True))} "
+                    f"samples={int(fx_entry.get('samples', 28) or 28)} frame_step={int(fx_entry.get('frame_step', 1) or 1)} "
+                    f"radius={float(fx_entry.get('radius', 0.35) or 0.35):.4f} repeats={int(fx_entry.get('repeats', 4) or 4)} "
+                    f"sides={int(fx_entry.get('sides', 28) or 28)} aliases={aliases!r}"
+                )
         _scene_log(f"collect_scene_assets done assets={len(assets)}")
         return assets
 

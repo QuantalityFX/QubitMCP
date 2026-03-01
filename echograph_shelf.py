@@ -3122,6 +3122,16 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                     f.write(f"{ts} {msg}\n")
             except Exception:
                 pass
+        def _fx_log(msg: str) -> None:
+            try:
+                root = Path(__file__).resolve().parent
+                log_dir = root / "logs"
+                log_dir.mkdir(parents=True, exist_ok=True)
+                ts = time.strftime("%Y-%m-%d %H:%M:%S")
+                with (log_dir / "fx_trail_debug.log").open("a", encoding="utf-8") as f:
+                    f.write(f"{ts} {msg}\n")
+            except Exception:
+                pass
         try:
             cur_path = getattr(self, "_current_path", None)
         except Exception:
@@ -3158,12 +3168,18 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             kind = str(entry.get("kind") or "").strip().lower()
             ext_hint = str(entry.get("ext") or "").strip().lower()
             is_camera = (kind == "camera") or (ext_hint == ".camera")
+            is_fx_trail = kind == "fx_trail"
+            target_owner = str(entry.get("target_owner") or "").strip()
             _scene_log(
                 f"raw[{idx}] node={node_name!r} path={path!r} kind={kind!r} "
                 f"ext={entry.get('ext')!r} visible={entry.get('visible')!r}"
             )
-            if not path and not is_camera:
+            if not path and not is_camera and not is_fx_trail:
                 _scene_log(f"raw[{idx}] drop: missing path node={node_name!r}")
+                continue
+            if is_fx_trail and not target_owner:
+                _scene_log(f"raw[{idx}] drop: fx_trail missing target_owner node={node_name!r}")
+                _fx_log(f"[shelf] drop invalid fx_trail node={node_name!r} asset={entry!r}")
                 continue
             if path:
                 try:
@@ -3215,8 +3231,25 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             tex_provider = entry.get("texture_provider")
             if tex_provider is not None:
                 clean_entry["texture_provider"] = tex_provider
+            if is_fx_trail:
+                clean_entry["target_owner"] = target_owner
+                clean_entry["target_owner_aliases"] = list(entry.get("target_owner_aliases") or [])
+                clean_entry["enabled"] = bool(entry.get("enabled", True))
+                clean_entry["samples"] = int(entry.get("samples", 28) or 28)
+                clean_entry["frame_step"] = int(entry.get("frame_step", 1) or 1)
+                clean_entry["radius"] = float(entry.get("radius", 0.35) or 0.35)
+                clean_entry["repeats"] = int(entry.get("repeats", 4) or 4)
+                clean_entry["sides"] = int(entry.get("sides", 28) or 28)
+                clean_entry["color"] = entry.get("color")
+                clean_entry["line_width"] = float(entry.get("line_width", 2.0) or 2.0)
+                clean_entry["profile_points"] = list(entry.get("profile_points") or [])
             clean.append(clean_entry)
             _scene_log(f"clean[{len(clean)-1}] node={node_name!r} path={path!r} visible={visible}")
+            if is_fx_trail:
+                _fx_log(
+                    f"[shelf] pass fx_trail node={node_name or '<none>'} target_owner={target_owner} "
+                    f"aliases={list(entry.get('target_owner_aliases') or [])!r} visible={visible}"
+                )
 
         if not clean:
             _scene_log("open_scene_assets: no valid scene assets")
@@ -3240,11 +3273,21 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                         str(entry.get("ext") or ""),
                         str(entry.get("path") or ""),
                         str(entry.get("node") or ""),
+                        str(entry.get("target_owner") or ""),
+                        repr(list(entry.get("target_owner_aliases") or [])),
                         bool(entry.get("visible", True)),
                         _round3((xf or {}).get("pos"), (0.0, 0.0, 0.0)),
                         _round3((xf or {}).get("rot"), (0.0, 0.0, 0.0)),
                         _round3((xf or {}).get("scl"), (1.0, 1.0, 1.0)),
                         bool(entry.get("xform_offset", False)),
+                        bool(entry.get("enabled", True)),
+                        int(entry.get("samples", 28) or 28),
+                        int(entry.get("frame_step", 1) or 1),
+                        round(float(entry.get("radius", 0.35) or 0.35), 6),
+                        int(entry.get("repeats", 4) or 4),
+                        int(entry.get("sides", 28) or 28),
+                        round(float(entry.get("line_width", 2.0) or 2.0), 6),
+                        repr(list(entry.get("profile_points") or [])),
                     )
                 )
             sig = tuple(sorted(sig))

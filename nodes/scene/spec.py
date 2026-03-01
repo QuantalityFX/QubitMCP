@@ -21,6 +21,18 @@ SUPPORTED_EXTS = {".fbx", ".obj", ".gltf", ".glb", ".ply", ".stl", ".off", ".om"
 _EYE_ICON_CACHE = {}
 
 
+def _fx_log(msg: str) -> None:
+    try:
+        root = Path(__file__).resolve().parents[2]
+        log_dir = root / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        with (log_dir / "fx_trail_debug.log").open("a", encoding="utf-8") as f:
+            f.write(f"{ts} {msg}\n")
+    except Exception:
+        pass
+
+
 def _eye_icon(visible: bool) -> QtGui.QIcon:
     key = "on" if visible else "off"
     icon = _EYE_ICON_CACHE.get(key)
@@ -331,6 +343,31 @@ def _resolve_input_item(scene, node_item, port_names=None):
         src_item = getattr(chosen, "src", None)
         return _trace(src_item, 0, set())
     return None, "", ""
+
+
+def _fx_target_owner_aliases(scene, owner_item, owner_model, owner_kind):
+    aliases = []
+    seen = set()
+
+    def _add(name):
+        text = str(name or "").strip()
+        if not text:
+            return
+        key = text.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        aliases.append(text)
+
+    _add(getattr(owner_model, "name", "") if owner_model is not None else "")
+    if (owner_kind or "").strip().lower() == "transforms" and owner_item is not None:
+        try:
+            base_item, _base_kind, _base_path = _resolve_input_item(scene, owner_item)
+        except Exception:
+            base_item = None
+        base_model = getattr(base_item, "model", None) if base_item is not None else None
+        _add(getattr(base_model, "name", "") if base_model is not None else "")
+    return aliases
 
 
 def _collect_assets(node_item) -> List[Dict[str, str]]:
@@ -708,6 +745,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             continue
 
         path = _param_value(model, "path")
+        owner_item = src_item
         owner_model = model
         owner_kind = kind
 
@@ -725,11 +763,13 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                         owner_model = getattr(upstream2_item, "model", owner_model)
                         owner_kind = upstream2_kind or owner_kind
                 elif kind in ("fx", "fx_trail"):
+                    owner_item = upstream_item
                     owner_model = getattr(upstream_item, "model", owner_model)
                     owner_kind = upstream_kind or owner_kind
                     if upstream_path:
                         path = upstream_path
                 else:
+                    owner_item = upstream_item
                     owner_model = getattr(upstream_item, "model", owner_model)
                     owner_kind = upstream_kind or owner_kind
                     if upstream_path:
@@ -738,8 +778,9 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                 try:
                     from nodes.fx import spec as _fx_spec  # type: ignore
                     fx_asset = _fx_spec.trail_asset_config_from_model(model)
-                except Exception:
+                except Exception as exc:
                     fx_asset = None
+                    _fx_log(f"[scene_spec] config error node={src_name or kind} err={exc!r}")
         elif kind == "uv_unwrap":
             upstream_item, upstream_kind, upstream_path = _resolve_input_item(scene, src_item)
             if upstream_item is not None and getattr(upstream_item, "model", None) is not None:
@@ -753,6 +794,12 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                 path = upstream_path
 
         if not path:
+            if kind in ("fx", "fx_trail"):
+                _fx_log(
+                    f"[scene_spec] skip unresolved-path node={src_name or kind} "
+                    f"target_owner={(getattr(owner_model, 'name', '') or '').strip() or '<none>'} "
+                    f"owner_kind={owner_kind or '<none>'}"
+                )
             continue
         node_name = getattr(owner_model, "name", "") or ""
         vol_path = volume_inputs.get(node_name)
@@ -760,20 +807,33 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             path = vol_path
         ext = Path(path).suffix.lower()
         if ext not in SUPPORTED_EXTS:
+            if kind in ("fx", "fx_trail"):
+                _fx_log(
+                    f"[scene_spec] skip unsupported-ext node={src_name or kind} "
+                    f"target_owner={node_name or '<none>'} ext={ext!r} path={path!r}"
+                )
             continue
         key = path.strip()
         if key in seen:
             if isinstance(fx_asset, dict) and node_name:
+                aliases = _fx_target_owner_aliases(scene, owner_item, owner_model, owner_kind)
                 fx_entry = dict(fx_asset)
                 fx_entry.update(
                     {
                         "kind": "fx_trail",
                         "node": src_name or f"{node_name}_fx",
                         "target_owner": node_name,
+                        "target_owner_aliases": list(aliases),
                         "visible": node_name not in hidden,
                     }
                 )
                 assets.append(fx_entry)
+                _fx_log(
+                    f"[scene_spec] append duplicate-base trail node={fx_entry['node']} "
+                    f"target_owner={node_name} path={path!r} enabled={bool(fx_entry.get('enabled', True))} "
+                    f"samples={int(fx_entry.get('samples', 28) or 28)} frame_step={int(fx_entry.get('frame_step', 1) or 1)} "
+                    f"radius={float(fx_entry.get('radius', 0.35) or 0.35):.4f} aliases={aliases!r}"
+                )
             continue
         seen.add(key)
         texture_provider = None
@@ -836,16 +896,25 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             entry["texture_provider"] = texture_provider
         assets.append(entry)
         if isinstance(fx_asset, dict) and node_name:
+            aliases = _fx_target_owner_aliases(scene, owner_item, owner_model, owner_kind)
             fx_entry = dict(fx_asset)
             fx_entry.update(
                 {
                     "kind": "fx_trail",
                     "node": src_name or f"{node_name}_fx",
                     "target_owner": node_name,
+                    "target_owner_aliases": list(aliases),
                     "visible": node_name not in hidden,
                 }
             )
             assets.append(fx_entry)
+            _fx_log(
+                f"[scene_spec] append trail node={fx_entry['node']} target_owner={node_name} "
+                f"path={path!r} enabled={bool(fx_entry.get('enabled', True))} "
+                f"samples={int(fx_entry.get('samples', 28) or 28)} frame_step={int(fx_entry.get('frame_step', 1) or 1)} "
+                f"radius={float(fx_entry.get('radius', 0.35) or 0.35):.4f} repeats={int(fx_entry.get('repeats', 4) or 4)} "
+                f"sides={int(fx_entry.get('sides', 28) or 28)} aliases={aliases!r}"
+            )
     return assets
 
 

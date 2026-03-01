@@ -120,6 +120,36 @@ class MGLRendererMixin:
         except Exception:
             pass
         self._mgl_log(msg)
+
+    def _mgl_fx_log(self, msg: str) -> None:
+        try:
+            root = Path(__file__).resolve().parents[2]
+            log_dir = root / "logs"
+            try:
+                log_dir.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                return
+            ts = time.strftime("%Y-%m-%d %H:%M:%S")
+            with (log_dir / "fx_trail_debug.log").open("a", encoding="utf-8") as f:
+                f.write(f"{ts} {msg}\n")
+        except Exception:
+            pass
+
+    def _mgl_fx_log_throttled(self, key: str, msg: str, interval: float = 0.75) -> None:
+        try:
+            store = getattr(self, "_mgl_fx_log_times", None)
+            if not isinstance(store, dict):
+                store = {}
+                setattr(self, "_mgl_fx_log_times", store)
+            now = float(time.time())
+            last = float(store.get(key, 0.0) or 0.0)
+            if (now - last) < float(interval):
+                return
+            store[key] = now
+        except Exception:
+            pass
+        self._mgl_fx_log(msg)
+
     def _mgl_add_wire_item_from_points(
         self,
         name: str,
@@ -986,6 +1016,56 @@ class MGLRendererMixin:
                 return float(y0) + (float(y1) - float(y0)) * float(alpha)
         return float(points[-1][1])
 
+    def _mgl_fx_owner_candidates(self, payload) -> list[str]:
+        out = []
+        seen = set()
+        raw_values = [payload.get("target_owner")]
+        aliases = payload.get("target_owner_aliases")
+        if isinstance(aliases, (list, tuple)):
+            raw_values.extend(list(aliases))
+        for raw in raw_values:
+            text = str(raw or "").strip()
+            if not text:
+                continue
+            key = text.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(text)
+        return out
+
+    def _mgl_fx_pick_owner(self, payload) -> str:
+        candidates = self._mgl_fx_owner_candidates(payload)
+        if not candidates:
+            return ""
+        best_owner = candidates[0]
+        best_score = -1
+        bounds_getter = getattr(self, "get_scene_owner_bounds", None)
+        for owner in candidates:
+            score = 0
+            try:
+                if self._mgl_fx_current_owner_pos(owner) is not None:
+                    score += 4
+            except Exception:
+                pass
+            try:
+                keys_map = self._mgl_timeline_owner_keys_map(owner)
+                if isinstance(keys_map, dict) and keys_map:
+                    score += 2
+            except Exception:
+                pass
+            try:
+                if callable(bounds_getter):
+                    bmin, bmax = bounds_getter(owner)
+                    if bmin is not None and bmax is not None:
+                        score += 1
+            except Exception:
+                pass
+            if score > best_score:
+                best_score = score
+                best_owner = owner
+        return best_owner
+
     def _mgl_timeline_owner_keys_map(self, owner: str):
         key = str(owner or "").strip()
         if not key:
@@ -1104,15 +1184,29 @@ class MGLRendererMixin:
 
     def _mgl_fx_build_trail_line_points(self, payload, frame: int):
         if np is None:
+            self._mgl_fx_log_throttled("numpy-missing", "[renderer] build skip: numpy unavailable", interval=3.0)
             return None
         target_owner = str(payload.get("target_owner") or "").strip()
-        if not target_owner:
+        active_owner = self._mgl_fx_pick_owner(payload) or target_owner
+        payload["_fx_active_owner"] = active_owner
+        if not active_owner:
+            owner = str(payload.get("owner") or "").strip()
+            self._mgl_fx_log_throttled(
+                f"missing-target:{owner or 'unknown'}",
+                f"[renderer] build skip: missing target owner owner={owner!r}",
+                interval=1.0,
+            )
             return None
         try:
             enabled = bool(payload.get("enabled", True))
         except Exception:
             enabled = True
         if not enabled:
+            self._mgl_fx_log_throttled(
+                f"disabled:{target_owner}",
+                f"[renderer] build skip: disabled target_owner={target_owner} frame={int(frame)}",
+                interval=1.0,
+            )
             return None
         try:
             samples = max(1, int(payload.get("samples", 28)))
@@ -1127,6 +1221,17 @@ class MGLRendererMixin:
         except Exception:
             base_radius = 0.35
         try:
+            bounds_getter = getattr(self, "get_scene_owner_bounds", None)
+            if callable(bounds_getter):
+                bmin, bmax = bounds_getter(active_owner)
+                if bmin is not None and bmax is not None:
+                    extents = np.asarray(bmax, dtype=np.float32) - np.asarray(bmin, dtype=np.float32)
+                    owner_scale = max(0.0, float(np.max(np.abs(extents))) * 0.5)
+                    if owner_scale > 1.0:
+                        base_radius = max(float(base_radius), float(base_radius) * float(owner_scale))
+        except Exception:
+            pass
+        try:
             repeats = max(1, int(payload.get("repeats", 4)))
         except Exception:
             repeats = 4
@@ -1140,7 +1245,7 @@ class MGLRendererMixin:
             sample_frame = int(frame) - (idx * int(frame_step))
             if sample_frame < 0:
                 break
-            pos = self._mgl_fx_eval_owner_pos(target_owner, sample_frame)
+            pos = self._mgl_fx_eval_owner_pos(active_owner, sample_frame)
             if pos is None:
                 if idx == 0:
                     continue
@@ -1154,6 +1259,11 @@ class MGLRendererMixin:
                     pass
             centers.append(vec)
         if not centers:
+            self._mgl_fx_log(
+                f"[renderer] build no-centers target_owner={target_owner} active_owner={active_owner} "
+                f"frame={int(frame)} samples={int(samples)} frame_step={int(frame_step)} "
+                f"aliases={self._mgl_fx_owner_candidates(payload)!r}"
+            )
             return None
         centers = list(reversed(centers))
         line_pos: List[float] = []
@@ -1224,13 +1334,20 @@ class MGLRendererMixin:
         payload = item.payload or {}
         frame_fn = getattr(self, "_timeline_current_frame", None)
         if not callable(frame_fn):
+            self._mgl_fx_log_throttled(
+                "timeline-frame-missing",
+                "[renderer] update skip: timeline frame function unavailable",
+                interval=3.0,
+            )
             return False
         try:
             frame = int(frame_fn())
         except Exception:
             frame = 0
         target_owner = str(payload.get("target_owner") or "").strip()
-        live_pos = self._mgl_fx_current_owner_pos(target_owner)
+        active_owner = self._mgl_fx_pick_owner(payload) or target_owner
+        payload["_fx_active_owner"] = active_owner
+        live_pos = self._mgl_fx_current_owner_pos(active_owner)
         stamp = (
             int(frame),
             tuple(round(float(v), 5) for v in live_pos) if isinstance(live_pos, (list, tuple)) else None,
@@ -1242,6 +1359,7 @@ class MGLRendererMixin:
             int(payload.get("sides", 28)),
             round(float(payload.get("line_width", 2.0)), 3),
             repr(payload.get("profile_points")),
+            tuple(self._mgl_fx_owner_candidates(payload)),
         )
         if payload.get("_fx_stamp") == stamp and payload.get("vao") is not None:
             return True
@@ -1258,6 +1376,11 @@ class MGLRendererMixin:
         if line_points is None or getattr(line_points, "size", 0) == 0:
             payload["_fx_stamp"] = stamp
             item.payload = payload
+            self._mgl_fx_log(
+                f"[renderer] update no-geometry owner={item.name} target_owner={target_owner} "
+                f"active_owner={active_owner} frame={int(frame)} live_pos={live_pos!r} "
+                f"aliases={self._mgl_fx_owner_candidates(payload)!r}"
+            )
             return False
 
         temp = self._mgl_add_wire_item_from_points(
@@ -1271,6 +1394,11 @@ class MGLRendererMixin:
         if temp is None:
             payload["_fx_stamp"] = stamp
             item.payload = payload
+            self._mgl_fx_log(
+                f"[renderer] update gpu-build-failed owner={item.name} target_owner={target_owner} "
+                f"active_owner={active_owner} "
+                f"frame={int(frame)} point_count={int(getattr(line_points, 'shape', [0])[0])}"
+            )
             return False
 
         dyn_payload = temp.payload or {}
@@ -1281,6 +1409,15 @@ class MGLRendererMixin:
         payload["_fx_stamp"] = stamp
         item.payload = payload
         item.resources = list(temp.resources or [])
+        try:
+            point_count = int(line_points.shape[0])
+        except Exception:
+            point_count = 0
+        self._mgl_fx_log(
+            f"[renderer] update ok owner={item.name} target_owner={target_owner} active_owner={active_owner} "
+            f"frame={int(frame)} point_count={point_count} visible={bool(item.visible)} live_pos={live_pos!r} "
+            f"aliases={self._mgl_fx_owner_candidates(payload)!r}"
+        )
         return payload.get("vao") is not None
 
     def _mgl_get_scene_asset_xform(self, owner: str):
@@ -2412,15 +2549,22 @@ class MGLRendererMixin:
 
     def _mgl_draw_scene_fx_trail(self, item: MGLSceneItem, mvp) -> None:
         if self._mgl_ctx is None or self._mgl_wire_prog is None:
+            self._mgl_fx_log_throttled(
+                "draw-context-missing",
+                "[renderer] draw skip: wire context unavailable",
+                interval=3.0,
+            )
             return
         try:
             if not self._mgl_fx_update_trail_item(item):
                 return
-        except Exception:
+        except Exception as exc:
+            self._mgl_fx_log(f"[renderer] draw update-exception owner={item.name} err={exc!r}")
             return
         try:
             self._mgl_draw_scene_wire(item, mvp)
-        except Exception:
+        except Exception as exc:
+            self._mgl_fx_log(f"[renderer] draw wire-exception owner={item.name} err={exc!r}")
             return
 
     def _mgl_draw_scene_grid(self, item: MGLSceneItem, mvp) -> None:
@@ -6486,6 +6630,10 @@ class MGLRendererMixin:
                     target_owner = str(asset.get("target_owner") or "").strip()
                     owner = str(asset.get("node") or "").strip() or (f"{target_owner}_fx" if target_owner else "")
                     if not target_owner or not owner:
+                        self._mgl_fx_log(
+                            f"[renderer] load skip invalid-asset owner={owner!r} "
+                            f"target_owner={target_owner!r} asset={asset!r}"
+                        )
                         continue
                     trail_item = MGLSceneItem(
                         name=owner,
@@ -6493,6 +6641,7 @@ class MGLRendererMixin:
                         payload={
                             "owner": owner,
                             "target_owner": target_owner,
+                            "target_owner_aliases": list(asset.get("target_owner_aliases") or []),
                             "enabled": bool(asset.get("enabled", True)),
                             "samples": int(asset.get("samples", 28) or 28),
                             "frame_step": int(asset.get("frame_step", 1) or 1),
@@ -6509,6 +6658,13 @@ class MGLRendererMixin:
                         tag="scene-fx-trail",
                     )
                     scene.add(trail_item)
+                    self._mgl_fx_log(
+                        f"[renderer] load item owner={owner} target_owner={target_owner} "
+                        f"visible={bool(asset.get('visible', True))} enabled={bool(asset.get('enabled', True))} "
+                        f"samples={int(asset.get('samples', 28) or 28)} frame_step={int(asset.get('frame_step', 1) or 1)} "
+                        f"radius={float(asset.get('radius', 0.35) or 0.35):.4f} repeats={int(asset.get('repeats', 4) or 4)} "
+                        f"sides={int(asset.get('sides', 28) or 28)} aliases={list(asset.get('target_owner_aliases') or [])!r}"
+                    )
                     continue
                 is_camera = kind == "camera" or ext_hint == ".camera"
                 path_str = str(asset.get("path", "") or "").strip()
