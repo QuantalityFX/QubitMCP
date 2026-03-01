@@ -294,7 +294,7 @@ class MaterialWidget(QtWidgets.QWidget):
         QtCore.QTimer.singleShot(0, self._update_inputs)
 
     def sizeHint(self):
-        return QtCore.QSize(220, 148)
+        return QtCore.QSize(224, 156)
 
     def _slider_row(self, parent_layout, label: str, slot):
         row = QtWidgets.QHBoxLayout()
@@ -527,18 +527,21 @@ class MaterialWidget(QtWidgets.QWidget):
 
 
 def render_node_body(node_item, y_cursor: int) -> int:
+    inset_x = 6
+    inset_top = 2
+    inset_bottom = 10
     body = MaterialWidget(node_item)
     proxy = QtWidgets.QGraphicsProxyWidget(node_item)
     proxy.setWidget(body)
     proxy.setZValue(node_item.zValue() + 0.1)
-    proxy.setPos(0, y_cursor)
+    proxy.setPos(inset_x, y_cursor + inset_top)
     h = body.sizeHint().height()
-    proxy.resize(node_item.width, h)
+    proxy.resize(max(40, int(node_item.width) - (inset_x * 2)), h)
     try:
         node_item._plugin_proxies.append(proxy)
     except Exception:
         pass
-    return y_cursor + h
+    return y_cursor + inset_top + h + inset_bottom
 
 
 MATERIAL_SPEC = Spec(

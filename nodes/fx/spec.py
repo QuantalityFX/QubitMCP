@@ -206,6 +206,8 @@ def trail_asset_config_from_model(model) -> dict:
 
 
 def build_ports(node_item) -> None:
+    _ensure_param(node_item, "mesh", "")
+    _ensure_param(node_item, "instance", "")
     _ensure_param(node_item, "source", "")
     _ensure_param(node_item, "path", "")
     _ensure_param(node_item, "enabled", "1")
@@ -227,6 +229,8 @@ def build_ports(node_item) -> None:
     _ensure_hidden_params(
         getattr(node_item, "model", None),
         [
+            "mesh",
+            "instance",
             "source",
             "path",
             "enabled",
@@ -602,7 +606,7 @@ class FxTrailWidget(QtWidgets.QWidget):
         self._schedule_refresh()
 
     def sizeHint(self):
-        return QtCore.QSize(220, 402)
+        return QtCore.QSize(252, 426)
 
     def _set_param(self, name: str, value: str, *, notify_scene: bool = True) -> None:
         if self._updating:
@@ -691,6 +695,12 @@ class FxTrailWidget(QtWidgets.QWidget):
                 if (name or "").strip().lower() in {"mesh", "path"}:
                     chosen = edge
                     break
+        if chosen is None:
+            for edge in in_edges:
+                name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
+                if not (name or "").strip():
+                    chosen = edge
+                    break
         if chosen is None and in_edges:
             chosen = in_edges[0]
         if chosen is None:
@@ -700,7 +710,7 @@ class FxTrailWidget(QtWidgets.QWidget):
     def _refresh_input_state(self):
         self._refresh_pending = False
         self._ensure_scene()
-        src_item, _kind, src_path = self._resolve_input({"mesh", "path"})
+        src_item, _kind, src_path = self._resolve_input()
         src_model = getattr(src_item, "model", None) if src_item is not None else None
         owner_name = (getattr(src_model, "name", "") or "").strip()
         display_name = owner_name or (Path(src_path).name if src_path else "")
@@ -808,20 +818,43 @@ class FxTrailWidget(QtWidgets.QWidget):
 
 
 def render_node_body(node_item, y_cursor: int) -> int:
+    inset_x = 8
+    inset_top = 2
+    inset_bottom = 16
+    try:
+        before = {
+            (entry.get("name") or "").strip().lower()
+            for entry in (getattr(getattr(node_item, "model", None), "params", None) or [])
+            if isinstance(entry, dict)
+        }
+        build_ports(node_item)
+        after = {
+            (entry.get("name") or "").strip().lower()
+            for entry in (getattr(getattr(node_item, "model", None), "params", None) or [])
+            if isinstance(entry, dict)
+        }
+        if after != before and hasattr(node_item, "_rebuild_deferred"):
+            node_item._rebuild_deferred()
+    except Exception:
+        pass
+    try:
+        setattr(node_item, "_show_default_input_with_named", True)
+    except Exception:
+        pass
     body = FxTrailWidget(node_item)
     proxy = QtWidgets.QGraphicsProxyWidget(node_item)
     proxy.setWidget(body)
     proxy.setZValue(node_item.zValue() + 0.1)
-    proxy.setPos(0, y_cursor)
+    proxy.setPos(inset_x, y_cursor + inset_top)
 
     h = body.sizeHint().height()
-    proxy.resize(node_item.width, h)
+    proxy.resize(max(40, int(node_item.width) - (inset_x * 2)), h)
     try:
         node_item._plugin_proxies.append(proxy)
     except Exception:
         pass
 
-    return y_cursor + h
+    return y_cursor + inset_top + h + inset_bottom
 
 
 FX_SPEC = Spec(

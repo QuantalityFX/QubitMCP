@@ -399,6 +399,12 @@ def _resolve_input_item(scene, node_item, port_names=None):
             if (name or "").strip().lower() in {"mesh", "path"}:
                 chosen = edge
                 break
+    if chosen is None:
+        for edge in in_edges:
+            name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
+            if not (name or "").strip():
+                chosen = edge
+                break
     if chosen is None and in_edges:
         chosen = in_edges[0]
     if chosen is not None:

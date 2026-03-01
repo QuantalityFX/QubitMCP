@@ -1014,6 +1014,20 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 wired.add(str(name).strip().lower())
         return wired
 
+    def _has_default_input_edge(self) -> bool:
+        sc = self.scene()
+        if sc is None:
+            return False
+        try:
+            in_edges = sc._in_edges(self)
+        except Exception:
+            in_edges = []
+        for e in in_edges:
+            name = getattr(e, "dst_port_name", None) or getattr(e, "dst_label", None) or getattr(e, "dst_name", None)
+            if not str(name or "").strip():
+                return True
+        return False
+
     # back-compat aliases some specs may call
     def add_input_port(self, name: str):
         self.ensure_input(name)
@@ -1474,9 +1488,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
             except Exception:
                 pass
             node_w = self._BASE_W
+        elif kind == "fx":
+            # Match the FX embedded widget and leave frame margin so rounded corners stay visible.
+            body_h = 462
+            node_w = max(self._BASE_W, 292)
         elif kind in ("mnaterial", "material"):
-            body_h = 148
-            node_w = self._BASE_W
+            # Match the material embedded widget and keep visible border around it.
+            body_h = 170
+            node_w = max(self._BASE_W, 236)
         else:
             body_h = 0
             node_w = self._BASE_W
@@ -2408,6 +2427,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     self._param_proxies.append(add_proxy)
                     y_cursor += self._PARAM_ROW_H
 
+                if kind == "fx":
+                    try:
+                        self._show_default_input_with_named = True
+                        second_y = float(self._BASE_H / 2.0) + float(self._PARAM_ROW_H)
+                        self._input_port_pos["instance"] = (QtCore.QPointF(0.0, second_y), "instance")
+                    except Exception:
+                        pass
+
             # --- Deferred plugin body (after standard params) ---
             if defer_plugin:
                 try:
@@ -2785,6 +2812,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 for edge in in_edges:
                     name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
                     if (name or "").strip().lower() in {"mesh", "path"}:
+                        chosen = edge
+                        break
+            if chosen is None:
+                for edge in in_edges:
+                    name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
+                    if not (name or "").strip():
                         chosen = edge
                         break
             if chosen is None and in_edges:
@@ -5483,7 +5516,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
             p.drawEllipse(QtCore.QRectF(self.width - 4, self._BASE_H / 2.0 - 4, 8, 8))
             entries = list(getattr(self, "_input_port_pos", {}).items())
             wired = self._wired_named_inputs()
+            draw_default_input = bool(getattr(self, "_show_default_input_with_named", False))
             if entries:
+                if draw_default_input:
+                    default_color = QtGui.QColor("#facc15" if self._has_default_input_edge() else "#cbd5e1")
+                    p.setBrush(default_color)
+                    p.drawEllipse(QtCore.QRectF(-4, self._BASE_H / 2.0 - 4, 8, 8))
                 for key, (pos, _) in entries:
                     color = QtGui.QColor("#facc15" if key in wired else "#cbd5e1")
                     p.setBrush(color)

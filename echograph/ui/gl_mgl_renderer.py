@@ -1720,6 +1720,7 @@ class MGLRendererMixin:
         normals = None
         uvs = None
         mesh_arrays = None
+        bounds_points = None
         if openmesh is not None and ext != ".fbx":
             try:
                 mesh = openmesh.read_trimesh(str(mesh_path))
@@ -1752,6 +1753,7 @@ class MGLRendererMixin:
                 if model_data is None or not model_data.vertices:
                     return None
                 points = np.array(model_data.vertices, dtype="f4").reshape(-1, 3)
+                bounds_points = points
                 normals = np.zeros_like(points)
                 for idx in range(0, points.shape[0], 3):
                     a, b, c = points[idx:idx + 3]
@@ -1761,14 +1763,24 @@ class MGLRendererMixin:
                         n = n / norm
                     normals[idx:idx + 3] = n
 
+        pivot_center = np.zeros(3, dtype=np.float32)
+        pivot_radius = 1.0
         if mesh is not None:
             mesh.update_normals()
             points = np.array(mesh.points(), dtype="f4")
+            bounds_points = points
             normals = np.array(mesh.vertex_normals(), dtype="f4")
             indices = np.array(mesh.face_vertex_indices(), dtype="u4").ravel()
             entry = self._mgl_build_mesh_entry(points, normals, None, indices)
             if entry is None:
                 return None
+            try:
+                mins = points.min(axis=0)
+                maxs = points.max(axis=0)
+                pivot_center = ((mins + maxs) * 0.5).astype(np.float32)
+                pivot_radius = max(1.0e-4, float(np.max(np.abs(maxs - mins))) * 0.5)
+            except Exception:
+                pass
             resources = [
                 entry.get("vao"),
                 entry.get("vbo"),
@@ -1780,6 +1792,8 @@ class MGLRendererMixin:
                 "vao": entry.get("vao"),
                 "color": self._mgl_mesh_color,
                 "path": str(mesh_path),
+                "pivot_center": pivot_center,
+                "pivot_radius": float(pivot_radius),
                 "resources": [res for res in resources if res is not None],
             }
 
@@ -1787,6 +1801,24 @@ class MGLRendererMixin:
             entries, _combined_uvs, _texture_paths, _total_indices = self._mgl_build_submesh_entries(mesh_arrays.submeshes)
             if not entries:
                 return None
+            try:
+                all_points = []
+                for sub in mesh_arrays.submeshes:
+                    pts = getattr(sub, "points", None)
+                    if pts is not None and getattr(pts, "size", 0):
+                        all_points.append(np.asarray(pts, dtype="f4").reshape(-1, 3))
+                if all_points:
+                    bounds_points = np.concatenate(all_points, axis=0)
+            except Exception:
+                bounds_points = None
+            try:
+                if bounds_points is not None and getattr(bounds_points, "size", 0):
+                    mins = bounds_points.min(axis=0)
+                    maxs = bounds_points.max(axis=0)
+                    pivot_center = ((mins + maxs) * 0.5).astype(np.float32)
+                    pivot_radius = max(1.0e-4, float(np.max(np.abs(maxs - mins))) * 0.5)
+            except Exception:
+                pass
             resources = []
             seen = set()
             for sub in entries:
@@ -1808,12 +1840,24 @@ class MGLRendererMixin:
             return {
                 "submeshes": entries,
                 "path": str(mesh_path),
+                "pivot_center": pivot_center,
+                "pivot_radius": float(pivot_radius),
                 "resources": resources,
             }
 
         entry = self._mgl_build_mesh_entry(points, normals, uvs)
         if entry is None:
             return None
+        try:
+            if bounds_points is None:
+                bounds_points = np.asarray(points, dtype="f4").reshape(-1, 3)
+            if bounds_points is not None and getattr(bounds_points, "size", 0):
+                mins = bounds_points.min(axis=0)
+                maxs = bounds_points.max(axis=0)
+                pivot_center = ((mins + maxs) * 0.5).astype(np.float32)
+                pivot_radius = max(1.0e-4, float(np.max(np.abs(maxs - mins))) * 0.5)
+        except Exception:
+            pass
         resources = [
             entry.get("vao"),
             entry.get("vbo"),
@@ -1831,6 +1875,8 @@ class MGLRendererMixin:
             "texture": None,
             "color": color,
             "path": str(mesh_path),
+            "pivot_center": pivot_center,
+            "pivot_radius": float(pivot_radius),
             "resources": [res for res in resources if res is not None],
         }
 
@@ -1902,6 +1948,34 @@ class MGLRendererMixin:
             payload["_fx_debug_newest_frame"] = None
 
         models = []
+        mesh_cache = payload.get("_fx_instance_mesh")
+        if isinstance(mesh_cache, dict):
+            try:
+                pivot_center = np.asarray(mesh_cache.get("pivot_center") or (0.0, 0.0, 0.0), dtype=np.float32).reshape(3)
+            except Exception:
+                pivot_center = np.zeros(3, dtype=np.float32)
+            try:
+                pivot_radius = max(1.0e-4, float(mesh_cache.get("pivot_radius", 1.0) or 1.0))
+            except Exception:
+                pivot_radius = 1.0
+        else:
+            pivot_center = np.zeros(3, dtype=np.float32)
+            pivot_radius = 1.0
+
+        def _t(tx: float, ty: float, tz: float):
+            m = np.eye(4, dtype=np.float32)
+            m[3, 0] = float(tx)
+            m[3, 1] = float(ty)
+            m[3, 2] = float(tz)
+            return m
+
+        def _s(scale: float):
+            m = np.eye(4, dtype=np.float32)
+            m[0, 0] = float(scale)
+            m[1, 1] = float(scale)
+            m[2, 2] = float(scale)
+            return m
+
         for entry in entries:
             phase_t = self._mgl_fx_profile_phase(
                 payload,
@@ -1915,13 +1989,12 @@ class MGLRendererMixin:
             if uniform_scale <= 1.0e-5:
                 continue
             center = entry["center"]
-            model = np.eye(4, dtype=np.float32)
-            model[0, 0] = float(uniform_scale)
-            model[1, 1] = float(uniform_scale)
-            model[2, 2] = float(uniform_scale)
-            model[3, 0] = float(center[0])
-            model[3, 1] = float(center[1])
-            model[3, 2] = float(center[2])
+            normalized_scale = float(uniform_scale) / float(pivot_radius)
+            model = _t(-float(pivot_center[0]), -float(pivot_center[1]), -float(pivot_center[2])) @ _s(normalized_scale) @ _t(
+                float(center[0]),
+                float(center[1]),
+                float(center[2]),
+            )
             models.append(model)
         return models
 
