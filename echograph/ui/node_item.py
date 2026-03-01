@@ -3350,25 +3350,35 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 _scene_log(f"edge[{edge_idx}] skip: duplicate path={path!r}")
                 continue
             seen.add(path)
+
+            # For fx/fx_trail, the mesh path comes from upstream, but texture/provider must also come from upstream.
+            surface_model = model
+            surface_kind = kind
+            if kind in ("fx", "fx_trail") and owner_model is not None:
+                surface_model = owner_model
+                surface_kind = owner_kind
+
             texture = ""
             texture_provider = None
-            if kind == "texture_pro":
+
+            if surface_kind == "texture_pro":
                 try:
-                    texture_provider = getattr(model, "_texture_pro_provider", None)
+                    texture_provider = getattr(surface_model, "_texture_pro_provider", None)
                 except Exception:
                     texture_provider = None
-            elif kind == "texture_layer":
+            elif surface_kind == "texture_layer":
                 try:
-                    texture_provider = getattr(model, "_texture_layer_provider", None)
+                    texture_provider = getattr(surface_model, "_texture_layer_provider", None)
                 except Exception:
                     texture_provider = None
-            if kind in ("texture", "texture_pro"):
-                for p in (model.params or []):
+
+            if surface_kind in ("texture", "texture_pro"):
+                for p in (getattr(surface_model, "params", None) or []):
                     if (p.get("name") or "").strip().lower() == "texture":
                         texture = (p.get("value") or "").strip()
                         break
             elif ext == ".obj":
-                for p in (model.params or []):
+                for p in (getattr(surface_model, "params", None) or []):
                     if (p.get("name") or "").strip().lower() == "texture":
                         texture = (p.get("value") or "").strip()
                         break

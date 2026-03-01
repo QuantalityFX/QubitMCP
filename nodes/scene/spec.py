@@ -462,6 +462,36 @@ def _fx_target_owner_aliases(scene, owner_item, owner_model, owner_kind):
     return aliases
 
 
+def _fx_surface_context(scene, owner_item, owner_model, owner_kind):
+    texture_model = owner_model
+    texture_kind = (owner_kind or "").strip().lower()
+    material_item = None
+    material_model = None
+    item = owner_item
+    model = owner_model
+    kind = texture_kind
+    visited = set()
+    depth = 0
+    while item is not None and model is not None and item not in visited and depth < 8:
+        visited.add(item)
+        depth += 1
+        if material_model is None and kind in _MATERIAL_KINDS:
+            material_item = item
+            material_model = model
+        if kind in _TEXTURE_KINDS:
+            texture_model = model
+            texture_kind = kind
+        if kind not in _TEXTURE_KINDS and kind not in _MATERIAL_KINDS and kind not in {"transforms", "uv_unwrap"}:
+            break
+        next_item, next_kind, _ = _resolve_input_item(scene, item)
+        if next_item is None or next_item is item:
+            break
+        item = next_item
+        model = getattr(item, "model", None)
+        kind = (next_kind or getattr(model, "kind", "") or "").strip().lower()
+    return material_item, material_model, texture_model, texture_kind
+
+
 def _collect_assets(node_item) -> List[Dict[str, str]]:
     scene = node_item.scene()
     if scene is None:
@@ -1037,6 +1067,25 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                     owner_kind = upstream_kind or owner_kind
                     if upstream_path:
                         path = upstream_path
+                    fx_material_item, fx_material_model, fx_texture_model, fx_texture_kind = _fx_surface_context(
+                        scene,
+                        owner_item,
+                        owner_model,
+                        owner_kind,
+                    )
+                    if fx_material_model is not None:
+                        material_model = fx_material_model
+                        try:
+                            from nodes import material as _material_node  # type: ignore
+                            builder = getattr(_material_node, "build_material_asset", None)
+                            if callable(builder):
+                                material_asset = builder(fx_material_item)
+                        except Exception:
+                            material_asset = None
+                    if fx_texture_model is not None:
+                        texture_model = fx_texture_model
+                    if fx_texture_kind:
+                        texture_kind = fx_texture_kind
                 else:
                     owner_item = upstream_item
                     owner_model = getattr(upstream_item, "model", owner_model)
@@ -1243,6 +1292,19 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                 texture_provider = getattr(model, "_texture_layer_provider", None)
             except Exception:
                 texture_provider = None
+        elif kind in ("fx", "fx_trail"):
+            if isinstance(material_asset, dict) and material_asset.get("texture_provider") is not None:
+                texture_provider = material_asset.get("texture_provider")
+            elif texture_kind == "texture_pro":
+                try:
+                    texture_provider = getattr(texture_model, "_texture_pro_provider", None)
+                except Exception:
+                    texture_provider = None
+            elif texture_kind == "texture_layer":
+                try:
+                    texture_provider = getattr(texture_model, "_texture_layer_provider", None)
+                except Exception:
+                    texture_provider = None
         if kind in _MATERIAL_KINDS:
             if isinstance(material_asset, dict):
                 texture = str(material_asset.get("texture") or "")
@@ -1252,6 +1314,15 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                 texture = _param_value(texture_model, "texture") if ext == ".obj" else ""
             else:
                 texture = _param_value(owner_model, "texture") if ext == ".obj" else ""
+        elif kind in ("fx", "fx_trail"):
+            if isinstance(material_asset, dict):
+                texture = str(material_asset.get("texture") or "")
+            elif texture_kind in ("texture", "texture_pro"):
+                texture = _param_value(texture_model, "texture")
+            elif texture_kind == "texture_layer":
+                texture = _param_value(texture_model, "texture") if ext == ".obj" else ""
+            else:
+                texture = _param_value(texture_model, "texture") if ext == ".obj" else ""
         elif kind in ("texture", "texture_pro"):
             texture = _param_value(model, "texture")
         else:
