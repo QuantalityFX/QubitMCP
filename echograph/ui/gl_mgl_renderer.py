@@ -5088,16 +5088,47 @@ class MGLRendererMixin:
                 owners=owners[:12],
             )
         prev_depth_mask = None
+        prev_depth_func = None
+        prev_wireframe = None
+        prev_polygon_offset = None
         try:
             prev_depth_mask = getattr(self._mgl_ctx, "depth_mask", None)
         except Exception:
             prev_depth_mask = None
         try:
+            prev_depth_func = getattr(self._mgl_ctx, "depth_func", None)
+        except Exception:
+            prev_depth_func = None
+        try:
+            prev_wireframe = bool(getattr(self._mgl_ctx, "wireframe", False))
+        except Exception:
+            prev_wireframe = None
+        try:
+            prev_polygon_offset = getattr(self._mgl_ctx, "polygon_offset", None)
+        except Exception:
+            prev_polygon_offset = None
+        try:
             self._mgl_ctx.enable(moderngl.BLEND | moderngl.DEPTH_TEST)
         except Exception:
             pass
         try:
+            self._mgl_ctx.disable(moderngl.CULL_FACE)
+        except Exception:
+            pass
+        try:
             self._mgl_ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
+        except Exception:
+            pass
+        try:
+            self._mgl_ctx.depth_func = "<="
+        except Exception:
+            pass
+        try:
+            self._mgl_ctx.wireframe = False
+        except Exception:
+            pass
+        try:
+            self._mgl_ctx.polygon_offset = (0.0, 0.0)
         except Exception:
             pass
         try:
@@ -5115,6 +5146,21 @@ class MGLRendererMixin:
             if prev_depth_mask is not None:
                 try:
                     self._mgl_ctx.depth_mask = prev_depth_mask
+                except Exception:
+                    pass
+            if prev_depth_func is not None:
+                try:
+                    self._mgl_ctx.depth_func = prev_depth_func
+                except Exception:
+                    pass
+            if prev_wireframe is not None:
+                try:
+                    self._mgl_ctx.wireframe = prev_wireframe
+                except Exception:
+                    pass
+            if prev_polygon_offset is not None:
+                try:
+                    self._mgl_ctx.polygon_offset = prev_polygon_offset
                 except Exception:
                     pass
 
