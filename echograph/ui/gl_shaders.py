@@ -373,16 +373,17 @@ void main() {
         if (UseSceneRefraction == 1 && refraction > 0.001) {
             vec2 safe_screen = max(ScreenSize, vec2(1.0, 1.0));
             vec2 screen_uv = gl_FragCoord.xy / safe_screen;
-            vec2 refract_offset = n.xy * (0.038 * refraction) * (0.30 + transmission * 0.70) * (0.65 + edge * 0.35);
+            vec2 center_uv = clamp(screen_uv, vec2(0.001), vec2(0.999));
+            vec2 refract_offset = n.xy * (0.018 * refraction) * (0.30 + transmission * 0.70) * (0.65 + edge * 0.35);
             vec2 warped_uv0 = clamp(screen_uv + refract_offset, vec2(0.001), vec2(0.999));
             vec2 warped_uv1 = clamp(screen_uv - refract_offset * 0.45, vec2(0.001), vec2(0.999));
+            vec3 scene_center = texture(SceneColorTex, center_uv).rgb;
             vec3 scene_rgb0 = texture(SceneColorTex, warped_uv0).rgb;
             vec3 scene_rgb1 = texture(SceneColorTex, warped_uv1).rgb;
             vec3 scene_rgb = mix(scene_rgb0, scene_rgb1, 0.35);
-            float tint_mix = clamp(0.26 + transmission * 0.20 + refraction * 0.26, 0.0, 0.72);
-            vec3 tinted_scene = scene_rgb * mix(vec3(1.0), tint, 0.68);
-            vec3 glass_rgb = mix(tinted_scene, tint, 0.18 + edge * 0.14);
-            material_rgb = mix(material_rgb, clamp(glass_rgb, 0.0, 1.0), clamp(0.42 + transmission * 0.16 + refraction * 0.12, 0.0, 0.72));
+            vec3 scene_delta = scene_rgb - scene_center;
+            material_rgb = clamp(material_rgb + scene_delta * (0.55 * refraction), 0.0, 1.0);
+            material_rgb = mix(material_rgb, clamp(material_rgb * mix(vec3(1.0), tint, 0.22), 0.0, 1.0), 0.12 + edge * 0.08);
         }
         vec3 edge_rgb = clamp(mix(material_rgb, tint, 0.30), 0.0, 1.0);
         material_rgb = mix(material_rgb, edge_rgb, clamp(edge * (0.22 + refraction * 0.14), 0.0, 0.34));

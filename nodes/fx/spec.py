@@ -563,7 +563,7 @@ class FxTrailWidget(QtWidgets.QWidget):
         hint.setWordWrap(True)
         hint.setStyleSheet("color:#64748b;font-size:10px;")
         layout.addWidget(hint, 0)
-        age_hint = QtWidgets.QLabel("Pattern uses Repeat. Age Scale multiplies size from spawn on the left to older rings on the right.")
+        age_hint = QtWidgets.QLabel("Pattern sets each ring's base size by spawn order. Age Scale multiplies that size over the ring lifetime.")
         age_hint.setWordWrap(True)
         age_hint.setStyleSheet("color:#64748b;font-size:10px;")
         layout.addWidget(age_hint, 0)

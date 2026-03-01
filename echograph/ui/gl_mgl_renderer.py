@@ -1160,17 +1160,26 @@ class MGLRendererMixin:
             return 0.0
         return max(0.0, min(1.0, float(age) / float(max(1, life_frames - 1))))
 
-    def _mgl_fx_profile_phase(self, payload, age: int, lifespan: int) -> float:
+    def _mgl_fx_profile_phase(self, payload, spawn_frame: int, frame_step: int, lifespan: int) -> float:
         try:
             repeats = max(1, int(payload.get("repeats", 1)))
         except Exception:
             repeats = 1
-        age_t = self._mgl_fx_age_t(age, lifespan)
-        if repeats <= 1:
-            return age_t
-        if age_t >= 1.0:
-            return 1.0
-        phase = math.fmod(float(age_t) * float(repeats), 1.0)
+        try:
+            step = max(1, int(frame_step))
+        except Exception:
+            step = 1
+        try:
+            life_steps = max(1, int(math.ceil(float(max(1, lifespan)) / float(step))))
+        except Exception:
+            life_steps = 1
+        try:
+            emit_index = max(0, int(math.floor(float(spawn_frame) / float(step))))
+        except Exception:
+            emit_index = max(0, int(spawn_frame))
+        if life_steps <= 1:
+            return 0.0
+        phase = math.fmod((float(emit_index) / float(life_steps)) * float(repeats), 1.0)
         if phase < 0.0:
             phase += 1.0
         return float(phase)
@@ -1254,8 +1263,9 @@ class MGLRendererMixin:
             lifespan = max(1, int(payload.get("lifespan", int(samples) * int(frame_step))))
         except Exception:
             lifespan = max(1, int(samples) * int(frame_step))
+        sample_limit = max(int(samples), int(math.ceil(float(max(1, lifespan)) / float(max(1, frame_step)))))
         entries = []
-        for idx in range(int(samples)):
+        for idx in range(int(sample_limit)):
             sample_age = idx * int(frame_step)
             if sample_age >= int(lifespan):
                 break
@@ -1278,6 +1288,7 @@ class MGLRendererMixin:
                 {
                     "frame": int(sample_frame),
                     "age": int(sample_age),
+                    "emit_index": int(max(0, math.floor(float(sample_frame) / float(max(1, frame_step))))),
                     "center": vec,
                 }
             )
@@ -1579,7 +1590,12 @@ class MGLRendererMixin:
             axis_u, axis_v = self._mgl_fx_ring_axes_from_tangent(tangent)
             if axis_u is None or axis_v is None:
                 continue
-            phase_t = self._mgl_fx_profile_phase(payload, int(entry["age"]), int(lifespan))
+            phase_t = self._mgl_fx_profile_phase(
+                payload,
+                int(entry["frame"]),
+                int(frame_step),
+                int(lifespan),
+            )
             profile_val = self._mgl_fx_profile_value(payload, phase_t)
             age_scale = max(0.0, float(self._mgl_fx_age_scale_value(payload, int(entry["age"]), int(lifespan))))
             ring_radius = float(base_radius) * max(0.08, float(profile_val)) * age_scale
@@ -4354,6 +4370,22 @@ class MGLRendererMixin:
             return False
         try:
             self._mgl_ctx.copy_framebuffer(dst_fbo, src_fbo)
+            try:
+                self._mgl_bind_default_fbo()
+            except Exception:
+                pass
+            try:
+                self._mgl_ctx.viewport = (0, 0, int(w), int(h))
+            except Exception:
+                pass
+            try:
+                if self._gl is not None:
+                    target_fbo = int(self._mgl_target_framebuffer_id())
+                    if target_fbo > 0:
+                        self._gl.glBindFramebuffer(0x8D40, target_fbo)  # GL_FRAMEBUFFER
+                    self._gl.glViewport(0, 0, int(w), int(h))
+            except Exception:
+                pass
             self._mgl_material_scene_screen_size = (float(w), float(h))
             self._mgl_material_scene_valid = True
             self._mgl_material_log_throttled(
@@ -4393,6 +4425,18 @@ class MGLRendererMixin:
                         0x2601,  # GL_LINEAR
                     )
                     self._mgl_bind_default_fbo()
+                    try:
+                        self._mgl_ctx.viewport = (0, 0, int(w), int(h))
+                    except Exception:
+                        pass
+                    try:
+                        if self._gl is not None:
+                            target_fbo = int(self._mgl_target_framebuffer_id())
+                            if target_fbo > 0:
+                                self._gl.glBindFramebuffer(0x8D40, target_fbo)  # GL_FRAMEBUFFER
+                            self._gl.glViewport(0, 0, int(w), int(h))
+                    except Exception:
+                        pass
                     self._mgl_material_scene_screen_size = (float(w), float(h))
                     self._mgl_material_scene_valid = True
                     self._mgl_material_log_throttled(
