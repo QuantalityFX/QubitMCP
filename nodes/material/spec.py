@@ -16,6 +16,7 @@ from echograph.material_debug import material_debug_log as _material_debug_log
 
 SUPPORTED_MESH_EXTS = {".obj", ".fbx", ".gltf", ".glb", ".ply", ".stl", ".off", ".om"}
 _DEFAULT_TRANSPARENCY = 80
+_DEFAULT_IOR = 1.50
 _DEFAULT_REFRACTION = 24
 _DEFAULT_TINT_COLOR = "#dfe7ff"
 
@@ -147,6 +148,39 @@ def _clamp_percent(value: str, default: int) -> int:
     return max(0, min(100, num))
 
 
+def _legacy_refraction_to_ior(value: str, default: float = _DEFAULT_IOR) -> float:
+    text = str(value or "").strip()
+    if not text:
+        return float(default)
+    try:
+        num = float(text)
+    except Exception:
+        return float(default)
+    if num <= 0.0:
+        return 1.0
+    if num <= 1.0:
+        return max(1.0, min(2.5, 1.0 + num))
+    return max(1.0, min(2.5, 1.0 + (num * 0.01)))
+
+
+def _clamp_ior(value: str, default: float = _DEFAULT_IOR) -> float:
+    text = str(value or "").strip()
+    if not text:
+        return max(1.0, min(2.5, float(default)))
+    try:
+        num = float(text)
+    except Exception:
+        return max(1.0, min(2.5, float(default)))
+    return max(1.0, min(2.5, num))
+
+
+def _ior_from_model(model) -> float:
+    raw_ior = _param_value(model, "ior")
+    if raw_ior.strip():
+        return _clamp_ior(raw_ior, _DEFAULT_IOR)
+    return _legacy_refraction_to_ior(_param_value(model, "refraction"), _DEFAULT_IOR)
+
+
 def _normalize_color_hex(value: str, default: str = _DEFAULT_TINT_COLOR) -> str:
     color = QtGui.QColor(str(value or "").strip() or default)
     if not color.isValid():
@@ -161,7 +195,7 @@ def _material_payload(model) -> dict:
     )
     return {
         "transparency": float(_clamp_percent(_param_value(model, "transparency"), _DEFAULT_TRANSPARENCY)) / 100.0,
-        "refraction": float(_clamp_percent(_param_value(model, "refraction"), _DEFAULT_REFRACTION)) / 100.0,
+        "ior": _ior_from_model(model),
         "tint_color": tint_color,
     }
 
@@ -171,11 +205,12 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, "source", "")
     _ensure_param(node_item, "path", "")
     _ensure_param(node_item, "transparency", str(_DEFAULT_TRANSPARENCY))
+    _ensure_param(node_item, "ior", f"{_ior_from_model(getattr(node_item, 'model', None)):.2f}")
     _ensure_param(node_item, "refraction", str(_DEFAULT_REFRACTION))
     _ensure_param(node_item, "tint_color", _DEFAULT_TINT_COLOR)
     _ensure_hidden_params(
         getattr(node_item, "model", None),
-        ["mesh", "source", "path", "transparency", "refraction", "tint_color", "base_color", "roughness", "specular_color"],
+        ["mesh", "source", "path", "transparency", "ior", "refraction", "tint_color", "base_color", "roughness", "specular_color"],
     )
     if hasattr(node_item, "ensure_input"):
         node_item.ensure_input("mesh")
@@ -210,7 +245,7 @@ class MaterialWidget(QtWidgets.QWidget):
         layout.addLayout(tint_row, 0)
 
         self._trans_slider, self._trans_value = self._slider_row(layout, "Transparency", self._on_transparency_changed)
-        self._refract_slider, self._refract_value = self._slider_row(layout, "Refraction", self._on_refraction_changed)
+        self._ior_spin = self._ior_row(layout)
 
         row3 = QtWidgets.QHBoxLayout()
         row3.setContentsMargins(0, 0, 0, 0)
@@ -242,6 +277,21 @@ class MaterialWidget(QtWidgets.QWidget):
         row.addWidget(value_label, 0)
         parent_layout.addLayout(row, 0)
         return slider, value_label
+
+    def _ior_row(self, parent_layout):
+        row = QtWidgets.QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(QtWidgets.QLabel("IOR"), 0)
+        spin = QtWidgets.QDoubleSpinBox()
+        spin.setRange(1.00, 2.50)
+        spin.setDecimals(2)
+        spin.setSingleStep(0.01)
+        spin.setKeyboardTracking(False)
+        spin.setAlignment(QtCore.Qt.AlignRight)
+        spin.valueChanged.connect(self._on_ior_changed)
+        row.addWidget(spin, 1)
+        parent_layout.addLayout(row, 0)
+        return spin
 
     def _ensure_scene(self):
         if self._scene is None:
@@ -297,18 +347,19 @@ class MaterialWidget(QtWidgets.QWidget):
             _DEFAULT_TINT_COLOR,
         )
         trans = _clamp_percent(_param_value(model, "transparency"), _DEFAULT_TRANSPARENCY)
-        refr = _clamp_percent(_param_value(model, "refraction"), _DEFAULT_REFRACTION)
+        ior = _ior_from_model(model)
         self._set_tint_button(tint_color)
-        for slider, value, text in (
-            (self._trans_slider, self._trans_value, trans),
-            (self._refract_slider, self._refract_value, refr),
-        ):
-            try:
-                slider.blockSignals(True)
-                slider.setValue(int(text))
-            finally:
-                slider.blockSignals(False)
-            value.setText(f"{int(text)}%")
+        try:
+            self._trans_slider.blockSignals(True)
+            self._trans_slider.setValue(int(trans))
+        finally:
+            self._trans_slider.blockSignals(False)
+        self._trans_value.setText(f"{int(trans)}%")
+        try:
+            self._ior_spin.blockSignals(True)
+            self._ior_spin.setValue(float(ior))
+        finally:
+            self._ior_spin.blockSignals(False)
 
     def _set_tint_button(self, color_hex: str):
         color = QtGui.QColor(_normalize_color_hex(color_hex, _DEFAULT_TINT_COLOR))
@@ -346,9 +397,8 @@ class MaterialWidget(QtWidgets.QWidget):
         self._trans_value.setText(f"{int(value)}%")
         self._set_param("transparency", str(int(value)), notify_scene=True)
 
-    def _on_refraction_changed(self, value: int):
-        self._refract_value.setText(f"{int(value)}%")
-        self._set_param("refraction", str(int(value)), notify_scene=True)
+    def _on_ior_changed(self, value: float):
+        self._set_param("ior", f"{float(value):.2f}", notify_scene=True)
 
     def _on_tint_clicked(self):
         current = QtGui.QColor(
@@ -546,7 +596,7 @@ def build_material_asset(node_item) -> Optional[dict]:
         path=str(path),
         texture=bool(texture),
         transparency=float(asset["material"].get("transparency", 0.0) or 0.0),
-        refraction=float(asset["material"].get("refraction", 0.0) or 0.0),
+        ior=float(asset["material"].get("ior", 1.0) or 1.0),
         tint_color=str(asset["material"].get("tint_color") or ""),
     )
     return asset

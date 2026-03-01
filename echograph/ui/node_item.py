@@ -662,6 +662,26 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 params.append({"name": "path", "value": ""})
             if "transparency" not in names:
                 params.append({"name": "transparency", "value": "80"})
+            if "ior" not in names:
+                legacy_refraction = ""
+                for p in params:
+                    if (p.get("name") or "").strip().lower() == "refraction":
+                        legacy_refraction = str(p.get("value") or "").strip()
+                        break
+                try:
+                    if legacy_refraction:
+                        legacy_num = float(legacy_refraction)
+                        if legacy_num <= 0.0:
+                            ior_default = "1.00"
+                        elif legacy_num <= 1.0:
+                            ior_default = f"{max(1.0, min(2.5, 1.0 + legacy_num)):.2f}"
+                        else:
+                            ior_default = f"{max(1.0, min(2.5, 1.0 + (legacy_num * 0.01))):.2f}"
+                    else:
+                        ior_default = "1.50"
+                except Exception:
+                    ior_default = "1.50"
+                params.append({"name": "ior", "value": ior_default})
             if "refraction" not in names:
                 params.append({"name": "refraction", "value": "24"})
             if "tint_color" not in names:
@@ -677,7 +697,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 params.append(hidden_entry)
             raw = hidden_entry.get("value", "")
             hidden = {t.strip().lower() for t in str(raw).split(",") if t.strip()}
-            hidden.update({"mesh", "source", "path", "transparency", "refraction", "tint_color", "base_color", "roughness", "specular_color"})
+            hidden.update({"mesh", "source", "path", "transparency", "ior", "refraction", "tint_color", "base_color", "roughness", "specular_color"})
             hidden_entry["value"] = ",".join(sorted(hidden))
             self.model.params = params
             try:
@@ -887,7 +907,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         elif kind == "texture_layer":
             hidden.update({"source", "path"})
         elif kind in ("mnaterial", "material"):
-            hidden.update({"mesh", "source", "path", "transparency", "base_color", "roughness", "refraction", "specular_color"})
+            hidden.update({"mesh", "source", "path", "transparency", "base_color", "roughness", "ior", "refraction", "specular_color"})
         elif kind in ("volume_selector", "split_volume"):
             hidden.update({"source", "path", "invert"})
         elif kind == "transforms":

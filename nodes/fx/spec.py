@@ -180,7 +180,7 @@ def trail_asset_config_from_model(model) -> dict:
         age_scale_points = _profile_from_json(raw_age_scale_profile)
     else:
         age_scale_points = list(DEFAULT_AGE_SCALE_POINTS)
-    samples = _parse_int(_param_value(model, "samples"), 28, minimum=4, maximum=180)
+    samples = _parse_int(_param_value(model, "samples"), 28, minimum=4, maximum=1000)
     frame_step = _parse_int(_param_value(model, "frame_step"), 1, minimum=1, maximum=24)
     lifespan_default = max(1, int(samples) * int(frame_step))
     return {
@@ -476,7 +476,7 @@ class FxTrailWidget(QtWidgets.QWidget):
             )
             return sb
 
-        self._samples = _mk_int(4, 180)
+        self._samples = _mk_int(4, 1000)
         self._step = _mk_int(1, 24)
         self._lifespan = _mk_int(1, 480)
         self._repeats = _mk_int(1, 64)
@@ -698,7 +698,7 @@ class FxTrailWidget(QtWidgets.QWidget):
             age_scale_profile = _profile_from_json(raw_age_scale_profile)
         else:
             age_scale_profile = list(DEFAULT_AGE_SCALE_POINTS)
-        samples = _parse_int(_param_value(model, "samples"), 28, minimum=4, maximum=180)
+        samples = _parse_int(_param_value(model, "samples"), 28, minimum=4, maximum=1000)
         frame_step = _parse_int(_param_value(model, "frame_step"), 1, minimum=1, maximum=24)
         lifespan_default = max(1, int(samples) * int(frame_step))
         try:

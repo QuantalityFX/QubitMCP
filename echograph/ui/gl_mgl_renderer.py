@@ -550,6 +550,31 @@ class MGLRendererMixin:
                 num = float(default)
             return max(0.0, min(1.0, num))
 
+        def _norm_ior(value, legacy_value, default: float = 1.50) -> float:
+            try:
+                text = str(value or "").strip()
+            except Exception:
+                text = ""
+            if text:
+                try:
+                    num = float(text)
+                except Exception:
+                    num = float(default)
+                if not math.isfinite(num):
+                    num = float(default)
+                return max(1.0, min(2.5, num))
+            try:
+                legacy = float(legacy_value)
+            except Exception:
+                legacy = None
+            if legacy is None:
+                return max(1.0, min(2.5, float(default)))
+            if legacy <= 0.0:
+                return 1.0
+            if legacy <= 1.0:
+                return max(1.0, min(2.5, 1.0 + legacy))
+            return max(1.0, min(2.5, 1.0 + (legacy * 0.01)))
+
         def _norm_color3(value) -> tuple[float, float, float]:
             default = (1.0, 1.0, 1.0)
             if isinstance(value, str):
@@ -579,11 +604,11 @@ class MGLRendererMixin:
             return default
 
         transparency = _norm01(raw.get("transparency", 0.0), 0.0)
-        refraction = _norm01(raw.get("refraction", 0.0), 0.0)
+        ior = _norm_ior(raw.get("ior", None), raw.get("refraction", None), 1.50)
         tint_color = _norm_color3(raw.get("tint_color", raw.get("base_color", "#ffffff")))
         return {
             "transparency": transparency,
-            "refraction": refraction,
+            "ior": ior,
             "tint_color": tint_color,
         }
 
@@ -596,7 +621,7 @@ class MGLRendererMixin:
         except Exception:
             pass
         try:
-            if float(material.get("refraction", 0.0) or 0.0) > 1e-4:
+            if float(material.get("ior", 1.0) or 1.0) > 1.001:
                 return True
         except Exception:
             pass
@@ -610,7 +635,7 @@ class MGLRendererMixin:
         if not isinstance(material, dict):
             return False
         try:
-            return bool(float(material.get("refraction", 0.0) or 0.0) > 1e-4)
+            return bool(float(material.get("ior", 1.0) or 1.0) > 1.001)
         except Exception:
             return False
 
@@ -623,7 +648,7 @@ class MGLRendererMixin:
         except Exception:
             pass
         try:
-            return bool(float(material.get("refraction", 0.0) or 0.0) > 1e-4)
+            return bool(float(material.get("ior", 1.0) or 1.0) > 1.001)
         except Exception:
             return False
 
@@ -1265,29 +1290,18 @@ class MGLRendererMixin:
             lifespan = max(1, int(payload.get("lifespan", int(samples) * int(frame_step))))
         except Exception:
             lifespan = max(1, int(samples) * int(frame_step))
-        age_values = []
-        seen_ages = set()
-        if int(samples) <= 1:
-            age_values = [0]
-        else:
-            denom = float(max(1, int(samples) - 1))
-            for idx in range(int(samples)):
-                raw_age = (float(idx) * float(max(0, int(lifespan) - 1))) / denom
-                quant_age = int(round(raw_age / float(max(1, frame_step)))) * int(frame_step)
-                quant_age = max(0, min(int(lifespan) - 1, int(quant_age)))
-                if quant_age in seen_ages:
-                    continue
-                seen_ages.add(quant_age)
-                age_values.append(int(quant_age))
-        age_values.sort()
+        sample_limit = max(int(samples), int(math.ceil(float(max(1, lifespan)) / float(max(1, frame_step)))))
         entries = []
-        for sample_age in age_values:
+        for idx in range(int(sample_limit)):
+            sample_age = idx * int(frame_step)
+            if sample_age >= int(lifespan):
+                break
             sample_frame = int(frame) - sample_age
             if sample_frame < 0:
-                continue
+                break
             pos = self._mgl_fx_eval_owner_pos(active_owner, sample_frame)
             if pos is None:
-                if not entries:
+                if idx == 0:
                     continue
                 break
             vec = np.array(pos, dtype=np.float32)
@@ -2403,7 +2417,7 @@ class MGLRendererMixin:
                 visible=bool(getattr(item, "visible", False)),
                 transparent=bool(is_transparent_material),
                 transparency=float((material or {}).get("transparency", 0.0) or 0.0),
-                refraction=float((material or {}).get("refraction", 0.0) or 0.0),
+                ior=float((material or {}).get("ior", 1.0) or 1.0),
                 tint_color=list((material or {}).get("tint_color", (1.0, 1.0, 1.0))),
                 submeshes=int(len(submeshes or [])),
                 has_vao=bool(vao is not None),
@@ -2411,14 +2425,14 @@ class MGLRendererMixin:
         def _apply_material_uniforms() -> None:
             use_material = 1 if self._mgl_material_has_effect(material) else 0
             transparency = 0.0
-            refraction = 0.0
+            ior = 1.0
             tint = (1.0, 1.0, 1.0)
             use_scene_refraction = 0
             if isinstance(material, dict):
                 transparency = float(material.get("transparency", 0.0) or 0.0)
-                refraction = float(material.get("refraction", 0.0) or 0.0)
+                ior = float(material.get("ior", 1.0) or 1.0)
                 tint = tuple(material.get("tint_color", (1.0, 1.0, 1.0)) or (1.0, 1.0, 1.0))
-                if refraction > 1e-4 and bool(getattr(self, "_mgl_material_scene_valid", False)):
+                if ior > 1.001 and bool(getattr(self, "_mgl_material_scene_valid", False)):
                     scene_tex = getattr(self, "_mgl_material_scene_tex", None)
                     if scene_tex is not None:
                         try:
@@ -2435,7 +2449,7 @@ class MGLRendererMixin:
             except Exception:
                 pass
             try:
-                self._mgl_prog["MaterialRefraction"].value = refraction
+                self._mgl_prog["MaterialIor"].value = ior
             except Exception:
                 pass
             try:
@@ -3664,7 +3678,7 @@ class MGLRendererMixin:
             prog["UseProceduralLayer"].value = 0
             prog["UseVolumeMask"].value = 0
             prog["UseSceneRefraction"].value = 0
-            prog["MaterialRefraction"].value = 0.0
+            prog["MaterialIor"].value = 1.0
             prog["MaterialTransparency"].value = 0.0
             prog["MaterialTint"].value = (1.0, 1.0, 1.0)
             prog["CameraWorldPos"].value = (0.0, 0.0, 4.0)
@@ -3802,7 +3816,7 @@ class MGLRendererMixin:
                 prog["Light"].value = (1.0, 1.0, 1.0)
                 prog["LightIntensity"].value = float(getattr(self, "_mgl_light_intensity", 1.0) or 1.0)
                 prog["MaterialTransparency"].value = 0.0
-                prog["MaterialRefraction"].value = 0.0
+                prog["MaterialIor"].value = 1.0
                 prog["MaterialTint"].value = (1.0, 1.0, 1.0)
                 prog["ScreenSize"].value = (1.0, 1.0)
                 prog["CameraWorldPos"].value = (0.0, 0.0, 4.0)
@@ -6285,7 +6299,7 @@ class MGLRendererMixin:
                 self._mgl_prog["UseLighting"].value = 1
                 self._mgl_prog["UseMaterial"].value = 0
                 self._mgl_prog["MaterialTransparency"].value = 0.0
-                self._mgl_prog["MaterialRefraction"].value = 0.0
+                self._mgl_prog["MaterialIor"].value = 1.0
                 self._mgl_prog["MaterialTint"].value = (1.0, 1.0, 1.0)
                 self._mgl_prog["UseSceneRefraction"].value = 0
                 self._mgl_prog["ScreenSize"].value = (1.0, 1.0)
@@ -7973,7 +7987,7 @@ class MGLRendererMixin:
                             visible=bool(visible),
                             transparent=bool(self._mgl_material_is_transparent(material)),
                             transparency=float((material or {}).get("transparency", 0.0) or 0.0),
-                            refraction=float((material or {}).get("refraction", 0.0) or 0.0),
+                            ior=float((material or {}).get("ior", 1.0) or 1.0),
                             tint_color=list((material or {}).get("tint_color", (1.0, 1.0, 1.0))),
                             submeshes=int(len(model_item.payload.get("submeshes") or [])),
                             has_vao=bool(model_item.payload.get("vao") is not None),

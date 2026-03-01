@@ -112,6 +112,32 @@ def _clamp01(value, default: float = 0.0) -> float:
     return max(0.0, min(1.0, num))
 
 
+def _legacy_refraction_to_ior(value, default: float = 1.50) -> float:
+    text = str(value or "").strip()
+    if not text:
+        return float(default)
+    try:
+        num = float(text)
+    except Exception:
+        return float(default)
+    if num <= 0.0:
+        return 1.0
+    if num <= 1.0:
+        return max(1.0, min(2.5, 1.0 + num))
+    return max(1.0, min(2.5, 1.0 + (num * 0.01)))
+
+
+def _clamp_ior(value, default: float = 1.50) -> float:
+    text = str(value or "").strip()
+    if not text:
+        return max(1.0, min(2.5, float(default)))
+    try:
+        num = float(text)
+    except Exception:
+        return max(1.0, min(2.5, float(default)))
+    return max(1.0, min(2.5, num))
+
+
 def _material_payload(model) -> dict | None:
     if model is None:
         return None
@@ -119,9 +145,10 @@ def _material_payload(model) -> dict | None:
     if kind not in _MATERIAL_KINDS:
         return None
     tint_color = (_param_value(model, "tint_color") or _param_value(model, "base_color") or "#dfe7ff").strip()
+    raw_ior = _param_value(model, "ior")
     return {
         "transparency": _clamp01(_param_value(model, "transparency"), 0.8),
-        "refraction": _clamp01(_param_value(model, "refraction"), 0.24),
+        "ior": _clamp_ior(raw_ior, 1.50) if raw_ior.strip() else _legacy_refraction_to_ior(_param_value(model, "refraction"), 1.50),
         "tint_color": tint_color or "#dfe7ff",
     }
 
@@ -1067,7 +1094,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                 visible=bool(entry.get("visible", True)),
                 has_texture=bool(texture),
                 transparency=float((entry.get("material") or {}).get("transparency", 0.0) or 0.0),
-                refraction=float((entry.get("material") or {}).get("refraction", 0.0) or 0.0),
+                ior=float((entry.get("material") or {}).get("ior", 1.0) or 1.0),
                 tint_color=str((entry.get("material") or {}).get("tint_color") or ""),
                 xform_offset=bool(entry.get("xform_offset")),
             )

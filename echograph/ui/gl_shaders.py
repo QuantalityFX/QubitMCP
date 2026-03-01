@@ -47,7 +47,7 @@ uniform int UseVolumeMask;
 uniform mat4 VolumeInv;
 uniform mat4 Model;
 uniform float MaterialTransparency;
-uniform float MaterialRefraction;
+uniform float MaterialIor;
 uniform vec3 MaterialTint;
 uniform sampler2D SceneColorTex;
 uniform int UseSceneRefraction;
@@ -366,38 +366,46 @@ void main() {
     if (UseMaterial == 1) {
         base.a = max(base.a, 1.0);
         float transmission = clamp(MaterialTransparency, 0.0, 1.0);
-        float refraction = clamp(MaterialRefraction, 0.0, 1.0);
+        float ior = max(MaterialIor, 1.0);
+        float refraction_strength = clamp((ior - 1.0) / 1.5, 0.0, 1.0);
         vec3 tint = clamp(MaterialTint, vec3(0.0), vec3(1.0));
         vec3 n = safe_normalize(v_world_norm);
         vec3 view_dir = safe_normalize(CameraWorldPos - v_world_pos);
         float edge = pow(1.0 - clamp(abs(n.z), 0.0, 1.0), 1.6);
         vec3 material_rgb = clamp(mix(base.rgb, tint, 0.58), 0.0, 1.0);
-        if (UseSceneRefraction == 1 && refraction > 0.001) {
+        float refraction_present = 0.0;
+        if (UseSceneRefraction == 1 && refraction_strength > 0.001) {
+            refraction_present = 1.0;
             vec2 safe_screen = max(ScreenSize, vec2(1.0, 1.0));
             vec2 screen_uv = gl_FragCoord.xy / safe_screen;
-            vec2 center_uv = clamp(screen_uv, vec2(0.001), vec2(0.999));
-            float ior = mix(1.0, 1.8, refraction);
+            float refract_strength = pow(refraction_strength, 1.5);
             vec3 refracted = refract(-view_dir, n, 1.0 / max(ior, 1.001));
             vec2 refract_vec = refracted.xy;
-            float refract_z = max(0.18, abs(refracted.z));
-            vec2 refract_offset = (refract_vec / refract_z) * (0.028 * refraction) * (0.30 + transmission * 0.70) * (0.65 + edge * 0.35);
+            float refract_z = max(0.35, abs(refracted.z));
+            vec2 refract_offset = (refract_vec / refract_z) * (0.014 * refract_strength) * (0.22 + transmission * 0.48) * (0.30 + edge * 0.22);
             vec2 warped_uv0 = clamp(screen_uv + refract_offset, vec2(0.001), vec2(0.999));
             vec2 warped_uv1 = clamp(screen_uv - refract_offset * 0.45, vec2(0.001), vec2(0.999));
-            vec3 scene_center = texture(SceneColorTex, center_uv).rgb;
             vec3 scene_rgb0 = texture(SceneColorTex, warped_uv0).rgb;
             vec3 scene_rgb1 = texture(SceneColorTex, warped_uv1).rgb;
             vec3 scene_rgb = mix(scene_rgb0, scene_rgb1, 0.35);
-            vec3 transmitted_rgb = mix(scene_center, scene_rgb, clamp(0.72 + refraction * 0.28, 0.0, 1.0));
-            transmitted_rgb *= mix(vec3(1.0), tint, 0.24 + transmission * 0.26);
-            material_rgb = mix(material_rgb, clamp(transmitted_rgb, 0.0, 1.0), clamp(transmission * (0.82 + refraction * 0.12), 0.0, 0.92));
+            vec3 transmitted_rgb = scene_rgb * mix(vec3(1.0), tint, 0.18 + transmission * 0.22);
+            material_rgb = mix(
+                material_rgb * mix(vec3(1.0), tint, 0.08),
+                clamp(transmitted_rgb, 0.0, 1.0),
+                clamp(0.88 + transmission * 0.08, 0.0, 0.98)
+            );
         }
         vec3 edge_rgb = clamp(mix(material_rgb, tint, 0.30), 0.0, 1.0);
-        material_rgb = mix(material_rgb, edge_rgb, clamp(edge * (0.22 + refraction * 0.14), 0.0, 0.34));
+        material_rgb = mix(material_rgb, edge_rgb, clamp(edge * (0.22 + refraction_strength * 0.12), 0.0, 0.34));
         base.rgb = material_rgb;
         float material_alpha = max(0.0, 1.0 - transmission);
-        material_alpha += 0.10 + refraction * 0.12;
-        material_alpha += edge * (0.14 + refraction * 0.16);
-        base.a *= clamp(material_alpha, 0.18, 0.92);
+        material_alpha += 0.10 + refraction_strength * 0.08;
+        material_alpha += edge * (0.14 + refraction_strength * 0.10);
+        float alpha_out = clamp(material_alpha, 0.18, 0.92);
+        if (refraction_present > 0.5) {
+            alpha_out = mix(alpha_out, 0.96, clamp(0.62 + transmission * 0.24, 0.0, 0.98));
+        }
+        base.a *= alpha_out;
     }
     if (base.a <= 0.001) {
         discard;
