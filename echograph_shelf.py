@@ -3244,6 +3244,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 clean_entry["global_space"] = bool(entry.get("global_space", False))
                 clean_entry["samples"] = int(entry.get("samples", 28) or 28)
                 clean_entry["frame_step"] = int(entry.get("frame_step", 1) or 1)
+                clean_entry["spawn_rate"] = float(entry.get("spawn_rate", entry.get("frame_step", 1.0)) or 1.0)
+                clean_entry["substeps"] = int(entry.get("substeps", 1) or 1)
                 clean_entry["lifespan"] = int(entry.get("lifespan", max(1, int(entry.get("samples", 28) or 28) * int(entry.get("frame_step", 1) or 1))) or 1)
                 clean_entry["repeats"] = int(entry.get("repeats", 1) or 1)
                 clean_entry["radius"] = float(entry.get("radius", 0.35) or 0.35)
@@ -3259,7 +3261,9 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             if is_fx_trail:
                 _fx_log(
                     f"[shelf] pass fx_trail node={node_name or '<none>'} target_owner={target_owner} "
-                    f"global={bool(entry.get('global_space', False))} repeats={int(entry.get('repeats', 1) or 1)} "
+                    f"global={bool(entry.get('global_space', False))} "
+                    f"spawn_rate={float(entry.get('spawn_rate', entry.get('frame_step', 1.0)) or 1.0):.3f} "
+                    f"substeps={int(entry.get('substeps', 1) or 1)} repeats={int(entry.get('repeats', 1) or 1)} "
                     f"aliases={list(entry.get('target_owner_aliases') or [])!r} visible={visible}"
                 )
 
@@ -3296,6 +3300,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                         bool(entry.get("enabled", True)),
                         int(entry.get("samples", 28) or 28),
                         int(entry.get("frame_step", 1) or 1),
+                        round(float(entry.get("spawn_rate", entry.get("frame_step", 1.0)) or 1.0), 6),
+                        int(entry.get("substeps", 1) or 1),
                         int(entry.get("lifespan", max(1, int(entry.get("samples", 28) or 28) * int(entry.get("frame_step", 1) or 1))) or 1),
                         int(entry.get("repeats", 1) or 1),
                         round(float(entry.get("radius", 0.35) or 0.35), 6),

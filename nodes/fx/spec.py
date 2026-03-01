@@ -181,13 +181,17 @@ def trail_asset_config_from_model(model) -> dict:
     else:
         age_scale_points = list(DEFAULT_AGE_SCALE_POINTS)
     samples = _parse_int(_param_value(model, "samples"), 28, minimum=4, maximum=1000)
-    frame_step = _parse_int(_param_value(model, "frame_step"), 1, minimum=1, maximum=24)
-    lifespan_default = max(1, int(samples) * int(frame_step))
+    spawn_rate_raw = _param_value(model, "spawn_rate") or _param_value(model, "frame_step") or "1"
+    spawn_rate = _parse_float(spawn_rate_raw, 1.0, minimum=0.01, maximum=24.0)
+    substeps = _parse_int(_param_value(model, "substeps"), 1, minimum=1, maximum=64)
+    lifespan_default = max(1, int(round(float(samples) * float(spawn_rate))))
     return {
         "enabled": _param_value(model, "enabled").strip() not in {"0", "false", "False", "off", "no"},
         "global_space": _param_value(model, "global_space").strip() in {"1", "true", "True", "on", "yes"},
         "samples": samples,
-        "frame_step": frame_step,
+        "frame_step": max(1, int(round(float(spawn_rate)))),
+        "spawn_rate": spawn_rate,
+        "substeps": substeps,
         "lifespan": _parse_int(_param_value(model, "lifespan"), lifespan_default, minimum=1, maximum=480),
         "repeats": _parse_int(_param_value(model, "repeats"), 1, minimum=1, maximum=64),
         "radius": _parse_float(_param_value(model, "radius"), 0.35, minimum=0.01, maximum=1000.0),
@@ -208,6 +212,8 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, "global_space", "0")
     _ensure_param(node_item, "samples", "28")
     _ensure_param(node_item, "frame_step", "1")
+    _ensure_param(node_item, "spawn_rate", "1.0")
+    _ensure_param(node_item, "substeps", "1")
     _ensure_param(node_item, "lifespan", "28")
     _ensure_param(node_item, "repeats", "1")
     _ensure_param(node_item, "radius", "0.35")
@@ -227,6 +233,8 @@ def build_ports(node_item) -> None:
             "global_space",
             "samples",
             "frame_step",
+            "spawn_rate",
+            "substeps",
             "lifespan",
             "repeats",
             "radius",
@@ -476,8 +484,8 @@ class FxTrailWidget(QtWidgets.QWidget):
             )
             return sb
 
-        self._samples = _mk_int(4, 1000)
-        self._step = _mk_int(1, 24)
+        self._spawn_rate = _mk_float(0.01, 24.0, 0.05)
+        self._substeps = _mk_int(1, 64)
         self._lifespan = _mk_int(1, 480)
         self._repeats = _mk_int(1, 64)
         self._sides = _mk_int(6, 96)
@@ -493,10 +501,10 @@ class FxTrailWidget(QtWidgets.QWidget):
         )
         self._color.editingFinished.connect(self._on_color_changed)
 
-        grid.addWidget(QtWidgets.QLabel("Samples"), 0, 0)
-        grid.addWidget(self._samples, 0, 1)
-        grid.addWidget(QtWidgets.QLabel("Step"), 0, 2)
-        grid.addWidget(self._step, 0, 3)
+        grid.addWidget(QtWidgets.QLabel("Spawn"), 0, 0)
+        grid.addWidget(self._spawn_rate, 0, 1)
+        grid.addWidget(QtWidgets.QLabel("Substeps"), 0, 2)
+        grid.addWidget(self._substeps, 0, 3)
         grid.addWidget(QtWidgets.QLabel("Life"), 1, 0)
         grid.addWidget(self._lifespan, 1, 1)
         grid.addWidget(QtWidgets.QLabel("Repeat"), 1, 2)
@@ -567,10 +575,14 @@ class FxTrailWidget(QtWidgets.QWidget):
         age_hint.setWordWrap(True)
         age_hint.setStyleSheet("color:#64748b;font-size:10px;")
         layout.addWidget(age_hint, 0)
+        spawn_hint = QtWidgets.QLabel("Spawn is ring spacing in frames. Values below 1 need higher Substeps.")
+        spawn_hint.setWordWrap(True)
+        spawn_hint.setStyleSheet("color:#64748b;font-size:10px;")
+        layout.addWidget(spawn_hint, 0)
 
         for widget, key, is_float in (
-            (self._samples, "samples", False),
-            (self._step, "frame_step", False),
+            (self._spawn_rate, "spawn_rate", True),
+            (self._substeps, "substeps", False),
             (self._lifespan, "lifespan", False),
             (self._repeats, "repeats", False),
             (self._sides, "sides", False),
@@ -589,7 +601,7 @@ class FxTrailWidget(QtWidgets.QWidget):
         self._schedule_refresh()
 
     def sizeHint(self):
-        return QtCore.QSize(220, 388)
+        return QtCore.QSize(220, 402)
 
     def _set_param(self, name: str, value: str, *, notify_scene: bool = True) -> None:
         if self._updating:
@@ -699,14 +711,20 @@ class FxTrailWidget(QtWidgets.QWidget):
         else:
             age_scale_profile = list(DEFAULT_AGE_SCALE_POINTS)
         samples = _parse_int(_param_value(model, "samples"), 28, minimum=4, maximum=1000)
-        frame_step = _parse_int(_param_value(model, "frame_step"), 1, minimum=1, maximum=24)
-        lifespan_default = max(1, int(samples) * int(frame_step))
+        spawn_rate = _parse_float(
+            _param_value(model, "spawn_rate") or _param_value(model, "frame_step") or "1",
+            1.0,
+            minimum=0.01,
+            maximum=24.0,
+        )
+        substeps = _parse_int(_param_value(model, "substeps"), 1, minimum=1, maximum=64)
+        lifespan_default = max(1, int(round(float(samples) * float(spawn_rate))))
         try:
             self._updating = True
             self._enabled.blockSignals(True)
             self._global_space.blockSignals(True)
-            self._samples.blockSignals(True)
-            self._step.blockSignals(True)
+            self._spawn_rate.blockSignals(True)
+            self._substeps.blockSignals(True)
             self._lifespan.blockSignals(True)
             self._repeats.blockSignals(True)
             self._sides.blockSignals(True)
@@ -716,8 +734,8 @@ class FxTrailWidget(QtWidgets.QWidget):
             self._age_scale_max.blockSignals(True)
             self._enabled.setChecked(_param_value(model, "enabled").strip() not in {"0", "false", "False", "off", "no"})
             self._global_space.setChecked(_param_value(model, "global_space").strip() in {"1", "true", "True", "on", "yes"})
-            self._samples.setValue(samples)
-            self._step.setValue(frame_step)
+            self._spawn_rate.setValue(spawn_rate)
+            self._substeps.setValue(substeps)
             self._lifespan.setValue(_parse_int(_param_value(model, "lifespan"), lifespan_default, minimum=1, maximum=480))
             self._repeats.setValue(_parse_int(_param_value(model, "repeats"), 1, minimum=1, maximum=64))
             self._sides.setValue(_parse_int(_param_value(model, "sides"), 28, minimum=6, maximum=96))
@@ -732,8 +750,8 @@ class FxTrailWidget(QtWidgets.QWidget):
             for widget in (
                 self._enabled,
                 self._global_space,
-                self._samples,
-                self._step,
+                self._spawn_rate,
+                self._substeps,
                 self._lifespan,
                 self._repeats,
                 self._sides,

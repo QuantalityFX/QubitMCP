@@ -1185,26 +1185,35 @@ class MGLRendererMixin:
             return 0.0
         return max(0.0, min(1.0, float(age) / float(max(1, life_frames - 1))))
 
-    def _mgl_fx_profile_phase(self, payload, spawn_frame: int, frame_step: int, lifespan: int) -> float:
+    def _mgl_fx_substeps(self, payload) -> int:
+        try:
+            return max(1, int(payload.get("substeps", 1)))
+        except Exception:
+            return 1
+
+    def _mgl_fx_spawn_rate(self, payload) -> float:
+        try:
+            return max(0.01, float(payload.get("spawn_rate", payload.get("frame_step", 1.0))))
+        except Exception:
+            return 1.0
+
+    def _mgl_fx_spawn_interval(self, payload) -> float:
+        substeps = max(1, self._mgl_fx_substeps(payload))
+        quantum = 1.0 / float(substeps)
+        return max(float(self._mgl_fx_spawn_rate(payload)), quantum)
+
+    def _mgl_fx_profile_phase(self, payload, emit_index: int, spawn_interval: float, lifespan: int) -> float:
         try:
             repeats = max(1, int(payload.get("repeats", 1)))
         except Exception:
             repeats = 1
         try:
-            step = max(1, int(frame_step))
-        except Exception:
-            step = 1
-        try:
-            life_steps = max(1, int(math.ceil(float(max(1, lifespan)) / float(step))))
+            life_steps = max(1, int(math.ceil(float(max(1, lifespan)) / float(max(0.01, spawn_interval)))))
         except Exception:
             life_steps = 1
-        try:
-            emit_index = max(0, int(math.floor(float(spawn_frame) / float(step))))
-        except Exception:
-            emit_index = max(0, int(spawn_frame))
         if life_steps <= 1:
             return 0.0
-        phase = math.fmod((float(emit_index) / float(life_steps)) * float(repeats), 1.0)
+        phase = math.fmod((float(max(0, int(emit_index))) / float(life_steps)) * float(repeats), 1.0)
         if phase < 0.0:
             phase += 1.0
         return float(phase)
@@ -1279,27 +1288,22 @@ class MGLRendererMixin:
         if np is None:
             return []
         try:
-            samples = max(1, int(payload.get("samples", 28)))
+            lifespan = max(1.0, float(payload.get("lifespan", 28)))
         except Exception:
-            samples = 28
-        try:
-            frame_step = max(1, int(payload.get("frame_step", 1)))
-        except Exception:
-            frame_step = 1
-        try:
-            lifespan = max(1, int(payload.get("lifespan", int(samples) * int(frame_step))))
-        except Exception:
-            lifespan = max(1, int(samples) * int(frame_step))
-        sample_limit = max(int(samples), int(math.ceil(float(max(1, lifespan)) / float(max(1, frame_step)))))
+            lifespan = 28.0
+        substeps = max(1, self._mgl_fx_substeps(payload))
+        spawn_interval = max(0.01, float(self._mgl_fx_spawn_interval(payload)))
+        sample_limit = max(1, int(math.ceil(float(lifespan) / float(spawn_interval))))
         entries = []
         for idx in range(int(sample_limit)):
-            sample_age = idx * int(frame_step)
-            if sample_age >= int(lifespan):
+            sample_age = float(idx) * float(spawn_interval)
+            if sample_age >= float(lifespan):
                 break
-            sample_frame = int(frame) - sample_age
-            if sample_frame < 0:
+            sample_frame = float(frame) - float(sample_age)
+            if sample_frame < 0.0:
                 break
-            pos = self._mgl_fx_eval_owner_pos(active_owner, sample_frame)
+            sample_frame_q = round(float(sample_frame) * float(substeps)) / float(substeps)
+            pos = self._mgl_fx_eval_owner_pos(active_owner, sample_frame_q)
             if pos is None:
                 if idx == 0:
                     continue
@@ -1313,9 +1317,9 @@ class MGLRendererMixin:
                     pass
             entries.append(
                 {
-                    "frame": int(sample_frame),
-                    "age": int(sample_age),
-                    "emit_index": int(max(0, math.floor(float(sample_frame) / float(max(1, frame_step))))),
+                    "frame": float(sample_frame_q),
+                    "age": float(sample_age),
+                    "emit_index": int(max(0, round(float(sample_frame_q) / float(spawn_interval)))),
                     "center": vec,
                 }
             )
@@ -1360,18 +1364,15 @@ class MGLRendererMixin:
         axis_v = axis_v / float(vlen)
         return axis_u, axis_v
 
-    def _mgl_fx_tangent_for_sample(self, payload, active_owner: str, sample_frame: int, prev_center, next_center):
-        try:
-            frame_step = max(1, int(payload.get("frame_step", 1)))
-        except Exception:
-            frame_step = 1
-        center = self._mgl_fx_eval_owner_pos(active_owner, int(sample_frame))
+    def _mgl_fx_tangent_for_sample(self, payload, active_owner: str, sample_frame: float, prev_center, next_center):
+        sample_step = float(self._mgl_fx_spawn_interval(payload))
+        center = self._mgl_fx_eval_owner_pos(active_owner, float(sample_frame))
         if center is None:
             center_vec = None
         else:
             center_vec = np.array(center, dtype=np.float32)
-        before = self._mgl_fx_eval_owner_pos(active_owner, int(sample_frame) - int(frame_step))
-        after = self._mgl_fx_eval_owner_pos(active_owner, int(sample_frame) + int(frame_step))
+        before = self._mgl_fx_eval_owner_pos(active_owner, float(sample_frame) - float(sample_step))
+        after = self._mgl_fx_eval_owner_pos(active_owner, float(sample_frame) + float(sample_step))
         before_vec = np.array(before, dtype=np.float32) if before is not None and np is not None else None
         after_vec = np.array(after, dtype=np.float32) if after is not None and np is not None else None
         if before_vec is not None and after_vec is not None:
@@ -1465,7 +1466,7 @@ class MGLRendererMixin:
         except Exception:
             return None
 
-    def _mgl_fx_eval_owner_pos(self, owner: str, frame: int):
+    def _mgl_fx_eval_owner_pos_int(self, owner: str, frame: int):
         key = str(owner or "").strip()
         if not key:
             return None
@@ -1502,6 +1503,39 @@ class MGLRendererMixin:
             return live_pos
         return None
 
+    def _mgl_fx_eval_owner_pos(self, owner: str, frame):
+        key = str(owner or "").strip()
+        if not key:
+            return None
+        try:
+            frame_f = float(frame)
+        except Exception:
+            return None
+        frame_i = int(round(frame_f))
+        if abs(frame_f - float(frame_i)) <= 1.0e-5:
+            return self._mgl_fx_eval_owner_pos_int(key, frame_i)
+        lo = int(math.floor(frame_f))
+        hi = int(math.ceil(frame_f))
+        if hi == lo:
+            return self._mgl_fx_eval_owner_pos_int(key, lo)
+        pos_lo = self._mgl_fx_eval_owner_pos_int(key, lo)
+        pos_hi = self._mgl_fx_eval_owner_pos_int(key, hi)
+        if pos_lo is None and pos_hi is None:
+            return None
+        if pos_lo is None:
+            return pos_hi
+        if pos_hi is None:
+            return pos_lo
+        alpha = max(0.0, min(1.0, float(frame_f - float(lo))))
+        try:
+            return (
+                (float(pos_lo[0]) * (1.0 - alpha)) + (float(pos_hi[0]) * alpha),
+                (float(pos_lo[1]) * (1.0 - alpha)) + (float(pos_hi[1]) * alpha),
+                (float(pos_lo[2]) * (1.0 - alpha)) + (float(pos_hi[2]) * alpha),
+            )
+        except Exception:
+            return pos_lo
+
     def _mgl_fx_build_trail_line_points(self, payload, frame: int):
         if np is None:
             self._mgl_fx_log_throttled("numpy-missing", "[renderer] build skip: numpy unavailable", interval=3.0)
@@ -1533,13 +1567,12 @@ class MGLRendererMixin:
         except Exception:
             samples = 28
         try:
-            frame_step = max(1, int(payload.get("frame_step", 1)))
+            lifespan = max(1, int(payload.get("lifespan", int(samples))))
         except Exception:
-            frame_step = 1
-        try:
-            lifespan = max(1, int(payload.get("lifespan", int(samples) * int(frame_step))))
-        except Exception:
-            lifespan = max(1, int(samples) * int(frame_step))
+            lifespan = max(1, int(samples))
+        spawn_rate = float(self._mgl_fx_spawn_rate(payload))
+        substeps = int(self._mgl_fx_substeps(payload))
+        spawn_interval = float(self._mgl_fx_spawn_interval(payload))
         try:
             base_radius = max(0.001, float(payload.get("radius", 0.35)))
         except Exception:
@@ -1573,7 +1606,8 @@ class MGLRendererMixin:
             payload["_fx_debug_newest_frame"] = None
             self._mgl_fx_log(
                 f"[renderer] build no-centers target_owner={target_owner} active_owner={active_owner} "
-                f"frame={int(frame)} samples={int(samples)} frame_step={int(frame_step)} lifespan={int(lifespan)} "
+                f"frame={int(frame)} spawn_rate={spawn_rate:.3f} substeps={int(substeps)} interval={spawn_interval:.3f} "
+                f"samples={int(samples)} lifespan={int(lifespan)} "
                 f"repeats={int(repeats)} global={global_space} "
                 f"aliases={self._mgl_fx_owner_candidates(payload)!r}"
             )
@@ -1584,8 +1618,8 @@ class MGLRendererMixin:
             newest_entry = entries[-1]
             payload["_fx_debug_oldest_center"] = tuple(float(v) for v in oldest_entry["center"])
             payload["_fx_debug_newest_center"] = tuple(float(v) for v in newest_entry["center"])
-            payload["_fx_debug_oldest_frame"] = int(oldest_entry["frame"])
-            payload["_fx_debug_newest_frame"] = int(newest_entry["frame"])
+            payload["_fx_debug_oldest_frame"] = float(oldest_entry["frame"])
+            payload["_fx_debug_newest_frame"] = float(newest_entry["frame"])
         except Exception:
             payload["_fx_debug_oldest_center"] = None
             payload["_fx_debug_newest_center"] = None
@@ -1601,7 +1635,7 @@ class MGLRendererMixin:
                 tangent = self._mgl_fx_tangent_for_sample(
                     payload,
                     active_owner,
-                    int(entry["frame"]),
+                    float(entry["frame"]),
                     prev_center,
                     next_center,
                 )
@@ -1619,12 +1653,12 @@ class MGLRendererMixin:
                 continue
             phase_t = self._mgl_fx_profile_phase(
                 payload,
-                int(entry["frame"]),
-                int(frame_step),
+                int(entry.get("emit_index", 0)),
+                float(spawn_interval),
                 int(lifespan),
             )
             profile_val = self._mgl_fx_profile_value(payload, phase_t)
-            age_scale = max(0.0, float(self._mgl_fx_age_scale_value(payload, int(entry["age"]), int(lifespan))))
+            age_scale = max(0.0, float(self._mgl_fx_age_scale_value(payload, float(entry["age"]), int(lifespan))))
             ring_radius = float(base_radius) * max(0.08, float(profile_val)) * age_scale
             for seg in range(int(sides)):
                 a0 = (2.0 * math.pi * float(seg)) / float(sides)
@@ -1666,6 +1700,8 @@ class MGLRendererMixin:
             bool(payload.get("global_space", False)),
             int(payload.get("samples", 28)),
             int(payload.get("frame_step", 1)),
+            round(float(payload.get("spawn_rate", payload.get("frame_step", 1.0))), 5),
+            int(payload.get("substeps", 1)),
             int(payload.get("lifespan", int(payload.get("samples", 28)) * max(1, int(payload.get("frame_step", 1))))),
             int(payload.get("repeats", 1)),
             round(float(payload.get("radius", 0.35)), 5),
@@ -1695,7 +1731,9 @@ class MGLRendererMixin:
             self._mgl_fx_log(
                 f"[renderer] update no-geometry owner={item.name} target_owner={target_owner} "
                 f"active_owner={active_owner} frame={int(frame)} live_pos={live_pos!r} "
-                f"global={bool(payload.get('global_space', False))} repeats={int(payload.get('repeats', 1) or 1)} "
+                f"global={bool(payload.get('global_space', False))} "
+                f"spawn_rate={float(payload.get('spawn_rate', payload.get('frame_step', 1.0)) or 1.0):.3f} "
+                f"substeps={int(payload.get('substeps', 1) or 1)} repeats={int(payload.get('repeats', 1) or 1)} "
                 f"aliases={self._mgl_fx_owner_candidates(payload)!r}"
             )
             return False
@@ -1714,7 +1752,9 @@ class MGLRendererMixin:
             self._mgl_fx_log(
                 f"[renderer] update gpu-build-failed owner={item.name} target_owner={target_owner} "
                 f"active_owner={active_owner} "
-                f"global={bool(payload.get('global_space', False))} repeats={int(payload.get('repeats', 1) or 1)} "
+                f"global={bool(payload.get('global_space', False))} "
+                f"spawn_rate={float(payload.get('spawn_rate', payload.get('frame_step', 1.0)) or 1.0):.3f} "
+                f"substeps={int(payload.get('substeps', 1) or 1)} repeats={int(payload.get('repeats', 1) or 1)} "
                 f"frame={int(frame)} point_count={int(getattr(line_points, 'shape', [0])[0])}"
             )
             return False
@@ -1736,7 +1776,9 @@ class MGLRendererMixin:
             f"frame={int(frame)} point_count={point_count} visible={bool(item.visible)} live_pos={live_pos!r} "
             f"newest_frame={payload.get('_fx_debug_newest_frame')!r} newest_center={payload.get('_fx_debug_newest_center')!r} "
             f"oldest_frame={payload.get('_fx_debug_oldest_frame')!r} oldest_center={payload.get('_fx_debug_oldest_center')!r} "
-            f"global={bool(payload.get('global_space', False))} repeats={int(payload.get('repeats', 1) or 1)} "
+            f"global={bool(payload.get('global_space', False))} "
+            f"spawn_rate={float(payload.get('spawn_rate', payload.get('frame_step', 1.0)) or 1.0):.3f} "
+            f"substeps={int(payload.get('substeps', 1) or 1)} repeats={int(payload.get('repeats', 1) or 1)} "
             f"aliases={self._mgl_fx_owner_candidates(payload)!r}"
         )
         return payload.get("vao") is not None
@@ -7426,6 +7468,8 @@ class MGLRendererMixin:
                             "global_space": bool(asset.get("global_space", False)),
                             "samples": int(asset.get("samples", 28) or 28),
                             "frame_step": int(asset.get("frame_step", 1) or 1),
+                            "spawn_rate": float(asset.get("spawn_rate", asset.get("frame_step", 1.0)) or 1.0),
+                            "substeps": int(asset.get("substeps", 1) or 1),
                             "lifespan": int(asset.get("lifespan", max(1, int(asset.get("samples", 28) or 28) * int(asset.get("frame_step", 1) or 1))) or 1),
                             "repeats": int(asset.get("repeats", 1) or 1),
                             "radius": float(asset.get("radius", 0.35) or 0.35),
@@ -7448,6 +7492,8 @@ class MGLRendererMixin:
                         f"visible={bool(asset.get('visible', True))} enabled={bool(asset.get('enabled', True))} "
                         f"global={bool(asset.get('global_space', False))} repeats={int(asset.get('repeats', 1) or 1)} "
                         f"samples={int(asset.get('samples', 28) or 28)} frame_step={int(asset.get('frame_step', 1) or 1)} "
+                        f"spawn_rate={float(asset.get('spawn_rate', asset.get('frame_step', 1.0)) or 1.0):.3f} "
+                        f"substeps={int(asset.get('substeps', 1) or 1)} "
                         f"lifespan={int(asset.get('lifespan', max(1, int(asset.get('samples', 28) or 28) * int(asset.get('frame_step', 1) or 1))) or 1)} "
                         f"radius={float(asset.get('radius', 0.35) or 0.35):.4f} "
                         f"sides={int(asset.get('sides', 28) or 28)} aliases={list(asset.get('target_owner_aliases') or [])!r}"
