@@ -1132,7 +1132,7 @@ class MGLRendererMixin:
         )
 
     def _mgl_fx_age_scale_points(self, payload) -> list[tuple[float, float]]:
-        return self._mgl_fx_curve_points(payload, "age_scale_points", [(0.0, 0.0), (1.0, 1.0)])
+        return self._mgl_fx_curve_points(payload, "age_scale_points", [(0.0, 0.25), (1.0, 1.0)])
 
     def _mgl_fx_curve_value(self, points: list[tuple[float, float]], t: float, default: float) -> float:
         tt = max(0.0, min(1.0, float(t)))
@@ -1196,6 +1196,8 @@ class MGLRendererMixin:
         except Exception:
             scale_max = 1.0
         ramp_t = max(0.0, min(1.0, float(ramp_t)))
+        if abs(float(scale_max) - float(scale_min)) <= 1.0e-6:
+            return float(ramp_t)
         return float(scale_min) + ((float(scale_max) - float(scale_min)) * float(ramp_t))
 
     def _mgl_fx_owner_candidates(self, payload) -> list[str]:
@@ -2438,6 +2440,18 @@ class MGLRendererMixin:
                 self._mgl_prog["ScreenSize"].value = (float(screen_size[0]), float(screen_size[1]))
             except Exception:
                 pass
+            try:
+                cam_world = getattr(self, "_mgl_cam_world", None)
+                if isinstance(cam_world, (list, tuple)) and len(cam_world) >= 3:
+                    self._mgl_prog["CameraWorldPos"].value = (
+                        float(cam_world[0]),
+                        float(cam_world[1]),
+                        float(cam_world[2]),
+                    )
+                else:
+                    self._mgl_prog["CameraWorldPos"].value = (0.0, 0.0, 4.0)
+            except Exception:
+                pass
 
         _apply_material_uniforms()
 
@@ -3642,6 +3656,7 @@ class MGLRendererMixin:
             prog["MaterialRefraction"].value = 0.0
             prog["MaterialTransparency"].value = 0.0
             prog["MaterialTint"].value = (1.0, 1.0, 1.0)
+            prog["CameraWorldPos"].value = (0.0, 0.0, 4.0)
             prog["ScreenSize"].value = (1.0, 1.0)
             prog["ProcGlyph"].value = 1
             prog["ProcGlyphGrid"].value = (1.0, 1.0)
@@ -3779,6 +3794,7 @@ class MGLRendererMixin:
                 prog["MaterialRefraction"].value = 0.0
                 prog["MaterialTint"].value = (1.0, 1.0, 1.0)
                 prog["ScreenSize"].value = (1.0, 1.0)
+                prog["CameraWorldPos"].value = (0.0, 0.0, 4.0)
                 if np is not None:
                     ident = np.eye(4, dtype="f4")
                     try:
@@ -6262,6 +6278,7 @@ class MGLRendererMixin:
                 self._mgl_prog["MaterialTint"].value = (1.0, 1.0, 1.0)
                 self._mgl_prog["UseSceneRefraction"].value = 0
                 self._mgl_prog["ScreenSize"].value = (1.0, 1.0)
+                self._mgl_prog["CameraWorldPos"].value = (0.0, 0.0, 4.0)
                 self._mgl_prog["UseProcedural"].value = 0
                 self._mgl_prog["UseProceduralLayer"].value = 0
                 self._mgl_prog["UseVolumeMask"].value = 0

@@ -52,6 +52,7 @@ uniform vec3 MaterialTint;
 uniform sampler2D SceneColorTex;
 uniform int UseSceneRefraction;
 uniform vec2 ScreenSize;
+uniform vec3 CameraWorldPos;
 uniform int ProceduralMode;
 uniform vec4 ProcParams;
 uniform float ProcSeed;
@@ -368,13 +369,18 @@ void main() {
         float refraction = clamp(MaterialRefraction, 0.0, 1.0);
         vec3 tint = clamp(MaterialTint, vec3(0.0), vec3(1.0));
         vec3 n = safe_normalize(v_world_norm);
+        vec3 view_dir = safe_normalize(CameraWorldPos - v_world_pos);
         float edge = pow(1.0 - clamp(abs(n.z), 0.0, 1.0), 1.6);
         vec3 material_rgb = clamp(mix(base.rgb, tint, 0.58), 0.0, 1.0);
         if (UseSceneRefraction == 1 && refraction > 0.001) {
             vec2 safe_screen = max(ScreenSize, vec2(1.0, 1.0));
             vec2 screen_uv = gl_FragCoord.xy / safe_screen;
             vec2 center_uv = clamp(screen_uv, vec2(0.001), vec2(0.999));
-            vec2 refract_offset = n.xy * (0.018 * refraction) * (0.30 + transmission * 0.70) * (0.65 + edge * 0.35);
+            float ior = mix(1.0, 1.8, refraction);
+            vec3 refracted = refract(-view_dir, n, 1.0 / max(ior, 1.001));
+            vec2 refract_vec = refracted.xy;
+            float refract_z = max(0.18, abs(refracted.z));
+            vec2 refract_offset = (refract_vec / refract_z) * (0.028 * refraction) * (0.30 + transmission * 0.70) * (0.65 + edge * 0.35);
             vec2 warped_uv0 = clamp(screen_uv + refract_offset, vec2(0.001), vec2(0.999));
             vec2 warped_uv1 = clamp(screen_uv - refract_offset * 0.45, vec2(0.001), vec2(0.999));
             vec3 scene_center = texture(SceneColorTex, center_uv).rgb;

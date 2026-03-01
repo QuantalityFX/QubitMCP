@@ -20,7 +20,7 @@ DEFAULT_PROFILE_POINTS = [
 ]
 
 DEFAULT_AGE_SCALE_POINTS = [
-    (0.0, 0.0),
+    (0.0, 0.25),
     (1.0, 1.0),
 ]
 
