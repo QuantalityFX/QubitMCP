@@ -566,6 +566,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
         visited = set()
         depth = 0
         material_model = None
+        material_item = None
         transform_model = None
         base_item = None
         base_model = None
@@ -591,6 +592,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             kind = (getattr(model, "kind", "") or "").strip().lower()
             if kind in _MATERIAL_KINDS and material_model is None:
                 material_model = model
+                material_item = item
             if kind == "transforms" and transform_model is None:
                 transform_model = model
             path = _param_value(model, "path") or _param_value(model, "mesh") or _param_value(model, "source")
@@ -612,6 +614,20 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
         if not base_path and transform_model is not None:
             base_path = _param_value(transform_model, "source") or _param_value(transform_model, "path")
 
+        material_asset = None
+        if material_item is not None:
+            try:
+                from nodes import material as _material_node  # type: ignore
+                builder = getattr(_material_node, "build_material_asset", None)
+                if callable(builder):
+                    material_asset = builder(material_item)
+            except Exception:
+                material_asset = None
+        if isinstance(material_asset, dict):
+            mat_path = str(material_asset.get("path") or "").strip()
+            if mat_path:
+                base_path = mat_path
+
         instance_xform = None
         if transform_model is not None:
             pos = _parse_vec3(_param_value(transform_model, "pos"), (0.0, 0.0, 0.0))
@@ -632,7 +648,13 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             "kind": base_kind,
             "path": str(base_path or "").strip(),
             "source_name": source_name,
-            "material": _material_payload(material_model),
+            "material": (
+                dict(material_asset.get("material") or {})
+                if isinstance(material_asset, dict) and isinstance(material_asset.get("material"), dict)
+                else _material_payload(material_model)
+            ),
+            "texture": str(material_asset.get("texture") or "").strip() if isinstance(material_asset, dict) else "",
+            "texture_provider": material_asset.get("texture_provider") if isinstance(material_asset, dict) else None,
             "xform": instance_xform,
         }
 
@@ -989,6 +1011,10 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                                 fx_asset["instance_source_name"] = str(inst_info.get("source_name") or "").strip()
                             if isinstance((inst_info or {}).get("material"), dict):
                                 fx_asset["instance_material"] = dict(inst_info.get("material") or {})
+                            if str((inst_info or {}).get("texture") or "").strip():
+                                fx_asset["instance_texture"] = str(inst_info.get("texture") or "").strip()
+                            if (inst_info or {}).get("texture_provider") is not None:
+                                fx_asset["instance_texture_provider"] = inst_info.get("texture_provider")
                             if isinstance((inst_info or {}).get("xform"), dict):
                                 fx_asset["instance_xform"] = dict(inst_info.get("xform") or {})
                         else:
@@ -2212,120 +2238,30 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                     pass
                 return
 
-            try:
-                in_edges = list(scene._ordered_in_edges(item))
-            except Exception:
-                try:
-                    in_edges = list(scene._in_edges(item))
-                except Exception:
-                    in_edges = []
-
             rows = []
             seen = set()
-            def _int_param(val, default=1, min_val=1, max_val=200):
-                try:
-                    v = int(float(str(val).strip()))
-                except Exception:
-                    return default
-                if v < min_val:
-                    return min_val
-                if v > max_val:
-                    return max_val
-                return v
-            for edge in in_edges:
-                src_item = getattr(edge, "src", None)
-                model = getattr(src_item, "model", None)
-                if model is None:
+            try:
+                asset_rows = list(_collect_assets(item) or [])
+            except Exception:
+                asset_rows = []
+            for asset in asset_rows:
+                if not isinstance(asset, dict):
                     continue
-                kind = (getattr(model, "kind", "") or "").strip().lower()
+                kind = str(asset.get("kind") or "").strip().lower()
+                if kind == "fx_trail":
+                    continue
+                name = str(asset.get("node") or "").strip()
+                if not name or name in seen:
+                    continue
                 if kind == "camera":
-                    name = (getattr(model, "name", "") or "").strip()
-                    if not name or name in seen:
-                        continue
                     seen.add(name)
                     rows.append({"name": name, "path": "", "kind": "camera"})
                     continue
-                if kind == "instance":
-                    base_item, _base_kind, base_path = _resolve_input_item(scene, src_item, {"mesh", "path", "source"})
-                    if not base_path:
-                        continue
-                    ext = Path(base_path).suffix.lower()
-                    if ext not in SUPPORTED_EXTS:
-                        continue
-                    prefix = (_param_value(model, "prefix") or "").strip()
-                    if not prefix:
-                        base_name = ""
-                        try:
-                            base_model = getattr(base_item, "model", None) if base_item is not None else None
-                            base_name = (getattr(base_model, "name", "") or "").strip()
-                        except Exception:
-                            base_name = ""
-                        if not base_name:
-                            base_name = "instance"
-                        prefix = f"instance_{base_name}" if base_name else "instance"
-                        _set_param_value(model, "prefix", prefix)
-                    count = _int_param(_param_value(model, "count") or "1", default=1, min_val=1, max_val=200)
-                    for idx in range(int(count)):
-                        name = f"{prefix}_{idx + 1}"
-                        if not name or name in seen:
-                            continue
-                        seen.add(name)
-                        rows.append({"name": name, "path": base_path, "kind": "mesh"})
-                    continue
-                if kind not in ("import", "primitive", "uv_unwrap", "texture", "texture_pro", "texture_layer", "mnaterial", "material", "volume_selector", "split_volume", "transforms", "camera", "fx", "fx_trail"):
-                    continue
-                path = _param_value(model, "path")
-                owner_model = model
-                owner_item = src_item
-                if kind in ("texture", "texture_pro", "texture_layer", "fx", "fx_trail", "mnaterial", "material"):
-                    upstream_item, upstream_kind, upstream_path = _resolve_input_item(scene, src_item)
-                    if upstream_item is not None and getattr(upstream_item, "model", None) is not None:
-                        if kind in _MATERIAL_KINDS:
-                            owner_item = upstream_item
-                            owner_model = getattr(upstream_item, "model", owner_model)
-                            if upstream_path:
-                                path = upstream_path
-                            if upstream_kind in _TEXTURE_KINDS:
-                                upstream2_item, upstream2_kind, upstream2_path = _resolve_input_item(scene, upstream_item)
-                                if upstream2_item is not None and getattr(upstream2_item, "model", None) is not None:
-                                    if upstream2_kind == "uv_unwrap":
-                                        if upstream2_path:
-                                            path = upstream2_path
-                                        upstream3_item, _up3_kind, _up3_path = _resolve_input_item(scene, upstream2_item)
-                                        if upstream3_item is not None and getattr(upstream3_item, "model", None) is not None:
-                                            owner_model = getattr(upstream3_item, "model", owner_model)
-                                    else:
-                                        owner_item = upstream2_item
-                                        owner_model = getattr(upstream2_item, "model", owner_model)
-                                        if upstream2_path:
-                                            path = upstream2_path
-                        elif upstream_kind == "uv_unwrap":
-                            if upstream_path:
-                                path = upstream_path
-                            upstream2_item, _up2_kind, _up2_path = _resolve_input_item(scene, upstream_item)
-                            if upstream2_item is not None and getattr(upstream2_item, "model", None) is not None:
-                                owner_model = getattr(upstream2_item, "model", owner_model)
-                        elif kind in ("fx", "fx_trail"):
-                            owner_model = getattr(upstream_item, "model", owner_model)
-                            if upstream_path:
-                                path = upstream_path
-                        else:
-                            owner_model = getattr(upstream_item, "model", owner_model)
-                            if upstream_path:
-                                path = upstream_path
-                elif kind == "uv_unwrap":
-                    upstream_item, _up_kind, upstream_path = _resolve_input_item(scene, src_item)
-                    if upstream_item is not None and getattr(upstream_item, "model", None) is not None:
-                        owner_model = getattr(upstream_item, "model", owner_model)
-                        if not path and upstream_path:
-                            path = upstream_path
+                path = str(asset.get("path") or "").strip()
                 if not path:
                     continue
                 ext = Path(path).suffix.lower()
                 if ext not in SUPPORTED_EXTS:
-                    continue
-                name = (getattr(owner_model, "name", "") or "").strip()
-                if not name or name in seen:
                     continue
                 seen.add(name)
                 rows.append({"name": name, "path": path, "kind": "mesh"})

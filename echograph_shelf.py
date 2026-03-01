@@ -3244,6 +3244,9 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 clean_entry["instance_source_name"] = str(entry.get("instance_source_name") or "").strip()
                 if isinstance(entry.get("instance_material"), dict):
                     clean_entry["instance_material"] = dict(entry.get("instance_material") or {})
+                clean_entry["instance_texture"] = str(entry.get("instance_texture") or "").strip()
+                if entry.get("instance_texture_provider") is not None:
+                    clean_entry["instance_texture_provider"] = entry.get("instance_texture_provider")
                 if isinstance(entry.get("instance_xform"), dict):
                     clean_entry["instance_xform"] = dict(entry.get("instance_xform") or {})
                 clean_entry["enabled"] = bool(entry.get("enabled", True))
@@ -3300,6 +3303,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                         str(entry.get("instance_path") or ""),
                         str(entry.get("instance_source_name") or ""),
                         repr(dict(entry.get("instance_material") or {})),
+                        str(entry.get("instance_texture") or ""),
+                        id(entry.get("instance_texture_provider")) if entry.get("instance_texture_provider") is not None else None,
                         repr(dict(entry.get("instance_xform") or {})),
                         repr(list(entry.get("target_owner_aliases") or [])),
                         bool(entry.get("visible", True)),

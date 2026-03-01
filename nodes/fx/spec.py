@@ -606,7 +606,7 @@ class FxTrailWidget(QtWidgets.QWidget):
         self._schedule_refresh()
 
     def sizeHint(self):
-        return QtCore.QSize(252, 438)
+        return QtCore.QSize(260, 454)
 
     def _set_param(self, name: str, value: str, *, notify_scene: bool = True) -> None:
         if self._updating:
@@ -820,7 +820,7 @@ class FxTrailWidget(QtWidgets.QWidget):
 def render_node_body(node_item, y_cursor: int) -> int:
     inset_x = 8
     inset_top = 2
-    inset_bottom = 22
+    inset_bottom = 30
     try:
         before = {
             (entry.get("name") or "").strip().lower()

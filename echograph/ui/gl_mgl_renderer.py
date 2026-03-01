@@ -1688,10 +1688,11 @@ class MGLRendererMixin:
         mesh_cache = payload.pop("_fx_instance_mesh", None)
         payload.pop("_fx_instance_loaded_path", None)
         payload.pop("_fx_instance_models", None)
-        if not isinstance(mesh_cache, dict):
-            return
+        tex_override = payload.pop("_fx_instance_texture", None)
+        payload.pop("_fx_instance_texture_path", None)
+        payload.pop("_fx_instance_texture_provider_id", None)
         seen = set()
-        for res in list(mesh_cache.get("resources") or []):
+        for res in list((mesh_cache or {}).get("resources") or []):
             if res is None:
                 continue
             rid = id(res)
@@ -1703,10 +1704,178 @@ class MGLRendererMixin:
                     res.release()
                 except Exception:
                     pass
+        if tex_override is not None:
+            rid = id(tex_override)
+            if rid not in seen and hasattr(tex_override, "release"):
+                try:
+                    tex_override.release()
+                except Exception:
+                    pass
+        owner = str(payload.get("owner") or "").strip()
+        if owner:
+            try:
+                proc_map = getattr(self, "_mgl_scene_proc_textures_by_owner", None)
+                proc_entry = proc_map.pop(owner, None) if isinstance(proc_map, dict) else None
+            except Exception:
+                proc_entry = None
+            if isinstance(proc_entry, dict):
+                proc_tex = proc_entry.get("texture")
+                if proc_tex is not None and id(proc_tex) not in seen and hasattr(proc_tex, "release"):
+                    try:
+                        proc_tex.release()
+                    except Exception:
+                        pass
         try:
             item.resources = []
         except Exception:
             pass
+
+    def _mgl_fx_sync_instance_surface(self, payload) -> None:
+        if self._mgl_ctx is None:
+            return
+        owner = str(payload.get("owner") or payload.get("target_owner") or "").strip()
+        texture_path = str(payload.get("instance_texture") or "").strip()
+        provider = payload.get("instance_texture_provider")
+        provider_id = id(provider) if provider is not None else None
+        current_provider_id = payload.get("_fx_instance_texture_provider_id")
+        current_texture_path = str(payload.get("_fx_instance_texture_path") or "").strip()
+        tex_override = payload.get("_fx_instance_texture")
+
+        proc_map = getattr(self, "_mgl_scene_proc_textures_by_owner", None)
+        if not isinstance(proc_map, dict):
+            proc_map = {}
+            self._mgl_scene_proc_textures_by_owner = proc_map
+
+        if current_provider_id != provider_id and owner:
+            old_entry = proc_map.pop(owner, None)
+            if isinstance(old_entry, dict):
+                old_tex = old_entry.get("texture")
+                if old_tex is not None and old_tex is not tex_override and hasattr(old_tex, "release"):
+                    try:
+                        old_tex.release()
+                    except Exception:
+                        pass
+            payload["_fx_instance_texture_provider_id"] = provider_id
+
+        if provider is not None and owner:
+            mesh_cache = payload.get("_fx_instance_mesh")
+            mesh_subs = list((mesh_cache or {}).get("submeshes") or []) if isinstance(mesh_cache, dict) else []
+            existing_entry = proc_map.get(owner) if isinstance(proc_map.get(owner), dict) else {}
+            gpu_state = self._mgl_proc_state(provider)
+            if gpu_state:
+                rev = 0
+                try:
+                    rev = int(getattr(provider, "revision", 0))
+                except Exception:
+                    rev = 0
+                proc_map[owner] = {
+                    "provider": provider,
+                    "texture": None,
+                    "rev": rev,
+                    "subs": mesh_subs,
+                    "gpu": True,
+                    "gpu_state": gpu_state,
+                }
+                try:
+                    self._mgl_ensure_proc_glyph(gpu_state)
+                except Exception:
+                    pass
+            else:
+                qimg = self._mgl_provider_image(provider)
+                proc_tex = existing_entry.get("texture")
+                if qimg is not None and not qimg.isNull():
+                    if hasattr(QtGui.QImage, "Format_RGBA8888"):
+                        qimg = qimg.convertToFormat(QtGui.QImage.Format_RGBA8888)
+                    else:
+                        qimg = qimg.convertToFormat(QtGui.QImage.Format_ARGB32)
+                    qimg = qimg.mirrored(False, True)
+                    try:
+                        tex_size = (int(qimg.width()), int(qimg.height()))
+                        if proc_tex is None or getattr(proc_tex, "size", None) != tex_size:
+                            if proc_tex is not None and hasattr(proc_tex, "release"):
+                                try:
+                                    proc_tex.release()
+                                except Exception:
+                                    pass
+                            proc_tex = self._mgl_make_texture(qimg)
+                        else:
+                            ptr = qimg.bits()
+                            ptr.setsize(qimg.sizeInBytes())
+                            proc_tex.write(bytes(ptr))
+                            try:
+                                proc_tex.build_mipmaps()
+                            except Exception:
+                                pass
+                    except Exception:
+                        proc_tex = None
+                rev = 0
+                try:
+                    rev = int(getattr(provider, "revision", 0))
+                except Exception:
+                    rev = 0
+                proc_map[owner] = {
+                    "provider": provider,
+                    "texture": proc_tex,
+                    "rev": rev,
+                    "subs": mesh_subs,
+                }
+            if tex_override is not None and hasattr(tex_override, "release"):
+                try:
+                    tex_override.release()
+                except Exception:
+                    pass
+            payload.pop("_fx_instance_texture", None)
+            payload["_fx_instance_texture_path"] = ""
+            return
+
+        if owner:
+            old_entry = proc_map.pop(owner, None)
+            if isinstance(old_entry, dict):
+                old_tex = old_entry.get("texture")
+                if old_tex is not None and old_tex is not tex_override and hasattr(old_tex, "release"):
+                    try:
+                        old_tex.release()
+                    except Exception:
+                        pass
+
+        if not texture_path:
+            if tex_override is not None and hasattr(tex_override, "release"):
+                try:
+                    tex_override.release()
+                except Exception:
+                    pass
+            payload.pop("_fx_instance_texture", None)
+            payload["_fx_instance_texture_path"] = ""
+            return
+
+        if texture_path != current_texture_path and tex_override is not None and hasattr(tex_override, "release"):
+            try:
+                tex_override.release()
+            except Exception:
+                pass
+            tex_override = None
+            payload.pop("_fx_instance_texture", None)
+
+        if tex_override is None:
+            try:
+                tex_path = Path(texture_path)
+            except Exception:
+                tex_path = None
+            if tex_path is not None and tex_path.exists():
+                qimg = QtGui.QImage(str(tex_path))
+                if not qimg.isNull():
+                    if hasattr(QtGui.QImage, "Format_RGBA8888"):
+                        qimg = qimg.convertToFormat(QtGui.QImage.Format_RGBA8888)
+                    else:
+                        qimg = qimg.convertToFormat(QtGui.QImage.Format_ARGB32)
+                    qimg = qimg.mirrored(False, True)
+                    try:
+                        tex_override = self._mgl_make_texture(qimg)
+                    except Exception:
+                        tex_override = None
+        if tex_override is not None:
+            payload["_fx_instance_texture"] = tex_override
+            payload["_fx_instance_texture_path"] = texture_path
 
     def _mgl_fx_load_instance_mesh(self, path_text: str):
         if not _HAS_MGL or self._mgl_ctx is None:
@@ -2100,6 +2269,9 @@ class MGLRendererMixin:
             repr(payload.get("age_scale_points")),
             tuple(self._mgl_fx_owner_candidates(payload)),
             instance_path,
+            repr(dict(payload.get("instance_material") or {})),
+            str(payload.get("instance_texture") or ""),
+            id(payload.get("instance_texture_provider")) if payload.get("instance_texture_provider") is not None else None,
         )
         if payload.get("_fx_stamp") == stamp:
             if instance_path:
@@ -2128,7 +2300,14 @@ class MGLRendererMixin:
                 if isinstance(mesh_cache, dict):
                     payload["_fx_instance_mesh"] = mesh_cache
                     payload["_fx_instance_loaded_path"] = instance_path
-                    item.resources = list(mesh_cache.get("resources") or [])
+            self._mgl_fx_sync_instance_surface(payload)
+            resources = list(mesh_cache.get("resources") or []) if isinstance(mesh_cache, dict) else []
+            tex_override = payload.get("_fx_instance_texture")
+            if tex_override is not None:
+                seen_ids = {id(res) for res in resources}
+                if id(tex_override) not in seen_ids:
+                    resources.append(tex_override)
+            item.resources = resources
             if not isinstance(mesh_cache, dict):
                 payload["_fx_stamp"] = stamp
                 item.payload = payload
@@ -3522,8 +3701,14 @@ class MGLRendererMixin:
         if isinstance(mesh_cache, dict) and mesh_models:
             base_payload = dict(mesh_cache)
             base_payload["owner"] = str(payload.get("owner") or payload.get("target_owner") or "")
-            base_payload["material"] = payload.get("instance_material")
-            base_payload["texture"] = base_payload.get("texture")
+            base_payload["material"] = payload.get("instance_material") or payload.get("material")
+            tex_override = payload.get("_fx_instance_texture")
+            if tex_override is not None:
+                submeshes = list(base_payload.get("submeshes") or [])
+                if submeshes:
+                    base_payload["submeshes"] = [{**sub, "texture": tex_override} for sub in submeshes]
+                else:
+                    base_payload["texture"] = tex_override
             try:
                 for model in mesh_models:
                     draw_item = MGLSceneItem(
@@ -7961,11 +8146,14 @@ class MGLRendererMixin:
                         draw_fn=MGLRendererMixin._mgl_draw_scene_fx_trail,
                         payload={
                             "owner": owner,
+                            "material": dict(asset.get("instance_material") or {}) if isinstance(asset.get("instance_material"), dict) else None,
                             "target_owner": target_owner,
                             "target_owner_aliases": list(asset.get("target_owner_aliases") or []),
                             "instance_path": str(asset.get("instance_path") or "").strip(),
                             "instance_source_name": str(asset.get("instance_source_name") or "").strip(),
                             "instance_material": dict(asset.get("instance_material") or {}) if isinstance(asset.get("instance_material"), dict) else None,
+                            "instance_texture": str(asset.get("instance_texture") or "").strip(),
+                            "instance_texture_provider": asset.get("instance_texture_provider"),
                             "instance_xform": dict(asset.get("instance_xform") or {}) if isinstance(asset.get("instance_xform"), dict) else None,
                             "enabled": bool(asset.get("enabled", True)),
                             "global_space": bool(asset.get("global_space", False)),
