@@ -16,6 +16,8 @@ from echograph.material_debug import material_debug_log as _material_debug_log
 
 SUPPORTED_MESH_EXTS = {".obj", ".fbx", ".gltf", ".glb", ".ply", ".stl", ".off", ".om"}
 _DEFAULT_TRANSPARENCY = 80
+_DEFAULT_REFRACTION = 24
+_DEFAULT_TINT_COLOR = "#dfe7ff"
 
 
 def _param_value(model, name: str) -> str:
@@ -145,9 +147,22 @@ def _clamp_percent(value: str, default: int) -> int:
     return max(0, min(100, num))
 
 
+def _normalize_color_hex(value: str, default: str = _DEFAULT_TINT_COLOR) -> str:
+    color = QtGui.QColor(str(value or "").strip() or default)
+    if not color.isValid():
+        color = QtGui.QColor(default)
+    return color.name().lower()
+
+
 def _material_payload(model) -> dict:
+    tint_color = _normalize_color_hex(
+        _param_value(model, "tint_color") or _param_value(model, "base_color"),
+        _DEFAULT_TINT_COLOR,
+    )
     return {
         "transparency": float(_clamp_percent(_param_value(model, "transparency"), _DEFAULT_TRANSPARENCY)) / 100.0,
+        "refraction": float(_clamp_percent(_param_value(model, "refraction"), _DEFAULT_REFRACTION)) / 100.0,
+        "tint_color": tint_color,
     }
 
 
@@ -156,9 +171,11 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, "source", "")
     _ensure_param(node_item, "path", "")
     _ensure_param(node_item, "transparency", str(_DEFAULT_TRANSPARENCY))
+    _ensure_param(node_item, "refraction", str(_DEFAULT_REFRACTION))
+    _ensure_param(node_item, "tint_color", _DEFAULT_TINT_COLOR)
     _ensure_hidden_params(
         getattr(node_item, "model", None),
-        ["mesh", "source", "path", "transparency", "base_color", "roughness", "refraction", "specular_color"],
+        ["mesh", "source", "path", "transparency", "refraction", "tint_color", "base_color", "roughness", "specular_color"],
     )
     if hasattr(node_item, "ensure_input"):
         node_item.ensure_input("mesh")
@@ -183,7 +200,17 @@ class MaterialWidget(QtWidgets.QWidget):
         row0.addWidget(self._status, 1)
         layout.addLayout(row0, 0)
 
+        tint_row = QtWidgets.QHBoxLayout()
+        tint_row.setContentsMargins(0, 0, 0, 0)
+        tint_row.addWidget(QtWidgets.QLabel("Tint"), 0)
+        self._tint_btn = QtWidgets.QPushButton("")
+        self._tint_btn.setFixedHeight(22)
+        self._tint_btn.clicked.connect(self._on_tint_clicked)
+        tint_row.addWidget(self._tint_btn, 1)
+        layout.addLayout(tint_row, 0)
+
         self._trans_slider, self._trans_value = self._slider_row(layout, "Transparency", self._on_transparency_changed)
+        self._refract_slider, self._refract_value = self._slider_row(layout, "Refraction", self._on_refraction_changed)
 
         row3 = QtWidgets.QHBoxLayout()
         row3.setContentsMargins(0, 0, 0, 0)
@@ -199,7 +226,7 @@ class MaterialWidget(QtWidgets.QWidget):
         QtCore.QTimer.singleShot(0, self._update_inputs)
 
     def sizeHint(self):
-        return QtCore.QSize(220, 82)
+        return QtCore.QSize(220, 118)
 
     def _slider_row(self, parent_layout, label: str, slot):
         row = QtWidgets.QHBoxLayout()
@@ -265,9 +292,16 @@ class MaterialWidget(QtWidgets.QWidget):
         model = getattr(self._node_item, "model", None)
         if model is None:
             return
+        tint_color = _normalize_color_hex(
+            _param_value(model, "tint_color") or _param_value(model, "base_color"),
+            _DEFAULT_TINT_COLOR,
+        )
         trans = _clamp_percent(_param_value(model, "transparency"), _DEFAULT_TRANSPARENCY)
+        refr = _clamp_percent(_param_value(model, "refraction"), _DEFAULT_REFRACTION)
+        self._set_tint_button(tint_color)
         for slider, value, text in (
             (self._trans_slider, self._trans_value, trans),
+            (self._refract_slider, self._refract_value, refr),
         ):
             try:
                 slider.blockSignals(True)
@@ -275,6 +309,17 @@ class MaterialWidget(QtWidgets.QWidget):
             finally:
                 slider.blockSignals(False)
             value.setText(f"{int(text)}%")
+
+    def _set_tint_button(self, color_hex: str):
+        color = QtGui.QColor(_normalize_color_hex(color_hex, _DEFAULT_TINT_COLOR))
+        lum = (0.2126 * color.red()) + (0.7152 * color.green()) + (0.0722 * color.blue())
+        text_color = "#0f172a" if lum > 140.0 else "#f8fafc"
+        self._tint_btn.setText(color.name().upper())
+        self._tint_btn.setStyleSheet(
+            "QPushButton{background:" + color.name() + ";color:" + text_color + ";"
+            "border:1px solid #3c4450;border-radius:4px;padding:2px 6px;}"
+            "QPushButton:hover{border:1px solid #64748b;}"
+        )
 
     def _update_inputs(self):
         self._pending = False
@@ -300,6 +345,42 @@ class MaterialWidget(QtWidgets.QWidget):
     def _on_transparency_changed(self, value: int):
         self._trans_value.setText(f"{int(value)}%")
         self._set_param("transparency", str(int(value)), notify_scene=True)
+
+    def _on_refraction_changed(self, value: int):
+        self._refract_value.setText(f"{int(value)}%")
+        self._set_param("refraction", str(int(value)), notify_scene=True)
+
+    def _on_tint_clicked(self):
+        current = QtGui.QColor(
+            _normalize_color_hex(
+                self._node_item._param_value("tint_color") or self._node_item._param_value("base_color"),
+                _DEFAULT_TINT_COLOR,
+            )
+        )
+        parent = _resolve_window(self._node_item) or self
+        dialog = QtWidgets.QColorDialog(parent)
+        dialog.setWindowTitle("Tint Color")
+        dialog.setCurrentColor(current)
+        try:
+            dialog.setOption(QtWidgets.QColorDialog.DontUseNativeDialog, True)
+        except Exception:
+            pass
+        try:
+            dialog.setOption(QtWidgets.QColorDialog.ShowAlphaChannel, False)
+        except Exception:
+            pass
+        try:
+            dialog.setModal(True)
+        except Exception:
+            pass
+        if dialog.exec() != QtWidgets.QDialog.Accepted:
+            return
+        picked = dialog.currentColor()
+        if not picked.isValid():
+            return
+        color_hex = picked.name().lower()
+        self._set_tint_button(color_hex)
+        self._set_param("tint_color", color_hex, notify_scene=True)
 
     def _build_preview_asset(self) -> Optional[dict]:
         return build_material_asset(self._node_item)
@@ -465,5 +546,7 @@ def build_material_asset(node_item) -> Optional[dict]:
         path=str(path),
         texture=bool(texture),
         transparency=float(asset["material"].get("transparency", 0.0) or 0.0),
+        refraction=float(asset["material"].get("refraction", 0.0) or 0.0),
+        tint_color=str(asset["material"].get("tint_color") or ""),
     )
     return asset

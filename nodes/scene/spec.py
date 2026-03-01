@@ -22,7 +22,7 @@ _MATERIAL_KINDS = {"mnaterial", "material"}
 _TEXTURE_KINDS = {"texture", "texture_pro", "texture_layer"}
 
 _EYE_ICON_CACHE = {}
-_FX_LOG_ENABLED = False
+_FX_LOG_ENABLED = True
 
 
 def _fx_log(msg: str) -> None:
@@ -118,8 +118,11 @@ def _material_payload(model) -> dict | None:
     kind = (getattr(model, "kind", "") or "").strip().lower()
     if kind not in _MATERIAL_KINDS:
         return None
+    tint_color = (_param_value(model, "tint_color") or _param_value(model, "base_color") or "#dfe7ff").strip()
     return {
         "transparency": _clamp01(_param_value(model, "transparency"), 0.8),
+        "refraction": _clamp01(_param_value(model, "refraction"), 0.24),
+        "tint_color": tint_color or "#dfe7ff",
     }
 
 
@@ -1064,6 +1067,8 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                 visible=bool(entry.get("visible", True)),
                 has_texture=bool(texture),
                 transparency=float((entry.get("material") or {}).get("transparency", 0.0) or 0.0),
+                refraction=float((entry.get("material") or {}).get("refraction", 0.0) or 0.0),
+                tint_color=str((entry.get("material") or {}).get("tint_color") or ""),
                 xform_offset=bool(entry.get("xform_offset")),
             )
         if isinstance(fx_asset, dict) and node_name:

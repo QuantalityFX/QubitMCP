@@ -3122,7 +3122,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                     f.write(f"{ts} {msg}\n")
             except Exception:
                 pass
-        fx_log_enabled = False
+        fx_log_enabled = True
 
         def _fx_log(msg: str) -> None:
             if not fx_log_enabled:
@@ -3251,6 +3251,9 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 clean_entry["color"] = entry.get("color")
                 clean_entry["line_width"] = float(entry.get("line_width", 2.0) or 2.0)
                 clean_entry["profile_points"] = list(entry.get("profile_points") or [])
+                clean_entry["age_scale_min"] = float(entry.get("age_scale_min", 1.0) or 1.0)
+                clean_entry["age_scale_max"] = float(entry.get("age_scale_max", 1.0) or 1.0)
+                clean_entry["age_scale_points"] = list(entry.get("age_scale_points") or [])
             clean.append(clean_entry)
             _scene_log(f"clean[{len(clean)-1}] node={node_name!r} path={path!r} visible={visible}")
             if is_fx_trail:
@@ -3299,6 +3302,9 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                         int(entry.get("sides", 28) or 28),
                         round(float(entry.get("line_width", 2.0) or 2.0), 6),
                         repr(list(entry.get("profile_points") or [])),
+                        round(float(entry.get("age_scale_min", 1.0) or 1.0), 6),
+                        round(float(entry.get("age_scale_max", 1.0) or 1.0), 6),
+                        repr(list(entry.get("age_scale_points") or [])),
                     )
                 )
             sig = tuple(sorted(sig))

@@ -127,7 +127,7 @@ class MGLRendererMixin:
         self._mgl_log(msg)
 
     def _mgl_fx_log(self, msg: str) -> None:
-        if not bool(getattr(self, "_mgl_fx_log_enabled", False)):
+        if not bool(getattr(self, "_mgl_fx_log_enabled", True)):
             return
         try:
             root = Path(__file__).resolve().parents[2]
@@ -550,16 +550,80 @@ class MGLRendererMixin:
                 num = float(default)
             return max(0.0, min(1.0, num))
 
+        def _norm_color3(value) -> tuple[float, float, float]:
+            default = (1.0, 1.0, 1.0)
+            if isinstance(value, str):
+                text = str(value or "").strip()
+                if text.startswith("#") and len(text) == 7:
+                    try:
+                        return (
+                            int(text[1:3], 16) / 255.0,
+                            int(text[3:5], 16) / 255.0,
+                            int(text[5:7], 16) / 255.0,
+                        )
+                    except Exception:
+                        return default
+                return default
+            if isinstance(value, (list, tuple)) and len(value) >= 3:
+                try:
+                    comps = [float(value[0]), float(value[1]), float(value[2])]
+                except Exception:
+                    return default
+                if max(comps) > 1.0:
+                    comps = [comp / 255.0 for comp in comps]
+                return (
+                    max(0.0, min(1.0, comps[0])),
+                    max(0.0, min(1.0, comps[1])),
+                    max(0.0, min(1.0, comps[2])),
+                )
+            return default
+
         transparency = _norm01(raw.get("transparency", 0.0), 0.0)
+        refraction = _norm01(raw.get("refraction", 0.0), 0.0)
+        tint_color = _norm_color3(raw.get("tint_color", raw.get("base_color", "#ffffff")))
         return {
             "transparency": transparency,
+            "refraction": refraction,
+            "tint_color": tint_color,
         }
+
+    def _mgl_material_has_effect(self, material) -> bool:
+        if not isinstance(material, dict):
+            return False
+        try:
+            if float(material.get("transparency", 0.0) or 0.0) > 1e-4:
+                return True
+        except Exception:
+            pass
+        try:
+            if float(material.get("refraction", 0.0) or 0.0) > 1e-4:
+                return True
+        except Exception:
+            pass
+        try:
+            tint = material.get("tint_color", (1.0, 1.0, 1.0))
+            return any(abs(float(comp) - 1.0) > 1e-4 for comp in tint[:3])
+        except Exception:
+            return False
+
+    def _mgl_material_uses_refraction(self, material) -> bool:
+        if not isinstance(material, dict):
+            return False
+        try:
+            return bool(float(material.get("refraction", 0.0) or 0.0) > 1e-4)
+        except Exception:
+            return False
 
     def _mgl_material_is_transparent(self, material) -> bool:
         if not isinstance(material, dict):
             return False
         try:
-            return bool(float(material.get("transparency", 0.0) or 0.0) > 1e-4)
+            if float(material.get("transparency", 0.0) or 0.0) > 1e-4:
+                return True
+        except Exception:
+            pass
+        try:
+            return bool(float(material.get("refraction", 0.0) or 0.0) > 1e-4)
         except Exception:
             return False
 
@@ -1017,11 +1081,11 @@ class MGLRendererMixin:
             0.95,
         )
 
-    def _mgl_fx_profile_points(self, payload) -> list[tuple[float, float]]:
+    def _mgl_fx_curve_points(self, payload, key: str, fallback: list[tuple[float, float]]) -> list[tuple[float, float]]:
         rows: list[tuple[float, float]] = []
         raw_points = []
         try:
-            raw_points = payload.get("profile_points") or []
+            raw_points = payload.get(key) or []
         except Exception:
             raw_points = []
         for raw in raw_points:
@@ -1040,7 +1104,7 @@ class MGLRendererMixin:
                 continue
             rows.append((x, y))
         if len(rows) < 2:
-            rows = [(0.0, 0.2), (0.25, 0.95), (0.5, 0.2), (0.75, 0.95), (1.0, 0.2)]
+            rows = list(fallback)
         rows.sort(key=lambda item: (float(item[0]), float(item[1])))
         merged: list[tuple[float, float]] = []
         for x, y in rows:
@@ -1049,7 +1113,7 @@ class MGLRendererMixin:
             else:
                 merged.append((float(x), float(y)))
         if not merged:
-            merged = [(0.0, 0.2), (1.0, 0.2)]
+            merged = list(fallback)
         if merged[0][0] > 0.0:
             merged.insert(0, (0.0, float(merged[0][1])))
         else:
@@ -1060,11 +1124,20 @@ class MGLRendererMixin:
             merged[-1] = (1.0, float(merged[-1][1]))
         return merged
 
-    def _mgl_fx_profile_value(self, payload, t: float) -> float:
-        points = self._mgl_fx_profile_points(payload)
+    def _mgl_fx_profile_points(self, payload) -> list[tuple[float, float]]:
+        return self._mgl_fx_curve_points(
+            payload,
+            "profile_points",
+            [(0.0, 0.2), (0.25, 0.95), (0.5, 0.2), (0.75, 0.95), (1.0, 0.2)],
+        )
+
+    def _mgl_fx_age_scale_points(self, payload) -> list[tuple[float, float]]:
+        return self._mgl_fx_curve_points(payload, "age_scale_points", [(0.0, 0.0), (1.0, 1.0)])
+
+    def _mgl_fx_curve_value(self, points: list[tuple[float, float]], t: float, default: float) -> float:
         tt = max(0.0, min(1.0, float(t)))
         if not points:
-            return 0.2
+            return float(default)
         if tt <= float(points[0][0]):
             return float(points[0][1])
         for idx in range(1, len(points)):
@@ -1078,16 +1151,21 @@ class MGLRendererMixin:
                 return float(y0) + (float(y1) - float(y0)) * float(alpha)
         return float(points[-1][1])
 
-    def _mgl_fx_profile_phase(self, payload, age: int, lifespan: int) -> float:
+    def _mgl_fx_profile_value(self, payload, t: float) -> float:
+        return self._mgl_fx_curve_value(self._mgl_fx_profile_points(payload), t, 0.2)
+
+    def _mgl_fx_age_t(self, age: int, lifespan: int) -> float:
         life_frames = max(1, int(lifespan))
+        if life_frames <= 1:
+            return 0.0
+        return max(0.0, min(1.0, float(age) / float(max(1, life_frames - 1))))
+
+    def _mgl_fx_profile_phase(self, payload, age: int, lifespan: int) -> float:
         try:
             repeats = max(1, int(payload.get("repeats", 1)))
         except Exception:
             repeats = 1
-        if life_frames <= 1:
-            age_t = 0.0
-        else:
-            age_t = max(0.0, min(1.0, float(age) / float(max(1, life_frames - 1))))
+        age_t = self._mgl_fx_age_t(age, lifespan)
         if repeats <= 1:
             return age_t
         if age_t >= 1.0:
@@ -1096,6 +1174,20 @@ class MGLRendererMixin:
         if phase < 0.0:
             phase += 1.0
         return float(phase)
+
+    def _mgl_fx_age_scale_value(self, payload, age: int, lifespan: int) -> float:
+        age_t = self._mgl_fx_age_t(age, lifespan)
+        ramp_t = self._mgl_fx_curve_value(self._mgl_fx_age_scale_points(payload), age_t, 1.0)
+        try:
+            scale_min = float(payload.get("age_scale_min", 1.0))
+        except Exception:
+            scale_min = 1.0
+        try:
+            scale_max = float(payload.get("age_scale_max", 1.0))
+        except Exception:
+            scale_max = 1.0
+        ramp_t = max(0.0, min(1.0, float(ramp_t)))
+        return float(scale_min) + ((float(scale_max) - float(scale_min)) * float(ramp_t))
 
     def _mgl_fx_owner_candidates(self, payload) -> list[str]:
         out = []
@@ -1346,9 +1438,6 @@ class MGLRendererMixin:
                 cur_frame = int(cur_frame_fn())
             except Exception:
                 cur_frame = None
-        live_pos = self._mgl_fx_current_owner_pos(key)
-        if cur_frame is not None and int(frame) == int(cur_frame) and live_pos is not None:
-            return live_pos
         keys_map = self._mgl_timeline_owner_keys_map(key)
         if isinstance(keys_map, dict) and keys_map:
             eval_fn = getattr(self, "_timeline_eval_frame_values_for_owner_keys", None)
@@ -1370,6 +1459,7 @@ class MGLRendererMixin:
                         return (float(xyz[0]), float(xyz[1]), float(xyz[2]))
                     except Exception:
                         pass
+        live_pos = self._mgl_fx_current_owner_pos(key)
         if cur_frame is not None and int(frame) == int(cur_frame) and live_pos is not None:
             return live_pos
         return None
@@ -1439,6 +1529,10 @@ class MGLRendererMixin:
 
         entries = self._mgl_fx_sample_entries(payload, frame, active_owner)
         if not entries:
+            payload["_fx_debug_oldest_center"] = None
+            payload["_fx_debug_newest_center"] = None
+            payload["_fx_debug_oldest_frame"] = None
+            payload["_fx_debug_newest_frame"] = None
             self._mgl_fx_log(
                 f"[renderer] build no-centers target_owner={target_owner} active_owner={active_owner} "
                 f"frame={int(frame)} samples={int(samples)} frame_step={int(frame_step)} lifespan={int(lifespan)} "
@@ -1447,6 +1541,18 @@ class MGLRendererMixin:
             )
             return None
         entries = list(reversed(entries))
+        try:
+            oldest_entry = entries[0]
+            newest_entry = entries[-1]
+            payload["_fx_debug_oldest_center"] = tuple(float(v) for v in oldest_entry["center"])
+            payload["_fx_debug_newest_center"] = tuple(float(v) for v in newest_entry["center"])
+            payload["_fx_debug_oldest_frame"] = int(oldest_entry["frame"])
+            payload["_fx_debug_newest_frame"] = int(newest_entry["frame"])
+        except Exception:
+            payload["_fx_debug_oldest_center"] = None
+            payload["_fx_debug_newest_center"] = None
+            payload["_fx_debug_oldest_frame"] = None
+            payload["_fx_debug_newest_frame"] = None
         line_pos: List[float] = []
         count = len(entries)
         for idx, entry in enumerate(entries):
@@ -1475,7 +1581,8 @@ class MGLRendererMixin:
                 continue
             phase_t = self._mgl_fx_profile_phase(payload, int(entry["age"]), int(lifespan))
             profile_val = self._mgl_fx_profile_value(payload, phase_t)
-            ring_radius = float(base_radius) * max(0.08, float(profile_val))
+            age_scale = max(0.0, float(self._mgl_fx_age_scale_value(payload, int(entry["age"]), int(lifespan))))
+            ring_radius = float(base_radius) * max(0.08, float(profile_val)) * age_scale
             for seg in range(int(sides)):
                 a0 = (2.0 * math.pi * float(seg)) / float(sides)
                 a1 = (2.0 * math.pi * float(seg + 1)) / float(sides)
@@ -1522,6 +1629,9 @@ class MGLRendererMixin:
             int(payload.get("sides", 28)),
             round(float(payload.get("line_width", 2.0)), 3),
             repr(payload.get("profile_points")),
+            round(float(payload.get("age_scale_min", 1.0)), 5),
+            round(float(payload.get("age_scale_max", 1.0)), 5),
+            repr(payload.get("age_scale_points")),
             tuple(self._mgl_fx_owner_candidates(payload)),
         )
         if payload.get("_fx_stamp") == stamp and payload.get("vao") is not None:
@@ -1581,6 +1691,8 @@ class MGLRendererMixin:
         self._mgl_fx_log(
             f"[renderer] update ok owner={item.name} target_owner={target_owner} active_owner={active_owner} "
             f"frame={int(frame)} point_count={point_count} visible={bool(item.visible)} live_pos={live_pos!r} "
+            f"newest_frame={payload.get('_fx_debug_newest_frame')!r} newest_center={payload.get('_fx_debug_newest_center')!r} "
+            f"oldest_frame={payload.get('_fx_debug_oldest_frame')!r} oldest_center={payload.get('_fx_debug_oldest_center')!r} "
             f"global={bool(payload.get('global_space', False))} repeats={int(payload.get('repeats', 1) or 1)} "
             f"aliases={self._mgl_fx_owner_candidates(payload)!r}"
         )
@@ -2262,19 +2374,52 @@ class MGLRendererMixin:
                 visible=bool(getattr(item, "visible", False)),
                 transparent=bool(is_transparent_material),
                 transparency=float((material or {}).get("transparency", 0.0) or 0.0),
+                refraction=float((material or {}).get("refraction", 0.0) or 0.0),
+                tint_color=list((material or {}).get("tint_color", (1.0, 1.0, 1.0))),
                 submeshes=int(len(submeshes or [])),
                 has_vao=bool(vao is not None),
             )
         def _apply_material_uniforms() -> None:
-            try:
-                self._mgl_prog["UseMaterial"].value = 1 if self._mgl_material_is_transparent(material) else 0
-            except Exception:
-                pass
+            use_material = 1 if self._mgl_material_has_effect(material) else 0
             transparency = 0.0
+            refraction = 0.0
+            tint = (1.0, 1.0, 1.0)
+            use_scene_refraction = 0
             if isinstance(material, dict):
                 transparency = float(material.get("transparency", 0.0) or 0.0)
+                refraction = float(material.get("refraction", 0.0) or 0.0)
+                tint = tuple(material.get("tint_color", (1.0, 1.0, 1.0)) or (1.0, 1.0, 1.0))
+                if refraction > 1e-4 and bool(getattr(self, "_mgl_material_scene_valid", False)):
+                    scene_tex = getattr(self, "_mgl_material_scene_tex", None)
+                    if scene_tex is not None:
+                        try:
+                            scene_tex.use(location=5)
+                            use_scene_refraction = 1
+                        except Exception:
+                            use_scene_refraction = 0
+            try:
+                self._mgl_prog["UseMaterial"].value = use_material
+            except Exception:
+                pass
             try:
                 self._mgl_prog["MaterialTransparency"].value = transparency
+            except Exception:
+                pass
+            try:
+                self._mgl_prog["MaterialRefraction"].value = refraction
+            except Exception:
+                pass
+            try:
+                self._mgl_prog["MaterialTint"].value = tint
+            except Exception:
+                pass
+            try:
+                self._mgl_prog["UseSceneRefraction"].value = use_scene_refraction
+            except Exception:
+                pass
+            try:
+                screen_size = getattr(self, "_mgl_material_scene_screen_size", None) or self._mgl_render_size()
+                self._mgl_prog["ScreenSize"].value = (float(screen_size[0]), float(screen_size[1]))
             except Exception:
                 pass
 
@@ -2785,6 +2930,10 @@ class MGLRendererMixin:
                     pass
         try:
             self._mgl_prog["UseMaterial"].value = 0
+        except Exception:
+            pass
+        try:
+            self._mgl_prog["UseSceneRefraction"].value = 0
         except Exception:
             pass
         if prev_depth_mask_material is not None:
@@ -3467,11 +3616,17 @@ class MGLRendererMixin:
         try:
             prog = self._mgl_ctx.program(vertex_shader=_THUMB_VERT, fragment_shader=SHADERS["mesh_fragment"])
             prog["Texture"].value = 0
+            prog["SceneColorTex"].value = 5
             prog["UseTexture"].value = 0
             prog["UseLighting"].value = 0
             prog["UseProcedural"].value = 1
             prog["UseProceduralLayer"].value = 0
             prog["UseVolumeMask"].value = 0
+            prog["UseSceneRefraction"].value = 0
+            prog["MaterialRefraction"].value = 0.0
+            prog["MaterialTransparency"].value = 0.0
+            prog["MaterialTint"].value = (1.0, 1.0, 1.0)
+            prog["ScreenSize"].value = (1.0, 1.0)
             prog["ProcGlyph"].value = 1
             prog["ProcGlyphGrid"].value = (1.0, 1.0)
             prog["ProcGlyphCount"].value = 1.0
@@ -3601,9 +3756,13 @@ class MGLRendererMixin:
                 prog["UseMaterial"].value = 0
                 prog["UseLighting"].value = 0
                 prog["UseVolumeMask"].value = 0
+                prog["UseSceneRefraction"].value = 0
                 prog["Light"].value = (1.0, 1.0, 1.0)
                 prog["LightIntensity"].value = float(getattr(self, "_mgl_light_intensity", 1.0) or 1.0)
                 prog["MaterialTransparency"].value = 0.0
+                prog["MaterialRefraction"].value = 0.0
+                prog["MaterialTint"].value = (1.0, 1.0, 1.0)
+                prog["ScreenSize"].value = (1.0, 1.0)
                 if np is not None:
                     ident = np.eye(4, dtype="f4")
                     try:
@@ -4120,6 +4279,145 @@ class MGLRendererMixin:
         self._mgl_render_offscreen_depth = depth
         self._mgl_render_offscreen_fbo = fbo
         return fbo
+
+    def _mgl_get_material_refraction_fbo(self, width: int, height: int):
+        if (not _HAS_MGL) or getattr(self, "_mgl_ctx", None) is None:
+            return None
+        w = max(2, int(width))
+        h = max(2, int(height))
+        cur_size = getattr(self, "_mgl_material_scene_tex_size", None)
+        tex = getattr(self, "_mgl_material_scene_tex", None)
+        fbo = getattr(self, "_mgl_material_scene_fbo", None)
+        if (
+            isinstance(cur_size, (list, tuple))
+            and len(cur_size) >= 2
+            and int(cur_size[0]) == w
+            and int(cur_size[1]) == h
+            and tex is not None
+            and fbo is not None
+        ):
+            return fbo
+        try:
+            if fbo is not None:
+                fbo.release()
+        except Exception:
+            pass
+        try:
+            if tex is not None:
+                tex.release()
+        except Exception:
+            pass
+        try:
+            tex = self._mgl_ctx.texture((w, h), 4)
+            tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
+            tex.repeat_x = False
+            tex.repeat_y = False
+            fbo = self._mgl_ctx.framebuffer(color_attachments=[tex])
+        except Exception:
+            return None
+        self._mgl_material_scene_fbo = fbo
+        self._mgl_material_scene_tex = tex
+        self._mgl_material_scene_tex_size = (w, h)
+        return fbo
+
+    def _mgl_capture_material_refraction_scene(self) -> bool:
+        if (not _HAS_MGL) or getattr(self, "_mgl_ctx", None) is None:
+            return False
+        try:
+            w, h = self._mgl_render_size()
+        except Exception:
+            w, h = (2, 2)
+        scale = float(getattr(self, "_mgl_material_refraction_scale", 0.5) or 0.5)
+        if scale <= 0.0:
+            scale = 0.5
+        tex_w = max(2, int(round(w * scale)))
+        tex_h = max(2, int(round(h * scale)))
+        dst_fbo = self._mgl_get_material_refraction_fbo(tex_w, tex_h)
+        if dst_fbo is None:
+            return False
+        src_fbo = None
+        try:
+            target_fbo = int(self._mgl_target_framebuffer_id())
+        except Exception:
+            target_fbo = 0
+        if target_fbo > 0 and hasattr(self._mgl_ctx, "detect_framebuffer"):
+            try:
+                src_fbo = self._mgl_ctx.detect_framebuffer(target_fbo)
+            except Exception:
+                src_fbo = None
+        if src_fbo is None:
+            try:
+                src_fbo = getattr(self._mgl_ctx, "fbo", None) or getattr(self._mgl_ctx, "screen", None)
+            except Exception:
+                src_fbo = None
+        if src_fbo is None:
+            return False
+        try:
+            self._mgl_ctx.copy_framebuffer(dst_fbo, src_fbo)
+            self._mgl_material_scene_screen_size = (float(w), float(h))
+            self._mgl_material_scene_valid = True
+            self._mgl_material_log_throttled(
+                "refraction-capture",
+                "renderer.refraction_capture",
+                interval=1.0,
+                screen_size=[int(w), int(h)],
+                texture_size=[int(tex_w), int(tex_h)],
+            )
+            return True
+        except Exception as exc:
+            pass
+        raw_gl = getattr(self, "_gl", None)
+        if raw_gl is not None and hasattr(raw_gl, "glBlitFramebuffer"):
+            try:
+                src_glo = int(getattr(src_fbo, "glo", 0) or 0)
+            except Exception:
+                src_glo = 0
+            try:
+                dst_glo = int(getattr(dst_fbo, "glo", 0) or 0)
+            except Exception:
+                dst_glo = 0
+            if src_glo > 0 and dst_glo > 0:
+                try:
+                    raw_gl.glBindFramebuffer(0x8CA8, src_glo)  # GL_READ_FRAMEBUFFER
+                    raw_gl.glBindFramebuffer(0x8CA9, dst_glo)  # GL_DRAW_FRAMEBUFFER
+                    raw_gl.glBlitFramebuffer(
+                        0,
+                        0,
+                        int(w),
+                        int(h),
+                        0,
+                        0,
+                        int(tex_w),
+                        int(tex_h),
+                        GL_COLOR_BUFFER_BIT,
+                        0x2601,  # GL_LINEAR
+                    )
+                    self._mgl_bind_default_fbo()
+                    self._mgl_material_scene_screen_size = (float(w), float(h))
+                    self._mgl_material_scene_valid = True
+                    self._mgl_material_log_throttled(
+                        "refraction-capture-raw",
+                        "renderer.refraction_capture_raw",
+                        interval=1.0,
+                        screen_size=[int(w), int(h)],
+                        texture_size=[int(tex_w), int(tex_h)],
+                    )
+                    return True
+                except Exception as raw_exc:
+                    exc = raw_exc
+                finally:
+                    try:
+                        self._mgl_bind_default_fbo()
+                    except Exception:
+                        pass
+        self._mgl_material_scene_valid = False
+        self._mgl_material_log_throttled(
+            "refraction-capture-error",
+            "renderer.refraction_capture_error",
+            interval=2.0,
+            error=repr(exc),
+        )
+        return False
 
     def _paint_mgl_draw_grid_pass(self, *, mvp) -> None:
         try:
@@ -5071,14 +5369,22 @@ class MGLRendererMixin:
             items = list(getattr(self, "_mgl_pending_transparent_scene_items", None) or [])
         except Exception:
             items = []
+        try:
+            self._mgl_material_scene_valid = False
+        except Exception:
+            pass
         if not items:
             return
         owners = []
+        refract_owners = []
         for item in items:
             payload = getattr(item, "payload", None) or {}
-            if payload.get("material") is None:
+            material = self._mgl_normalize_material(payload.get("material"))
+            if material is None:
                 continue
             owners.append(str(payload.get("owner") or item.name or ""))
+            if self._mgl_material_uses_refraction(material):
+                refract_owners.append(str(payload.get("owner") or item.name or ""))
         if owners:
             self._mgl_material_log_throttled(
                 "transparent-pass",
@@ -5086,6 +5392,19 @@ class MGLRendererMixin:
                 interval=1.0,
                 count=len(owners),
                 owners=owners[:12],
+            )
+        if refract_owners:
+            try:
+                self._mgl_capture_material_refraction_scene()
+            except Exception:
+                pass
+            self._mgl_material_log_throttled(
+                "transparent-pass-refraction",
+                "renderer.transparent_pass_refraction",
+                interval=1.0,
+                count=len(refract_owners),
+                owners=refract_owners[:12],
+                captured=bool(getattr(self, "_mgl_material_scene_valid", False)),
             )
         prev_depth_mask = None
         prev_depth_func = None
@@ -5889,9 +6208,16 @@ class MGLRendererMixin:
             self._mgl_prog["Color"].value = self._mgl_mesh_color
             try:
                 self._mgl_prog["Texture"].value = 0
+                self._mgl_prog["SceneColorTex"].value = 5
                 self._mgl_prog["UseTexture"].value = 0
                 self._mgl_prog["LightIntensity"].value = float(self._mgl_light_intensity)
                 self._mgl_prog["UseLighting"].value = 1
+                self._mgl_prog["UseMaterial"].value = 0
+                self._mgl_prog["MaterialTransparency"].value = 0.0
+                self._mgl_prog["MaterialRefraction"].value = 0.0
+                self._mgl_prog["MaterialTint"].value = (1.0, 1.0, 1.0)
+                self._mgl_prog["UseSceneRefraction"].value = 0
+                self._mgl_prog["ScreenSize"].value = (1.0, 1.0)
                 self._mgl_prog["UseProcedural"].value = 0
                 self._mgl_prog["UseProceduralLayer"].value = 0
                 self._mgl_prog["UseVolumeMask"].value = 0
@@ -5947,6 +6273,7 @@ class MGLRendererMixin:
             self._mgl_arcball = _ArcBallUtil(self.width(), self.height())
             self._mgl_center = np.zeros(3, dtype="f4")
             self._mgl_camera_zoom = self._mgl_camera_distance(self._mgl_fov)
+            self._mgl_material_refraction_scale = 0.5
             self._mgl_update_grid()
             self._mgl_error = ""
 
@@ -7020,6 +7347,9 @@ class MGLRendererMixin:
                             "color": self._mgl_fx_color_rgba(asset.get("color")),
                             "line_width": float(asset.get("line_width", 2.0) or 2.0),
                             "profile_points": list(asset.get("profile_points") or []),
+                            "age_scale_min": float(asset.get("age_scale_min", 1.0) or 1.0),
+                            "age_scale_max": float(asset.get("age_scale_max", 1.0) or 1.0),
+                            "age_scale_points": list(asset.get("age_scale_points") or []),
                         },
                         resources=[],
                         visible=bool(asset.get("visible", True)),
@@ -7571,6 +7901,8 @@ class MGLRendererMixin:
                             visible=bool(visible),
                             transparent=bool(self._mgl_material_is_transparent(material)),
                             transparency=float((material or {}).get("transparency", 0.0) or 0.0),
+                            refraction=float((material or {}).get("refraction", 0.0) or 0.0),
+                            tint_color=list((material or {}).get("tint_color", (1.0, 1.0, 1.0))),
                             submeshes=int(len(model_item.payload.get("submeshes") or [])),
                             has_vao=bool(model_item.payload.get("vao") is not None),
                         )

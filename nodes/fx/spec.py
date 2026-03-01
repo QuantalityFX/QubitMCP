@@ -19,6 +19,11 @@ DEFAULT_PROFILE_POINTS = [
     (1.00, 0.20),
 ]
 
+DEFAULT_AGE_SCALE_POINTS = [
+    (0.0, 0.0),
+    (1.0, 1.0),
+]
+
 
 def _param_value(model, name: str) -> str:
     key = (name or "").strip().lower()
@@ -170,6 +175,11 @@ def _profile_to_json(points) -> str:
 
 def trail_asset_config_from_model(model) -> dict:
     profile_points = _profile_from_json(_param_value(model, "profile"))
+    raw_age_scale_profile = _param_value(model, "age_scale_profile")
+    if raw_age_scale_profile.strip():
+        age_scale_points = _profile_from_json(raw_age_scale_profile)
+    else:
+        age_scale_points = list(DEFAULT_AGE_SCALE_POINTS)
     samples = _parse_int(_param_value(model, "samples"), 28, minimum=4, maximum=180)
     frame_step = _parse_int(_param_value(model, "frame_step"), 1, minimum=1, maximum=24)
     lifespan_default = max(1, int(samples) * int(frame_step))
@@ -185,6 +195,9 @@ def trail_asset_config_from_model(model) -> dict:
         "color": _normalize_color(_param_value(model, "color")),
         "line_width": _parse_float(_param_value(model, "line_width"), 2.0, minimum=0.5, maximum=8.0),
         "profile_points": [{"x": float(x), "y": float(y)} for x, y in profile_points],
+        "age_scale_min": _parse_float(_param_value(model, "age_scale_min"), 1.0, minimum=0.0, maximum=10.0),
+        "age_scale_max": _parse_float(_param_value(model, "age_scale_max"), 1.0, minimum=0.0, maximum=10.0),
+        "age_scale_points": [{"x": float(x), "y": float(y)} for x, y in age_scale_points],
     }
 
 
@@ -202,6 +215,9 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, "color", "#b7ff6a")
     _ensure_param(node_item, "line_width", "2.0")
     _ensure_param(node_item, "profile", _profile_to_json(DEFAULT_PROFILE_POINTS))
+    _ensure_param(node_item, "age_scale_min", "1.0")
+    _ensure_param(node_item, "age_scale_max", "1.0")
+    _ensure_param(node_item, "age_scale_profile", _profile_to_json(DEFAULT_AGE_SCALE_POINTS))
     _ensure_hidden_params(
         getattr(node_item, "model", None),
         [
@@ -218,6 +234,9 @@ def build_ports(node_item) -> None:
             "color",
             "line_width",
             "profile",
+            "age_scale_min",
+            "age_scale_max",
+            "age_scale_profile",
         ],
     )
     if hasattr(node_item, "ensure_input"):
@@ -464,6 +483,8 @@ class FxTrailWidget(QtWidgets.QWidget):
         self._sides = _mk_int(6, 96)
         self._radius = _mk_float(0.01, 1000.0, 0.01)
         self._line_width = _mk_float(0.5, 8.0, 0.1)
+        self._age_scale_min = _mk_float(0.0, 10.0, 0.05)
+        self._age_scale_max = _mk_float(0.0, 10.0, 0.05)
         self._color = QtWidgets.QLineEdit()
         self._color.setPlaceholderText("#b7ff6a")
         self._color.setStyleSheet(
@@ -488,6 +509,10 @@ class FxTrailWidget(QtWidgets.QWidget):
         grid.addWidget(self._line_width, 3, 1)
         grid.addWidget(QtWidgets.QLabel("Color"), 3, 2)
         grid.addWidget(self._color, 3, 3)
+        grid.addWidget(QtWidgets.QLabel("Age Min"), 4, 0)
+        grid.addWidget(self._age_scale_min, 4, 1)
+        grid.addWidget(QtWidgets.QLabel("Age Max"), 4, 2)
+        grid.addWidget(self._age_scale_max, 4, 3)
         layout.addLayout(grid)
 
         preset_row = QtWidgets.QHBoxLayout()
@@ -512,11 +537,33 @@ class FxTrailWidget(QtWidgets.QWidget):
         self._profile.pointsChanged.connect(self._on_profile_changed)
         layout.addWidget(self._profile, 0)
 
+        scale_row = QtWidgets.QHBoxLayout()
+        scale_row.setContentsMargins(0, 0, 0, 0)
+        scale_row.setSpacing(4)
+        scale_label = QtWidgets.QLabel("Age Scale")
+        scale_label.setStyleSheet("color:#cbd5e1;")
+        scale_row.addWidget(scale_label, 0)
+        scale_row.addStretch(1)
+        scale_reset_btn = QtWidgets.QPushButton("Linear")
+        scale_reset_btn.setFixedHeight(20)
+        scale_reset_btn.setStyleSheet(
+            "QPushButton{background:#1e293b;color:#e2e8f0;border-radius:4px;padding:1px 8px;}"
+            "QPushButton:hover{background:#334155;}"
+        )
+        scale_reset_btn.clicked.connect(self._reset_age_scale_profile_linear)
+        scale_row.addWidget(scale_reset_btn, 0)
+        layout.addLayout(scale_row)
+
+        self._age_scale_profile = FxRampWidget(DEFAULT_AGE_SCALE_POINTS)
+        self._age_scale_profile.setStyleSheet("background:#0f1216;border:1px solid #334155;border-radius:6px;")
+        self._age_scale_profile.pointsChanged.connect(self._on_age_scale_profile_changed)
+        layout.addWidget(self._age_scale_profile, 0)
+
         hint = QtWidgets.QLabel("Drag points. Double-click to add. Right-click to remove.")
         hint.setWordWrap(True)
         hint.setStyleSheet("color:#64748b;font-size:10px;")
         layout.addWidget(hint, 0)
-        age_hint = QtWidgets.QLabel("Life is ring age in frames. Repeat cycles the ramp from spawn to death.")
+        age_hint = QtWidgets.QLabel("Pattern uses Repeat. Age Scale multiplies size from spawn on the left to older rings on the right.")
         age_hint.setWordWrap(True)
         age_hint.setStyleSheet("color:#64748b;font-size:10px;")
         layout.addWidget(age_hint, 0)
@@ -529,6 +576,8 @@ class FxTrailWidget(QtWidgets.QWidget):
             (self._sides, "sides", False),
             (self._radius, "radius", True),
             (self._line_width, "line_width", True),
+            (self._age_scale_min, "age_scale_min", True),
+            (self._age_scale_max, "age_scale_max", True),
         ):
             if is_float:
                 widget.valueChanged.connect(lambda value, name=key: self._set_param(name, f"{float(value):.3f}"))
@@ -540,7 +589,7 @@ class FxTrailWidget(QtWidgets.QWidget):
         self._schedule_refresh()
 
     def sizeHint(self):
-        return QtCore.QSize(220, 264)
+        return QtCore.QSize(220, 388)
 
     def _set_param(self, name: str, value: str, *, notify_scene: bool = True) -> None:
         if self._updating:
@@ -644,6 +693,11 @@ class FxTrailWidget(QtWidgets.QWidget):
         if model is None:
             return
         profile = _profile_from_json(_param_value(model, "profile"))
+        raw_age_scale_profile = _param_value(model, "age_scale_profile")
+        if raw_age_scale_profile.strip():
+            age_scale_profile = _profile_from_json(raw_age_scale_profile)
+        else:
+            age_scale_profile = list(DEFAULT_AGE_SCALE_POINTS)
         samples = _parse_int(_param_value(model, "samples"), 28, minimum=4, maximum=180)
         frame_step = _parse_int(_param_value(model, "frame_step"), 1, minimum=1, maximum=24)
         lifespan_default = max(1, int(samples) * int(frame_step))
@@ -658,6 +712,8 @@ class FxTrailWidget(QtWidgets.QWidget):
             self._sides.blockSignals(True)
             self._radius.blockSignals(True)
             self._line_width.blockSignals(True)
+            self._age_scale_min.blockSignals(True)
+            self._age_scale_max.blockSignals(True)
             self._enabled.setChecked(_param_value(model, "enabled").strip() not in {"0", "false", "False", "off", "no"})
             self._global_space.setChecked(_param_value(model, "global_space").strip() in {"1", "true", "True", "on", "yes"})
             self._samples.setValue(samples)
@@ -667,8 +723,11 @@ class FxTrailWidget(QtWidgets.QWidget):
             self._sides.setValue(_parse_int(_param_value(model, "sides"), 28, minimum=6, maximum=96))
             self._radius.setValue(_parse_float(_param_value(model, "radius"), 0.35, minimum=0.01, maximum=1000.0))
             self._line_width.setValue(_parse_float(_param_value(model, "line_width"), 2.0, minimum=0.5, maximum=8.0))
+            self._age_scale_min.setValue(_parse_float(_param_value(model, "age_scale_min"), 1.0, minimum=0.0, maximum=10.0))
+            self._age_scale_max.setValue(_parse_float(_param_value(model, "age_scale_max"), 1.0, minimum=0.0, maximum=10.0))
             self._color.setText(_normalize_color(_param_value(model, "color")))
             self._profile.set_points(profile)
+            self._age_scale_profile.set_points(age_scale_profile)
         finally:
             for widget in (
                 self._enabled,
@@ -680,6 +739,8 @@ class FxTrailWidget(QtWidgets.QWidget):
                 self._sides,
                 self._radius,
                 self._line_width,
+                self._age_scale_min,
+                self._age_scale_max,
             ):
                 try:
                     widget.blockSignals(False)
@@ -701,9 +762,16 @@ class FxTrailWidget(QtWidgets.QWidget):
     def _on_profile_changed(self, points):
         self._set_param("profile", _profile_to_json(points))
 
+    def _on_age_scale_profile_changed(self, points):
+        self._set_param("age_scale_profile", _profile_to_json(points))
+
     def _reset_profile_wave(self):
         self._profile.set_points(DEFAULT_PROFILE_POINTS)
         self._set_param("profile", _profile_to_json(DEFAULT_PROFILE_POINTS))
+
+    def _reset_age_scale_profile_linear(self):
+        self._age_scale_profile.set_points(DEFAULT_AGE_SCALE_POINTS)
+        self._set_param("age_scale_profile", _profile_to_json(DEFAULT_AGE_SCALE_POINTS))
 
 
 def render_node_body(node_item, y_cursor: int) -> int:

@@ -662,6 +662,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 params.append({"name": "path", "value": ""})
             if "transparency" not in names:
                 params.append({"name": "transparency", "value": "80"})
+            if "refraction" not in names:
+                params.append({"name": "refraction", "value": "24"})
+            if "tint_color" not in names:
+                params.append({"name": "tint_color", "value": "#dfe7ff"})
             store_key = "__ui_hidden_params"
             hidden_entry = None
             for p in params:
@@ -673,7 +677,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 params.append(hidden_entry)
             raw = hidden_entry.get("value", "")
             hidden = {t.strip().lower() for t in str(raw).split(",") if t.strip()}
-            hidden.update({"mesh", "source", "path", "transparency", "base_color", "roughness", "refraction", "specular_color"})
+            hidden.update({"mesh", "source", "path", "transparency", "refraction", "tint_color", "base_color", "roughness", "specular_color"})
             hidden_entry["value"] = ",".join(sorted(hidden))
             self.model.params = params
             try:
@@ -1447,7 +1451,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 pass
             node_w = self._BASE_W
         elif kind in ("mnaterial", "material"):
-            body_h = 82
+            body_h = 118
             node_w = self._BASE_W
         else:
             body_h = 0
@@ -2557,7 +2561,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     f.write(f"{ts} {msg}\n")
             except Exception:
                 pass
-        fx_log_enabled = False
+        fx_log_enabled = True
 
         def _fx_log(msg: str) -> None:
             if not fx_log_enabled:

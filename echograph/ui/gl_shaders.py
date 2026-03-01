@@ -14,13 +14,20 @@ out vec3 v_vert;
 out vec2 v_uv;
 out vec3 v_world_norm;
 out vec3 v_world_pos;
+vec3 safe_normalize(vec3 v) {
+    float len2 = dot(v, v);
+    if (len2 <= 1e-10) {
+        return vec3(0.0, 0.0, 1.0);
+    }
+    return v * inversesqrt(len2);
+}
 void main() {
     vec4 world = Model * vec4(in_position, 1.0);
     gl_Position = Mvp * vec4(in_position, 1.0);
     v_norm = in_normal;
     v_vert = in_position;
     v_uv = in_uv;
-    v_world_norm = normalize(mat3(Model) * in_normal);
+    v_world_norm = safe_normalize(mat3(Model) * in_normal);
     v_world_pos = world.xyz;
 }
 """,
@@ -40,6 +47,11 @@ uniform int UseVolumeMask;
 uniform mat4 VolumeInv;
 uniform mat4 Model;
 uniform float MaterialTransparency;
+uniform float MaterialRefraction;
+uniform vec3 MaterialTint;
+uniform sampler2D SceneColorTex;
+uniform int UseSceneRefraction;
+uniform vec2 ScreenSize;
 uniform int ProceduralMode;
 uniform vec4 ProcParams;
 uniform float ProcSeed;
@@ -80,6 +92,14 @@ in vec2 v_uv;
 in vec3 v_world_norm;
 in vec3 v_world_pos;
 out vec4 f_color;
+
+vec3 safe_normalize(vec3 v) {
+    float len2 = dot(v, v);
+    if (len2 <= 1e-10) {
+        return vec3(0.0, 0.0, 1.0);
+    }
+    return v * inversesqrt(len2);
+}
 
 float hash11(float n) {
     return fract(sin(n) * 43758.5453123);
@@ -343,8 +363,34 @@ void main() {
         base = vec4(clamp(lit_rgb, 0.0, 1.0), base.a);
     }
     if (UseMaterial == 1) {
+        base.a = max(base.a, 1.0);
         float transmission = clamp(MaterialTransparency, 0.0, 1.0);
-        base.a *= max(0.0, 1.0 - transmission);
+        float refraction = clamp(MaterialRefraction, 0.0, 1.0);
+        vec3 tint = clamp(MaterialTint, vec3(0.0), vec3(1.0));
+        vec3 n = safe_normalize(v_world_norm);
+        float edge = pow(1.0 - clamp(abs(n.z), 0.0, 1.0), 1.6);
+        vec3 material_rgb = clamp(mix(base.rgb, tint, 0.58), 0.0, 1.0);
+        if (UseSceneRefraction == 1 && refraction > 0.001) {
+            vec2 safe_screen = max(ScreenSize, vec2(1.0, 1.0));
+            vec2 screen_uv = gl_FragCoord.xy / safe_screen;
+            vec2 refract_offset = n.xy * (0.038 * refraction) * (0.30 + transmission * 0.70) * (0.65 + edge * 0.35);
+            vec2 warped_uv0 = clamp(screen_uv + refract_offset, vec2(0.001), vec2(0.999));
+            vec2 warped_uv1 = clamp(screen_uv - refract_offset * 0.45, vec2(0.001), vec2(0.999));
+            vec3 scene_rgb0 = texture(SceneColorTex, warped_uv0).rgb;
+            vec3 scene_rgb1 = texture(SceneColorTex, warped_uv1).rgb;
+            vec3 scene_rgb = mix(scene_rgb0, scene_rgb1, 0.35);
+            float tint_mix = clamp(0.26 + transmission * 0.20 + refraction * 0.26, 0.0, 0.72);
+            vec3 tinted_scene = scene_rgb * mix(vec3(1.0), tint, 0.68);
+            vec3 glass_rgb = mix(tinted_scene, tint, 0.18 + edge * 0.14);
+            material_rgb = mix(material_rgb, clamp(glass_rgb, 0.0, 1.0), clamp(0.42 + transmission * 0.16 + refraction * 0.12, 0.0, 0.72));
+        }
+        vec3 edge_rgb = clamp(mix(material_rgb, tint, 0.30), 0.0, 1.0);
+        material_rgb = mix(material_rgb, edge_rgb, clamp(edge * (0.22 + refraction * 0.14), 0.0, 0.34));
+        base.rgb = material_rgb;
+        float material_alpha = max(0.0, 1.0 - transmission);
+        material_alpha += 0.10 + refraction * 0.12;
+        material_alpha += edge * (0.14 + refraction * 0.16);
+        base.a *= clamp(material_alpha, 0.18, 0.92);
     }
     if (base.a <= 0.001) {
         discard;
