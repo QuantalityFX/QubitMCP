@@ -29,6 +29,7 @@ _VIDEO_PLAYER_ICON = None
 _INSTANCE_ICON = None
 _TEXTURE_LAYER_ICON = None
 _TEXTURE_NODE_ICON = None
+_MATERIAL_NODE_ICON = None
 _UV_UNWRAP_ICON = None
 _TRANSFORMS_ICON = None
 
@@ -219,6 +220,14 @@ def _texture_node_icon():
         return _TEXTURE_NODE_ICON
     _TEXTURE_NODE_ICON = _load_pm("TextureNode_Icon.png")
     return _TEXTURE_NODE_ICON
+
+
+def _material_node_icon():
+    global _MATERIAL_NODE_ICON
+    if _MATERIAL_NODE_ICON is not None:
+        return _MATERIAL_NODE_ICON
+    _MATERIAL_NODE_ICON = _load_pm("MaterialGenerator_Icon_M.png") or _load_pm("LiveMaterial_Icon.png")
+    return _MATERIAL_NODE_ICON
 
 
 def _uv_unwrap_icon():

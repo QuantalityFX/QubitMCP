@@ -338,6 +338,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     _texture_layer.register()
             except Exception:
                 pass
+        # Ensure Material spec is registered even if the loader was skipped.
+        if (self.model.kind or "").strip().lower() in ("mnaterial", "material"):
+            try:
+                from nodes import material as _material  # type: ignore
+                if hasattr(_material, "register"):
+                    _material.register()
+            except Exception:
+                pass
         # Ensure FX spec is registered even if the loader was skipped.
         if (self.model.kind or "").strip().lower() in ("fx", "fx_trail"):
             try:
@@ -643,6 +651,41 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 self.ensure_input("overlay")
             except Exception:
                 pass
+        elif kind_lower in ("mnaterial", "material"):
+            params = list(self.model.params or [])
+            names = {(p.get("name") or "").strip().lower() for p in params}
+            if "mesh" not in names:
+                params.append({"name": "mesh", "value": ""})
+            if "source" not in names:
+                params.append({"name": "source", "value": ""})
+            if "path" not in names:
+                params.append({"name": "path", "value": ""})
+            if "base_color" not in names:
+                params.append({"name": "base_color", "value": "#dbeafe"})
+            if "roughness" not in names:
+                params.append({"name": "roughness", "value": "18"})
+            if "transparency" not in names:
+                params.append({"name": "transparency", "value": "80"})
+            if "refraction" not in names:
+                params.append({"name": "refraction", "value": "45"})
+            store_key = "__ui_hidden_params"
+            hidden_entry = None
+            for p in params:
+                if (p.get("name") or "").strip().lower() == store_key:
+                    hidden_entry = p
+                    break
+            if hidden_entry is None:
+                hidden_entry = {"name": store_key, "value": ""}
+                params.append(hidden_entry)
+            raw = hidden_entry.get("value", "")
+            hidden = {t.strip().lower() for t in str(raw).split(",") if t.strip()}
+            hidden.update({"mesh", "source", "path", "base_color", "roughness", "transparency", "refraction", "specular_color"})
+            hidden_entry["value"] = ",".join(sorted(hidden))
+            self.model.params = params
+            try:
+                self.ensure_input("mesh")
+            except Exception:
+                pass
         elif kind_lower == "note":
             # Ensure notes always start with at least one parameter for convenience
             if not (self.model.params or []):
@@ -845,6 +888,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
             hidden.update({"pattern", "tiling", "pack_x", "pack_y", "offset_x", "offset_y", "speed", "invert", "pan", "life_min", "life_max", "emissive", "softness", "lighting", "bg_color", "bg_alpha", "resolution", "source", "path"})
         elif kind == "texture_layer":
             hidden.update({"source", "path"})
+        elif kind in ("mnaterial", "material"):
+            hidden.update({"mesh", "source", "path", "base_color", "roughness", "transparency", "refraction", "specular_color"})
         elif kind in ("volume_selector", "split_volume"):
             hidden.update({"source", "path", "invert"})
         elif kind == "transforms":
@@ -1406,6 +1451,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 body_h = max(body_h, int(getattr(_tl_spec, "PREVIEW_SIZE", 72)) + 40)
             except Exception:
                 pass
+            node_w = self._BASE_W
+        elif kind in ("mnaterial", "material"):
+            body_h = 132
             node_w = self._BASE_W
         else:
             body_h = 0
@@ -2515,7 +2563,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     f.write(f"{ts} {msg}\n")
             except Exception:
                 pass
+        fx_log_enabled = False
+
         def _fx_log(msg: str) -> None:
+            if not fx_log_enabled:
+                return
             try:
                 root = Path(__file__).resolve().parents[2]
                 log_dir = root / "logs"
@@ -2529,6 +2581,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
         if sc is None:
             _scene_log("collect_scene_assets abort: no scene")
             return []
+        try:
+            scene_kind = (getattr(getattr(self, "model", None), "kind", "") or "").strip().lower()
+            if scene_kind in ("scene", "scene_assembly", "scene_outliner"):
+                from nodes.scene import spec as _scene_spec  # type: ignore
+                collector = getattr(_scene_spec, "_collect_assets", None)
+                if callable(collector):
+                    return list(collector(self) or [])
+        except Exception:
+            pass
 
         def _param_val(model, name: str) -> str:
             key = (name or "").strip().lower()
@@ -3050,7 +3111,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     _fx_log(
                         f"[node_item] append duplicate-base trail node={fx_entry['node']} "
                         f"target_owner={model_name} path={path!r} enabled={bool(fx_entry.get('enabled', True))} "
+                        f"global={bool(fx_entry.get('global_space', False))} "
                         f"samples={int(fx_entry.get('samples', 28) or 28)} frame_step={int(fx_entry.get('frame_step', 1) or 1)} "
+                        f"lifespan={int(fx_entry.get('lifespan', max(1, int(fx_entry.get('samples', 28) or 28) * int(fx_entry.get('frame_step', 1) or 1))) or 1)} "
+                        f"repeats={int(fx_entry.get('repeats', 1) or 1)} "
                         f"radius={float(fx_entry.get('radius', 0.35) or 0.35):.4f} aliases={aliases!r}"
                     )
                 _scene_log(f"edge[{edge_idx}] skip: duplicate path={path!r}")
@@ -3143,8 +3207,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 _fx_log(
                     f"[node_item] append trail node={fx_entry['node']} target_owner={model_name} "
                     f"path={path!r} enabled={bool(fx_entry.get('enabled', True))} "
+                    f"global={bool(fx_entry.get('global_space', False))} "
                     f"samples={int(fx_entry.get('samples', 28) or 28)} frame_step={int(fx_entry.get('frame_step', 1) or 1)} "
-                    f"radius={float(fx_entry.get('radius', 0.35) or 0.35):.4f} repeats={int(fx_entry.get('repeats', 4) or 4)} "
+                    f"lifespan={int(fx_entry.get('lifespan', max(1, int(fx_entry.get('samples', 28) or 28) * int(fx_entry.get('frame_step', 1) or 1))) or 1)} "
+                    f"repeats={int(fx_entry.get('repeats', 1) or 1)} "
+                    f"radius={float(fx_entry.get('radius', 0.35) or 0.35):.4f} "
                     f"sides={int(fx_entry.get('sides', 28) or 28)} aliases={aliases!r}"
                 )
         _scene_log(f"collect_scene_assets done assets={len(assets)}")
@@ -5145,6 +5212,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "texture pro",
                 "texture_layer",
                 "texture layer",
+                "mnaterial",
+                "material",
                 "transforms",
                 "export_fbx",
                 "exportfbx",
@@ -5281,6 +5350,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 icon_pm = node_icons._texture_node_icon() or node_icons._output_icon()
             elif kind_lower in ("texture_layer", "texture layer"):
                 icon_pm = node_icons._texture_layer_icon() or node_icons._output_icon()
+            elif kind_lower in ("mnaterial", "material"):
+                icon_pm = node_icons._material_node_icon() or node_icons._output_icon()
             elif kind_lower == "transforms":
                 icon_pm = node_icons._transforms_icon() or node_icons._output_icon()
             elif kind_lower in ("export_fbx", "exportfbx", "export fbx"):
@@ -5311,6 +5382,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     size = int(max(34, size * 0.792))
                 if kind_lower in ("texture_layer", "texture layer"):
                     size = int(max(36, size * 0.855))
+                if kind_lower in ("mnaterial", "material"):
+                    size = int(max(36, size * 0.88))
                 if kind_lower in ("chatbot", "chat bot", "chat_bot"):
                     size = int(size * 1.13)
                 pm_scaled = icon_pm.scaled(size, size, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)

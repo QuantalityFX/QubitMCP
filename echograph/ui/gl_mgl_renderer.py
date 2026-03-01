@@ -66,11 +66,15 @@ in vec2 in_uv;
 out vec3 v_norm;
 out vec3 v_vert;
 out vec2 v_uv;
+out vec3 v_world_norm;
+out vec3 v_world_pos;
 void main() {
     gl_Position = vec4(in_pos.xy, 0.0, 1.0);
     v_uv = in_uv;
     v_norm = vec3(0.0, 0.0, 1.0);
     v_vert = vec3(0.0, 0.0, 0.0);
+    v_world_norm = vec3(0.0, 0.0, 1.0);
+    v_world_pos = vec3(0.0, 0.0, 0.0);
 }
 """
 
@@ -122,6 +126,8 @@ class MGLRendererMixin:
         self._mgl_log(msg)
 
     def _mgl_fx_log(self, msg: str) -> None:
+        if not bool(getattr(self, "_mgl_fx_log_enabled", False)):
+            return
         try:
             root = Path(__file__).resolve().parents[2]
             log_dir = root / "logs"
@@ -509,6 +515,71 @@ class MGLRendererMixin:
             except Exception:
                 continue
         return None
+
+    def _mgl_normalize_material(self, raw) -> Optional[dict]:
+        if not isinstance(raw, dict):
+            return None
+
+        color_raw = raw.get("base_color")
+        if color_raw is None:
+            color_raw = raw.get("specular_color")
+        color = None
+        if isinstance(color_raw, (list, tuple)) and len(color_raw) >= 3:
+            try:
+                color = (
+                    max(0.0, min(1.0, float(color_raw[0]))),
+                    max(0.0, min(1.0, float(color_raw[1]))),
+                    max(0.0, min(1.0, float(color_raw[2]))),
+                )
+            except Exception:
+                color = None
+        elif isinstance(color_raw, str):
+            try:
+                qc = QtGui.QColor(str(color_raw))
+                if qc.isValid():
+                    color = (float(qc.redF()), float(qc.greenF()), float(qc.blueF()))
+            except Exception:
+                color = None
+        if color is None:
+            color = (0.8588, 0.9333, 0.9961)
+
+        def _norm01(value, default: float) -> float:
+            try:
+                num = float(value)
+            except Exception:
+                num = float(default)
+            if num > 1.0:
+                num *= 0.01
+            if not math.isfinite(num):
+                num = float(default)
+            return max(0.0, min(1.0, num))
+
+        roughness = _norm01(raw.get("roughness", 0.18), 0.18)
+        transparency = _norm01(raw.get("transparency", 0.0), 0.0)
+        refraction = _norm01(raw.get("refraction", 0.0), 0.0)
+        return {
+            "base_color": color,
+            "roughness": roughness,
+            "transparency": transparency,
+            "refraction": refraction,
+        }
+
+    def _mgl_material_is_transparent(self, material) -> bool:
+        if not isinstance(material, dict):
+            return False
+        try:
+            return bool(float(material.get("transparency", 0.0) or 0.0) > 1e-4 or float(material.get("refraction", 0.0) or 0.0) > 1e-4)
+        except Exception:
+            return False
+
+    def _mgl_scene_item_is_transparent(self, item: MGLSceneItem) -> bool:
+        if item is None or not bool(getattr(item, "visible", False)):
+            return False
+        try:
+            payload = getattr(item, "payload", None) or {}
+        except Exception:
+            payload = {}
+        return self._mgl_material_is_transparent(payload.get("material"))
 
     def _mgl_owner_pivot_local(self, owner: str, bmin=None, bmax=None):
         # Optional per-owner local pivot override (used by scene cameras).
@@ -1016,6 +1087,25 @@ class MGLRendererMixin:
                 return float(y0) + (float(y1) - float(y0)) * float(alpha)
         return float(points[-1][1])
 
+    def _mgl_fx_profile_phase(self, payload, age: int, lifespan: int) -> float:
+        life_frames = max(1, int(lifespan))
+        try:
+            repeats = max(1, int(payload.get("repeats", 1)))
+        except Exception:
+            repeats = 1
+        if life_frames <= 1:
+            age_t = 0.0
+        else:
+            age_t = max(0.0, min(1.0, float(age) / float(max(1, life_frames - 1))))
+        if repeats <= 1:
+            return age_t
+        if age_t >= 1.0:
+            return 1.0
+        phase = math.fmod(float(age_t) * float(repeats), 1.0)
+        if phase < 0.0:
+            phase += 1.0
+        return float(phase)
+
     def _mgl_fx_owner_candidates(self, payload) -> list[str]:
         out = []
         seen = set()
@@ -1065,6 +1155,117 @@ class MGLRendererMixin:
                 best_score = score
                 best_owner = owner
         return best_owner
+
+    def _mgl_fx_sample_entries(self, payload, frame: int, active_owner: str):
+        if np is None:
+            return []
+        try:
+            samples = max(1, int(payload.get("samples", 28)))
+        except Exception:
+            samples = 28
+        try:
+            frame_step = max(1, int(payload.get("frame_step", 1)))
+        except Exception:
+            frame_step = 1
+        try:
+            lifespan = max(1, int(payload.get("lifespan", int(samples) * int(frame_step))))
+        except Exception:
+            lifespan = max(1, int(samples) * int(frame_step))
+        entries = []
+        for idx in range(int(samples)):
+            sample_age = idx * int(frame_step)
+            if sample_age >= int(lifespan):
+                break
+            sample_frame = int(frame) - sample_age
+            if sample_frame < 0:
+                break
+            pos = self._mgl_fx_eval_owner_pos(active_owner, sample_frame)
+            if pos is None:
+                if idx == 0:
+                    continue
+                break
+            vec = np.array(pos, dtype=np.float32)
+            if entries:
+                try:
+                    if float(np.linalg.norm(vec - entries[-1]["center"])) < 1.0e-5:
+                        continue
+                except Exception:
+                    pass
+            entries.append(
+                {
+                    "frame": int(sample_frame),
+                    "age": int(sample_age),
+                    "center": vec,
+                }
+            )
+        return entries
+
+    def _mgl_fx_ring_axes_from_tangent(self, tangent):
+        if np is None:
+            return None, None
+        last_tangent = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+        try:
+            tlen = float(np.linalg.norm(tangent))
+        except Exception:
+            tlen = 0.0
+        if tlen > 1.0e-6:
+            normal = np.asarray(tangent, dtype=np.float32) / tlen
+            last_tangent = normal.astype(np.float32)
+        else:
+            normal = last_tangent
+        ref = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+        try:
+            if abs(float(np.dot(normal, ref))) > 0.92:
+                ref = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        except Exception:
+            ref = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        axis_u = np.cross(ref, normal)
+        try:
+            ulen = float(np.linalg.norm(axis_u))
+        except Exception:
+            ulen = 0.0
+        if ulen <= 1.0e-6:
+            axis_u = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+            ulen = 1.0
+        axis_u = axis_u / float(ulen)
+        axis_v = np.cross(normal, axis_u)
+        try:
+            vlen = float(np.linalg.norm(axis_v))
+        except Exception:
+            vlen = 0.0
+        if vlen <= 1.0e-6:
+            axis_v = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+            vlen = 1.0
+        axis_v = axis_v / float(vlen)
+        return axis_u, axis_v
+
+    def _mgl_fx_tangent_for_sample(self, payload, active_owner: str, sample_frame: int, prev_center, next_center):
+        try:
+            frame_step = max(1, int(payload.get("frame_step", 1)))
+        except Exception:
+            frame_step = 1
+        center = self._mgl_fx_eval_owner_pos(active_owner, int(sample_frame))
+        if center is None:
+            center_vec = None
+        else:
+            center_vec = np.array(center, dtype=np.float32)
+        before = self._mgl_fx_eval_owner_pos(active_owner, int(sample_frame) - int(frame_step))
+        after = self._mgl_fx_eval_owner_pos(active_owner, int(sample_frame) + int(frame_step))
+        before_vec = np.array(before, dtype=np.float32) if before is not None and np is not None else None
+        after_vec = np.array(after, dtype=np.float32) if after is not None and np is not None else None
+        if before_vec is not None and after_vec is not None:
+            return after_vec - before_vec
+        if center_vec is not None and after_vec is not None:
+            return after_vec - center_vec
+        if center_vec is not None and before_vec is not None:
+            return center_vec - before_vec
+        if prev_center is not None and next_center is not None:
+            return np.asarray(next_center, dtype=np.float32) - np.asarray(prev_center, dtype=np.float32)
+        if next_center is not None and center_vec is not None:
+            return np.asarray(next_center, dtype=np.float32) - center_vec
+        if prev_center is not None and center_vec is not None:
+            return center_vec - np.asarray(prev_center, dtype=np.float32)
+        return np.array([0.0, 0.0, 1.0], dtype=np.float32)
 
     def _mgl_timeline_owner_keys_map(self, owner: str):
         key = str(owner or "").strip()
@@ -1217,6 +1418,10 @@ class MGLRendererMixin:
         except Exception:
             frame_step = 1
         try:
+            lifespan = max(1, int(payload.get("lifespan", int(samples) * int(frame_step))))
+        except Exception:
+            lifespan = max(1, int(samples) * int(frame_step))
+        try:
             base_radius = max(0.001, float(payload.get("radius", 0.35)))
         except Exception:
             base_radius = 0.35
@@ -1232,88 +1437,53 @@ class MGLRendererMixin:
         except Exception:
             pass
         try:
-            repeats = max(1, int(payload.get("repeats", 4)))
-        except Exception:
-            repeats = 4
-        try:
             sides = max(6, int(payload.get("sides", 28)))
         except Exception:
             sides = 28
+        try:
+            repeats = max(1, int(payload.get("repeats", 1)))
+        except Exception:
+            repeats = 1
+        global_space = bool(payload.get("global_space", False))
 
-        centers = []
-        for idx in range(int(samples)):
-            sample_frame = int(frame) - (idx * int(frame_step))
-            if sample_frame < 0:
-                break
-            pos = self._mgl_fx_eval_owner_pos(active_owner, sample_frame)
-            if pos is None:
-                if idx == 0:
-                    continue
-                break
-            vec = np.array(pos, dtype=np.float32)
-            if centers:
-                try:
-                    if float(np.linalg.norm(vec - centers[-1])) < 1.0e-5:
-                        continue
-                except Exception:
-                    pass
-            centers.append(vec)
-        if not centers:
+        entries = self._mgl_fx_sample_entries(payload, frame, active_owner)
+        if not entries:
             self._mgl_fx_log(
                 f"[renderer] build no-centers target_owner={target_owner} active_owner={active_owner} "
-                f"frame={int(frame)} samples={int(samples)} frame_step={int(frame_step)} "
+                f"frame={int(frame)} samples={int(samples)} frame_step={int(frame_step)} lifespan={int(lifespan)} "
+                f"repeats={int(repeats)} global={global_space} "
                 f"aliases={self._mgl_fx_owner_candidates(payload)!r}"
             )
             return None
-        centers = list(reversed(centers))
+        entries = list(reversed(entries))
         line_pos: List[float] = []
-        last_tangent = np.array([0.0, 0.0, 1.0], dtype=np.float32)
-        count = len(centers)
-        for idx, center in enumerate(centers):
-            if count == 1:
-                tangent = last_tangent
-            elif idx == 0:
-                tangent = centers[min(idx + 1, count - 1)] - center
-            elif idx == (count - 1):
-                tangent = center - centers[idx - 1]
+        count = len(entries)
+        for idx, entry in enumerate(entries):
+            center = entry["center"]
+            prev_center = entries[idx - 1]["center"] if idx > 0 else None
+            next_center = entries[idx + 1]["center"] if idx < (count - 1) else None
+            if global_space:
+                tangent = self._mgl_fx_tangent_for_sample(
+                    payload,
+                    active_owner,
+                    int(entry["frame"]),
+                    prev_center,
+                    next_center,
+                )
             else:
-                tangent = centers[idx + 1] - centers[idx - 1]
-            try:
-                tlen = float(np.linalg.norm(tangent))
-            except Exception:
-                tlen = 0.0
-            if tlen > 1.0e-6:
-                normal = tangent / tlen
-                last_tangent = normal.astype(np.float32)
-            else:
-                normal = last_tangent
-            ref = np.array([0.0, 1.0, 0.0], dtype=np.float32)
-            try:
-                if abs(float(np.dot(normal, ref))) > 0.92:
-                    ref = np.array([1.0, 0.0, 0.0], dtype=np.float32)
-            except Exception:
-                ref = np.array([1.0, 0.0, 0.0], dtype=np.float32)
-            axis_u = np.cross(ref, normal)
-            try:
-                ulen = float(np.linalg.norm(axis_u))
-            except Exception:
-                ulen = 0.0
-            if ulen <= 1.0e-6:
-                axis_u = np.array([1.0, 0.0, 0.0], dtype=np.float32)
-                ulen = 1.0
-            axis_u = axis_u / float(ulen)
-            axis_v = np.cross(normal, axis_u)
-            try:
-                vlen = float(np.linalg.norm(axis_v))
-            except Exception:
-                vlen = 0.0
-            if vlen <= 1.0e-6:
-                axis_v = np.array([0.0, 1.0, 0.0], dtype=np.float32)
-                vlen = 1.0
-            axis_v = axis_v / float(vlen)
-            age_t = 1.0 - (float(idx) / float(max(1, count - 1)))
-            phase = (age_t * float(repeats)) % 1.0
-            profile_val = self._mgl_fx_profile_value(payload, phase)
+                if count == 1:
+                    tangent = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+                elif idx == 0:
+                    tangent = np.asarray(next_center, dtype=np.float32) - center if next_center is not None else np.array([0.0, 0.0, 1.0], dtype=np.float32)
+                elif idx == (count - 1):
+                    tangent = center - np.asarray(prev_center, dtype=np.float32) if prev_center is not None else np.array([0.0, 0.0, 1.0], dtype=np.float32)
+                else:
+                    tangent = np.asarray(next_center, dtype=np.float32) - np.asarray(prev_center, dtype=np.float32)
+            axis_u, axis_v = self._mgl_fx_ring_axes_from_tangent(tangent)
+            if axis_u is None or axis_v is None:
+                continue
+            phase_t = self._mgl_fx_profile_phase(payload, int(entry["age"]), int(lifespan))
+            profile_val = self._mgl_fx_profile_value(payload, phase_t)
             ring_radius = float(base_radius) * max(0.08, float(profile_val))
             for seg in range(int(sides)):
                 a0 = (2.0 * math.pi * float(seg)) / float(sides)
@@ -1352,10 +1522,12 @@ class MGLRendererMixin:
             int(frame),
             tuple(round(float(v), 5) for v in live_pos) if isinstance(live_pos, (list, tuple)) else None,
             bool(payload.get("enabled", True)),
+            bool(payload.get("global_space", False)),
             int(payload.get("samples", 28)),
             int(payload.get("frame_step", 1)),
+            int(payload.get("lifespan", int(payload.get("samples", 28)) * max(1, int(payload.get("frame_step", 1))))),
+            int(payload.get("repeats", 1)),
             round(float(payload.get("radius", 0.35)), 5),
-            int(payload.get("repeats", 4)),
             int(payload.get("sides", 28)),
             round(float(payload.get("line_width", 2.0)), 3),
             repr(payload.get("profile_points")),
@@ -1379,6 +1551,7 @@ class MGLRendererMixin:
             self._mgl_fx_log(
                 f"[renderer] update no-geometry owner={item.name} target_owner={target_owner} "
                 f"active_owner={active_owner} frame={int(frame)} live_pos={live_pos!r} "
+                f"global={bool(payload.get('global_space', False))} repeats={int(payload.get('repeats', 1) or 1)} "
                 f"aliases={self._mgl_fx_owner_candidates(payload)!r}"
             )
             return False
@@ -1397,6 +1570,7 @@ class MGLRendererMixin:
             self._mgl_fx_log(
                 f"[renderer] update gpu-build-failed owner={item.name} target_owner={target_owner} "
                 f"active_owner={active_owner} "
+                f"global={bool(payload.get('global_space', False))} repeats={int(payload.get('repeats', 1) or 1)} "
                 f"frame={int(frame)} point_count={int(getattr(line_points, 'shape', [0])[0])}"
             )
             return False
@@ -1416,6 +1590,7 @@ class MGLRendererMixin:
         self._mgl_fx_log(
             f"[renderer] update ok owner={item.name} target_owner={target_owner} active_owner={active_owner} "
             f"frame={int(frame)} point_count={point_count} visible={bool(item.visible)} live_pos={live_pos!r} "
+            f"global={bool(payload.get('global_space', False))} repeats={int(payload.get('repeats', 1) or 1)} "
             f"aliases={self._mgl_fx_owner_candidates(payload)!r}"
         )
         return payload.get("vao") is not None
@@ -2076,6 +2251,64 @@ class MGLRendererMixin:
                 proc_state = None
         self._mgl_apply_procedural_uniforms(proc_state)
         manual_texture = self._mgl_texture if self._mgl_texture_override else None
+        material = self._mgl_normalize_material(payload.get("material"))
+        is_transparent_material = self._mgl_material_is_transparent(material)
+        try:
+            cam_world = getattr(self, "_mgl_cam_world", None)
+            if isinstance(cam_world, (list, tuple)) and len(cam_world) >= 3:
+                camera_pos = (float(cam_world[0]), float(cam_world[1]), float(cam_world[2]))
+            else:
+                camera_pos = (0.0, 0.0, 5.0)
+        except Exception:
+            camera_pos = (0.0, 0.0, 5.0)
+
+        def _apply_material_uniforms() -> None:
+            try:
+                self._mgl_prog["UseMaterial"].value = 1 if material is not None else 0
+            except Exception:
+                pass
+            try:
+                self._mgl_prog["CameraPos"].value = camera_pos
+            except Exception:
+                pass
+            base_color = (0.8588, 0.9333, 0.9961)
+            roughness = 0.18
+            transparency = 0.0
+            refraction = 0.0
+            if isinstance(material, dict):
+                base_color = material.get("base_color") or material.get("specular_color") or base_color
+                roughness = float(material.get("roughness", roughness) or roughness)
+                transparency = float(material.get("transparency", 0.0) or 0.0)
+                refraction = float(material.get("refraction", 0.0) or 0.0)
+            try:
+                self._mgl_prog["MaterialBaseColor"].value = base_color
+            except Exception:
+                pass
+            try:
+                self._mgl_prog["MaterialRoughness"].value = roughness
+            except Exception:
+                pass
+            try:
+                self._mgl_prog["MaterialTransparency"].value = transparency
+            except Exception:
+                pass
+            try:
+                self._mgl_prog["MaterialRefraction"].value = refraction
+            except Exception:
+                pass
+
+        _apply_material_uniforms()
+
+        prev_depth_mask_material = None
+        if is_transparent_material:
+            try:
+                prev_depth_mask_material = getattr(self._mgl_ctx, "depth_mask", None)
+            except Exception:
+                prev_depth_mask_material = None
+            try:
+                self._mgl_ctx.depth_mask = False
+            except Exception:
+                pass
         # For FBX, avoid fallback triangle-wire overlay; only show explicit edge wire items.
         wire_overlay = bool(
             self._mgl_wireframe
@@ -2132,6 +2365,10 @@ class MGLRendererMixin:
                 if color_mask_disabled:
                     # Stamp full mesh depth even if the visible material has alpha/discard.
                     self._mgl_apply_procedural_uniforms(None)
+                    try:
+                        self._mgl_prog["UseMaterial"].value = 0
+                    except Exception:
+                        pass
                     self._mgl_prog["UseTexture"].value = 0
                     self._mgl_prog["UseLighting"].value = 0
                     self._mgl_prog["Color"].value = (0.0, 0.0, 0.0, 1.0)
@@ -2161,6 +2398,14 @@ class MGLRendererMixin:
                         self._mgl_ctx.depth_func = "<="
                     except Exception:
                         pass
+                try:
+                    self._mgl_apply_procedural_uniforms(proc_state)
+                except Exception:
+                    pass
+                try:
+                    _apply_material_uniforms()
+                except Exception:
+                    pass
 
         def _render_wire_overlay(draw_geometry) -> None:
             prev_depth_mask = None
@@ -2213,6 +2458,7 @@ class MGLRendererMixin:
                 pass
             try:
                 self._mgl_prog["Color"].value = self._mgl_wire_color
+                self._mgl_prog["UseMaterial"].value = 0
             except Exception:
                 pass
             try:
@@ -2247,6 +2493,14 @@ class MGLRendererMixin:
                         self._mgl_ctx.disable(moderngl.CULL_FACE)
                     except Exception:
                         pass
+                try:
+                    self._mgl_apply_procedural_uniforms(proc_state)
+                except Exception:
+                    pass
+                try:
+                    _apply_material_uniforms()
+                except Exception:
+                    pass
 
         if wire_overlay:
             try:
@@ -2264,6 +2518,7 @@ class MGLRendererMixin:
 
                 _render_depth_prepass(_draw_submeshes_depth)
                 self._mgl_apply_procedural_uniforms(proc_state)
+                _apply_material_uniforms()
             for sub in submeshes:
                 color = sub.get("color") or self._mgl_mesh_color
                 tex = manual_texture or sub.get("texture")
@@ -2299,6 +2554,7 @@ class MGLRendererMixin:
             if explicit_edge_wire and vao is not None:
                 _render_depth_prepass(vao.render)
                 self._mgl_apply_procedural_uniforms(proc_state)
+                _apply_material_uniforms()
             color = payload.get("color") or self._mgl_mesh_color
             tex = manual_texture or payload.get("texture")
             use_texture = tex is not None
@@ -2546,6 +2802,15 @@ class MGLRendererMixin:
                     self._mgl_ctx.wireframe = prev_wire
                 except Exception:
                     pass
+        try:
+            self._mgl_prog["UseMaterial"].value = 0
+        except Exception:
+            pass
+        if prev_depth_mask_material is not None:
+            try:
+                self._mgl_ctx.depth_mask = prev_depth_mask_material
+            except Exception:
+                pass
 
     def _mgl_draw_scene_fx_trail(self, item: MGLSceneItem, mvp) -> None:
         if self._mgl_ctx is None or self._mgl_wire_prog is None:
@@ -3352,10 +3617,16 @@ class MGLRendererMixin:
             try:
                 prog["Color"].value = (1.0, 1.0, 1.0, 1.0)
                 prog["UseTexture"].value = 0
+                prog["UseMaterial"].value = 0
                 prog["UseLighting"].value = 0
                 prog["UseVolumeMask"].value = 0
                 prog["Light"].value = (1.0, 1.0, 1.0)
                 prog["LightIntensity"].value = float(getattr(self, "_mgl_light_intensity", 1.0) or 1.0)
+                prog["MaterialBaseColor"].value = (1.0, 1.0, 1.0)
+                prog["MaterialRoughness"].value = 0.18
+                prog["MaterialTransparency"].value = 0.0
+                prog["MaterialRefraction"].value = 0.0
+                prog["CameraPos"].value = (0.0, 0.0, 1.0)
                 if np is not None:
                     ident = np.eye(4, dtype="f4")
                     try:
@@ -4797,7 +5068,20 @@ class MGLRendererMixin:
 
         scene = getattr(self, "_mgl_scene", None)
         if scene is not None:
-            scene.draw(self, mvp)
+            try:
+                items = [item for item in sorted(scene.items(), key=lambda it: it.order) if bool(getattr(item, "visible", False))]
+            except Exception:
+                items = []
+            transparent_items = [item for item in items if self._mgl_scene_item_is_transparent(item)]
+            if transparent_items:
+                transparent_ids = {id(item) for item in transparent_items}
+                opaque_items = [item for item in items if id(item) not in transparent_ids]
+                for item in opaque_items:
+                    item.draw(self, mvp)
+                for item in transparent_items:
+                    item.draw(self, mvp)
+            else:
+                scene.draw(self, mvp)
 
     def _paint_mgl(self) -> None:
         if getattr(self, "_render_paused", False):
@@ -6643,10 +6927,12 @@ class MGLRendererMixin:
                             "target_owner": target_owner,
                             "target_owner_aliases": list(asset.get("target_owner_aliases") or []),
                             "enabled": bool(asset.get("enabled", True)),
+                            "global_space": bool(asset.get("global_space", False)),
                             "samples": int(asset.get("samples", 28) or 28),
                             "frame_step": int(asset.get("frame_step", 1) or 1),
+                            "lifespan": int(asset.get("lifespan", max(1, int(asset.get("samples", 28) or 28) * int(asset.get("frame_step", 1) or 1))) or 1),
+                            "repeats": int(asset.get("repeats", 1) or 1),
                             "radius": float(asset.get("radius", 0.35) or 0.35),
-                            "repeats": int(asset.get("repeats", 4) or 4),
                             "sides": int(asset.get("sides", 28) or 28),
                             "color": self._mgl_fx_color_rgba(asset.get("color")),
                             "line_width": float(asset.get("line_width", 2.0) or 2.0),
@@ -6661,8 +6947,10 @@ class MGLRendererMixin:
                     self._mgl_fx_log(
                         f"[renderer] load item owner={owner} target_owner={target_owner} "
                         f"visible={bool(asset.get('visible', True))} enabled={bool(asset.get('enabled', True))} "
+                        f"global={bool(asset.get('global_space', False))} repeats={int(asset.get('repeats', 1) or 1)} "
                         f"samples={int(asset.get('samples', 28) or 28)} frame_step={int(asset.get('frame_step', 1) or 1)} "
-                        f"radius={float(asset.get('radius', 0.35) or 0.35):.4f} repeats={int(asset.get('repeats', 4) or 4)} "
+                        f"lifespan={int(asset.get('lifespan', max(1, int(asset.get('samples', 28) or 28) * int(asset.get('frame_step', 1) or 1))) or 1)} "
+                        f"radius={float(asset.get('radius', 0.35) or 0.35):.4f} "
                         f"sides={int(asset.get('sides', 28) or 28)} aliases={list(asset.get('target_owner_aliases') or [])!r}"
                     )
                     continue
@@ -6688,6 +6976,7 @@ class MGLRendererMixin:
                 visible = bool(visibility_map.get(owner, True))
                 wire_only = bool(asset.get("wire_only"))
                 is_volume = bool(asset.get("volume"))
+                material = self._mgl_normalize_material(asset.get("material"))
 
                 if is_camera:
                     # Preferred camera proxy path: an OBJ generated from primitive cube+cone,
@@ -7012,6 +7301,7 @@ class MGLRendererMixin:
                             "vao": entry.get("vao"),
                             "texture": texture_override,
                             "color": self._mgl_mesh_color,
+                            "material": material,
                             "owner": owner,
                             "path": path_key,
                         },
@@ -7068,7 +7358,7 @@ class MGLRendererMixin:
                         model_item = MGLSceneItem(
                             name=path.name,
                             draw_fn=MGLRendererMixin._mgl_draw_scene_mesh,
-                            payload={"submeshes": entries, "owner": owner, "path": path_key},
+                            payload={"submeshes": entries, "material": material, "owner": owner, "path": path_key},
                             resources=resources,
                             visible=visible,
                             order=10,
@@ -7136,6 +7426,7 @@ class MGLRendererMixin:
                                 "vao": entry.get("vao"),
                                 "texture": texture_override,
                                 "color": color,
+                                "material": material,
                                 "owner": owner,
                                 "path": path_key,
                             },

@@ -170,12 +170,17 @@ def _profile_to_json(points) -> str:
 
 def trail_asset_config_from_model(model) -> dict:
     profile_points = _profile_from_json(_param_value(model, "profile"))
+    samples = _parse_int(_param_value(model, "samples"), 28, minimum=4, maximum=180)
+    frame_step = _parse_int(_param_value(model, "frame_step"), 1, minimum=1, maximum=24)
+    lifespan_default = max(1, int(samples) * int(frame_step))
     return {
         "enabled": _param_value(model, "enabled").strip() not in {"0", "false", "False", "off", "no"},
-        "samples": _parse_int(_param_value(model, "samples"), 28, minimum=4, maximum=180),
-        "frame_step": _parse_int(_param_value(model, "frame_step"), 1, minimum=1, maximum=24),
+        "global_space": _param_value(model, "global_space").strip() in {"1", "true", "True", "on", "yes"},
+        "samples": samples,
+        "frame_step": frame_step,
+        "lifespan": _parse_int(_param_value(model, "lifespan"), lifespan_default, minimum=1, maximum=480),
+        "repeats": _parse_int(_param_value(model, "repeats"), 1, minimum=1, maximum=64),
         "radius": _parse_float(_param_value(model, "radius"), 0.35, minimum=0.01, maximum=1000.0),
-        "repeats": _parse_int(_param_value(model, "repeats"), 4, minimum=1, maximum=24),
         "sides": _parse_int(_param_value(model, "sides"), 28, minimum=6, maximum=96),
         "color": _normalize_color(_param_value(model, "color")),
         "line_width": _parse_float(_param_value(model, "line_width"), 2.0, minimum=0.5, maximum=8.0),
@@ -187,10 +192,12 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, "source", "")
     _ensure_param(node_item, "path", "")
     _ensure_param(node_item, "enabled", "1")
+    _ensure_param(node_item, "global_space", "0")
     _ensure_param(node_item, "samples", "28")
     _ensure_param(node_item, "frame_step", "1")
+    _ensure_param(node_item, "lifespan", "28")
+    _ensure_param(node_item, "repeats", "1")
     _ensure_param(node_item, "radius", "0.35")
-    _ensure_param(node_item, "repeats", "4")
     _ensure_param(node_item, "sides", "28")
     _ensure_param(node_item, "color", "#b7ff6a")
     _ensure_param(node_item, "line_width", "2.0")
@@ -201,10 +208,12 @@ def build_ports(node_item) -> None:
             "source",
             "path",
             "enabled",
+            "global_space",
             "samples",
             "frame_step",
-            "radius",
+            "lifespan",
             "repeats",
+            "radius",
             "sides",
             "color",
             "line_width",
@@ -404,10 +413,19 @@ class FxTrailWidget(QtWidgets.QWidget):
         self._status.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         self._status.setStyleSheet("color:#94a3b8;font-size:11px;")
         header.addWidget(self._status, 1)
-        self._enabled = QtWidgets.QCheckBox("On")
-        self._enabled.stateChanged.connect(self._on_enabled_changed)
-        header.addWidget(self._enabled, 0)
         layout.addLayout(header)
+
+        toggle_row = QtWidgets.QHBoxLayout()
+        toggle_row.setContentsMargins(0, 0, 0, 0)
+        toggle_row.setSpacing(10)
+        self._global_space = QtWidgets.QCheckBox("Global")
+        self._global_space.stateChanged.connect(self._on_global_space_changed)
+        toggle_row.addWidget(self._global_space, 0)
+        self._enabled = QtWidgets.QCheckBox("Enabled")
+        self._enabled.stateChanged.connect(self._on_enabled_changed)
+        toggle_row.addWidget(self._enabled, 0)
+        toggle_row.addStretch(1)
+        layout.addLayout(toggle_row)
 
         grid = QtWidgets.QGridLayout()
         grid.setContentsMargins(0, 0, 0, 0)
@@ -441,7 +459,8 @@ class FxTrailWidget(QtWidgets.QWidget):
 
         self._samples = _mk_int(4, 180)
         self._step = _mk_int(1, 24)
-        self._repeats = _mk_int(1, 24)
+        self._lifespan = _mk_int(1, 480)
+        self._repeats = _mk_int(1, 64)
         self._sides = _mk_int(6, 96)
         self._radius = _mk_float(0.01, 1000.0, 0.01)
         self._line_width = _mk_float(0.5, 8.0, 0.1)
@@ -457,16 +476,18 @@ class FxTrailWidget(QtWidgets.QWidget):
         grid.addWidget(self._samples, 0, 1)
         grid.addWidget(QtWidgets.QLabel("Step"), 0, 2)
         grid.addWidget(self._step, 0, 3)
-        grid.addWidget(QtWidgets.QLabel("Repeat"), 1, 0)
-        grid.addWidget(self._repeats, 1, 1)
-        grid.addWidget(QtWidgets.QLabel("Sides"), 1, 2)
-        grid.addWidget(self._sides, 1, 3)
-        grid.addWidget(QtWidgets.QLabel("Radius"), 2, 0)
-        grid.addWidget(self._radius, 2, 1)
-        grid.addWidget(QtWidgets.QLabel("Line"), 2, 2)
-        grid.addWidget(self._line_width, 2, 3)
-        grid.addWidget(QtWidgets.QLabel("Color"), 3, 0)
-        grid.addWidget(self._color, 3, 1, 1, 3)
+        grid.addWidget(QtWidgets.QLabel("Life"), 1, 0)
+        grid.addWidget(self._lifespan, 1, 1)
+        grid.addWidget(QtWidgets.QLabel("Repeat"), 1, 2)
+        grid.addWidget(self._repeats, 1, 3)
+        grid.addWidget(QtWidgets.QLabel("Sides"), 2, 0)
+        grid.addWidget(self._sides, 2, 1)
+        grid.addWidget(QtWidgets.QLabel("Radius"), 2, 2)
+        grid.addWidget(self._radius, 2, 3)
+        grid.addWidget(QtWidgets.QLabel("Line"), 3, 0)
+        grid.addWidget(self._line_width, 3, 1)
+        grid.addWidget(QtWidgets.QLabel("Color"), 3, 2)
+        grid.addWidget(self._color, 3, 3)
         layout.addLayout(grid)
 
         preset_row = QtWidgets.QHBoxLayout()
@@ -495,10 +516,15 @@ class FxTrailWidget(QtWidgets.QWidget):
         hint.setWordWrap(True)
         hint.setStyleSheet("color:#64748b;font-size:10px;")
         layout.addWidget(hint, 0)
+        age_hint = QtWidgets.QLabel("Life is ring age in frames. Repeat cycles the ramp from spawn to death.")
+        age_hint.setWordWrap(True)
+        age_hint.setStyleSheet("color:#64748b;font-size:10px;")
+        layout.addWidget(age_hint, 0)
 
         for widget, key, is_float in (
             (self._samples, "samples", False),
             (self._step, "frame_step", False),
+            (self._lifespan, "lifespan", False),
             (self._repeats, "repeats", False),
             (self._sides, "sides", False),
             (self._radius, "radius", True),
@@ -514,7 +540,7 @@ class FxTrailWidget(QtWidgets.QWidget):
         self._schedule_refresh()
 
     def sizeHint(self):
-        return QtCore.QSize(232, 230)
+        return QtCore.QSize(220, 264)
 
     def _set_param(self, name: str, value: str, *, notify_scene: bool = True) -> None:
         if self._updating:
@@ -618,19 +644,26 @@ class FxTrailWidget(QtWidgets.QWidget):
         if model is None:
             return
         profile = _profile_from_json(_param_value(model, "profile"))
+        samples = _parse_int(_param_value(model, "samples"), 28, minimum=4, maximum=180)
+        frame_step = _parse_int(_param_value(model, "frame_step"), 1, minimum=1, maximum=24)
+        lifespan_default = max(1, int(samples) * int(frame_step))
         try:
             self._updating = True
             self._enabled.blockSignals(True)
+            self._global_space.blockSignals(True)
             self._samples.blockSignals(True)
             self._step.blockSignals(True)
+            self._lifespan.blockSignals(True)
             self._repeats.blockSignals(True)
             self._sides.blockSignals(True)
             self._radius.blockSignals(True)
             self._line_width.blockSignals(True)
             self._enabled.setChecked(_param_value(model, "enabled").strip() not in {"0", "false", "False", "off", "no"})
-            self._samples.setValue(_parse_int(_param_value(model, "samples"), 28, minimum=4, maximum=180))
-            self._step.setValue(_parse_int(_param_value(model, "frame_step"), 1, minimum=1, maximum=24))
-            self._repeats.setValue(_parse_int(_param_value(model, "repeats"), 4, minimum=1, maximum=24))
+            self._global_space.setChecked(_param_value(model, "global_space").strip() in {"1", "true", "True", "on", "yes"})
+            self._samples.setValue(samples)
+            self._step.setValue(frame_step)
+            self._lifespan.setValue(_parse_int(_param_value(model, "lifespan"), lifespan_default, minimum=1, maximum=480))
+            self._repeats.setValue(_parse_int(_param_value(model, "repeats"), 1, minimum=1, maximum=64))
             self._sides.setValue(_parse_int(_param_value(model, "sides"), 28, minimum=6, maximum=96))
             self._radius.setValue(_parse_float(_param_value(model, "radius"), 0.35, minimum=0.01, maximum=1000.0))
             self._line_width.setValue(_parse_float(_param_value(model, "line_width"), 2.0, minimum=0.5, maximum=8.0))
@@ -639,8 +672,10 @@ class FxTrailWidget(QtWidgets.QWidget):
         finally:
             for widget in (
                 self._enabled,
+                self._global_space,
                 self._samples,
                 self._step,
+                self._lifespan,
                 self._repeats,
                 self._sides,
                 self._radius,
@@ -654,6 +689,9 @@ class FxTrailWidget(QtWidgets.QWidget):
 
     def _on_enabled_changed(self, state: int):
         self._set_param("enabled", "1" if bool(state) else "0")
+
+    def _on_global_space_changed(self, state: int):
+        self._set_param("global_space", "1" if bool(state) else "0")
 
     def _on_color_changed(self):
         color = _normalize_color(self._color.text())

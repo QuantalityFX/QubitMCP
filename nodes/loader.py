@@ -175,6 +175,17 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Texture Layer plugin import failed:", e)
 
+    # 8.92) Material
+    try:
+        from nodes import material
+        if hasattr(material, "register"):
+            material.register()
+            _safe_probe("material")
+        else:
+            print("[EchoGraph] Material module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Material plugin import failed:", e)
+
     # 8.95) Volume Selector
     try:
         from nodes import volume_selector

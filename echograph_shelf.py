@@ -3122,7 +3122,11 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                     f.write(f"{ts} {msg}\n")
             except Exception:
                 pass
+        fx_log_enabled = False
+
         def _fx_log(msg: str) -> None:
+            if not fx_log_enabled:
+                return
             try:
                 root = Path(__file__).resolve().parent
                 log_dir = root / "logs"
@@ -3228,6 +3232,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 clean_entry["aspect_width"] = entry.get("aspect_width")
             if "aspect_height" in entry:
                 clean_entry["aspect_height"] = entry.get("aspect_height")
+            if "material" in entry and isinstance(entry.get("material"), dict):
+                clean_entry["material"] = dict(entry.get("material") or {})
             tex_provider = entry.get("texture_provider")
             if tex_provider is not None:
                 clean_entry["texture_provider"] = tex_provider
@@ -3235,10 +3241,12 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 clean_entry["target_owner"] = target_owner
                 clean_entry["target_owner_aliases"] = list(entry.get("target_owner_aliases") or [])
                 clean_entry["enabled"] = bool(entry.get("enabled", True))
+                clean_entry["global_space"] = bool(entry.get("global_space", False))
                 clean_entry["samples"] = int(entry.get("samples", 28) or 28)
                 clean_entry["frame_step"] = int(entry.get("frame_step", 1) or 1)
+                clean_entry["lifespan"] = int(entry.get("lifespan", max(1, int(entry.get("samples", 28) or 28) * int(entry.get("frame_step", 1) or 1))) or 1)
+                clean_entry["repeats"] = int(entry.get("repeats", 1) or 1)
                 clean_entry["radius"] = float(entry.get("radius", 0.35) or 0.35)
-                clean_entry["repeats"] = int(entry.get("repeats", 4) or 4)
                 clean_entry["sides"] = int(entry.get("sides", 28) or 28)
                 clean_entry["color"] = entry.get("color")
                 clean_entry["line_width"] = float(entry.get("line_width", 2.0) or 2.0)
@@ -3248,6 +3256,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             if is_fx_trail:
                 _fx_log(
                     f"[shelf] pass fx_trail node={node_name or '<none>'} target_owner={target_owner} "
+                    f"global={bool(entry.get('global_space', False))} repeats={int(entry.get('repeats', 1) or 1)} "
                     f"aliases={list(entry.get('target_owner_aliases') or [])!r} visible={visible}"
                 )
 
@@ -3276,6 +3285,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                         str(entry.get("target_owner") or ""),
                         repr(list(entry.get("target_owner_aliases") or [])),
                         bool(entry.get("visible", True)),
+                        bool(entry.get("global_space", False)),
                         _round3((xf or {}).get("pos"), (0.0, 0.0, 0.0)),
                         _round3((xf or {}).get("rot"), (0.0, 0.0, 0.0)),
                         _round3((xf or {}).get("scl"), (1.0, 1.0, 1.0)),
@@ -3283,8 +3293,9 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                         bool(entry.get("enabled", True)),
                         int(entry.get("samples", 28) or 28),
                         int(entry.get("frame_step", 1) or 1),
+                        int(entry.get("lifespan", max(1, int(entry.get("samples", 28) or 28) * int(entry.get("frame_step", 1) or 1))) or 1),
+                        int(entry.get("repeats", 1) or 1),
                         round(float(entry.get("radius", 0.35) or 0.35), 6),
-                        int(entry.get("repeats", 4) or 4),
                         int(entry.get("sides", 28) or 28),
                         round(float(entry.get("line_width", 2.0) or 2.0), 6),
                         repr(list(entry.get("profile_points") or [])),
