@@ -52,6 +52,7 @@ from .gl_loaders import load_obj_mesh_arrays
 from .gl_scene import MGLSceneItem
 from .gl_shaders import SHADERS
 from .gl_types import SubMeshData
+from echograph.material_debug import material_debug_log as _material_debug_log
 
 # OpenGL constants (avoid optional PyOpenGL dependency).
 GL_COLOR_BUFFER_BIT = 0x00004000
@@ -155,6 +156,24 @@ class MGLRendererMixin:
         except Exception:
             pass
         self._mgl_fx_log(msg)
+
+    def _mgl_material_log(self, event: str, **fields) -> None:
+        _material_debug_log(event, **fields)
+
+    def _mgl_material_log_throttled(self, key: str, event: str, interval: float = 1.0, **fields) -> None:
+        try:
+            store = getattr(self, "_mgl_material_log_times", None)
+            if not isinstance(store, dict):
+                store = {}
+                setattr(self, "_mgl_material_log_times", store)
+            now = float(time.time())
+            last = float(store.get(key, 0.0) or 0.0)
+            if (now - last) < float(interval):
+                return
+            store[key] = now
+        except Exception:
+            pass
+        self._mgl_material_log(event, **fields)
 
     def _mgl_add_wire_item_from_points(
         self,
@@ -520,29 +539,6 @@ class MGLRendererMixin:
         if not isinstance(raw, dict):
             return None
 
-        color_raw = raw.get("base_color")
-        if color_raw is None:
-            color_raw = raw.get("specular_color")
-        color = None
-        if isinstance(color_raw, (list, tuple)) and len(color_raw) >= 3:
-            try:
-                color = (
-                    max(0.0, min(1.0, float(color_raw[0]))),
-                    max(0.0, min(1.0, float(color_raw[1]))),
-                    max(0.0, min(1.0, float(color_raw[2]))),
-                )
-            except Exception:
-                color = None
-        elif isinstance(color_raw, str):
-            try:
-                qc = QtGui.QColor(str(color_raw))
-                if qc.isValid():
-                    color = (float(qc.redF()), float(qc.greenF()), float(qc.blueF()))
-            except Exception:
-                color = None
-        if color is None:
-            color = (0.8588, 0.9333, 0.9961)
-
         def _norm01(value, default: float) -> float:
             try:
                 num = float(value)
@@ -554,21 +550,16 @@ class MGLRendererMixin:
                 num = float(default)
             return max(0.0, min(1.0, num))
 
-        roughness = _norm01(raw.get("roughness", 0.18), 0.18)
         transparency = _norm01(raw.get("transparency", 0.0), 0.0)
-        refraction = _norm01(raw.get("refraction", 0.0), 0.0)
         return {
-            "base_color": color,
-            "roughness": roughness,
             "transparency": transparency,
-            "refraction": refraction,
         }
 
     def _mgl_material_is_transparent(self, material) -> bool:
         if not isinstance(material, dict):
             return False
         try:
-            return bool(float(material.get("transparency", 0.0) or 0.0) > 1e-4 or float(material.get("refraction", 0.0) or 0.0) > 1e-4)
+            return bool(float(material.get("transparency", 0.0) or 0.0) > 1e-4)
         except Exception:
             return False
 
@@ -2190,6 +2181,13 @@ class MGLRendererMixin:
         submeshes = payload.get("submeshes")
         vao = payload.get("vao")
         if not submeshes and vao is None:
+            if payload.get("material") is not None:
+                self._mgl_material_log(
+                    "renderer.draw.skip_no_geometry",
+                    owner=str(payload.get("owner") or ""),
+                    path=str(payload.get("path") or ""),
+                    material=payload.get("material"),
+                )
             return
         edge_wire = bool(payload.get("edge_wire"))
         path_key = str(payload.get("path", "") or "").strip().lower()
@@ -2253,47 +2251,30 @@ class MGLRendererMixin:
         manual_texture = self._mgl_texture if self._mgl_texture_override else None
         material = self._mgl_normalize_material(payload.get("material"))
         is_transparent_material = self._mgl_material_is_transparent(material)
-        try:
-            cam_world = getattr(self, "_mgl_cam_world", None)
-            if isinstance(cam_world, (list, tuple)) and len(cam_world) >= 3:
-                camera_pos = (float(cam_world[0]), float(cam_world[1]), float(cam_world[2]))
-            else:
-                camera_pos = (0.0, 0.0, 5.0)
-        except Exception:
-            camera_pos = (0.0, 0.0, 5.0)
-
+        if material is not None:
+            owner_key = str(owner or path_key or item.name or "scene-material")
+            self._mgl_material_log_throttled(
+                f"draw:{owner_key}",
+                "renderer.draw.material",
+                interval=1.0,
+                owner=str(owner or ""),
+                path=str(payload.get("path") or ""),
+                visible=bool(getattr(item, "visible", False)),
+                transparent=bool(is_transparent_material),
+                transparency=float((material or {}).get("transparency", 0.0) or 0.0),
+                submeshes=int(len(submeshes or [])),
+                has_vao=bool(vao is not None),
+            )
         def _apply_material_uniforms() -> None:
             try:
-                self._mgl_prog["UseMaterial"].value = 1 if material is not None else 0
+                self._mgl_prog["UseMaterial"].value = 1 if self._mgl_material_is_transparent(material) else 0
             except Exception:
                 pass
-            try:
-                self._mgl_prog["CameraPos"].value = camera_pos
-            except Exception:
-                pass
-            base_color = (0.8588, 0.9333, 0.9961)
-            roughness = 0.18
             transparency = 0.0
-            refraction = 0.0
             if isinstance(material, dict):
-                base_color = material.get("base_color") or material.get("specular_color") or base_color
-                roughness = float(material.get("roughness", roughness) or roughness)
                 transparency = float(material.get("transparency", 0.0) or 0.0)
-                refraction = float(material.get("refraction", 0.0) or 0.0)
-            try:
-                self._mgl_prog["MaterialBaseColor"].value = base_color
-            except Exception:
-                pass
-            try:
-                self._mgl_prog["MaterialRoughness"].value = roughness
-            except Exception:
-                pass
             try:
                 self._mgl_prog["MaterialTransparency"].value = transparency
-            except Exception:
-                pass
-            try:
-                self._mgl_prog["MaterialRefraction"].value = refraction
             except Exception:
                 pass
 
@@ -3622,11 +3603,7 @@ class MGLRendererMixin:
                 prog["UseVolumeMask"].value = 0
                 prog["Light"].value = (1.0, 1.0, 1.0)
                 prog["LightIntensity"].value = float(getattr(self, "_mgl_light_intensity", 1.0) or 1.0)
-                prog["MaterialBaseColor"].value = (1.0, 1.0, 1.0)
-                prog["MaterialRoughness"].value = 0.18
                 prog["MaterialTransparency"].value = 0.0
-                prog["MaterialRefraction"].value = 0.0
-                prog["CameraPos"].value = (0.0, 0.0, 1.0)
                 if np is not None:
                     ident = np.eye(4, dtype="f4")
                     try:
@@ -5067,6 +5044,10 @@ class MGLRendererMixin:
         self._mgl_upload_pending_splats()
 
         scene = getattr(self, "_mgl_scene", None)
+        try:
+            self._mgl_pending_transparent_scene_items = []
+        except Exception:
+            pass
         if scene is not None:
             try:
                 items = [item for item in sorted(scene.items(), key=lambda it: it.order) if bool(getattr(item, "visible", False))]
@@ -5074,14 +5055,68 @@ class MGLRendererMixin:
                 items = []
             transparent_items = [item for item in items if self._mgl_scene_item_is_transparent(item)]
             if transparent_items:
+                try:
+                    self._mgl_pending_transparent_scene_items = list(transparent_items)
+                except Exception:
+                    self._mgl_pending_transparent_scene_items = []
                 transparent_ids = {id(item) for item in transparent_items}
                 opaque_items = [item for item in items if id(item) not in transparent_ids]
                 for item in opaque_items:
                     item.draw(self, mvp)
-                for item in transparent_items:
-                    item.draw(self, mvp)
             else:
                 scene.draw(self, mvp)
+
+    def _paint_mgl_draw_transparent_scene_pass(self, *, mvp) -> None:
+        try:
+            items = list(getattr(self, "_mgl_pending_transparent_scene_items", None) or [])
+        except Exception:
+            items = []
+        if not items:
+            return
+        owners = []
+        for item in items:
+            payload = getattr(item, "payload", None) or {}
+            if payload.get("material") is None:
+                continue
+            owners.append(str(payload.get("owner") or item.name or ""))
+        if owners:
+            self._mgl_material_log_throttled(
+                "transparent-pass",
+                "renderer.transparent_pass",
+                interval=1.0,
+                count=len(owners),
+                owners=owners[:12],
+            )
+        prev_depth_mask = None
+        try:
+            prev_depth_mask = getattr(self._mgl_ctx, "depth_mask", None)
+        except Exception:
+            prev_depth_mask = None
+        try:
+            self._mgl_ctx.enable(moderngl.BLEND | moderngl.DEPTH_TEST)
+        except Exception:
+            pass
+        try:
+            self._mgl_ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
+        except Exception:
+            pass
+        try:
+            self._mgl_ctx.depth_mask = False
+        except Exception:
+            pass
+        try:
+            for item in items:
+                item.draw(self, mvp)
+        finally:
+            try:
+                self._mgl_pending_transparent_scene_items = []
+            except Exception:
+                pass
+            if prev_depth_mask is not None:
+                try:
+                    self._mgl_ctx.depth_mask = prev_depth_mask
+                except Exception:
+                    pass
 
     def _paint_mgl(self) -> None:
         if getattr(self, "_render_paused", False):
@@ -5108,6 +5143,7 @@ class MGLRendererMixin:
             transform=transform,
         )
         self._paint_mgl_draw_splat_wireframe_pass(mvp=mvp)
+        self._paint_mgl_draw_transparent_scene_pass(mvp=mvp)
 
 
 
@@ -6910,6 +6946,7 @@ class MGLRendererMixin:
 
                 kind = str(asset.get("kind") or "").strip().lower()
                 ext_hint = str(asset.get("ext") or "").strip().lower()
+                material = self._mgl_normalize_material(asset.get("material"))
                 if kind == "fx_trail":
                     target_owner = str(asset.get("target_owner") or "").strip()
                     owner = str(asset.get("node") or "").strip() or (f"{target_owner}_fx" if target_owner else "")
@@ -6962,21 +6999,45 @@ class MGLRendererMixin:
                 if path_str:
                     path = Path(path_str)
                     if not path.exists():
+                        if material is not None:
+                            self._mgl_material_log(
+                                "renderer.load.skip_missing_path",
+                                owner=owner,
+                                path=path_str,
+                                kind=kind,
+                                ext=ext_hint,
+                                material=material,
+                            )
                         continue
                     if not ext:
                         ext = path.suffix.lower()
                     if not owner:
                         owner = path.name
                 elif not is_camera:
+                    if material is not None:
+                        self._mgl_material_log(
+                            "renderer.load.skip_no_path",
+                            owner=owner,
+                            kind=kind,
+                            ext=ext_hint,
+                            material=material,
+                        )
                     continue
                 if not owner:
+                    if material is not None:
+                        self._mgl_material_log(
+                            "renderer.load.skip_no_owner",
+                            path=str(path) if path is not None else "",
+                            kind=kind,
+                            ext=ext,
+                            material=material,
+                        )
                     continue
                 path_key = str(path) if path is not None else f"camera://{owner}"
                 visibility_map = getattr(self, "_mgl_scene_visibility", {}) or {}
                 visible = bool(visibility_map.get(owner, True))
                 wire_only = bool(asset.get("wire_only"))
                 is_volume = bool(asset.get("volume"))
-                material = self._mgl_normalize_material(asset.get("material"))
 
                 if is_camera:
                     # Preferred camera proxy path: an OBJ generated from primitive cube+cone,
@@ -7284,6 +7345,14 @@ class MGLRendererMixin:
                     indices = np.array(mesh.face_vertex_indices(), dtype="u4").ravel()
                     entry = self._mgl_build_mesh_entry(points, normals, None, indices)
                     if entry is None:
+                        if material is not None:
+                            self._mgl_material_log(
+                                "renderer.load.skip_mesh_entry_none",
+                                owner=owner,
+                                path=str(path),
+                                ext=ext,
+                                material=material,
+                            )
                         continue
                     resources = [
                         entry.get("vao"),
@@ -7392,6 +7461,14 @@ class MGLRendererMixin:
                     else:
                         entry = self._mgl_build_mesh_entry(points, normals, uvs)
                         if entry is None:
+                            if material is not None:
+                                self._mgl_material_log(
+                                    "renderer.load.skip_mesh_entry_none",
+                                    owner=owner,
+                                    path=str(path),
+                                    ext=ext,
+                                    material=material,
+                                )
                             continue
                         if uvs is not None and getattr(uvs, "size", 0):
                             try:
@@ -7439,6 +7516,18 @@ class MGLRendererMixin:
 
                 if model_item is not None:
                     scene.add(model_item)
+                    if material is not None:
+                        self._mgl_material_log(
+                            "renderer.load.material_item",
+                            owner=owner,
+                            path=str(path),
+                            ext=ext,
+                            visible=bool(visible),
+                            transparent=bool(self._mgl_material_is_transparent(material)),
+                            transparency=float((material or {}).get("transparency", 0.0) or 0.0),
+                            submeshes=int(len(model_item.payload.get("submeshes") or [])),
+                            has_vao=bool(model_item.payload.get("vao") is not None),
+                        )
                     if not first_mesh_path:
                         first_mesh_path = str(path)
                     if points is not None and getattr(points, "size", 0):

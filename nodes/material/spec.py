@@ -11,6 +11,7 @@ except Exception:
 
 from nodes.core import Spec
 from nodes.util_graph import param_change_relevant as _param_change_relevant
+from echograph.material_debug import material_debug_log as _material_debug_log
 
 
 SUPPORTED_MESH_EXTS = {".obj", ".fbx", ".gltf", ".glb", ".ply", ".stl", ".off", ".om"}
@@ -243,10 +244,22 @@ class MaterialWidget(QtWidgets.QWidget):
             self._schedule_update()
 
     def _set_param(self, name: str, value: str, notify_scene: bool = True):
+        key = (name or "").strip().lower()
         try:
-            self._node_item._set_param_value(name, value, rebuild=False, notify_scene=notify_scene)
+            current = ""
+            for entry in (getattr(self._node_item.model, "params", None) or []):
+                if (entry.get("name") or "").strip().lower() == key:
+                    current = entry.get("value", "") or ""
+                    break
+            if current == value:
+                return False
         except Exception:
             pass
+        try:
+            self._node_item._set_param_value(name, value, rebuild=False, notify_scene=notify_scene)
+            return True
+        except Exception:
+            return False
 
     def _sync_from_params(self):
         model = getattr(self._node_item, "model", None)
@@ -270,10 +283,10 @@ class MaterialWidget(QtWidgets.QWidget):
         src_path = (src_path or "").strip()
         if src_path:
             self._set_param("source", src_path, notify_scene=False)
-            self._set_param("path", src_path, notify_scene=True)
+            self._set_param("path", src_path, notify_scene=False)
         else:
             self._set_param("source", "", notify_scene=False)
-            self._set_param("path", "", notify_scene=True)
+            self._set_param("path", "", notify_scene=False)
         has_link = bool(src_item is not None)
         valid_mesh = bool(src_path) and os.path.exists(src_path) and Path(src_path).suffix.lower() in SUPPORTED_MESH_EXTS
         self._view_btn.setEnabled(bool(valid_mesh or has_link))
@@ -341,15 +354,41 @@ MNATERIAL_SPEC = MATERIAL_SPEC
 
 
 def build_material_asset(node_item) -> Optional[dict]:
+    model = getattr(node_item, "model", None)
+    material_node = (getattr(model, "name", "") or "").strip() or "material"
     src_item, src_kind, src_path = _resolve_input_item(node_item)
     src_kind = (src_kind or "").strip().lower()
+    src_model = getattr(src_item, "model", None) if src_item is not None else None
+    src_node = (getattr(src_model, "name", "") or "").strip()
     if not src_path:
+        _material_debug_log(
+            "material.build.skip_no_input",
+            material_node=material_node,
+            source_node=src_node,
+            source_kind=src_kind,
+        )
         return None
     try:
         path = Path(src_path)
     except Exception:
+        _material_debug_log(
+            "material.build.skip_bad_path",
+            material_node=material_node,
+            source_node=src_node,
+            source_kind=src_kind,
+            source_path=src_path,
+        )
         return None
     if not path.exists() or path.suffix.lower() not in SUPPORTED_MESH_EXTS:
+        _material_debug_log(
+            "material.build.skip_invalid_mesh",
+            material_node=material_node,
+            source_node=src_node,
+            source_kind=src_kind,
+            source_path=str(path),
+            exists=bool(path.exists()),
+            ext=path.suffix.lower(),
+        )
         return None
 
     owner_item = src_item
@@ -416,4 +455,15 @@ def build_material_asset(node_item) -> Optional[dict]:
     }
     if texture_provider is not None:
         asset["texture_provider"] = texture_provider
+    _material_debug_log(
+        "material.build.ready",
+        material_node=material_node,
+        source_node=src_node,
+        source_kind=src_kind,
+        owner_node=node_name,
+        owner_kind=owner_kind,
+        path=str(path),
+        texture=bool(texture),
+        transparency=float(asset["material"].get("transparency", 0.0) or 0.0),
+    )
     return asset

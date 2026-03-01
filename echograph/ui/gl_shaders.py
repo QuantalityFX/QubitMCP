@@ -39,11 +39,7 @@ uniform int UseProceduralLayer;
 uniform int UseVolumeMask;
 uniform mat4 VolumeInv;
 uniform mat4 Model;
-uniform vec3 MaterialBaseColor;
-uniform float MaterialRoughness;
 uniform float MaterialTransparency;
-uniform float MaterialRefraction;
-uniform vec3 CameraPos;
 uniform int ProceduralMode;
 uniform vec4 ProcParams;
 uniform float ProcSeed;
@@ -347,32 +343,8 @@ void main() {
         base = vec4(clamp(lit_rgb, 0.0, 1.0), base.a);
     }
     if (UseMaterial == 1) {
-        vec3 world_norm = normalize(v_world_norm);
-        vec3 view_dir = normalize(CameraPos - v_world_pos);
-        float ndv = max(dot(world_norm, view_dir), 0.0);
-        float fresnel = pow(1.0 - ndv, 5.0);
-        vec3 base_tint = clamp(MaterialBaseColor, 0.0, 1.0);
-        float roughness = clamp(MaterialRoughness, 0.0, 1.0);
         float transmission = clamp(MaterialTransparency, 0.0, 1.0);
-        float refract_amt = clamp(MaterialRefraction, 0.0, 1.0);
-        vec3 transmitted_rgb = base.rgb;
-        transmitted_rgb = mix(transmitted_rgb, transmitted_rgb * base_tint, clamp(0.20 + transmission * 0.45 + refract_amt * 0.15, 0.0, 0.92));
-        float bend = (1.0 - ndv) * refract_amt;
-        float luma = dot(transmitted_rgb, vec3(0.2126, 0.7152, 0.0722));
-        transmitted_rgb = mix(transmitted_rgb, vec3(luma), roughness * refract_amt * 0.12);
-        transmitted_rgb += base_tint * bend * (0.03 + 0.08 * transmission) * (1.0 - roughness * 0.35);
-
-        vec3 light_dir = normalize(Light - v_world_pos);
-        vec3 half_dir = normalize(light_dir + view_dir);
-        float spec_pow = mix(160.0, 10.0, roughness);
-        float spec = pow(max(dot(world_norm, half_dir), 0.0), spec_pow);
-        float spec_strength = mix(1.25, 0.18, roughness);
-        vec3 spec_tint = mix(vec3(1.0), base_tint, 0.08);
-        vec3 spec_rgb = spec_tint * spec * spec_strength * (0.3 + 0.7 * fresnel) * max(0.25, LightIntensity);
-        vec3 rim_rgb = mix(vec3(1.0), base_tint, 0.25) * fresnel * (0.06 + 0.10 * refract_amt) * (1.0 - roughness * 0.35);
-        vec3 core_rgb = base_tint * (0.015 + 0.07 * refract_amt) * (1.0 - ndv) * (0.25 + 0.75 * transmission);
-        float glass_alpha = clamp(1.0 - transmission + fresnel * mix(0.05, 0.18, transmission) + roughness * 0.04 - refract_amt * 0.08, 0.05, 0.98);
-        base = vec4(clamp(transmitted_rgb + spec_rgb + rim_rgb + core_rgb, 0.0, 1.0), glass_alpha);
+        base.a *= max(0.0, 1.0 - transmission);
     }
     if (base.a <= 0.001) {
         discard;

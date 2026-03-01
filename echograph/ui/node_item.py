@@ -660,14 +660,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 params.append({"name": "source", "value": ""})
             if "path" not in names:
                 params.append({"name": "path", "value": ""})
-            if "base_color" not in names:
-                params.append({"name": "base_color", "value": "#dbeafe"})
-            if "roughness" not in names:
-                params.append({"name": "roughness", "value": "18"})
             if "transparency" not in names:
                 params.append({"name": "transparency", "value": "80"})
-            if "refraction" not in names:
-                params.append({"name": "refraction", "value": "45"})
             store_key = "__ui_hidden_params"
             hidden_entry = None
             for p in params:
@@ -679,7 +673,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 params.append(hidden_entry)
             raw = hidden_entry.get("value", "")
             hidden = {t.strip().lower() for t in str(raw).split(",") if t.strip()}
-            hidden.update({"mesh", "source", "path", "base_color", "roughness", "transparency", "refraction", "specular_color"})
+            hidden.update({"mesh", "source", "path", "transparency", "base_color", "roughness", "refraction", "specular_color"})
             hidden_entry["value"] = ",".join(sorted(hidden))
             self.model.params = params
             try:
@@ -889,7 +883,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         elif kind == "texture_layer":
             hidden.update({"source", "path"})
         elif kind in ("mnaterial", "material"):
-            hidden.update({"mesh", "source", "path", "base_color", "roughness", "transparency", "refraction", "specular_color"})
+            hidden.update({"mesh", "source", "path", "transparency", "base_color", "roughness", "refraction", "specular_color"})
         elif kind in ("volume_selector", "split_volume"):
             hidden.update({"source", "path", "invert"})
         elif kind == "transforms":
@@ -1453,7 +1447,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 pass
             node_w = self._BASE_W
         elif kind in ("mnaterial", "material"):
-            body_h = 132
+            body_h = 82
             node_w = self._BASE_W
         else:
             body_h = 0

@@ -14,6 +14,7 @@ except Exception:
 
 from nodes.core import Spec
 from echograph.ui import actions
+from echograph.material_debug import material_debug_log as _material_debug_log
 import traceback
 
 SUPPORTED_EXTS = {".fbx", ".obj", ".gltf", ".glb", ".ply", ".stl", ".off", ".om"}
@@ -604,8 +605,18 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                 builder = getattr(_material_node, "build_material_asset", None)
                 if callable(builder):
                     material_asset = builder(src_item)
-            except Exception:
+            except Exception as exc:
                 material_asset = None
+                _material_debug_log(
+                    "scene.collect.material_builder_error",
+                    material_node=src_name or kind,
+                    error=repr(exc),
+                )
+            if material_asset is None:
+                _material_debug_log(
+                    "scene.collect.material_builder_empty",
+                    material_node=src_name or kind,
+                )
 
         if kind == "camera":
             cam_name = (getattr(model, "name", "") or "").strip() or "camera"
@@ -892,6 +903,12 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                 path = upstream_path
 
         if not path:
+            if kind in _MATERIAL_KINDS:
+                _material_debug_log(
+                    "scene.collect.material_skip_no_path",
+                    material_node=src_name or kind,
+                    owner_kind=owner_kind or "",
+                )
             if kind in ("fx", "fx_trail"):
                 _fx_log(
                     f"[scene_spec] skip unresolved-path node={src_name or kind} "
@@ -909,6 +926,14 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             path = vol_path
         ext = Path(path).suffix.lower()
         if ext not in SUPPORTED_EXTS:
+            if kind in _MATERIAL_KINDS:
+                _material_debug_log(
+                    "scene.collect.material_skip_unsupported_ext",
+                    material_node=src_name or kind,
+                    owner_node=node_name,
+                    path=path,
+                    ext=ext,
+                )
             if kind in ("fx", "fx_trail"):
                 _fx_log(
                     f"[scene_spec] skip unsupported-ext node={src_name or kind} "
@@ -1029,6 +1054,18 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
         if texture_provider is not None:
             entry["texture_provider"] = texture_provider
         assets.append(entry)
+        if kind in _MATERIAL_KINDS:
+            _material_debug_log(
+                "scene.collect.material_entry",
+                material_node=src_name or kind,
+                owner_node=node_name,
+                path=path,
+                ext=ext,
+                visible=bool(entry.get("visible", True)),
+                has_texture=bool(texture),
+                transparency=float((entry.get("material") or {}).get("transparency", 0.0) or 0.0),
+                xform_offset=bool(entry.get("xform_offset")),
+            )
         if isinstance(fx_asset, dict) and node_name:
             aliases = _fx_target_owner_aliases(scene, owner_item, owner_model, owner_kind)
             fx_entry = dict(fx_asset)
