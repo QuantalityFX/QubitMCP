@@ -606,7 +606,7 @@ class FxTrailWidget(QtWidgets.QWidget):
         self._schedule_refresh()
 
     def sizeHint(self):
-        return QtCore.QSize(252, 426)
+        return QtCore.QSize(252, 438)
 
     def _set_param(self, name: str, value: str, *, notify_scene: bool = True) -> None:
         if self._updating:
@@ -659,7 +659,7 @@ class FxTrailWidget(QtWidgets.QWidget):
             if model is None:
                 return None, "", ""
             kind = (getattr(model, "kind", "") or "").strip().lower()
-            if kind in {"switch", "fx", "fx_trail"}:
+            if kind in {"switch", "fx", "fx_trail", "transforms", "mnaterial", "material", "texture", "texture_pro", "texture_layer", "uv_unwrap"}:
                 try:
                     edges = list(scene._ordered_in_edges(item))
                 except Exception:
@@ -820,7 +820,7 @@ class FxTrailWidget(QtWidgets.QWidget):
 def render_node_body(node_item, y_cursor: int) -> int:
     inset_x = 8
     inset_top = 2
-    inset_bottom = 16
+    inset_bottom = 22
     try:
         before = {
             (entry.get("name") or "").strip().lower()

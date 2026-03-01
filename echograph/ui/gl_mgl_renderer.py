@@ -1962,6 +1962,25 @@ class MGLRendererMixin:
             pivot_center = np.zeros(3, dtype=np.float32)
             pivot_radius = 1.0
 
+        raw_xform = payload.get("instance_xform")
+        if isinstance(raw_xform, dict):
+            try:
+                base_pos = tuple(float(v) for v in (raw_xform.get("pos") or (0.0, 0.0, 0.0)))
+            except Exception:
+                base_pos = (0.0, 0.0, 0.0)
+            try:
+                base_rot = tuple(float(v) for v in (raw_xform.get("rot") or (0.0, 0.0, 0.0)))
+            except Exception:
+                base_rot = (0.0, 0.0, 0.0)
+            try:
+                base_scl = tuple(float(v) for v in (raw_xform.get("scl") or (1.0, 1.0, 1.0)))
+            except Exception:
+                base_scl = (1.0, 1.0, 1.0)
+        else:
+            base_pos = (0.0, 0.0, 0.0)
+            base_rot = (0.0, 0.0, 0.0)
+            base_scl = (1.0, 1.0, 1.0)
+
         def _t(tx: float, ty: float, tz: float):
             m = np.eye(4, dtype=np.float32)
             m[3, 0] = float(tx)
@@ -1969,12 +1988,47 @@ class MGLRendererMixin:
             m[3, 2] = float(tz)
             return m
 
-        def _s(scale: float):
+        def _s(sx: float, sy: float, sz: float):
             m = np.eye(4, dtype=np.float32)
-            m[0, 0] = float(scale)
-            m[1, 1] = float(scale)
-            m[2, 2] = float(scale)
+            m[0, 0] = float(sx)
+            m[1, 1] = float(sy)
+            m[2, 2] = float(sz)
             return m
+
+        def _rx(angle_deg: float):
+            ang = math.radians(float(angle_deg))
+            c = math.cos(ang)
+            s = math.sin(ang)
+            m = np.eye(4, dtype=np.float32)
+            m[1, 1] = c
+            m[1, 2] = s
+            m[2, 1] = -s
+            m[2, 2] = c
+            return m
+
+        def _ry(angle_deg: float):
+            ang = math.radians(float(angle_deg))
+            c = math.cos(ang)
+            s = math.sin(ang)
+            m = np.eye(4, dtype=np.float32)
+            m[0, 0] = c
+            m[0, 2] = -s
+            m[2, 0] = s
+            m[2, 2] = c
+            return m
+
+        def _rz(angle_deg: float):
+            ang = math.radians(float(angle_deg))
+            c = math.cos(ang)
+            s = math.sin(ang)
+            m = np.eye(4, dtype=np.float32)
+            m[0, 0] = c
+            m[0, 1] = s
+            m[1, 0] = -s
+            m[1, 1] = c
+            return m
+
+        base_rot_mat = _rx(-float(base_rot[0])) @ _ry(-float(base_rot[1])) @ _rz(-float(base_rot[2]))
 
         for entry in entries:
             phase_t = self._mgl_fx_profile_phase(
@@ -1990,10 +2044,19 @@ class MGLRendererMixin:
                 continue
             center = entry["center"]
             normalized_scale = float(uniform_scale) / float(pivot_radius)
-            model = _t(-float(pivot_center[0]), -float(pivot_center[1]), -float(pivot_center[2])) @ _s(normalized_scale) @ _t(
-                float(center[0]),
-                float(center[1]),
-                float(center[2]),
+            model = (
+                _t(-float(pivot_center[0]), -float(pivot_center[1]), -float(pivot_center[2]))
+                @ base_rot_mat
+                @ _s(
+                    float(base_scl[0]) * normalized_scale,
+                    float(base_scl[1]) * normalized_scale,
+                    float(base_scl[2]) * normalized_scale,
+                )
+                @ _t(
+                    float(center[0]) + float(base_pos[0]),
+                    float(center[1]) + float(base_pos[1]),
+                    float(center[2]) + float(base_pos[2]),
+                )
             )
             models.append(model)
         return models
@@ -3459,7 +3522,7 @@ class MGLRendererMixin:
         if isinstance(mesh_cache, dict) and mesh_models:
             base_payload = dict(mesh_cache)
             base_payload["owner"] = str(payload.get("owner") or payload.get("target_owner") or "")
-            base_payload["material"] = None
+            base_payload["material"] = payload.get("instance_material")
             base_payload["texture"] = base_payload.get("texture")
             try:
                 for model in mesh_models:
@@ -7901,6 +7964,9 @@ class MGLRendererMixin:
                             "target_owner": target_owner,
                             "target_owner_aliases": list(asset.get("target_owner_aliases") or []),
                             "instance_path": str(asset.get("instance_path") or "").strip(),
+                            "instance_source_name": str(asset.get("instance_source_name") or "").strip(),
+                            "instance_material": dict(asset.get("instance_material") or {}) if isinstance(asset.get("instance_material"), dict) else None,
+                            "instance_xform": dict(asset.get("instance_xform") or {}) if isinstance(asset.get("instance_xform"), dict) else None,
                             "enabled": bool(asset.get("enabled", True)),
                             "global_space": bool(asset.get("global_space", False)),
                             "samples": int(asset.get("samples", 28) or 28),
@@ -7926,7 +7992,7 @@ class MGLRendererMixin:
                     scene.add(trail_item)
                     self._mgl_fx_log(
                         f"[renderer] load item owner={owner} target_owner={target_owner} "
-                        f"instance={str(asset.get('instance_path') or '').strip() or '<rings>'} "
+                        f"instance={str(asset.get('instance_source_name') or '').strip() or str(asset.get('instance_path') or '').strip() or '<rings>'} "
                         f"visible={bool(asset.get('visible', True))} enabled={bool(asset.get('enabled', True))} "
                         f"global={bool(asset.get('global_space', False))} repeats={int(asset.get('repeats', 1) or 1)} "
                         f"samples={int(asset.get('samples', 28) or 28)} frame_step={int(asset.get('frame_step', 1) or 1)} "

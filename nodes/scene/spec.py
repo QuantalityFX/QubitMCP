@@ -561,6 +561,81 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             return None
         return None
 
+    def _resolve_fx_instance_asset(start_item):
+        item = start_item
+        visited = set()
+        depth = 0
+        material_model = None
+        transform_model = None
+        base_item = None
+        base_model = None
+        base_kind = ""
+        base_path = ""
+        pass_kinds = {
+            "switch",
+            "uv_unwrap",
+            "texture",
+            "texture_pro",
+            "texture_layer",
+            "mnaterial",
+            "material",
+            "transforms",
+        }
+
+        while item is not None and item not in visited and depth < 12:
+            visited.add(item)
+            depth += 1
+            model = getattr(item, "model", None)
+            if model is None:
+                break
+            kind = (getattr(model, "kind", "") or "").strip().lower()
+            if kind in _MATERIAL_KINDS and material_model is None:
+                material_model = model
+            if kind == "transforms" and transform_model is None:
+                transform_model = model
+            path = _param_value(model, "path") or _param_value(model, "mesh") or _param_value(model, "source")
+            if kind not in pass_kinds:
+                base_item = item
+                base_model = model
+                base_kind = kind
+                base_path = path
+                break
+            edge = _pick_input_edge(item, {"mesh", "path", "source"})
+            if edge is None:
+                base_item = item
+                base_model = model
+                base_kind = kind
+                base_path = path
+                break
+            item = getattr(edge, "src", None)
+
+        if not base_path and transform_model is not None:
+            base_path = _param_value(transform_model, "source") or _param_value(transform_model, "path")
+
+        instance_xform = None
+        if transform_model is not None:
+            pos = _parse_vec3(_param_value(transform_model, "pos"), (0.0, 0.0, 0.0))
+            rot = _parse_vec3(_param_value(transform_model, "rot"), (0.0, 0.0, 0.0))
+            scl = _parse_vec3(_param_value(transform_model, "scl"), (1.0, 1.0, 1.0))
+            instance_xform = {
+                "pos": [float(pos[0]), float(pos[1]), float(pos[2])],
+                "rot": [float(rot[0]), float(rot[1]), float(rot[2])],
+                "scl": [float(scl[0]), float(scl[1]), float(scl[2])],
+            }
+
+        source_name = (getattr(base_model, "name", "") or "").strip() if base_model is not None else ""
+        if not source_name and base_path:
+            source_name = Path(base_path).stem
+
+        return {
+            "item": base_item,
+            "kind": base_kind,
+            "path": str(base_path or "").strip(),
+            "source_name": source_name,
+            "material": _material_payload(material_model),
+            "xform": instance_xform,
+        }
+
     hidden = set()
     xforms = {}
     try:
@@ -903,12 +978,19 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                 try:
                     from nodes.fx import spec as _fx_spec  # type: ignore
                     fx_asset = _fx_spec.trail_asset_config_from_model(model)
-                    _inst_item, _inst_kind, inst_path = _resolve_input_item(scene, src_item, {"instance"})
-                    inst_path = str(inst_path or "").strip()
+                    inst_edge = _pick_input_edge(src_item, {"instance"})
+                    inst_info = _resolve_fx_instance_asset(getattr(inst_edge, "src", None) if inst_edge is not None else None)
+                    inst_path = str((inst_info or {}).get("path") or "").strip()
                     if inst_path:
                         inst_ext = Path(inst_path).suffix.lower()
                         if inst_ext in SUPPORTED_EXTS:
                             fx_asset["instance_path"] = inst_path
+                            if (inst_info or {}).get("source_name"):
+                                fx_asset["instance_source_name"] = str(inst_info.get("source_name") or "").strip()
+                            if isinstance((inst_info or {}).get("material"), dict):
+                                fx_asset["instance_material"] = dict(inst_info.get("material") or {})
+                            if isinstance((inst_info or {}).get("xform"), dict):
+                                fx_asset["instance_xform"] = dict(inst_info.get("xform") or {})
                         else:
                             _fx_log(
                                 f"[scene_spec] instance skip unsupported-ext node={src_name or kind} "

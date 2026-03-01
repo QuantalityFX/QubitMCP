@@ -3241,6 +3241,11 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 clean_entry["target_owner"] = target_owner
                 clean_entry["target_owner_aliases"] = list(entry.get("target_owner_aliases") or [])
                 clean_entry["instance_path"] = str(entry.get("instance_path") or "").strip()
+                clean_entry["instance_source_name"] = str(entry.get("instance_source_name") or "").strip()
+                if isinstance(entry.get("instance_material"), dict):
+                    clean_entry["instance_material"] = dict(entry.get("instance_material") or {})
+                if isinstance(entry.get("instance_xform"), dict):
+                    clean_entry["instance_xform"] = dict(entry.get("instance_xform") or {})
                 clean_entry["enabled"] = bool(entry.get("enabled", True))
                 clean_entry["global_space"] = bool(entry.get("global_space", False))
                 clean_entry["samples"] = int(entry.get("samples", 28) or 28)
@@ -3262,7 +3267,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             if is_fx_trail:
                 _fx_log(
                     f"[shelf] pass fx_trail node={node_name or '<none>'} target_owner={target_owner} "
-                    f"instance={str(entry.get('instance_path') or '').strip() or '<rings>'} "
+                    f"instance={str(entry.get('instance_source_name') or '').strip() or str(entry.get('instance_path') or '').strip() or '<rings>'} "
                     f"global={bool(entry.get('global_space', False))} "
                     f"spawn_rate={float(entry.get('spawn_rate', entry.get('frame_step', 1.0)) or 1.0):.3f} "
                     f"substeps={int(entry.get('substeps', 1) or 1)} repeats={int(entry.get('repeats', 1) or 1)} "
@@ -3293,6 +3298,9 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                         str(entry.get("node") or ""),
                         str(entry.get("target_owner") or ""),
                         str(entry.get("instance_path") or ""),
+                        str(entry.get("instance_source_name") or ""),
+                        repr(dict(entry.get("instance_material") or {})),
+                        repr(dict(entry.get("instance_xform") or {})),
                         repr(list(entry.get("target_owner_aliases") or [])),
                         bool(entry.get("visible", True)),
                         bool(entry.get("global_space", False)),
