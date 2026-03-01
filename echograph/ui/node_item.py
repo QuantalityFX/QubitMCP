@@ -2816,12 +2816,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
             chosen = None
             if port_names:
                 wanted = {str(name).strip().lower() for name in port_names if str(name).strip()}
+                allow_default_mesh_fallback = bool(wanted) and wanted.issubset({"mesh", "path", "source"})
                 for edge in in_edges:
                     name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
                     if (name or "").strip().lower() in wanted:
                         chosen = edge
                         break
-                if chosen is None:
+                if chosen is None and not allow_default_mesh_fallback:
                     return None, "", ""
             if chosen is None:
                 for edge in in_edges:

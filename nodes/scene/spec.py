@@ -401,12 +401,13 @@ def _resolve_input_item(scene, node_item, port_names=None):
     chosen = None
     if port_names:
         wanted = {str(n).strip().lower() for n in port_names if str(n).strip()}
+        allow_default_mesh_fallback = bool(wanted) and wanted.issubset({"mesh", "path", "source"})
         for edge in in_edges:
             name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
             if (name or "").strip().lower() in wanted:
                 chosen = edge
                 break
-        if chosen is None:
+        if chosen is None and not allow_default_mesh_fallback:
             return None, "", ""
     if chosen is None:
         for edge in in_edges:
