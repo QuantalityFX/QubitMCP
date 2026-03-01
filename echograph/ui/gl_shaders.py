@@ -379,10 +379,12 @@ void main() {
             vec2 safe_screen = max(ScreenSize, vec2(1.0, 1.0));
             vec2 screen_uv = gl_FragCoord.xy / safe_screen;
             float refract_strength = pow(refraction_strength, 1.5);
-            vec3 refracted = refract(-view_dir, n, 1.0 / max(ior, 1.001));
-            vec2 refract_vec = refracted.xy;
-            float refract_z = max(0.35, abs(refracted.z));
-            vec2 refract_offset = (refract_vec / refract_z) * (0.014 * refract_strength) * (0.22 + transmission * 0.48) * (0.30 + edge * 0.22);
+            vec3 incident = -view_dir;
+            vec3 refracted = refract(incident, n, 1.0 / max(ior, 1.001));
+            vec2 incident_slope = incident.xy / max(0.35, abs(incident.z));
+            vec2 refracted_slope = refracted.xy / max(0.35, abs(refracted.z));
+            vec2 bend_delta = refracted_slope - incident_slope;
+            vec2 refract_offset = bend_delta * (0.010 * refract_strength) * (0.18 + transmission * 0.34) * (0.22 + edge * 0.16);
             vec2 warped_uv0 = clamp(screen_uv + refract_offset, vec2(0.001), vec2(0.999));
             vec2 warped_uv1 = clamp(screen_uv - refract_offset * 0.45, vec2(0.001), vec2(0.999));
             vec3 scene_rgb0 = texture(SceneColorTex, warped_uv0).rgb;
