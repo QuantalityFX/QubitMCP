@@ -289,6 +289,16 @@ def _resolve_input_item(scene, node_item, port_names=None):
                     edges = []
             if edges:
                 return _trace(getattr(edges[0], "src", None), depth + 1, visited)
+        if kind in {"fx", "fx_trail"}:
+            try:
+                edges = list(scene._ordered_in_edges(item))
+            except Exception:
+                try:
+                    edges = list(scene._in_edges(item))
+                except Exception:
+                    edges = []
+            if edges:
+                return _trace(getattr(edges[0], "src", None), depth + 1, visited)
         path = _param_value(m, "path")
         if not path:
             path = _param_value(m, "mesh") or _param_value(m, "source")
@@ -376,7 +386,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
     def _find_upstream_transform(start_item):
         item = start_item
         visited = set()
-        pass_kinds = {"switch", "uv_unwrap", "texture", "texture_pro", "texture_layer", "split_volume", "volume_selector"}
+        pass_kinds = {"switch", "uv_unwrap", "texture", "texture_pro", "texture_layer", "split_volume", "volume_selector", "fx", "fx_trail"}
         depth = 0
         while item is not None and item not in visited and depth < 10:
             visited.add(item)
@@ -408,6 +418,8 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             "split_volume",
             "volume_selector",
             "transforms",
+            "fx",
+            "fx_trail",
         }
         depth = 0
         while item is not None and item not in visited and depth < 12:
@@ -486,6 +498,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
         model = getattr(src_item, "model", None)
         if model is None:
             continue
+        src_name = (getattr(model, "name", "") or "").strip()
         kind = (getattr(model, "kind", "") or "").strip().lower()
         if kind not in ("volume_selector", "split_volume"):
             continue
@@ -517,6 +530,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
         model = getattr(src_item, "model", None)
         if model is None:
             continue
+        src_name = (getattr(model, "name", "") or "").strip()
         kind = (getattr(model, "kind", "") or "").strip().lower()
 
         if kind == "camera":
@@ -699,7 +713,8 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
 
         # If a texture node is in between, use the upstream model for owner/xform,
         # but keep the texture override from the texture node.
-        if kind in ("texture", "texture_pro", "texture_layer"):
+        fx_asset = None
+        if kind in ("texture", "texture_pro", "texture_layer", "fx", "fx_trail"):
             upstream_item, upstream_kind, upstream_path = _resolve_input_item(scene, src_item)
             if upstream_item is not None and getattr(upstream_item, "model", None) is not None:
                 if upstream_kind == "uv_unwrap":
@@ -709,11 +724,22 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                     if upstream2_item is not None and getattr(upstream2_item, "model", None) is not None:
                         owner_model = getattr(upstream2_item, "model", owner_model)
                         owner_kind = upstream2_kind or owner_kind
+                elif kind in ("fx", "fx_trail"):
+                    owner_model = getattr(upstream_item, "model", owner_model)
+                    owner_kind = upstream_kind or owner_kind
+                    if upstream_path:
+                        path = upstream_path
                 else:
                     owner_model = getattr(upstream_item, "model", owner_model)
                     owner_kind = upstream_kind or owner_kind
                     if upstream_path:
                         path = upstream_path
+            if kind in ("fx", "fx_trail"):
+                try:
+                    from nodes.fx import spec as _fx_spec  # type: ignore
+                    fx_asset = _fx_spec.trail_asset_config_from_model(model)
+                except Exception:
+                    fx_asset = None
         elif kind == "uv_unwrap":
             upstream_item, upstream_kind, upstream_path = _resolve_input_item(scene, src_item)
             if upstream_item is not None and getattr(upstream_item, "model", None) is not None:
@@ -737,6 +763,17 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             continue
         key = path.strip()
         if key in seen:
+            if isinstance(fx_asset, dict) and node_name:
+                fx_entry = dict(fx_asset)
+                fx_entry.update(
+                    {
+                        "kind": "fx_trail",
+                        "node": src_name or f"{node_name}_fx",
+                        "target_owner": node_name,
+                        "visible": node_name not in hidden,
+                    }
+                )
+                assets.append(fx_entry)
             continue
         seen.add(key)
         texture_provider = None
@@ -798,6 +835,17 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
         if texture_provider is not None:
             entry["texture_provider"] = texture_provider
         assets.append(entry)
+        if isinstance(fx_asset, dict) and node_name:
+            fx_entry = dict(fx_asset)
+            fx_entry.update(
+                {
+                    "kind": "fx_trail",
+                    "node": src_name or f"{node_name}_fx",
+                    "target_owner": node_name,
+                    "visible": node_name not in hidden,
+                }
+            )
+            assets.append(fx_entry)
     return assets
 
 
@@ -1837,11 +1885,11 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                         seen.add(name)
                         rows.append({"name": name, "path": base_path, "kind": "mesh"})
                     continue
-                if kind not in ("import", "primitive", "uv_unwrap", "texture", "texture_pro", "texture_layer", "volume_selector", "split_volume", "transforms", "camera"):
+                if kind not in ("import", "primitive", "uv_unwrap", "texture", "texture_pro", "texture_layer", "volume_selector", "split_volume", "transforms", "camera", "fx", "fx_trail"):
                     continue
                 path = _param_value(model, "path")
                 owner_model = model
-                if kind in ("texture", "texture_pro", "texture_layer"):
+                if kind in ("texture", "texture_pro", "texture_layer", "fx", "fx_trail"):
                     upstream_item, upstream_kind, upstream_path = _resolve_input_item(scene, src_item)
                     if upstream_item is not None and getattr(upstream_item, "model", None) is not None:
                         if upstream_kind == "uv_unwrap":
@@ -1850,6 +1898,10 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                             upstream2_item, _up2_kind, _up2_path = _resolve_input_item(scene, upstream_item)
                             if upstream2_item is not None and getattr(upstream2_item, "model", None) is not None:
                                 owner_model = getattr(upstream2_item, "model", owner_model)
+                        elif kind in ("fx", "fx_trail"):
+                            owner_model = getattr(upstream_item, "model", owner_model)
+                            if upstream_path:
+                                path = upstream_path
                         else:
                             owner_model = getattr(upstream_item, "model", owner_model)
                             if upstream_path:

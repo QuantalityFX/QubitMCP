@@ -338,6 +338,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     _texture_layer.register()
             except Exception:
                 pass
+        # Ensure FX spec is registered even if the loader was skipped.
+        if (self.model.kind or "").strip().lower() in ("fx", "fx_trail"):
+            try:
+                from nodes import fx as _fx  # type: ignore
+                if hasattr(_fx, "register"):
+                    _fx.register()
+            except Exception:
+                pass
 
         self.setFlag(QtWidgets.QGraphicsItem.ItemIsMovable, True)
         self.setFlag(QtWidgets.QGraphicsItem.ItemSendsGeometryChanges, True)
@@ -2569,7 +2577,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         def _find_upstream_transform(start_item):
             item = start_item
             visited = set()
-            pass_kinds = {"switch", "uv_unwrap", "texture", "texture_pro", "texture_layer", "split_volume", "volume_selector"}
+            pass_kinds = {"switch", "uv_unwrap", "texture", "texture_pro", "texture_layer", "split_volume", "volume_selector", "fx", "fx_trail"}
             depth = 0
             while item is not None and item not in visited and depth < 10:
                 visited.add(item)
@@ -2601,6 +2609,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "split_volume",
                 "volume_selector",
                 "transforms",
+                "fx",
+                "fx_trail",
             }
             depth = 0
             while item is not None and item not in visited and depth < 12:
@@ -2635,6 +2645,16 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     return None, "", ""
                 kind = (getattr(m, "kind", "") or "").strip().lower()
                 if kind == "switch":
+                    try:
+                        edges = list(sc._ordered_in_edges(item))
+                    except Exception:
+                        try:
+                            edges = list(sc._in_edges(item))
+                        except Exception:
+                            edges = []
+                    if edges:
+                        return _trace(getattr(edges[0], "src", None), depth + 1, visited)
+                if kind in {"fx", "fx_trail"}:
                     try:
                         edges = list(sc._ordered_in_edges(item))
                     except Exception:
@@ -2720,13 +2740,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
             if model is None:
                 _scene_log(f"edge[{edge_idx}] skip: no model")
                 continue
+            src_name = (getattr(model, "name", "") or "").strip()
             path = ""
             for p in (model.params or []):
                 if (p.get("name") or "").strip().lower() == "path":
                     path = (p.get("value") or "").strip()
                     break
             kind = (getattr(model, "kind", "") or "").strip().lower()
-            model_name = (getattr(model, "name", "") or "").strip()
+            model_name = src_name
             _scene_log(f"edge[{edge_idx}] kind={kind} name={model_name} path_param={path!r}")
             if kind == "camera":
                 camera_name = model_name or "camera"
@@ -2921,7 +2942,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 continue
             owner_model = model
             owner_kind = kind
-            if kind in ("texture", "texture_pro", "texture_layer"):
+            fx_asset = None
+            if kind in ("texture", "texture_pro", "texture_layer", "fx", "fx_trail"):
                 upstream_item, upstream_kind, upstream_path = _resolve_input_item(src_item)
                 if upstream_item is not None and getattr(upstream_item, "model", None) is not None:
                     if upstream_kind == "uv_unwrap":
@@ -2931,11 +2953,22 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         if upstream2_item is not None and getattr(upstream2_item, "model", None) is not None:
                             owner_model = getattr(upstream2_item, "model", owner_model)
                             owner_kind = _up2_kind or owner_kind
+                    elif kind in ("fx", "fx_trail"):
+                        owner_model = getattr(upstream_item, "model", owner_model)
+                        owner_kind = upstream_kind or owner_kind
+                        if upstream_path:
+                            path = upstream_path
                     else:
                         owner_model = getattr(upstream_item, "model", owner_model)
                         owner_kind = upstream_kind or owner_kind
                         if upstream_path:
                             path = upstream_path
+                if kind in ("fx", "fx_trail"):
+                    try:
+                        from nodes.fx import spec as _fx_spec  # type: ignore
+                        fx_asset = _fx_spec.trail_asset_config_from_model(model)
+                    except Exception:
+                        fx_asset = None
             elif kind == "uv_unwrap":
                 upstream_item, _up_kind, upstream_path = _resolve_input_item(src_item)
                 if upstream_item is not None and getattr(upstream_item, "model", None) is not None:
@@ -2953,6 +2986,17 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 _scene_log(f"edge[{edge_idx}] skip: unsupported ext={ext} path={path!r}")
                 continue
             if path in seen:
+                if isinstance(fx_asset, dict) and model_name:
+                    fx_entry = dict(fx_asset)
+                    fx_entry.update(
+                        {
+                            "kind": "fx_trail",
+                            "node": src_name or f"{model_name}_fx",
+                            "target_owner": model_name,
+                            "visible": model_name not in hidden,
+                        }
+                    )
+                    assets.append(fx_entry)
                 _scene_log(f"edge[{edge_idx}] skip: duplicate path={path!r}")
                 continue
             seen.add(path)
@@ -3027,6 +3071,17 @@ class NodeItem(QtWidgets.QGraphicsObject):
             if texture_provider is not None:
                 asset["texture_provider"] = texture_provider
             assets.append(asset)
+            if isinstance(fx_asset, dict) and model_name:
+                fx_entry = dict(fx_asset)
+                fx_entry.update(
+                    {
+                        "kind": "fx_trail",
+                        "node": src_name or f"{model_name}_fx",
+                        "target_owner": model_name,
+                        "visible": model_name not in hidden,
+                    }
+                )
+                assets.append(fx_entry)
         _scene_log(f"collect_scene_assets done assets={len(assets)}")
         return assets
 

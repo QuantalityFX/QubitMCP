@@ -619,7 +619,7 @@ class MGLRendererMixin:
         scene = getattr(self, "_mgl_scene", None)
         if scene is None:
             return
-        for tag in ("model", "model-wire", "scene-model", "scene-wire", "scene-volume", "scene-camera"):
+        for tag in ("model", "model-wire", "scene-model", "scene-wire", "scene-volume", "scene-camera", "scene-fx-trail"):
             scene.remove_by_tag(tag)
 
     def _mgl_disable_splats(self) -> None:
@@ -865,11 +865,16 @@ class MGLRendererMixin:
         scene = getattr(self, "_mgl_scene", None)
         if scene is None or not key:
             return
+        key_norm = str(key).strip().lower()
         for item in scene.items():
             payload = item.payload or {}
             owner = payload.get("owner") or payload.get("node")
             path_key = payload.get("path")
-            if owner == key or path_key == key:
+            target_owner = payload.get("target_owner")
+            owner_norm = str(owner).strip().lower() if owner is not None else ""
+            path_norm = str(path_key).strip().lower() if path_key is not None else ""
+            target_norm = str(target_owner).strip().lower() if target_owner is not None else ""
+            if owner == key or path_key == key or owner_norm == key_norm or path_norm == key_norm or target_norm == key_norm:
                 if item.tag == "scene-wire":
                     item.visible = bool(visible) and bool(getattr(self, "_mgl_wireframe", False))
                 else:
@@ -879,11 +884,404 @@ class MGLRendererMixin:
         scene = getattr(self, "_mgl_scene", None)
         if scene is None or not old_name or not new_name or old_name == new_name:
             return
+        old_norm = str(old_name).strip().lower()
         for item in scene.items():
             payload = item.payload or {}
             owner = payload.get("owner") or payload.get("node")
             if owner == old_name:
                 payload["owner"] = new_name
+            elif owner is not None and str(owner).strip().lower() == old_norm:
+                payload["owner"] = new_name
+            target_owner = payload.get("target_owner")
+            if target_owner == old_name:
+                payload["target_owner"] = new_name
+            elif target_owner is not None and str(target_owner).strip().lower() == old_norm:
+                payload["target_owner"] = new_name
+
+    def _mgl_fx_color_rgba(self, raw_color):
+        if isinstance(raw_color, (list, tuple)):
+            vals = [float(v) for v in raw_color[:4]]
+            if len(vals) >= 3:
+                if len(vals) < 4:
+                    vals.append(1.0)
+                return tuple(max(0.0, min(1.0, float(v))) for v in vals[:4])
+        text = str(raw_color or "").strip()
+        if not text:
+            text = "#b7ff6a"
+        if not text.startswith("#"):
+            text = f"#{text}"
+        if len(text) == 4:
+            text = "#" + "".join(ch * 2 for ch in text[1:])
+        if len(text) != 7:
+            text = "#b7ff6a"
+        try:
+            rgb = int(text[1:], 16)
+        except Exception:
+            rgb = int("b7ff6a", 16)
+        return (
+            float((rgb >> 16) & 255) / 255.0,
+            float((rgb >> 8) & 255) / 255.0,
+            float(rgb & 255) / 255.0,
+            0.95,
+        )
+
+    def _mgl_fx_profile_points(self, payload) -> list[tuple[float, float]]:
+        rows: list[tuple[float, float]] = []
+        raw_points = []
+        try:
+            raw_points = payload.get("profile_points") or []
+        except Exception:
+            raw_points = []
+        for raw in raw_points:
+            x_val = None
+            y_val = None
+            if isinstance(raw, dict):
+                x_val = raw.get("x")
+                y_val = raw.get("y")
+            elif isinstance(raw, (list, tuple)) and len(raw) >= 2:
+                x_val = raw[0]
+                y_val = raw[1]
+            try:
+                x = max(0.0, min(1.0, float(x_val)))
+                y = max(0.0, min(1.0, float(y_val)))
+            except Exception:
+                continue
+            rows.append((x, y))
+        if len(rows) < 2:
+            rows = [(0.0, 0.2), (0.25, 0.95), (0.5, 0.2), (0.75, 0.95), (1.0, 0.2)]
+        rows.sort(key=lambda item: (float(item[0]), float(item[1])))
+        merged: list[tuple[float, float]] = []
+        for x, y in rows:
+            if merged and abs(float(merged[-1][0]) - float(x)) < 1.0e-5:
+                merged[-1] = (float(x), float(y))
+            else:
+                merged.append((float(x), float(y)))
+        if not merged:
+            merged = [(0.0, 0.2), (1.0, 0.2)]
+        if merged[0][0] > 0.0:
+            merged.insert(0, (0.0, float(merged[0][1])))
+        else:
+            merged[0] = (0.0, float(merged[0][1]))
+        if merged[-1][0] < 1.0:
+            merged.append((1.0, float(merged[-1][1])))
+        else:
+            merged[-1] = (1.0, float(merged[-1][1]))
+        return merged
+
+    def _mgl_fx_profile_value(self, payload, t: float) -> float:
+        points = self._mgl_fx_profile_points(payload)
+        tt = max(0.0, min(1.0, float(t)))
+        if not points:
+            return 0.2
+        if tt <= float(points[0][0]):
+            return float(points[0][1])
+        for idx in range(1, len(points)):
+            x0, y0 = points[idx - 1]
+            x1, y1 = points[idx]
+            if tt <= float(x1):
+                span = float(x1) - float(x0)
+                if span <= 1.0e-6:
+                    return float(y1)
+                alpha = (tt - float(x0)) / span
+                return float(y0) + (float(y1) - float(y0)) * float(alpha)
+        return float(points[-1][1])
+
+    def _mgl_timeline_owner_keys_map(self, owner: str):
+        key = str(owner or "").strip()
+        if not key:
+            return {}
+        norm_fn = getattr(self, "_timeline_owner_norm", None)
+        key_norm = norm_fn(key) if callable(norm_fn) else key.lower()
+        current_owner = str(getattr(self, "_timeline_owner_name", "") or "").strip()
+        current_norm = norm_fn(current_owner) if callable(norm_fn) else current_owner.lower()
+        current_keys = getattr(self, "_timeline_keys", None)
+        if key_norm and current_norm == key_norm and isinstance(current_keys, dict):
+            return current_keys
+
+        owner_paths_fn = getattr(self, "_timeline_owner_file_paths", None)
+        reader = getattr(self, "_timeline_read_owner_keys_file", None)
+        if not callable(owner_paths_fn) or not callable(reader):
+            return {}
+        try:
+            file_paths = owner_paths_fn()
+        except Exception:
+            return {}
+        cache = getattr(self, "_timeline_owner_keys_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+        for path in file_paths or []:
+            path_key = str(path)
+            try:
+                mtime = float(path.stat().st_mtime)
+            except Exception:
+                mtime = None
+            entry = cache.get(path_key) if isinstance(cache, dict) else None
+            owner_name = ""
+            keys_map = {}
+            if isinstance(entry, dict) and entry.get("mtime", None) == mtime:
+                owner_name = str(entry.get("owner", "") or "").strip()
+                cached_keys = entry.get("keys", None)
+                if isinstance(cached_keys, dict):
+                    keys_map = cached_keys
+            else:
+                owner_name, keys_map = reader(path)
+                cache[path_key] = {
+                    "mtime": mtime,
+                    "owner": str(owner_name or ""),
+                    "keys": keys_map if isinstance(keys_map, dict) else {},
+                }
+            owner_norm = norm_fn(owner_name) if callable(norm_fn) else str(owner_name or "").strip().lower()
+            if owner_norm and owner_norm == key_norm and isinstance(keys_map, dict):
+                self._timeline_owner_keys_cache = cache
+                return keys_map
+        self._timeline_owner_keys_cache = cache
+        return {}
+
+    def _mgl_fx_current_owner_pos(self, owner: str):
+        key = str(owner or "").strip()
+        if not key:
+            return None
+        xf = None
+        get_xf = getattr(self, "_timeline_get_owner_xform", None)
+        if callable(get_xf):
+            try:
+                xf, _is_splat = get_xf(key)
+            except Exception:
+                xf = None
+        if not isinstance(xf, dict):
+            try:
+                xf = self._mgl_get_scene_asset_xform(key)
+            except Exception:
+                xf = None
+        if not isinstance(xf, dict):
+            return None
+        pos = xf.get("pos", None)
+        if not isinstance(pos, (list, tuple)) or len(pos) < 3:
+            return None
+        try:
+            return (float(pos[0]), float(pos[1]), float(pos[2]))
+        except Exception:
+            return None
+
+    def _mgl_fx_eval_owner_pos(self, owner: str, frame: int):
+        key = str(owner or "").strip()
+        if not key:
+            return None
+        cur_frame_fn = getattr(self, "_timeline_current_frame", None)
+        cur_frame = None
+        if callable(cur_frame_fn):
+            try:
+                cur_frame = int(cur_frame_fn())
+            except Exception:
+                cur_frame = None
+        live_pos = self._mgl_fx_current_owner_pos(key)
+        if cur_frame is not None and int(frame) == int(cur_frame) and live_pos is not None:
+            return live_pos
+        keys_map = self._mgl_timeline_owner_keys_map(key)
+        if isinstance(keys_map, dict) and keys_map:
+            eval_fn = getattr(self, "_timeline_eval_frame_values_for_owner_keys", None)
+            if callable(eval_fn):
+                try:
+                    xyz_eval, _rxyz_eval = eval_fn(key, keys_map, int(frame))
+                    if isinstance(xyz_eval, (list, tuple)) and len(xyz_eval) >= 3:
+                        return (float(xyz_eval[0]), float(xyz_eval[1]), float(xyz_eval[2]))
+                except Exception:
+                    pass
+            try:
+                entry = keys_map.get(int(frame))
+            except Exception:
+                entry = None
+            if isinstance(entry, dict):
+                xyz = entry.get("xyz", None)
+                if isinstance(xyz, (list, tuple)) and len(xyz) >= 3:
+                    try:
+                        return (float(xyz[0]), float(xyz[1]), float(xyz[2]))
+                    except Exception:
+                        pass
+        if cur_frame is not None and int(frame) == int(cur_frame) and live_pos is not None:
+            return live_pos
+        return None
+
+    def _mgl_fx_build_trail_line_points(self, payload, frame: int):
+        if np is None:
+            return None
+        target_owner = str(payload.get("target_owner") or "").strip()
+        if not target_owner:
+            return None
+        try:
+            enabled = bool(payload.get("enabled", True))
+        except Exception:
+            enabled = True
+        if not enabled:
+            return None
+        try:
+            samples = max(1, int(payload.get("samples", 28)))
+        except Exception:
+            samples = 28
+        try:
+            frame_step = max(1, int(payload.get("frame_step", 1)))
+        except Exception:
+            frame_step = 1
+        try:
+            base_radius = max(0.001, float(payload.get("radius", 0.35)))
+        except Exception:
+            base_radius = 0.35
+        try:
+            repeats = max(1, int(payload.get("repeats", 4)))
+        except Exception:
+            repeats = 4
+        try:
+            sides = max(6, int(payload.get("sides", 28)))
+        except Exception:
+            sides = 28
+
+        centers = []
+        for idx in range(int(samples)):
+            sample_frame = int(frame) - (idx * int(frame_step))
+            if sample_frame < 0:
+                break
+            pos = self._mgl_fx_eval_owner_pos(target_owner, sample_frame)
+            if pos is None:
+                if idx == 0:
+                    continue
+                break
+            vec = np.array(pos, dtype=np.float32)
+            if centers:
+                try:
+                    if float(np.linalg.norm(vec - centers[-1])) < 1.0e-5:
+                        continue
+                except Exception:
+                    pass
+            centers.append(vec)
+        if not centers:
+            return None
+        centers = list(reversed(centers))
+        line_pos: List[float] = []
+        last_tangent = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+        count = len(centers)
+        for idx, center in enumerate(centers):
+            if count == 1:
+                tangent = last_tangent
+            elif idx == 0:
+                tangent = centers[min(idx + 1, count - 1)] - center
+            elif idx == (count - 1):
+                tangent = center - centers[idx - 1]
+            else:
+                tangent = centers[idx + 1] - centers[idx - 1]
+            try:
+                tlen = float(np.linalg.norm(tangent))
+            except Exception:
+                tlen = 0.0
+            if tlen > 1.0e-6:
+                normal = tangent / tlen
+                last_tangent = normal.astype(np.float32)
+            else:
+                normal = last_tangent
+            ref = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+            try:
+                if abs(float(np.dot(normal, ref))) > 0.92:
+                    ref = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+            except Exception:
+                ref = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+            axis_u = np.cross(ref, normal)
+            try:
+                ulen = float(np.linalg.norm(axis_u))
+            except Exception:
+                ulen = 0.0
+            if ulen <= 1.0e-6:
+                axis_u = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+                ulen = 1.0
+            axis_u = axis_u / float(ulen)
+            axis_v = np.cross(normal, axis_u)
+            try:
+                vlen = float(np.linalg.norm(axis_v))
+            except Exception:
+                vlen = 0.0
+            if vlen <= 1.0e-6:
+                axis_v = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+                vlen = 1.0
+            axis_v = axis_v / float(vlen)
+            age_t = 1.0 - (float(idx) / float(max(1, count - 1)))
+            phase = (age_t * float(repeats)) % 1.0
+            profile_val = self._mgl_fx_profile_value(payload, phase)
+            ring_radius = float(base_radius) * max(0.08, float(profile_val))
+            for seg in range(int(sides)):
+                a0 = (2.0 * math.pi * float(seg)) / float(sides)
+                a1 = (2.0 * math.pi * float(seg + 1)) / float(sides)
+                p0 = center + (math.cos(a0) * ring_radius * axis_u) + (math.sin(a0) * ring_radius * axis_v)
+                p1 = center + (math.cos(a1) * ring_radius * axis_u) + (math.sin(a1) * ring_radius * axis_v)
+                line_pos.extend(
+                    [
+                        float(p0[0]), float(p0[1]), float(p0[2]),
+                        float(p1[0]), float(p1[1]), float(p1[2]),
+                    ]
+                )
+        if not line_pos:
+            return None
+        return np.array(line_pos, dtype="f4").reshape(-1, 3)
+
+    def _mgl_fx_update_trail_item(self, item: MGLSceneItem) -> bool:
+        payload = item.payload or {}
+        frame_fn = getattr(self, "_timeline_current_frame", None)
+        if not callable(frame_fn):
+            return False
+        try:
+            frame = int(frame_fn())
+        except Exception:
+            frame = 0
+        target_owner = str(payload.get("target_owner") or "").strip()
+        live_pos = self._mgl_fx_current_owner_pos(target_owner)
+        stamp = (
+            int(frame),
+            tuple(round(float(v), 5) for v in live_pos) if isinstance(live_pos, (list, tuple)) else None,
+            bool(payload.get("enabled", True)),
+            int(payload.get("samples", 28)),
+            int(payload.get("frame_step", 1)),
+            round(float(payload.get("radius", 0.35)), 5),
+            int(payload.get("repeats", 4)),
+            int(payload.get("sides", 28)),
+            round(float(payload.get("line_width", 2.0)), 3),
+            repr(payload.get("profile_points")),
+        )
+        if payload.get("_fx_stamp") == stamp and payload.get("vao") is not None:
+            return True
+
+        line_points = self._mgl_fx_build_trail_line_points(payload, frame)
+        for res in list(getattr(item, "resources", None) or []):
+            if res is not None and hasattr(res, "release"):
+                try:
+                    res.release()
+                except Exception:
+                    pass
+        item.resources = []
+        payload.pop("vao", None)
+        if line_points is None or getattr(line_points, "size", 0) == 0:
+            payload["_fx_stamp"] = stamp
+            item.payload = payload
+            return False
+
+        temp = self._mgl_add_wire_item_from_points(
+            name=item.name,
+            line_points=line_points,
+            visible=item.visible,
+            tag=str(getattr(item, "tag", "") or "scene-fx-trail"),
+            owner=str(payload.get("owner") or payload.get("target_owner") or ""),
+            path_key=str(payload.get("path") or ""),
+        )
+        if temp is None:
+            payload["_fx_stamp"] = stamp
+            item.payload = payload
+            return False
+
+        dyn_payload = temp.payload or {}
+        payload["vao"] = dyn_payload.get("vao")
+        payload["mode"] = dyn_payload.get("mode")
+        payload["color"] = self._mgl_fx_color_rgba(payload.get("color"))
+        payload["line_width"] = float(payload.get("line_width", 2.0) or 2.0)
+        payload["_fx_stamp"] = stamp
+        item.payload = payload
+        item.resources = list(temp.resources or [])
+        return payload.get("vao") is not None
 
     def _mgl_get_scene_asset_xform(self, owner: str):
         d = getattr(self, "_mgl_scene_xforms_by_owner", None)
@@ -2012,6 +2410,19 @@ class MGLRendererMixin:
                 except Exception:
                     pass
 
+    def _mgl_draw_scene_fx_trail(self, item: MGLSceneItem, mvp) -> None:
+        if self._mgl_ctx is None or self._mgl_wire_prog is None:
+            return
+        try:
+            if not self._mgl_fx_update_trail_item(item):
+                return
+        except Exception:
+            return
+        try:
+            self._mgl_draw_scene_wire(item, mvp)
+        except Exception:
+            return
+
     def _mgl_draw_scene_grid(self, item: MGLSceneItem, mvp) -> None:
         if self._mgl_grid_prog is None:
             return
@@ -2117,14 +2528,9 @@ class MGLRendererMixin:
                         mvp_to_use = mvp
                 self._mgl_wire_prog["Mvp"].write(mvp_to_use.astype("f4").tobytes())
                 self._mgl_wire_prog["Color"].value = color_rgba
-                try:
-                    vp_w, vp_h = self._mgl_render_size()
-                except Exception:
-                    vp_w = max(1, int(self.width()))
-                    vp_h = max(1, int(self.height()))
-                self._mgl_wire_prog["Viewport"].value = (float(max(1, vp_w)), float(max(1, vp_h)))
+                self._mgl_wire_prog["Viewport"].value = (float(max(1, self.width())), float(max(1, self.height())))
                 self._mgl_wire_prog["LineWidth"].value = float(
-                    getattr(self, "_mgl_wire_edge_width", getattr(self, "_mgl_wire_line_width", 1.0))
+                    payload.get("line_width", getattr(self, "_mgl_wire_edge_width", getattr(self, "_mgl_wire_line_width", 1.0)))
                 )
             except Exception:
                 pass
@@ -3188,7 +3594,6 @@ class MGLRendererMixin:
         w = max(2, int(width))
         h = max(2, int(height))
         fbo = None
-        saved_cam_state = None
         prev_size_override = getattr(self, "_mgl_render_size_override", None)
         prev_target_fbo = int(getattr(self, "_mgl_render_target_fbo_id", 0) or 0)
         prev_render_paused = bool(getattr(self, "_render_paused", False))
@@ -3206,15 +3611,6 @@ class MGLRendererMixin:
             fbo = self._mgl_get_render_offscreen_fbo(w, h)
             if fbo is None:
                 return None
-            try:
-                saved_cam_state = self._mgl_get_camera_state()
-                if isinstance(saved_cam_state, dict):
-                    saved_cam_state = dict(saved_cam_state)
-                    saved_cam_state.pop("scene_xforms", None)
-                else:
-                    saved_cam_state = None
-            except Exception:
-                saved_cam_state = None
             self._mgl_render_size_override = (w, h)
             try:
                 self._mgl_render_target_fbo_id = int(getattr(fbo, "glo", 0) or 0)
@@ -3234,23 +3630,8 @@ class MGLRendererMixin:
                 self._mgl_splats_rebuild_min_dt = 0.0
             except Exception:
                 pass
-            if isinstance(saved_cam_state, dict):
-                try:
-                    self._mgl_apply_camera_state(dict(saved_cam_state))
-                except Exception:
-                    pass
             self._paint_mgl()
-            if isinstance(saved_cam_state, dict):
-                try:
-                    self._mgl_apply_camera_state(dict(saved_cam_state))
-                except Exception:
-                    pass
             self._paint_mgl()
-            if isinstance(saved_cam_state, dict):
-                try:
-                    self._mgl_apply_camera_state(dict(saved_cam_state))
-                except Exception:
-                    pass
             try:
                 if hasattr(self._mgl_ctx, "finish"):
                     self._mgl_ctx.finish()
@@ -4360,24 +4741,6 @@ class MGLRendererMixin:
             state["splat_scale"] = float(getattr(self, "_splat_scale", 1.0))
         except Exception:
             state["splat_scale"] = 1.0
-        try:
-            state["fps_camera_active"] = bool(getattr(self, "_fps_camera_active", False))
-        except Exception:
-            state["fps_camera_active"] = False
-        try:
-            state["fps_roll_locked"] = bool(getattr(self, "_mgl_orbit_locked", True))
-        except Exception:
-            state["fps_roll_locked"] = True
-        try:
-            fps_cam = getattr(self, "_fps_camera", None)
-            if fps_cam is not None:
-                state["fps_camera"] = {
-                    "position": [float(v) for v in getattr(fps_cam, "position", (0.0, 0.0, 0.0))],
-                    "forward": [float(v) for v in getattr(fps_cam, "forward", (0.0, 0.0, -1.0))],
-                    "up": [float(v) for v in getattr(fps_cam, "up", (0.0, 1.0, 0.0))],
-                }
-        except Exception:
-            pass
 
         # scene xforms (mesh + splat) for snapshot persistence
         try:
@@ -4713,36 +5076,6 @@ class MGLRendererMixin:
                 self._mgl_clip_far = float(clip_far)
                 if hasattr(self, "_mgl_clip_input") and self._mgl_clip_input is not None:
                     self._mgl_clip_input.setText(str(int(self._mgl_clip_far)))
-        except Exception:
-            pass
-        try:
-            if "fps_roll_locked" in state:
-                self._mgl_orbit_locked = bool(state.get("fps_roll_locked", True))
-        except Exception:
-            pass
-        try:
-            fps_state = state.get("fps_camera", None)
-            if isinstance(fps_state, dict) and np is not None:
-                fps_cam = getattr(self, "_fps_camera", None)
-                if fps_cam is None:
-                    try:
-                        from echograph.ui.fps_camera import FpsCamera
-
-                        fps_cam = FpsCamera()
-                        self._fps_camera = fps_cam
-                    except Exception:
-                        fps_cam = None
-                if fps_cam is not None:
-                    try:
-                        fps_cam.position = np.array(fps_state.get("position", (0.0, 0.0, 0.0)), dtype=np.float32)
-                        fps_cam.forward = np.array(fps_state.get("forward", (0.0, 0.0, -1.0)), dtype=np.float32)
-                        fps_cam.up = np.array(fps_state.get("up", (0.0, 1.0, 0.0)), dtype=np.float32)
-                        if hasattr(fps_cam, "_orthonormalize"):
-                            fps_cam._orthonormalize()
-                    except Exception:
-                        pass
-            if "fps_camera_active" in state:
-                self._fps_camera_active = bool(state.get("fps_camera_active", False))
         except Exception:
             pass
 
@@ -6149,6 +6482,34 @@ class MGLRendererMixin:
 
                 kind = str(asset.get("kind") or "").strip().lower()
                 ext_hint = str(asset.get("ext") or "").strip().lower()
+                if kind == "fx_trail":
+                    target_owner = str(asset.get("target_owner") or "").strip()
+                    owner = str(asset.get("node") or "").strip() or (f"{target_owner}_fx" if target_owner else "")
+                    if not target_owner or not owner:
+                        continue
+                    trail_item = MGLSceneItem(
+                        name=owner,
+                        draw_fn=MGLRendererMixin._mgl_draw_scene_fx_trail,
+                        payload={
+                            "owner": owner,
+                            "target_owner": target_owner,
+                            "enabled": bool(asset.get("enabled", True)),
+                            "samples": int(asset.get("samples", 28) or 28),
+                            "frame_step": int(asset.get("frame_step", 1) or 1),
+                            "radius": float(asset.get("radius", 0.35) or 0.35),
+                            "repeats": int(asset.get("repeats", 4) or 4),
+                            "sides": int(asset.get("sides", 28) or 28),
+                            "color": self._mgl_fx_color_rgba(asset.get("color")),
+                            "line_width": float(asset.get("line_width", 2.0) or 2.0),
+                            "profile_points": list(asset.get("profile_points") or []),
+                        },
+                        resources=[],
+                        visible=bool(asset.get("visible", True)),
+                        order=14,
+                        tag="scene-fx-trail",
+                    )
+                    scene.add(trail_item)
+                    continue
                 is_camera = kind == "camera" or ext_hint == ".camera"
                 path_str = str(asset.get("path", "") or "").strip()
                 path = None

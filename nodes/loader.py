@@ -197,6 +197,17 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Transforms plugin import failed:", e)
 
+    # 8.97) FX
+    try:
+        from nodes import fx
+        if hasattr(fx, "register"):
+            fx.register()
+            _safe_probe("fx")
+        else:
+            print("[EchoGraph] FX module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] FX plugin import failed:", e)
+
     # 9) GPT Prompt
     try:
         from nodes import gpt_prompt

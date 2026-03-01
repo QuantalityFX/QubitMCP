@@ -882,6 +882,9 @@ class RenderNodeWidget(QtWidgets.QWidget):
                         time.sleep(0.012)
                     except Exception:
                         pass
+            image = self._grab_frame(glv)
+            if image is not None and (not image.isNull()) and (not self._image_is_invalid_capture(image)):
+                return image
             return None
         return self._grab_frame(glv)
 
