@@ -686,6 +686,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 params.append({"name": "refraction", "value": "24"})
             if "tint_color" not in names:
                 params.append({"name": "tint_color", "value": "#dfe7ff"})
+            if "fresnel_amount" not in names:
+                params.append({"name": "fresnel_amount", "value": "0"})
+            if "fresnel_color" not in names:
+                params.append({"name": "fresnel_color", "value": "#ffffff"})
             store_key = "__ui_hidden_params"
             hidden_entry = None
             for p in params:
@@ -697,7 +701,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 params.append(hidden_entry)
             raw = hidden_entry.get("value", "")
             hidden = {t.strip().lower() for t in str(raw).split(",") if t.strip()}
-            hidden.update({"mesh", "source", "path", "transparency", "ior", "refraction", "tint_color", "base_color", "roughness", "specular_color"})
+            hidden.update({"mesh", "source", "path", "transparency", "ior", "refraction", "tint_color", "fresnel_amount", "fresnel_color", "base_color", "roughness", "specular_color"})
             hidden_entry["value"] = ",".join(sorted(hidden))
             self.model.params = params
             try:
@@ -907,7 +911,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         elif kind == "texture_layer":
             hidden.update({"source", "path"})
         elif kind in ("mnaterial", "material"):
-            hidden.update({"mesh", "source", "path", "transparency", "base_color", "roughness", "ior", "refraction", "specular_color"})
+            hidden.update({"mesh", "source", "path", "transparency", "base_color", "roughness", "ior", "refraction", "tint_color", "fresnel_amount", "fresnel_color", "specular_color"})
         elif kind in ("volume_selector", "split_volume"):
             hidden.update({"source", "path", "invert"})
         elif kind == "transforms":
@@ -1471,7 +1475,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 pass
             node_w = self._BASE_W
         elif kind in ("mnaterial", "material"):
-            body_h = 118
+            body_h = 148
             node_w = self._BASE_W
         else:
             body_h = 0
@@ -2720,7 +2724,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 item = getattr(edge, "src", None) if edge is not None else None
             return False
 
-        def _resolve_input_item(node_item):
+        def _resolve_input_item(node_item, port_names=None):
             def _trace(item, depth=0, visited=None):
                 if item is None or depth > 8:
                     return None, "", ""
@@ -2768,11 +2772,21 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 except Exception:
                     in_edges = []
             chosen = None
-            for edge in in_edges:
-                name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
-                if (name or "").strip().lower() in {"mesh", "path"}:
-                    chosen = edge
-                    break
+            if port_names:
+                wanted = {str(name).strip().lower() for name in port_names if str(name).strip()}
+                for edge in in_edges:
+                    name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
+                    if (name or "").strip().lower() in wanted:
+                        chosen = edge
+                        break
+                if chosen is None:
+                    return None, "", ""
+            if chosen is None:
+                for edge in in_edges:
+                    name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
+                    if (name or "").strip().lower() in {"mesh", "path"}:
+                        chosen = edge
+                        break
             if chosen is None and in_edges:
                 chosen = in_edges[0]
             if chosen is not None:
@@ -3083,6 +3097,17 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     try:
                         from nodes.fx import spec as _fx_spec  # type: ignore
                         fx_asset = _fx_spec.trail_asset_config_from_model(model)
+                        _inst_item, _inst_kind, inst_path = _resolve_input_item(src_item, {"instance"})
+                        inst_path = str(inst_path or "").strip()
+                        if inst_path:
+                            inst_ext = os.path.splitext(inst_path)[1].lower()
+                            if inst_ext in supported:
+                                fx_asset["instance_path"] = inst_path
+                            else:
+                                _fx_log(
+                                    f"[node_item] instance skip unsupported-ext node={src_name or kind} "
+                                    f"path={inst_path!r} ext={inst_ext!r}"
+                                )
                     except Exception as exc:
                         fx_asset = None
                         _fx_log(f"[node_item] config error node={src_name or kind} err={exc!r}")
@@ -3120,6 +3145,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         {
                             "kind": "fx_trail",
                             "node": src_name or f"{model_name}_fx",
+                            "instance_path": str(fx_entry.get("instance_path") or "").strip(),
                             "target_owner": model_name,
                             "target_owner_aliases": list(aliases),
                             "visible": model_name not in hidden,
@@ -3218,6 +3244,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     {
                         "kind": "fx_trail",
                         "node": src_name or f"{model_name}_fx",
+                        "instance_path": str(fx_entry.get("instance_path") or "").strip(),
                         "target_owner": model_name,
                         "target_owner_aliases": list(aliases),
                         "visible": model_name not in hidden,

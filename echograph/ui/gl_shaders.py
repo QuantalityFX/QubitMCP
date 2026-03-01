@@ -49,6 +49,8 @@ uniform mat4 Model;
 uniform float MaterialTransparency;
 uniform float MaterialIor;
 uniform vec3 MaterialTint;
+uniform float MaterialFresnelAmount;
+uniform vec3 MaterialFresnelColor;
 uniform sampler2D SceneColorTex;
 uniform int UseSceneRefraction;
 uniform vec2 ScreenSize;
@@ -369,6 +371,8 @@ void main() {
         float ior = max(MaterialIor, 1.0);
         float refraction_strength = clamp((ior - 1.0) / 1.5, 0.0, 1.0);
         vec3 tint = clamp(MaterialTint, vec3(0.0), vec3(1.0));
+        float fresnel_amount = clamp(MaterialFresnelAmount, 0.0, 1.0);
+        vec3 fresnel_color = clamp(MaterialFresnelColor, vec3(0.0), vec3(1.0));
         vec3 n = safe_normalize(v_world_norm);
         vec3 view_dir = safe_normalize(CameraWorldPos - v_world_pos);
         float edge = pow(1.0 - clamp(abs(n.z), 0.0, 1.0), 1.6);
@@ -399,6 +403,10 @@ void main() {
         }
         vec3 edge_rgb = clamp(mix(material_rgb, tint, 0.30), 0.0, 1.0);
         material_rgb = mix(material_rgb, edge_rgb, clamp(edge * (0.22 + refraction_strength * 0.12), 0.0, 0.34));
+        if (fresnel_amount > 0.001) {
+            float fresnel_term = pow(1.0 - clamp(abs(dot(n, view_dir)), 0.0, 1.0), 3.0);
+            material_rgb = mix(material_rgb, fresnel_color, clamp(fresnel_term * fresnel_amount, 0.0, 1.0));
+        }
         base.rgb = material_rgb;
         float material_alpha = max(0.0, 1.0 - transmission);
         material_alpha += 0.10 + refraction_strength * 0.08;

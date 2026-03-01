@@ -606,10 +606,14 @@ class MGLRendererMixin:
         transparency = _norm01(raw.get("transparency", 0.0), 0.0)
         ior = _norm_ior(raw.get("ior", None), raw.get("refraction", None), 1.50)
         tint_color = _norm_color3(raw.get("tint_color", raw.get("base_color", "#ffffff")))
+        fresnel_amount = _norm01(raw.get("fresnel_amount", 0.0), 0.0)
+        fresnel_color = _norm_color3(raw.get("fresnel_color", "#ffffff"))
         return {
             "transparency": transparency,
             "ior": ior,
             "tint_color": tint_color,
+            "fresnel_amount": fresnel_amount,
+            "fresnel_color": fresnel_color,
         }
 
     def _mgl_material_has_effect(self, material) -> bool:
@@ -622,6 +626,11 @@ class MGLRendererMixin:
             pass
         try:
             if float(material.get("ior", 1.0) or 1.0) > 1.001:
+                return True
+        except Exception:
+            pass
+        try:
+            if float(material.get("fresnel_amount", 0.0) or 0.0) > 1e-4:
                 return True
         except Exception:
             pass
@@ -1675,6 +1684,247 @@ class MGLRendererMixin:
             return None
         return np.array(line_pos, dtype="f4").reshape(-1, 3)
 
+    def _mgl_fx_release_mesh_cache(self, item: MGLSceneItem, payload) -> None:
+        mesh_cache = payload.pop("_fx_instance_mesh", None)
+        payload.pop("_fx_instance_loaded_path", None)
+        payload.pop("_fx_instance_models", None)
+        if not isinstance(mesh_cache, dict):
+            return
+        seen = set()
+        for res in list(mesh_cache.get("resources") or []):
+            if res is None:
+                continue
+            rid = id(res)
+            if rid in seen:
+                continue
+            seen.add(rid)
+            if hasattr(res, "release"):
+                try:
+                    res.release()
+                except Exception:
+                    pass
+        try:
+            item.resources = []
+        except Exception:
+            pass
+
+    def _mgl_fx_load_instance_mesh(self, path_text: str):
+        if not _HAS_MGL or self._mgl_ctx is None:
+            return None
+        mesh_path = Path(str(path_text or "").strip())
+        if not mesh_path.exists():
+            return None
+        ext = mesh_path.suffix.lower()
+        mesh = None
+        points = None
+        normals = None
+        uvs = None
+        mesh_arrays = None
+        if openmesh is not None and ext != ".fbx":
+            try:
+                mesh = openmesh.read_trimesh(str(mesh_path))
+            except Exception:
+                mesh = None
+        if mesh is None:
+            if ext == ".fbx":
+                try:
+                    mesh_arrays = load_fbx_mesh_arrays_pyassimp(mesh_path)
+                    points = mesh_arrays.points
+                    normals = mesh_arrays.normals
+                    uvs = mesh_arrays.uvs
+                except Exception:
+                    return None
+            elif ext == ".obj":
+                try:
+                    points, normals, uvs = load_obj_mesh_arrays(mesh_path)
+                except Exception:
+                    points = None
+            elif ext in (".gltf", ".glb"):
+                try:
+                    mesh_arrays = load_gltf_mesh_arrays(mesh_path)
+                    points = mesh_arrays.points
+                    normals = mesh_arrays.normals
+                    uvs = mesh_arrays.uvs
+                except Exception:
+                    points = None
+            if points is None:
+                model_data = load_model(mesh_path)
+                if model_data is None or not model_data.vertices:
+                    return None
+                points = np.array(model_data.vertices, dtype="f4").reshape(-1, 3)
+                normals = np.zeros_like(points)
+                for idx in range(0, points.shape[0], 3):
+                    a, b, c = points[idx:idx + 3]
+                    n = np.cross(b - a, c - a)
+                    norm = np.linalg.norm(n)
+                    if norm > 1.0e-6:
+                        n = n / norm
+                    normals[idx:idx + 3] = n
+
+        if mesh is not None:
+            mesh.update_normals()
+            points = np.array(mesh.points(), dtype="f4")
+            normals = np.array(mesh.vertex_normals(), dtype="f4")
+            indices = np.array(mesh.face_vertex_indices(), dtype="u4").ravel()
+            entry = self._mgl_build_mesh_entry(points, normals, None, indices)
+            if entry is None:
+                return None
+            resources = [
+                entry.get("vao"),
+                entry.get("vbo"),
+                entry.get("nbo"),
+                entry.get("tbo"),
+                entry.get("ibo"),
+            ]
+            return {
+                "vao": entry.get("vao"),
+                "color": self._mgl_mesh_color,
+                "path": str(mesh_path),
+                "resources": [res for res in resources if res is not None],
+            }
+
+        if mesh_arrays is not None and mesh_arrays.submeshes:
+            entries, _combined_uvs, _texture_paths, _total_indices = self._mgl_build_submesh_entries(mesh_arrays.submeshes)
+            if not entries:
+                return None
+            resources = []
+            seen = set()
+            for sub in entries:
+                for res in (
+                    sub.get("vao"),
+                    sub.get("vbo"),
+                    sub.get("nbo"),
+                    sub.get("tbo"),
+                    sub.get("ibo"),
+                    sub.get("texture"),
+                ):
+                    if res is None:
+                        continue
+                    rid = id(res)
+                    if rid in seen:
+                        continue
+                    seen.add(rid)
+                    resources.append(res)
+            return {
+                "submeshes": entries,
+                "path": str(mesh_path),
+                "resources": resources,
+            }
+
+        entry = self._mgl_build_mesh_entry(points, normals, uvs)
+        if entry is None:
+            return None
+        resources = [
+            entry.get("vao"),
+            entry.get("vbo"),
+            entry.get("nbo"),
+            entry.get("tbo"),
+            entry.get("ibo"),
+        ]
+        color = (
+            mesh_arrays.base_color
+            if mesh_arrays is not None and mesh_arrays.base_color is not None
+            else self._mgl_mesh_color
+        )
+        return {
+            "vao": entry.get("vao"),
+            "texture": None,
+            "color": color,
+            "path": str(mesh_path),
+            "resources": [res for res in resources if res is not None],
+        }
+
+    def _mgl_fx_build_trail_mesh_models(self, payload, frame: int):
+        if np is None:
+            self._mgl_fx_log_throttled("numpy-missing", "[renderer] build skip: numpy unavailable", interval=3.0)
+            return None
+        target_owner = str(payload.get("target_owner") or "").strip()
+        active_owner = self._mgl_fx_pick_owner(payload) or target_owner
+        payload["_fx_active_owner"] = active_owner
+        if not active_owner:
+            owner = str(payload.get("owner") or "").strip()
+            self._mgl_fx_log_throttled(
+                f"missing-target:{owner or 'unknown'}",
+                f"[renderer] build skip: missing target owner owner={owner!r}",
+                interval=1.0,
+            )
+            return None
+        try:
+            enabled = bool(payload.get("enabled", True))
+        except Exception:
+            enabled = True
+        if not enabled:
+            return None
+        try:
+            samples = max(1, int(payload.get("samples", 28)))
+        except Exception:
+            samples = 28
+        try:
+            lifespan = max(1, int(payload.get("lifespan", int(samples))))
+        except Exception:
+            lifespan = max(1, int(samples))
+        spawn_interval = float(self._mgl_fx_spawn_interval(payload))
+        try:
+            base_radius = max(0.001, float(payload.get("radius", 0.35)))
+        except Exception:
+            base_radius = 0.35
+        try:
+            bounds_getter = getattr(self, "get_scene_owner_bounds", None)
+            if callable(bounds_getter):
+                bmin, bmax = bounds_getter(active_owner)
+                if bmin is not None and bmax is not None:
+                    extents = np.asarray(bmax, dtype=np.float32) - np.asarray(bmin, dtype=np.float32)
+                    owner_scale = max(0.0, float(np.max(np.abs(extents))) * 0.5)
+                    if owner_scale > 1.0:
+                        base_radius = max(float(base_radius), float(base_radius) * float(owner_scale))
+        except Exception:
+            pass
+
+        entries = self._mgl_fx_sample_entries(payload, frame, active_owner)
+        if not entries:
+            payload["_fx_debug_oldest_center"] = None
+            payload["_fx_debug_newest_center"] = None
+            payload["_fx_debug_oldest_frame"] = None
+            payload["_fx_debug_newest_frame"] = None
+            return None
+        entries = list(reversed(entries))
+        try:
+            oldest_entry = entries[0]
+            newest_entry = entries[-1]
+            payload["_fx_debug_oldest_center"] = tuple(float(v) for v in oldest_entry["center"])
+            payload["_fx_debug_newest_center"] = tuple(float(v) for v in newest_entry["center"])
+            payload["_fx_debug_oldest_frame"] = float(oldest_entry["frame"])
+            payload["_fx_debug_newest_frame"] = float(newest_entry["frame"])
+        except Exception:
+            payload["_fx_debug_oldest_center"] = None
+            payload["_fx_debug_newest_center"] = None
+            payload["_fx_debug_oldest_frame"] = None
+            payload["_fx_debug_newest_frame"] = None
+
+        models = []
+        for entry in entries:
+            phase_t = self._mgl_fx_profile_phase(
+                payload,
+                int(entry.get("emit_index", 0)),
+                float(spawn_interval),
+                int(lifespan),
+            )
+            profile_val = self._mgl_fx_profile_value(payload, phase_t)
+            age_scale = max(0.0, float(self._mgl_fx_age_scale_value(payload, float(entry["age"]), int(lifespan))))
+            uniform_scale = float(base_radius) * max(0.08, float(profile_val)) * age_scale
+            if uniform_scale <= 1.0e-5:
+                continue
+            center = entry["center"]
+            model = np.eye(4, dtype=np.float32)
+            model[0, 0] = float(uniform_scale)
+            model[1, 1] = float(uniform_scale)
+            model[2, 2] = float(uniform_scale)
+            model[3, 0] = float(center[0])
+            model[3, 1] = float(center[1])
+            model[3, 2] = float(center[2])
+            models.append(model)
+        return models
+
     def _mgl_fx_update_trail_item(self, item: MGLSceneItem) -> bool:
         payload = item.payload or {}
         frame_fn = getattr(self, "_timeline_current_frame", None)
@@ -1693,6 +1943,7 @@ class MGLRendererMixin:
         active_owner = self._mgl_fx_pick_owner(payload) or target_owner
         payload["_fx_active_owner"] = active_owner
         live_pos = self._mgl_fx_current_owner_pos(active_owner)
+        instance_path = str(payload.get("instance_path") or "").strip()
         stamp = (
             int(frame),
             tuple(round(float(v), 5) for v in live_pos) if isinstance(live_pos, (list, tuple)) else None,
@@ -1712,9 +1963,73 @@ class MGLRendererMixin:
             round(float(payload.get("age_scale_max", 1.0)), 5),
             repr(payload.get("age_scale_points")),
             tuple(self._mgl_fx_owner_candidates(payload)),
+            instance_path,
         )
-        if payload.get("_fx_stamp") == stamp and payload.get("vao") is not None:
+        if payload.get("_fx_stamp") == stamp:
+            if instance_path:
+                if payload.get("_fx_instance_models") and isinstance(payload.get("_fx_instance_mesh"), dict):
+                    return True
+            elif payload.get("vao") is not None:
+                return True
+
+        if instance_path:
+            loaded_path = str(payload.get("_fx_instance_loaded_path") or "").strip()
+            if loaded_path and loaded_path != instance_path:
+                self._mgl_fx_release_mesh_cache(item, payload)
+            if payload.get("vao") is not None:
+                for res in list(getattr(item, "resources", None) or []):
+                    if res is not None and hasattr(res, "release"):
+                        try:
+                            res.release()
+                        except Exception:
+                            pass
+                item.resources = []
+                payload.pop("vao", None)
+                payload.pop("mode", None)
+            mesh_cache = payload.get("_fx_instance_mesh")
+            if not isinstance(mesh_cache, dict):
+                mesh_cache = self._mgl_fx_load_instance_mesh(instance_path)
+                if isinstance(mesh_cache, dict):
+                    payload["_fx_instance_mesh"] = mesh_cache
+                    payload["_fx_instance_loaded_path"] = instance_path
+                    item.resources = list(mesh_cache.get("resources") or [])
+            if not isinstance(mesh_cache, dict):
+                payload["_fx_stamp"] = stamp
+                item.payload = payload
+                self._mgl_fx_log(
+                    f"[renderer] update mesh-load-failed owner={item.name} target_owner={target_owner} "
+                    f"active_owner={active_owner} frame={int(frame)} instance={instance_path!r}"
+                )
+                return False
+            models = self._mgl_fx_build_trail_mesh_models(payload, frame)
+            if not models:
+                payload["_fx_instance_models"] = []
+                payload["_fx_stamp"] = stamp
+                item.payload = payload
+                self._mgl_fx_log(
+                    f"[renderer] update no-instance-models owner={item.name} target_owner={target_owner} "
+                    f"active_owner={active_owner} frame={int(frame)} live_pos={live_pos!r} "
+                    f"instance={instance_path!r} aliases={self._mgl_fx_owner_candidates(payload)!r}"
+                )
+                return False
+            payload["_fx_instance_models"] = list(models)
+            payload["_fx_stamp"] = stamp
+            item.payload = payload
+            self._mgl_fx_log(
+                f"[renderer] update ok owner={item.name} target_owner={target_owner} active_owner={active_owner} "
+                f"frame={int(frame)} instance_count={int(len(models))} instance={instance_path!r} "
+                f"visible={bool(item.visible)} live_pos={live_pos!r} "
+                f"newest_frame={payload.get('_fx_debug_newest_frame')!r} newest_center={payload.get('_fx_debug_newest_center')!r} "
+                f"oldest_frame={payload.get('_fx_debug_oldest_frame')!r} oldest_center={payload.get('_fx_debug_oldest_center')!r} "
+                f"global={bool(payload.get('global_space', False))} "
+                f"spawn_rate={float(payload.get('spawn_rate', payload.get('frame_step', 1.0)) or 1.0):.3f} "
+                f"substeps={int(payload.get('substeps', 1) or 1)} repeats={int(payload.get('repeats', 1) or 1)} "
+                f"aliases={self._mgl_fx_owner_candidates(payload)!r}"
+            )
             return True
+
+        if isinstance(payload.get("_fx_instance_mesh"), dict):
+            self._mgl_fx_release_mesh_cache(item, payload)
 
         line_points = self._mgl_fx_build_trail_line_points(payload, frame)
         for res in list(getattr(item, "resources", None) or []):
@@ -1725,12 +2040,14 @@ class MGLRendererMixin:
                     pass
         item.resources = []
         payload.pop("vao", None)
+        payload.pop("mode", None)
         if line_points is None or getattr(line_points, "size", 0) == 0:
             payload["_fx_stamp"] = stamp
             item.payload = payload
             self._mgl_fx_log(
                 f"[renderer] update no-geometry owner={item.name} target_owner={target_owner} "
                 f"active_owner={active_owner} frame={int(frame)} live_pos={live_pos!r} "
+                f"instance='<rings>' "
                 f"global={bool(payload.get('global_space', False))} "
                 f"spawn_rate={float(payload.get('spawn_rate', payload.get('frame_step', 1.0)) or 1.0):.3f} "
                 f"substeps={int(payload.get('substeps', 1) or 1)} repeats={int(payload.get('repeats', 1) or 1)} "
@@ -1752,6 +2069,7 @@ class MGLRendererMixin:
             self._mgl_fx_log(
                 f"[renderer] update gpu-build-failed owner={item.name} target_owner={target_owner} "
                 f"active_owner={active_owner} "
+                f"instance='<rings>' "
                 f"global={bool(payload.get('global_space', False))} "
                 f"spawn_rate={float(payload.get('spawn_rate', payload.get('frame_step', 1.0)) or 1.0):.3f} "
                 f"substeps={int(payload.get('substeps', 1) or 1)} repeats={int(payload.get('repeats', 1) or 1)} "
@@ -1773,7 +2091,7 @@ class MGLRendererMixin:
             point_count = 0
         self._mgl_fx_log(
             f"[renderer] update ok owner={item.name} target_owner={target_owner} active_owner={active_owner} "
-            f"frame={int(frame)} point_count={point_count} visible={bool(item.visible)} live_pos={live_pos!r} "
+            f"frame={int(frame)} point_count={point_count} instance='<rings>' visible={bool(item.visible)} live_pos={live_pos!r} "
             f"newest_frame={payload.get('_fx_debug_newest_frame')!r} newest_center={payload.get('_fx_debug_newest_center')!r} "
             f"oldest_frame={payload.get('_fx_debug_oldest_frame')!r} oldest_center={payload.get('_fx_debug_oldest_center')!r} "
             f"global={bool(payload.get('global_space', False))} "
@@ -2461,6 +2779,8 @@ class MGLRendererMixin:
                 transparency=float((material or {}).get("transparency", 0.0) or 0.0),
                 ior=float((material or {}).get("ior", 1.0) or 1.0),
                 tint_color=list((material or {}).get("tint_color", (1.0, 1.0, 1.0))),
+                fresnel_amount=float((material or {}).get("fresnel_amount", 0.0) or 0.0),
+                fresnel_color=list((material or {}).get("fresnel_color", (1.0, 1.0, 1.0))),
                 submeshes=int(len(submeshes or [])),
                 has_vao=bool(vao is not None),
             )
@@ -2469,11 +2789,15 @@ class MGLRendererMixin:
             transparency = 0.0
             ior = 1.0
             tint = (1.0, 1.0, 1.0)
+            fresnel_amount = 0.0
+            fresnel_color = (1.0, 1.0, 1.0)
             use_scene_refraction = 0
             if isinstance(material, dict):
                 transparency = float(material.get("transparency", 0.0) or 0.0)
                 ior = float(material.get("ior", 1.0) or 1.0)
                 tint = tuple(material.get("tint_color", (1.0, 1.0, 1.0)) or (1.0, 1.0, 1.0))
+                fresnel_amount = float(material.get("fresnel_amount", 0.0) or 0.0)
+                fresnel_color = tuple(material.get("fresnel_color", (1.0, 1.0, 1.0)) or (1.0, 1.0, 1.0))
                 if ior > 1.001 and bool(getattr(self, "_mgl_material_scene_valid", False)):
                     scene_tex = getattr(self, "_mgl_material_scene_tex", None)
                     if scene_tex is not None:
@@ -2496,6 +2820,14 @@ class MGLRendererMixin:
                 pass
             try:
                 self._mgl_prog["MaterialTint"].value = tint
+            except Exception:
+                pass
+            try:
+                self._mgl_prog["MaterialFresnelAmount"].value = fresnel_amount
+            except Exception:
+                pass
+            try:
+                self._mgl_prog["MaterialFresnelColor"].value = fresnel_color
             except Exception:
                 pass
             try:
@@ -3040,18 +3372,43 @@ class MGLRendererMixin:
                 pass
 
     def _mgl_draw_scene_fx_trail(self, item: MGLSceneItem, mvp) -> None:
-        if self._mgl_ctx is None or self._mgl_wire_prog is None:
-            self._mgl_fx_log_throttled(
-                "draw-context-missing",
-                "[renderer] draw skip: wire context unavailable",
-                interval=3.0,
-            )
+        if self._mgl_ctx is None:
             return
         try:
             if not self._mgl_fx_update_trail_item(item):
                 return
         except Exception as exc:
             self._mgl_fx_log(f"[renderer] draw update-exception owner={item.name} err={exc!r}")
+            return
+        payload = item.payload or {}
+        mesh_cache = payload.get("_fx_instance_mesh")
+        mesh_models = list(payload.get("_fx_instance_models") or [])
+        if isinstance(mesh_cache, dict) and mesh_models:
+            base_payload = dict(mesh_cache)
+            base_payload["owner"] = str(payload.get("owner") or payload.get("target_owner") or "")
+            base_payload["material"] = None
+            base_payload["texture"] = base_payload.get("texture")
+            try:
+                for model in mesh_models:
+                    draw_item = MGLSceneItem(
+                        name=item.name,
+                        draw_fn=MGLRendererMixin._mgl_draw_scene_mesh,
+                        payload={**base_payload, "model": model},
+                        resources=[],
+                        visible=item.visible,
+                        order=item.order,
+                        tag=item.tag,
+                    )
+                    self._mgl_draw_scene_mesh(draw_item, mvp)
+            except Exception as exc:
+                self._mgl_fx_log(f"[renderer] draw mesh-exception owner={item.name} err={exc!r}")
+            return
+        if self._mgl_wire_prog is None:
+            self._mgl_fx_log_throttled(
+                "draw-context-missing",
+                "[renderer] draw skip: wire context unavailable",
+                interval=3.0,
+            )
             return
         try:
             self._mgl_draw_scene_wire(item, mvp)
@@ -3723,6 +4080,8 @@ class MGLRendererMixin:
             prog["MaterialIor"].value = 1.0
             prog["MaterialTransparency"].value = 0.0
             prog["MaterialTint"].value = (1.0, 1.0, 1.0)
+            prog["MaterialFresnelAmount"].value = 0.0
+            prog["MaterialFresnelColor"].value = (1.0, 1.0, 1.0)
             prog["CameraWorldPos"].value = (0.0, 0.0, 4.0)
             prog["ScreenSize"].value = (1.0, 1.0)
             prog["ProcGlyph"].value = 1
@@ -3860,6 +4219,8 @@ class MGLRendererMixin:
                 prog["MaterialTransparency"].value = 0.0
                 prog["MaterialIor"].value = 1.0
                 prog["MaterialTint"].value = (1.0, 1.0, 1.0)
+                prog["MaterialFresnelAmount"].value = 0.0
+                prog["MaterialFresnelColor"].value = (1.0, 1.0, 1.0)
                 prog["ScreenSize"].value = (1.0, 1.0)
                 prog["CameraWorldPos"].value = (0.0, 0.0, 4.0)
                 if np is not None:
@@ -6343,6 +6704,8 @@ class MGLRendererMixin:
                 self._mgl_prog["MaterialTransparency"].value = 0.0
                 self._mgl_prog["MaterialIor"].value = 1.0
                 self._mgl_prog["MaterialTint"].value = (1.0, 1.0, 1.0)
+                self._mgl_prog["MaterialFresnelAmount"].value = 0.0
+                self._mgl_prog["MaterialFresnelColor"].value = (1.0, 1.0, 1.0)
                 self._mgl_prog["UseSceneRefraction"].value = 0
                 self._mgl_prog["ScreenSize"].value = (1.0, 1.0)
                 self._mgl_prog["CameraWorldPos"].value = (0.0, 0.0, 4.0)
@@ -7464,6 +7827,7 @@ class MGLRendererMixin:
                             "owner": owner,
                             "target_owner": target_owner,
                             "target_owner_aliases": list(asset.get("target_owner_aliases") or []),
+                            "instance_path": str(asset.get("instance_path") or "").strip(),
                             "enabled": bool(asset.get("enabled", True)),
                             "global_space": bool(asset.get("global_space", False)),
                             "samples": int(asset.get("samples", 28) or 28),
@@ -7489,6 +7853,7 @@ class MGLRendererMixin:
                     scene.add(trail_item)
                     self._mgl_fx_log(
                         f"[renderer] load item owner={owner} target_owner={target_owner} "
+                        f"instance={str(asset.get('instance_path') or '').strip() or '<rings>'} "
                         f"visible={bool(asset.get('visible', True))} enabled={bool(asset.get('enabled', True))} "
                         f"global={bool(asset.get('global_space', False))} repeats={int(asset.get('repeats', 1) or 1)} "
                         f"samples={int(asset.get('samples', 28) or 28)} frame_step={int(asset.get('frame_step', 1) or 1)} "
@@ -8035,6 +8400,8 @@ class MGLRendererMixin:
                             transparency=float((material or {}).get("transparency", 0.0) or 0.0),
                             ior=float((material or {}).get("ior", 1.0) or 1.0),
                             tint_color=list((material or {}).get("tint_color", (1.0, 1.0, 1.0))),
+                            fresnel_amount=float((material or {}).get("fresnel_amount", 0.0) or 0.0),
+                            fresnel_color=list((material or {}).get("fresnel_color", (1.0, 1.0, 1.0))),
                             submeshes=int(len(model_item.payload.get("submeshes") or [])),
                             has_vao=bool(model_item.payload.get("vao") is not None),
                         )

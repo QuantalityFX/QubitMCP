@@ -19,6 +19,8 @@ _DEFAULT_TRANSPARENCY = 80
 _DEFAULT_IOR = 1.50
 _DEFAULT_REFRACTION = 24
 _DEFAULT_TINT_COLOR = "#dfe7ff"
+_DEFAULT_FRESNEL_AMOUNT = 0
+_DEFAULT_FRESNEL_COLOR = "#ffffff"
 
 
 def _param_value(model, name: str) -> str:
@@ -193,10 +195,16 @@ def _material_payload(model) -> dict:
         _param_value(model, "tint_color") or _param_value(model, "base_color"),
         _DEFAULT_TINT_COLOR,
     )
+    fresnel_color = _normalize_color_hex(
+        _param_value(model, "fresnel_color"),
+        _DEFAULT_FRESNEL_COLOR,
+    )
     return {
         "transparency": float(_clamp_percent(_param_value(model, "transparency"), _DEFAULT_TRANSPARENCY)) / 100.0,
         "ior": _ior_from_model(model),
         "tint_color": tint_color,
+        "fresnel_amount": float(_clamp_percent(_param_value(model, "fresnel_amount"), _DEFAULT_FRESNEL_AMOUNT)) / 100.0,
+        "fresnel_color": fresnel_color,
     }
 
 
@@ -208,9 +216,24 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, "ior", f"{_ior_from_model(getattr(node_item, 'model', None)):.2f}")
     _ensure_param(node_item, "refraction", str(_DEFAULT_REFRACTION))
     _ensure_param(node_item, "tint_color", _DEFAULT_TINT_COLOR)
+    _ensure_param(node_item, "fresnel_amount", str(_DEFAULT_FRESNEL_AMOUNT))
+    _ensure_param(node_item, "fresnel_color", _DEFAULT_FRESNEL_COLOR)
     _ensure_hidden_params(
         getattr(node_item, "model", None),
-        ["mesh", "source", "path", "transparency", "ior", "refraction", "tint_color", "base_color", "roughness", "specular_color"],
+        [
+            "mesh",
+            "source",
+            "path",
+            "transparency",
+            "ior",
+            "refraction",
+            "tint_color",
+            "fresnel_amount",
+            "fresnel_color",
+            "base_color",
+            "roughness",
+            "specular_color",
+        ],
     )
     if hasattr(node_item, "ensure_input"):
         node_item.ensure_input("mesh")
@@ -244,8 +267,18 @@ class MaterialWidget(QtWidgets.QWidget):
         tint_row.addWidget(self._tint_btn, 1)
         layout.addLayout(tint_row, 0)
 
+        fresnel_row = QtWidgets.QHBoxLayout()
+        fresnel_row.setContentsMargins(0, 0, 0, 0)
+        fresnel_row.addWidget(QtWidgets.QLabel("Fresnel"), 0)
+        self._fresnel_btn = QtWidgets.QPushButton("")
+        self._fresnel_btn.setFixedHeight(22)
+        self._fresnel_btn.clicked.connect(self._on_fresnel_clicked)
+        fresnel_row.addWidget(self._fresnel_btn, 1)
+        layout.addLayout(fresnel_row, 0)
+
         self._trans_slider, self._trans_value = self._slider_row(layout, "Transparency", self._on_transparency_changed)
         self._ior_spin = self._ior_row(layout)
+        self._fresnel_slider, self._fresnel_value = self._slider_row(layout, "Fresnel Amt", self._on_fresnel_changed)
 
         row3 = QtWidgets.QHBoxLayout()
         row3.setContentsMargins(0, 0, 0, 0)
@@ -261,7 +294,7 @@ class MaterialWidget(QtWidgets.QWidget):
         QtCore.QTimer.singleShot(0, self._update_inputs)
 
     def sizeHint(self):
-        return QtCore.QSize(220, 118)
+        return QtCore.QSize(220, 148)
 
     def _slider_row(self, parent_layout, label: str, slot):
         row = QtWidgets.QHBoxLayout()
@@ -346,9 +379,15 @@ class MaterialWidget(QtWidgets.QWidget):
             _param_value(model, "tint_color") or _param_value(model, "base_color"),
             _DEFAULT_TINT_COLOR,
         )
+        fresnel_color = _normalize_color_hex(
+            _param_value(model, "fresnel_color"),
+            _DEFAULT_FRESNEL_COLOR,
+        )
         trans = _clamp_percent(_param_value(model, "transparency"), _DEFAULT_TRANSPARENCY)
         ior = _ior_from_model(model)
-        self._set_tint_button(tint_color)
+        fresnel_amount = _clamp_percent(_param_value(model, "fresnel_amount"), _DEFAULT_FRESNEL_AMOUNT)
+        self._set_color_button(self._tint_btn, tint_color, _DEFAULT_TINT_COLOR)
+        self._set_color_button(self._fresnel_btn, fresnel_color, _DEFAULT_FRESNEL_COLOR)
         try:
             self._trans_slider.blockSignals(True)
             self._trans_slider.setValue(int(trans))
@@ -360,13 +399,19 @@ class MaterialWidget(QtWidgets.QWidget):
             self._ior_spin.setValue(float(ior))
         finally:
             self._ior_spin.blockSignals(False)
+        try:
+            self._fresnel_slider.blockSignals(True)
+            self._fresnel_slider.setValue(int(fresnel_amount))
+        finally:
+            self._fresnel_slider.blockSignals(False)
+        self._fresnel_value.setText(f"{int(fresnel_amount)}%")
 
-    def _set_tint_button(self, color_hex: str):
-        color = QtGui.QColor(_normalize_color_hex(color_hex, _DEFAULT_TINT_COLOR))
+    def _set_color_button(self, button, color_hex: str, default: str):
+        color = QtGui.QColor(_normalize_color_hex(color_hex, default))
         lum = (0.2126 * color.red()) + (0.7152 * color.green()) + (0.0722 * color.blue())
         text_color = "#0f172a" if lum > 140.0 else "#f8fafc"
-        self._tint_btn.setText(color.name().upper())
-        self._tint_btn.setStyleSheet(
+        button.setText(color.name().upper())
+        button.setStyleSheet(
             "QPushButton{background:" + color.name() + ";color:" + text_color + ";"
             "border:1px solid #3c4450;border-radius:4px;padding:2px 6px;}"
             "QPushButton:hover{border:1px solid #64748b;}"
@@ -400,16 +445,14 @@ class MaterialWidget(QtWidgets.QWidget):
     def _on_ior_changed(self, value: float):
         self._set_param("ior", f"{float(value):.2f}", notify_scene=True)
 
-    def _on_tint_clicked(self):
-        current = QtGui.QColor(
-            _normalize_color_hex(
-                self._node_item._param_value("tint_color") or self._node_item._param_value("base_color"),
-                _DEFAULT_TINT_COLOR,
-            )
-        )
+    def _on_fresnel_changed(self, value: int):
+        self._fresnel_value.setText(f"{int(value)}%")
+        self._set_param("fresnel_amount", str(int(value)), notify_scene=True)
+
+    def _pick_color(self, title: str, current: QtGui.QColor):
         parent = _resolve_window(self._node_item) or self
         dialog = QtWidgets.QColorDialog(parent)
-        dialog.setWindowTitle("Tint Color")
+        dialog.setWindowTitle(title)
         dialog.setCurrentColor(current)
         try:
             dialog.setOption(QtWidgets.QColorDialog.DontUseNativeDialog, True)
@@ -424,13 +467,37 @@ class MaterialWidget(QtWidgets.QWidget):
         except Exception:
             pass
         if dialog.exec() != QtWidgets.QDialog.Accepted:
-            return
+            return None
         picked = dialog.currentColor()
         if not picked.isValid():
+            return None
+        return picked.name().lower()
+
+    def _on_tint_clicked(self):
+        current = QtGui.QColor(
+            _normalize_color_hex(
+                self._node_item._param_value("tint_color") or self._node_item._param_value("base_color"),
+                _DEFAULT_TINT_COLOR,
+            )
+        )
+        color_hex = self._pick_color("Tint Color", current)
+        if not color_hex:
             return
-        color_hex = picked.name().lower()
-        self._set_tint_button(color_hex)
+        self._set_color_button(self._tint_btn, color_hex, _DEFAULT_TINT_COLOR)
         self._set_param("tint_color", color_hex, notify_scene=True)
+
+    def _on_fresnel_clicked(self):
+        current = QtGui.QColor(
+            _normalize_color_hex(
+                self._node_item._param_value("fresnel_color"),
+                _DEFAULT_FRESNEL_COLOR,
+            )
+        )
+        color_hex = self._pick_color("Fresnel Color", current)
+        if not color_hex:
+            return
+        self._set_color_button(self._fresnel_btn, color_hex, _DEFAULT_FRESNEL_COLOR)
+        self._set_param("fresnel_color", color_hex, notify_scene=True)
 
     def _build_preview_asset(self) -> Optional[dict]:
         return build_material_asset(self._node_item)
@@ -598,5 +665,7 @@ def build_material_asset(node_item) -> Optional[dict]:
         transparency=float(asset["material"].get("transparency", 0.0) or 0.0),
         ior=float(asset["material"].get("ior", 1.0) or 1.0),
         tint_color=str(asset["material"].get("tint_color") or ""),
+        fresnel_amount=float(asset["material"].get("fresnel_amount", 0.0) or 0.0),
+        fresnel_color=str(asset["material"].get("fresnel_color") or ""),
     )
     return asset

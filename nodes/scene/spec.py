@@ -145,11 +145,14 @@ def _material_payload(model) -> dict | None:
     if kind not in _MATERIAL_KINDS:
         return None
     tint_color = (_param_value(model, "tint_color") or _param_value(model, "base_color") or "#dfe7ff").strip()
+    fresnel_color = (_param_value(model, "fresnel_color") or "#ffffff").strip()
     raw_ior = _param_value(model, "ior")
     return {
         "transparency": _clamp01(_param_value(model, "transparency"), 0.8),
         "ior": _clamp_ior(raw_ior, 1.50) if raw_ior.strip() else _legacy_refraction_to_ior(_param_value(model, "refraction"), 1.50),
         "tint_color": tint_color or "#dfe7ff",
+        "fresnel_amount": _clamp01(_param_value(model, "fresnel_amount"), 0.0),
+        "fresnel_color": fresnel_color or "#ffffff",
     }
 
 
@@ -388,6 +391,8 @@ def _resolve_input_item(scene, node_item, port_names=None):
             if (name or "").strip().lower() in wanted:
                 chosen = edge
                 break
+        if chosen is None:
+            return None, "", ""
     if chosen is None:
         for edge in in_edges:
             name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
@@ -892,6 +897,17 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                 try:
                     from nodes.fx import spec as _fx_spec  # type: ignore
                     fx_asset = _fx_spec.trail_asset_config_from_model(model)
+                    _inst_item, _inst_kind, inst_path = _resolve_input_item(scene, src_item, {"instance"})
+                    inst_path = str(inst_path or "").strip()
+                    if inst_path:
+                        inst_ext = Path(inst_path).suffix.lower()
+                        if inst_ext in SUPPORTED_EXTS:
+                            fx_asset["instance_path"] = inst_path
+                        else:
+                            _fx_log(
+                                f"[scene_spec] instance skip unsupported-ext node={src_name or kind} "
+                                f"path={inst_path!r} ext={inst_ext!r}"
+                            )
                 except Exception as exc:
                     fx_asset = None
                     _fx_log(f"[scene_spec] config error node={src_name or kind} err={exc!r}")
@@ -979,6 +995,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                     {
                         "kind": "fx_trail",
                         "node": src_name or f"{node_name}_fx",
+                        "instance_path": str(fx_entry.get("instance_path") or "").strip(),
                         "target_owner": node_name,
                         "target_owner_aliases": list(aliases),
                         "visible": node_name not in hidden,
@@ -1098,6 +1115,8 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                 transparency=float((entry.get("material") or {}).get("transparency", 0.0) or 0.0),
                 ior=float((entry.get("material") or {}).get("ior", 1.0) or 1.0),
                 tint_color=str((entry.get("material") or {}).get("tint_color") or ""),
+                fresnel_amount=float((entry.get("material") or {}).get("fresnel_amount", 0.0) or 0.0),
+                fresnel_color=str((entry.get("material") or {}).get("fresnel_color") or ""),
                 xform_offset=bool(entry.get("xform_offset")),
             )
         if isinstance(fx_asset, dict) and node_name:
@@ -1107,6 +1126,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                 {
                     "kind": "fx_trail",
                     "node": src_name or f"{node_name}_fx",
+                    "instance_path": str(fx_entry.get("instance_path") or "").strip(),
                     "target_owner": node_name,
                     "target_owner_aliases": list(aliases),
                     "visible": node_name not in hidden,

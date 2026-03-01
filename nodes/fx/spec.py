@@ -249,6 +249,7 @@ def build_ports(node_item) -> None:
     )
     if hasattr(node_item, "ensure_input"):
         node_item.ensure_input("mesh")
+        node_item.ensure_input("instance")
 
 
 class FxRampWidget(QtWidgets.QWidget):
@@ -637,7 +638,7 @@ class FxTrailWidget(QtWidgets.QWidget):
         self._refresh_pending = True
         QtCore.QTimer.singleShot(0, self._refresh_input_state)
 
-    def _resolve_input(self):
+    def _resolve_input(self, port_names=None):
         scene = self._scene
         if scene is None:
             return None, "", ""
@@ -675,11 +676,21 @@ class FxTrailWidget(QtWidgets.QWidget):
             except Exception:
                 in_edges = []
         chosen = None
-        for edge in in_edges:
-            name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
-            if (name or "").strip().lower() in {"mesh", "path"}:
-                chosen = edge
-                break
+        wanted = {str(name).strip().lower() for name in (port_names or []) if str(name).strip()}
+        if wanted:
+            for edge in in_edges:
+                name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
+                if (name or "").strip().lower() in wanted:
+                    chosen = edge
+                    break
+            if chosen is None:
+                return None, "", ""
+        if chosen is None:
+            for edge in in_edges:
+                name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
+                if (name or "").strip().lower() in {"mesh", "path"}:
+                    chosen = edge
+                    break
         if chosen is None and in_edges:
             chosen = in_edges[0]
         if chosen is None:
@@ -689,12 +700,16 @@ class FxTrailWidget(QtWidgets.QWidget):
     def _refresh_input_state(self):
         self._refresh_pending = False
         self._ensure_scene()
-        src_item, _kind, src_path = self._resolve_input()
+        src_item, _kind, src_path = self._resolve_input({"mesh", "path"})
         src_model = getattr(src_item, "model", None) if src_item is not None else None
         owner_name = (getattr(src_model, "name", "") or "").strip()
         display_name = owner_name or (Path(src_path).name if src_path else "")
+        inst_item, _inst_kind, inst_path = self._resolve_input({"instance"})
+        inst_model = getattr(inst_item, "model", None) if inst_item is not None else None
+        inst_name = (getattr(inst_model, "name", "") or "").strip() or (Path(inst_path).name if inst_path else "")
         if src_path:
-            self._status.setText(f"Trail target: {display_name or 'mesh'}")
+            spawn_text = inst_name or "rings"
+            self._status.setText(f"Target: {display_name or 'mesh'} | Spawn: {spawn_text}")
         else:
             self._status.setText("No mesh input.")
         self._set_param("source", src_path, notify_scene=False)
