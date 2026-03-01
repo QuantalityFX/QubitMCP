@@ -158,6 +158,15 @@ class MGLRendererMixin:
         self._mgl_fx_log(msg)
 
     def _mgl_material_log(self, event: str, **fields) -> None:
+        if not bool(getattr(self, "_mgl_material_log_enabled", False)):
+            return
+        try:
+            owners = getattr(self, "_mgl_material_debug_owners", None)
+            owner = str(fields.get("owner") or "").strip()
+            if owner and isinstance(owners, set) and owners and owner not in owners:
+                return
+        except Exception:
+            pass
         _material_debug_log(event, **fields)
 
     def _mgl_material_log_throttled(self, key: str, event: str, interval: float = 1.0, **fields) -> None:
@@ -7981,6 +7990,9 @@ class MGLRendererMixin:
         self._mgl_scene_tex_by_owner = {}
         self._mgl_scene_proc_textures_by_owner = {}
         self._mgl_scene_volume_overrides_by_owner = {}
+        self._mgl_material_log_enabled = False
+        self._mgl_material_debug_owners = set()
+        self._mgl_fx_log_enabled = False
         self._mgl_proc_provider = None
         self._mgl_proc_label = ""
         self._mgl_proc_rev = -1
@@ -7989,6 +8001,22 @@ class MGLRendererMixin:
         self._mgl_texture = None
         self._mgl_texture_path = ""
         self._mgl_texture_paths = []
+        try:
+            for entry in assets or []:
+                if not isinstance(entry, dict):
+                    continue
+                if not bool(entry.get("debug_log", False)):
+                    continue
+                kind = str(entry.get("kind") or "").strip().lower()
+                if kind == "fx_trail":
+                    self._mgl_fx_log_enabled = True
+                    continue
+                owner = str(entry.get("node") or "").strip()
+                if owner:
+                    self._mgl_material_debug_owners.add(owner)
+                    self._mgl_material_log_enabled = True
+        except Exception:
+            pass
 
         # Ensure offset-mode owners are always registered for this scene load.
         try:
@@ -8147,6 +8175,7 @@ class MGLRendererMixin:
                         payload={
                             "owner": owner,
                             "material": dict(asset.get("instance_material") or {}) if isinstance(asset.get("instance_material"), dict) else None,
+                            "debug_log": bool(asset.get("debug_log", False)),
                             "target_owner": target_owner,
                             "target_owner_aliases": list(asset.get("target_owner_aliases") or []),
                             "instance_path": str(asset.get("instance_path") or "").strip(),
@@ -8173,10 +8202,10 @@ class MGLRendererMixin:
                             "age_scale_points": list(asset.get("age_scale_points") or []),
                         },
                         resources=[],
-                        visible=bool(asset.get("visible", True)),
-                        order=14,
-                        tag="scene-fx-trail",
-                    )
+                    visible=bool(asset.get("visible", True)),
+                    order=14,
+                    tag="scene-fx-trail",
+                )
                     scene.add(trail_item)
                     self._mgl_fx_log(
                         f"[renderer] load item owner={owner} target_owner={target_owner} "

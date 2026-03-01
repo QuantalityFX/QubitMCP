@@ -170,6 +170,29 @@ def _spec_stripe_color(kind: str) -> str:
                     pass
     return DEFAULT_STRIPE_HEX
 
+
+_HEADER_DEBUG_ICON_CACHE: dict[str, QtGui.QPixmap] = {}
+
+
+def _header_debug_icon(active: bool) -> QtGui.QPixmap | None:
+    key = "on" if active else "off"
+    cached = _HEADER_DEBUG_ICON_CACHE.get(key)
+    if cached is not None and not cached.isNull():
+        return cached
+    try:
+        root = Path(__file__).resolve().parents[2]
+        icon_name = "debug_002_Active_Icon_s.png" if active else "debug_002_Icon_s.png"
+        path = root / "icons" / icon_name
+        if not path.exists():
+            return None
+        pm = QtGui.QPixmap(str(path))
+        if pm.isNull():
+            return None
+        _HEADER_DEBUG_ICON_CACHE[key] = pm
+        return pm
+    except Exception:
+        return None
+
 class NodeItem(QtWidgets.QGraphicsObject):
     clicked = QtCore.Signal(object)
     requestCenter = QtCore.Signal(str)
@@ -741,6 +764,41 @@ class NodeItem(QtWidgets.QGraphicsObject):
     def input_port_names(self) -> list[str]:
         self._ensure_named_inputs_set()
         return [str(n) for n in getattr(self.model, "_named_inputs", []) if n]
+
+    def _header_debug_button_kind(self) -> str | None:
+        kind = (self.model.kind or "").strip().lower()
+        if kind in ("mnaterial", "material"):
+            return "material"
+        if kind in ("fx", "fx_trail"):
+            return "fx"
+        return None
+
+    def _header_debug_enabled(self) -> bool:
+        return self._param_value("debug_log").strip().lower() in {"1", "true", "yes", "on"}
+
+    def _header_debug_button_rect(self) -> QtCore.QRectF:
+        if not self._header_debug_button_kind():
+            return QtCore.QRectF()
+        size = 22.0
+        margin_right = 10.0
+        x = max(96.0, float(self.width) - size - margin_right)
+        y = 10.0
+        return QtCore.QRectF(x, y, size, size)
+
+    def _toggle_header_debug_button(self) -> bool:
+        kind = self._header_debug_button_kind()
+        if not kind:
+            return False
+        new_value = "0" if self._header_debug_enabled() else "1"
+        try:
+            self._set_param_value("debug_log", new_value, rebuild=False, notify_scene=True)
+        except Exception:
+            return False
+        try:
+            self.update()
+        except Exception:
+            pass
+        return True
     
     def _set_param_value(self, name: str, value: str, rebuild: bool = True, notify_scene: bool = True):
         key = (name or "").strip().lower()
@@ -5403,12 +5461,37 @@ class NodeItem(QtWidgets.QGraphicsObject):
             p.setPen(self.titlePen)
             fm = QtGui.QFontMetrics(p.font())
             name_txt = self.model.name or "<Unnamed>"
+            debug_rect = self._header_debug_button_rect()
+            title_width = int(self.width - 16)
+            if not debug_rect.isNull():
+                title_width = max(24, int(float(debug_rect.left()) - 18.0))
             p.drawText(
                 QtCore.QPointF(10, 28),
-                fm.elidedText(name_txt, QtCore.Qt.ElideRight, int(self.width - 16)),
+                fm.elidedText(name_txt, QtCore.Qt.ElideRight, title_width),
             )
         except Exception as e:
             print("[EchoGraph][paint] title fail:", e)
+
+        try:
+            debug_rect = self._header_debug_button_rect()
+            if not debug_rect.isNull():
+                p.save()
+                p.setRenderHint(QtGui.QPainter.Antialiasing, True)
+                icon_pm = _header_debug_icon(self._header_debug_enabled())
+                if icon_pm is not None and not icon_pm.isNull():
+                    inner = debug_rect.adjusted(1.0, 1.0, -1.0, -1.0)
+                    scaled = icon_pm.scaled(
+                        int(max(8.0, inner.width())),
+                        int(max(8.0, inner.height())),
+                        QtCore.Qt.KeepAspectRatio,
+                        QtCore.Qt.SmoothTransformation,
+                    )
+                    ix = float(inner.left()) + max(0.0, (float(inner.width()) - float(scaled.width())) * 0.5)
+                    iy = float(inner.top()) + max(0.0, (float(inner.height()) - float(scaled.height())) * 0.5)
+                    p.drawPixmap(QtCore.QPointF(ix, iy), scaled)
+                p.restore()
+        except Exception:
+            pass
 
         # --- Optional icon for specific node kinds ---
         try:
@@ -5558,6 +5641,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
         self.unsetCursor()
 
     def hoverMoveEvent(self, e):
+        debug_rect = self._header_debug_button_rect()
+        if not debug_rect.isNull() and debug_rect.contains(e.pos()):
+            self.setCursor(QtCore.Qt.PointingHandCursor)
+            e.accept()
+            return
         if self._note_resize_available():
             mode = self._note_hit_test(e.pos())
             cursor = self._note_cursor_for_mode(mode)
@@ -5664,6 +5752,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     scene._active_node_item = self
                 except Exception:
                     pass
+            debug_rect = self._header_debug_button_rect()
+            if not debug_rect.isNull() and debug_rect.contains(e.pos()):
+                self._toggle_header_debug_button()
+                e.accept()
+                return
             mods = e.modifiers()
             shift = bool(mods & QtCore.Qt.ShiftModifier)
             ctrl = bool(mods & QtCore.Qt.ControlModifier)

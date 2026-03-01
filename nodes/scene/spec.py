@@ -39,6 +39,14 @@ def _fx_log(msg: str) -> None:
         pass
 
 
+def _fx_debug_enabled(model) -> bool:
+    return str(_param_value(model, "debug_log") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _material_debug_enabled(model) -> bool:
+    return str(_param_value(model, "debug_log") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _eye_icon(visible: bool) -> QtGui.QIcon:
     key = "on" if visible else "off"
     icon = _EYE_ICON_CACHE.get(key)
@@ -761,16 +769,19 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                     material_asset = builder(src_item)
             except Exception as exc:
                 material_asset = None
-                _material_debug_log(
-                    "scene.collect.material_builder_error",
-                    material_node=src_name or kind,
-                    error=repr(exc),
-                )
-            if material_asset is None:
+                if _material_debug_enabled(model):
+                    _material_debug_log(
+                        "scene.collect.material_builder_error",
+                        material_node=src_name or kind,
+                        error=repr(exc),
+                    )
+            if material_asset is None and _material_debug_enabled(model):
                 _material_debug_log(
                     "scene.collect.material_builder_empty",
                     material_node=src_name or kind,
                 )
+        material_debug_on = bool(material_asset.get("debug_log")) if isinstance(material_asset, dict) else _material_debug_enabled(model)
+        fx_debug_on = _fx_debug_enabled(model)
 
         if kind == "camera":
             cam_name = (getattr(model, "name", "") or "").strip() or "camera"
@@ -954,6 +965,8 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                 material = _material_payload(material_model)
                 if material is not None:
                     entry["material"] = material
+                if material_model is not None and _material_debug_enabled(material_model):
+                    entry["debug_log"] = True
                 if xform_offset:
                     entry["xform_offset"] = True
                 if wire_only:
@@ -1034,13 +1047,15 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                             if isinstance((inst_info or {}).get("xform"), dict):
                                 fx_asset["instance_xform"] = dict(inst_info.get("xform") or {})
                         else:
-                            _fx_log(
-                                f"[scene_spec] instance skip unsupported-ext node={src_name or kind} "
-                                f"path={inst_path!r} ext={inst_ext!r}"
-                            )
+                            if fx_debug_on:
+                                _fx_log(
+                                    f"[scene_spec] instance skip unsupported-ext node={src_name or kind} "
+                                    f"path={inst_path!r} ext={inst_ext!r}"
+                                )
                 except Exception as exc:
                     fx_asset = None
-                    _fx_log(f"[scene_spec] config error node={src_name or kind} err={exc!r}")
+                    if fx_debug_on:
+                        _fx_log(f"[scene_spec] config error node={src_name or kind} err={exc!r}")
         if kind in _MATERIAL_KINDS and owner_kind in _TEXTURE_KINDS:
             upstream_item, upstream_kind, upstream_path = _resolve_input_item(scene, owner_item)
             if upstream_item is not None and getattr(upstream_item, "model", None) is not None:
@@ -1080,17 +1095,19 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
 
         if not path:
             if kind in _MATERIAL_KINDS:
-                _material_debug_log(
-                    "scene.collect.material_skip_no_path",
-                    material_node=src_name or kind,
-                    owner_kind=owner_kind or "",
-                )
+                if material_debug_on:
+                    _material_debug_log(
+                        "scene.collect.material_skip_no_path",
+                        material_node=src_name or kind,
+                        owner_kind=owner_kind or "",
+                    )
             if kind in ("fx", "fx_trail"):
-                _fx_log(
-                    f"[scene_spec] skip unresolved-path node={src_name or kind} "
-                    f"target_owner={(getattr(owner_model, 'name', '') or '').strip() or '<none>'} "
-                    f"owner_kind={owner_kind or '<none>'}"
-                )
+                if fx_debug_on:
+                    _fx_log(
+                        f"[scene_spec] skip unresolved-path node={src_name or kind} "
+                        f"target_owner={(getattr(owner_model, 'name', '') or '').strip() or '<none>'} "
+                        f"owner_kind={owner_kind or '<none>'}"
+                    )
             continue
         node_name = getattr(owner_model, "name", "") or ""
         if isinstance(material_asset, dict):
@@ -1103,18 +1120,20 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
         ext = Path(path).suffix.lower()
         if ext not in SUPPORTED_EXTS:
             if kind in _MATERIAL_KINDS:
-                _material_debug_log(
-                    "scene.collect.material_skip_unsupported_ext",
-                    material_node=src_name or kind,
-                    owner_node=node_name,
-                    path=path,
-                    ext=ext,
-                )
+                if material_debug_on:
+                    _material_debug_log(
+                        "scene.collect.material_skip_unsupported_ext",
+                        material_node=src_name or kind,
+                        owner_node=node_name,
+                        path=path,
+                        ext=ext,
+                    )
             if kind in ("fx", "fx_trail"):
-                _fx_log(
-                    f"[scene_spec] skip unsupported-ext node={src_name or kind} "
-                    f"target_owner={node_name or '<none>'} ext={ext!r} path={path!r}"
-                )
+                if fx_debug_on:
+                    _fx_log(
+                        f"[scene_spec] skip unsupported-ext node={src_name or kind} "
+                        f"target_owner={node_name or '<none>'} ext={ext!r} path={path!r}"
+                    )
             continue
         key = path.strip()
         if key in seen:
@@ -1132,17 +1151,18 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                     }
                 )
                 assets.append(fx_entry)
-                _fx_log(
-                    f"[scene_spec] append duplicate-base trail node={fx_entry['node']} "
-                    f"target_owner={node_name} path={path!r} enabled={bool(fx_entry.get('enabled', True))} "
-                    f"global={bool(fx_entry.get('global_space', False))} "
-                    f"samples={int(fx_entry.get('samples', 28) or 28)} frame_step={int(fx_entry.get('frame_step', 1) or 1)} "
-                    f"spawn_rate={float(fx_entry.get('spawn_rate', fx_entry.get('frame_step', 1.0)) or 1.0):.3f} "
-                    f"substeps={int(fx_entry.get('substeps', 1) or 1)} "
-                    f"lifespan={int(fx_entry.get('lifespan', max(1, int(fx_entry.get('samples', 28) or 28) * int(fx_entry.get('frame_step', 1) or 1))) or 1)} "
-                    f"repeats={int(fx_entry.get('repeats', 1) or 1)} "
-                    f"radius={float(fx_entry.get('radius', 0.35) or 0.35):.4f} aliases={aliases!r}"
-                )
+                if fx_debug_on:
+                    _fx_log(
+                        f"[scene_spec] append duplicate-base trail node={fx_entry['node']} "
+                        f"target_owner={node_name} path={path!r} enabled={bool(fx_entry.get('enabled', True))} "
+                        f"global={bool(fx_entry.get('global_space', False))} "
+                        f"samples={int(fx_entry.get('samples', 28) or 28)} frame_step={int(fx_entry.get('frame_step', 1) or 1)} "
+                        f"spawn_rate={float(fx_entry.get('spawn_rate', fx_entry.get('frame_step', 1.0)) or 1.0):.3f} "
+                        f"substeps={int(fx_entry.get('substeps', 1) or 1)} "
+                        f"lifespan={int(fx_entry.get('lifespan', max(1, int(fx_entry.get('samples', 28) or 28) * int(fx_entry.get('frame_step', 1) or 1))) or 1)} "
+                        f"repeats={int(fx_entry.get('repeats', 1) or 1)} "
+                        f"radius={float(fx_entry.get('radius', 0.35) or 0.35):.4f} aliases={aliases!r}"
+                    )
             continue
         seen.add(key)
         texture_provider = None
@@ -1225,6 +1245,8 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             material = _material_payload(material_model)
         if material is not None:
             entry["material"] = material
+        if material_debug_on:
+            entry["debug_log"] = True
         if xform_offset:
             entry["xform_offset"] = True
         if wire_only:
@@ -1234,21 +1256,22 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             entry["texture_provider"] = texture_provider
         assets.append(entry)
         if kind in _MATERIAL_KINDS:
-            _material_debug_log(
-                "scene.collect.material_entry",
-                material_node=src_name or kind,
-                owner_node=node_name,
-                path=path,
-                ext=ext,
-                visible=bool(entry.get("visible", True)),
-                has_texture=bool(texture),
-                transparency=float((entry.get("material") or {}).get("transparency", 0.0) or 0.0),
-                ior=float((entry.get("material") or {}).get("ior", 1.0) or 1.0),
-                tint_color=str((entry.get("material") or {}).get("tint_color") or ""),
-                fresnel_amount=float((entry.get("material") or {}).get("fresnel_amount", 0.0) or 0.0),
-                fresnel_color=str((entry.get("material") or {}).get("fresnel_color") or ""),
-                xform_offset=bool(entry.get("xform_offset")),
-            )
+            if material_debug_on:
+                _material_debug_log(
+                    "scene.collect.material_entry",
+                    material_node=src_name or kind,
+                    owner_node=node_name,
+                    path=path,
+                    ext=ext,
+                    visible=bool(entry.get("visible", True)),
+                    has_texture=bool(texture),
+                    transparency=float((entry.get("material") or {}).get("transparency", 0.0) or 0.0),
+                    ior=float((entry.get("material") or {}).get("ior", 1.0) or 1.0),
+                    tint_color=str((entry.get("material") or {}).get("tint_color") or ""),
+                    fresnel_amount=float((entry.get("material") or {}).get("fresnel_amount", 0.0) or 0.0),
+                    fresnel_color=str((entry.get("material") or {}).get("fresnel_color") or ""),
+                    xform_offset=bool(entry.get("xform_offset")),
+                )
         if isinstance(fx_asset, dict) and node_name:
             aliases = _fx_target_owner_aliases(scene, owner_item, owner_model, owner_kind)
             fx_entry = dict(fx_asset)
@@ -1263,18 +1286,19 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                 }
             )
             assets.append(fx_entry)
-            _fx_log(
-                f"[scene_spec] append trail node={fx_entry['node']} target_owner={node_name} "
-                f"path={path!r} enabled={bool(fx_entry.get('enabled', True))} "
-                f"global={bool(fx_entry.get('global_space', False))} "
-                f"samples={int(fx_entry.get('samples', 28) or 28)} frame_step={int(fx_entry.get('frame_step', 1) or 1)} "
-                f"spawn_rate={float(fx_entry.get('spawn_rate', fx_entry.get('frame_step', 1.0)) or 1.0):.3f} "
-                f"substeps={int(fx_entry.get('substeps', 1) or 1)} "
-                f"lifespan={int(fx_entry.get('lifespan', max(1, int(fx_entry.get('samples', 28) or 28) * int(fx_entry.get('frame_step', 1) or 1))) or 1)} "
-                f"repeats={int(fx_entry.get('repeats', 1) or 1)} "
-                f"radius={float(fx_entry.get('radius', 0.35) or 0.35):.4f} "
-                f"sides={int(fx_entry.get('sides', 28) or 28)} aliases={aliases!r}"
-            )
+            if fx_debug_on:
+                _fx_log(
+                    f"[scene_spec] append trail node={fx_entry['node']} target_owner={node_name} "
+                    f"path={path!r} enabled={bool(fx_entry.get('enabled', True))} "
+                    f"global={bool(fx_entry.get('global_space', False))} "
+                    f"samples={int(fx_entry.get('samples', 28) or 28)} frame_step={int(fx_entry.get('frame_step', 1) or 1)} "
+                    f"spawn_rate={float(fx_entry.get('spawn_rate', fx_entry.get('frame_step', 1.0)) or 1.0):.3f} "
+                    f"substeps={int(fx_entry.get('substeps', 1) or 1)} "
+                    f"lifespan={int(fx_entry.get('lifespan', max(1, int(fx_entry.get('samples', 28) or 28) * int(fx_entry.get('frame_step', 1) or 1))) or 1)} "
+                    f"repeats={int(fx_entry.get('repeats', 1) or 1)} "
+                    f"radius={float(fx_entry.get('radius', 0.35) or 0.35):.4f} "
+                    f"sides={int(fx_entry.get('sides', 28) or 28)} aliases={aliases!r}"
+                )
     return assets
 
 

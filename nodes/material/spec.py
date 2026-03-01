@@ -71,6 +71,10 @@ def _ensure_hidden_params(model, names) -> None:
     model.params = params
 
 
+def _debug_log_enabled(model) -> bool:
+    return (str(_param_value(model, "debug_log") or "").strip().lower() in {"1", "true", "yes", "on"})
+
+
 def _resolve_input_item(node_item):
     scene = node_item.scene()
     model = getattr(node_item, "model", None)
@@ -212,6 +216,7 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, "mesh", "")
     _ensure_param(node_item, "source", "")
     _ensure_param(node_item, "path", "")
+    _ensure_param(node_item, "debug_log", "0")
     _ensure_param(node_item, "transparency", str(_DEFAULT_TRANSPARENCY))
     _ensure_param(node_item, "ior", f"{_ior_from_model(getattr(node_item, 'model', None)):.2f}")
     _ensure_param(node_item, "refraction", str(_DEFAULT_REFRACTION))
@@ -224,6 +229,7 @@ def build_ports(node_item) -> None:
             "mesh",
             "source",
             "path",
+            "debug_log",
             "transparency",
             "ior",
             "refraction",
@@ -557,39 +563,43 @@ MNATERIAL_SPEC = MATERIAL_SPEC
 def build_material_asset(node_item) -> Optional[dict]:
     model = getattr(node_item, "model", None)
     material_node = (getattr(model, "name", "") or "").strip() or "material"
+    debug_log = _debug_log_enabled(model)
     src_item, src_kind, src_path = _resolve_input_item(node_item)
     src_kind = (src_kind or "").strip().lower()
     src_model = getattr(src_item, "model", None) if src_item is not None else None
     src_node = (getattr(src_model, "name", "") or "").strip()
     if not src_path:
-        _material_debug_log(
-            "material.build.skip_no_input",
-            material_node=material_node,
-            source_node=src_node,
-            source_kind=src_kind,
-        )
+        if debug_log:
+            _material_debug_log(
+                "material.build.skip_no_input",
+                material_node=material_node,
+                source_node=src_node,
+                source_kind=src_kind,
+            )
         return None
     try:
         path = Path(src_path)
     except Exception:
-        _material_debug_log(
-            "material.build.skip_bad_path",
-            material_node=material_node,
-            source_node=src_node,
-            source_kind=src_kind,
-            source_path=src_path,
-        )
+        if debug_log:
+            _material_debug_log(
+                "material.build.skip_bad_path",
+                material_node=material_node,
+                source_node=src_node,
+                source_kind=src_kind,
+                source_path=src_path,
+            )
         return None
     if not path.exists() or path.suffix.lower() not in SUPPORTED_MESH_EXTS:
-        _material_debug_log(
-            "material.build.skip_invalid_mesh",
-            material_node=material_node,
-            source_node=src_node,
-            source_kind=src_kind,
-            source_path=str(path),
-            exists=bool(path.exists()),
-            ext=path.suffix.lower(),
-        )
+        if debug_log:
+            _material_debug_log(
+                "material.build.skip_invalid_mesh",
+                material_node=material_node,
+                source_node=src_node,
+                source_kind=src_kind,
+                source_path=str(path),
+                exists=bool(path.exists()),
+                ext=path.suffix.lower(),
+            )
         return None
 
     owner_item = src_item
@@ -653,22 +663,24 @@ def build_material_asset(node_item) -> Optional[dict]:
         "ext": path.suffix.lower(),
         "visible": True,
         "material": _material_payload(getattr(node_item, "model", None)),
+        "debug_log": bool(debug_log),
     }
     if texture_provider is not None:
         asset["texture_provider"] = texture_provider
-    _material_debug_log(
-        "material.build.ready",
-        material_node=material_node,
-        source_node=src_node,
-        source_kind=src_kind,
-        owner_node=node_name,
-        owner_kind=owner_kind,
-        path=str(path),
-        texture=bool(texture),
-        transparency=float(asset["material"].get("transparency", 0.0) or 0.0),
-        ior=float(asset["material"].get("ior", 1.0) or 1.0),
-        tint_color=str(asset["material"].get("tint_color") or ""),
-        fresnel_amount=float(asset["material"].get("fresnel_amount", 0.0) or 0.0),
-        fresnel_color=str(asset["material"].get("fresnel_color") or ""),
-    )
+    if debug_log:
+        _material_debug_log(
+            "material.build.ready",
+            material_node=material_node,
+            source_node=src_node,
+            source_kind=src_kind,
+            owner_node=node_name,
+            owner_kind=owner_kind,
+            path=str(path),
+            texture=bool(texture),
+            transparency=float(asset["material"].get("transparency", 0.0) or 0.0),
+            ior=float(asset["material"].get("ior", 1.0) or 1.0),
+            tint_color=str(asset["material"].get("tint_color") or ""),
+            fresnel_amount=float(asset["material"].get("fresnel_amount", 0.0) or 0.0),
+            fresnel_color=str(asset["material"].get("fresnel_color") or ""),
+        )
     return asset

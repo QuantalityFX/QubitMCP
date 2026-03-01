@@ -3183,7 +3183,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 continue
             if is_fx_trail and not target_owner:
                 _scene_log(f"raw[{idx}] drop: fx_trail missing target_owner node={node_name!r}")
-                _fx_log(f"[shelf] drop invalid fx_trail node={node_name!r} asset={entry!r}")
+                if bool(entry.get("debug_log", False)):
+                    _fx_log(f"[shelf] drop invalid fx_trail node={node_name!r} asset={entry!r}")
                 continue
             if path:
                 try:
@@ -3234,6 +3235,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 clean_entry["aspect_height"] = entry.get("aspect_height")
             if "material" in entry and isinstance(entry.get("material"), dict):
                 clean_entry["material"] = dict(entry.get("material") or {})
+            if "debug_log" in entry:
+                clean_entry["debug_log"] = bool(entry.get("debug_log"))
             tex_provider = entry.get("texture_provider")
             if tex_provider is not None:
                 clean_entry["texture_provider"] = tex_provider
@@ -3267,7 +3270,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 clean_entry["age_scale_points"] = list(entry.get("age_scale_points") or [])
             clean.append(clean_entry)
             _scene_log(f"clean[{len(clean)-1}] node={node_name!r} path={path!r} visible={visible}")
-            if is_fx_trail:
+            if is_fx_trail and bool(entry.get("debug_log", False)):
                 _fx_log(
                     f"[shelf] pass fx_trail node={node_name or '<none>'} target_owner={target_owner} "
                     f"instance={str(entry.get('instance_source_name') or '').strip() or str(entry.get('instance_path') or '').strip() or '<rings>'} "
@@ -3299,6 +3302,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                         str(entry.get("ext") or ""),
                         str(entry.get("path") or ""),
                         str(entry.get("node") or ""),
+                        bool(entry.get("debug_log", False)),
                         str(entry.get("target_owner") or ""),
                         str(entry.get("instance_path") or ""),
                         str(entry.get("instance_source_name") or ""),

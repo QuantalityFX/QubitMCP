@@ -173,6 +173,10 @@ def _profile_to_json(points) -> str:
     return json.dumps(payload, separators=(",", ":"))
 
 
+def _debug_log_enabled(model) -> bool:
+    return (str(_param_value(model, "debug_log") or "").strip().lower() in {"1", "true", "yes", "on"})
+
+
 def trail_asset_config_from_model(model) -> dict:
     profile_points = _profile_from_json(_param_value(model, "profile"))
     raw_age_scale_profile = _param_value(model, "age_scale_profile")
@@ -187,6 +191,7 @@ def trail_asset_config_from_model(model) -> dict:
     lifespan_default = max(1, int(round(float(samples) * float(spawn_rate))))
     return {
         "enabled": _param_value(model, "enabled").strip() not in {"0", "false", "False", "off", "no"},
+        "debug_log": _debug_log_enabled(model),
         "global_space": _param_value(model, "global_space").strip() in {"1", "true", "True", "on", "yes"},
         "samples": samples,
         "frame_step": max(1, int(round(float(spawn_rate)))),
@@ -210,6 +215,7 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, "instance", "")
     _ensure_param(node_item, "source", "")
     _ensure_param(node_item, "path", "")
+    _ensure_param(node_item, "debug_log", "0")
     _ensure_param(node_item, "enabled", "1")
     _ensure_param(node_item, "global_space", "0")
     _ensure_param(node_item, "samples", "28")
@@ -233,6 +239,7 @@ def build_ports(node_item) -> None:
             "instance",
             "source",
             "path",
+            "debug_log",
             "enabled",
             "global_space",
             "samples",
