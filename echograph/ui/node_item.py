@@ -2658,7 +2658,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
     def _collect_scene_assets(self) -> list[dict]:
         supported = {".fbx", ".obj", ".gltf", ".glb", ".ply", ".stl", ".off", ".om"}
         def _scene_log(msg: str) -> None:
-            enabled = False
+            enabled = True
             if not enabled:
                 return
             try:
@@ -2685,8 +2685,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
             except Exception:
                 pass
         sc = self.scene()
+        try:
+            m = getattr(self, "model", None)
+            nm = (getattr(m, "name", "") or "").strip()
+            kd = (getattr(m, "kind", "") or "").strip()
+            _scene_log(f"collect_scene_assets start node={nm!r} kind={kd!r} has_scene={bool(sc)}")
+        except Exception:
+            pass
         if sc is None:
-            _scene_log("collect_scene_assets abort: no scene")
             return []
         try:
             scene_kind = (getattr(getattr(self, "model", None), "kind", "") or "").strip().lower()
@@ -3425,7 +3431,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "visible": model_name not in hidden,
                 "xform": xf if isinstance(xf, dict) else None,
             }
-            _scene_log(f"edge[{edge_idx}] add asset node={model_name} path={path!r} ext={ext}")
+            _scene_log(
+                f"edge[{edge_idx}] add asset node={model_name} kind={kind} path={path!r} ext={ext} texture={texture!r}"
+            )
             if xform_offset:
                 asset["xform_offset"] = True
             if texture_provider is not None:
