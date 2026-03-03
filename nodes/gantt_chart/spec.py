@@ -630,7 +630,7 @@ def _today_icon() -> QtGui.QIcon | None:
         painter = QtGui.QPainter(tinted)
         painter.drawPixmap(0, 0, pm)
         painter.setCompositionMode(QtGui.QPainter.CompositionMode_SourceIn)
-        painter.fillRect(tinted.rect(), QtGui.QColor("#22c55e"))
+        painter.fillRect(tinted.rect(), QtGui.QColor("#f8fafc"))
         painter.end()
         _TODAY_ICON_CACHE = QtGui.QIcon(tinted)
         return _TODAY_ICON_CACHE
@@ -731,7 +731,7 @@ class _GanttCalendarTable(QtWidgets.QTableWidget):
         if x >= self.viewport().width():
             return
         painter = QtGui.QPainter(self.viewport())
-        pen = QtGui.QPen(QtGui.QColor("#22c55e"), 2)
+        pen = QtGui.QPen(QtGui.QColor("#f8fafc"), 2)
         pen.setCosmetic(True)
         painter.setPen(pen)
         painter.drawLine(x, 0, x, self.viewport().height())
@@ -990,7 +990,7 @@ class _GanttMonthStrip(QtWidgets.QWidget):
             if x >= self.width():
                 continue
             painter.setPen(
-                QtGui.QColor("#22c55e")
+                QtGui.QColor("#f97316")
                 if visible_date.year == self._today.year and visible_date.month == self._today.month
                 else QtGui.QColor("#e5eef8")
             )
