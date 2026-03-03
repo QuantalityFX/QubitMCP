@@ -798,6 +798,8 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
     completionToggled = QtCore.Signal(int, bool)
     progressEditRequested = QtCore.Signal(int, object)
     renameRequested = QtCore.Signal(int)
+    reorderRequested = QtCore.Signal(int, int)
+    selectionRequested = QtCore.Signal(int)
 
     def __init__(self, parent=None):
         super().__init__(QtCore.Qt.Vertical, parent)
@@ -805,7 +807,11 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
         self._completed_sections: set[int] = set()
         self._progress_values: dict[int, int] = {}
         self._dragging_section: int | None = None
+        self._drag_start_visual_index: int | None = None
+        self._drag_grab_offset: int | None = None
+        self._drag_pointer_y: int | None = None
         self._drop_indicator_y: int | None = None
+        self._drop_indicator_index: int | None = None
         self._checkbox_pressed_section: int | None = None
         self._progress_pressed_section: int | None = None
         self.setDefaultAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
@@ -875,10 +881,13 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
         except Exception:
             self.update()
 
-    def _indicator_y_for_pos(self, pos_y: int) -> int | None:
+    def _set_drop_indicator_index(self, index: int | None) -> None:
+        self._drop_indicator_index = None if index is None else int(index)
+
+    def _indicator_target_for_pos(self, pos_y: int) -> tuple[int | None, int | None]:
         count = int(self.count())
         if count <= 0:
-            return None
+            return None, None
         for visual_index in range(count):
             logical_index = int(self.logicalIndex(visual_index))
             if logical_index < 0:
@@ -886,18 +895,26 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
             top = int(self.sectionPosition(logical_index))
             size = int(self.sectionSize(logical_index))
             if pos_y < (top + (size / 2.0)):
-                return top
+                return top, visual_index
         last_logical = int(self.logicalIndex(count - 1))
         if last_logical < 0:
-            return None
-        return int(self.sectionPosition(last_logical) + self.sectionSize(last_logical))
+            return None, None
+        return int(self.sectionPosition(last_logical) + self.sectionSize(last_logical)), count
 
-    def paintSection(self, painter, rect, logical_index):
+    def _paint_task_section(self, painter, rect, logical_index, *, force_selected: bool | None = None, ghost: bool = False, placeholder: bool = False):
         if not rect.isValid():
             return
         painter.save()
-        is_selected = int(logical_index) == self._selected_section
-        painter.fillRect(rect, QtGui.QColor("#1d4f74") if is_selected else QtGui.QColor("#141c27"))
+        if ghost:
+            try:
+                painter.setOpacity(0.96)
+            except Exception:
+                pass
+        is_selected = int(logical_index) == self._selected_section if force_selected is None else bool(force_selected)
+        if placeholder:
+            painter.fillRect(rect, QtGui.QColor("#10151c"))
+        else:
+            painter.fillRect(rect, QtGui.QColor("#1d4f74") if is_selected else QtGui.QColor("#141c27"))
         pen = QtGui.QPen(QtGui.QColor("#223041"), 1)
         pen.setCosmetic(True)
         painter.setPen(pen)
@@ -938,16 +955,32 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
             painter.drawLine(p2, p3)
         painter.restore()
 
+    def paintSection(self, painter, rect, logical_index):
+        if int(logical_index) == self._dragging_section and self._drag_pointer_y is not None:
+            self._paint_task_section(painter, rect, logical_index, placeholder=True)
+            return
+        self._paint_task_section(painter, rect, logical_index)
+
     def paintEvent(self, event):
         super().paintEvent(event)
-        if self._drop_indicator_y is None:
-            return
         painter = QtGui.QPainter(self.viewport())
-        pen = QtGui.QPen(QtGui.QColor("#ffffff"), 2)
-        pen.setCosmetic(True)
-        painter.setPen(pen)
-        y = max(0, min(int(self._drop_indicator_y), max(0, self.viewport().height() - 1)))
-        painter.drawLine(0, y, self.viewport().width(), y)
+        if self._drop_indicator_y is not None:
+            pen = QtGui.QPen(QtGui.QColor("#ffffff"), 2)
+            pen.setCosmetic(True)
+            painter.setPen(pen)
+            y = max(0, min(int(self._drop_indicator_y), max(0, self.viewport().height() - 1)))
+            painter.drawLine(0, y, self.viewport().width(), y)
+        if self._dragging_section is not None and self._drag_pointer_y is not None:
+            try:
+                section_height = int(self.sectionSize(int(self._dragging_section)))
+            except Exception:
+                section_height = 0
+            if section_height > 0:
+                grab_offset = int(self._drag_grab_offset or (section_height // 2))
+                ghost_top = int(self._drag_pointer_y) - grab_offset
+                ghost_top = max(0, min(ghost_top, max(0, self.viewport().height() - section_height)))
+                ghost_rect = QtCore.QRect(0, ghost_top, self.viewport().width(), section_height)
+                self._paint_task_section(painter, ghost_rect, int(self._dragging_section), force_selected=True, ghost=True)
         painter.end()
 
     def mousePressEvent(self, event):
@@ -962,6 +995,19 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
                 event.accept()
                 return
             self._dragging_section = logical_index if logical_index >= 0 else None
+            if self._dragging_section is not None:
+                self.selectionRequested.emit(self._dragging_section)
+                try:
+                    self._drag_start_visual_index = int(self.visualIndex(self._dragging_section))
+                except Exception:
+                    self._drag_start_visual_index = None
+                try:
+                    section_top = int(self.sectionPosition(self._dragging_section))
+                    self._drag_grab_offset = int(event.pos().y()) - section_top
+                except Exception:
+                    self._drag_grab_offset = None
+                self._drag_pointer_y = int(event.pos().y())
+                self._set_drop_indicator_index(self._drag_start_visual_index)
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
@@ -972,7 +1018,16 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
             event.accept()
             return
         if bool(event.buttons() & QtCore.Qt.LeftButton) and self._dragging_section is not None:
-            self._set_drop_indicator_y(self._indicator_y_for_pos(int(event.pos().y())))
+            self._drag_pointer_y = int(event.pos().y())
+            indicator_y, indicator_index = self._indicator_target_for_pos(int(event.pos().y()))
+            self._set_drop_indicator_y(indicator_y)
+            self._set_drop_indicator_index(indicator_index)
+            try:
+                self.viewport().update()
+            except Exception:
+                self.update()
+            event.accept()
+            return
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
@@ -993,9 +1048,32 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
                 self.completionToggled.emit(logical_index, checked)
             event.accept()
             return
+        if event.button() == QtCore.Qt.LeftButton and self._dragging_section is not None:
+            try:
+                start_visual = int(self._drag_start_visual_index) if self._drag_start_visual_index is not None else None
+            except Exception:
+                start_visual = None
+            try:
+                drop_index = int(self._drop_indicator_index) if self._drop_indicator_index is not None else None
+            except Exception:
+                drop_index = None
+            if start_visual is not None and drop_index is not None:
+                self.reorderRequested.emit(start_visual, drop_index)
+            self._dragging_section = None
+            self._drag_start_visual_index = None
+            self._drag_grab_offset = None
+            self._drag_pointer_y = None
+            self._set_drop_indicator_y(None)
+            self._set_drop_indicator_index(None)
+            event.accept()
+            return
         super().mouseReleaseEvent(event)
         self._dragging_section = None
+        self._drag_start_visual_index = None
+        self._drag_grab_offset = None
+        self._drag_pointer_y = None
         self._set_drop_indicator_y(None)
+        self._set_drop_indicator_index(None)
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == QtCore.Qt.LeftButton:
@@ -1018,6 +1096,7 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
         self._checkbox_pressed_section = None
         if self._dragging_section is None:
             self._set_drop_indicator_y(None)
+            self._set_drop_indicator_index(None)
 
 
 class _GanttMonthStrip(QtWidgets.QWidget):
@@ -1225,14 +1304,6 @@ class GanttChartWidget(QtWidgets.QFrame):
         except Exception:
             pass
         try:
-            self._table.verticalHeader().setSectionsMovable(True)
-        except Exception:
-            pass
-        try:
-            self._table.verticalHeader().sectionMoved.connect(self._on_task_section_moved)
-        except Exception:
-            pass
-        try:
             self._table.verticalHeader().completionToggled.connect(self._on_task_completion_toggled)
         except Exception:
             pass
@@ -1242,6 +1313,14 @@ class GanttChartWidget(QtWidgets.QFrame):
             pass
         try:
             self._table.verticalHeader().renameRequested.connect(self._on_task_header_rename_requested)
+        except Exception:
+            pass
+        try:
+            self._table.verticalHeader().reorderRequested.connect(self._on_task_reorder_requested)
+        except Exception:
+            pass
+        try:
+            self._table.verticalHeader().selectionRequested.connect(self._on_task_header_clicked)
         except Exception:
             pass
 
@@ -1969,16 +2048,26 @@ class GanttChartWidget(QtWidgets.QFrame):
         visible_start = self._base_start_date + timedelta(days=_day_offset_for_scroll_value(value))
         self._set_visible_start_date(visible_start, sync_scroll=False, persist=True)
 
-    def _on_task_section_moved(self, logical_index: int, _old_visual_index: int, _new_visual_index: int):
+    def _on_task_reorder_requested(self, start_visual_index: int, drop_indicator_index: int):
         if self._ignore_header_move:
             return
-        if logical_index < 0 or logical_index >= len(self._task_names):
+        if not self._task_names:
             return
-        header = self._table.verticalHeader()
-        ordered = [
-            self._task_names[row]
-            for row in sorted(range(len(self._task_names)), key=lambda r: int(header.visualIndex(r)))
-        ]
+        try:
+            start_index = int(start_visual_index)
+            insert_index = int(drop_indicator_index)
+        except Exception:
+            return
+        if start_index < 0 or start_index >= len(self._task_names):
+            return
+        ordered = list(self._task_names)
+        moved_task = ordered.pop(start_index)
+        if insert_index > start_index:
+            insert_index -= 1
+        insert_index = max(0, min(len(ordered), insert_index))
+        ordered.insert(insert_index, moved_task)
+        if ordered == self._task_names:
+            return
         if _reorder_note_params(self._node_item, ordered):
             self._task_names = ordered
             self._rebuild_table()
