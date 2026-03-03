@@ -1011,8 +1011,8 @@ class _GanttTaskDividerHandle(QtWidgets.QWidget):
 class _GanttCalendarTable(QtWidgets.QTableWidget):
     cellShortRightClicked = QtCore.Signal(int, int)
     cellLeftDoubleClicked = QtCore.Signal(int, int)
-    assignmentResizeMoved = QtCore.Signal(int, int)
-    assignmentResizeFinished = QtCore.Signal(int, int)
+    assignmentResizeMoved = QtCore.Signal(int, int, int)
+    assignmentResizeFinished = QtCore.Signal(int, int, int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1023,7 +1023,7 @@ class _GanttCalendarTable(QtWidgets.QTableWidget):
         self._right_press_index = QtCore.QModelIndex()
         self._right_drag_threshold = 0
         self._resize_drag_row: int | None = None
-        self._resize_drag_start_column: int | None = None
+        self._resize_drag_edge: int | None = None
 
     def set_today_column(self, column: int | None) -> None:
         self._today_column = None if column is None else int(column)
@@ -1083,7 +1083,7 @@ class _GanttCalendarTable(QtWidgets.QTableWidget):
                 return int(column)
         return int(count - 1)
 
-    def _resize_hit_for_pos(self, pos) -> tuple[int, int] | None:
+    def _resize_hit_for_pos(self, pos) -> tuple[int, int, int] | None:
         try:
             index = self.indexAt(pos)
         except Exception:
@@ -1101,9 +1101,13 @@ class _GanttCalendarTable(QtWidgets.QTableWidget):
         point = QtCore.QPointF(pos)
         if not rect.contains(point):
             return None
-        if abs(float(point.x()) - float(rect.right())) > 6.0:
-            return None
-        return row, end_column
+        left_distance = abs(float(point.x()) - float(rect.left()))
+        right_distance = abs(float(point.x()) - float(rect.right()))
+        if left_distance <= 6.0 and left_distance <= right_distance:
+            return row, start_column, -1
+        if right_distance <= 6.0:
+            return row, end_column, 1
+        return None
 
     def _update_resize_cursor(self, pos=None) -> None:
         if self._resize_drag_row is not None:
@@ -1121,7 +1125,7 @@ class _GanttCalendarTable(QtWidgets.QTableWidget):
             hit = self._resize_hit_for_pos(event.pos())
             if hit is not None:
                 self._resize_drag_row = int(hit[0])
-                self._resize_drag_start_column = int(hit[1])
+                self._resize_drag_edge = int(hit[2])
                 self._update_resize_cursor(event.pos())
                 event.accept()
                 return True
@@ -1142,7 +1146,11 @@ class _GanttCalendarTable(QtWidgets.QTableWidget):
             if self._resize_drag_row is not None and bool(event.buttons() & QtCore.Qt.LeftButton):
                 target_column = self._column_for_pos_x(int(event.pos().x()))
                 if target_column is not None:
-                    self.assignmentResizeMoved.emit(int(self._resize_drag_row), int(target_column))
+                    self.assignmentResizeMoved.emit(
+                        int(self._resize_drag_row),
+                        int(target_column),
+                        int(self._resize_drag_edge or 1),
+                    )
                 self._update_resize_cursor(event.pos())
                 event.accept()
                 return True
@@ -1191,9 +1199,13 @@ class _GanttCalendarTable(QtWidgets.QTableWidget):
             if self._resize_drag_row is not None:
                 target_column = self._column_for_pos_x(int(event.pos().x()))
                 if target_column is not None:
-                    self.assignmentResizeFinished.emit(int(self._resize_drag_row), int(target_column))
+                    self.assignmentResizeFinished.emit(
+                        int(self._resize_drag_row),
+                        int(target_column),
+                        int(self._resize_drag_edge or 1),
+                    )
                 self._resize_drag_row = None
-                self._resize_drag_start_column = None
+                self._resize_drag_edge = None
                 self._update_resize_cursor(event.pos())
                 event.accept()
                 return True
@@ -1839,7 +1851,7 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._task_progress: dict[str, int] = {}
         self._task_notifications: dict[str, dict[str, str]] = {}
         self._selected_task: str | None = None
-        self._assignment_resize_preview: tuple[str, int] | None = None
+        self._assignment_resize_preview: tuple[str, int, int] | None = None
         self._processing_due_notifications = False
         self._active_notification_popups: list[QtWidgets.QMessageBox] = []
         self._ignore_header_move = False
@@ -2709,9 +2721,10 @@ class GanttChartWidget(QtWidgets.QFrame):
 
             assigned_span = self._visible_assignment_span(task)
             if self._assignment_resize_preview is not None and self._assignment_resize_preview[0] == task:
-                preview_end = int(self._assignment_resize_preview[1])
-                if assigned_span is not None:
-                    assigned_span = (int(assigned_span[0]), max(int(assigned_span[0]), preview_end))
+                assigned_span = (
+                    int(self._assignment_resize_preview[1]),
+                    int(self._assignment_resize_preview[2]),
+                )
             progress_value = int(self._task_progress.get(task, 0))
             for day in range(self._visible_day_count()):
                 item = self._ensure_item(row, day)
@@ -2786,6 +2799,13 @@ class GanttChartWidget(QtWidgets.QFrame):
         if assigned_span is not None and assigned_span[0] <= col <= assigned_span[1]:
             self._apply_table_styles()
             self._update_labels()
+            return
+        assignment_dates = self._assignment_dates_for_task(task)
+        if assignment_dates is not None:
+            start_date, end_date = assignment_dates
+            span_days = max(0, int((end_date - start_date).days))
+            new_start = self._visible_date_for_day(col + 1)
+            self._set_task_day_range(task, new_start, new_start + timedelta(days=span_days), notify_scene=True)
             return
         self._set_task_day(task, col + 1)
 
@@ -2983,7 +3003,7 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._update_labels()
         return True
 
-    def _on_assignment_resize_moved(self, row: int, col: int):
+    def _on_assignment_resize_moved(self, row: int, col: int, edge: int):
         if row < 0 or row >= len(self._task_names):
             return
         task = self._task_names[row]
@@ -2991,11 +3011,16 @@ class GanttChartWidget(QtWidgets.QFrame):
         if assigned_span is None:
             return
         self._selected_task = task
-        self._assignment_resize_preview = (task, max(int(assigned_span[0]), int(col)))
+        start_col, end_col = int(assigned_span[0]), int(assigned_span[1])
+        if int(edge) < 0:
+            start_col = max(0, min(int(col), end_col))
+        else:
+            end_col = max(start_col, int(col))
+        self._assignment_resize_preview = (task, start_col, end_col)
         self._apply_table_styles()
         self._update_labels()
 
-    def _on_assignment_resize_finished(self, row: int, col: int):
+    def _on_assignment_resize_finished(self, row: int, col: int, edge: int):
         if row < 0 or row >= len(self._task_names):
             self._assignment_resize_preview = None
             self._apply_table_styles()
@@ -3007,12 +3032,19 @@ class GanttChartWidget(QtWidgets.QFrame):
             self._assignment_resize_preview = None
             self._apply_table_styles()
             return
-        start_date, _current_end = dates
-        target_col = max(int(assigned_span[0]), int(col))
-        target_col = max(0, min(target_col, max(0, len(self._visible_dates) - 1)))
+        start_col, end_col = int(assigned_span[0]), int(assigned_span[1])
+        target_col = max(0, min(int(col), max(0, len(self._visible_dates) - 1)))
+        if int(edge) < 0:
+            target_start_col = min(target_col, end_col)
+            target_end_col = end_col
+        else:
+            target_start_col = start_col
+            target_end_col = max(start_col, target_col)
         self._assignment_resize_preview = None
         self._selected_task = task
-        self._set_task_day_range(task, start_date, self._visible_dates[target_col], notify_scene=True)
+        target_start_date = self._visible_dates[target_start_col]
+        target_end_date = self._visible_dates[target_end_col]
+        self._set_task_day_range(task, target_start_date, target_end_date, notify_scene=True)
 
     def _handle_graph_view_short_right_click(self, global_pos) -> bool:
         try:
