@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import calendar
 import json
+from datetime import date
+from pathlib import Path
 
 try:
     from PySide6 import QtWidgets, QtCore, QtGui
@@ -10,8 +13,10 @@ except Exception:
 from nodes.core import Spec
 from nodes.util_graph import param_change_relevant as _param_change_relevant
 
-_DAY_COUNT = 31
 _SCHEDULE_PARAM = "schedule_data"
+_VIEW_MONTH_PARAM = "view_month"
+_MONTH_SCROLL_CENTER = 1200
+_MONTH_SCROLL_RANGE = 2400
 
 
 def _param_value(model, name: str) -> str:
@@ -65,8 +70,10 @@ def _ensure_hidden_params(model, names) -> None:
 
 
 def build_ports(node_item) -> None:
+    today = date.today()
     _ensure_param(node_item, _SCHEDULE_PARAM, "{}")
-    _ensure_hidden_params(getattr(node_item, "model", None), [_SCHEDULE_PARAM])
+    _ensure_param(node_item, _VIEW_MONTH_PARAM, f"{today.year:04d}-{today.month:02d}")
+    _ensure_hidden_params(getattr(node_item, "model", None), [_SCHEDULE_PARAM, _VIEW_MONTH_PARAM])
 
 
 def _set_param_value(node_item, name: str, value: str, *, notify_scene: bool = True) -> None:
@@ -106,7 +113,57 @@ def _hidden_params(model) -> set[str]:
     return hidden
 
 
-def _read_assignments(node_item) -> dict[str, int]:
+def _parse_view_month(raw: str, *, fallback_year: int, fallback_month: int) -> tuple[int, int]:
+    text = str(raw or "").strip()
+    if text:
+        parts = text.split("-", 1)
+        if len(parts) == 2:
+            try:
+                year = int(parts[0])
+                month = int(parts[1])
+                if 1 <= month <= 12:
+                    return year, month
+            except Exception:
+                pass
+    return fallback_year, fallback_month
+
+
+def _add_months(year: int, month: int, offset: int) -> tuple[int, int]:
+    total = int(year) * 12 + (int(month) - 1) + int(offset)
+    new_year = total // 12
+    new_month = (total % 12) + 1
+    return new_year, new_month
+
+
+def _month_offset(base_year: int, base_month: int, year: int, month: int) -> int:
+    return (int(year) - int(base_year)) * 12 + (int(month) - int(base_month))
+
+
+def _days_in_month(year: int, month: int) -> int:
+    return int(calendar.monthrange(int(year), int(month))[1])
+
+
+def _coerce_iso_date(raw, *, default_year: int, default_month: int) -> str | None:
+    if isinstance(raw, int):
+        day = int(raw)
+        if 1 <= day <= _days_in_month(default_year, default_month):
+            return date(default_year, default_month, day).isoformat()
+        return None
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    if text.isdigit():
+        day = int(text)
+        if 1 <= day <= _days_in_month(default_year, default_month):
+            return date(default_year, default_month, day).isoformat()
+        return None
+    try:
+        return date.fromisoformat(text).isoformat()
+    except Exception:
+        return None
+
+
+def _read_assignments(node_item, *, default_year: int, default_month: int) -> dict[str, str]:
     model = getattr(node_item, "model", None)
     if model is None:
         return {}
@@ -119,32 +176,26 @@ def _read_assignments(node_item) -> dict[str, int]:
         return {}
     if not isinstance(data, dict):
         return {}
-    clean: dict[str, int] = {}
+    clean: dict[str, str] = {}
     for name, value in data.items():
         task = str(name or "").strip()
         if not task:
             continue
-        try:
-            day = int(value)
-        except Exception:
-            continue
-        if 1 <= day <= _DAY_COUNT:
-            clean[task] = day
+        iso = _coerce_iso_date(value, default_year=default_year, default_month=default_month)
+        if iso:
+            clean[task] = iso
     return clean
 
 
-def _write_assignments(node_item, mapping: dict[str, int], *, notify_scene: bool = True) -> None:
+def _write_assignments(node_item, mapping: dict[str, str], *, notify_scene: bool = True) -> None:
     clean = {}
     for name, value in (mapping or {}).items():
         task = str(name or "").strip()
         if not task:
             continue
-        try:
-            day = int(value)
-        except Exception:
-            continue
-        if 1 <= day <= _DAY_COUNT:
-            clean[task] = day
+        iso = _coerce_iso_date(value, default_year=date.today().year, default_month=date.today().month)
+        if iso:
+            clean[task] = iso
     _set_param_value(
         node_item,
         _SCHEDULE_PARAM,
@@ -210,6 +261,64 @@ def _set_section_resize_mode(header, section: int, mode) -> None:
         header.setResizeMode(section, mode)
 
 
+_TODAY_ICON_CACHE = None
+
+
+def _today_icon() -> QtGui.QIcon | None:
+    global _TODAY_ICON_CACHE
+    if _TODAY_ICON_CACHE is not None:
+        return _TODAY_ICON_CACHE
+    try:
+        icon_path = Path(__file__).resolve().parents[2] / "icons" / "KeyframeHandle_Icon.png"
+        pm = QtGui.QPixmap(str(icon_path))
+        if pm.isNull():
+            _TODAY_ICON_CACHE = None
+            return None
+        tinted = QtGui.QPixmap(pm.size())
+        tinted.fill(QtCore.Qt.transparent)
+        painter = QtGui.QPainter(tinted)
+        painter.drawPixmap(0, 0, pm)
+        painter.setCompositionMode(QtGui.QPainter.CompositionMode_SourceIn)
+        painter.fillRect(tinted.rect(), QtGui.QColor("#22c55e"))
+        painter.end()
+        _TODAY_ICON_CACHE = QtGui.QIcon(tinted)
+        return _TODAY_ICON_CACHE
+    except Exception:
+        _TODAY_ICON_CACHE = None
+        return None
+
+
+class _GanttCalendarTable(QtWidgets.QTableWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._today_column: int | None = None
+
+    def set_today_column(self, column: int | None) -> None:
+        self._today_column = None if column is None else int(column)
+        try:
+            self.viewport().update()
+        except Exception:
+            pass
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        col = self._today_column
+        if col is None or col < 0 or col >= self.columnCount():
+            return
+        try:
+            x = int(self.columnViewportPosition(col))
+        except Exception:
+            return
+        if x >= self.viewport().width():
+            return
+        painter = QtGui.QPainter(self.viewport())
+        pen = QtGui.QPen(QtGui.QColor("#22c55e"), 2)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        painter.drawLine(x, 0, x, self.viewport().height())
+        painter.end()
+
+
 def _reorder_note_params(node_item, ordered_names: list[str]) -> bool:
     src_item, src_model = _resolve_note_source(node_item)
     if src_model is None:
@@ -262,9 +371,15 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._source_name = ""
         self._source_invalid = False
         self._task_names: list[str] = []
-        self._assignments: dict[str, int] = {}
+        self._assignments: dict[str, str] = {}
         self._selected_task: str | None = None
         self._ignore_header_move = False
+        self._today = date.today()
+        self._base_year = int(self._today.year)
+        self._base_month = int(self._today.month)
+        self._visible_year = int(self._today.year)
+        self._visible_month = int(self._today.month)
+        self._month_scroll_sync = False
 
         self.setObjectName("GanttChartWidget")
         self.setStyleSheet(
@@ -274,7 +389,6 @@ class GanttChartWidget(QtWidgets.QFrame):
             "gridline-color:#223041;selection-background-color:#16212b;selection-color:#e2e8f0;}"
             "QTableWidget::item:selected{background:#16212b;color:#e2e8f0;}"
             "QHeaderView::section{background:#141c27;color:#dbe4ee;border:1px solid #223041;padding:4px;font-weight:600;}"
-            "QHeaderView::section:checked{background:#1d4f74;color:#f8fafc;}"
             "QTableCornerButton::section{background:#141c27;border:1px solid #223041;}"
         )
 
@@ -297,7 +411,31 @@ class GanttChartWidget(QtWidgets.QFrame):
 
         layout.addLayout(status_row)
 
-        self._table = QtWidgets.QTableWidget(0, _DAY_COUNT, self)
+        month_row = QtWidgets.QHBoxLayout()
+        month_row.setContentsMargins(0, 0, 0, 0)
+        month_row.setSpacing(6)
+        month_row.addStretch(1)
+        self._month_label = QtWidgets.QLabel("")
+        self._month_label.setStyleSheet("QLabel{color:#e5eef8;font-size:15px;font-weight:700;}")
+        month_row.addWidget(self._month_label, 0, QtCore.Qt.AlignCenter)
+        self._today_label = QtWidgets.QLabel("")
+        self._today_label.setStyleSheet("QLabel{color:#22c55e;font-weight:700;}")
+        month_row.addWidget(self._today_label, 0, QtCore.Qt.AlignVCenter)
+        month_row.addStretch(1)
+        layout.addLayout(month_row)
+
+        self._today_marker_strip = QtWidgets.QWidget(self)
+        self._today_marker_strip.setFixedHeight(16)
+        self._today_marker_strip.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+        self._today_marker_strip.setStyleSheet("background:transparent;")
+        self._today_marker_icon = QtWidgets.QLabel(self._today_marker_strip)
+        self._today_marker_icon.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+        self._today_marker_icon.setStyleSheet("background:transparent;")
+        self._today_marker_icon.hide()
+        layout.addWidget(self._today_marker_strip, 0)
+
+        self._table = _GanttCalendarTable(self)
+        self._table.setColumnCount(0)
         self._table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self._table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self._table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
@@ -308,7 +446,6 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._table.verticalHeader().setVisible(True)
         self._table.setAlternatingRowColors(False)
         self._table.setShowGrid(True)
-        self._table.setHorizontalHeaderLabels([str(i) for i in range(1, _DAY_COUNT + 1)])
         self._table.horizontalHeader().setDefaultAlignment(QtCore.Qt.AlignCenter)
         self._table.horizontalHeader().setSectionsClickable(True)
         try:
@@ -342,9 +479,6 @@ class GanttChartWidget(QtWidgets.QFrame):
             self._table.verticalHeader().setMinimumWidth(180)
         except Exception:
             pass
-        for day in range(_DAY_COUNT):
-            _set_section_resize_mode(self._table.horizontalHeader(), day, fixed_mode)
-            self._table.setColumnWidth(day, 24)
 
         self._table.cellClicked.connect(self._on_cell_clicked)
         try:
@@ -359,6 +493,15 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._table.customContextMenuRequested.connect(self._on_table_context_menu)
         layout.addWidget(self._table, 1)
 
+        self._month_scroll = QtWidgets.QScrollBar(QtCore.Qt.Horizontal, self)
+        self._month_scroll.setRange(0, _MONTH_SCROLL_RANGE)
+        self._month_scroll.setSingleStep(1)
+        self._month_scroll.setPageStep(1)
+        self._month_scroll.setValue(_MONTH_SCROLL_CENTER)
+        self._month_scroll.setToolTip("Scroll through months")
+        self._month_scroll.valueChanged.connect(self._on_month_scroll_changed)
+        layout.addWidget(self._month_scroll, 0)
+
         self._ensure_scene()
         self._sync_from_source()
         QtCore.QTimer.singleShot(0, self._post_attach_sync)
@@ -366,9 +509,65 @@ class GanttChartWidget(QtWidgets.QFrame):
     def sizeHint(self):
         return QtCore.QSize(1000, 320)
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_today_marker()
+
     def _post_attach_sync(self):
         self._ensure_scene()
         self._schedule_sync()
+
+    def _visible_day_count(self) -> int:
+        return _days_in_month(self._visible_year, self._visible_month)
+
+    def _visible_date_for_day(self, day: int) -> date:
+        return date(self._visible_year, self._visible_month, int(day))
+
+    def _day_for_visible_assignment(self, task: str) -> int | None:
+        raw = self._assignments.get(task, "")
+        try:
+            assigned = date.fromisoformat(str(raw))
+        except Exception:
+            return None
+        if assigned.year == self._visible_year and assigned.month == self._visible_month:
+            return int(assigned.day)
+        return None
+
+    def _sync_view_month_from_params(self, *, force: bool = False):
+        raw = _param_value(getattr(self._node_item, "model", None), _VIEW_MONTH_PARAM)
+        year, month = _parse_view_month(raw, fallback_year=self._base_year, fallback_month=self._base_month)
+        if (not force) and year == self._visible_year and month == self._visible_month:
+            return
+        self._visible_year = int(year)
+        self._visible_month = int(month)
+        offset = _month_offset(self._base_year, self._base_month, self._visible_year, self._visible_month)
+        new_value = max(0, min(_MONTH_SCROLL_RANGE, _MONTH_SCROLL_CENTER + offset))
+        try:
+            self._month_scroll_sync = True
+            self._month_scroll.setValue(int(new_value))
+        finally:
+            self._month_scroll_sync = False
+
+    def _update_today_marker(self):
+        if self._visible_year != self._today.year or self._visible_month != self._today.month:
+            self._today_marker_icon.hide()
+            return
+        icon = _today_icon()
+        if icon is None:
+            self._today_marker_icon.hide()
+            return
+        today_col = int(self._today.day) - 1
+        if today_col < 0 or today_col >= self._table.columnCount():
+            self._today_marker_icon.hide()
+            return
+        pm = icon.pixmap(12, 12)
+        self._today_marker_icon.setPixmap(pm)
+        x = int(self._table.verticalHeader().width() + self._table.columnViewportPosition(today_col) - (pm.width() / 2.0))
+        x = max(0, min(x, max(0, self._today_marker_strip.width() - pm.width())))
+        y = max(0, int((self._today_marker_strip.height() - pm.height()) / 2.0))
+        self._today_marker_icon.move(x, y)
+        self._today_marker_icon.resize(pm.size())
+        self._today_marker_icon.show()
 
     def _ensure_scene(self):
         if self._scene is None:
@@ -404,11 +603,16 @@ class GanttChartWidget(QtWidgets.QFrame):
     def _sync_from_source(self):
         self._ensure_scene()
         self._sync_pending = False
+        self._sync_view_month_from_params(force=True)
         src_item, src_model = _resolve_note_source(self._node_item)
         self._source_invalid = bool(src_item is not None and src_model is None)
         self._source_name = getattr(src_model, "name", "") if src_model is not None else ""
         task_names = _note_task_names(src_model)
-        assignments = _read_assignments(self._node_item)
+        assignments = _read_assignments(
+            self._node_item,
+            default_year=self._visible_year,
+            default_month=self._visible_month,
+        )
         pruned = {name: day for name, day in assignments.items() if name in task_names}
         if pruned != assignments:
             _write_assignments(self._node_item, pruned, notify_scene=False)
@@ -430,10 +634,34 @@ class GanttChartWidget(QtWidgets.QFrame):
             self._source_label.setText("Connect a Note node to this input.")
             self._source_label.setStyleSheet("QLabel{color:#93a4b8;font-weight:600;}")
 
+        try:
+            month_name = calendar.month_name[int(self._visible_month)]
+        except Exception:
+            month_name = str(self._visible_month)
+        self._month_label.setText(f"{month_name} {self._visible_year}")
+        if self._visible_year == self._today.year and self._visible_month == self._today.month:
+            icon = _today_icon()
+            if icon is not None:
+                self._today_label.setPixmap(icon.pixmap(16, 16))
+            else:
+                self._today_label.setText("Today")
+            self._today_label.setToolTip(f"Today: {self._today.isoformat()}")
+            self._today_label.setVisible(True)
+        else:
+            self._today_label.clear()
+            self._today_label.setVisible(False)
+        self._update_today_marker()
+
         if self._selected_task:
-            day = self._assignments.get(self._selected_task)
-            if day:
-                self._selection_label.setText(f"Selected: {self._selected_task} -> day {day}")
+            raw = self._assignments.get(self._selected_task)
+            if raw:
+                try:
+                    assigned = date.fromisoformat(str(raw))
+                    self._selection_label.setText(
+                        f"Selected: {self._selected_task} -> {calendar.month_abbr[assigned.month]} {assigned.day}, {assigned.year}"
+                    )
+                except Exception:
+                    self._selection_label.setText(f"Selected: {self._selected_task} -> {raw}")
             else:
                 self._selection_label.setText(f"Selected: {self._selected_task} -> unscheduled")
         elif self._task_names:
@@ -457,6 +685,32 @@ class GanttChartWidget(QtWidgets.QFrame):
     def _rebuild_table(self):
         self._table.blockSignals(True)
         self._ignore_header_move = True
+        day_count = self._visible_day_count()
+        self._table.setColumnCount(day_count)
+        self._table.setHorizontalHeaderLabels([str(i) for i in range(1, day_count + 1)])
+        try:
+            fixed_mode = QtWidgets.QHeaderView.ResizeMode.Fixed
+        except AttributeError:
+            fixed_mode = QtWidgets.QHeaderView.Fixed
+        today_column = None
+        if self._visible_year == self._today.year and self._visible_month == self._today.month:
+            today_column = int(self._today.day) - 1
+        for day in range(day_count):
+            _set_section_resize_mode(self._table.horizontalHeader(), day, fixed_mode)
+            self._table.setColumnWidth(day, 24)
+            header_item = self._table.horizontalHeaderItem(day)
+            if header_item is None:
+                header_item = QtWidgets.QTableWidgetItem(str(day + 1))
+                self._table.setHorizontalHeaderItem(day, header_item)
+            header_item.setText(str(day + 1))
+            if today_column is not None and day == today_column:
+                header_item.setForeground(QtGui.QBrush(QtGui.QColor("#22c55e")))
+                header_item.setToolTip(f"Today: {self._today.isoformat()}")
+            else:
+                header_item.setIcon(QtGui.QIcon())
+                header_item.setForeground(QtGui.QBrush(QtGui.QColor("#dbe4ee")))
+                header_item.setToolTip(f"{calendar.month_name[self._visible_month]} {day + 1}, {self._visible_year}")
+
         self._table.setRowCount(len(self._task_names))
         for row, task in enumerate(self._task_names):
             self._table.setRowHeight(row, 26)
@@ -466,14 +720,16 @@ class GanttChartWidget(QtWidgets.QFrame):
                 self._table.setVerticalHeaderItem(row, header_item)
             header_item.setText(task)
             header_item.setToolTip(task)
-            for day in range(_DAY_COUNT):
+            for day in range(day_count):
                 cell = self._ensure_item(row, day)
                 cell.setText("")
                 cell.setTextAlignment(int(QtCore.Qt.AlignCenter))
                 cell.setToolTip(f"{task}: day {day + 1}")
         self._table.blockSignals(False)
         self._ignore_header_move = False
+        self._table.set_today_column(today_column)
         self._apply_table_styles()
+        self._update_today_marker()
 
     def _apply_table_styles(self):
         label_bg = QtGui.QColor("#141b24")
@@ -497,8 +753,8 @@ class GanttChartWidget(QtWidgets.QFrame):
             font.setBold(bool(is_selected))
             header_item.setFont(font)
 
-            assigned_day = self._assignments.get(task)
-            for day in range(_DAY_COUNT):
+            assigned_day = self._day_for_visible_assignment(task)
+            for day in range(self._visible_day_count()):
                 item = self._ensure_item(row, day)
                 if assigned_day == (day + 1):
                     item.setBackground(assigned_bg)
@@ -541,7 +797,7 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._set_task_day(self._selected_task, col + 1)
 
     def _on_header_clicked(self, section: int):
-        if section < 0 or section >= _DAY_COUNT:
+        if section < 0 or section >= self._visible_day_count():
             return
         if not self._selected_task:
             self._selection_label.setText("Select a task first, then choose a day.")
@@ -556,10 +812,10 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._update_labels()
 
     def _set_task_day(self, task: str, day: int):
-        if not task or not (1 <= int(day) <= _DAY_COUNT):
+        if not task or not (1 <= int(day) <= self._visible_day_count()):
             return
         mapping = dict(self._assignments)
-        mapping[task] = int(day)
+        mapping[task] = self._visible_date_for_day(day).isoformat()
         self._assignments = mapping
         _write_assignments(self._node_item, mapping, notify_scene=True)
         self._apply_table_styles()
@@ -575,7 +831,7 @@ class GanttChartWidget(QtWidgets.QFrame):
             return
         task = self._task_names[row]
         day = col + 1
-        if self._assignments.get(task) != day:
+        if self._day_for_visible_assignment(task) != day:
             return
         mapping = dict(self._assignments)
         mapping.pop(task, None)
@@ -583,6 +839,23 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._selected_task = task
         _write_assignments(self._node_item, mapping, notify_scene=True)
         self._apply_table_styles()
+        self._update_labels()
+
+    def _on_month_scroll_changed(self, value: int):
+        if self._month_scroll_sync:
+            return
+        year, month = _add_months(self._base_year, self._base_month, int(value) - _MONTH_SCROLL_CENTER)
+        if year == self._visible_year and month == self._visible_month:
+            return
+        self._visible_year = int(year)
+        self._visible_month = int(month)
+        _set_param_value(
+            self._node_item,
+            _VIEW_MONTH_PARAM,
+            f"{self._visible_year:04d}-{self._visible_month:02d}",
+            notify_scene=False,
+        )
+        self._rebuild_table()
         self._update_labels()
 
     def _on_task_section_moved(self, logical_index: int, _old_visual_index: int, _new_visual_index: int):
