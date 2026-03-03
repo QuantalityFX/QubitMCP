@@ -14,6 +14,7 @@ from nodes.core import Spec
 from nodes.util_graph import param_change_relevant as _param_change_relevant
 
 _SCHEDULE_PARAM = "schedule_data"
+_PROGRESS_PARAM = "progress_data"
 _VIEW_MONTH_PARAM = "view_month"
 _VIEW_START_PARAM = "view_start_date"
 _VISIBLE_DAY_COUNT = 31
@@ -89,9 +90,10 @@ def build_ports(node_item) -> None:
         fallback=date(year, month, 1),
     )
     _ensure_param(node_item, _SCHEDULE_PARAM, "{}")
+    _ensure_param(node_item, _PROGRESS_PARAM, "{}")
     _ensure_param(node_item, _VIEW_MONTH_PARAM, f"{view_start.year:04d}-{view_start.month:02d}")
     _ensure_param(node_item, _VIEW_START_PARAM, view_start.isoformat())
-    _ensure_hidden_params(model, [_SCHEDULE_PARAM, _VIEW_MONTH_PARAM, _VIEW_START_PARAM])
+    _ensure_hidden_params(model, [_SCHEDULE_PARAM, _PROGRESS_PARAM, _VIEW_MONTH_PARAM, _VIEW_START_PARAM])
 
 
 def _set_param_value(node_item, name: str, value: str, *, notify_scene: bool = True) -> None:
@@ -231,6 +233,38 @@ def _read_assignments(node_item, *, default_year: int, default_month: int) -> di
     return clean
 
 
+def _coerce_progress_value(raw) -> int | None:
+    try:
+        value = int(float(raw))
+    except Exception:
+        return None
+    return max(0, min(100, value))
+
+
+def _read_progress_map(node_item) -> dict[str, int]:
+    model = getattr(node_item, "model", None)
+    if model is None:
+        return {}
+    raw = _param_value(model, _PROGRESS_PARAM).strip()
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    clean: dict[str, int] = {}
+    for name, value in data.items():
+        task = str(name or "").strip()
+        if not task:
+            continue
+        progress = _coerce_progress_value(value)
+        if progress is not None:
+            clean[task] = progress
+    return clean
+
+
 def _write_assignments(node_item, mapping: dict[str, str], *, notify_scene: bool = True) -> None:
     clean = {}
     for name, value in (mapping or {}).items():
@@ -243,6 +277,24 @@ def _write_assignments(node_item, mapping: dict[str, str], *, notify_scene: bool
     _set_param_value(
         node_item,
         _SCHEDULE_PARAM,
+        json.dumps(clean, sort_keys=True, separators=(",", ":")),
+        notify_scene=notify_scene,
+    )
+    _write_gantt_sidecar_snapshot(node_item)
+
+
+def _write_progress_map(node_item, mapping: dict[str, int], *, notify_scene: bool = True) -> None:
+    clean: dict[str, int] = {}
+    for name, value in (mapping or {}).items():
+        task = str(name or "").strip()
+        if not task:
+            continue
+        progress = _coerce_progress_value(value)
+        if progress is not None:
+            clean[task] = progress
+    _set_param_value(
+        node_item,
+        _PROGRESS_PARAM,
         json.dumps(clean, sort_keys=True, separators=(",", ":")),
         notify_scene=notify_scene,
     )
@@ -317,6 +369,7 @@ def _write_gantt_sidecar_snapshot(node_item) -> None:
         return
     nodes[node_name] = {
         "schedule_data": _param_value(model, _SCHEDULE_PARAM).strip() or "{}",
+        "progress_data": _param_value(model, _PROGRESS_PARAM).strip() or "{}",
         "view_start_date": _param_value(model, _VIEW_START_PARAM).strip(),
     }
     try:
@@ -365,6 +418,23 @@ def _load_gantt_sidecar_snapshot(node_item) -> bool:
             notify_scene=False,
         )
         changed = True
+    current_progress = _param_value(model, _PROGRESS_PARAM)
+    sidecar_progress = entry.get("progress_data")
+    if _schedule_param_is_empty(current_progress):
+        if isinstance(sidecar_progress, dict):
+            sidecar_progress = json.dumps(sidecar_progress, sort_keys=True, separators=(",", ":"))
+        sidecar_progress = str(sidecar_progress or "").strip() or "{}"
+        try:
+            parsed_progress = json.loads(sidecar_progress)
+            if isinstance(parsed_progress, dict):
+                sidecar_progress = json.dumps(parsed_progress, sort_keys=True, separators=(",", ":"))
+            else:
+                sidecar_progress = "{}"
+        except Exception:
+            sidecar_progress = "{}"
+        if not _schedule_param_is_empty(sidecar_progress):
+            _set_param_value(node_item, _PROGRESS_PARAM, sidecar_progress, notify_scene=False)
+            changed = True
     return changed
 
 
@@ -540,6 +610,7 @@ class _GanttCalendarTable(QtWidgets.QTableWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._today_column: int | None = None
+        self._progress_overlays: dict[int, tuple[int, int]] = {}
 
     def set_today_column(self, column: int | None) -> None:
         self._today_column = None if column is None else int(column)
@@ -548,8 +619,37 @@ class _GanttCalendarTable(QtWidgets.QTableWidget):
         except Exception:
             pass
 
+    def set_progress_overlays(self, overlays: dict[int, tuple[int, int]]) -> None:
+        self._progress_overlays = {
+            int(row): (int(column), int(progress))
+            for row, (column, progress) in (overlays or {}).items()
+        }
+        try:
+            self.viewport().update()
+        except Exception:
+            pass
+
     def paintEvent(self, event):
         super().paintEvent(event)
+        if self._progress_overlays:
+            painter = QtGui.QPainter(self.viewport())
+            try:
+                painter.setPen(QtCore.Qt.NoPen)
+                for row, (column, progress) in self._progress_overlays.items():
+                    if progress <= 0 or progress >= 100:
+                        continue
+                    try:
+                        rect = self.visualRect(self.model().index(int(row), int(column)))
+                    except Exception:
+                        continue
+                    if not rect.isValid() or rect.width() <= 1 or rect.height() <= 1:
+                        continue
+                    fill_height = max(1, int((max(0, min(100, progress)) / 100.0) * float(rect.height())))
+                    fill_rect = QtCore.QRect(rect.left(), rect.bottom() - fill_height + 1, rect.width(), fill_height)
+                    painter.setBrush(QtGui.QColor(29, 78, 216, 170))
+                    painter.drawRect(fill_rect)
+            finally:
+                painter.end()
         col = self._today_column
         if col is None or col < 0 or col >= self.columnCount():
             return
@@ -569,14 +669,17 @@ class _GanttCalendarTable(QtWidgets.QTableWidget):
 
 class _GanttTaskHeader(QtWidgets.QHeaderView):
     completionToggled = QtCore.Signal(int, bool)
+    progressEditRequested = QtCore.Signal(int, object)
 
     def __init__(self, parent=None):
         super().__init__(QtCore.Qt.Vertical, parent)
         self._selected_section: int | None = None
         self._completed_sections: set[int] = set()
+        self._progress_values: dict[int, int] = {}
         self._dragging_section: int | None = None
         self._drop_indicator_y: int | None = None
         self._checkbox_pressed_section: int | None = None
+        self._progress_pressed_section: int | None = None
         self.setDefaultAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
 
     def set_selected_section(self, section: int | None) -> None:
@@ -599,6 +702,27 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
         except Exception:
             self.update()
 
+    def set_progress_values(self, values: dict[int, int]) -> None:
+        clean = {}
+        for section, value in (values or {}).items():
+            progress = _coerce_progress_value(value)
+            if progress is not None and int(section) >= 0:
+                clean[int(section)] = progress
+        if clean == self._progress_values:
+            return
+        self._progress_values = clean
+        try:
+            self.viewport().update()
+        except Exception:
+            self.update()
+
+    def _progress_rect(self, rect: QtCore.QRect) -> QtCore.QRect:
+        checkbox_rect = self._checkbox_rect(rect)
+        width = 42
+        x = int(checkbox_rect.left() - width - 8)
+        y = int(rect.top() + 4)
+        return QtCore.QRect(x, y, width, max(12, int(rect.height()) - 8))
+
     def _checkbox_rect(self, rect: QtCore.QRect) -> QtCore.QRect:
         size = max(12, min(14, int(rect.height()) - 10))
         x = int(rect.right() - size - 8)
@@ -608,6 +732,10 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
     def _checkbox_rect_for_section(self, logical_index: int) -> QtCore.QRect:
         top = int(self.sectionPosition(int(logical_index)))
         return self._checkbox_rect(QtCore.QRect(0, top, self.viewport().width(), int(self.sectionSize(int(logical_index)))))
+
+    def _progress_rect_for_section(self, logical_index: int) -> QtCore.QRect:
+        top = int(self.sectionPosition(int(logical_index)))
+        return self._progress_rect(QtCore.QRect(0, top, self.viewport().width(), int(self.sectionSize(int(logical_index)))))
 
     def _set_drop_indicator_y(self, y: int | None) -> None:
         new_value = None if y is None else int(y)
@@ -658,8 +786,15 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
         painter.setFont(font)
         painter.setPen(QtGui.QColor("#f8fafc") if is_selected else QtGui.QColor("#dbe4ee"))
         checkbox_rect = self._checkbox_rect(rect)
-        text_rect = rect.adjusted(8, 0, -int(rect.width() - checkbox_rect.left() + 4), 0)
+        progress_rect = self._progress_rect(rect)
+        text_rect = rect.adjusted(8, 0, -int(rect.width() - progress_rect.left() + 4), 0)
         painter.drawText(text_rect, int(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter), text)
+        progress = self._progress_values.get(int(logical_index), 0)
+        painter.setBrush(QtGui.QColor("#10161d"))
+        painter.setPen(QtGui.QPen(QtGui.QColor("#475569"), 1))
+        painter.drawRect(progress_rect.adjusted(0, 0, -1, -1))
+        painter.setPen(QtGui.QColor("#cbd5e1"))
+        painter.drawText(progress_rect.adjusted(4, 0, -4, 0), int(QtCore.Qt.AlignCenter), str(progress))
         checkbox_checked = int(logical_index) in self._completed_sections
         painter.setBrush(QtGui.QColor("#12151a"))
         painter.setPen(QtGui.QPen(QtGui.QColor("#475569"), 1))
@@ -690,6 +825,10 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
     def mousePressEvent(self, event):
         if event.button() == QtCore.Qt.LeftButton:
             logical_index = int(self.logicalIndexAt(event.pos()))
+            if logical_index >= 0 and self._progress_rect_for_section(logical_index).contains(event.pos()):
+                self._progress_pressed_section = logical_index
+                event.accept()
+                return
             if logical_index >= 0 and self._checkbox_rect_for_section(logical_index).contains(event.pos()):
                 self._checkbox_pressed_section = logical_index
                 event.accept()
@@ -698,6 +837,9 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        if self._progress_pressed_section is not None:
+            event.accept()
+            return
         if self._checkbox_pressed_section is not None:
             event.accept()
             return
@@ -706,6 +848,14 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        if self._progress_pressed_section is not None:
+            logical_index = int(self._progress_pressed_section)
+            pressed = self._progress_rect_for_section(logical_index).contains(event.pos())
+            self._progress_pressed_section = None
+            if pressed:
+                self.progressEditRequested.emit(logical_index, self._progress_rect_for_section(logical_index))
+            event.accept()
+            return
         if self._checkbox_pressed_section is not None:
             logical_index = int(self._checkbox_pressed_section)
             pressed = self._checkbox_rect_for_section(logical_index).contains(event.pos())
@@ -721,6 +871,7 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
 
     def leaveEvent(self, event):
         super().leaveEvent(event)
+        self._progress_pressed_section = None
         self._checkbox_pressed_section = None
         if self._dragging_section is None:
             self._set_drop_indicator_y(None)
@@ -835,6 +986,7 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._task_names: list[str] = []
         self._assignments: dict[str, str] = {}
         self._completed_tasks: set[str] = set()
+        self._task_progress: dict[str, int] = {}
         self._selected_task: str | None = None
         self._ignore_header_move = False
         self._today = date.today()
@@ -932,6 +1084,10 @@ class GanttChartWidget(QtWidgets.QFrame):
             self._table.verticalHeader().completionToggled.connect(self._on_task_completion_toggled)
         except Exception:
             pass
+        try:
+            self._table.verticalHeader().progressEditRequested.connect(self._on_progress_edit_requested)
+        except Exception:
+            pass
 
         try:
             fixed_mode = QtWidgets.QHeaderView.ResizeMode.Fixed
@@ -964,6 +1120,19 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._today_jump_button.clicked.connect(self._jump_to_today)
         self._today_jump_button.raise_()
 
+        self._progress_editor = QtWidgets.QSpinBox(self._table.verticalHeader().viewport())
+        self._progress_editor.setRange(0, 100)
+        self._progress_editor.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
+        self._progress_editor.setFrame(True)
+        self._progress_editor.setAlignment(QtCore.Qt.AlignCenter)
+        self._progress_editor.setFocusPolicy(QtCore.Qt.StrongFocus)
+        self._progress_editor.setStyleSheet(
+            "QSpinBox{background:#10161d;color:#e2e8f0;border:1px solid #475569;padding:0 4px;}"
+        )
+        self._progress_editor.hide()
+        self._progress_edit_section: int | None = None
+        self._progress_editor.editingFinished.connect(self._commit_progress_edit)
+
         self._day_scroll = QtWidgets.QScrollBar(QtCore.Qt.Horizontal, self)
         self._day_scroll.setRange(0, _DAY_SCROLL_RANGE)
         self._day_scroll.setSingleStep(_DAY_SCROLL_UNITS_PER_DAY)
@@ -982,6 +1151,11 @@ class GanttChartWidget(QtWidgets.QFrame):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        try:
+            self._progress_editor.hide()
+        except Exception:
+            pass
+        self._progress_edit_section = None
         self._update_corner_button_geometry()
         self._update_today_marker()
 
@@ -1073,6 +1247,39 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._today_jump_button.setGeometry(x, y, button_size, button_size)
         self._today_jump_button.raise_()
 
+    def _on_progress_edit_requested(self, section: int, rect_obj):
+        if section < 0 or section >= len(self._task_names):
+            return
+        try:
+            rect = QtCore.QRect(rect_obj)
+        except Exception:
+            return
+        task = self._task_names[section]
+        self._progress_edit_section = int(section)
+        self._progress_editor.setGeometry(rect.adjusted(0, 0, 0, 0))
+        self._progress_editor.setValue(int(self._task_progress.get(task, 0)))
+        self._progress_editor.show()
+        self._progress_editor.raise_()
+        self._progress_editor.setFocus(QtCore.Qt.MouseFocusReason)
+        try:
+            self._progress_editor.selectAll()
+        except Exception:
+            try:
+                self._progress_editor.lineEdit().selectAll()
+            except Exception:
+                pass
+
+    def _commit_progress_edit(self):
+        section = self._progress_edit_section
+        self._progress_edit_section = None
+        try:
+            self._progress_editor.hide()
+        except Exception:
+            pass
+        if section is None or section < 0 or section >= len(self._task_names):
+            return
+        self._set_task_progress(self._task_names[section], int(self._progress_editor.value()))
+
     def _set_visible_start_date(self, visible_start: date, *, sync_scroll: bool = True, persist: bool = True) -> None:
         if visible_start == self._visible_start_date and self._visible_dates:
             if sync_scroll:
@@ -1151,9 +1358,20 @@ class GanttChartWidget(QtWidgets.QFrame):
     def _sync_from_source(self):
         self._ensure_scene()
         self._sync_pending = False
+        try:
+            self._progress_editor.hide()
+        except Exception:
+            pass
+        self._progress_edit_section = None
         if not self._sidecar_loaded:
             current_schedule = _param_value(getattr(self._node_item, "model", None), _SCHEDULE_PARAM)
-            if not _schedule_param_is_empty(current_schedule):
+            current_progress = _param_value(getattr(self._node_item, "model", None), _PROGRESS_PARAM)
+            current_view_start = _param_value(getattr(self._node_item, "model", None), _VIEW_START_PARAM).strip()
+            if (
+                (not _schedule_param_is_empty(current_schedule))
+                and (not _schedule_param_is_empty(current_progress))
+                and bool(current_view_start)
+            ):
                 self._sidecar_loaded = True
             else:
                 loaded = _load_gantt_sidecar_snapshot(self._node_item)
@@ -1173,16 +1391,33 @@ class GanttChartWidget(QtWidgets.QFrame):
             default_year=self._visible_start_date.year,
             default_month=self._visible_start_date.month,
         )
+        progress_map = _read_progress_map(self._node_item)
         has_valid_note_source = src_model is not None
         pruned = {name: day for name, day in assignments.items() if name in task_names}
         if has_valid_note_source and pruned != assignments:
             _write_assignments(self._node_item, pruned, notify_scene=False)
+        pruned_progress = {name: value for name, value in progress_map.items() if name in task_names}
         source_completed = _completed_task_names(src_model)
         completed = {name for name in source_completed if name in task_names}
+        synced_progress = dict(pruned_progress)
+        if has_valid_note_source:
+            progress_changed = pruned_progress != progress_map
+            for task in task_names:
+                current_value = int(synced_progress.get(task, 0))
+                if task in completed:
+                    if current_value != 100:
+                        synced_progress[task] = 100
+                        progress_changed = True
+                elif current_value >= 100:
+                    synced_progress[task] = 0
+                    progress_changed = True
+            if progress_changed:
+                _write_progress_map(self._node_item, synced_progress, notify_scene=False)
         if completed != source_completed:
             _write_source_completed_tasks(self._node_item, completed, notify_scene=False)
         self._task_names = task_names
         self._assignments = pruned if has_valid_note_source else assignments
+        self._task_progress = synced_progress if has_valid_note_source else progress_map
         self._completed_tasks = completed
         if self._selected_task not in self._task_names:
             self._selected_task = None
@@ -1301,10 +1536,11 @@ class GanttChartWidget(QtWidgets.QFrame):
         weekend_cell_bg = QtGui.QColor("#0c1015")
         selected_row_bg = QtGui.QColor("#16212b")
         weekend_selected_row_bg = QtGui.QColor("#121b23")
-        assigned_bg = QtGui.QColor("#0f766e")
+        assigned_bg = QtGui.QColor("#60a5fa")
         completed_assigned_bg = QtGui.QColor("#16a34a")
         assigned_fg = QtGui.QColor("#ecfeff")
         selected_row = None if self._selected_task not in self._task_names else self._task_names.index(self._selected_task)
+        progress_overlays: dict[int, tuple[int, int]] = {}
 
         for row, task in enumerate(self._task_names):
             is_selected = task == self._selected_task
@@ -1319,6 +1555,7 @@ class GanttChartWidget(QtWidgets.QFrame):
             header_item.setFont(font)
 
             assigned_column = self._visible_column_for_assignment(task)
+            progress_value = int(self._task_progress.get(task, 0))
             for day in range(self._visible_day_count()):
                 item = self._ensure_item(row, day)
                 is_weekend = False
@@ -1327,7 +1564,12 @@ class GanttChartWidget(QtWidgets.QFrame):
                 except Exception:
                     is_weekend = False
                 if assigned_column == day:
-                    item.setBackground(completed_assigned_bg if task in self._completed_tasks else assigned_bg)
+                    if task in self._completed_tasks or progress_value >= 100:
+                        item.setBackground(completed_assigned_bg)
+                    else:
+                        item.setBackground(assigned_bg)
+                        if progress_value > 0:
+                            progress_overlays[row] = (day, progress_value)
                     item.setForeground(assigned_fg)
                 else:
                     if is_selected:
@@ -1341,6 +1583,16 @@ class GanttChartWidget(QtWidgets.QFrame):
                 header.set_selected_section(selected_row)
             except Exception:
                 pass
+        if hasattr(header, "set_progress_values"):
+            try:
+                header.set_progress_values(
+                    {
+                        row: int(self._task_progress.get(task, 0))
+                        for row, task in enumerate(self._task_names)
+                    }
+                )
+            except Exception:
+                pass
         if hasattr(header, "set_completed_sections"):
             try:
                 header.set_completed_sections(
@@ -1352,6 +1604,7 @@ class GanttChartWidget(QtWidgets.QFrame):
                 )
             except Exception:
                 pass
+        self._table.set_progress_overlays(progress_overlays)
 
     def _on_cell_clicked(self, row: int, col: int):
         if row < 0 or row >= len(self._task_names):
@@ -1383,6 +1636,10 @@ class GanttChartWidget(QtWidgets.QFrame):
         if section < 0 or section >= len(self._task_names):
             return
         task = self._task_names[section]
+        progress_map = dict(self._task_progress)
+        progress_map[task] = 100 if checked else 0
+        self._task_progress = progress_map
+        _write_progress_map(self._node_item, progress_map, notify_scene=False)
         completed = set(self._completed_tasks)
         if checked:
             completed.add(task)
@@ -1391,6 +1648,37 @@ class GanttChartWidget(QtWidgets.QFrame):
         if not _write_source_completed_tasks(self._node_item, completed, notify_scene=True):
             return
         self._completed_tasks = completed
+        self._apply_table_styles()
+        self._update_labels()
+
+    def _set_task_progress(self, task: str, progress: int):
+        if not task:
+            return
+        progress_value = _coerce_progress_value(progress)
+        if progress_value is None:
+            return
+        progress_map = dict(self._task_progress)
+        progress_map[task] = progress_value
+        self._task_progress = progress_map
+        _write_progress_map(self._node_item, progress_map, notify_scene=True)
+
+        src_item, src_model = _resolve_note_source(self._node_item)
+        if src_model is not None:
+            completed = set(self._completed_tasks)
+            if progress_value >= 100:
+                completed.add(task)
+            else:
+                completed.discard(task)
+            if _write_source_completed_tasks(self._node_item, completed, notify_scene=True):
+                self._completed_tasks = completed
+        elif progress_value >= 100:
+            completed = set(self._completed_tasks)
+            completed.add(task)
+            self._completed_tasks = completed
+        else:
+            completed = set(self._completed_tasks)
+            completed.discard(task)
+            self._completed_tasks = completed
         self._apply_table_styles()
         self._update_labels()
 
