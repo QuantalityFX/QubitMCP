@@ -794,6 +794,19 @@ class NodeItem(QtWidgets.QGraphicsObject):
             right = min(right, float(debug_rect.left()) - 8.0)
         return QtCore.QRectF(left, top, max(24.0, right - left), 24.0)
 
+    def _header_badge_text(self) -> str:
+        return (self.model.kind or "node").upper()
+
+    def _header_badge_width(self) -> float:
+        badge = self._header_badge_text()
+        try:
+            badge_font = QtGui.QFont(QtWidgets.QApplication.font())
+            badge_font.setBold(True)
+            text_w = QtGui.QFontMetrics(badge_font).horizontalAdvance(badge)
+        except Exception:
+            text_w = max(0, len(badge) * 8)
+        return max(80.0, float(text_w) + 18.0)
+
     def _toggle_header_debug_button(self) -> bool:
         kind = self._header_debug_button_kind()
         if not kind:
@@ -1712,7 +1725,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             body_h = 0
             node_w = self._BASE_W
 
-        new_w = max(node_w, self._BASE_W)
+        new_w = max(node_w, self._BASE_W, self._header_badge_width() + 20.0)
         extra_pad = self._PADDING
         if kind in ("import", "scene", "scene_assembly", "scene_outliner"):
             extra_pad = 0.0
@@ -5891,7 +5904,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
         # --- Kind badge (type pill) ---
         try:
             kb_y = 38  # under the title line
-            kb = QtCore.QRectF(10, kb_y, 80, 16)
+            badge = self._header_badge_text()
+            badge_font = p.font()
+            badge_font.setBold(True)
+            p.setFont(badge_font)
+            badge_w = min(self._header_badge_width(), max(80.0, float(self.width) - 20.0))
+            kb = QtCore.QRectF(10, kb_y, badge_w, 16)
             p.setBrush(QtGui.QBrush(QtGui.QColor("#d1d5db")))
             p.setPen(QtCore.Qt.NoPen)
             r = 8.0
@@ -5908,11 +5926,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             path.quadTo(kb.left(), kb.top(), kb.left() + rl, kb.top())
             path.closeSubpath()
             p.drawPath(path)
-            badge_font = p.font()
-            badge_font.setBold(True)
-            p.setFont(badge_font)
             p.setPen(QtGui.QPen(QtGui.QColor("#111111")))
-            badge = (self.model.kind or "node").upper()
             p.drawText(kb.adjusted(6, 1, -6, -2), QtCore.Qt.AlignCenter, badge)
         except Exception as e:
             print("[EchoGraph][paint] badge fail:", e)

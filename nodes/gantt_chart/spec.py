@@ -210,6 +210,48 @@ def _set_section_resize_mode(header, section: int, mode) -> None:
         header.setResizeMode(section, mode)
 
 
+def _reorder_note_params(node_item, ordered_names: list[str]) -> bool:
+    src_item, src_model = _resolve_note_source(node_item)
+    if src_model is None:
+        return False
+    params = list(getattr(src_model, "params", None) or [])
+    hidden = _hidden_params(src_model)
+    visible_entries = []
+    other_entries = []
+    for entry in params:
+        name = (entry.get("name") or "").strip()
+        key = name.lower()
+        if name and key != "__ui_hidden_params" and key not in hidden:
+            visible_entries.append(entry)
+        else:
+            other_entries.append(entry)
+    if not visible_entries:
+        return False
+
+    by_name = {(entry.get("name") or "").strip(): entry for entry in visible_entries}
+    reordered_visible = [by_name[name] for name in ordered_names if name in by_name]
+    seen_ids = {id(entry) for entry in reordered_visible}
+    for entry in visible_entries:
+        if id(entry) not in seen_ids:
+            reordered_visible.append(entry)
+
+    new_params = reordered_visible + other_entries
+    if new_params == params:
+        return False
+    src_model.params = new_params
+    scene = None
+    try:
+        scene = node_item.scene()
+    except Exception:
+        scene = None
+    if scene is not None and hasattr(scene, "set_node_params"):
+        try:
+            scene.set_node_params(src_model.name, new_params, rebuild=True, emit=True)
+        except Exception:
+            pass
+    return True
+
+
 class GanttChartWidget(QtWidgets.QFrame):
     def __init__(self, node_item, parent=None):
         super().__init__(parent)
@@ -222,13 +264,17 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._task_names: list[str] = []
         self._assignments: dict[str, int] = {}
         self._selected_task: str | None = None
+        self._ignore_header_move = False
 
         self.setObjectName("GanttChartWidget")
         self.setStyleSheet(
             "QFrame#GanttChartWidget{background:#0f1216;border:1px solid #334155;border-radius:8px;}"
             "QLabel{color:#cbd5e1;}"
-            "QTableWidget{background:#0f1216;color:#e2e8f0;border:1px solid #273244;border-radius:6px;gridline-color:#223041;}"
+            "QTableWidget{background:#0f1216;color:#e2e8f0;border:1px solid #273244;border-radius:6px;"
+            "gridline-color:#223041;selection-background-color:#16212b;selection-color:#e2e8f0;}"
+            "QTableWidget::item:selected{background:#16212b;color:#e2e8f0;}"
             "QHeaderView::section{background:#141c27;color:#dbe4ee;border:1px solid #223041;padding:4px;font-weight:600;}"
+            "QHeaderView::section:checked{background:#1d4f74;color:#f8fafc;}"
             "QTableCornerButton::section{background:#141c27;border:1px solid #223041;}"
         )
 
@@ -251,42 +297,78 @@ class GanttChartWidget(QtWidgets.QFrame):
 
         layout.addLayout(status_row)
 
-        self._table = QtWidgets.QTableWidget(0, _DAY_COUNT + 1, self)
+        self._table = QtWidgets.QTableWidget(0, _DAY_COUNT, self)
         self._table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        self._table.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
+        self._table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self._table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self._table.setFocusPolicy(QtCore.Qt.NoFocus)
         self._table.setWordWrap(False)
         self._table.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self._table.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
-        self._table.verticalHeader().setVisible(False)
+        self._table.verticalHeader().setVisible(True)
         self._table.setAlternatingRowColors(False)
         self._table.setShowGrid(True)
-        self._table.setHorizontalHeaderLabels(["Task"] + [str(i) for i in range(1, _DAY_COUNT + 1)])
+        self._table.setHorizontalHeaderLabels([str(i) for i in range(1, _DAY_COUNT + 1)])
         self._table.horizontalHeader().setDefaultAlignment(QtCore.Qt.AlignCenter)
         self._table.horizontalHeader().setSectionsClickable(True)
+        try:
+            self._table.horizontalHeader().setHighlightSections(False)
+        except Exception:
+            pass
+        self._table.verticalHeader().setSectionsClickable(True)
+        try:
+            self._table.verticalHeader().setHighlightSections(True)
+        except Exception:
+            pass
+        try:
+            self._table.verticalHeader().setSectionsMovable(True)
+        except Exception:
+            pass
+        try:
+            self._table.verticalHeader().sectionMoved.connect(self._on_task_section_moved)
+        except Exception:
+            pass
 
         try:
             fixed_mode = QtWidgets.QHeaderView.ResizeMode.Fixed
         except AttributeError:
             fixed_mode = QtWidgets.QHeaderView.Fixed
-        _set_section_resize_mode(self._table.horizontalHeader(), 0, fixed_mode)
-        self._table.setColumnWidth(0, 180)
-        for day in range(1, _DAY_COUNT + 1):
+        try:
+            _set_section_resize_mode(self._table.verticalHeader(), 0, fixed_mode)
+        except Exception:
+            pass
+        try:
+            self._table.verticalHeader().setDefaultSectionSize(26)
+            self._table.verticalHeader().setMinimumWidth(180)
+        except Exception:
+            pass
+        for day in range(_DAY_COUNT):
             _set_section_resize_mode(self._table.horizontalHeader(), day, fixed_mode)
             self._table.setColumnWidth(day, 24)
 
         self._table.cellClicked.connect(self._on_cell_clicked)
         try:
+            self._table.verticalHeader().sectionClicked.connect(self._on_task_header_clicked)
+        except Exception:
+            pass
+        try:
             self._table.horizontalHeader().sectionClicked.connect(self._on_header_clicked)
         except Exception:
             pass
+        self._table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self._table.customContextMenuRequested.connect(self._on_table_context_menu)
         layout.addWidget(self._table, 1)
 
         self._ensure_scene()
         self._sync_from_source()
+        QtCore.QTimer.singleShot(0, self._post_attach_sync)
 
     def sizeHint(self):
         return QtCore.QSize(1000, 320)
+
+    def _post_attach_sync(self):
+        self._ensure_scene()
+        self._schedule_sync()
 
     def _ensure_scene(self):
         if self._scene is None:
@@ -313,12 +395,14 @@ class GanttChartWidget(QtWidgets.QFrame):
             self._schedule_sync()
 
     def _schedule_sync(self):
+        self._ensure_scene()
         if self._sync_pending:
             return
         self._sync_pending = True
         QtCore.QTimer.singleShot(0, self._sync_from_source)
 
     def _sync_from_source(self):
+        self._ensure_scene()
         self._sync_pending = False
         src_item, src_model = _resolve_note_source(self._node_item)
         self._source_invalid = bool(src_item is not None and src_model is None)
@@ -372,19 +456,23 @@ class GanttChartWidget(QtWidgets.QFrame):
 
     def _rebuild_table(self):
         self._table.blockSignals(True)
+        self._ignore_header_move = True
         self._table.setRowCount(len(self._task_names))
         for row, task in enumerate(self._task_names):
             self._table.setRowHeight(row, 26)
-            label_item = self._ensure_item(row, 0)
-            label_item.setText(task)
-            label_item.setTextAlignment(int(QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft))
-            label_item.setToolTip(task)
-            for day in range(1, _DAY_COUNT + 1):
+            header_item = self._table.verticalHeaderItem(row)
+            if header_item is None:
+                header_item = QtWidgets.QTableWidgetItem(task)
+                self._table.setVerticalHeaderItem(row, header_item)
+            header_item.setText(task)
+            header_item.setToolTip(task)
+            for day in range(_DAY_COUNT):
                 cell = self._ensure_item(row, day)
                 cell.setText("")
                 cell.setTextAlignment(int(QtCore.Qt.AlignCenter))
-                cell.setToolTip(f"{task}: day {day}")
+                cell.setToolTip(f"{task}: day {day + 1}")
         self._table.blockSignals(False)
+        self._ignore_header_move = False
         self._apply_table_styles()
 
     def _apply_table_styles(self):
@@ -399,54 +487,118 @@ class GanttChartWidget(QtWidgets.QFrame):
 
         for row, task in enumerate(self._task_names):
             is_selected = task == self._selected_task
-            label_item = self._ensure_item(row, 0)
-            label_item.setBackground(selected_label_bg if is_selected else label_bg)
-            label_item.setForeground(selected_label_fg if is_selected else label_fg)
-            font = label_item.font()
+            header_item = self._table.verticalHeaderItem(row)
+            if header_item is None:
+                header_item = QtWidgets.QTableWidgetItem(task)
+                self._table.setVerticalHeaderItem(row, header_item)
+            header_item.setBackground(selected_label_bg if is_selected else label_bg)
+            header_item.setForeground(selected_label_fg if is_selected else label_fg)
+            font = header_item.font()
             font.setBold(bool(is_selected))
-            label_item.setFont(font)
+            header_item.setFont(font)
 
             assigned_day = self._assignments.get(task)
-            for day in range(1, _DAY_COUNT + 1):
+            for day in range(_DAY_COUNT):
                 item = self._ensure_item(row, day)
-                if assigned_day == day:
+                if assigned_day == (day + 1):
                     item.setBackground(assigned_bg)
                     item.setForeground(assigned_fg)
                 else:
                     item.setBackground(selected_row_bg if is_selected else cell_bg)
                     item.setForeground(label_fg)
+        try:
+            self._table.blockSignals(True)
+            if self._selected_task and self._selected_task in self._task_names:
+                row = self._task_names.index(self._selected_task)
+                self._table.selectRow(row)
+                assigned_day = self._assignments.get(self._selected_task)
+                if assigned_day:
+                    assigned_item = self._table.item(row, int(assigned_day) - 1)
+                    if assigned_item is not None:
+                        try:
+                            assigned_item.setSelected(False)
+                        except Exception:
+                            pass
+            else:
+                self._table.clearSelection()
+        except Exception:
+            pass
+        finally:
+            try:
+                self._table.blockSignals(False)
+            except Exception:
+                pass
 
     def _on_cell_clicked(self, row: int, col: int):
         if row < 0 or row >= len(self._task_names):
             return
         task = self._task_names[row]
-        self._selected_task = task
-        if col <= 0:
+        if not self._selected_task:
+            self._selected_task = task
             self._apply_table_styles()
             self._update_labels()
             return
-        self._set_task_day(task, col)
+        self._set_task_day(self._selected_task, col + 1)
 
     def _on_header_clicked(self, section: int):
-        if section <= 0 or section > _DAY_COUNT:
+        if section < 0 or section >= _DAY_COUNT:
             return
         if not self._selected_task:
             self._selection_label.setText("Select a task first, then choose a day.")
             return
-        self._set_task_day(self._selected_task, section)
+        self._set_task_day(self._selected_task, section + 1)
+
+    def _on_task_header_clicked(self, section: int):
+        if section < 0 or section >= len(self._task_names):
+            return
+        self._selected_task = self._task_names[section]
+        self._apply_table_styles()
+        self._update_labels()
 
     def _set_task_day(self, task: str, day: int):
         if not task or not (1 <= int(day) <= _DAY_COUNT):
             return
         mapping = dict(self._assignments)
-        if mapping.get(task) == int(day):
-            mapping.pop(task, None)
-        else:
-            mapping[task] = int(day)
+        mapping[task] = int(day)
         self._assignments = mapping
         _write_assignments(self._node_item, mapping, notify_scene=True)
         self._apply_table_styles()
         self._update_labels()
+
+    def _on_table_context_menu(self, pos):
+        item = self._table.itemAt(pos)
+        if item is None:
+            return
+        row = int(item.row())
+        col = int(item.column())
+        if row < 0 or row >= len(self._task_names):
+            return
+        task = self._task_names[row]
+        day = col + 1
+        if self._assignments.get(task) != day:
+            return
+        mapping = dict(self._assignments)
+        mapping.pop(task, None)
+        self._assignments = mapping
+        self._selected_task = task
+        _write_assignments(self._node_item, mapping, notify_scene=True)
+        self._apply_table_styles()
+        self._update_labels()
+
+    def _on_task_section_moved(self, logical_index: int, _old_visual_index: int, _new_visual_index: int):
+        if self._ignore_header_move:
+            return
+        if logical_index < 0 or logical_index >= len(self._task_names):
+            return
+        header = self._table.verticalHeader()
+        ordered = [
+            self._task_names[row]
+            for row in sorted(range(len(self._task_names)), key=lambda r: int(header.visualIndex(r)))
+        ]
+        if _reorder_note_params(self._node_item, ordered):
+            self._task_names = ordered
+            self._rebuild_table()
+            self._update_labels()
 
 
 def render_node_body(node_item, y_cursor: int) -> int:
