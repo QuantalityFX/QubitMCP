@@ -253,7 +253,51 @@ def _coerce_iso_date(raw, *, default_year: int, default_month: int) -> str | Non
         return None
 
 
-def _read_assignments(node_item, *, default_year: int, default_month: int) -> dict[str, str]:
+def _normalize_assignment_entry(start_iso: str, end_iso: str) -> tuple[str, str]:
+    try:
+        start_date = date.fromisoformat(str(start_iso))
+        end_date = date.fromisoformat(str(end_iso))
+    except Exception:
+        return str(start_iso), str(end_iso)
+    if end_date < start_date:
+        start_date, end_date = end_date, start_date
+    return start_date.isoformat(), end_date.isoformat()
+
+
+def _coerce_assignment_entry(raw, *, default_year: int, default_month: int) -> tuple[str, str] | None:
+    start_iso = None
+    end_iso = None
+    if isinstance(raw, dict):
+        start_iso = _coerce_iso_date(
+            raw.get("start", raw.get("date", raw.get("day"))),
+            default_year=default_year,
+            default_month=default_month,
+        )
+        end_iso = _coerce_iso_date(
+            raw.get("end", raw.get("finish", raw.get("to"))),
+            default_year=default_year,
+            default_month=default_month,
+        )
+    elif isinstance(raw, (list, tuple)):
+        if len(raw) >= 1:
+            start_iso = _coerce_iso_date(raw[0], default_year=default_year, default_month=default_month)
+        if len(raw) >= 2:
+            end_iso = _coerce_iso_date(raw[1], default_year=default_year, default_month=default_month)
+    else:
+        start_iso = _coerce_iso_date(raw, default_year=default_year, default_month=default_month)
+        end_iso = start_iso
+    if start_iso is None and end_iso is None:
+        return None
+    if start_iso is None:
+        start_iso = end_iso
+    if end_iso is None:
+        end_iso = start_iso
+    if start_iso is None or end_iso is None:
+        return None
+    return _normalize_assignment_entry(start_iso, end_iso)
+
+
+def _read_assignments(node_item, *, default_year: int, default_month: int) -> dict[str, tuple[str, str]]:
     model = getattr(node_item, "model", None)
     if model is None:
         return {}
@@ -266,14 +310,14 @@ def _read_assignments(node_item, *, default_year: int, default_month: int) -> di
         return {}
     if not isinstance(data, dict):
         return {}
-    clean: dict[str, str] = {}
+    clean: dict[str, tuple[str, str]] = {}
     for name, value in data.items():
         task = str(name or "").strip()
         if not task:
             continue
-        iso = _coerce_iso_date(value, default_year=default_year, default_month=default_month)
-        if iso:
-            clean[task] = iso
+        entry = _coerce_assignment_entry(value, default_year=default_year, default_month=default_month)
+        if entry:
+            clean[task] = entry
     return clean
 
 
@@ -309,15 +353,17 @@ def _read_progress_map(node_item) -> dict[str, int]:
     return clean
 
 
-def _write_assignments(node_item, mapping: dict[str, str], *, notify_scene: bool = True) -> None:
+def _write_assignments(node_item, mapping: dict[str, object], *, notify_scene: bool = True) -> None:
     clean = {}
     for name, value in (mapping or {}).items():
         task = str(name or "").strip()
         if not task:
             continue
-        iso = _coerce_iso_date(value, default_year=date.today().year, default_month=date.today().month)
-        if iso:
-            clean[task] = iso
+        entry = _coerce_assignment_entry(value, default_year=date.today().year, default_month=date.today().month)
+        if not entry:
+            continue
+        start_iso, end_iso = entry
+        clean[task] = start_iso if start_iso == end_iso else {"start": start_iso, "end": end_iso}
     _set_param_value(
         node_item,
         _SCHEDULE_PARAM,
@@ -965,15 +1011,19 @@ class _GanttTaskDividerHandle(QtWidgets.QWidget):
 class _GanttCalendarTable(QtWidgets.QTableWidget):
     cellShortRightClicked = QtCore.Signal(int, int)
     cellLeftDoubleClicked = QtCore.Signal(int, int)
+    assignmentResizeMoved = QtCore.Signal(int, int)
+    assignmentResizeFinished = QtCore.Signal(int, int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._today_column: int | None = None
-        self._assignment_overlays: dict[int, tuple[int, QtGui.QColor]] = {}
-        self._progress_overlays: dict[int, tuple[int, int]] = {}
+        self._assignment_overlays: dict[int, tuple[int, int, QtGui.QColor]] = {}
+        self._progress_overlays: dict[int, tuple[int, int, int]] = {}
         self._right_press_pos: QtCore.QPoint | None = None
         self._right_press_index = QtCore.QModelIndex()
         self._right_drag_threshold = 0
+        self._resize_drag_row: int | None = None
+        self._resize_drag_start_column: int | None = None
 
     def set_today_column(self, column: int | None) -> None:
         self._today_column = None if column is None else int(column)
@@ -982,22 +1032,22 @@ class _GanttCalendarTable(QtWidgets.QTableWidget):
         except Exception:
             pass
 
-    def set_progress_overlays(self, overlays: dict[int, tuple[int, int]]) -> None:
+    def set_progress_overlays(self, overlays: dict[int, tuple[int, int, int]]) -> None:
         self._progress_overlays = {
-            int(row): (int(column), int(progress))
-            for row, (column, progress) in (overlays or {}).items()
+            int(row): (int(start_column), int(end_column), int(progress))
+            for row, (start_column, end_column, progress) in (overlays or {}).items()
         }
         try:
             self.viewport().update()
         except Exception:
             pass
 
-    def set_assignment_overlays(self, overlays: dict[int, tuple[int, QtGui.QColor]]) -> None:
-        clean: dict[int, tuple[int, QtGui.QColor]] = {}
+    def set_assignment_overlays(self, overlays: dict[int, tuple[int, int, QtGui.QColor]]) -> None:
+        clean: dict[int, tuple[int, int, QtGui.QColor]] = {}
         for row, value in (overlays or {}).items():
             try:
-                column, color = value
-                clean[int(row)] = (int(column), QtGui.QColor(color))
+                start_column, end_column, color = value
+                clean[int(row)] = (int(start_column), int(end_column), QtGui.QColor(color))
             except Exception:
                 continue
         self._assignment_overlays = clean
@@ -1006,9 +1056,76 @@ class _GanttCalendarTable(QtWidgets.QTableWidget):
         except Exception:
             pass
 
+    def _assignment_rect(self, row: int, start_column: int, end_column: int) -> QtCore.QRectF:
+        try:
+            start_rect = self.visualRect(self.model().index(int(row), int(start_column)))
+            end_rect = self.visualRect(self.model().index(int(row), int(end_column)))
+        except Exception:
+            return QtCore.QRectF()
+        if not start_rect.isValid() or not end_rect.isValid():
+            return QtCore.QRectF()
+        combined = start_rect.united(end_rect).adjusted(1, 1, -1, -1)
+        if combined.width() <= 1 or combined.height() <= 1:
+            return QtCore.QRectF()
+        return QtCore.QRectF(combined)
+
+    def _column_for_pos_x(self, x: int) -> int | None:
+        count = int(self.columnCount())
+        if count <= 0:
+            return None
+        for column in range(count):
+            try:
+                left = int(self.columnViewportPosition(column))
+                width = int(self.columnWidth(column))
+            except Exception:
+                continue
+            if x < (left + width):
+                return int(column)
+        return int(count - 1)
+
+    def _resize_hit_for_pos(self, pos) -> tuple[int, int] | None:
+        try:
+            index = self.indexAt(pos)
+        except Exception:
+            index = QtCore.QModelIndex()
+        if not index.isValid():
+            return None
+        row = int(index.row())
+        overlay = self._assignment_overlays.get(row)
+        if not overlay:
+            return None
+        start_column, end_column, _color = overlay
+        rect = self._assignment_rect(row, start_column, end_column)
+        if not rect.isValid():
+            return None
+        point = QtCore.QPointF(pos)
+        if not rect.contains(point):
+            return None
+        if abs(float(point.x()) - float(rect.right())) > 6.0:
+            return None
+        return row, end_column
+
+    def _update_resize_cursor(self, pos=None) -> None:
+        if self._resize_drag_row is not None:
+            self.viewport().setCursor(QtCore.Qt.SizeHorCursor)
+            return
+        hit = self._resize_hit_for_pos(pos) if pos is not None else None
+        if hit is not None:
+            self.viewport().setCursor(QtCore.Qt.SizeHorCursor)
+        else:
+            self.viewport().unsetCursor()
+
     def viewportEvent(self, event):
         event_type = event.type()
-        if event_type == QtCore.QEvent.MouseButtonPress and event.button() == QtCore.Qt.RightButton:
+        if event_type == QtCore.QEvent.MouseButtonPress and event.button() == QtCore.Qt.LeftButton:
+            hit = self._resize_hit_for_pos(event.pos())
+            if hit is not None:
+                self._resize_drag_row = int(hit[0])
+                self._resize_drag_start_column = int(hit[1])
+                self._update_resize_cursor(event.pos())
+                event.accept()
+                return True
+        elif event_type == QtCore.QEvent.MouseButtonPress and event.button() == QtCore.Qt.RightButton:
             try:
                 self._right_press_pos = QtCore.QPoint(event.pos())
             except Exception:
@@ -1022,6 +1139,13 @@ class _GanttCalendarTable(QtWidgets.QTableWidget):
             except Exception:
                 self._right_drag_threshold = 8
         elif event_type == QtCore.QEvent.MouseMove:
+            if self._resize_drag_row is not None and bool(event.buttons() & QtCore.Qt.LeftButton):
+                target_column = self._column_for_pos_x(int(event.pos().x()))
+                if target_column is not None:
+                    self.assignmentResizeMoved.emit(int(self._resize_drag_row), int(target_column))
+                self._update_resize_cursor(event.pos())
+                event.accept()
+                return True
             if self._right_press_pos is not None and bool(event.buttons() & QtCore.Qt.RightButton):
                 try:
                     pos = QtCore.QPoint(event.pos())
@@ -1030,6 +1154,7 @@ class _GanttCalendarTable(QtWidgets.QTableWidget):
                         self._right_press_index = QtCore.QModelIndex()
                 except Exception:
                     pass
+            self._update_resize_cursor(event.pos())
         elif event_type == QtCore.QEvent.MouseButtonDblClick and event.button() == QtCore.Qt.LeftButton:
             try:
                 dbl_index = self.indexAt(event.pos())
@@ -1062,6 +1187,19 @@ class _GanttCalendarTable(QtWidgets.QTableWidget):
                         self.cellShortRightClicked.emit(int(target_index.row()), int(target_index.column()))
             self._right_press_pos = None
             self._right_press_index = QtCore.QModelIndex()
+        elif event_type == QtCore.QEvent.MouseButtonRelease and event.button() == QtCore.Qt.LeftButton:
+            if self._resize_drag_row is not None:
+                target_column = self._column_for_pos_x(int(event.pos().x()))
+                if target_column is not None:
+                    self.assignmentResizeFinished.emit(int(self._resize_drag_row), int(target_column))
+                self._resize_drag_row = None
+                self._resize_drag_start_column = None
+                self._update_resize_cursor(event.pos())
+                event.accept()
+                return True
+        elif event_type == QtCore.QEvent.Leave:
+            if self._resize_drag_row is None:
+                self._update_resize_cursor(None)
         return super().viewportEvent(event)
 
     def paintEvent(self, event):
@@ -1074,29 +1212,17 @@ class _GanttCalendarTable(QtWidgets.QTableWidget):
                 except Exception:
                     pass
                 painter.setPen(QtCore.Qt.NoPen)
-                for row, (column, color) in self._assignment_overlays.items():
-                    try:
-                        rect = self.visualRect(self.model().index(int(row), int(column)))
-                    except Exception:
-                        continue
-                    if not rect.isValid() or rect.width() <= 2 or rect.height() <= 2:
-                        continue
-                    rounded_rect = QtCore.QRectF(rect.adjusted(1, 1, -1, -1))
-                    if rounded_rect.width() <= 1 or rounded_rect.height() <= 1:
+                for row, (start_column, end_column, color) in self._assignment_overlays.items():
+                    rounded_rect = self._assignment_rect(int(row), int(start_column), int(end_column))
+                    if not rounded_rect.isValid():
                         continue
                     painter.setBrush(QtGui.QBrush(color))
                     painter.drawRoundedRect(rounded_rect, 4.0, 4.0)
-                for row, (column, progress) in self._progress_overlays.items():
+                for row, (start_column, end_column, progress) in self._progress_overlays.items():
                     if progress <= 0 or progress >= 100:
                         continue
-                    try:
-                        rect = self.visualRect(self.model().index(int(row), int(column)))
-                    except Exception:
-                        continue
-                    if not rect.isValid() or rect.width() <= 2 or rect.height() <= 2:
-                        continue
-                    rounded_rect = QtCore.QRectF(rect.adjusted(1, 1, -1, -1))
-                    if rounded_rect.width() <= 1 or rounded_rect.height() <= 1:
+                    rounded_rect = self._assignment_rect(int(row), int(start_column), int(end_column))
+                    if not rounded_rect.isValid():
                         continue
                     fill_height = max(1.0, (max(0, min(100, progress)) / 100.0) * float(rounded_rect.height()))
                     fill_rect = QtCore.QRectF(
@@ -1708,11 +1834,12 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._source_name = ""
         self._source_invalid = False
         self._task_names: list[str] = []
-        self._assignments: dict[str, str] = {}
+        self._assignments: dict[str, tuple[str, str]] = {}
         self._completed_tasks: set[str] = set()
         self._task_progress: dict[str, int] = {}
         self._task_notifications: dict[str, dict[str, str]] = {}
         self._selected_task: str | None = None
+        self._assignment_resize_preview: tuple[str, int] | None = None
         self._processing_due_notifications = False
         self._active_notification_popups: list[QtWidgets.QMessageBox] = []
         self._ignore_header_move = False
@@ -1855,6 +1982,8 @@ class GanttChartWidget(QtWidgets.QFrame):
         except Exception:
             pass
         self._table.cellShortRightClicked.connect(self._on_table_short_right_click)
+        self._table.assignmentResizeMoved.connect(self._on_assignment_resize_moved)
+        self._table.assignmentResizeFinished.connect(self._on_assignment_resize_finished)
         layout.addWidget(self._table, 1)
 
         self._task_divider_handle = _GanttTaskDividerHandle(self._table, self)
@@ -1990,16 +2119,35 @@ class GanttChartWidget(QtWidgets.QFrame):
     def _visible_date_for_day(self, day: int) -> date:
         return self._visible_start_date + timedelta(days=max(0, int(day) - 1))
 
-    def _visible_column_for_assignment(self, task: str) -> int | None:
-        raw = self._assignments.get(task, "")
+    def _assignment_dates_for_task(self, task: str) -> tuple[date, date] | None:
+        raw = self._assignments.get(task)
+        if not raw:
+            return None
         try:
-            assigned = date.fromisoformat(str(raw))
+            start_iso, end_iso = raw
+            start_date = date.fromisoformat(str(start_iso))
+            end_date = date.fromisoformat(str(end_iso))
         except Exception:
             return None
-        delta = (assigned - self._visible_start_date).days
-        if 0 <= delta < self._visible_day_count():
-            return int(delta)
-        return None
+        if end_date < start_date:
+            start_date, end_date = end_date, start_date
+        return start_date, end_date
+
+    def _visible_assignment_span(self, task: str) -> tuple[int, int] | None:
+        dates = self._assignment_dates_for_task(task)
+        if dates is None:
+            return None
+        start_date, end_date = dates
+        start_delta = int((start_date - self._visible_start_date).days)
+        end_delta = int((end_date - self._visible_start_date).days)
+        day_count = self._visible_day_count()
+        if end_delta < 0 or start_delta >= day_count:
+            return None
+        return max(0, start_delta), min(day_count - 1, end_delta)
+
+    def _visible_column_for_assignment(self, task: str) -> int | None:
+        span = self._visible_assignment_span(task)
+        return None if span is None else int(span[0])
 
     def _sync_view_start_from_params(self, *, force: bool = False):
         model = getattr(self._node_item, "model", None)
@@ -2409,6 +2557,7 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._task_progress = synced_progress if has_valid_note_source else progress_map
         self._task_notifications = pruned_notifications if has_valid_note_source else notifications
         self._completed_tasks = completed
+        self._assignment_resize_preview = None
         if self._selected_task not in self._task_names:
             self._selected_task = None
         self._rebuild_table()
@@ -2432,10 +2581,17 @@ class GanttChartWidget(QtWidgets.QFrame):
             raw = self._assignments.get(self._selected_task)
             if raw:
                 try:
-                    assigned = date.fromisoformat(str(raw))
-                    self._selection_label.setText(
-                        f"Selected: {self._selected_task} -> {calendar.month_abbr[assigned.month]} {assigned.day}, {assigned.year}"
-                    )
+                    start_iso, end_iso = raw
+                    assigned_start = date.fromisoformat(str(start_iso))
+                    assigned_end = date.fromisoformat(str(end_iso))
+                    if assigned_start == assigned_end:
+                        self._selection_label.setText(
+                            f"Selected: {self._selected_task} -> {calendar.month_abbr[assigned_start.month]} {assigned_start.day}, {assigned_start.year}"
+                        )
+                    else:
+                        self._selection_label.setText(
+                            f"Selected: {self._selected_task} -> {assigned_start.isoformat()} to {assigned_end.isoformat()}"
+                        )
                 except Exception:
                     self._selection_label.setText(f"Selected: {self._selected_task} -> {raw}")
             else:
@@ -2536,8 +2692,8 @@ class GanttChartWidget(QtWidgets.QFrame):
         completed_assigned_bg = QtGui.QColor("#16a34a")
         assigned_fg = QtGui.QColor("#ecfeff")
         selected_row = None if self._selected_task not in self._task_names else self._task_names.index(self._selected_task)
-        assignment_overlays: dict[int, tuple[int, QtGui.QColor]] = {}
-        progress_overlays: dict[int, tuple[int, int]] = {}
+        assignment_overlays: dict[int, tuple[int, int, QtGui.QColor]] = {}
+        progress_overlays: dict[int, tuple[int, int, int]] = {}
 
         for row, task in enumerate(self._task_names):
             is_selected = task == self._selected_task
@@ -2551,7 +2707,11 @@ class GanttChartWidget(QtWidgets.QFrame):
             font.setBold(bool(is_selected))
             header_item.setFont(font)
 
-            assigned_column = self._visible_column_for_assignment(task)
+            assigned_span = self._visible_assignment_span(task)
+            if self._assignment_resize_preview is not None and self._assignment_resize_preview[0] == task:
+                preview_end = int(self._assignment_resize_preview[1])
+                if assigned_span is not None:
+                    assigned_span = (int(assigned_span[0]), max(int(assigned_span[0]), preview_end))
             progress_value = int(self._task_progress.get(task, 0))
             for day in range(self._visible_day_count()):
                 item = self._ensure_item(row, day)
@@ -2568,13 +2728,13 @@ class GanttChartWidget(QtWidgets.QFrame):
                 )
                 item.setBackground(base_bg)
                 item.setForeground(label_fg)
-                if assigned_column == day:
+                if assigned_span is not None and assigned_span[0] <= day <= assigned_span[1]:
                     if task in self._completed_tasks or progress_value >= 100:
-                        assignment_overlays[row] = (day, completed_assigned_bg)
+                        assignment_overlays[row] = (assigned_span[0], assigned_span[1], completed_assigned_bg)
                     else:
-                        assignment_overlays[row] = (day, assigned_bg)
+                        assignment_overlays[row] = (assigned_span[0], assigned_span[1], assigned_bg)
                         if progress_value > 0:
-                            progress_overlays[row] = (day, progress_value)
+                            progress_overlays[row] = (assigned_span[0], assigned_span[1], progress_value)
                     item.setForeground(assigned_fg)
         header = self._table.verticalHeader()
         if hasattr(header, "set_selected_section"):
@@ -2622,6 +2782,11 @@ class GanttChartWidget(QtWidgets.QFrame):
             return
         task = self._task_names[row]
         self._selected_task = task
+        assigned_span = self._visible_assignment_span(task)
+        if assigned_span is not None and assigned_span[0] <= col <= assigned_span[1]:
+            self._apply_table_styles()
+            self._update_labels()
+            return
         self._set_task_day(task, col + 1)
 
     def _on_cell_double_clicked(self, row: int, _col: int):
@@ -2784,30 +2949,70 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._apply_table_styles()
         self._update_labels()
 
+    def _set_task_day_range(self, task: str, start_date: date, end_date: date, *, notify_scene: bool = True):
+        if not task:
+            return
+        self._assignment_resize_preview = None
+        mapping = dict(self._assignments)
+        mapping[task] = _normalize_assignment_entry(start_date.isoformat(), end_date.isoformat())
+        self._assignments = mapping
+        _write_assignments(self._node_item, mapping, notify_scene=notify_scene)
+        self._apply_table_styles()
+        self._update_labels()
+
     def _set_task_day(self, task: str, day: int):
         if not task or not (1 <= int(day) <= self._visible_day_count()):
             return
-        mapping = dict(self._assignments)
-        mapping[task] = self._visible_date_for_day(day).isoformat()
-        self._assignments = mapping
-        _write_assignments(self._node_item, mapping, notify_scene=True)
-        self._apply_table_styles()
-        self._update_labels()
+        assigned_date = self._visible_date_for_day(day)
+        self._set_task_day_range(task, assigned_date, assigned_date, notify_scene=True)
 
     def _remove_task_day_at(self, row: int, col: int) -> bool:
         if row < 0 or row >= len(self._task_names):
             return False
         task = self._task_names[row]
-        if self._visible_column_for_assignment(task) != col:
+        assigned_span = self._visible_assignment_span(task)
+        if assigned_span is None or not (assigned_span[0] <= col <= assigned_span[1]):
             return False
         mapping = dict(self._assignments)
         mapping.pop(task, None)
+        self._assignment_resize_preview = None
         self._assignments = mapping
         self._selected_task = task
         _write_assignments(self._node_item, mapping, notify_scene=True)
         self._apply_table_styles()
         self._update_labels()
         return True
+
+    def _on_assignment_resize_moved(self, row: int, col: int):
+        if row < 0 or row >= len(self._task_names):
+            return
+        task = self._task_names[row]
+        assigned_span = self._visible_assignment_span(task)
+        if assigned_span is None:
+            return
+        self._selected_task = task
+        self._assignment_resize_preview = (task, max(int(assigned_span[0]), int(col)))
+        self._apply_table_styles()
+        self._update_labels()
+
+    def _on_assignment_resize_finished(self, row: int, col: int):
+        if row < 0 or row >= len(self._task_names):
+            self._assignment_resize_preview = None
+            self._apply_table_styles()
+            return
+        task = self._task_names[row]
+        dates = self._assignment_dates_for_task(task)
+        assigned_span = self._visible_assignment_span(task)
+        if dates is None or assigned_span is None:
+            self._assignment_resize_preview = None
+            self._apply_table_styles()
+            return
+        start_date, _current_end = dates
+        target_col = max(int(assigned_span[0]), int(col))
+        target_col = max(0, min(target_col, max(0, len(self._visible_dates) - 1)))
+        self._assignment_resize_preview = None
+        self._selected_task = task
+        self._set_task_day_range(task, start_date, self._visible_dates[target_col], notify_scene=True)
 
     def _handle_graph_view_short_right_click(self, global_pos) -> bool:
         try:
