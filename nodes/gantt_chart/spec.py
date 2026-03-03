@@ -1271,7 +1271,7 @@ class _GanttCalendarTable(QtWidgets.QTableWidget):
                     )
                 self._resize_drag_row = None
                 self._resize_drag_edge = None
-                self._update_resize_cursor(event.pos())
+                self.viewport().unsetCursor()
                 event.accept()
                 return True
             if self._move_drag_row is not None:
@@ -1292,7 +1292,7 @@ class _GanttCalendarTable(QtWidgets.QTableWidget):
                 self._move_drag_origin_start = None
                 self._move_drag_origin_end = None
                 self._move_drag_grab_column = None
-                self._update_resize_cursor(event.pos())
+                self.viewport().unsetCursor()
                 event.accept()
                 return True
         elif event_type == QtCore.QEvent.Leave:
@@ -2111,6 +2111,12 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._progress_editor.hide()
         self._progress_edit_section: int | None = None
         self._progress_editor.editingFinished.connect(self._commit_progress_edit)
+        try:
+            app = QtWidgets.QApplication.instance()
+            if app is not None:
+                app.installEventFilter(self)
+        except Exception:
+            pass
 
         self._notification_timer = QtCore.QTimer(self)
         self._notification_timer.setInterval(1000)
@@ -2134,6 +2140,34 @@ class GanttChartWidget(QtWidgets.QFrame):
 
     def sizeHint(self):
         return QtCore.QSize(1000, 320)
+
+    def eventFilter(self, obj, event):
+        try:
+            editor_visible = bool(self._progress_editor.isVisible())
+        except Exception:
+            editor_visible = False
+        if editor_visible and event is not None:
+            try:
+                event_type = event.type()
+            except Exception:
+                event_type = None
+            if event_type in (QtCore.QEvent.MouseButtonPress, QtCore.QEvent.MouseButtonDblClick):
+                try:
+                    global_pos = event.globalPosition().toPoint()
+                except Exception:
+                    try:
+                        global_pos = event.globalPos()
+                    except Exception:
+                        global_pos = None
+                if global_pos is not None:
+                    try:
+                        local_pos = self._progress_editor.mapFromGlobal(global_pos)
+                        inside_editor = self._progress_editor.rect().contains(local_pos)
+                    except Exception:
+                        inside_editor = False
+                    if not inside_editor:
+                        QtCore.QTimer.singleShot(0, self._commit_progress_edit)
+        return super().eventFilter(obj, event)
 
     def _clamp_task_panel_width(self, width: int) -> int:
         try:
