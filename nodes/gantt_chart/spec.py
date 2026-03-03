@@ -12,6 +12,7 @@ except Exception:
 
 from nodes.core import Spec
 from nodes.util_graph import param_change_relevant as _param_change_relevant
+from echograph.ui.dialogs import BigTextEditDialog
 
 _SCHEDULE_PARAM = "schedule_data"
 _PROGRESS_PARAM = "progress_data"
@@ -472,6 +473,76 @@ def _resolve_note_source(node_item):
     return src_item, src_model
 
 
+def _dialog_parent_for_node(node_item):
+    try:
+        scene = node_item.scene()
+    except Exception:
+        scene = None
+    if scene is not None:
+        try:
+            views = scene.views()
+            if views:
+                win = views[0].window()
+                if win is not None:
+                    return win
+        except Exception:
+            pass
+    try:
+        return QtWidgets.QApplication.activeWindow()
+    except Exception:
+        return None
+
+
+def _read_source_task_value(model, task_name: str) -> str:
+    if model is None:
+        return ""
+    key = (task_name or "").strip().lower()
+    for entry in (getattr(model, "params", None) or []):
+        if (entry.get("name") or "").strip().lower() == key:
+            return entry.get("value", "") or ""
+    return ""
+
+
+def _write_source_task_value(node_item, task_name: str, value: str, *, notify_scene: bool = True) -> bool:
+    src_item, src_model = _resolve_note_source(node_item)
+    if src_model is None:
+        return False
+    key = (task_name or "").strip().lower()
+    params = list(getattr(src_model, "params", None) or [])
+    updated = False
+    for entry in params:
+        if (entry.get("name") or "").strip().lower() != key:
+            continue
+        entry["value"] = value or ""
+        updated = True
+        break
+    if not updated:
+        return False
+    try:
+        src_model.params = params
+    except Exception:
+        return False
+    try:
+        if src_item is not None and hasattr(src_item, "_schedule_rebuild"):
+            src_item._schedule_rebuild()
+        elif src_item is not None and hasattr(src_item, "update"):
+            src_item.update()
+    except Exception:
+        pass
+    if notify_scene:
+        scene = None
+        try:
+            scene = src_item.scene() if src_item is not None else node_item.scene()
+        except Exception:
+            scene = None
+        if scene is not None and hasattr(scene, "paramChanged"):
+            try:
+                scene.paramChanged.emit(getattr(src_model, "name", ""), list(getattr(src_model, "params", []) or []))
+            except Exception:
+                pass
+    return True
+
+
 def _note_task_names(model) -> list[str]:
     if model is None:
         return []
@@ -718,7 +789,7 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
 
     def _progress_rect(self, rect: QtCore.QRect) -> QtCore.QRect:
         checkbox_rect = self._checkbox_rect(rect)
-        width = 42
+        width = 36
         x = int(checkbox_rect.left() - width - 8)
         y = int(rect.top() + 4)
         return QtCore.QRect(x, y, width, max(12, int(rect.height()) - 8))
@@ -792,13 +863,13 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
         progress = self._progress_values.get(int(logical_index), 0)
         painter.setBrush(QtGui.QColor("#10161d"))
         painter.setPen(QtGui.QPen(QtGui.QColor("#475569"), 1))
-        painter.drawRect(progress_rect.adjusted(0, 0, -1, -1))
+        painter.drawRoundedRect(QtCore.QRectF(progress_rect.adjusted(0, 0, -1, -1)), 3.0, 3.0)
         painter.setPen(QtGui.QColor("#cbd5e1"))
         painter.drawText(progress_rect.adjusted(4, 0, -4, 0), int(QtCore.Qt.AlignCenter), str(progress))
         checkbox_checked = int(logical_index) in self._completed_sections
         painter.setBrush(QtGui.QColor("#12151a"))
         painter.setPen(QtGui.QPen(QtGui.QColor("#475569"), 1))
-        painter.drawRect(checkbox_rect.adjusted(0, 0, -1, -1))
+        painter.drawRoundedRect(QtCore.QRectF(checkbox_rect.adjusted(0, 0, -1, -1)), 3.0, 3.0)
         if checkbox_checked:
             pen = QtGui.QPen(QtGui.QColor("#f8fafc"), 2)
             pen.setCosmetic(True)
@@ -1023,7 +1094,7 @@ class GanttChartWidget(QtWidgets.QFrame):
 
         self._selection_label = QtWidgets.QLabel("Click a task cell to place that task on a day.")
         self._selection_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
-        self._selection_label.setStyleSheet("QLabel{color:#7dd3fc;}")
+        self._selection_label.setStyleSheet("QLabel{color:#93a4b8;}")
         status_row.addWidget(self._selection_label, 1)
 
         layout.addLayout(status_row)
@@ -1104,6 +1175,7 @@ class GanttChartWidget(QtWidgets.QFrame):
             pass
 
         self._table.cellClicked.connect(self._on_cell_clicked)
+        self._table.cellDoubleClicked.connect(self._on_cell_double_clicked)
         try:
             self._table.verticalHeader().sectionClicked.connect(self._on_task_header_clicked)
         except Exception:
@@ -1127,7 +1199,7 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._progress_editor.setAlignment(QtCore.Qt.AlignCenter)
         self._progress_editor.setFocusPolicy(QtCore.Qt.StrongFocus)
         self._progress_editor.setStyleSheet(
-            "QSpinBox{background:#10161d;color:#e2e8f0;border:1px solid #475569;padding:0 4px;}"
+            "QSpinBox{background:#10161d;color:#e2e8f0;border:1px solid #475569;border-radius:3px;padding:0 4px;}"
         )
         self._progress_editor.hide()
         self._progress_edit_section: int | None = None
@@ -1430,7 +1502,7 @@ class GanttChartWidget(QtWidgets.QFrame):
             self._source_label.setStyleSheet("QLabel{color:#fca5a5;font-weight:600;}")
         elif self._source_name:
             self._source_label.setText(f"Source: {self._source_name}")
-            self._source_label.setStyleSheet("QLabel{color:#93c5fd;font-weight:600;}")
+            self._source_label.setStyleSheet("QLabel{color:#93a4b8;font-weight:600;}")
         else:
             self._source_label.setText("Connect a Note node to this input.")
             self._source_label.setStyleSheet("QLabel{color:#93a4b8;font-weight:600;}")
@@ -1613,6 +1685,42 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._selected_task = task
         self._set_task_day(task, col + 1)
 
+    def _on_cell_double_clicked(self, row: int, _col: int):
+        if row < 0 or row >= len(self._task_names):
+            return
+        task = self._task_names[row]
+        self._selected_task = task
+        self._apply_table_styles()
+        self._update_labels()
+        src_item, src_model = _resolve_note_source(self._node_item)
+        if src_model is None:
+            QtWidgets.QMessageBox.information(
+                _dialog_parent_for_node(self._node_item),
+                "Edit Task Value",
+                "Connect a Note node to edit task values from the Gantt chart.",
+            )
+            return
+        initial_text = _read_source_task_value(src_model, task)
+        dlg = BigTextEditDialog(
+            _dialog_parent_for_node(self._node_item),
+            title=f"Edit Task Value: {task}",
+            initial=initial_text,
+        )
+        try:
+            dlg.edit.setPlaceholderText("Enter the note value for this task.")
+        except Exception:
+            pass
+        try:
+            result = dlg.exec()
+        except Exception:
+            result = dlg.exec_()
+        if result != QtWidgets.QDialog.Accepted:
+            return
+        new_text = dlg.text()
+        if new_text == initial_text:
+            return
+        _write_source_task_value(self._node_item, task, new_text, notify_scene=True)
+
     def _on_header_clicked(self, section: int):
         if section < 0 or section >= self._visible_day_count():
             return
@@ -1735,17 +1843,30 @@ def render_node_body(node_item, y_cursor: int) -> int:
     proxy.setWidget(body)
     proxy.setZValue(node_item.zValue() + 0.1)
     proxy.setPos(0, y_cursor)
-    h = max(
+    min_h = max(
         int(body.sizeHint().height()),
         int(body.minimumSizeHint().height()),
         int(body.minimumHeight() or 0),
     )
-    proxy.resize(node_item.width, h)
+    try:
+        available_h = int(
+            max(
+                float(min_h),
+                float(node_item.height) - float(y_cursor) - float(getattr(node_item, "_PADDING", 0.0)),
+            )
+        )
+    except Exception:
+        available_h = int(min_h)
+    proxy.resize(node_item.width, available_h)
+    try:
+        proxy.setPreferredSize(node_item.width, available_h)
+    except Exception:
+        pass
     try:
         node_item._plugin_proxies.append(proxy)
     except Exception:
         pass
-    return y_cursor + h
+    return y_cursor + available_h
 
 
 GANTT_CHART_SPEC = Spec(

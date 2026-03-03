@@ -1743,6 +1743,23 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     new_w = max(new_w, max(self._BASE_W, custom_w))
                 if custom_h is not None and custom_h > 0:
                     new_h = max(new_h, max(self._BASE_H, custom_h))
+        elif kind in ("gantt_chart", "gantt chart", "gant_chart", "gant chart"):
+            try:
+                self._gantt_chart_min_w = float(new_w)
+                self._gantt_chart_min_h = float(new_h)
+            except Exception:
+                pass
+            custom_size = getattr(self.model, "_gantt_chart_size", None)
+            if isinstance(custom_size, (list, tuple)) and len(custom_size) >= 2:
+                try:
+                    custom_w = float(custom_size[0])
+                    custom_h = float(custom_size[1])
+                except Exception:
+                    custom_w = custom_h = None
+                if custom_w is not None and custom_w > 0:
+                    new_w = max(new_w, max(self._BASE_W, custom_w))
+                if custom_h is not None and custom_h > 0:
+                    new_h = max(new_h, max(self._BASE_H, custom_h))
         elif kind in ("chatbot", "chat bot", "chat_bot"):
             try:
                 self._chatbot_min_w = float(new_w)
@@ -5378,7 +5395,19 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
     def _note_resize_available(self) -> bool:
         kind = (self.model.kind or "").lower()
-        if kind not in ("note", "chatbot", "chat bot", "chat_bot", "video_player", "video player", "videoplayer"):
+        if kind not in (
+            "note",
+            "chatbot",
+            "chat bot",
+            "chat_bot",
+            "video_player",
+            "video player",
+            "videoplayer",
+            "gantt_chart",
+            "gantt chart",
+            "gant_chart",
+            "gant chart",
+        ):
             return False
         if self._note_resize_mode:
             return True
@@ -5468,6 +5497,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
         if kind in ("chatbot", "chat bot", "chat_bot"):
             min_w = float(getattr(self, "_chatbot_min_w", self._BASE_W))
             min_h = float(getattr(self, "_chatbot_min_h", self._BASE_H))
+        elif kind in ("gantt_chart", "gantt chart", "gant_chart", "gant chart"):
+            min_w = float(getattr(self, "_gantt_chart_min_w", self._BASE_W))
+            min_h = float(getattr(self, "_gantt_chart_min_h", self._BASE_H))
         elif kind in ("video_player", "video player", "videoplayer"):
             min_w = float(getattr(self, "_video_player_min_w", self._BASE_W))
             min_h = float(getattr(self, "_video_player_min_h", self._BASE_H))
@@ -5515,6 +5547,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
         try:
             if kind == "note":
                 self.model._note_size = (float(self.width), float(self.height))
+            elif kind in ("gantt_chart", "gantt chart", "gant_chart", "gant chart"):
+                self.model._gantt_chart_size = (float(self.width), float(self.height))
             elif kind in ("chatbot", "chat bot", "chat_bot"):
                 self.model._chatbot_size = (float(self.width), float(self.height))
             elif kind in ("video_player", "video player", "videoplayer"):
@@ -5542,6 +5576,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 kind = (self.model.kind or "").lower()
                 if kind == "note":
                     self.model._note_size = (float(self.width), float(self.height))
+                elif kind in ("gantt_chart", "gantt chart", "gant_chart", "gant chart"):
+                    self.model._gantt_chart_size = (float(self.width), float(self.height))
                 elif kind in ("chatbot", "chat bot", "chat_bot"):
                     self.model._chatbot_size = (float(self.width), float(self.height))
                 elif kind in ("video_player", "video player", "videoplayer"):

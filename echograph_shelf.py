@@ -1409,6 +1409,15 @@ class GraphScene(QtWidgets.QGraphicsScene):
                     snap["note_size"] = [nw, nh]
                 except Exception:
                     pass
+        if (node.kind or "").lower() in ("gantt_chart", "gantt chart", "gant_chart", "gant chart"):
+            gsize = getattr(node, "_gantt_chart_size", None)
+            if isinstance(gsize, (list, tuple)) and len(gsize) >= 2:
+                try:
+                    gw = float(gsize[0])
+                    gh = float(gsize[1])
+                    snap["gantt_chart_size"] = [gw, gh]
+                except Exception:
+                    pass
         return snap
 
     def copy_selection_to_clipboard(self) -> bool:
@@ -1550,6 +1559,15 @@ class GraphScene(QtWidgets.QGraphicsScene):
                         nw = float(nsize[0])
                         nh = float(nsize[1])
                         setattr(node, "_note_size", (nw, nh))
+                    except Exception:
+                        pass
+            if (kind or "").lower() in ("gantt_chart", "gantt chart", "gant_chart", "gant chart"):
+                gsize = entry.get("gantt_chart_size")
+                if isinstance(gsize, (list, tuple)) and len(gsize) >= 2:
+                    try:
+                        gw = float(gsize[0])
+                        gh = float(gsize[1])
+                        setattr(node, "_gantt_chart_size", (gw, gh))
                     except Exception:
                         pass
 
