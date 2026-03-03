@@ -32,9 +32,9 @@ _GANTT_TASK_ROW_HEIGHT = 28
 _GANTT_TASK_PANEL_MIN_WIDTH = 180
 _GANTT_TASK_PANEL_DEFAULT_WIDTH = 180
 _GANTT_TASK_PANEL_HANDLE_WIDTH = 4
-_DAY_SCROLL_UNITS_PER_DAY = 12
-_DAY_SCROLL_CENTER = 24000
-_DAY_SCROLL_RANGE = 48000
+_DAY_SCROLL_UNITS_PER_DAY = 64
+_DAY_SCROLL_CENTER = 128000
+_DAY_SCROLL_RANGE = 256000
 _TODAY_MARKER_Y_OFFSET = -8
 _GANTT_SIDECAR_SUFFIX = ".gantt_chart.json"
 
@@ -1501,23 +1501,42 @@ class _GanttMonthStrip(QtWidgets.QWidget):
             pass
         painter.setFont(font)
         header_width = int(self._table.verticalHeader().width())
+        month_starts: list[tuple[int, date]] = []
+        previous = None
         for column, visible_date in enumerate(self._visible_dates):
-            if visible_date.day != 1:
-                continue
-            try:
-                x = int(header_width + self._table.columnViewportPosition(column) + 3)
-            except Exception:
-                continue
+            key = (visible_date.year, visible_date.month)
+            if key != previous:
+                month_starts.append((column, visible_date))
+                previous = key
+        left_margin = int(header_width + 3)
+        gap = 6
+        for index, (column, visible_date) in enumerate(month_starts):
+            if index == 0:
+                x = left_margin
+            else:
+                try:
+                    x = int(header_width + self._table.columnViewportPosition(column) + 3)
+                except Exception:
+                    continue
             if x >= self.width():
+                continue
+            next_x = self.width()
+            if (index + 1) < len(month_starts):
+                next_column = int(month_starts[index + 1][0])
+                try:
+                    next_x = int(header_width + self._table.columnViewportPosition(next_column) + 3)
+                except Exception:
+                    next_x = self.width()
+            rect_width = min(max(1, self.width() - x), max(1, next_x - x - gap))
+            if rect_width <= 0:
                 continue
             painter.setPen(
                 QtGui.QColor("#f97316")
                 if visible_date.year == self._today.year and visible_date.month == self._today.month
                 else QtGui.QColor("#e5eef8")
             )
-            rect = QtCore.QRect(x, 0, max(1, self.width() - x), self.height())
             painter.drawText(
-                rect,
+                QtCore.QRect(x, 0, rect_width, self.height()),
                 int(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter),
                 f"{calendar.month_name[visible_date.month]} {visible_date.year}",
             )
