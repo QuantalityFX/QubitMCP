@@ -852,7 +852,7 @@ class GanttChartWidget(QtWidgets.QFrame):
             "gridline-color:#223041;selection-background-color:#16212b;selection-color:#e2e8f0;}"
             "QTableWidget::item:selected{background:#16212b;color:#e2e8f0;}"
             "QHeaderView::section{background:#141c27;color:#dbe4ee;border:1px solid #223041;padding:4px;font-weight:600;}"
-            "QTableCornerButton::section{background:#141c27;border:1px solid #223041;}"
+            "QTableCornerButton::section{background:#000000;border:1px solid #223041;}"
         )
 
         layout = QtWidgets.QVBoxLayout(self)
@@ -1064,11 +1064,10 @@ class GanttChartWidget(QtWidgets.QFrame):
             frame = int(self._table.frameWidth())
         except Exception:
             return
-        x = max(0, frame)
-        y = max(0, frame)
-        w = max(1, corner_width)
-        h = max(1, header_height)
-        self._today_jump_button.setGeometry(x, y, w, h)
+        button_size = max(18, min(24, corner_width - 4, header_height - 4))
+        x = max(0, frame + int((corner_width - button_size) / 2.0))
+        y = max(0, frame + int((header_height - button_size) / 2.0))
+        self._today_jump_button.setGeometry(x, y, button_size, button_size)
         self._today_jump_button.raise_()
 
     def _set_visible_start_date(self, visible_start: date, *, sync_scroll: bool = True, persist: bool = True) -> None:
@@ -1296,7 +1295,9 @@ class GanttChartWidget(QtWidgets.QFrame):
         selected_label_bg = QtGui.QColor("#1d4f74")
         selected_label_fg = QtGui.QColor("#f8fafc")
         cell_bg = QtGui.QColor("#10161d")
+        weekend_cell_bg = QtGui.QColor("#0c1015")
         selected_row_bg = QtGui.QColor("#16212b")
+        weekend_selected_row_bg = QtGui.QColor("#121b23")
         assigned_bg = QtGui.QColor("#0f766e")
         completed_assigned_bg = QtGui.QColor("#16a34a")
         assigned_fg = QtGui.QColor("#ecfeff")
@@ -1317,11 +1318,19 @@ class GanttChartWidget(QtWidgets.QFrame):
             assigned_column = self._visible_column_for_assignment(task)
             for day in range(self._visible_day_count()):
                 item = self._ensure_item(row, day)
+                is_weekend = False
+                try:
+                    is_weekend = self._visible_dates[day].weekday() >= 5
+                except Exception:
+                    is_weekend = False
                 if assigned_column == day:
                     item.setBackground(completed_assigned_bg if task in self._completed_tasks else assigned_bg)
                     item.setForeground(assigned_fg)
                 else:
-                    item.setBackground(selected_row_bg if is_selected else cell_bg)
+                    if is_selected:
+                        item.setBackground(weekend_selected_row_bg if is_weekend else selected_row_bg)
+                    else:
+                        item.setBackground(weekend_cell_bg if is_weekend else cell_bg)
                     item.setForeground(label_fg)
         header = self._table.verticalHeader()
         if hasattr(header, "set_selected_section"):
