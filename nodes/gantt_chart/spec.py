@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import calendar
 import json
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 try:
@@ -15,8 +15,11 @@ from nodes.util_graph import param_change_relevant as _param_change_relevant
 
 _SCHEDULE_PARAM = "schedule_data"
 _VIEW_MONTH_PARAM = "view_month"
-_MONTH_SCROLL_CENTER = 1200
-_MONTH_SCROLL_RANGE = 2400
+_VIEW_START_PARAM = "view_start_date"
+_VISIBLE_DAY_COUNT = 31
+_DAY_SCROLL_UNITS_PER_DAY = 12
+_DAY_SCROLL_CENTER = 24000
+_DAY_SCROLL_RANGE = 48000
 
 
 def _param_value(model, name: str) -> str:
@@ -71,9 +74,20 @@ def _ensure_hidden_params(model, names) -> None:
 
 def build_ports(node_item) -> None:
     today = date.today()
+    model = getattr(node_item, "model", None)
+    year, month = _parse_view_month(
+        _param_value(model, _VIEW_MONTH_PARAM),
+        fallback_year=today.year,
+        fallback_month=today.month,
+    )
+    view_start = _parse_view_start(
+        _param_value(model, _VIEW_START_PARAM),
+        fallback=date(year, month, 1),
+    )
     _ensure_param(node_item, _SCHEDULE_PARAM, "{}")
-    _ensure_param(node_item, _VIEW_MONTH_PARAM, f"{today.year:04d}-{today.month:02d}")
-    _ensure_hidden_params(getattr(node_item, "model", None), [_SCHEDULE_PARAM, _VIEW_MONTH_PARAM])
+    _ensure_param(node_item, _VIEW_MONTH_PARAM, f"{view_start.year:04d}-{view_start.month:02d}")
+    _ensure_param(node_item, _VIEW_START_PARAM, view_start.isoformat())
+    _ensure_hidden_params(model, [_SCHEDULE_PARAM, _VIEW_MONTH_PARAM, _VIEW_START_PARAM])
 
 
 def _set_param_value(node_item, name: str, value: str, *, notify_scene: bool = True) -> None:
@@ -128,15 +142,26 @@ def _parse_view_month(raw: str, *, fallback_year: int, fallback_month: int) -> t
     return fallback_year, fallback_month
 
 
-def _add_months(year: int, month: int, offset: int) -> tuple[int, int]:
-    total = int(year) * 12 + (int(month) - 1) + int(offset)
-    new_year = total // 12
-    new_month = (total % 12) + 1
-    return new_year, new_month
+def _parse_view_start(raw: str, *, fallback: date) -> date:
+    text = str(raw or "").strip()
+    if text:
+        try:
+            return date.fromisoformat(text)
+        except Exception:
+            pass
+    return fallback
 
 
-def _month_offset(base_year: int, base_month: int, year: int, month: int) -> int:
-    return (int(year) - int(base_year)) * 12 + (int(month) - int(base_month))
+def _scroll_value_for_day_offset(day_offset: int) -> int:
+    value = _DAY_SCROLL_CENTER + (int(day_offset) * _DAY_SCROLL_UNITS_PER_DAY)
+    return max(0, min(_DAY_SCROLL_RANGE, value))
+
+
+def _day_offset_for_scroll_value(value: int) -> int:
+    delta = int(value) - _DAY_SCROLL_CENTER
+    if delta >= 0:
+        return int((delta + (_DAY_SCROLL_UNITS_PER_DAY // 2)) // _DAY_SCROLL_UNITS_PER_DAY)
+    return -int(((-delta) + (_DAY_SCROLL_UNITS_PER_DAY // 2)) // _DAY_SCROLL_UNITS_PER_DAY)
 
 
 def _days_in_month(year: int, month: int) -> int:
@@ -319,6 +344,57 @@ class _GanttCalendarTable(QtWidgets.QTableWidget):
         painter.end()
 
 
+class _GanttMonthStrip(QtWidgets.QWidget):
+    def __init__(self, table=None, parent=None):
+        super().__init__(parent)
+        self._table = table
+        self._visible_dates: list[date] = []
+        self._today = date.today()
+        self.setFixedHeight(22)
+        self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+        self.setStyleSheet("background:transparent;")
+
+    def set_dates(self, visible_dates: list[date], today_value: date) -> None:
+        self._visible_dates = list(visible_dates or [])
+        self._today = today_value
+        self.update()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if not self._visible_dates or self._table is None:
+            return
+        painter = QtGui.QPainter(self)
+        try:
+            painter.setRenderHint(QtGui.QPainter.TextAntialiasing, True)
+        except Exception:
+            pass
+        font = painter.font()
+        font.setBold(True)
+        painter.setFont(font)
+        header_width = int(self._table.verticalHeader().width())
+        for column, visible_date in enumerate(self._visible_dates):
+            if visible_date.day != 1:
+                continue
+            try:
+                x = int(header_width + self._table.columnViewportPosition(column) + 3)
+            except Exception:
+                continue
+            if x >= self.width():
+                continue
+            painter.setPen(
+                QtGui.QColor("#22c55e")
+                if visible_date.year == self._today.year and visible_date.month == self._today.month
+                else QtGui.QColor("#e5eef8")
+            )
+            rect = QtCore.QRect(x, 0, max(1, self.width() - x), self.height())
+            painter.drawText(
+                rect,
+                int(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter),
+                f"{calendar.month_name[visible_date.month]} {visible_date.year}",
+            )
+        painter.end()
+
+
 def _reorder_note_params(node_item, ordered_names: list[str]) -> bool:
     src_item, src_model = _resolve_note_source(node_item)
     if src_model is None:
@@ -375,11 +451,10 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._selected_task: str | None = None
         self._ignore_header_move = False
         self._today = date.today()
-        self._base_year = int(self._today.year)
-        self._base_month = int(self._today.month)
-        self._visible_year = int(self._today.year)
-        self._visible_month = int(self._today.month)
-        self._month_scroll_sync = False
+        self._base_start_date = date(self._today.year, self._today.month, 1)
+        self._visible_start_date = self._base_start_date
+        self._visible_dates: list[date] = []
+        self._day_scroll_sync = False
 
         self.setObjectName("GanttChartWidget")
         self.setStyleSheet(
@@ -411,18 +486,8 @@ class GanttChartWidget(QtWidgets.QFrame):
 
         layout.addLayout(status_row)
 
-        month_row = QtWidgets.QHBoxLayout()
-        month_row.setContentsMargins(0, 0, 0, 0)
-        month_row.setSpacing(6)
-        month_row.addStretch(1)
-        self._month_label = QtWidgets.QLabel("")
-        self._month_label.setStyleSheet("QLabel{color:#e5eef8;font-size:15px;font-weight:700;}")
-        month_row.addWidget(self._month_label, 0, QtCore.Qt.AlignCenter)
-        self._today_label = QtWidgets.QLabel("")
-        self._today_label.setStyleSheet("QLabel{color:#22c55e;font-weight:700;}")
-        month_row.addWidget(self._today_label, 0, QtCore.Qt.AlignVCenter)
-        month_row.addStretch(1)
-        layout.addLayout(month_row)
+        self._month_strip = _GanttMonthStrip(None, self)
+        layout.addWidget(self._month_strip, 0)
 
         self._today_marker_strip = QtWidgets.QWidget(self)
         self._today_marker_strip.setFixedHeight(16)
@@ -435,9 +500,10 @@ class GanttChartWidget(QtWidgets.QFrame):
         layout.addWidget(self._today_marker_strip, 0)
 
         self._table = _GanttCalendarTable(self)
+        self._month_strip._table = self._table
         self._table.setColumnCount(0)
         self._table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        self._table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self._table.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
         self._table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self._table.setFocusPolicy(QtCore.Qt.NoFocus)
         self._table.setWordWrap(False)
@@ -493,14 +559,14 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._table.customContextMenuRequested.connect(self._on_table_context_menu)
         layout.addWidget(self._table, 1)
 
-        self._month_scroll = QtWidgets.QScrollBar(QtCore.Qt.Horizontal, self)
-        self._month_scroll.setRange(0, _MONTH_SCROLL_RANGE)
-        self._month_scroll.setSingleStep(1)
-        self._month_scroll.setPageStep(1)
-        self._month_scroll.setValue(_MONTH_SCROLL_CENTER)
-        self._month_scroll.setToolTip("Scroll through months")
-        self._month_scroll.valueChanged.connect(self._on_month_scroll_changed)
-        layout.addWidget(self._month_scroll, 0)
+        self._day_scroll = QtWidgets.QScrollBar(QtCore.Qt.Horizontal, self)
+        self._day_scroll.setRange(0, _DAY_SCROLL_RANGE)
+        self._day_scroll.setSingleStep(_DAY_SCROLL_UNITS_PER_DAY)
+        self._day_scroll.setPageStep(7 * _DAY_SCROLL_UNITS_PER_DAY)
+        self._day_scroll.setValue(_DAY_SCROLL_CENTER)
+        self._day_scroll.setToolTip("Scroll through days")
+        self._day_scroll.valueChanged.connect(self._on_day_scroll_changed)
+        layout.addWidget(self._day_scroll, 0)
 
         self._ensure_scene()
         self._sync_from_source()
@@ -518,45 +584,56 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._schedule_sync()
 
     def _visible_day_count(self) -> int:
-        return _days_in_month(self._visible_year, self._visible_month)
+        return int(len(self._visible_dates) or _VISIBLE_DAY_COUNT)
 
     def _visible_date_for_day(self, day: int) -> date:
-        return date(self._visible_year, self._visible_month, int(day))
+        return self._visible_start_date + timedelta(days=max(0, int(day) - 1))
 
-    def _day_for_visible_assignment(self, task: str) -> int | None:
+    def _visible_column_for_assignment(self, task: str) -> int | None:
         raw = self._assignments.get(task, "")
         try:
             assigned = date.fromisoformat(str(raw))
         except Exception:
             return None
-        if assigned.year == self._visible_year and assigned.month == self._visible_month:
-            return int(assigned.day)
+        delta = (assigned - self._visible_start_date).days
+        if 0 <= delta < self._visible_day_count():
+            return int(delta)
         return None
 
-    def _sync_view_month_from_params(self, *, force: bool = False):
-        raw = _param_value(getattr(self._node_item, "model", None), _VIEW_MONTH_PARAM)
-        year, month = _parse_view_month(raw, fallback_year=self._base_year, fallback_month=self._base_month)
-        if (not force) and year == self._visible_year and month == self._visible_month:
+    def _sync_view_start_from_params(self, *, force: bool = False):
+        model = getattr(self._node_item, "model", None)
+        fallback = self._base_start_date
+        raw_start = _param_value(model, _VIEW_START_PARAM)
+        if raw_start.strip():
+            visible_start = _parse_view_start(raw_start, fallback=fallback)
+        else:
+            year, month = _parse_view_month(
+                _param_value(model, _VIEW_MONTH_PARAM),
+                fallback_year=fallback.year,
+                fallback_month=fallback.month,
+            )
+            visible_start = date(year, month, 1)
+        if (not force) and visible_start == self._visible_start_date:
             return
-        self._visible_year = int(year)
-        self._visible_month = int(month)
-        offset = _month_offset(self._base_year, self._base_month, self._visible_year, self._visible_month)
-        new_value = max(0, min(_MONTH_SCROLL_RANGE, _MONTH_SCROLL_CENTER + offset))
+        self._visible_start_date = visible_start
+        self._visible_dates = [
+            self._visible_start_date + timedelta(days=offset)
+            for offset in range(_VISIBLE_DAY_COUNT)
+        ]
+        offset = int((self._visible_start_date - self._base_start_date).days)
+        new_value = _scroll_value_for_day_offset(offset)
         try:
-            self._month_scroll_sync = True
-            self._month_scroll.setValue(int(new_value))
+            self._day_scroll_sync = True
+            self._day_scroll.setValue(int(new_value))
         finally:
-            self._month_scroll_sync = False
+            self._day_scroll_sync = False
 
     def _update_today_marker(self):
-        if self._visible_year != self._today.year or self._visible_month != self._today.month:
-            self._today_marker_icon.hide()
-            return
         icon = _today_icon()
         if icon is None:
             self._today_marker_icon.hide()
             return
-        today_col = int(self._today.day) - 1
+        today_col = int((self._today - self._visible_start_date).days)
         if today_col < 0 or today_col >= self._table.columnCount():
             self._today_marker_icon.hide()
             return
@@ -568,6 +645,7 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._today_marker_icon.move(x, y)
         self._today_marker_icon.resize(pm.size())
         self._today_marker_icon.show()
+        self._month_strip.update()
 
     def _ensure_scene(self):
         if self._scene is None:
@@ -603,15 +681,15 @@ class GanttChartWidget(QtWidgets.QFrame):
     def _sync_from_source(self):
         self._ensure_scene()
         self._sync_pending = False
-        self._sync_view_month_from_params(force=True)
+        self._sync_view_start_from_params(force=True)
         src_item, src_model = _resolve_note_source(self._node_item)
         self._source_invalid = bool(src_item is not None and src_model is None)
         self._source_name = getattr(src_model, "name", "") if src_model is not None else ""
         task_names = _note_task_names(src_model)
         assignments = _read_assignments(
             self._node_item,
-            default_year=self._visible_year,
-            default_month=self._visible_month,
+            default_year=self._visible_start_date.year,
+            default_month=self._visible_start_date.month,
         )
         pruned = {name: day for name, day in assignments.items() if name in task_names}
         if pruned != assignments:
@@ -634,22 +712,7 @@ class GanttChartWidget(QtWidgets.QFrame):
             self._source_label.setText("Connect a Note node to this input.")
             self._source_label.setStyleSheet("QLabel{color:#93a4b8;font-weight:600;}")
 
-        try:
-            month_name = calendar.month_name[int(self._visible_month)]
-        except Exception:
-            month_name = str(self._visible_month)
-        self._month_label.setText(f"{month_name} {self._visible_year}")
-        if self._visible_year == self._today.year and self._visible_month == self._today.month:
-            icon = _today_icon()
-            if icon is not None:
-                self._today_label.setPixmap(icon.pixmap(16, 16))
-            else:
-                self._today_label.setText("Today")
-            self._today_label.setToolTip(f"Today: {self._today.isoformat()}")
-            self._today_label.setVisible(True)
-        else:
-            self._today_label.clear()
-            self._today_label.setVisible(False)
+        self._month_strip.set_dates(self._visible_dates, self._today)
         self._update_today_marker()
 
         if self._selected_task:
@@ -687,29 +750,36 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._ignore_header_move = True
         day_count = self._visible_day_count()
         self._table.setColumnCount(day_count)
-        self._table.setHorizontalHeaderLabels([str(i) for i in range(1, day_count + 1)])
+        if not self._visible_dates:
+            self._visible_dates = [
+                self._visible_start_date + timedelta(days=offset)
+                for offset in range(day_count)
+            ]
+        self._table.setHorizontalHeaderLabels([str(visible_date.day) for visible_date in self._visible_dates])
         try:
             fixed_mode = QtWidgets.QHeaderView.ResizeMode.Fixed
         except AttributeError:
             fixed_mode = QtWidgets.QHeaderView.Fixed
         today_column = None
-        if self._visible_year == self._today.year and self._visible_month == self._today.month:
-            today_column = int(self._today.day) - 1
+        today_offset = int((self._today - self._visible_start_date).days)
+        if 0 <= today_offset < day_count:
+            today_column = today_offset
         for day in range(day_count):
             _set_section_resize_mode(self._table.horizontalHeader(), day, fixed_mode)
             self._table.setColumnWidth(day, 24)
             header_item = self._table.horizontalHeaderItem(day)
             if header_item is None:
-                header_item = QtWidgets.QTableWidgetItem(str(day + 1))
+                header_item = QtWidgets.QTableWidgetItem(str(self._visible_dates[day].day))
                 self._table.setHorizontalHeaderItem(day, header_item)
-            header_item.setText(str(day + 1))
+            header_item.setText(str(self._visible_dates[day].day))
             if today_column is not None and day == today_column:
                 header_item.setForeground(QtGui.QBrush(QtGui.QColor("#22c55e")))
                 header_item.setToolTip(f"Today: {self._today.isoformat()}")
             else:
                 header_item.setIcon(QtGui.QIcon())
                 header_item.setForeground(QtGui.QBrush(QtGui.QColor("#dbe4ee")))
-                header_item.setToolTip(f"{calendar.month_name[self._visible_month]} {day + 1}, {self._visible_year}")
+                visible_date = self._visible_dates[day]
+                header_item.setToolTip(f"{calendar.month_name[visible_date.month]} {visible_date.day}, {visible_date.year}")
 
         self._table.setRowCount(len(self._task_names))
         for row, task in enumerate(self._task_names):
@@ -724,10 +794,12 @@ class GanttChartWidget(QtWidgets.QFrame):
                 cell = self._ensure_item(row, day)
                 cell.setText("")
                 cell.setTextAlignment(int(QtCore.Qt.AlignCenter))
-                cell.setToolTip(f"{task}: day {day + 1}")
+                visible_date = self._visible_dates[day]
+                cell.setToolTip(f"{task}: {visible_date.isoformat()}")
         self._table.blockSignals(False)
         self._ignore_header_move = False
         self._table.set_today_column(today_column)
+        self._month_strip.set_dates(self._visible_dates, self._today)
         self._apply_table_styles()
         self._update_today_marker()
 
@@ -753,37 +825,15 @@ class GanttChartWidget(QtWidgets.QFrame):
             font.setBold(bool(is_selected))
             header_item.setFont(font)
 
-            assigned_day = self._day_for_visible_assignment(task)
+            assigned_column = self._visible_column_for_assignment(task)
             for day in range(self._visible_day_count()):
                 item = self._ensure_item(row, day)
-                if assigned_day == (day + 1):
+                if assigned_column == day:
                     item.setBackground(assigned_bg)
                     item.setForeground(assigned_fg)
                 else:
                     item.setBackground(selected_row_bg if is_selected else cell_bg)
                     item.setForeground(label_fg)
-        try:
-            self._table.blockSignals(True)
-            if self._selected_task and self._selected_task in self._task_names:
-                row = self._task_names.index(self._selected_task)
-                self._table.selectRow(row)
-                assigned_day = self._assignments.get(self._selected_task)
-                if assigned_day:
-                    assigned_item = self._table.item(row, int(assigned_day) - 1)
-                    if assigned_item is not None:
-                        try:
-                            assigned_item.setSelected(False)
-                        except Exception:
-                            pass
-            else:
-                self._table.clearSelection()
-        except Exception:
-            pass
-        finally:
-            try:
-                self._table.blockSignals(False)
-            except Exception:
-                pass
 
     def _on_cell_clicked(self, row: int, col: int):
         if row < 0 or row >= len(self._task_names):
@@ -830,8 +880,7 @@ class GanttChartWidget(QtWidgets.QFrame):
         if row < 0 or row >= len(self._task_names):
             return
         task = self._task_names[row]
-        day = col + 1
-        if self._day_for_visible_assignment(task) != day:
+        if self._visible_column_for_assignment(task) != col:
             return
         mapping = dict(self._assignments)
         mapping.pop(task, None)
@@ -841,18 +890,27 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._apply_table_styles()
         self._update_labels()
 
-    def _on_month_scroll_changed(self, value: int):
-        if self._month_scroll_sync:
+    def _on_day_scroll_changed(self, value: int):
+        if self._day_scroll_sync:
             return
-        year, month = _add_months(self._base_year, self._base_month, int(value) - _MONTH_SCROLL_CENTER)
-        if year == self._visible_year and month == self._visible_month:
+        visible_start = self._base_start_date + timedelta(days=_day_offset_for_scroll_value(value))
+        if visible_start == self._visible_start_date:
             return
-        self._visible_year = int(year)
-        self._visible_month = int(month)
+        self._visible_start_date = visible_start
+        self._visible_dates = [
+            self._visible_start_date + timedelta(days=offset)
+            for offset in range(_VISIBLE_DAY_COUNT)
+        ]
+        _set_param_value(
+            self._node_item,
+            _VIEW_START_PARAM,
+            self._visible_start_date.isoformat(),
+            notify_scene=False,
+        )
         _set_param_value(
             self._node_item,
             _VIEW_MONTH_PARAM,
-            f"{self._visible_year:04d}-{self._visible_month:02d}",
+            f"{self._visible_start_date.year:04d}-{self._visible_start_date.month:02d}",
             notify_scene=False,
         )
         self._rebuild_table()
