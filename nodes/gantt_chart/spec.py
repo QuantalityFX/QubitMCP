@@ -1021,7 +1021,7 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._source_label.setStyleSheet("QLabel{color:#93a4b8;font-weight:600;}")
         status_row.addWidget(self._source_label, 1)
 
-        self._selection_label = QtWidgets.QLabel("Select a task, then click a day.")
+        self._selection_label = QtWidgets.QLabel("Click a task cell to place that task on a day.")
         self._selection_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
         self._selection_label.setStyleSheet("QLabel{color:#7dd3fc;}")
         status_row.addWidget(self._selection_label, 1)
@@ -1451,11 +1451,11 @@ class GanttChartWidget(QtWidgets.QFrame):
             else:
                 self._selection_label.setText(f"Selected: {self._selected_task} -> unscheduled")
         elif self._task_names:
-            self._selection_label.setText("Select a task, then click a day.")
+            self._selection_label.setText("Click a task cell to place that task on a day.")
         elif self._source_name:
             self._selection_label.setText("The connected note has no visible parameters.")
         else:
-            self._selection_label.setText("Select a note task to place it on the chart.")
+            self._selection_label.setText("Connect a note task list to place tasks on the chart.")
 
     def _ensure_item(self, row: int, col: int) -> QtWidgets.QTableWidgetItem:
         item = self._table.item(row, col)
@@ -1610,20 +1610,16 @@ class GanttChartWidget(QtWidgets.QFrame):
         if row < 0 or row >= len(self._task_names):
             return
         task = self._task_names[row]
-        if not self._selected_task:
-            self._selected_task = task
-            self._apply_table_styles()
-            self._update_labels()
-            return
-        self._set_task_day(self._selected_task, col + 1)
+        self._selected_task = task
+        self._set_task_day(task, col + 1)
 
     def _on_header_clicked(self, section: int):
         if section < 0 or section >= self._visible_day_count():
             return
-        if not self._selected_task:
-            self._selection_label.setText("Select a task first, then choose a day.")
-            return
-        self._set_task_day(self._selected_task, section + 1)
+        if self._selected_task:
+            self._selection_label.setText("Click a day cell in the selected task row to place it.")
+        else:
+            self._selection_label.setText("Click a task cell to place that task on a day.")
 
     def _on_task_header_clicked(self, section: int):
         if section < 0 or section >= len(self._task_names):
