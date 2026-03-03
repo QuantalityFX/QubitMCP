@@ -32,9 +32,9 @@ _GANTT_TASK_ROW_HEIGHT = 28
 _GANTT_TASK_PANEL_MIN_WIDTH = 180
 _GANTT_TASK_PANEL_DEFAULT_WIDTH = 180
 _GANTT_TASK_PANEL_HANDLE_WIDTH = 4
-_DAY_SCROLL_UNITS_PER_DAY = 64
-_DAY_SCROLL_CENTER = 128000
-_DAY_SCROLL_RANGE = 256000
+_DAY_SCROLL_UNITS_PER_DAY = 128
+_DAY_SCROLL_CENTER = 15360
+_DAY_SCROLL_RANGE = 30720
 _TODAY_MARKER_Y_OFFSET = -8
 _GANTT_SIDECAR_SUFFIX = ".gantt_chart.json"
 
@@ -1527,19 +1527,36 @@ class _GanttMonthStrip(QtWidgets.QWidget):
                     next_x = int(header_width + self._table.columnViewportPosition(next_column) + 3)
                 except Exception:
                     next_x = self.width()
+            if (index + 1) < len(month_starts):
+                segment_columns = max(1, int(month_starts[index + 1][0]) - int(column))
+            else:
+                segment_columns = max(1, len(self._visible_dates) - int(column))
             rect_width = min(max(1, self.width() - x), max(1, next_x - x - gap))
             if rect_width <= 0:
                 continue
+            year_short = int(visible_date.year) % 100
+            if segment_columns <= 1:
+                label = f"{int(visible_date.month):02d}"
+            elif segment_columns == 2:
+                label = f"{calendar.month_abbr[visible_date.month]}'{year_short:02d}"
+            elif segment_columns == 3:
+                label = f"{calendar.month_abbr[visible_date.month]} {visible_date.year}"
+            else:
+                label = f"{calendar.month_name[visible_date.month]} {visible_date.year}"
             painter.setPen(
                 QtGui.QColor("#f97316")
                 if visible_date.year == self._today.year and visible_date.month == self._today.month
                 else QtGui.QColor("#e5eef8")
             )
+            text_rect = QtCore.QRect(x, 0, rect_width, self.height())
+            painter.save()
+            painter.setClipRect(text_rect)
             painter.drawText(
-                QtCore.QRect(x, 0, rect_width, self.height()),
+                text_rect,
                 int(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter),
-                f"{calendar.month_name[visible_date.month]} {visible_date.year}",
+                label,
             )
+            painter.restore()
         painter.end()
 
 
@@ -1876,7 +1893,7 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._day_scroll = QtWidgets.QScrollBar(QtCore.Qt.Horizontal, self)
         self._day_scroll.setRange(0, _DAY_SCROLL_RANGE)
         self._day_scroll.setSingleStep(_DAY_SCROLL_UNITS_PER_DAY)
-        self._day_scroll.setPageStep(7 * _DAY_SCROLL_UNITS_PER_DAY)
+        self._day_scroll.setPageStep(_VISIBLE_DAY_COUNT * _DAY_SCROLL_UNITS_PER_DAY)
         self._day_scroll.setValue(_DAY_SCROLL_CENTER)
         self._day_scroll.setToolTip("Scroll through days")
         self._day_scroll.valueChanged.connect(self._on_day_scroll_changed)
