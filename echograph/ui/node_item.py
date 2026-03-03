@@ -1661,6 +1661,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
             # Keep extra bottom frame space for the Video Player preview controls.
             body_h = 188
             node_w = self._BASE_W
+        elif kind in ("gantt_chart", "gantt chart", "gant_chart", "gant chart"):
+            body_h = 320
+            node_w = max(self._BASE_W, 1010)
         elif kind in ("image_collection", "imagecollection"):
             body_h = self._IMG_CTRL_H + self._IMG_CANVAS_H
             node_w = max(self._BASE_W, self._IMG_CANVAS_W)

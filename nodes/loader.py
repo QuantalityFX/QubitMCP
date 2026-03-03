@@ -64,6 +64,17 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Python plugin import failed:", e)
 
+    # 4.5) Gantt Chart
+    try:
+        from nodes import gantt_chart
+        if hasattr(gantt_chart, "register"):
+            gantt_chart.register()
+            _safe_probe("gantt_chart")
+        else:
+            print("[EchoGraph] Gantt Chart module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Gantt Chart plugin import failed:", e)
+
     # 5) Output
     try:
         from nodes import output
