@@ -80,6 +80,63 @@ class GraphView(QtWidgets.QGraphicsView):
         self._pre_3d_transform = None
         self._last_interaction_ts = 0.0
 
+    def _dispatch_embedded_short_right_click(self, viewport_pos: QtCore.QPoint) -> bool:
+        scene = self.scene()
+        if scene is None:
+            return False
+        try:
+            scene_pos = self.mapToScene(viewport_pos)
+        except Exception:
+            return False
+        for item in scene.items(scene_pos):
+            proxy = item if isinstance(item, QtWidgets.QGraphicsProxyWidget) else None
+            if proxy is None:
+                proxy = getattr(item, "_llm_proxy", None)
+            if not isinstance(proxy, QtWidgets.QGraphicsProxyWidget):
+                continue
+            try:
+                widget = proxy.widget()
+            except Exception:
+                widget = None
+            if widget is None:
+                continue
+            try:
+                proxy_local = proxy.mapFromScene(scene_pos)
+            except Exception:
+                proxy_local = QtCore.QPointF()
+            try:
+                widget_pos = proxy_local.toPoint()
+            except Exception:
+                widget_pos = QtCore.QPoint(int(proxy_local.x()), int(proxy_local.y()))
+            current = None
+            try:
+                current = widget.childAt(widget_pos)
+            except Exception:
+                current = None
+            if current is None:
+                current = widget
+            while current is not None:
+                handler = getattr(current, "_handle_graph_view_short_right_click_local", None)
+                if callable(handler):
+                    try:
+                        if bool(handler(widget_pos)):
+                            return True
+                    except Exception:
+                        pass
+                handler = getattr(current, "_handle_graph_view_short_right_click", None)
+                if callable(handler):
+                    try:
+                        global_pos = self.viewport().mapToGlobal(viewport_pos)
+                        if bool(handler(global_pos)):
+                            return True
+                    except Exception:
+                        pass
+                try:
+                    current = current.parentWidget()
+                except Exception:
+                    current = None
+        return False
+
     def _mark_interaction(self) -> None:
         try:
             self._last_interaction_ts = time.perf_counter()
@@ -847,6 +904,8 @@ class GraphView(QtWidgets.QGraphicsView):
             self._rc_did_zoom = False
 
             if is_context and not self._is_over_llm_view(e.pos()):
+                if self._dispatch_embedded_short_right_click(e.pos()):
+                    e.accept(); return
                 sp = self.mapToScene(e.pos())
                 sc = self.scene()
                 if hasattr(sc, "show_create_dialog_at"):

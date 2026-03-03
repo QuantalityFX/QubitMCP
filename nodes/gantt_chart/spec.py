@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import calendar
+import html
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
+
+try:
+    import winsound
+except Exception:
+    winsound = None  # type: ignore
 
 try:
     from PySide6 import QtWidgets, QtCore, QtGui
@@ -16,6 +22,7 @@ from echograph.ui.dialogs import BigTextEditDialog
 
 _SCHEDULE_PARAM = "schedule_data"
 _PROGRESS_PARAM = "progress_data"
+_NOTIFICATION_PARAM = "notification_data"
 _VIEW_MONTH_PARAM = "view_month"
 _VIEW_START_PARAM = "view_start_date"
 _TASK_PANEL_WIDTH_PARAM = "task_panel_width"
@@ -24,7 +31,7 @@ _GANTT_DAY_COLUMN_WIDTH = 24
 _GANTT_TASK_ROW_HEIGHT = 28
 _GANTT_TASK_PANEL_MIN_WIDTH = 180
 _GANTT_TASK_PANEL_DEFAULT_WIDTH = 180
-_GANTT_TASK_PANEL_HANDLE_WIDTH = 8
+_GANTT_TASK_PANEL_HANDLE_WIDTH = 4
 _DAY_SCROLL_UNITS_PER_DAY = 12
 _DAY_SCROLL_CENTER = 24000
 _DAY_SCROLL_RANGE = 48000
@@ -98,12 +105,20 @@ def build_ports(node_item) -> None:
     )
     _ensure_param(node_item, _SCHEDULE_PARAM, "{}")
     _ensure_param(node_item, _PROGRESS_PARAM, "{}")
+    _ensure_param(node_item, _NOTIFICATION_PARAM, "{}")
     _ensure_param(node_item, _VIEW_MONTH_PARAM, f"{view_start.year:04d}-{view_start.month:02d}")
     _ensure_param(node_item, _VIEW_START_PARAM, view_start.isoformat())
     _ensure_param(node_item, _TASK_PANEL_WIDTH_PARAM, str(_GANTT_TASK_PANEL_DEFAULT_WIDTH))
     _ensure_hidden_params(
         model,
-        [_SCHEDULE_PARAM, _PROGRESS_PARAM, _VIEW_MONTH_PARAM, _VIEW_START_PARAM, _TASK_PANEL_WIDTH_PARAM],
+        [
+            _SCHEDULE_PARAM,
+            _PROGRESS_PARAM,
+            _NOTIFICATION_PARAM,
+            _VIEW_MONTH_PARAM,
+            _VIEW_START_PARAM,
+            _TASK_PANEL_WIDTH_PARAM,
+        ],
     )
 
 
@@ -194,6 +209,24 @@ def _load_icon_pixmap(name: str) -> QtGui.QPixmap | None:
         pm = None
     _ICON_PIXMAP_CACHE[name] = pm
     return pm
+
+
+def _play_notification_alert_sound() -> None:
+    if winsound is None:
+        return
+    try:
+        sound_path = Path(__file__).resolve().parents[2] / "sounds" / "notification_alert.wav"
+    except Exception:
+        return
+    if not sound_path.is_file():
+        return
+    try:
+        winsound.PlaySound(
+            str(sound_path),
+            winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT,
+        )
+    except Exception:
+        pass
 
 
 def _days_in_month(year: int, month: int) -> int:
@@ -312,6 +345,91 @@ def _write_progress_map(node_item, mapping: dict[str, int], *, notify_scene: boo
     _write_gantt_sidecar_snapshot(node_item)
 
 
+def _parse_notification_datetime(raw) -> datetime | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except Exception:
+        return None
+    if getattr(parsed, "tzinfo", None) is not None:
+        try:
+            parsed = parsed.astimezone().replace(tzinfo=None)
+        except Exception:
+            parsed = parsed.replace(tzinfo=None)
+    return parsed.replace(microsecond=0)
+
+
+def _serialize_notification_datetime(value: datetime) -> str:
+    if getattr(value, "tzinfo", None) is not None:
+        try:
+            value = value.astimezone().replace(tzinfo=None)
+        except Exception:
+            value = value.replace(tzinfo=None)
+    return value.replace(microsecond=0).isoformat(timespec="seconds")
+
+
+def _coerce_notification_entry(raw) -> dict[str, str] | None:
+    if not isinstance(raw, dict):
+        return None
+    notify_at = _parse_notification_datetime(raw.get("notify_at"))
+    if notify_at is None:
+        return None
+    message = str(raw.get("message") or "").strip()
+    return {
+        "notify_at": _serialize_notification_datetime(notify_at),
+        "message": message,
+    }
+
+
+def _read_notifications(node_item) -> dict[str, dict[str, str]]:
+    model = getattr(node_item, "model", None)
+    if model is None:
+        return {}
+    raw = _param_value(model, _NOTIFICATION_PARAM).strip()
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    clean: dict[str, dict[str, str]] = {}
+    for name, value in data.items():
+        task = str(name or "").strip()
+        if not task:
+            continue
+        entry = _coerce_notification_entry(value)
+        if entry is not None:
+            clean[task] = entry
+    return clean
+
+
+def _write_notifications(
+    node_item,
+    mapping: dict[str, dict[str, str]],
+    *,
+    notify_scene: bool = True,
+) -> None:
+    clean: dict[str, dict[str, str]] = {}
+    for name, value in (mapping or {}).items():
+        task = str(name or "").strip()
+        if not task:
+            continue
+        entry = _coerce_notification_entry(value)
+        if entry is not None:
+            clean[task] = entry
+    _set_param_value(
+        node_item,
+        _NOTIFICATION_PARAM,
+        json.dumps(clean, sort_keys=True, separators=(",", ":")),
+        notify_scene=notify_scene,
+    )
+    _write_gantt_sidecar_snapshot(node_item)
+
+
 def _read_task_panel_width(node_item) -> int:
     model = getattr(node_item, "model", None)
     raw = _param_value(model, _TASK_PANEL_WIDTH_PARAM).strip()
@@ -329,6 +447,7 @@ def _write_task_panel_width(node_item, width: int) -> None:
         str(max(_GANTT_TASK_PANEL_MIN_WIDTH, int(width))),
         notify_scene=False,
     )
+    _write_gantt_sidecar_snapshot(node_item)
 
 
 def _rename_task_key(mapping: dict, old_name: str, new_name: str):
@@ -391,7 +510,7 @@ def _read_gantt_sidecar_nodes(node_item) -> dict[str, dict]:
     return nodes if isinstance(nodes, dict) else {}
 
 
-def _schedule_param_is_empty(raw: str) -> bool:
+def _json_param_is_empty(raw: str) -> bool:
     text = str(raw or "").strip()
     return not text or text == "{}"
 
@@ -410,7 +529,9 @@ def _write_gantt_sidecar_snapshot(node_item) -> None:
     nodes[node_name] = {
         "schedule_data": _param_value(model, _SCHEDULE_PARAM).strip() or "{}",
         "progress_data": _param_value(model, _PROGRESS_PARAM).strip() or "{}",
+        "notification_data": _param_value(model, _NOTIFICATION_PARAM).strip() or "{}",
         "view_start_date": _param_value(model, _VIEW_START_PARAM).strip(),
+        "task_panel_width": _param_value(model, _TASK_PANEL_WIDTH_PARAM).strip(),
     }
     try:
         path.write_text(json.dumps({"nodes": nodes}, indent=2), encoding="utf-8")
@@ -430,7 +551,7 @@ def _load_gantt_sidecar_snapshot(node_item) -> bool:
     changed = False
     current_schedule = _param_value(model, _SCHEDULE_PARAM)
     sidecar_schedule = entry.get("schedule_data")
-    if _schedule_param_is_empty(current_schedule):
+    if _json_param_is_empty(current_schedule):
         if isinstance(sidecar_schedule, dict):
             sidecar_schedule = json.dumps(sidecar_schedule, sort_keys=True, separators=(",", ":"))
         sidecar_schedule = str(sidecar_schedule or "").strip() or "{}"
@@ -442,7 +563,7 @@ def _load_gantt_sidecar_snapshot(node_item) -> bool:
                 sidecar_schedule = "{}"
         except Exception:
             sidecar_schedule = "{}"
-        if not _schedule_param_is_empty(sidecar_schedule):
+        if not _json_param_is_empty(sidecar_schedule):
             _set_param_value(node_item, _SCHEDULE_PARAM, sidecar_schedule, notify_scene=False)
             changed = True
 
@@ -460,7 +581,7 @@ def _load_gantt_sidecar_snapshot(node_item) -> bool:
         changed = True
     current_progress = _param_value(model, _PROGRESS_PARAM)
     sidecar_progress = entry.get("progress_data")
-    if _schedule_param_is_empty(current_progress):
+    if _json_param_is_empty(current_progress):
         if isinstance(sidecar_progress, dict):
             sidecar_progress = json.dumps(sidecar_progress, sort_keys=True, separators=(",", ":"))
         sidecar_progress = str(sidecar_progress or "").strip() or "{}"
@@ -472,9 +593,52 @@ def _load_gantt_sidecar_snapshot(node_item) -> bool:
                 sidecar_progress = "{}"
         except Exception:
             sidecar_progress = "{}"
-        if not _schedule_param_is_empty(sidecar_progress):
+        if not _json_param_is_empty(sidecar_progress):
             _set_param_value(node_item, _PROGRESS_PARAM, sidecar_progress, notify_scene=False)
             changed = True
+    current_notifications = _param_value(model, _NOTIFICATION_PARAM)
+    sidecar_notifications = entry.get("notification_data")
+    if _json_param_is_empty(current_notifications):
+        if isinstance(sidecar_notifications, dict):
+            sidecar_notifications = json.dumps(sidecar_notifications, sort_keys=True, separators=(",", ":"))
+        sidecar_notifications = str(sidecar_notifications or "").strip() or "{}"
+        try:
+            parsed_notifications = json.loads(sidecar_notifications)
+            if isinstance(parsed_notifications, dict):
+                clean_notifications = {}
+                for task_name, raw_entry in parsed_notifications.items():
+                    task = str(task_name or "").strip()
+                    if not task:
+                        continue
+                    entry_value = _coerce_notification_entry(raw_entry)
+                    if entry_value is not None:
+                        clean_notifications[task] = entry_value
+                sidecar_notifications = json.dumps(clean_notifications, sort_keys=True, separators=(",", ":"))
+            else:
+                sidecar_notifications = "{}"
+        except Exception:
+            sidecar_notifications = "{}"
+        if not _json_param_is_empty(sidecar_notifications):
+            _set_param_value(node_item, _NOTIFICATION_PARAM, sidecar_notifications, notify_scene=False)
+            changed = True
+    current_width_raw = _param_value(model, _TASK_PANEL_WIDTH_PARAM).strip()
+    current_width = _read_task_panel_width(node_item)
+    sidecar_width = str(entry.get("task_panel_width") or "").strip()
+    if sidecar_width:
+        try:
+            parsed_sidecar_width = max(_GANTT_TASK_PANEL_MIN_WIDTH, int(float(sidecar_width)))
+        except Exception:
+            parsed_sidecar_width = None
+        if parsed_sidecar_width is not None:
+            should_restore_width = (not current_width_raw) or (current_width == _GANTT_TASK_PANEL_DEFAULT_WIDTH)
+            if should_restore_width and parsed_sidecar_width != current_width:
+                _set_param_value(
+                    node_item,
+                    _TASK_PANEL_WIDTH_PARAM,
+                    str(parsed_sidecar_width),
+                    notify_scene=False,
+                )
+                changed = True
     return changed
 
 
@@ -678,6 +842,35 @@ def _today_icon() -> QtGui.QIcon | None:
         return None
 
 
+class _GanttNotificationButton(QtWidgets.QAbstractButton):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._icon_pm = _load_icon_pixmap("notification_timer.png")
+        self.setCursor(QtCore.Qt.PointingHandCursor)
+        self.setToolTip("Select a task to schedule a reminder.")
+        self.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+
+    def sizeHint(self):
+        return QtCore.QSize(28, 28)
+
+    def paintEvent(self, event):
+        painter = QtGui.QPainter(self)
+        try:
+            painter.setRenderHint(QtGui.QPainter.SmoothPixmapTransform, True)
+        except Exception:
+            pass
+        if self._icon_pm is not None and not self._icon_pm.isNull():
+            target = QtCore.QRect(0, 0, min(self.width() - 4, 18), min(self.height() - 4, 18))
+            target.moveCenter(self.rect().center())
+            try:
+                painter.setOpacity(0.82 if self.isEnabled() else 0.45)
+            except Exception:
+                pass
+            painter.drawPixmap(target, self._icon_pm, self._icon_pm.rect())
+        painter.end()
+
+
 class _GanttTodayButton(QtWidgets.QAbstractButton):
     def __init__(self, today_value: date, parent=None):
         super().__init__(parent)
@@ -770,11 +963,17 @@ class _GanttTaskDividerHandle(QtWidgets.QWidget):
 
 
 class _GanttCalendarTable(QtWidgets.QTableWidget):
+    cellShortRightClicked = QtCore.Signal(int, int)
+    cellLeftDoubleClicked = QtCore.Signal(int, int)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._today_column: int | None = None
         self._assignment_overlays: dict[int, tuple[int, QtGui.QColor]] = {}
         self._progress_overlays: dict[int, tuple[int, int]] = {}
+        self._right_press_pos: QtCore.QPoint | None = None
+        self._right_press_index = QtCore.QModelIndex()
+        self._right_drag_threshold = 0
 
     def set_today_column(self, column: int | None) -> None:
         self._today_column = None if column is None else int(column)
@@ -806,6 +1005,64 @@ class _GanttCalendarTable(QtWidgets.QTableWidget):
             self.viewport().update()
         except Exception:
             pass
+
+    def viewportEvent(self, event):
+        event_type = event.type()
+        if event_type == QtCore.QEvent.MouseButtonPress and event.button() == QtCore.Qt.RightButton:
+            try:
+                self._right_press_pos = QtCore.QPoint(event.pos())
+            except Exception:
+                self._right_press_pos = None
+            try:
+                self._right_press_index = self.indexAt(event.pos())
+            except Exception:
+                self._right_press_index = QtCore.QModelIndex()
+            try:
+                self._right_drag_threshold = int(QtWidgets.QApplication.startDragDistance())
+            except Exception:
+                self._right_drag_threshold = 8
+        elif event_type == QtCore.QEvent.MouseMove:
+            if self._right_press_pos is not None and bool(event.buttons() & QtCore.Qt.RightButton):
+                try:
+                    pos = QtCore.QPoint(event.pos())
+                    if (pos - self._right_press_pos).manhattanLength() > max(1, int(self._right_drag_threshold)):
+                        self._right_press_pos = None
+                        self._right_press_index = QtCore.QModelIndex()
+                except Exception:
+                    pass
+        elif event_type == QtCore.QEvent.MouseButtonDblClick and event.button() == QtCore.Qt.LeftButton:
+            try:
+                dbl_index = self.indexAt(event.pos())
+            except Exception:
+                dbl_index = QtCore.QModelIndex()
+            if dbl_index.isValid():
+                self.cellLeftDoubleClicked.emit(int(dbl_index.row()), int(dbl_index.column()))
+        elif event_type == QtCore.QEvent.MouseButtonDblClick and event.button() == QtCore.Qt.RightButton:
+            self._right_press_pos = None
+            self._right_press_index = QtCore.QModelIndex()
+            event.accept()
+            return True
+        elif event_type == QtCore.QEvent.MouseButtonRelease and event.button() == QtCore.Qt.RightButton:
+            try:
+                release_pos = QtCore.QPoint(event.pos())
+            except Exception:
+                release_pos = None
+            if self._right_press_pos is not None and release_pos is not None:
+                try:
+                    moved = (release_pos - self._right_press_pos).manhattanLength()
+                except Exception:
+                    moved = max(1, int(self._right_drag_threshold) + 1)
+                if moved <= max(1, int(self._right_drag_threshold)):
+                    try:
+                        release_index = self.indexAt(release_pos)
+                    except Exception:
+                        release_index = QtCore.QModelIndex()
+                    target_index = release_index if release_index.isValid() else self._right_press_index
+                    if target_index.isValid():
+                        self.cellShortRightClicked.emit(int(target_index.row()), int(target_index.column()))
+            self._right_press_pos = None
+            self._right_press_index = QtCore.QModelIndex()
+        return super().viewportEvent(event)
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -886,6 +1143,8 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
         self._selected_section: int | None = None
         self._completed_sections: set[int] = set()
         self._progress_values: dict[int, int] = {}
+        self._notification_sections: set[int] = set()
+        self._notification_icon = _load_icon_pixmap("bell_icon.png")
         self._dragging_section: int | None = None
         self._drag_start_visual_index: int | None = None
         self._drag_grab_offset: int | None = None
@@ -930,12 +1189,29 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
         except Exception:
             self.update()
 
+    def set_notification_sections(self, sections: set[int]) -> None:
+        clean = {int(section) for section in (sections or set()) if int(section) >= 0}
+        if clean == self._notification_sections:
+            return
+        self._notification_sections = clean
+        try:
+            self.viewport().update()
+        except Exception:
+            self.update()
+
     def _progress_rect(self, rect: QtCore.QRect) -> QtCore.QRect:
         checkbox_rect = self._checkbox_rect(rect)
         width = 36
         x = int(checkbox_rect.left() - width - 8)
         y = int(rect.top() + 4)
         return QtCore.QRect(x, y, width, max(12, int(rect.height()) - 8))
+
+    def _notification_rect(self, rect: QtCore.QRect) -> QtCore.QRect:
+        progress_rect = self._progress_rect(rect)
+        size = max(10, min(12, int(rect.height()) - 12))
+        x = int(progress_rect.left() - size - 8)
+        y = int(rect.top() + ((rect.height() - size) / 2.0))
+        return QtCore.QRect(x, y, size, size)
 
     def _checkbox_rect(self, rect: QtCore.QRect) -> QtCore.QRect:
         size = max(12, min(14, int(rect.height()) - 10))
@@ -1012,8 +1288,22 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
         painter.setPen(QtGui.QColor("#f8fafc") if is_selected else QtGui.QColor("#dbe4ee"))
         checkbox_rect = self._checkbox_rect(rect)
         progress_rect = self._progress_rect(rect)
-        text_rect = rect.adjusted(8, -2, -int(rect.width() - progress_rect.left() + 4), -2)
+        notification_rect = self._notification_rect(rect)
+        text_rect = rect.adjusted(8, -2, -int(rect.width() - notification_rect.left() + 4), -2)
         painter.drawText(text_rect, int(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter), text)
+        if int(logical_index) in self._notification_sections and self._notification_icon is not None and not self._notification_icon.isNull():
+            icon_target = QtCore.QRect(notification_rect)
+            source_rect = self._notification_icon.rect()
+            if source_rect.width() > 0 and source_rect.height() > 0:
+                try:
+                    painter.setOpacity(1.0 if is_selected else 0.95)
+                except Exception:
+                    pass
+                painter.drawPixmap(icon_target, self._notification_icon, source_rect)
+                try:
+                    painter.setOpacity(1.0)
+                except Exception:
+                    pass
         progress = self._progress_values.get(int(logical_index), 0)
         painter.setBrush(QtGui.QColor("#10161d"))
         painter.setPen(QtGui.QPen(QtGui.QColor("#475569"), 1))
@@ -1276,6 +1566,102 @@ def _reorder_note_params(node_item, ordered_names: list[str]) -> bool:
     return True
 
 
+def _qdatetime_from_datetime(value: datetime) -> QtCore.QDateTime:
+    try:
+        return QtCore.QDateTime.fromSecsSinceEpoch(int(value.timestamp()))
+    except Exception:
+        qdt = QtCore.QDateTime.currentDateTime()
+        try:
+            qdt.setSecsSinceEpoch(int(value.timestamp()))
+        except Exception:
+            pass
+        return qdt
+
+
+class TaskNotificationDialog(QtWidgets.QDialog):
+    ClearResult = 2
+
+    def __init__(
+        self,
+        parent=None,
+        *,
+        task_name: str,
+        initial_when: datetime | None = None,
+        initial_message: str = "",
+        has_existing: bool = False,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("Task Notification")
+        self.setModal(True)
+        self.resize(420, 0)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
+
+        task_label = QtWidgets.QLabel(f"Task: {task_name}", self)
+        task_label.setStyleSheet("QLabel{color:#cbd5e1;font-weight:600;}")
+        layout.addWidget(task_label)
+
+        form = QtWidgets.QFormLayout()
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setSpacing(8)
+        form.setLabelAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        form.setFormAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop)
+
+        self._when_edit = QtWidgets.QDateTimeEdit(self)
+        self._when_edit.setCalendarPopup(True)
+        self._when_edit.setDisplayFormat("yyyy-MM-dd HH:mm")
+        self._when_edit.setDateTime(
+            _qdatetime_from_datetime(initial_when or (datetime.now() + timedelta(minutes=5)))
+        )
+        form.addRow("Notify at", self._when_edit)
+
+        self._message_edit = QtWidgets.QLineEdit(self)
+        self._message_edit.setPlaceholderText("Optional reminder message")
+        self._message_edit.setText(str(initial_message or "").strip())
+        form.addRow("Message", self._message_edit)
+        layout.addLayout(form)
+
+        self._button_box = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
+            QtCore.Qt.Horizontal,
+            self,
+        )
+        self._save_button = self._button_box.button(QtWidgets.QDialogButtonBox.Ok)
+        if self._save_button is not None:
+            self._save_button.setText("Save")
+        if has_existing:
+            self._clear_button = self._button_box.addButton("Clear", QtWidgets.QDialogButtonBox.ResetRole)
+            self._clear_button.clicked.connect(self._clear_notification)
+        else:
+            self._clear_button = None
+        self._button_box.accepted.connect(self._validate_and_accept)
+        self._button_box.rejected.connect(self.reject)
+        layout.addWidget(self._button_box)
+
+    def _validate_and_accept(self) -> None:
+        notify_at = self.notification_datetime()
+        if notify_at <= datetime.now():
+            QtWidgets.QMessageBox.warning(self, "Task Notification", "Choose a future date and time.")
+            return
+        self.accept()
+
+    def _clear_notification(self) -> None:
+        self.done(self.ClearResult)
+
+    def notification_datetime(self) -> datetime:
+        qdt = self._when_edit.dateTime()
+        try:
+            return datetime.fromtimestamp(int(qdt.toSecsSinceEpoch())).replace(microsecond=0)
+        except Exception:
+            parsed = _parse_notification_datetime(qdt.toString("yyyy-MM-ddTHH:mm:ss"))
+            return parsed or datetime.now().replace(microsecond=0)
+
+    def message_text(self) -> str:
+        return str(self._message_edit.text() or "").strip()
+
+
 class GanttChartWidget(QtWidgets.QFrame):
     def __init__(self, node_item, parent=None):
         super().__init__(parent)
@@ -1289,7 +1675,10 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._assignments: dict[str, str] = {}
         self._completed_tasks: set[str] = set()
         self._task_progress: dict[str, int] = {}
+        self._task_notifications: dict[str, dict[str, str]] = {}
         self._selected_task: str | None = None
+        self._processing_due_notifications = False
+        self._active_notification_popups: list[QtWidgets.QMessageBox] = []
         self._ignore_header_move = False
         self._today = date.today()
         self._base_start_date = date(self._today.year, self._today.month, 1)
@@ -1420,7 +1809,7 @@ class GanttChartWidget(QtWidgets.QFrame):
             pass
 
         self._table.cellClicked.connect(self._on_cell_clicked)
-        self._table.cellDoubleClicked.connect(self._on_cell_double_clicked)
+        self._table.cellLeftDoubleClicked.connect(self._on_cell_double_clicked)
         try:
             self._table.verticalHeader().sectionClicked.connect(self._on_task_header_clicked)
         except Exception:
@@ -1429,8 +1818,7 @@ class GanttChartWidget(QtWidgets.QFrame):
             self._table.horizontalHeader().sectionClicked.connect(self._on_header_clicked)
         except Exception:
             pass
-        self._table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
-        self._table.customContextMenuRequested.connect(self._on_table_context_menu)
+        self._table.cellShortRightClicked.connect(self._on_table_short_right_click)
         layout.addWidget(self._table, 1)
 
         self._task_divider_handle = _GanttTaskDividerHandle(self._table, self)
@@ -1441,6 +1829,10 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._today_jump_button = _GanttTodayButton(self._today, self._table)
         self._today_jump_button.clicked.connect(self._jump_to_today)
         self._today_jump_button.raise_()
+        self._notification_button = _GanttNotificationButton(self._table)
+        self._notification_button.setEnabled(False)
+        self._notification_button.clicked.connect(self._open_notification_dialog)
+        self._notification_button.raise_()
 
         self._progress_editor = QtWidgets.QSpinBox(self._table.verticalHeader().viewport())
         self._progress_editor.setRange(0, 100)
@@ -1454,6 +1846,11 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._progress_editor.hide()
         self._progress_edit_section: int | None = None
         self._progress_editor.editingFinished.connect(self._commit_progress_edit)
+
+        self._notification_timer = QtCore.QTimer(self)
+        self._notification_timer.setInterval(1000)
+        self._notification_timer.timeout.connect(self._process_due_notifications)
+        self._notification_timer.start()
 
         self._apply_task_panel_width(self._task_panel_width, persist=False)
 
@@ -1527,7 +1924,8 @@ class GanttChartWidget(QtWidgets.QFrame):
             frame = int(self._table.frameWidth())
             header_width = int(self._table.verticalHeader().width())
             handle_width = int(_GANTT_TASK_PANEL_HANDLE_WIDTH)
-            x = max(0, table_x + frame + header_width - handle_width + 1)
+            divider_x = table_x + frame + header_width
+            x = max(0, divider_x - (handle_width // 2))
             y = max(0, table_y + frame)
             h = max(1, int(self._table.height()) - (frame * 2))
             self._task_divider_handle.setGeometry(x, y, handle_width, h)
@@ -1629,9 +2027,13 @@ class GanttChartWidget(QtWidgets.QFrame):
         except Exception:
             return
         button_size = max(18, min(24, corner_width - 4, header_height - 4))
-        x = max(0, frame + int((corner_width - button_size) / 2.0))
+        gap = 6
+        group_width = (button_size * 2) + gap
+        x = max(0, frame + int((corner_width - group_width) / 2.0))
         y = max(0, frame + int((header_height - button_size) / 2.0))
-        self._today_jump_button.setGeometry(x, y, button_size, button_size)
+        self._notification_button.setGeometry(x, y, button_size, button_size)
+        self._today_jump_button.setGeometry(x + button_size + gap, y, button_size, button_size)
+        self._notification_button.raise_()
         self._today_jump_button.raise_()
 
     def _on_progress_edit_requested(self, section: int, rect_obj):
@@ -1666,6 +2068,173 @@ class GanttChartWidget(QtWidgets.QFrame):
         if section is None or section < 0 or section >= len(self._task_names):
             return
         self._set_task_progress(self._task_names[section], int(self._progress_editor.value()))
+
+    def _update_notification_button(self) -> None:
+        selected_task = str(self._selected_task or "").strip()
+        if not selected_task:
+            self._notification_button.setToolTip("Select a task to schedule a reminder.")
+            self._notification_button.setEnabled(False)
+            return
+        entry = self._task_notifications.get(selected_task) or {}
+        notify_at = _parse_notification_datetime(entry.get("notify_at"))
+        if notify_at is None:
+            self._notification_button.setToolTip(f"Schedule a reminder for {selected_task}.")
+        else:
+            self._notification_button.setToolTip(
+                f"Reminder for {selected_task}: {_serialize_notification_datetime(notify_at)}"
+            )
+        self._notification_button.setEnabled(True)
+
+    def _open_notification_dialog(self) -> None:
+        task = str(self._selected_task or "").strip()
+        if not task:
+            QtWidgets.QMessageBox.information(
+                _dialog_parent_for_node(self._node_item),
+                "Task Notification",
+                "Select a task from the list before creating a notification.",
+            )
+            return
+        current_entry = self._task_notifications.get(task) or {}
+        dlg = TaskNotificationDialog(
+            _dialog_parent_for_node(self._node_item),
+            task_name=task,
+            initial_when=_parse_notification_datetime(current_entry.get("notify_at")),
+            initial_message=str(current_entry.get("message") or ""),
+            has_existing=bool(current_entry),
+        )
+        try:
+            result = dlg.exec()
+        except Exception:
+            result = dlg.exec_()
+        if result == TaskNotificationDialog.ClearResult:
+            notifications = dict(self._task_notifications)
+            if task in notifications:
+                notifications.pop(task, None)
+                self._task_notifications = notifications
+                _write_notifications(self._node_item, notifications, notify_scene=False)
+                self._apply_table_styles()
+                self._update_labels()
+            return
+        if result != QtWidgets.QDialog.Accepted:
+            return
+        notifications = dict(self._task_notifications)
+        notifications[task] = {
+            "notify_at": _serialize_notification_datetime(dlg.notification_datetime()),
+            "message": dlg.message_text(),
+        }
+        self._task_notifications = notifications
+        _write_notifications(self._node_item, notifications, notify_scene=False)
+        self._apply_table_styles()
+        self._update_labels()
+
+    def _show_task_notification(self, task: str, message: str) -> None:
+        _play_notification_alert_sound()
+        body = str(message or "").strip()
+        task_line = f"Task: {task}"
+        parent = _dialog_parent_for_node(self._node_item)
+        box = QtWidgets.QMessageBox(parent)
+        box.setWindowTitle("Task Notification")
+        try:
+            box.setIcon(QtWidgets.QMessageBox.NoIcon)
+        except Exception:
+            pass
+        try:
+            if body:
+                box.setTextFormat(QtCore.Qt.RichText)
+                box.setText(f"<b>{html.escape(body)}</b>")
+                box.setInformativeText(task_line)
+            else:
+                box.setText(task_line)
+                box.setInformativeText("")
+        except Exception:
+            box.setText(f"{body}\n\n{task_line}" if body else task_line)
+        try:
+            icon_pm = _load_icon_pixmap("notification_timer.png")
+            if icon_pm is not None and not icon_pm.isNull():
+                box.setIconPixmap(icon_pm.scaled(28, 28, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+        except Exception:
+            pass
+        try:
+            box.setStyleSheet(
+                "QLabel#qt_msgbox_label,QLabel#qt_msgbox_informativelabel{min-width:420px;}"
+            )
+        except Exception:
+            pass
+        try:
+            box.setStandardButtons(QtWidgets.QMessageBox.Ok)
+        except Exception:
+            pass
+        try:
+            button_box = box.findChild(QtWidgets.QDialogButtonBox)
+            if button_box is not None:
+                button_box.setCenterButtons(True)
+        except Exception:
+            pass
+        try:
+            box.adjustSize()
+            target_width = max(520, int(box.sizeHint().width()))
+            box.setMinimumWidth(target_width)
+            box.resize(target_width, max(int(box.height()), int(box.sizeHint().height())))
+        except Exception:
+            pass
+        try:
+            box.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+        except Exception:
+            pass
+        self._active_notification_popups.append(box)
+
+        def _cleanup_popup(_result=0, popup=box):
+            try:
+                self._active_notification_popups.remove(popup)
+            except Exception:
+                pass
+
+        try:
+            box.finished.connect(_cleanup_popup)
+        except Exception:
+            pass
+        try:
+            box.open()
+        except Exception:
+            try:
+                box.show()
+            except Exception:
+                try:
+                    box.exec()
+                except Exception:
+                    box.exec_()
+
+    def _process_due_notifications(self) -> None:
+        if self._processing_due_notifications or not self._task_notifications:
+            return
+        self._processing_due_notifications = True
+        try:
+            now = datetime.now().replace(microsecond=0)
+            due_items = []
+            remaining = dict(self._task_notifications)
+            changed = False
+            for task, entry in sorted(
+                self._task_notifications.items(),
+                key=lambda item: str((item[1] or {}).get("notify_at") or ""),
+            ):
+                notify_at = _parse_notification_datetime((entry or {}).get("notify_at"))
+                if notify_at is None:
+                    remaining.pop(task, None)
+                    changed = True
+                    continue
+                if notify_at <= now:
+                    due_items.append((task, str((entry or {}).get("message") or "").strip()))
+                    remaining.pop(task, None)
+                    changed = True
+            if changed:
+                self._task_notifications = remaining
+                _write_notifications(self._node_item, remaining, notify_scene=False)
+                self._apply_table_styles()
+                self._update_labels()
+            for task, message in due_items:
+                self._show_task_notification(task, message)
+        finally:
+            self._processing_due_notifications = False
 
     def _set_visible_start_date(self, visible_start: date, *, sync_scroll: bool = True, persist: bool = True) -> None:
         if visible_start == self._visible_start_date and self._visible_dates:
@@ -1751,24 +2320,17 @@ class GanttChartWidget(QtWidgets.QFrame):
             pass
         self._progress_edit_section = None
         if not self._sidecar_loaded:
-            current_schedule = _param_value(getattr(self._node_item, "model", None), _SCHEDULE_PARAM)
-            current_progress = _param_value(getattr(self._node_item, "model", None), _PROGRESS_PARAM)
-            current_view_start = _param_value(getattr(self._node_item, "model", None), _VIEW_START_PARAM).strip()
-            if (
-                (not _schedule_param_is_empty(current_schedule))
-                and (not _schedule_param_is_empty(current_progress))
-                and bool(current_view_start)
-            ):
+            loaded = _load_gantt_sidecar_snapshot(self._node_item)
+            if loaded:
                 self._sidecar_loaded = True
             else:
-                loaded = _load_gantt_sidecar_snapshot(self._node_item)
-                if loaded:
+                path = _gantt_sidecar_path(self._node_item)
+                if path is not None and path.is_file():
                     self._sidecar_loaded = True
-                else:
-                    path = _gantt_sidecar_path(self._node_item)
-                    if path is not None and path.is_file():
-                        self._sidecar_loaded = True
         self._sync_view_start_from_params(force=True)
+        panel_width = _read_task_panel_width(self._node_item)
+        if panel_width != self._task_panel_width:
+            self._apply_task_panel_width(panel_width, persist=False)
         src_item, src_model = _resolve_note_source(self._node_item)
         self._source_invalid = bool(src_item is not None and src_model is None)
         self._source_name = getattr(src_model, "name", "") if src_model is not None else ""
@@ -1779,11 +2341,15 @@ class GanttChartWidget(QtWidgets.QFrame):
             default_month=self._visible_start_date.month,
         )
         progress_map = _read_progress_map(self._node_item)
+        notifications = _read_notifications(self._node_item)
         has_valid_note_source = src_model is not None
         pruned = {name: day for name, day in assignments.items() if name in task_names}
         if has_valid_note_source and pruned != assignments:
             _write_assignments(self._node_item, pruned, notify_scene=False)
         pruned_progress = {name: value for name, value in progress_map.items() if name in task_names}
+        pruned_notifications = {name: entry for name, entry in notifications.items() if name in task_names}
+        if has_valid_note_source and pruned_notifications != notifications:
+            _write_notifications(self._node_item, pruned_notifications, notify_scene=False)
         source_completed = _completed_task_names(src_model)
         completed = {name for name in source_completed if name in task_names}
         synced_progress = dict(pruned_progress)
@@ -1805,6 +2371,7 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._task_names = task_names
         self._assignments = pruned if has_valid_note_source else assignments
         self._task_progress = synced_progress if has_valid_note_source else progress_map
+        self._task_notifications = pruned_notifications if has_valid_note_source else notifications
         self._completed_tasks = completed
         if self._selected_task not in self._task_names:
             self._selected_task = None
@@ -1843,6 +2410,7 @@ class GanttChartWidget(QtWidgets.QFrame):
             self._selection_label.setText("The connected note has no visible parameters.")
         else:
             self._selection_label.setText("Connect a note task list to place tasks on the chart.")
+        self._update_notification_button()
 
     def _ensure_item(self, row: int, col: int) -> QtWidgets.QTableWidgetItem:
         item = self._table.item(row, col)
@@ -1999,6 +2567,17 @@ class GanttChartWidget(QtWidgets.QFrame):
                 )
             except Exception:
                 pass
+        if hasattr(header, "set_notification_sections"):
+            try:
+                header.set_notification_sections(
+                    {
+                        row
+                        for row, task in enumerate(self._task_names)
+                        if task in self._task_notifications
+                    }
+                )
+            except Exception:
+                pass
         self._table.set_assignment_overlays(assignment_overlays)
         self._table.set_progress_overlays(progress_overlays)
 
@@ -2097,6 +2676,7 @@ class GanttChartWidget(QtWidgets.QFrame):
             return
         assignments, assignments_changed = _rename_task_key(self._assignments, old_name, final_name)
         progress_map, progress_changed = _rename_task_key(self._task_progress, old_name, final_name)
+        notifications, notifications_changed = _rename_task_key(self._task_notifications, old_name, final_name)
         completed = set(self._completed_tasks)
         completed_changed = False
         if old_name != final_name and old_name in completed:
@@ -2109,6 +2689,9 @@ class GanttChartWidget(QtWidgets.QFrame):
         if progress_changed:
             self._task_progress = progress_map
             _write_progress_map(self._node_item, progress_map, notify_scene=False)
+        if notifications_changed:
+            self._task_notifications = notifications
+            _write_notifications(self._node_item, notifications, notify_scene=False)
         if completed_changed:
             self._completed_tasks = completed
         if self._selected_task == old_name:
@@ -2175,17 +2758,12 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._apply_table_styles()
         self._update_labels()
 
-    def _on_table_context_menu(self, pos):
-        item = self._table.itemAt(pos)
-        if item is None:
-            return
-        row = int(item.row())
-        col = int(item.column())
+    def _remove_task_day_at(self, row: int, col: int) -> bool:
         if row < 0 or row >= len(self._task_names):
-            return
+            return False
         task = self._task_names[row]
         if self._visible_column_for_assignment(task) != col:
-            return
+            return False
         mapping = dict(self._assignments)
         mapping.pop(task, None)
         self._assignments = mapping
@@ -2193,6 +2771,47 @@ class GanttChartWidget(QtWidgets.QFrame):
         _write_assignments(self._node_item, mapping, notify_scene=True)
         self._apply_table_styles()
         self._update_labels()
+        return True
+
+    def _handle_graph_view_short_right_click(self, global_pos) -> bool:
+        try:
+            viewport_pos = self._table.viewport().mapFromGlobal(global_pos)
+        except Exception:
+            return False
+        if not self._table.viewport().rect().contains(viewport_pos):
+            return False
+        try:
+            index = self._table.indexAt(viewport_pos)
+        except Exception:
+            index = QtCore.QModelIndex()
+        if not index.isValid():
+            return False
+        return self._remove_task_day_at(int(index.row()), int(index.column()))
+
+    def _handle_graph_view_short_right_click_local(self, local_pos) -> bool:
+        try:
+            widget_pos = QtCore.QPoint(local_pos)
+        except Exception:
+            try:
+                widget_pos = QtCore.QPoint(int(local_pos.x()), int(local_pos.y()))
+            except Exception:
+                return False
+        try:
+            viewport_pos = self._table.viewport().mapFrom(self, widget_pos)
+        except Exception:
+            return False
+        if not self._table.viewport().rect().contains(viewport_pos):
+            return False
+        try:
+            index = self._table.indexAt(viewport_pos)
+        except Exception:
+            index = QtCore.QModelIndex()
+        if not index.isValid():
+            return False
+        return self._remove_task_day_at(int(index.row()), int(index.column()))
+
+    def _on_table_short_right_click(self, row: int, col: int):
+        self._remove_task_day_at(row, col)
 
     def _on_day_scroll_changed(self, value: int):
         if self._day_scroll_sync:
