@@ -20,6 +20,7 @@ _VISIBLE_DAY_COUNT = 31
 _DAY_SCROLL_UNITS_PER_DAY = 12
 _DAY_SCROLL_CENTER = 24000
 _DAY_SCROLL_RANGE = 48000
+_TODAY_MARKER_Y_OFFSET = -8
 
 
 def _param_value(model, name: str) -> str:
@@ -350,7 +351,7 @@ class _GanttMonthStrip(QtWidgets.QWidget):
         self._table = table
         self._visible_dates: list[date] = []
         self._today = date.today()
-        self.setFixedHeight(22)
+        self.setFixedHeight(16)
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
         self.setStyleSheet("background:transparent;")
 
@@ -370,6 +371,10 @@ class _GanttMonthStrip(QtWidgets.QWidget):
             pass
         font = painter.font()
         font.setBold(True)
+        try:
+            font.setPointSize(max(8, int(font.pointSize()) - 1))
+        except Exception:
+            pass
         painter.setFont(font)
         header_width = int(self._table.verticalHeader().width())
         for column, visible_date in enumerate(self._visible_dates):
@@ -469,10 +474,10 @@ class GanttChartWidget(QtWidgets.QFrame):
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(6)
+        layout.setSpacing(0)
 
         status_row = QtWidgets.QHBoxLayout()
-        status_row.setContentsMargins(0, 0, 0, 0)
+        status_row.setContentsMargins(0, 0, 0, 6)
         status_row.setSpacing(10)
 
         self._source_label = QtWidgets.QLabel("Connect a Note node to this input.")
@@ -497,6 +502,8 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._today_marker_icon.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
         self._today_marker_icon.setStyleSheet("background:transparent;")
         self._today_marker_icon.hide()
+        self._today_marker_strip.setFixedHeight(0)
+        self._today_marker_strip.hide()
         layout.addWidget(self._today_marker_strip, 0)
 
         self._table = _GanttCalendarTable(self)
@@ -633,15 +640,31 @@ class GanttChartWidget(QtWidgets.QFrame):
         if icon is None:
             self._today_marker_icon.hide()
             return
+        header = self._table.horizontalHeader()
+        try:
+            header_viewport = header.viewport()
+        except Exception:
+            header_viewport = None
+        if header_viewport is None:
+            self._today_marker_icon.hide()
+            return
+        if self._today_marker_icon.parent() is not header_viewport:
+            self._today_marker_icon.setParent(header_viewport)
+            self._today_marker_icon.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+            self._today_marker_icon.setStyleSheet("background:transparent;")
         today_col = int((self._today - self._visible_start_date).days)
         if today_col < 0 or today_col >= self._table.columnCount():
             self._today_marker_icon.hide()
             return
         pm = icon.pixmap(12, 12)
         self._today_marker_icon.setPixmap(pm)
-        x = int(self._table.verticalHeader().width() + self._table.columnViewportPosition(today_col) - (pm.width() / 2.0))
-        x = max(0, min(x, max(0, self._today_marker_strip.width() - pm.width())))
-        y = max(0, int((self._today_marker_strip.height() - pm.height()) / 2.0))
+        try:
+            x = int(header.sectionPosition(today_col) - (pm.width() / 2.0))
+        except Exception:
+            self._today_marker_icon.hide()
+            return
+        x = max(0, min(x, max(0, header_viewport.width() - pm.width())))
+        y = max(0, int((header_viewport.height() - pm.height()) / 2.0) + _TODAY_MARKER_Y_OFFSET)
         self._today_marker_icon.move(x, y)
         self._today_marker_icon.resize(pm.size())
         self._today_marker_icon.show()
