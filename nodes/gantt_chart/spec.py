@@ -19,6 +19,8 @@ _PROGRESS_PARAM = "progress_data"
 _VIEW_MONTH_PARAM = "view_month"
 _VIEW_START_PARAM = "view_start_date"
 _VISIBLE_DAY_COUNT = 31
+_GANTT_DAY_COLUMN_WIDTH = 24
+_GANTT_TASK_ROW_HEIGHT = 28
 _DAY_SCROLL_UNITS_PER_DAY = 12
 _DAY_SCROLL_CENTER = 24000
 _DAY_SCROLL_RANGE = 48000
@@ -681,6 +683,7 @@ class _GanttCalendarTable(QtWidgets.QTableWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._today_column: int | None = None
+        self._assignment_overlays: dict[int, tuple[int, QtGui.QColor]] = {}
         self._progress_overlays: dict[int, tuple[int, int]] = {}
 
     def set_today_column(self, column: int | None) -> None:
@@ -700,12 +703,42 @@ class _GanttCalendarTable(QtWidgets.QTableWidget):
         except Exception:
             pass
 
+    def set_assignment_overlays(self, overlays: dict[int, tuple[int, QtGui.QColor]]) -> None:
+        clean: dict[int, tuple[int, QtGui.QColor]] = {}
+        for row, value in (overlays or {}).items():
+            try:
+                column, color = value
+                clean[int(row)] = (int(column), QtGui.QColor(color))
+            except Exception:
+                continue
+        self._assignment_overlays = clean
+        try:
+            self.viewport().update()
+        except Exception:
+            pass
+
     def paintEvent(self, event):
         super().paintEvent(event)
-        if self._progress_overlays:
+        if self._assignment_overlays or self._progress_overlays:
             painter = QtGui.QPainter(self.viewport())
             try:
+                try:
+                    painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+                except Exception:
+                    pass
                 painter.setPen(QtCore.Qt.NoPen)
+                for row, (column, color) in self._assignment_overlays.items():
+                    try:
+                        rect = self.visualRect(self.model().index(int(row), int(column)))
+                    except Exception:
+                        continue
+                    if not rect.isValid() or rect.width() <= 2 or rect.height() <= 2:
+                        continue
+                    rounded_rect = QtCore.QRectF(rect.adjusted(1, 1, -1, -1))
+                    if rounded_rect.width() <= 1 or rounded_rect.height() <= 1:
+                        continue
+                    painter.setBrush(QtGui.QBrush(color))
+                    painter.drawRoundedRect(rounded_rect, 4.0, 4.0)
                 for row, (column, progress) in self._progress_overlays.items():
                     if progress <= 0 or progress >= 100:
                         continue
@@ -713,12 +746,25 @@ class _GanttCalendarTable(QtWidgets.QTableWidget):
                         rect = self.visualRect(self.model().index(int(row), int(column)))
                     except Exception:
                         continue
-                    if not rect.isValid() or rect.width() <= 1 or rect.height() <= 1:
+                    if not rect.isValid() or rect.width() <= 2 or rect.height() <= 2:
                         continue
-                    fill_height = max(1, int((max(0, min(100, progress)) / 100.0) * float(rect.height())))
-                    fill_rect = QtCore.QRect(rect.left(), rect.bottom() - fill_height + 1, rect.width(), fill_height)
+                    rounded_rect = QtCore.QRectF(rect.adjusted(1, 1, -1, -1))
+                    if rounded_rect.width() <= 1 or rounded_rect.height() <= 1:
+                        continue
+                    fill_height = max(1.0, (max(0, min(100, progress)) / 100.0) * float(rounded_rect.height()))
+                    fill_rect = QtCore.QRectF(
+                        rounded_rect.left(),
+                        rounded_rect.bottom() - fill_height,
+                        rounded_rect.width(),
+                        fill_height,
+                    )
+                    clip = QtGui.QPainterPath()
+                    clip.addRoundedRect(rounded_rect, 4.0, 4.0)
+                    painter.save()
+                    painter.setClipPath(clip)
                     painter.setBrush(QtGui.QColor(29, 78, 216, 170))
                     painter.drawRect(fill_rect)
+                    painter.restore()
             finally:
                 painter.end()
         col = self._today_column
@@ -858,14 +904,14 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
         painter.setPen(QtGui.QColor("#f8fafc") if is_selected else QtGui.QColor("#dbe4ee"))
         checkbox_rect = self._checkbox_rect(rect)
         progress_rect = self._progress_rect(rect)
-        text_rect = rect.adjusted(8, 0, -int(rect.width() - progress_rect.left() + 4), 0)
+        text_rect = rect.adjusted(8, -2, -int(rect.width() - progress_rect.left() + 4), -2)
         painter.drawText(text_rect, int(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter), text)
         progress = self._progress_values.get(int(logical_index), 0)
         painter.setBrush(QtGui.QColor("#10161d"))
         painter.setPen(QtGui.QPen(QtGui.QColor("#475569"), 1))
         painter.drawRoundedRect(QtCore.QRectF(progress_rect.adjusted(0, 0, -1, -1)), 3.0, 3.0)
         painter.setPen(QtGui.QColor("#cbd5e1"))
-        painter.drawText(progress_rect.adjusted(4, 0, -4, 0), int(QtCore.Qt.AlignCenter), str(progress))
+        painter.drawText(progress_rect.adjusted(3, -1, -5, -1), int(QtCore.Qt.AlignCenter), str(progress))
         checkbox_checked = int(logical_index) in self._completed_sections
         painter.setBrush(QtGui.QColor("#12151a"))
         painter.setPen(QtGui.QPen(QtGui.QColor("#475569"), 1))
@@ -1131,13 +1177,22 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._table.horizontalHeader().setDefaultAlignment(QtCore.Qt.AlignCenter)
         self._table.horizontalHeader().setStyleSheet(
             "QHeaderView::section{background:#000000;color:#dbe4ee;border-top:0px;border-left:0px;"
-            "border-right:1px solid #223041;border-bottom:1px solid #223041;padding:4px;font-weight:600;}"
+            "border-right:1px solid #223041;border-bottom:1px solid #223041;"
+            "padding-left:4px;padding-right:4px;padding-top:3px;padding-bottom:5px;font-weight:600;}"
         )
         self._table.horizontalHeader().setSectionsClickable(True)
         try:
             self._table.horizontalHeader().setHighlightSections(False)
         except Exception:
             pass
+        try:
+            self._table.horizontalHeader().setFixedHeight(_GANTT_TASK_ROW_HEIGHT)
+        except Exception:
+            try:
+                self._table.horizontalHeader().setMinimumHeight(_GANTT_TASK_ROW_HEIGHT)
+                self._table.horizontalHeader().setMaximumHeight(_GANTT_TASK_ROW_HEIGHT)
+            except Exception:
+                pass
         self._table.verticalHeader().setSectionsClickable(True)
         try:
             self._table.verticalHeader().setHighlightSections(True)
@@ -1169,7 +1224,7 @@ class GanttChartWidget(QtWidgets.QFrame):
         except Exception:
             pass
         try:
-            self._table.verticalHeader().setDefaultSectionSize(26)
+            self._table.verticalHeader().setDefaultSectionSize(_GANTT_TASK_ROW_HEIGHT)
             self._table.verticalHeader().setMinimumWidth(180)
         except Exception:
             pass
@@ -1561,7 +1616,7 @@ class GanttChartWidget(QtWidgets.QFrame):
             today_column = today_offset
         for day in range(day_count):
             _set_section_resize_mode(self._table.horizontalHeader(), day, fixed_mode)
-            self._table.setColumnWidth(day, 24)
+            self._table.setColumnWidth(day, _GANTT_DAY_COLUMN_WIDTH)
             header_item = self._table.horizontalHeaderItem(day)
             if header_item is None:
                 header_item = QtWidgets.QTableWidgetItem(str(self._visible_dates[day].day))
@@ -1578,7 +1633,11 @@ class GanttChartWidget(QtWidgets.QFrame):
 
         self._table.setRowCount(len(self._task_names))
         for row, task in enumerate(self._task_names):
-            self._table.setRowHeight(row, 26)
+            try:
+                _set_section_resize_mode(self._table.verticalHeader(), row, fixed_mode)
+            except Exception:
+                pass
+            self._table.setRowHeight(row, _GANTT_TASK_ROW_HEIGHT)
             header_item = self._table.verticalHeaderItem(row)
             if header_item is None:
                 header_item = QtWidgets.QTableWidgetItem(task)
@@ -1612,6 +1671,7 @@ class GanttChartWidget(QtWidgets.QFrame):
         completed_assigned_bg = QtGui.QColor("#16a34a")
         assigned_fg = QtGui.QColor("#ecfeff")
         selected_row = None if self._selected_task not in self._task_names else self._task_names.index(self._selected_task)
+        assignment_overlays: dict[int, tuple[int, QtGui.QColor]] = {}
         progress_overlays: dict[int, tuple[int, int]] = {}
 
         for row, task in enumerate(self._task_names):
@@ -1635,20 +1695,22 @@ class GanttChartWidget(QtWidgets.QFrame):
                     is_weekend = self._visible_dates[day].weekday() >= 5
                 except Exception:
                     is_weekend = False
+                base_bg = (
+                    weekend_selected_row_bg if (is_selected and is_weekend)
+                    else selected_row_bg if is_selected
+                    else weekend_cell_bg if is_weekend
+                    else cell_bg
+                )
+                item.setBackground(base_bg)
+                item.setForeground(label_fg)
                 if assigned_column == day:
                     if task in self._completed_tasks or progress_value >= 100:
-                        item.setBackground(completed_assigned_bg)
+                        assignment_overlays[row] = (day, completed_assigned_bg)
                     else:
-                        item.setBackground(assigned_bg)
+                        assignment_overlays[row] = (day, assigned_bg)
                         if progress_value > 0:
                             progress_overlays[row] = (day, progress_value)
                     item.setForeground(assigned_fg)
-                else:
-                    if is_selected:
-                        item.setBackground(weekend_selected_row_bg if is_weekend else selected_row_bg)
-                    else:
-                        item.setBackground(weekend_cell_bg if is_weekend else cell_bg)
-                    item.setForeground(label_fg)
         header = self._table.verticalHeader()
         if hasattr(header, "set_selected_section"):
             try:
@@ -1676,6 +1738,7 @@ class GanttChartWidget(QtWidgets.QFrame):
                 )
             except Exception:
                 pass
+        self._table.set_assignment_overlays(assignment_overlays)
         self._table.set_progress_overlays(progress_overlays)
 
     def _on_cell_clicked(self, row: int, col: int):
