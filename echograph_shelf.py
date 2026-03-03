@@ -823,6 +823,31 @@ class GraphScene(QtWidgets.QGraphicsScene):
                     if callable(handler):
                         handler(old_name, new_name)
                 try:
+                    card_map = getattr(win, "_card_by_node", None)
+                    if isinstance(card_map, dict) and old_name in card_map:
+                        card = card_map.pop(old_name)
+                        card_map[new_name] = card
+                        try:
+                            setattr(card, "_node_name", new_name)
+                        except Exception:
+                            pass
+                        try:
+                            setattr(card, "_node_ref", node)
+                        except Exception:
+                            pass
+                        title_edit = getattr(card, "_title_edit", None)
+                        if title_edit is not None:
+                            try:
+                                title_edit.blockSignals(True)
+                                title_edit.setText(new_name)
+                            finally:
+                                try:
+                                    title_edit.blockSignals(False)
+                                except Exception:
+                                    pass
+                except Exception:
+                    pass
+                try:
                     ctl = getattr(win, "_timeline_controller", None)
                     if ctl is not None:
                         ctl.sync_timeline_context()

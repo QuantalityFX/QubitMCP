@@ -57,6 +57,7 @@ class InfoCard(QtWidgets.QFrame):
         self.setStyleSheet("#InfoCard{border:1px solid #3c4450;border-radius:8px;background:#1f232a;}")
 
         title = QtWidgets.QLineEdit(node.name)
+        self._title_edit = title
         title.setObjectName("NodeNameEdit")
         f = title.font(); f.setBold(True); title.setFont(f)
         title.setStyleSheet("QLineEdit{background:#12151a;color:#e6edf3;border:1px solid #3c4450;border-radius:4px;padding:2px 6px;}")

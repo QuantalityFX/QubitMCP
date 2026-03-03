@@ -18,7 +18,7 @@ from echograph.ui import node_icons
 from echograph.ui import actions
 
 from echograph.constants import (
-    LLM_URL, LLM_NODE_W_BASE, LLM_NODE_H_BASE, LLM_SCALE_DEFAULT,
+    APP_TITLE, LLM_URL, LLM_NODE_W_BASE, LLM_NODE_H_BASE, LLM_SCALE_DEFAULT,
     DEFAULT_STRIPE_HEX,
 )
 
@@ -785,6 +785,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
         y = 10.0
         return QtCore.QRectF(x, y, size, size)
 
+    def _header_title_rect(self) -> QtCore.QRectF:
+        left = 8.0
+        top = 8.0
+        right = float(self.width) - 8.0
+        debug_rect = self._header_debug_button_rect()
+        if not debug_rect.isNull():
+            right = min(right, float(debug_rect.left()) - 8.0)
+        return QtCore.QRectF(left, top, max(24.0, right - left), 24.0)
+
     def _toggle_header_debug_button(self) -> bool:
         kind = self._header_debug_button_kind()
         if not kind:
@@ -1425,6 +1434,32 @@ class NodeItem(QtWidgets.QGraphicsObject):
         if not new_name:
             return
         self._apply_param_rename(idx, new_name)
+
+    def _prompt_rename_node(self) -> None:
+        old_name = (getattr(self.model, "name", "") or "").strip()
+        if not old_name:
+            return
+        sc = self.scene()
+        if sc is None or not hasattr(sc, "rename_node"):
+            return
+        parent = _top_level_parent_for_dialog()
+        text, ok = QtWidgets.QInputDialog.getText(
+            parent, "Rename Note", "New name:", QtWidgets.QLineEdit.Normal, old_name
+        )
+        if not ok:
+            return
+        new_name = (text or "").strip()
+        if not new_name or new_name == old_name:
+            return
+        success, msg = sc.rename_node(old_name, new_name)
+        if not success:
+            QtWidgets.QMessageBox.warning(parent, APP_TITLE, msg or "Rename failed.")
+            return
+        try:
+            self.model.name = new_name
+        except Exception:
+            pass
+        self.update()
 
 
     def _unique_param_name(self, base: str = "param") -> str:
@@ -6182,6 +6217,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
             e.accept()
             return
         super().mouseReleaseEvent(e)
+
+    def mouseDoubleClickEvent(self, e):
+        if e.button() == QtCore.Qt.LeftButton:
+            if (self.model.kind or "").lower() == "note" and self._header_title_rect().contains(e.pos()):
+                self._prompt_rename_node()
+                e.accept()
+                return
+        super().mouseDoubleClickEvent(e)
 
 
 def _open_in_explorer(path_str: str):
