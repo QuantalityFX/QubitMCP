@@ -18,9 +18,13 @@ _SCHEDULE_PARAM = "schedule_data"
 _PROGRESS_PARAM = "progress_data"
 _VIEW_MONTH_PARAM = "view_month"
 _VIEW_START_PARAM = "view_start_date"
+_TASK_PANEL_WIDTH_PARAM = "task_panel_width"
 _VISIBLE_DAY_COUNT = 31
 _GANTT_DAY_COLUMN_WIDTH = 24
 _GANTT_TASK_ROW_HEIGHT = 28
+_GANTT_TASK_PANEL_MIN_WIDTH = 180
+_GANTT_TASK_PANEL_DEFAULT_WIDTH = 180
+_GANTT_TASK_PANEL_HANDLE_WIDTH = 8
 _DAY_SCROLL_UNITS_PER_DAY = 12
 _DAY_SCROLL_CENTER = 24000
 _DAY_SCROLL_RANGE = 48000
@@ -96,7 +100,11 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, _PROGRESS_PARAM, "{}")
     _ensure_param(node_item, _VIEW_MONTH_PARAM, f"{view_start.year:04d}-{view_start.month:02d}")
     _ensure_param(node_item, _VIEW_START_PARAM, view_start.isoformat())
-    _ensure_hidden_params(model, [_SCHEDULE_PARAM, _PROGRESS_PARAM, _VIEW_MONTH_PARAM, _VIEW_START_PARAM])
+    _ensure_param(node_item, _TASK_PANEL_WIDTH_PARAM, str(_GANTT_TASK_PANEL_DEFAULT_WIDTH))
+    _ensure_hidden_params(
+        model,
+        [_SCHEDULE_PARAM, _PROGRESS_PARAM, _VIEW_MONTH_PARAM, _VIEW_START_PARAM, _TASK_PANEL_WIDTH_PARAM],
+    )
 
 
 def _set_param_value(node_item, name: str, value: str, *, notify_scene: bool = True) -> None:
@@ -302,6 +310,25 @@ def _write_progress_map(node_item, mapping: dict[str, int], *, notify_scene: boo
         notify_scene=notify_scene,
     )
     _write_gantt_sidecar_snapshot(node_item)
+
+
+def _read_task_panel_width(node_item) -> int:
+    model = getattr(node_item, "model", None)
+    raw = _param_value(model, _TASK_PANEL_WIDTH_PARAM).strip()
+    try:
+        value = int(float(raw))
+    except Exception:
+        value = _GANTT_TASK_PANEL_DEFAULT_WIDTH
+    return max(_GANTT_TASK_PANEL_MIN_WIDTH, value)
+
+
+def _write_task_panel_width(node_item, width: int) -> None:
+    _set_param_value(
+        node_item,
+        _TASK_PANEL_WIDTH_PARAM,
+        str(max(_GANTT_TASK_PANEL_MIN_WIDTH, int(width))),
+        notify_scene=False,
+    )
 
 
 def _rename_task_key(mapping: dict, old_name: str, new_name: str):
@@ -687,6 +714,59 @@ class _GanttTodayButton(QtWidgets.QAbstractButton):
         text_rect = QtCore.QRect(target) if self._icon_pm is not None and not self._icon_pm.isNull() else self.rect()
         painter.drawText(text_rect.adjusted(0, 1, 0, 0), int(QtCore.Qt.AlignCenter), str(self._today.day))
         painter.end()
+
+
+class _GanttTaskDividerHandle(QtWidgets.QWidget):
+    dragMoved = QtCore.Signal(int)
+    dragFinished = QtCore.Signal(int)
+
+    def __init__(self, table, parent=None):
+        super().__init__(parent)
+        self._table = table
+        self._dragging = False
+        self._start_global_x = 0
+        self._start_width = 0
+        self.setCursor(QtCore.Qt.SizeHorCursor)
+        self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+        self.setMouseTracking(True)
+
+    def mousePressEvent(self, event):
+        if event.button() == QtCore.Qt.LeftButton:
+            self._dragging = True
+            try:
+                self._start_global_x = int(event.globalPosition().x())
+            except Exception:
+                self._start_global_x = int(event.globalX())
+            try:
+                self._start_width = int(self._table.verticalHeader().width()) if self._table is not None else 0
+            except Exception:
+                self._start_width = 0
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._dragging:
+            try:
+                global_x = int(event.globalPosition().x())
+            except Exception:
+                global_x = int(event.globalX())
+            self.dragMoved.emit(int(self._start_width + (global_x - self._start_global_x)))
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._dragging and event.button() == QtCore.Qt.LeftButton:
+            self._dragging = False
+            try:
+                global_x = int(event.globalPosition().x())
+            except Exception:
+                global_x = int(event.globalX())
+            self.dragFinished.emit(int(self._start_width + (global_x - self._start_global_x)))
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
 
 class _GanttCalendarTable(QtWidgets.QTableWidget):
@@ -1217,6 +1297,7 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._visible_dates: list[date] = []
         self._day_scroll_sync = False
         self._sidecar_loaded = False
+        self._task_panel_width = _read_task_panel_width(node_item)
 
         self.setObjectName("GanttChartWidget")
         self.setStyleSheet(
@@ -1334,7 +1415,7 @@ class GanttChartWidget(QtWidgets.QFrame):
             pass
         try:
             self._table.verticalHeader().setDefaultSectionSize(_GANTT_TASK_ROW_HEIGHT)
-            self._table.verticalHeader().setMinimumWidth(180)
+            self._table.verticalHeader().setMinimumWidth(_GANTT_TASK_PANEL_MIN_WIDTH)
         except Exception:
             pass
 
@@ -1351,6 +1432,11 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self._table.customContextMenuRequested.connect(self._on_table_context_menu)
         layout.addWidget(self._table, 1)
+
+        self._task_divider_handle = _GanttTaskDividerHandle(self._table, self)
+        self._task_divider_handle.dragMoved.connect(self._on_task_panel_width_dragged)
+        self._task_divider_handle.dragFinished.connect(self._on_task_panel_width_drag_finished)
+        self._task_divider_handle.raise_()
 
         self._today_jump_button = _GanttTodayButton(self._today, self._table)
         self._today_jump_button.clicked.connect(self._jump_to_today)
@@ -1369,6 +1455,8 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._progress_edit_section: int | None = None
         self._progress_editor.editingFinished.connect(self._commit_progress_edit)
 
+        self._apply_task_panel_width(self._task_panel_width, persist=False)
+
         self._day_scroll = QtWidgets.QScrollBar(QtCore.Qt.Horizontal, self)
         self._day_scroll.setRange(0, _DAY_SCROLL_RANGE)
         self._day_scroll.setSingleStep(_DAY_SCROLL_UNITS_PER_DAY)
@@ -1385,6 +1473,68 @@ class GanttChartWidget(QtWidgets.QFrame):
     def sizeHint(self):
         return QtCore.QSize(1000, 320)
 
+    def _clamp_task_panel_width(self, width: int) -> int:
+        try:
+            table_width = int(self._table.width())
+        except Exception:
+            table_width = 0
+        min_width = int(_GANTT_TASK_PANEL_MIN_WIDTH)
+        max_width = max(min_width, table_width - (_GANTT_DAY_COLUMN_WIDTH * 6)) if table_width > 0 else min_width
+        return max(min_width, min(int(width), max_width))
+
+    def _apply_task_panel_width(self, width: int, *, persist: bool) -> None:
+        clamped = self._clamp_task_panel_width(width)
+        self._task_panel_width = clamped
+        try:
+            self._table.verticalHeader().setFixedWidth(clamped)
+        except Exception:
+            try:
+                self._table.verticalHeader().setMinimumWidth(clamped)
+                self._table.verticalHeader().setMaximumWidth(clamped)
+            except Exception:
+                pass
+        if persist:
+            _write_task_panel_width(self._node_item, clamped)
+        try:
+            self._table.updateGeometries()
+        except Exception:
+            pass
+        try:
+            self._table.doItemsLayout()
+        except Exception:
+            pass
+        self._update_task_divider_geometry()
+        self._month_strip.update()
+        self._update_corner_button_geometry()
+        self._update_today_marker()
+        try:
+            self._table.viewport().update()
+            self._table.verticalHeader().viewport().update()
+            self._table.horizontalHeader().viewport().update()
+        except Exception:
+            pass
+
+    def _on_task_panel_width_dragged(self, width: int) -> None:
+        self._apply_task_panel_width(width, persist=False)
+
+    def _on_task_panel_width_drag_finished(self, width: int) -> None:
+        self._apply_task_panel_width(width, persist=True)
+
+    def _update_task_divider_geometry(self) -> None:
+        try:
+            table_x = int(self._table.x())
+            table_y = int(self._table.y())
+            frame = int(self._table.frameWidth())
+            header_width = int(self._table.verticalHeader().width())
+            handle_width = int(_GANTT_TASK_PANEL_HANDLE_WIDTH)
+            x = max(0, table_x + frame + header_width - handle_width + 1)
+            y = max(0, table_y + frame)
+            h = max(1, int(self._table.height()) - (frame * 2))
+            self._task_divider_handle.setGeometry(x, y, handle_width, h)
+            self._task_divider_handle.raise_()
+        except Exception:
+            pass
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         try:
@@ -1392,6 +1542,7 @@ class GanttChartWidget(QtWidgets.QFrame):
         except Exception:
             pass
         self._progress_edit_section = None
+        self._apply_task_panel_width(self._task_panel_width, persist=False)
         self._update_corner_button_geometry()
         self._update_today_marker()
 
@@ -1763,6 +1914,7 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._ignore_header_move = False
         self._table.set_today_column(today_column)
         self._month_strip.set_dates(self._visible_dates, self._today)
+        self._apply_task_panel_width(self._task_panel_width, persist=False)
         self._update_corner_button_geometry()
         self._apply_table_styles()
         self._update_today_marker()
