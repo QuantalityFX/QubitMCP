@@ -345,6 +345,109 @@ class _GanttCalendarTable(QtWidgets.QTableWidget):
         painter.end()
 
 
+class _GanttTaskHeader(QtWidgets.QHeaderView):
+    def __init__(self, parent=None):
+        super().__init__(QtCore.Qt.Vertical, parent)
+        self._selected_section: int | None = None
+        self._dragging_section: int | None = None
+        self._drop_indicator_y: int | None = None
+        self.setDefaultAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+
+    def set_selected_section(self, section: int | None) -> None:
+        new_value = None if section is None or int(section) < 0 else int(section)
+        if new_value == self._selected_section:
+            return
+        self._selected_section = new_value
+        try:
+            self.viewport().update()
+        except Exception:
+            self.update()
+
+    def _set_drop_indicator_y(self, y: int | None) -> None:
+        new_value = None if y is None else int(y)
+        if new_value == self._drop_indicator_y:
+            return
+        self._drop_indicator_y = new_value
+        try:
+            self.viewport().update()
+        except Exception:
+            self.update()
+
+    def _indicator_y_for_pos(self, pos_y: int) -> int | None:
+        count = int(self.count())
+        if count <= 0:
+            return None
+        for visual_index in range(count):
+            logical_index = int(self.logicalIndex(visual_index))
+            if logical_index < 0:
+                continue
+            top = int(self.sectionPosition(logical_index))
+            size = int(self.sectionSize(logical_index))
+            if pos_y < (top + (size / 2.0)):
+                return top
+        last_logical = int(self.logicalIndex(count - 1))
+        if last_logical < 0:
+            return None
+        return int(self.sectionPosition(last_logical) + self.sectionSize(last_logical))
+
+    def paintSection(self, painter, rect, logical_index):
+        if not rect.isValid():
+            return
+        painter.save()
+        is_selected = int(logical_index) == self._selected_section
+        painter.fillRect(rect, QtGui.QColor("#1d4f74") if is_selected else QtGui.QColor("#141c27"))
+        pen = QtGui.QPen(QtGui.QColor("#223041"), 1)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        painter.drawRect(rect.adjusted(0, 0, -1, -1))
+        text = ""
+        try:
+            model = self.model()
+            if model is not None:
+                text = str(model.headerData(int(logical_index), self.orientation(), QtCore.Qt.DisplayRole) or "")
+        except Exception:
+            text = ""
+        font = painter.font()
+        font.setBold(bool(is_selected))
+        painter.setFont(font)
+        painter.setPen(QtGui.QColor("#f8fafc") if is_selected else QtGui.QColor("#dbe4ee"))
+        painter.drawText(rect.adjusted(8, 0, -6, 0), int(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter), text)
+        painter.restore()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self._drop_indicator_y is None:
+            return
+        painter = QtGui.QPainter(self.viewport())
+        pen = QtGui.QPen(QtGui.QColor("#ffffff"), 2)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        y = max(0, min(int(self._drop_indicator_y), max(0, self.viewport().height() - 1)))
+        painter.drawLine(0, y, self.viewport().width(), y)
+        painter.end()
+
+    def mousePressEvent(self, event):
+        if event.button() == QtCore.Qt.LeftButton:
+            logical_index = int(self.logicalIndexAt(event.pos()))
+            self._dragging_section = logical_index if logical_index >= 0 else None
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if bool(event.buttons() & QtCore.Qt.LeftButton) and self._dragging_section is not None:
+            self._set_drop_indicator_y(self._indicator_y_for_pos(int(event.pos().y())))
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        self._dragging_section = None
+        self._set_drop_indicator_y(None)
+
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+        if self._dragging_section is None:
+            self._set_drop_indicator_y(None)
+
+
 class _GanttMonthStrip(QtWidgets.QWidget):
     def __init__(self, table=None, parent=None):
         super().__init__(parent)
@@ -507,6 +610,7 @@ class GanttChartWidget(QtWidgets.QFrame):
         layout.addWidget(self._today_marker_strip, 0)
 
         self._table = _GanttCalendarTable(self)
+        self._table.setVerticalHeader(_GanttTaskHeader(self._table))
         self._month_strip._table = self._table
         self._table.setColumnCount(0)
         self._table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
@@ -835,6 +939,7 @@ class GanttChartWidget(QtWidgets.QFrame):
         selected_row_bg = QtGui.QColor("#16212b")
         assigned_bg = QtGui.QColor("#0f766e")
         assigned_fg = QtGui.QColor("#ecfeff")
+        selected_row = None if self._selected_task not in self._task_names else self._task_names.index(self._selected_task)
 
         for row, task in enumerate(self._task_names):
             is_selected = task == self._selected_task
@@ -857,6 +962,12 @@ class GanttChartWidget(QtWidgets.QFrame):
                 else:
                     item.setBackground(selected_row_bg if is_selected else cell_bg)
                     item.setForeground(label_fg)
+        header = self._table.verticalHeader()
+        if hasattr(header, "set_selected_section"):
+            try:
+                header.set_selected_section(selected_row)
+            except Exception:
+                pass
 
     def _on_cell_clicked(self, row: int, col: int):
         if row < 0 or row >= len(self._task_names):
