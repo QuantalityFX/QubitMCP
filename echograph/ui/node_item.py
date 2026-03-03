@@ -5693,6 +5693,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "mnaterial",
                 "material",
                 "transforms",
+                "gantt_chart",
+                "gantt chart",
+                "gant_chart",
+                "gant chart",
                 "export_fbx",
                 "exportfbx",
                 "export fbx",
@@ -5857,6 +5861,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 icon_pm = node_icons._material_node_icon() or node_icons._output_icon()
             elif kind_lower == "transforms":
                 icon_pm = node_icons._transforms_icon() or node_icons._output_icon()
+            elif kind_lower in ("gantt_chart", "gantt chart", "gant_chart", "gant chart"):
+                icon_pm = node_icons._gantt_icon() or node_icons._output_icon()
             elif kind_lower in ("export_fbx", "exportfbx", "export fbx"):
                 icon_pm = node_icons._fbx_icon() or node_icons._output_icon()
             elif kind_lower == "output":

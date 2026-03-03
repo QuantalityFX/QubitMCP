@@ -32,6 +32,7 @@ _TEXTURE_NODE_ICON = None
 _MATERIAL_NODE_ICON = None
 _UV_UNWRAP_ICON = None
 _TRANSFORMS_ICON = None
+_GANTT_ICON = None
 
 
 def _load_pm(rel_icon_name: str):
@@ -244,3 +245,11 @@ def _transforms_icon():
         return _TRANSFORMS_ICON
     _TRANSFORMS_ICON = _load_pm("TranformNode_Icon.png") or _load_pm("WorldGizmoOn_Icon.png")
     return _TRANSFORMS_ICON
+
+
+def _gantt_icon():
+    global _GANTT_ICON
+    if _GANTT_ICON is not None:
+        return _GANTT_ICON
+    _GANTT_ICON = _load_pm("Calendar_Icon.png")
+    return _GANTT_ICON

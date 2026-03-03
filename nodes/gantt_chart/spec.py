@@ -22,6 +22,8 @@ _DAY_SCROLL_CENTER = 24000
 _DAY_SCROLL_RANGE = 48000
 _TODAY_MARKER_Y_OFFSET = -8
 
+_ICON_PIXMAP_CACHE: dict[str, QtGui.QPixmap | None] = {}
+
 
 def _param_value(model, name: str) -> str:
     key = (name or "").strip().lower()
@@ -165,6 +167,21 @@ def _day_offset_for_scroll_value(value: int) -> int:
     return -int(((-delta) + (_DAY_SCROLL_UNITS_PER_DAY // 2)) // _DAY_SCROLL_UNITS_PER_DAY)
 
 
+def _load_icon_pixmap(name: str) -> QtGui.QPixmap | None:
+    cached = _ICON_PIXMAP_CACHE.get(name)
+    if name in _ICON_PIXMAP_CACHE:
+        return cached
+    try:
+        icon_path = Path(__file__).resolve().parents[2] / "icons" / name
+        pm = QtGui.QPixmap(str(icon_path))
+        if pm.isNull():
+            pm = None
+    except Exception:
+        pm = None
+    _ICON_PIXMAP_CACHE[name] = pm
+    return pm
+
+
 def _days_in_month(year: int, month: int) -> int:
     return int(calendar.monthrange(int(year), int(month))[1])
 
@@ -295,8 +312,10 @@ def _today_icon() -> QtGui.QIcon | None:
     if _TODAY_ICON_CACHE is not None:
         return _TODAY_ICON_CACHE
     try:
-        icon_path = Path(__file__).resolve().parents[2] / "icons" / "KeyframeHandle_Icon.png"
-        pm = QtGui.QPixmap(str(icon_path))
+        pm = _load_icon_pixmap("KeyframeHandle_Icon.png")
+        if pm is None:
+            _TODAY_ICON_CACHE = None
+            return None
         if pm.isNull():
             _TODAY_ICON_CACHE = None
             return None
@@ -312,6 +331,44 @@ def _today_icon() -> QtGui.QIcon | None:
     except Exception:
         _TODAY_ICON_CACHE = None
         return None
+
+
+class _GanttTodayButton(QtWidgets.QAbstractButton):
+    def __init__(self, today_value: date, parent=None):
+        super().__init__(parent)
+        self._today = today_value
+        self._icon_pm = _load_icon_pixmap("CalendarToday_Icon.png")
+        self.setCursor(QtCore.Qt.PointingHandCursor)
+        self.setToolTip(f"Jump to today: {self._today.isoformat()}")
+        self.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+
+    def sizeHint(self):
+        return QtCore.QSize(28, 28)
+
+    def paintEvent(self, event):
+        painter = QtGui.QPainter(self)
+        try:
+            painter.setRenderHint(QtGui.QPainter.SmoothPixmapTransform, True)
+            painter.setRenderHint(QtGui.QPainter.TextAntialiasing, True)
+        except Exception:
+            pass
+        if self._icon_pm is not None and not self._icon_pm.isNull():
+            target = QtCore.QRect(0, 0, min(self.width() - 2, 24), min(self.height() - 2, 24))
+            target.moveCenter(self.rect().center())
+            target.moveTop(max(0, int((self.height() - target.height()) / 2.0)))
+            painter.drawPixmap(target, self._icon_pm, self._icon_pm.rect())
+        font = painter.font()
+        font.setBold(True)
+        try:
+            font.setPointSize(max(8, int(font.pointSize()) - 1))
+        except Exception:
+            pass
+        painter.setFont(font)
+        painter.setPen(QtGui.QColor("#f8fafc"))
+        text_rect = QtCore.QRect(target) if self._icon_pm is not None and not self._icon_pm.isNull() else self.rect()
+        painter.drawText(text_rect.adjusted(0, 1, 0, 0), int(QtCore.Qt.AlignCenter), str(self._today.day))
+        painter.end()
 
 
 class _GanttCalendarTable(QtWidgets.QTableWidget):
@@ -624,6 +681,9 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._table.setAlternatingRowColors(False)
         self._table.setShowGrid(True)
         self._table.horizontalHeader().setDefaultAlignment(QtCore.Qt.AlignCenter)
+        self._table.horizontalHeader().setStyleSheet(
+            "QHeaderView::section{background:#000000;color:#dbe4ee;border:1px solid #223041;padding:4px;font-weight:600;}"
+        )
         self._table.horizontalHeader().setSectionsClickable(True)
         try:
             self._table.horizontalHeader().setHighlightSections(False)
@@ -670,6 +730,10 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._table.customContextMenuRequested.connect(self._on_table_context_menu)
         layout.addWidget(self._table, 1)
 
+        self._today_jump_button = _GanttTodayButton(self._today, self._table)
+        self._today_jump_button.clicked.connect(self._jump_to_today)
+        self._today_jump_button.raise_()
+
         self._day_scroll = QtWidgets.QScrollBar(QtCore.Qt.Horizontal, self)
         self._day_scroll.setRange(0, _DAY_SCROLL_RANGE)
         self._day_scroll.setSingleStep(_DAY_SCROLL_UNITS_PER_DAY)
@@ -688,6 +752,7 @@ class GanttChartWidget(QtWidgets.QFrame):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self._update_corner_button_geometry()
         self._update_today_marker()
 
     def _post_attach_sync(self):
@@ -724,20 +789,9 @@ class GanttChartWidget(QtWidgets.QFrame):
                 fallback_month=fallback.month,
             )
             visible_start = date(year, month, 1)
-        if (not force) and visible_start == self._visible_start_date:
+        if (not force) and visible_start == self._visible_start_date and self._visible_dates:
             return
-        self._visible_start_date = visible_start
-        self._visible_dates = [
-            self._visible_start_date + timedelta(days=offset)
-            for offset in range(_VISIBLE_DAY_COUNT)
-        ]
-        offset = int((self._visible_start_date - self._base_start_date).days)
-        new_value = _scroll_value_for_day_offset(offset)
-        try:
-            self._day_scroll_sync = True
-            self._day_scroll.setValue(int(new_value))
-        finally:
-            self._day_scroll_sync = False
+        self._set_visible_start_date(visible_start, sync_scroll=True, persist=False)
 
     def _update_today_marker(self):
         icon = _today_icon()
@@ -746,15 +800,16 @@ class GanttChartWidget(QtWidgets.QFrame):
             return
         header = self._table.horizontalHeader()
         try:
-            header_viewport = header.viewport()
+            header_rect = header.geometry()
         except Exception:
-            header_viewport = None
-        if header_viewport is None:
+            header_rect = QtCore.QRect()
+        if header_rect.isNull():
             self._today_marker_icon.hide()
             return
-        if self._today_marker_icon.parent() is not header_viewport:
-            self._today_marker_icon.setParent(header_viewport)
+        if self._today_marker_icon.parent() is not self._table:
+            self._today_marker_icon.setParent(self._table)
             self._today_marker_icon.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+            self._today_marker_icon.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
             self._today_marker_icon.setStyleSheet("background:transparent;")
         today_col = int((self._today - self._visible_start_date).days)
         if today_col < 0 or today_col >= self._table.columnCount():
@@ -763,16 +818,74 @@ class GanttChartWidget(QtWidgets.QFrame):
         pm = icon.pixmap(12, 12)
         self._today_marker_icon.setPixmap(pm)
         try:
-            x = int(header.sectionPosition(today_col) - (pm.width() / 2.0))
+            x = int(header_rect.left() + header.sectionPosition(today_col) - (pm.width() / 2.0))
         except Exception:
             self._today_marker_icon.hide()
             return
-        x = max(0, min(x, max(0, header_viewport.width() - pm.width())))
-        y = max(0, int((header_viewport.height() - pm.height()) / 2.0) + _TODAY_MARKER_Y_OFFSET)
+        x = max(0, min(x, max(0, self._table.width() - pm.width())))
+        y = max(0, int(header_rect.top() + ((header_rect.height() - pm.height()) / 2.0) + _TODAY_MARKER_Y_OFFSET))
         self._today_marker_icon.move(x, y)
         self._today_marker_icon.resize(pm.size())
         self._today_marker_icon.show()
+        self._today_marker_icon.raise_()
         self._month_strip.update()
+
+    def _update_corner_button_geometry(self):
+        try:
+            header_height = int(self._table.horizontalHeader().height())
+            corner_width = int(self._table.verticalHeader().width())
+            frame = int(self._table.frameWidth())
+        except Exception:
+            return
+        x = max(0, frame)
+        y = max(0, frame)
+        w = max(1, corner_width)
+        h = max(1, header_height)
+        self._today_jump_button.setGeometry(x, y, w, h)
+        self._today_jump_button.raise_()
+
+    def _set_visible_start_date(self, visible_start: date, *, sync_scroll: bool = True, persist: bool = True) -> None:
+        if visible_start == self._visible_start_date and self._visible_dates:
+            if sync_scroll:
+                offset = int((self._visible_start_date - self._base_start_date).days)
+                new_value = _scroll_value_for_day_offset(offset)
+                try:
+                    self._day_scroll_sync = True
+                    self._day_scroll.setValue(int(new_value))
+                finally:
+                    self._day_scroll_sync = False
+            return
+        self._visible_start_date = visible_start
+        self._visible_dates = [
+            self._visible_start_date + timedelta(days=offset)
+            for offset in range(_VISIBLE_DAY_COUNT)
+        ]
+        if persist:
+            _set_param_value(
+                self._node_item,
+                _VIEW_START_PARAM,
+                self._visible_start_date.isoformat(),
+                notify_scene=False,
+            )
+            _set_param_value(
+                self._node_item,
+                _VIEW_MONTH_PARAM,
+                f"{self._visible_start_date.year:04d}-{self._visible_start_date.month:02d}",
+                notify_scene=False,
+            )
+        if sync_scroll:
+            offset = int((self._visible_start_date - self._base_start_date).days)
+            new_value = _scroll_value_for_day_offset(offset)
+            try:
+                self._day_scroll_sync = True
+                self._day_scroll.setValue(int(new_value))
+            finally:
+                self._day_scroll_sync = False
+        self._rebuild_table()
+        self._update_labels()
+
+    def _jump_to_today(self):
+        self._set_visible_start_date(self._today)
 
     def _ensure_scene(self):
         if self._scene is None:
@@ -927,6 +1040,7 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._ignore_header_move = False
         self._table.set_today_column(today_column)
         self._month_strip.set_dates(self._visible_dates, self._today)
+        self._update_corner_button_geometry()
         self._apply_table_styles()
         self._update_today_marker()
 
@@ -1028,27 +1142,7 @@ class GanttChartWidget(QtWidgets.QFrame):
         if self._day_scroll_sync:
             return
         visible_start = self._base_start_date + timedelta(days=_day_offset_for_scroll_value(value))
-        if visible_start == self._visible_start_date:
-            return
-        self._visible_start_date = visible_start
-        self._visible_dates = [
-            self._visible_start_date + timedelta(days=offset)
-            for offset in range(_VISIBLE_DAY_COUNT)
-        ]
-        _set_param_value(
-            self._node_item,
-            _VIEW_START_PARAM,
-            self._visible_start_date.isoformat(),
-            notify_scene=False,
-        )
-        _set_param_value(
-            self._node_item,
-            _VIEW_MONTH_PARAM,
-            f"{self._visible_start_date.year:04d}-{self._visible_start_date.month:02d}",
-            notify_scene=False,
-        )
-        self._rebuild_table()
-        self._update_labels()
+        self._set_visible_start_date(visible_start, sync_scroll=False, persist=True)
 
     def _on_task_section_moved(self, logical_index: int, _old_visual_index: int, _new_visual_index: int):
         if self._ignore_header_move:
