@@ -1151,6 +1151,28 @@ class NodeItem(QtWidgets.QGraphicsObject):
         """Write back a NEW set instance (copy-on-write)."""
         setattr(self.model, "_featured_params", set(names))
 
+    def _get_completed_set(self) -> set[str]:
+        """Return a copy of completed note param names."""
+        raw = getattr(self.model, "_completed_params", None)
+        out = set()
+        if isinstance(raw, set):
+            out.update(str(x) for x in raw if x)
+        elif isinstance(raw, (list, tuple)):
+            out.update(str(x) for x in raw if x)
+        elif isinstance(raw, str) and raw:
+            out.add(raw)
+        return out
+
+    def _set_completed_set(self, names: set[str]) -> None:
+        setattr(self.model, "_completed_params", {str(n) for n in names if n})
+
+    def _pruned_completed_set(self, valid_names: set[str]) -> set[str]:
+        completed = self._get_completed_set()
+        pruned = {n for n in completed if n in valid_names}
+        if pruned != completed:
+            self._set_completed_set(pruned)
+        return pruned
+
     def _featured_heights_map(self, valid_names: set[str] | None = None) -> dict[str, float]:
         """Return a sanitized mapping of featured heights; prune names not in valid_names."""
         raw = getattr(self.model, "_featured_heights", None)
@@ -1226,6 +1248,91 @@ class NodeItem(QtWidgets.QGraphicsObject):
         except Exception:
             pass
 
+    def _rename_completed_param(self, old_name: str, new_name: str) -> None:
+        if not old_name or not new_name or old_name == new_name:
+            return
+        try:
+            completed = self._get_completed_set()
+            if old_name in completed:
+                completed.discard(old_name)
+                completed.add(new_name)
+                self._set_completed_set(completed)
+        except Exception:
+            pass
+
+    def _note_param_label_style(self, *, completed: bool) -> str:
+        return "color:#94a3b8;" if completed else "color:#cbd5e1;"
+
+    def _note_param_line_edit_style(self, *, completed: bool, wired: bool) -> str:
+        if wired:
+            if completed:
+                return (
+                    "QLineEdit{background:#161a21;color:#64748b;"
+                    "border:1px dashed #3f4752;border-radius:4px;padding:2px 6px;}"
+                )
+            return (
+                "QLineEdit{background:#191d24;color:#94a3b8;"
+                "border:1px dashed #475569;border-radius:4px;padding:2px 6px;}"
+            )
+        if completed:
+            return (
+                "QLineEdit{background:#101318;color:#64748b;"
+                "border:1px solid #2f3742;border-radius:4px;padding:2px 6px;}"
+            )
+        return (
+            "QLineEdit{background:#12151a;color:#e6edf3;"
+            "border:1px solid #3c4450;border-radius:4px;padding:2px 6px;}"
+        )
+
+    def _note_featured_edit_style(self, *, completed: bool) -> str:
+        if completed:
+            return (
+                "QTextEdit{background:#0d1116;color:#64748b;"
+                "border:1px solid #2f3742;border-radius:6px;padding:6px;}"
+            )
+        return (
+            "QTextEdit{background:#0f1216;color:#e6edf3;"
+            "border:1px solid #3c4450;border-radius:6px;padding:6px;}"
+        )
+
+    def _note_complete_button_style(self, *, checked: bool) -> str:
+        return (
+            f"QToolButton{{background:#12151a;color:{'#e6edf3' if checked else 'transparent'};"
+            "border:1px solid #475569;border-radius:3px;padding:0;font-weight:700;}}"
+        )
+
+    def _apply_note_completion_visuals(
+        self,
+        *,
+        completed: bool,
+        wired: bool,
+        label=None,
+        edit=None,
+        big=None,
+        button=None,
+    ) -> None:
+        if label is not None:
+            try:
+                label.setStyleSheet(self._note_param_label_style(completed=completed))
+            except Exception:
+                pass
+        if edit is not None:
+            try:
+                edit.setStyleSheet(self._note_param_line_edit_style(completed=completed, wired=wired))
+            except Exception:
+                pass
+        if big is not None:
+            try:
+                big.setStyleSheet(self._note_featured_edit_style(completed=completed))
+            except Exception:
+                pass
+        if button is not None:
+            try:
+                button.setText("✓" if completed else "")
+                button.setStyleSheet(self._note_complete_button_style(checked=completed))
+            except Exception:
+                pass
+
     def _rename_hidden_param_value(self, params: list, old_name: str, new_name: str) -> None:
         if not old_name or not new_name or old_name == new_name:
             return
@@ -1282,6 +1389,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             return old
         params[idx]["name"] = final
         self._rename_featured_param(old, final)
+        self._rename_completed_param(old, final)
         self._rename_hidden_param_value(params, old, final)
         self.model.params = params
 
@@ -1365,6 +1473,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 self._set_featured_set(feat)
         except Exception:
             pass
+        try:
+            completed = self._get_completed_set()
+            if pname in completed:
+                completed.discard(pname)
+                self._set_completed_set(completed)
+        except Exception:
+            pass
         raw = getattr(self.model, "_featured_heights", None)
         if isinstance(raw, dict) and pname:
             try:
@@ -1434,6 +1549,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             try:
                 current_names = { (p.get("name") or "") for p in (self.model.params or []) if (p.get("name") or "") }
                 feat_set = self._pruned_featured_set(current_names)
+                self._pruned_completed_set(current_names)
                 feat_heights = self._featured_heights_map(current_names)
                 params_h += sum(self._featured_block_height(nm, feat_heights) for nm in feat_set)
             except Exception:
@@ -2222,6 +2338,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 if kind == "note":
                     current_names = { (p.get("name") or "") for p in (self.model.params or []) if (p.get("name") or "") }
                     feat_set = self._pruned_featured_set(current_names)
+                    completed_set = self._pruned_completed_set(current_names)
                     feat_heights = self._featured_heights_map(current_names)
                     # Cache note eye icons for expand/collapse
                     try:
@@ -2235,6 +2352,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         eye_open, eye_close = (None, None)
                 else:
                     feat_set = set()
+                    completed_set = set()
                     feat_heights = {}
 
                 wired_inputs = self._wired_named_inputs()
@@ -2253,6 +2371,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
                     has_port = pname_key in named_inputs
                     wired = has_port and pname_key in wired_inputs
+                    is_completed = kind == "note" and pname in completed_set
 
                     # Row 1: label + line edit
                     row = QtWidgets.QWidget()
@@ -2262,6 +2381,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     lay.setSpacing(6)
 
                     if kind == "note":
+                        completion_refs = {"label": None, "edit": None, "big": None, "button": None}
                         feat_btn = QtWidgets.QToolButton()
                         is_featured = pname in feat_set
                         feat_btn.setAutoRaise(True)
@@ -2295,6 +2415,48 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         feat_btn.clicked.connect(_mk_toggle())
                         lay.insertWidget(0, feat_btn, 0)
 
+                        done_btn = QtWidgets.QToolButton()
+                        done_btn.setCheckable(True)
+                        done_btn.setAutoRaise(False)
+                        done_btn.setToolTip("Mark this note item complete")
+                        done_btn.setFixedSize(16, 16)
+                        try:
+                            done_btn.setCursor(QtCore.Qt.ArrowCursor)
+                        except Exception:
+                            pass
+                        completion_refs["button"] = done_btn
+
+                        def _mk_complete_toggle(nm=pname, refs=completion_refs, is_wired=wired):
+                            def _toggle(checked: bool):
+                                completed = self._get_completed_set()
+                                if checked:
+                                    completed.add(nm)
+                                else:
+                                    completed.discard(nm)
+                                self._set_completed_set(completed)
+                                self._apply_note_completion_visuals(
+                                    completed=checked,
+                                    wired=is_wired,
+                                    label=refs.get("label"),
+                                    edit=refs.get("edit"),
+                                    big=refs.get("big"),
+                                    button=refs.get("button"),
+                                )
+                                try:
+                                    self.update()
+                                except Exception:
+                                    pass
+                            return _toggle
+
+                        done_btn.toggled.connect(_mk_complete_toggle())
+                        done_btn.setChecked(is_completed)
+                        self._apply_note_completion_visuals(
+                            completed=is_completed,
+                            wired=wired,
+                            button=done_btn,
+                        )
+                        lay.insertWidget(1, done_btn, 0)
+
                     if has_port:
                         lay.addSpacing(10)
                         pin_center_x = 0.0
@@ -2314,7 +2476,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         lab.setToolTip("Double-click to rename")
                     else:
                         lab = QtWidgets.QLabel(pname)
-                    lab.setStyleSheet("color:#cbd5e1;")
+                    if kind == "note":
+                        lab.setStyleSheet(self._note_param_label_style(completed=is_completed))
+                        try:
+                            completion_refs["label"] = lab
+                        except Exception:
+                            pass
+                    else:
+                        lab.setStyleSheet("color:#cbd5e1;")
                     lab.setMinimumWidth(50)
                     lab_holder.addWidget(lab, 0)
 
@@ -2341,6 +2510,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         )
                     else:
                         edit.setToolTip("")
+                    if kind == "note":
+                        edit.setStyleSheet(self._note_param_line_edit_style(completed=is_completed, wired=wired))
+                        try:
+                            completion_refs["edit"] = edit
+                        except Exception:
+                            pass
                     is_note = (kind == "note")
                     edit.textChanged.connect(
                         lambda txt, idx=i, emit=not is_note: self._on_param_changed(idx, txt, emit_scene=emit)
@@ -2399,10 +2574,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         big.setAcceptRichText(False)
                         big.setPlainText(pval)
                         big.setMinimumHeight(text_h)
-                        big.setStyleSheet(
-                            "QTextEdit{background:#0f1216;color:#e6edf3;"
-                            "border:1px solid #3c4450;border-radius:6px;padding:6px;}"
-                        )
+                        big.setStyleSheet(self._note_featured_edit_style(completed=is_completed))
+                        try:
+                            completion_refs["big"] = big
+                        except Exception:
+                            pass
                         def _sync_big(idx=i, w=big):
                             self._on_param_changed(idx, w.toPlainText(), emit_scene=False)
                         big.textChanged.connect(_sync_big)
@@ -5741,7 +5917,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
             self.setCursor(QtCore.Qt.PointingHandCursor)
             e.accept()
             return
-        if self._note_resize_available():
+        kind = (self.model.kind or "").lower()
+        if kind == "note":
+            self.unsetCursor()
+        elif self._note_resize_available():
             mode = self._note_hit_test(e.pos())
             cursor = self._note_cursor_for_mode(mode)
             if cursor:

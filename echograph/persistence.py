@@ -38,6 +38,11 @@ def _node_to_dict(node) -> Dict[str, Any]:
         feat = getattr(node, "_featured_params", None)
         if isinstance(feat, set):
             d["featured_params"] = sorted(feat)
+        completed = getattr(node, "_completed_params", None)
+        if isinstance(completed, (set, list, tuple)):
+            names = sorted({str(x) for x in completed if x})
+            if names:
+                d["completed_params"] = names
         size = getattr(node, "_note_size", None)
         if isinstance(size, (list, tuple)) and len(size) >= 2:
             try:
@@ -264,6 +269,11 @@ def deserialize_scene(
                     setattr(n, "_featured_params", {str(x) for x in feat if x})
                 except Exception:
                     setattr(n, "_featured_params", set())
+                completed = nd.get("completed_params") or []
+                try:
+                    setattr(n, "_completed_params", {str(x) for x in completed if x})
+                except Exception:
+                    setattr(n, "_completed_params", set())
                 nsize = nd.get("note_size")
                 if isinstance(nsize, (list, tuple)) and len(nsize) >= 2:
                     try:
