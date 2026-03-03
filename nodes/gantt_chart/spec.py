@@ -304,6 +304,16 @@ def _write_progress_map(node_item, mapping: dict[str, int], *, notify_scene: boo
     _write_gantt_sidecar_snapshot(node_item)
 
 
+def _rename_task_key(mapping: dict, old_name: str, new_name: str):
+    clean = dict(mapping or {})
+    old_key = str(old_name or "").strip()
+    new_key = str(new_name or "").strip()
+    if not old_key or not new_key or old_key == new_key or old_key not in clean:
+        return clean, False
+    clean[new_key] = clean.pop(old_key)
+    return clean, True
+
+
 def _workflow_path_for_node(node_item) -> Path | None:
     scene = None
     try:
@@ -787,6 +797,7 @@ class _GanttCalendarTable(QtWidgets.QTableWidget):
 class _GanttTaskHeader(QtWidgets.QHeaderView):
     completionToggled = QtCore.Signal(int, bool)
     progressEditRequested = QtCore.Signal(int, object)
+    renameRequested = QtCore.Signal(int)
 
     def __init__(self, parent=None):
         super().__init__(QtCore.Qt.Vertical, parent)
@@ -985,6 +996,21 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
         super().mouseReleaseEvent(event)
         self._dragging_section = None
         self._set_drop_indicator_y(None)
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == QtCore.Qt.LeftButton:
+            logical_index = int(self.logicalIndexAt(event.pos()))
+            if logical_index >= 0:
+                if self._progress_rect_for_section(logical_index).contains(event.pos()):
+                    event.accept()
+                    return
+                if self._checkbox_rect_for_section(logical_index).contains(event.pos()):
+                    event.accept()
+                    return
+                self.renameRequested.emit(logical_index)
+                event.accept()
+                return
+        super().mouseDoubleClickEvent(event)
 
     def leaveEvent(self, event):
         super().leaveEvent(event)
@@ -1212,6 +1238,10 @@ class GanttChartWidget(QtWidgets.QFrame):
             pass
         try:
             self._table.verticalHeader().progressEditRequested.connect(self._on_progress_edit_requested)
+        except Exception:
+            pass
+        try:
+            self._table.verticalHeader().renameRequested.connect(self._on_task_header_rename_requested)
         except Exception:
             pass
 
@@ -1798,6 +1828,61 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._selected_task = self._task_names[section]
         self._apply_table_styles()
         self._update_labels()
+
+    def _on_task_header_rename_requested(self, section: int):
+        if section < 0 or section >= len(self._task_names):
+            return
+        old_name = self._task_names[section]
+        src_item, src_model = _resolve_note_source(self._node_item)
+        if src_item is None or src_model is None:
+            QtWidgets.QMessageBox.information(
+                _dialog_parent_for_node(self._node_item),
+                "Rename Task",
+                "Connect a Note node to rename tasks from the Gantt chart.",
+            )
+            return
+        rename_fn = getattr(src_item, "_apply_param_rename", None)
+        if not callable(rename_fn):
+            return
+        param_index = -1
+        old_key = old_name.strip().lower()
+        for idx, entry in enumerate(getattr(src_model, "params", None) or []):
+            if (entry.get("name") or "").strip().lower() == old_key:
+                param_index = idx
+                break
+        if param_index < 0:
+            return
+        parent = _dialog_parent_for_node(self._node_item)
+        text, ok = QtWidgets.QInputDialog.getText(
+            parent, "Rename Parameter", "New name:", QtWidgets.QLineEdit.Normal, old_name
+        )
+        if not ok:
+            return
+        desired_name = (text or "").strip()
+        if not desired_name:
+            return
+        final_name = str(rename_fn(param_index, desired_name) or "").strip()
+        if not final_name:
+            return
+        assignments, assignments_changed = _rename_task_key(self._assignments, old_name, final_name)
+        progress_map, progress_changed = _rename_task_key(self._task_progress, old_name, final_name)
+        completed = set(self._completed_tasks)
+        completed_changed = False
+        if old_name != final_name and old_name in completed:
+            completed.discard(old_name)
+            completed.add(final_name)
+            completed_changed = True
+        if assignments_changed:
+            self._assignments = assignments
+            _write_assignments(self._node_item, assignments, notify_scene=False)
+        if progress_changed:
+            self._task_progress = progress_map
+            _write_progress_map(self._node_item, progress_map, notify_scene=False)
+        if completed_changed:
+            self._completed_tasks = completed
+        if self._selected_task == old_name:
+            self._selected_task = final_name
+        self._schedule_sync()
 
     def _on_task_completion_toggled(self, section: int, checked: bool):
         if section < 0 or section >= len(self._task_names):

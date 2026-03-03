@@ -4216,6 +4216,23 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         except Exception:
             pass
 
+    def _workflow_project_dir(self) -> str:
+        try:
+            path = str(self._current_path or "").strip()
+        except Exception:
+            path = ""
+        if path:
+            try:
+                current = Path(path).expanduser()
+                base_dir = current if current.is_dir() else current.parent
+                return str(base_dir.resolve())
+            except Exception:
+                pass
+        try:
+            return str(script_dir().resolve())
+        except Exception:
+            return str(script_dir())
+
     def _reset_settings_to_defaults(self) -> None:
         try:
             default_llm = float(LLM_SCALE_DEFAULT)
@@ -4855,7 +4872,12 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         return True
 
     def _open_graph(self):
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Open Graph (.json)", "", "JSON Files (*.json)")
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Open Graph (.json)",
+            self._workflow_project_dir(),
+            "JSON Files (*.json)",
+        )
         if not path:
             return
         self._load_graph_file(path)
