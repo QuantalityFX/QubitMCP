@@ -846,13 +846,15 @@ class GanttChartWidget(QtWidgets.QFrame):
 
         self.setObjectName("GanttChartWidget")
         self.setStyleSheet(
-            "QFrame#GanttChartWidget{background:#0f1216;border:1px solid #334155;border-radius:8px;}"
+            "QFrame#GanttChartWidget{background:#0f1216;border:1px solid #334155;border-radius:0px;}"
             "QLabel{color:#cbd5e1;}"
-            "QTableWidget{background:#0f1216;color:#e2e8f0;border:1px solid #273244;border-radius:6px;"
+            "QTableWidget{background:#0f1216;color:#e2e8f0;border:1px solid #273244;border-radius:0px;"
             "gridline-color:#223041;selection-background-color:#16212b;selection-color:#e2e8f0;}"
             "QTableWidget::item:selected{background:#16212b;color:#e2e8f0;}"
-            "QHeaderView::section{background:#141c27;color:#dbe4ee;border:1px solid #223041;padding:4px;font-weight:600;}"
-            "QTableCornerButton::section{background:#000000;border:1px solid #223041;}"
+            "QHeaderView::section{background:#141c27;color:#dbe4ee;border-top:0px;border-left:0px;"
+            "border-right:1px solid #223041;border-bottom:1px solid #223041;padding:4px;font-weight:600;}"
+            "QTableCornerButton::section{background:#000000;border-top:0px;border-left:0px;"
+            "border-right:1px solid #223041;border-bottom:1px solid #223041;}"
         )
 
         layout = QtWidgets.QVBoxLayout(self)
@@ -905,7 +907,8 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._table.setShowGrid(True)
         self._table.horizontalHeader().setDefaultAlignment(QtCore.Qt.AlignCenter)
         self._table.horizontalHeader().setStyleSheet(
-            "QHeaderView::section{background:#000000;color:#dbe4ee;border:1px solid #223041;padding:4px;font-weight:600;}"
+            "QHeaderView::section{background:#000000;color:#dbe4ee;border-top:0px;border-left:0px;"
+            "border-right:1px solid #223041;border-bottom:1px solid #223041;padding:4px;font-weight:600;}"
         )
         self._table.horizontalHeader().setSectionsClickable(True)
         try:
