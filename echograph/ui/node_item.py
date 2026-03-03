@@ -2494,6 +2494,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
                                     button=refs.get("button"),
                                 )
                                 try:
+                                    self._schedule_param_emit()
+                                except Exception:
+                                    pass
+                                try:
                                     self.update()
                                 except Exception:
                                     pass

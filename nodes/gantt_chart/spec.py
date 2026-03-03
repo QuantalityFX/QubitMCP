@@ -21,6 +21,7 @@ _DAY_SCROLL_UNITS_PER_DAY = 12
 _DAY_SCROLL_CENTER = 24000
 _DAY_SCROLL_RANGE = 48000
 _TODAY_MARKER_Y_OFFSET = -8
+_GANTT_SIDECAR_SUFFIX = ".gantt_chart.json"
 
 _ICON_PIXMAP_CACHE: dict[str, QtGui.QPixmap | None] = {}
 
@@ -245,6 +246,126 @@ def _write_assignments(node_item, mapping: dict[str, str], *, notify_scene: bool
         json.dumps(clean, sort_keys=True, separators=(",", ":")),
         notify_scene=notify_scene,
     )
+    _write_gantt_sidecar_snapshot(node_item)
+
+
+def _workflow_path_for_node(node_item) -> Path | None:
+    scene = None
+    try:
+        scene = node_item.scene()
+    except Exception:
+        scene = None
+
+    scene_path = getattr(scene, "_filename", None) if scene is not None else None
+    workflow_path = None
+    if scene is not None:
+        try:
+            views = scene.views()
+            if views:
+                win = views[0].window()
+                workflow_path = getattr(win, "_current_path", None)
+        except Exception:
+            pass
+    workflow_path = workflow_path or scene_path
+    if not workflow_path:
+        return None
+    try:
+        return Path(workflow_path)
+    except Exception:
+        return None
+
+
+def _gantt_sidecar_path(node_item) -> Path | None:
+    workflow_path = _workflow_path_for_node(node_item)
+    if workflow_path is None:
+        return None
+    try:
+        return workflow_path.parent / "gantt_chart" / f"{workflow_path.stem}{_GANTT_SIDECAR_SUFFIX}"
+    except Exception:
+        return None
+
+
+def _read_gantt_sidecar_nodes(node_item) -> dict[str, dict]:
+    path = _gantt_sidecar_path(node_item)
+    if path is None or not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    nodes = payload.get("nodes") or {}
+    return nodes if isinstance(nodes, dict) else {}
+
+
+def _schedule_param_is_empty(raw: str) -> bool:
+    text = str(raw or "").strip()
+    return not text or text == "{}"
+
+
+def _write_gantt_sidecar_snapshot(node_item) -> None:
+    path = _gantt_sidecar_path(node_item)
+    model = getattr(node_item, "model", None)
+    node_name = str(getattr(model, "name", "") or "").strip()
+    if path is None or not node_name:
+        return
+    nodes = _read_gantt_sidecar_nodes(node_item)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        return
+    nodes[node_name] = {
+        "schedule_data": _param_value(model, _SCHEDULE_PARAM).strip() or "{}",
+        "view_start_date": _param_value(model, _VIEW_START_PARAM).strip(),
+    }
+    try:
+        path.write_text(json.dumps({"nodes": nodes}, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _load_gantt_sidecar_snapshot(node_item) -> bool:
+    model = getattr(node_item, "model", None)
+    node_name = str(getattr(model, "name", "") or "").strip()
+    if model is None or not node_name:
+        return False
+    entry = _read_gantt_sidecar_nodes(node_item).get(node_name)
+    if not isinstance(entry, dict):
+        return False
+
+    changed = False
+    current_schedule = _param_value(model, _SCHEDULE_PARAM)
+    sidecar_schedule = entry.get("schedule_data")
+    if _schedule_param_is_empty(current_schedule):
+        if isinstance(sidecar_schedule, dict):
+            sidecar_schedule = json.dumps(sidecar_schedule, sort_keys=True, separators=(",", ":"))
+        sidecar_schedule = str(sidecar_schedule or "").strip() or "{}"
+        try:
+            parsed = json.loads(sidecar_schedule)
+            if isinstance(parsed, dict):
+                sidecar_schedule = json.dumps(parsed, sort_keys=True, separators=(",", ":"))
+            else:
+                sidecar_schedule = "{}"
+        except Exception:
+            sidecar_schedule = "{}"
+        if not _schedule_param_is_empty(sidecar_schedule):
+            _set_param_value(node_item, _SCHEDULE_PARAM, sidecar_schedule, notify_scene=False)
+            changed = True
+
+    current_view_start = _param_value(model, _VIEW_START_PARAM).strip()
+    sidecar_view_start = str(entry.get("view_start_date") or "").strip()
+    if not current_view_start and sidecar_view_start:
+        parsed_view_start = _parse_view_start(sidecar_view_start, fallback=date.today())
+        _set_param_value(node_item, _VIEW_START_PARAM, parsed_view_start.isoformat(), notify_scene=False)
+        _set_param_value(
+            node_item,
+            _VIEW_MONTH_PARAM,
+            f"{parsed_view_start.year:04d}-{parsed_view_start.month:02d}",
+            notify_scene=False,
+        )
+        changed = True
+    return changed
 
 
 def _resolve_note_source(node_item):
@@ -295,6 +416,50 @@ def _note_task_names(model) -> list[str]:
         seen.add(key)
         names.append(name)
     return names
+
+
+def _completed_task_names(model) -> set[str]:
+    if model is None:
+        return set()
+    raw = getattr(model, "_completed_params", None)
+    out = set()
+    if isinstance(raw, set):
+        out.update(str(x) for x in raw if x)
+    elif isinstance(raw, (list, tuple)):
+        out.update(str(x) for x in raw if x)
+    elif isinstance(raw, str) and raw:
+        out.add(raw)
+    return out
+
+
+def _write_source_completed_tasks(node_item, names: set[str], *, notify_scene: bool = True) -> bool:
+    src_item, src_model = _resolve_note_source(node_item)
+    if src_model is None:
+        return False
+    clean = {str(name) for name in (names or set()) if str(name).strip()}
+    try:
+        setattr(src_model, "_completed_params", clean)
+    except Exception:
+        return False
+    try:
+        if src_item is not None and hasattr(src_item, "_schedule_rebuild"):
+            src_item._schedule_rebuild()
+        elif src_item is not None and hasattr(src_item, "update"):
+            src_item.update()
+    except Exception:
+        pass
+    if notify_scene:
+        scene = None
+        try:
+            scene = src_item.scene() if src_item is not None else node_item.scene()
+        except Exception:
+            scene = None
+        if scene is not None and hasattr(scene, "paramChanged"):
+            try:
+                scene.paramChanged.emit(getattr(src_model, "name", ""), list(getattr(src_model, "params", []) or []))
+            except Exception:
+                pass
+    return True
 
 
 def _set_section_resize_mode(header, section: int, mode) -> None:
@@ -403,11 +568,15 @@ class _GanttCalendarTable(QtWidgets.QTableWidget):
 
 
 class _GanttTaskHeader(QtWidgets.QHeaderView):
+    completionToggled = QtCore.Signal(int, bool)
+
     def __init__(self, parent=None):
         super().__init__(QtCore.Qt.Vertical, parent)
         self._selected_section: int | None = None
+        self._completed_sections: set[int] = set()
         self._dragging_section: int | None = None
         self._drop_indicator_y: int | None = None
+        self._checkbox_pressed_section: int | None = None
         self.setDefaultAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
 
     def set_selected_section(self, section: int | None) -> None:
@@ -419,6 +588,26 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
             self.viewport().update()
         except Exception:
             self.update()
+
+    def set_completed_sections(self, sections: set[int]) -> None:
+        clean = {int(section) for section in (sections or set()) if int(section) >= 0}
+        if clean == self._completed_sections:
+            return
+        self._completed_sections = clean
+        try:
+            self.viewport().update()
+        except Exception:
+            self.update()
+
+    def _checkbox_rect(self, rect: QtCore.QRect) -> QtCore.QRect:
+        size = max(12, min(14, int(rect.height()) - 10))
+        x = int(rect.right() - size - 8)
+        y = int(rect.top() + ((rect.height() - size) / 2.0))
+        return QtCore.QRect(x, y, size, size)
+
+    def _checkbox_rect_for_section(self, logical_index: int) -> QtCore.QRect:
+        top = int(self.sectionPosition(int(logical_index)))
+        return self._checkbox_rect(QtCore.QRect(0, top, self.viewport().width(), int(self.sectionSize(int(logical_index)))))
 
     def _set_drop_indicator_y(self, y: int | None) -> None:
         new_value = None if y is None else int(y)
@@ -468,7 +657,22 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
         font.setBold(bool(is_selected))
         painter.setFont(font)
         painter.setPen(QtGui.QColor("#f8fafc") if is_selected else QtGui.QColor("#dbe4ee"))
-        painter.drawText(rect.adjusted(8, 0, -6, 0), int(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter), text)
+        checkbox_rect = self._checkbox_rect(rect)
+        text_rect = rect.adjusted(8, 0, -int(rect.width() - checkbox_rect.left() + 4), 0)
+        painter.drawText(text_rect, int(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter), text)
+        checkbox_checked = int(logical_index) in self._completed_sections
+        painter.setBrush(QtGui.QColor("#12151a"))
+        painter.setPen(QtGui.QPen(QtGui.QColor("#475569"), 1))
+        painter.drawRect(checkbox_rect.adjusted(0, 0, -1, -1))
+        if checkbox_checked:
+            pen = QtGui.QPen(QtGui.QColor("#f8fafc"), 2)
+            pen.setCosmetic(True)
+            painter.setPen(pen)
+            p1 = QtCore.QPoint(int(checkbox_rect.left() + (checkbox_rect.width() * 0.22)), int(checkbox_rect.top() + (checkbox_rect.height() * 0.56)))
+            p2 = QtCore.QPoint(int(checkbox_rect.left() + (checkbox_rect.width() * 0.44)), int(checkbox_rect.top() + (checkbox_rect.height() * 0.78)))
+            p3 = QtCore.QPoint(int(checkbox_rect.left() + (checkbox_rect.width() * 0.80)), int(checkbox_rect.top() + (checkbox_rect.height() * 0.26)))
+            painter.drawLine(p1, p2)
+            painter.drawLine(p2, p3)
         painter.restore()
 
     def paintEvent(self, event):
@@ -486,21 +690,38 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
     def mousePressEvent(self, event):
         if event.button() == QtCore.Qt.LeftButton:
             logical_index = int(self.logicalIndexAt(event.pos()))
+            if logical_index >= 0 and self._checkbox_rect_for_section(logical_index).contains(event.pos()):
+                self._checkbox_pressed_section = logical_index
+                event.accept()
+                return
             self._dragging_section = logical_index if logical_index >= 0 else None
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        if self._checkbox_pressed_section is not None:
+            event.accept()
+            return
         if bool(event.buttons() & QtCore.Qt.LeftButton) and self._dragging_section is not None:
             self._set_drop_indicator_y(self._indicator_y_for_pos(int(event.pos().y())))
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        if self._checkbox_pressed_section is not None:
+            logical_index = int(self._checkbox_pressed_section)
+            pressed = self._checkbox_rect_for_section(logical_index).contains(event.pos())
+            self._checkbox_pressed_section = None
+            if pressed:
+                checked = logical_index not in self._completed_sections
+                self.completionToggled.emit(logical_index, checked)
+            event.accept()
+            return
         super().mouseReleaseEvent(event)
         self._dragging_section = None
         self._set_drop_indicator_y(None)
 
     def leaveEvent(self, event):
         super().leaveEvent(event)
+        self._checkbox_pressed_section = None
         if self._dragging_section is None:
             self._set_drop_indicator_y(None)
 
@@ -613,6 +834,7 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._source_invalid = False
         self._task_names: list[str] = []
         self._assignments: dict[str, str] = {}
+        self._completed_tasks: set[str] = set()
         self._selected_task: str | None = None
         self._ignore_header_move = False
         self._today = date.today()
@@ -620,6 +842,7 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._visible_start_date = self._base_start_date
         self._visible_dates: list[date] = []
         self._day_scroll_sync = False
+        self._sidecar_loaded = False
 
         self.setObjectName("GanttChartWidget")
         self.setStyleSheet(
@@ -700,6 +923,10 @@ class GanttChartWidget(QtWidgets.QFrame):
             pass
         try:
             self._table.verticalHeader().sectionMoved.connect(self._on_task_section_moved)
+        except Exception:
+            pass
+        try:
+            self._table.verticalHeader().completionToggled.connect(self._on_task_completion_toggled)
         except Exception:
             pass
 
@@ -873,6 +1100,7 @@ class GanttChartWidget(QtWidgets.QFrame):
                 f"{self._visible_start_date.year:04d}-{self._visible_start_date.month:02d}",
                 notify_scene=False,
             )
+            _write_gantt_sidecar_snapshot(self._node_item)
         if sync_scroll:
             offset = int((self._visible_start_date - self._base_start_date).days)
             new_value = _scroll_value_for_day_offset(offset)
@@ -921,6 +1149,18 @@ class GanttChartWidget(QtWidgets.QFrame):
     def _sync_from_source(self):
         self._ensure_scene()
         self._sync_pending = False
+        if not self._sidecar_loaded:
+            current_schedule = _param_value(getattr(self._node_item, "model", None), _SCHEDULE_PARAM)
+            if not _schedule_param_is_empty(current_schedule):
+                self._sidecar_loaded = True
+            else:
+                loaded = _load_gantt_sidecar_snapshot(self._node_item)
+                if loaded:
+                    self._sidecar_loaded = True
+                else:
+                    path = _gantt_sidecar_path(self._node_item)
+                    if path is not None and path.is_file():
+                        self._sidecar_loaded = True
         self._sync_view_start_from_params(force=True)
         src_item, src_model = _resolve_note_source(self._node_item)
         self._source_invalid = bool(src_item is not None and src_model is None)
@@ -931,11 +1171,17 @@ class GanttChartWidget(QtWidgets.QFrame):
             default_year=self._visible_start_date.year,
             default_month=self._visible_start_date.month,
         )
+        has_valid_note_source = src_model is not None
         pruned = {name: day for name, day in assignments.items() if name in task_names}
-        if pruned != assignments:
+        if has_valid_note_source and pruned != assignments:
             _write_assignments(self._node_item, pruned, notify_scene=False)
+        source_completed = _completed_task_names(src_model)
+        completed = {name for name in source_completed if name in task_names}
+        if completed != source_completed:
+            _write_source_completed_tasks(self._node_item, completed, notify_scene=False)
         self._task_names = task_names
-        self._assignments = pruned
+        self._assignments = pruned if has_valid_note_source else assignments
+        self._completed_tasks = completed
         if self._selected_task not in self._task_names:
             self._selected_task = None
         self._rebuild_table()
@@ -1052,6 +1298,7 @@ class GanttChartWidget(QtWidgets.QFrame):
         cell_bg = QtGui.QColor("#10161d")
         selected_row_bg = QtGui.QColor("#16212b")
         assigned_bg = QtGui.QColor("#0f766e")
+        completed_assigned_bg = QtGui.QColor("#16a34a")
         assigned_fg = QtGui.QColor("#ecfeff")
         selected_row = None if self._selected_task not in self._task_names else self._task_names.index(self._selected_task)
 
@@ -1071,7 +1318,7 @@ class GanttChartWidget(QtWidgets.QFrame):
             for day in range(self._visible_day_count()):
                 item = self._ensure_item(row, day)
                 if assigned_column == day:
-                    item.setBackground(assigned_bg)
+                    item.setBackground(completed_assigned_bg if task in self._completed_tasks else assigned_bg)
                     item.setForeground(assigned_fg)
                 else:
                     item.setBackground(selected_row_bg if is_selected else cell_bg)
@@ -1080,6 +1327,17 @@ class GanttChartWidget(QtWidgets.QFrame):
         if hasattr(header, "set_selected_section"):
             try:
                 header.set_selected_section(selected_row)
+            except Exception:
+                pass
+        if hasattr(header, "set_completed_sections"):
+            try:
+                header.set_completed_sections(
+                    {
+                        row
+                        for row, task in enumerate(self._task_names)
+                        if task in self._completed_tasks
+                    }
+                )
             except Exception:
                 pass
 
@@ -1106,6 +1364,21 @@ class GanttChartWidget(QtWidgets.QFrame):
         if section < 0 or section >= len(self._task_names):
             return
         self._selected_task = self._task_names[section]
+        self._apply_table_styles()
+        self._update_labels()
+
+    def _on_task_completion_toggled(self, section: int, checked: bool):
+        if section < 0 or section >= len(self._task_names):
+            return
+        task = self._task_names[section]
+        completed = set(self._completed_tasks)
+        if checked:
+            completed.add(task)
+        else:
+            completed.discard(task)
+        if not _write_source_completed_tasks(self._node_item, completed, notify_scene=True):
+            return
+        self._completed_tasks = completed
         self._apply_table_styles()
         self._update_labels()
 
