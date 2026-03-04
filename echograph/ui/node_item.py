@@ -1714,9 +1714,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 pass
             node_w = self._BASE_W
         elif kind == "fx":
-            # Match the FX embedded widget and leave frame margin so rounded corners stay visible.
-            body_h = 506
-            node_w = max(self._BASE_W, 296)
+            # Match the FX embedded widget more closely so the bottom frame does not hang below it.
+            body_h = 452
+            node_w = max(self._BASE_W, 288)
+            try:
+                from nodes.fx import spec as _fx_spec  # type: ignore
+                body_h = max(0, int(getattr(_fx_spec, "FX_NODE_BODY_H", body_h)))
+                node_w = max(self._BASE_W, int(getattr(_fx_spec, "FX_NODE_W", node_w)))
+            except Exception:
+                pass
         elif kind in ("mnaterial", "material"):
             # Match the material embedded widget and keep visible border around it.
             body_h = 170

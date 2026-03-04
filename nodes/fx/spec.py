@@ -24,6 +24,17 @@ DEFAULT_AGE_SCALE_POINTS = [
     (1.0, 1.0),
 ]
 
+FX_NODE_W = 288
+FX_BODY_INSET_X = 8
+FX_BODY_INSET_TOP = 2
+FX_BODY_INSET_BOTTOM = 4
+FX_FIELD_LABEL_W = 56
+FX_FIELD_MIN_W = 64
+FX_RAMP_MIN_H = 70
+FX_RAMP_HINT_H = 78
+FX_TRAIL_WIDGET_HINT_H = 416
+FX_NODE_BODY_H = FX_BODY_INSET_TOP + FX_TRAIL_WIDGET_HINT_H + FX_BODY_INSET_BOTTOM
+
 
 def _param_value(model, name: str) -> str:
     key = (name or "").strip().lower()
@@ -270,11 +281,11 @@ class FxRampWidget(QtWidgets.QWidget):
         super().__init__(parent)
         self._points = _normalize_profile_points(points)
         self._drag_index = None
-        self.setMinimumHeight(84)
+        self.setMinimumHeight(FX_RAMP_MIN_H)
         self.setMouseTracking(True)
 
     def sizeHint(self):
-        return QtCore.QSize(220, 92)
+        return QtCore.QSize(212, FX_RAMP_HINT_H)
 
     def points(self) -> list[tuple[float, float]]:
         return list(self._points)
@@ -441,8 +452,8 @@ class FxTrailWidget(QtWidgets.QWidget):
         self._updating = False
 
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(6, 4, 6, 4)
-        layout.setSpacing(4)
+        layout.setContentsMargins(6, 4, 6, 0)
+        layout.setSpacing(3)
 
         header = QtWidgets.QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
@@ -468,8 +479,23 @@ class FxTrailWidget(QtWidgets.QWidget):
 
         grid = QtWidgets.QGridLayout()
         grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(6)
-        grid.setVerticalSpacing(4)
+        grid.setHorizontalSpacing(5)
+        grid.setVerticalSpacing(3)
+        grid.setColumnMinimumWidth(0, FX_FIELD_LABEL_W)
+        grid.setColumnMinimumWidth(2, FX_FIELD_LABEL_W)
+        grid.setColumnStretch(1, 1)
+        grid.setColumnStretch(3, 1)
+
+        def _configure_field(widget):
+            widget.setMinimumWidth(FX_FIELD_MIN_W)
+            widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+            return widget
+
+        def _make_label(text: str):
+            label = QtWidgets.QLabel(text)
+            label.setMinimumWidth(FX_FIELD_LABEL_W)
+            label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+            return label
 
         def _mk_int(minimum: int, maximum: int):
             sb = QtWidgets.QSpinBox()
@@ -480,7 +506,7 @@ class FxTrailWidget(QtWidgets.QWidget):
                 "QSpinBox{background:#0f1216;color:#e6edf3;border:1px solid #3c4450;"
                 "border-radius:4px;padding:1px 4px;}"
             )
-            return sb
+            return _configure_field(sb)
 
         def _mk_float(minimum: float, maximum: float, step: float):
             sb = QtWidgets.QDoubleSpinBox()
@@ -494,7 +520,7 @@ class FxTrailWidget(QtWidgets.QWidget):
                 "QDoubleSpinBox{background:#0f1216;color:#e6edf3;border:1px solid #3c4450;"
                 "border-radius:4px;padding:1px 4px;}"
             )
-            return sb
+            return _configure_field(sb)
 
         self._spawn_rate = _mk_float(0.01, 24.0, 0.05)
         self._substeps = _mk_int(1, 64)
@@ -511,39 +537,40 @@ class FxTrailWidget(QtWidgets.QWidget):
             "QLineEdit{background:#0f1216;color:#e6edf3;border:1px solid #3c4450;"
             "border-radius:4px;padding:2px 6px;}"
         )
+        _configure_field(self._color)
         self._color.editingFinished.connect(self._on_color_changed)
 
-        grid.addWidget(QtWidgets.QLabel("Spawn"), 0, 0)
+        grid.addWidget(_make_label("Spawn"), 0, 0)
         grid.addWidget(self._spawn_rate, 0, 1)
-        grid.addWidget(QtWidgets.QLabel("Substeps"), 0, 2)
+        grid.addWidget(_make_label("Substeps"), 0, 2)
         grid.addWidget(self._substeps, 0, 3)
-        grid.addWidget(QtWidgets.QLabel("Life"), 1, 0)
+        grid.addWidget(_make_label("Life"), 1, 0)
         grid.addWidget(self._lifespan, 1, 1)
-        grid.addWidget(QtWidgets.QLabel("Repeat"), 1, 2)
+        grid.addWidget(_make_label("Repeat"), 1, 2)
         grid.addWidget(self._repeats, 1, 3)
-        grid.addWidget(QtWidgets.QLabel("Sides"), 2, 0)
+        grid.addWidget(_make_label("Sides"), 2, 0)
         grid.addWidget(self._sides, 2, 1)
-        grid.addWidget(QtWidgets.QLabel("Radius"), 2, 2)
+        grid.addWidget(_make_label("Radius"), 2, 2)
         grid.addWidget(self._radius, 2, 3)
-        grid.addWidget(QtWidgets.QLabel("Line"), 3, 0)
+        grid.addWidget(_make_label("Line"), 3, 0)
         grid.addWidget(self._line_width, 3, 1)
-        grid.addWidget(QtWidgets.QLabel("Color"), 3, 2)
+        grid.addWidget(_make_label("Color"), 3, 2)
         grid.addWidget(self._color, 3, 3)
-        grid.addWidget(QtWidgets.QLabel("Age Min"), 4, 0)
+        grid.addWidget(_make_label("Age Min"), 4, 0)
         grid.addWidget(self._age_scale_min, 4, 1)
-        grid.addWidget(QtWidgets.QLabel("Age Max"), 4, 2)
+        grid.addWidget(_make_label("Age Max"), 4, 2)
         grid.addWidget(self._age_scale_max, 4, 3)
         layout.addLayout(grid)
 
         preset_row = QtWidgets.QHBoxLayout()
         preset_row.setContentsMargins(0, 0, 0, 0)
-        preset_row.setSpacing(4)
+        preset_row.setSpacing(3)
         preset_label = QtWidgets.QLabel("Pattern")
         preset_label.setStyleSheet("color:#cbd5e1;")
         preset_row.addWidget(preset_label, 0)
         preset_row.addStretch(1)
         reset_btn = QtWidgets.QPushButton("Wave")
-        reset_btn.setFixedHeight(20)
+        reset_btn.setFixedHeight(18)
         reset_btn.setStyleSheet(
             "QPushButton{background:#1e293b;color:#e2e8f0;border-radius:4px;padding:1px 8px;}"
             "QPushButton:hover{background:#334155;}"
@@ -559,13 +586,13 @@ class FxTrailWidget(QtWidgets.QWidget):
 
         scale_row = QtWidgets.QHBoxLayout()
         scale_row.setContentsMargins(0, 0, 0, 0)
-        scale_row.setSpacing(4)
+        scale_row.setSpacing(3)
         scale_label = QtWidgets.QLabel("Age Scale")
         scale_label.setStyleSheet("color:#cbd5e1;")
         scale_row.addWidget(scale_label, 0)
         scale_row.addStretch(1)
         scale_reset_btn = QtWidgets.QPushButton("Linear")
-        scale_reset_btn.setFixedHeight(20)
+        scale_reset_btn.setFixedHeight(18)
         scale_reset_btn.setStyleSheet(
             "QPushButton{background:#1e293b;color:#e2e8f0;border-radius:4px;padding:1px 8px;}"
             "QPushButton:hover{background:#334155;}"
@@ -583,11 +610,11 @@ class FxTrailWidget(QtWidgets.QWidget):
         hint.setWordWrap(True)
         hint.setStyleSheet("color:#64748b;font-size:10px;")
         layout.addWidget(hint, 0)
-        age_hint = QtWidgets.QLabel("Pattern sets each ring's base size by spawn order. Age Scale multiplies that size over the ring lifetime.")
+        age_hint = QtWidgets.QLabel("Pattern sets ring size by spawn order. Age Scale adjusts size over lifetime.")
         age_hint.setWordWrap(True)
         age_hint.setStyleSheet("color:#64748b;font-size:10px;")
         layout.addWidget(age_hint, 0)
-        spawn_hint = QtWidgets.QLabel("Spawn is ring spacing in frames. Values below 1 need higher Substeps.")
+        spawn_hint = QtWidgets.QLabel("Spawn is spacing in frames. Values below 1 need more Substeps.")
         spawn_hint.setWordWrap(True)
         spawn_hint.setStyleSheet("color:#64748b;font-size:10px;")
         layout.addWidget(spawn_hint, 0)
@@ -613,7 +640,7 @@ class FxTrailWidget(QtWidgets.QWidget):
         self._schedule_refresh()
 
     def sizeHint(self):
-        return QtCore.QSize(248, 446)
+        return QtCore.QSize(236, FX_TRAIL_WIDGET_HINT_H)
 
     def _set_param(self, name: str, value: str, *, notify_scene: bool = True) -> None:
         if self._updating:
@@ -851,9 +878,9 @@ class FxTrailWidget(QtWidgets.QWidget):
 
 
 def render_node_body(node_item, y_cursor: int) -> int:
-    inset_x = 8
-    inset_top = 2
-    inset_bottom = 24
+    inset_x = FX_BODY_INSET_X
+    inset_top = FX_BODY_INSET_TOP
+    inset_bottom = FX_BODY_INSET_BOTTOM
     try:
         before = {
             (entry.get("name") or "").strip().lower()
