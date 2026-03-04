@@ -344,6 +344,42 @@ class FxRampWidget(QtWidgets.QWidget):
         self.pointsChanged.emit(list(self._points))
         self.update()
 
+    def _remove_point_at_pos(self, posf) -> bool:
+        idx = self._point_index_at(posf)
+        if idx is None:
+            return False
+        idx = int(idx)
+        if idx <= 0 or idx >= (len(self._points) - 1):
+            return False
+        del self._points[idx]
+        self._drag_index = None
+        self._emit_points()
+        return True
+
+    def _wants_graph_view_short_right_click_local(self, local_pos) -> bool:
+        try:
+            posf = QtCore.QPointF(local_pos)
+        except Exception:
+            try:
+                posf = QtCore.QPointF(float(local_pos.x()), float(local_pos.y()))
+            except Exception:
+                return False
+        idx = self._point_index_at(posf)
+        if idx is None:
+            return False
+        idx = int(idx)
+        return 0 < idx < (len(self._points) - 1)
+
+    def _handle_graph_view_short_right_click_local(self, local_pos) -> bool:
+        try:
+            posf = QtCore.QPointF(local_pos)
+        except Exception:
+            try:
+                posf = QtCore.QPointF(float(local_pos.x()), float(local_pos.y()))
+            except Exception:
+                return False
+        return self._remove_point_at_pos(posf)
+
     def paintEvent(self, _ev):
         p = QtGui.QPainter(self)
         try:
@@ -399,11 +435,7 @@ class FxRampWidget(QtWidgets.QWidget):
                 ev.accept()
                 return
         if ev.button() == QtCore.Qt.RightButton:
-            idx = self._point_index_at(self._event_pos(ev))
-            if idx is not None and 0 < int(idx) < (len(self._points) - 1):
-                del self._points[int(idx)]
-                self._drag_index = None
-                self._emit_points()
+            if self._remove_point_at_pos(self._event_pos(ev)):
                 ev.accept()
                 return
         super().mousePressEvent(ev)

@@ -48,6 +48,7 @@ class GraphView(QtWidgets.QGraphicsView):
         self._rc_dragging = False
         self._rc_press_pos = None
         self._rc_started_over_llm = False
+        self._rc_started_over_embedded_short_click = False
         self._rc_start_transform = QtGui.QTransform()
         self._rc_press_scene_pt = QtCore.QPointF()
 
@@ -116,10 +117,16 @@ class GraphView(QtWidgets.QGraphicsView):
             if current is None:
                 current = widget
             while current is not None:
+                current_local = widget_pos
+                if current is not widget:
+                    try:
+                        current_local = current.mapFrom(widget, widget_pos)
+                    except Exception:
+                        current_local = widget_pos
                 handler = getattr(current, "_handle_graph_view_short_right_click_local", None)
                 if callable(handler):
                     try:
-                        if bool(handler(widget_pos)):
+                        if bool(handler(current_local)):
                             return True
                     except Exception:
                         pass
@@ -131,6 +138,65 @@ class GraphView(QtWidgets.QGraphicsView):
                             return True
                     except Exception:
                         pass
+                try:
+                    current = current.parentWidget()
+                except Exception:
+                    current = None
+        return False
+
+    def _has_embedded_short_right_click_target(self, viewport_pos: QtCore.QPoint) -> bool:
+        scene = self.scene()
+        if scene is None:
+            return False
+        try:
+            scene_pos = self.mapToScene(viewport_pos)
+        except Exception:
+            return False
+        for item in scene.items(scene_pos):
+            proxy = item if isinstance(item, QtWidgets.QGraphicsProxyWidget) else None
+            if proxy is None:
+                proxy = getattr(item, "_llm_proxy", None)
+            if not isinstance(proxy, QtWidgets.QGraphicsProxyWidget):
+                continue
+            try:
+                widget = proxy.widget()
+            except Exception:
+                widget = None
+            if widget is None:
+                continue
+            try:
+                proxy_local = proxy.mapFromScene(scene_pos)
+            except Exception:
+                proxy_local = QtCore.QPointF()
+            try:
+                widget_pos = proxy_local.toPoint()
+            except Exception:
+                widget_pos = QtCore.QPoint(int(proxy_local.x()), int(proxy_local.y()))
+            current = None
+            try:
+                current = widget.childAt(widget_pos)
+            except Exception:
+                current = None
+            if current is None:
+                current = widget
+            while current is not None:
+                current_local = widget_pos
+                if current is not widget:
+                    try:
+                        current_local = current.mapFrom(widget, widget_pos)
+                    except Exception:
+                        current_local = widget_pos
+                wants_handler = getattr(current, "_wants_graph_view_short_right_click_local", None)
+                if callable(wants_handler):
+                    try:
+                        if bool(wants_handler(current_local)):
+                            return True
+                    except Exception:
+                        pass
+                elif callable(getattr(current, "_handle_graph_view_short_right_click_local", None)):
+                    return True
+                if callable(getattr(current, "_handle_graph_view_short_right_click", None)):
+                    return True
                 try:
                     current = current.parentWidget()
                 except Exception:
@@ -726,6 +792,12 @@ class GraphView(QtWidgets.QGraphicsView):
             if self._rc_started_over_llm:
                 super().mousePressEvent(e)
                 return
+            self._rc_started_over_embedded_short_click = self._has_embedded_short_right_click_target(e.pos())
+            if self._rc_started_over_embedded_short_click:
+                self._rc_dragging = False
+                self._rc_press_pos = e.pos()
+                self._rc_did_zoom = False
+                e.accept(); return
             self._rc_dragging = True
             self._rc_press_pos = e.pos()
             self._rc_start_transform = QtGui.QTransform(self.transform())
@@ -852,6 +924,16 @@ class GraphView(QtWidgets.QGraphicsView):
             e.accept()
             return
 
+        if self._rc_started_over_embedded_short_click:
+            if not (e.buttons() & QtCore.Qt.RightButton):
+                self._rc_started_over_embedded_short_click = False
+                self._rc_press_pos = None
+                e.accept()
+                return
+            self._update_temp_wire_from_view(e.pos())
+            e.accept()
+            return
+
         self._update_temp_wire_from_view(e.pos())
         super().mouseMoveEvent(e)
 
@@ -883,6 +965,15 @@ class GraphView(QtWidgets.QGraphicsView):
             if self._rc_started_over_llm:
                 self._rc_started_over_llm = False
                 super().mouseReleaseEvent(e); return
+
+            if self._rc_started_over_embedded_short_click:
+                dispatch_pos = self._rc_press_pos if self._rc_press_pos is not None else e.pos()
+                self._rc_started_over_embedded_short_click = False
+                self._rc_dragging = False
+                self._rc_press_pos = None
+                self._rc_did_zoom = False
+                self._dispatch_embedded_short_right_click(dispatch_pos)
+                e.accept(); return
 
             # If a zoom occurred, swallow the release (no context)
             if self._rc_did_zoom:
