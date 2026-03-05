@@ -790,7 +790,9 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._timeline_audio_loaded_key = None
         self._timeline_audio_player = None
         self._timeline_audio_output = None
+        self._timeline_audio_muted = False
         self._timeline_audio_file_label = None
+        self._timeline_audio_mute_btn = None
         self._timeline_audio_wave_widget = None
         self._timeline_audio_status_label = None
         self._timeline_fps = 24.0

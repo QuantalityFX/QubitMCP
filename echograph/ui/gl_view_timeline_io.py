@@ -296,6 +296,7 @@ class GraphGLTimelineIOMixin:
         payload = {
             "scene": str(getattr(self, "_timeline_audio_scene_name", "viewport") or "viewport"),
             "audio_path": self._timeline_audio_store_path(str(getattr(self, "_timeline_audio_path", "") or "")),
+            "muted": bool(getattr(self, "_timeline_audio_muted", False)),
         }
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -315,15 +316,31 @@ class GraphGLTimelineIOMixin:
             raw = {}
         stored = str(raw.get("audio_path", "") or "").strip()
         resolved = self._timeline_audio_resolve_path(stored)
+        muted = bool(raw.get("muted", False))
         setter = getattr(self, "_timeline_audio_set_path", None)
+        mute_setter = getattr(self, "_timeline_audio_set_muted", None)
         if callable(setter):
             try:
                 setter(resolved, save=False)
+                if callable(mute_setter):
+                    try:
+                        mute_setter(muted, save=False)
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        self._timeline_audio_muted = bool(muted)
+                    except Exception:
+                        pass
                 return
             except Exception:
                 pass
         try:
             self._timeline_audio_path = resolved
+        except Exception:
+            pass
+        try:
+            self._timeline_audio_muted = bool(muted)
         except Exception:
             pass
 

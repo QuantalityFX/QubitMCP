@@ -2152,6 +2152,55 @@ class GraphGLTimelineWidgetsMixin:
         except Exception:
             pass
 
+    def _timeline_audio_set_muted(self, muted: bool, save: bool = True) -> None:
+        self._timeline_audio_apply_mute(bool(muted), save=bool(save))
+
+    def _timeline_audio_apply_mute(self, muted: bool, save: bool = True) -> None:
+        want = bool(muted)
+        self._timeline_audio_muted = want
+        output = getattr(self, "_timeline_audio_output", None)
+        player = getattr(self, "_timeline_audio_player", None)
+        try:
+            if output is not None and hasattr(output, "setMuted"):
+                output.setMuted(want)
+            elif player is not None and hasattr(player, "setMuted"):
+                player.setMuted(want)
+            elif output is not None and hasattr(output, "setVolume"):
+                output.setVolume(0.0 if want else 1.0)
+            elif player is not None and hasattr(player, "setVolume"):
+                player.setVolume(0 if want else 100)
+        except Exception:
+            pass
+        self._timeline_audio_update_mute_button()
+        if bool(save):
+            try:
+                self._timeline_audio_save_to_disk()
+            except Exception:
+                pass
+
+    def _timeline_audio_update_mute_button(self) -> None:
+        btn = getattr(self, "_timeline_audio_mute_btn", None)
+        if btn is None:
+            return
+        muted = bool(getattr(self, "_timeline_audio_muted", False))
+        text = "Unmute" if muted else "Mute"
+        tooltip = "Unmute audio playback" if muted else "Mute audio playback"
+        try:
+            btn.blockSignals(True)
+            btn.setChecked(muted)
+            btn.setText(text)
+            btn.setToolTip(tooltip)
+        except Exception:
+            pass
+        finally:
+            try:
+                btn.blockSignals(False)
+            except Exception:
+                pass
+
+    def _timeline_audio_on_mute_toggled(self, checked: bool) -> None:
+        self._timeline_audio_apply_mute(bool(checked), save=True)
+
     def _timeline_audio_init_player(self) -> bool:
         if getattr(self, "_timeline_audio_player", None) is not None:
             return True
@@ -2188,6 +2237,10 @@ class GraphGLTimelineWidgetsMixin:
             pass
         self._timeline_audio_player = player
         self._timeline_audio_output = output
+        try:
+            self._timeline_audio_apply_mute(bool(getattr(self, "_timeline_audio_muted", False)), save=False)
+        except Exception:
+            pass
         return True
 
     def _timeline_audio_set_media_source(self, path: Path) -> bool:
@@ -2215,6 +2268,10 @@ class GraphGLTimelineWidgetsMixin:
         if loaded:
             try:
                 player.pause()
+            except Exception:
+                pass
+            try:
+                self._timeline_audio_apply_mute(bool(getattr(self, "_timeline_audio_muted", False)), save=False)
             except Exception:
                 pass
             try:
@@ -2452,7 +2509,9 @@ class GraphGLTimelineWidgetsMixin:
             has_wave = isinstance(getattr(self, "_timeline_audio_wave_widget", None), _TimelineAudioWaveformWidget)
             has_label = isinstance(getattr(self, "_timeline_audio_file_label", None), QtWidgets.QLabel)
             has_status = isinstance(getattr(self, "_timeline_audio_status_label", None), QtWidgets.QLabel)
-            if has_wave and has_label and has_status:
+            has_mute = isinstance(getattr(self, "_timeline_audio_mute_btn", None), QtWidgets.QPushButton)
+            if has_wave and has_label and has_status and has_mute:
+                self._timeline_audio_update_mute_button()
                 return
             try:
                 existing.hide()
@@ -2468,6 +2527,7 @@ class GraphGLTimelineWidgetsMixin:
                 "#GLTimelineAudioPanel QLabel{color:#e2e8f0;font-size:11px;}",
                 "#GLTimelineAudioPanel QPushButton{padding:2px 8px;font-weight:600;color:#e2e8f0;background:#1f2937;border-radius:4px;}",
                 "#GLTimelineAudioPanel QPushButton:hover{background:#334155;}",
+                "#GLTimelineAudioPanel QPushButton:checked{background:#14532d;}",
                 "#GLTimelineAudioPanel QLabel#GLTimelineAudioStatus{color:#94a3b8;font-size:10px;}",
             ))
         )
@@ -2492,6 +2552,12 @@ class GraphGLTimelineWidgetsMixin:
         clear_btn.clicked.connect(self._timeline_audio_on_clear_clicked)
         row.addWidget(clear_btn, 0)
 
+        mute_btn = QtWidgets.QPushButton("Mute", panel)
+        mute_btn.setFixedHeight(22)
+        mute_btn.setCheckable(True)
+        mute_btn.toggled.connect(self._timeline_audio_on_mute_toggled)
+        row.addWidget(mute_btn, 0)
+
         file_lbl = QtWidgets.QLabel("No audio selected", panel)
         file_lbl.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
         file_lbl.setAlignment(QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft)
@@ -2510,12 +2576,14 @@ class GraphGLTimelineWidgetsMixin:
         panel.setVisible(bool(getattr(self, "_timeline_audio_enabled", False)))
         self._timeline_audio_panel = panel
         self._timeline_audio_file_label = file_lbl
+        self._timeline_audio_mute_btn = mute_btn
         self._timeline_audio_wave_widget = wave
         self._timeline_audio_status_label = status
         try:
             wave.setWaveform(getattr(self, "_timeline_audio_wave_samples", []) or [])
         except Exception:
             pass
+        self._timeline_audio_update_mute_button()
         self._timeline_audio_update_file_label()
         self._timeline_audio_update_playhead()
 

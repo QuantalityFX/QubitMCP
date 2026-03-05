@@ -3619,6 +3619,15 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         except Exception:
             pass
         try:
+            self._active_scene_node = None
+        except Exception:
+            pass
+        try:
+            self._scene_assets_sig = None
+            self._scene_assets_ts = 0.0
+        except Exception:
+            pass
+        try:
             gl_view = getattr(self, "gl_view", None)
             if gl_view is None:
                 return
@@ -4105,9 +4114,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         grid.addWidget(splat_log_label, 7, 0, 1, 1, QtCore.Qt.AlignVCenter)
         grid.addWidget(self._splat_log_toggle, 7, 1, 1, 1, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
 
-        save_layout_label = QtWidgets.QLabel("Save Layout")
+        save_layout_label = QtWidgets.QLabel("Auto Save Layout")
         self._save_layout_toggle = QtWidgets.QCheckBox()
         self._save_layout_toggle.setChecked(bool(getattr(self, "_save_layout_enabled", True)))
+        self._save_layout_toggle.setToolTip("Automatically save panel visibility changes as the global default layout")
         self._save_layout_toggle.toggled.connect(self._on_save_layout_toggled)
         grid.addWidget(save_layout_label, 8, 0, 1, 1, QtCore.Qt.AlignVCenter)
         grid.addWidget(self._save_layout_toggle, 8, 1, 1, 1, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
@@ -4438,6 +4448,18 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             return None
         return _normalize_panel_layout_preset(raw, _DEFAULT_PANEL_LAYOUT_PRESET)
 
+    @staticmethod
+    def _workflow_scene_restore_name_from_settings(settings) -> str | None:
+        if not isinstance(settings, dict):
+            return None
+        raw = settings.get("scene_restore", None)
+        if isinstance(raw, dict):
+            name = str(raw.get("active_scene_node", "") or "").strip()
+            if name:
+                return name
+        legacy = str(settings.get("active_scene_node", "") or "").strip()
+        return legacy or None
+
     def _inject_panel_layout_into_workflow_data(self, data: Dict[str, Any]) -> None:
         if not isinstance(data, dict):
             return
@@ -4447,6 +4469,95 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         settings = dict(settings)
         settings["panel_layout"] = self._current_panel_layout_preset()
         data["settings"] = settings
+
+    def _inject_scene_restore_into_workflow_data(self, data: Dict[str, Any]) -> None:
+        if not isinstance(data, dict):
+            return
+        settings = data.get("settings", None)
+        if not isinstance(settings, dict):
+            settings = {}
+        settings = dict(settings)
+        try:
+            active = getattr(self, "_active_scene_node", None)
+            active_name = str(getattr(active, "name", "") or "").strip() if active is not None else ""
+        except Exception:
+            active_name = ""
+        if active_name:
+            scene_restore = settings.get("scene_restore", None)
+            if not isinstance(scene_restore, dict):
+                scene_restore = {}
+            scene_restore = dict(scene_restore)
+            scene_restore["active_scene_node"] = active_name
+            settings["scene_restore"] = scene_restore
+            settings.pop("active_scene_node", None)
+        else:
+            scene_restore = settings.get("scene_restore", None)
+            if isinstance(scene_restore, dict):
+                scene_restore = dict(scene_restore)
+                scene_restore.pop("active_scene_node", None)
+                if scene_restore:
+                    settings["scene_restore"] = scene_restore
+                else:
+                    settings.pop("scene_restore", None)
+            else:
+                settings.pop("scene_restore", None)
+            settings.pop("active_scene_node", None)
+        data["settings"] = settings
+
+    def _restore_workflow_active_scene(self, scene_name: str | None) -> None:
+        target = str(scene_name or "").strip()
+        if not target:
+            return
+        sc = getattr(self, "scene", None)
+        node_items = getattr(sc, "_node_items", None)
+        if not isinstance(node_items, dict):
+            return
+        item = node_items.get(target)
+        if not isinstance(item, NodeItem):
+            return
+        kind = (getattr(getattr(item, "model", None), "kind", "") or "").strip().lower()
+        if kind not in {"scene", "scene_assembly", "scene_outliner"}:
+            return
+        try:
+            collect = getattr(item, "_collect_scene_assets", None)
+            if callable(collect) and not (collect() or []):
+                return
+        except Exception:
+            pass
+        try:
+            item._open_scene_assets()
+        except Exception:
+            pass
+
+    def _restore_workflow_active_scene_deferred(
+        self,
+        scene_name: str | None,
+        *,
+        workflow_path: str | None = None,
+        delay_ms: int = 260,
+    ) -> None:
+        target = str(scene_name or "").strip()
+        if not target:
+            return
+        expected_path = str(workflow_path or getattr(self, "_current_path", "") or "").strip()
+
+        def _apply() -> None:
+            try:
+                if expected_path:
+                    current = str(getattr(self, "_current_path", "") or "").strip()
+                    if current != expected_path:
+                        return
+            except Exception:
+                return
+            try:
+                self._restore_workflow_active_scene(target)
+            except Exception:
+                pass
+
+        try:
+            QtCore.QTimer.singleShot(max(0, int(delay_ms)), _apply)
+        except Exception:
+            _apply()
 
     def _reset_settings_to_defaults(self) -> None:
         try:
@@ -4972,6 +5083,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         if not isinstance(settings, dict):
             settings = {}
         workflow_panel_layout = self._workflow_panel_layout_from_settings(settings)
+        workflow_scene_restore = self._workflow_scene_restore_name_from_settings(settings)
         try:
             pan_base = float(settings.get("pan_base", getattr(self, "_pan_base", 0.01)))
         except Exception:
@@ -5080,6 +5192,14 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 )
         except Exception:
             pass
+        try:
+            self._restore_workflow_active_scene_deferred(
+                workflow_scene_restore,
+                workflow_path=path,
+                delay_ms=260,
+            )
+        except Exception:
+            pass
         self._remember_recent(path)
         self._update_window_title()
         try:
@@ -5126,6 +5246,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         try:
             data = self.scene.to_dict()
             self._inject_panel_layout_into_workflow_data(data)
+            self._inject_scene_restore_into_workflow_data(data)
             with open(self._current_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
             self._remember_recent(self._current_path)
@@ -5156,6 +5277,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         try:
             data = self.scene.to_dict()
             self._inject_panel_layout_into_workflow_data(data)
+            self._inject_scene_restore_into_workflow_data(data)
 
             # Optional: Append-aware preview block
             try:
