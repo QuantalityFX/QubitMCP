@@ -49,6 +49,24 @@ def _toggle_audio_panel(window, checked: bool) -> None:
             pass
 
 
+def _save_layout_preset(window) -> None:
+    ctl = _controller(window)
+    if ctl is not None:
+        try:
+            saver = getattr(ctl, "save_layout_preset_from_menu", None)
+            if callable(saver):
+                saver()
+                return
+        except Exception:
+            pass
+    saver = getattr(window, "_save_current_layout_as_global_preset", None)
+    if callable(saver):
+        try:
+            saver()
+        except Exception:
+            pass
+
+
 def _sync_timeline_menu_state(window) -> None:
     ctl = _controller(window)
     if ctl is not None:
@@ -118,6 +136,15 @@ def build_timeline_panels_menu(window, bar, layout) -> tuple[QtWidgets.QToolButt
     audio_toggle.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
     audio_toggle.clicked.connect(lambda checked=False: _toggle_audio_panel(window, bool(checked)))
     timeline_layout.addWidget(audio_toggle, 0)
+
+    save_layout_btn = QtWidgets.QPushButton("Save Layout", timeline_panel)
+    save_layout_btn.setToolTip("Save current panel visibility as the app default layout")
+    save_layout_btn.setFixedHeight(22)
+    save_layout_btn.setCursor(QtCore.Qt.PointingHandCursor)
+    save_layout_btn.setFlat(True)
+    save_layout_btn.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+    save_layout_btn.clicked.connect(lambda _=False: _save_layout_preset(window))
+    timeline_layout.addWidget(save_layout_btn, 0)
 
     timeline_action = QtWidgets.QWidgetAction(timeline_menu)
     timeline_action.setDefaultWidget(timeline_panel)

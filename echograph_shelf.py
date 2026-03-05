@@ -66,6 +66,8 @@ LLM_NODE_W, LLM_NODE_H = _llm_dims()
 # Recent file tracking
 _RECENT_GRAPHS_PATH = script_dir() / "recent_graphs.json"
 _RECENT_GRAPHS_LIMIT = 10
+_APP_SETTINGS_PATH = script_dir() / "app_settings.json"
+_DEFAULT_PANEL_LAYOUT_PRESET = {"timeline": False, "audio": False}
 
 def _load_recent_graphs() -> List[str]:
     try:
@@ -91,6 +93,67 @@ def _save_recent_graphs(paths: List[str]) -> None:
             json.dumps(list(paths), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+    except Exception:
+        pass
+
+
+def _coerce_bool(value, default: bool) -> bool:
+    if isinstance(value, bool):
+        return bool(value)
+    if isinstance(value, (int, float)):
+        return bool(int(value))
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "on", "y"}:
+            return True
+        if text in {"0", "false", "no", "off", "n"}:
+            return False
+    return bool(default)
+
+
+def _normalize_panel_layout_preset(value, fallback=None) -> Dict[str, bool]:
+    base = dict(_DEFAULT_PANEL_LAYOUT_PRESET)
+    if isinstance(fallback, dict):
+        if "timeline" in fallback:
+            base["timeline"] = _coerce_bool(fallback.get("timeline"), base["timeline"])
+        if "audio" in fallback:
+            base["audio"] = _coerce_bool(fallback.get("audio"), base["audio"])
+    if isinstance(value, dict):
+        if "timeline" in value:
+            base["timeline"] = _coerce_bool(value.get("timeline"), base["timeline"])
+        if "audio" in value:
+            base["audio"] = _coerce_bool(value.get("audio"), base["audio"])
+    if base["audio"] and not base["timeline"]:
+        base["timeline"] = True
+    if not base["timeline"]:
+        base["audio"] = False
+    return {"timeline": bool(base["timeline"]), "audio": bool(base["audio"])}
+
+
+def _load_app_settings() -> Dict[str, Any]:
+    raw = {}
+    try:
+        data = json.loads(_APP_SETTINGS_PATH.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            raw = data
+    except Exception:
+        raw = {}
+    panel_layout = _normalize_panel_layout_preset(raw.get("panel_layout"), _DEFAULT_PANEL_LAYOUT_PRESET)
+    save_layout = _coerce_bool(raw.get("save_layout"), True)
+    return {
+        "save_layout": bool(save_layout),
+        "panel_layout": panel_layout,
+    }
+
+
+def _save_app_settings(settings: Dict[str, Any]) -> None:
+    payload = {
+        "save_layout": _coerce_bool((settings or {}).get("save_layout"), True),
+        "panel_layout": _normalize_panel_layout_preset((settings or {}).get("panel_layout"), _DEFAULT_PANEL_LAYOUT_PRESET),
+    }
+    try:
+        _APP_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _APP_SETTINGS_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception:
         pass
 
@@ -2208,6 +2271,13 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._hotkey_shortcuts = {}
         self._update_window_title()
         self._timeline_controller = TimelineController(self)
+        self._suspend_panel_layout_persist = False
+        app_settings = _load_app_settings()
+        self._save_layout_enabled = _coerce_bool(app_settings.get("save_layout"), True)
+        self._panel_layout_master_preset = _normalize_panel_layout_preset(
+            app_settings.get("panel_layout"),
+            _DEFAULT_PANEL_LAYOUT_PRESET,
+        )
 
         central = QtWidgets.QWidget(self)
         v = QtWidgets.QVBoxLayout(central)
@@ -2275,6 +2345,14 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         try:
             self._timeline_controller.sync_timeline_context()
             self._timeline_controller.sync_timeline_menu_state()
+        except Exception:
+            pass
+        try:
+            if bool(getattr(self, "_save_layout_enabled", True)):
+                self._apply_panel_layout_preset(
+                    getattr(self, "_panel_layout_master_preset", None),
+                    persist_global=False,
+                )
         except Exception:
             pass
 
@@ -4027,6 +4105,13 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         grid.addWidget(splat_log_label, 7, 0, 1, 1, QtCore.Qt.AlignVCenter)
         grid.addWidget(self._splat_log_toggle, 7, 1, 1, 1, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
 
+        save_layout_label = QtWidgets.QLabel("Save Layout")
+        self._save_layout_toggle = QtWidgets.QCheckBox()
+        self._save_layout_toggle.setChecked(bool(getattr(self, "_save_layout_enabled", True)))
+        self._save_layout_toggle.toggled.connect(self._on_save_layout_toggled)
+        grid.addWidget(save_layout_label, 8, 0, 1, 1, QtCore.Qt.AlignVCenter)
+        grid.addWidget(self._save_layout_toggle, 8, 1, 1, 1, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+
         panel_action = QtWidgets.QWidgetAction(settings_menu)
         panel_action.setDefaultWidget(panel)
         settings_menu.addAction(panel_action)
@@ -4233,6 +4318,136 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         except Exception:
             return str(script_dir())
 
+    def _current_panel_layout_preset(self) -> Dict[str, bool]:
+        timeline_on = False
+        audio_on = False
+        ctl = getattr(self, "_timeline_controller", None)
+        if ctl is not None:
+            try:
+                timeline_on = bool(ctl.timeline_panel_enabled())
+            except Exception:
+                timeline_on = False
+            try:
+                audio_on = bool(ctl.audio_panel_enabled())
+            except Exception:
+                audio_on = False
+        preset = _normalize_panel_layout_preset(
+            {"timeline": timeline_on, "audio": audio_on},
+            _DEFAULT_PANEL_LAYOUT_PRESET,
+        )
+        return dict(preset)
+
+    def _persist_app_layout_settings(self) -> None:
+        payload = {
+            "save_layout": bool(getattr(self, "_save_layout_enabled", True)),
+            "panel_layout": _normalize_panel_layout_preset(
+                getattr(self, "_panel_layout_master_preset", None),
+                _DEFAULT_PANEL_LAYOUT_PRESET,
+            ),
+        }
+        _save_app_settings(payload)
+
+    def _on_panel_layout_changed(self) -> None:
+        if bool(getattr(self, "_suspend_panel_layout_persist", False)):
+            return
+        current = self._current_panel_layout_preset()
+        if bool(getattr(self, "_save_layout_enabled", True)):
+            self._panel_layout_master_preset = dict(current)
+        self._persist_app_layout_settings()
+
+    def _on_save_layout_toggled(self, checked: bool) -> None:
+        self._save_layout_enabled = bool(checked)
+        if self._save_layout_enabled:
+            self._panel_layout_master_preset = self._current_panel_layout_preset()
+        self._persist_app_layout_settings()
+
+    def _save_current_layout_as_global_preset(self) -> None:
+        self._panel_layout_master_preset = self._current_panel_layout_preset()
+        self._save_layout_enabled = True
+        if hasattr(self, "_save_layout_toggle"):
+            try:
+                self._save_layout_toggle.blockSignals(True)
+                self._save_layout_toggle.setChecked(True)
+                self._save_layout_toggle.blockSignals(False)
+            except Exception:
+                pass
+        self._persist_app_layout_settings()
+        try:
+            QtWidgets.QToolTip.showText(
+                QtGui.QCursor.pos(),
+                "Saved layout preset",
+                self,
+                self.rect(),
+                1200,
+            )
+        except Exception:
+            pass
+
+    def _apply_panel_layout_preset(self, preset, *, persist_global: bool = False) -> None:
+        normalized = _normalize_panel_layout_preset(
+            preset,
+            self._current_panel_layout_preset(),
+        )
+        self._suspend_panel_layout_persist = True
+        try:
+            ctl = getattr(self, "_timeline_controller", None)
+            if bool(normalized.get("timeline")) and str(getattr(self, "_view_mode", "2d")).lower() == "2d":
+                try:
+                    self._set_view_mode("split")
+                except Exception:
+                    pass
+            if ctl is not None:
+                try:
+                    ctl.sync_timeline_context()
+                except Exception:
+                    pass
+            gv = getattr(self, "gl_view", None)
+            if gv is not None:
+                try:
+                    set_timeline_visible = getattr(gv, "set_timeline_visible", None)
+                    if callable(set_timeline_visible):
+                        set_timeline_visible(bool(normalized.get("timeline")))
+                except Exception:
+                    pass
+                try:
+                    set_audio_visible = getattr(gv, "set_timeline_audio_visible", None)
+                    if callable(set_audio_visible):
+                        set_audio_visible(bool(normalized.get("audio")))
+                except Exception:
+                    pass
+            if ctl is not None:
+                try:
+                    ctl.sync_timeline_menu_state()
+                except Exception:
+                    pass
+        finally:
+            self._suspend_panel_layout_persist = False
+
+        if persist_global and bool(getattr(self, "_save_layout_enabled", True)):
+            self._panel_layout_master_preset = dict(normalized)
+            self._persist_app_layout_settings()
+
+    @staticmethod
+    def _workflow_panel_layout_from_settings(settings) -> Dict[str, bool] | None:
+        if not isinstance(settings, dict):
+            return None
+        raw = settings.get("panel_layout", None)
+        if not isinstance(raw, dict):
+            return None
+        if "timeline" not in raw and "audio" not in raw:
+            return None
+        return _normalize_panel_layout_preset(raw, _DEFAULT_PANEL_LAYOUT_PRESET)
+
+    def _inject_panel_layout_into_workflow_data(self, data: Dict[str, Any]) -> None:
+        if not isinstance(data, dict):
+            return
+        settings = data.get("settings", None)
+        if not isinstance(settings, dict):
+            settings = {}
+        settings = dict(settings)
+        settings["panel_layout"] = self._current_panel_layout_preset()
+        data["settings"] = settings
+
     def _reset_settings_to_defaults(self) -> None:
         try:
             default_llm = float(LLM_SCALE_DEFAULT)
@@ -4261,6 +4476,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._gizmo_zoom_scale = 0.02
         self._fly_speed_mult = 1.0
         self._splat_log_enabled = False
+        self._save_layout_enabled = True
         if hasattr(self, "_pan_base_slider"):
             try:
                 self._pan_base_slider.blockSignals(True)
@@ -4303,6 +4519,13 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 self._splat_log_toggle.blockSignals(False)
             except Exception:
                 pass
+        if hasattr(self, "_save_layout_toggle"):
+            try:
+                self._save_layout_toggle.blockSignals(True)
+                self._save_layout_toggle.setChecked(bool(self._save_layout_enabled))
+                self._save_layout_toggle.blockSignals(False)
+            except Exception:
+                pass
         if hasattr(self, "_pan_base_value_lbl"):
             try:
                 self._pan_base_value_lbl.setText(f"{self._pan_base:.3f}")
@@ -4330,6 +4553,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 pass
         self._apply_pan_settings_to_gl_view()
         self._apply_wireframe_color(self._default_wireframe_color(), sync_scene=True)
+        self._persist_app_layout_settings()
 
     def _apply_pan_settings_to_gl_view(self) -> None:
         gv = getattr(self, "gl_view", None)
@@ -4745,6 +4969,9 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 self._llm_value_lbl.setText(f"{int(round(s*100))}%")
             self._llm_slider.blockSignals(False)
         settings = data.get("settings", {}) if isinstance(data, dict) else {}
+        if not isinstance(settings, dict):
+            settings = {}
+        workflow_panel_layout = self._workflow_panel_layout_from_settings(settings)
         try:
             pan_base = float(settings.get("pan_base", getattr(self, "_pan_base", 0.01)))
         except Exception:
@@ -4843,10 +5070,21 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         post_ms = (time.perf_counter() - t_post) * 1000.0
 
         self._current_path = path
+        try:
+            if workflow_panel_layout is not None:
+                self._apply_panel_layout_preset(workflow_panel_layout, persist_global=False)
+            elif bool(getattr(self, "_save_layout_enabled", True)):
+                self._apply_panel_layout_preset(
+                    getattr(self, "_panel_layout_master_preset", None),
+                    persist_global=False,
+                )
+        except Exception:
+            pass
         self._remember_recent(path)
         self._update_window_title()
         try:
             self._timeline_controller.sync_timeline_context()
+            self._timeline_controller.sync_timeline_menu_state()
         except Exception:
             pass
         t_frame = time.perf_counter()
@@ -4887,6 +5125,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             return self._export_graph()
         try:
             data = self.scene.to_dict()
+            self._inject_panel_layout_into_workflow_data(data)
             with open(self._current_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
             self._remember_recent(self._current_path)
@@ -4916,6 +5155,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             return
         try:
             data = self.scene.to_dict()
+            self._inject_panel_layout_into_workflow_data(data)
 
             # Optional: Append-aware preview block
             try:

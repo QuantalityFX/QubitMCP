@@ -64,6 +64,36 @@ class TimelineController:
         win = self._win()
         return getattr(win, "gl_view", None)
 
+    def _notify_panel_layout_changed(self) -> None:
+        win = self._win()
+        hook = getattr(win, "_on_panel_layout_changed", None)
+        if callable(hook):
+            try:
+                hook()
+            except Exception:
+                pass
+
+    def save_layout_preset_from_menu(self) -> None:
+        win = self._win()
+        saver = getattr(win, "_save_current_layout_as_global_preset", None)
+        if callable(saver):
+            try:
+                saver()
+            except Exception:
+                pass
+        self.sync_timeline_menu_state()
+        try:
+            self._close_menu()
+        except Exception:
+            pass
+        try:
+            QtCore.QTimer.singleShot(0, win._reset_ui_cursor_arrow)
+        except Exception:
+            try:
+                win._reset_ui_cursor_arrow()
+            except Exception:
+                pass
+
     def timeline_panel_enabled(self) -> bool:
         gv = self._gl_view()
         if gv is None:
@@ -212,6 +242,7 @@ class TimelineController:
                 except Exception:
                     pass
         self.sync_timeline_menu_state()
+        self._notify_panel_layout_changed()
         try:
             self._close_menu()
         except Exception:
@@ -249,6 +280,7 @@ class TimelineController:
             except Exception:
                 pass
         self.sync_timeline_menu_state()
+        self._notify_panel_layout_changed()
         try:
             self._close_menu()
         except Exception:
