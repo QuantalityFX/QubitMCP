@@ -2178,6 +2178,26 @@ class GraphGLTimelineWidgetsMixin:
             except Exception:
                 pass
 
+    def _timeline_audio_mute_icons(self):
+        icon_on = getattr(self, "_timeline_audio_icon_sound_on", None)
+        icon_off = getattr(self, "_timeline_audio_icon_sound_off", None)
+        if icon_on is None or icon_off is None:
+            icon_on = QtGui.QIcon()
+            icon_off = QtGui.QIcon()
+            try:
+                root = Path(__file__).resolve().parents[2]
+                on_path = root / "icons" / "Sound_On_Icon.png"
+                off_path = root / "icons" / "Sound_Off_Icon.png"
+                if on_path.exists():
+                    icon_on = QtGui.QIcon(str(on_path))
+                if off_path.exists():
+                    icon_off = QtGui.QIcon(str(off_path))
+            except Exception:
+                pass
+            self._timeline_audio_icon_sound_on = icon_on
+            self._timeline_audio_icon_sound_off = icon_off
+        return icon_on, icon_off
+
     def _timeline_audio_update_mute_button(self) -> None:
         btn = getattr(self, "_timeline_audio_mute_btn", None)
         if btn is None:
@@ -2185,10 +2205,19 @@ class GraphGLTimelineWidgetsMixin:
         muted = bool(getattr(self, "_timeline_audio_muted", False))
         text = "Unmute" if muted else "Mute"
         tooltip = "Unmute audio playback" if muted else "Mute audio playback"
+        icon_on, icon_off = self._timeline_audio_mute_icons()
+        icon = icon_off if muted else icon_on
+        use_icon = bool(isinstance(icon, QtGui.QIcon) and (not icon.isNull()))
         try:
             btn.blockSignals(True)
             btn.setChecked(muted)
-            btn.setText(text)
+            if use_icon:
+                btn.setIcon(icon)
+                btn.setIconSize(QtCore.QSize(14, 14))
+                btn.setText("")
+            else:
+                btn.setIcon(QtGui.QIcon())
+                btn.setText(text)
             btn.setToolTip(tooltip)
         except Exception:
             pass
@@ -2527,7 +2556,8 @@ class GraphGLTimelineWidgetsMixin:
                 "#GLTimelineAudioPanel QLabel{color:#e2e8f0;font-size:11px;}",
                 "#GLTimelineAudioPanel QPushButton{padding:2px 8px;font-weight:600;color:#e2e8f0;background:#1f2937;border-radius:4px;}",
                 "#GLTimelineAudioPanel QPushButton:hover{background:#334155;}",
-                "#GLTimelineAudioPanel QPushButton:checked{background:#14532d;}",
+                "#GLTimelineAudioPanel QPushButton:checked{background:#0f172a;}",
+                "#GLTimelineAudioPanel QPushButton:checked:hover{background:#111827;}",
                 "#GLTimelineAudioPanel QLabel#GLTimelineAudioStatus{color:#94a3b8;font-size:10px;}",
             ))
         )
@@ -2552,8 +2582,9 @@ class GraphGLTimelineWidgetsMixin:
         clear_btn.clicked.connect(self._timeline_audio_on_clear_clicked)
         row.addWidget(clear_btn, 0)
 
-        mute_btn = QtWidgets.QPushButton("Mute", panel)
+        mute_btn = QtWidgets.QPushButton("", panel)
         mute_btn.setFixedHeight(22)
+        mute_btn.setMinimumWidth(30)
         mute_btn.setCheckable(True)
         mute_btn.toggled.connect(self._timeline_audio_on_mute_toggled)
         row.addWidget(mute_btn, 0)
