@@ -1047,7 +1047,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             lock_btn = getattr(self, "_cam_select_lock_btn", None)
             lock_w = int(ctrl_h) if lock_btn is not None else 0
             gap = 2 if lock_w > 0 else 0
-            combo_w = int(max(64, round(base_w * 0.5)))
+            combo_w = int(max(128, round(base_w * 0.65)))
             frame_w = int(combo_w + lock_w + gap + 4)
             combo_x = max(self._side_btn_margin, self.width() - self._side_btn_margin - frame_w)
             combo_y = self._side_btn_margin
@@ -2452,7 +2452,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             frame.setAttribute(QtCore.Qt.WA_StyledBackground, True)
             frame.setStyleSheet(
                 "QFrame#GLCamSelectFrame{background:rgba(85,91,97,95);border:1px solid rgba(15,20,24,123);border-radius:4px;}"
-                "QComboBox{background:rgba(15,18,22,104);color:#e2e8f0;border:1px solid rgba(15,20,24,123);border-radius:3px;padding:2px 6px;}"
+                "QComboBox{background:rgba(15,18,22,104);color:#e2e8f0;border:1px solid rgba(15,20,24,123);border-radius:3px;padding:2px 18px 2px 6px;}"
                 "QComboBox::drop-down{border:none;width:16px;}"
                 "QComboBox QAbstractItemView{background:rgba(15,18,22,180);color:#e6edf3;border:1px solid rgba(60,68,80,200);outline:0px;}"
                 "QComboBox QAbstractItemView::item:hover{background:rgba(31,41,55,200);}"

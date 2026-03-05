@@ -478,6 +478,7 @@ class GraphGLTimelineIOMixin:
                 else None
             ),
             "loop_enabled": bool(getattr(self, "_timeline_loop_enabled", True)),
+            "material_live_mode": bool(getattr(self, "_timeline_material_live_mode", True)),
             "fx_instances_enabled": bool(getattr(self, "_timeline_fx_instances_enabled", True)),
             "fx_proxy_enabled": bool(getattr(self, "_timeline_fx_proxy_enabled", True)),
             "keys": keys_out,
@@ -492,15 +493,20 @@ class GraphGLTimelineIOMixin:
         path = getattr(self, "_timeline_anim_path", None)
         self._timeline_keys = {}
         self._timeline_curve_selected = set()
+        material_live_mode = True
         fx_instances_enabled = True
         fx_proxy_enabled = True
         if path is None or not path.exists():
             try:
-                self._timeline_set_fx_instances_enabled(bool(fx_instances_enabled))
+                self._timeline_set_material_live_mode(bool(material_live_mode), save=False)
+            except Exception:
+                self._timeline_material_live_mode = bool(material_live_mode)
+            try:
+                self._timeline_set_fx_instances_enabled(bool(fx_instances_enabled), save=False)
             except Exception:
                 self._timeline_fx_instances_enabled = bool(fx_instances_enabled)
             try:
-                self._timeline_set_fx_proxy_enabled(bool(fx_proxy_enabled))
+                self._timeline_set_fx_proxy_enabled(bool(fx_proxy_enabled), save=False)
             except Exception:
                 self._timeline_fx_proxy_enabled = bool(fx_proxy_enabled)
             self._timeline_total_max = max(240, int(self._timeline_current_frame()))
@@ -537,6 +543,10 @@ class GraphGLTimelineIOMixin:
             if txt in {"1", "true", "on", "yes"}:
                 return True
             return bool(default)
+        material_live_mode = _bool_value(
+            raw.get("material_live_mode", raw.get("material_live_enabled", True)),
+            default=True,
+        )
         fx_instances_enabled = _bool_value(raw.get("fx_instances_enabled", True), default=True)
         fx_proxy_enabled = _bool_value(raw.get("fx_proxy_enabled", True), default=True)
         try:
@@ -546,11 +556,15 @@ class GraphGLTimelineIOMixin:
         except Exception:
             self._timeline_fps = 24.0
         try:
-            self._timeline_set_fx_instances_enabled(bool(fx_instances_enabled))
+            self._timeline_set_material_live_mode(bool(material_live_mode), save=False)
+        except Exception:
+            self._timeline_material_live_mode = bool(material_live_mode)
+        try:
+            self._timeline_set_fx_instances_enabled(bool(fx_instances_enabled), save=False)
         except Exception:
             self._timeline_fx_instances_enabled = bool(fx_instances_enabled)
         try:
-            self._timeline_set_fx_proxy_enabled(bool(fx_proxy_enabled))
+            self._timeline_set_fx_proxy_enabled(bool(fx_proxy_enabled), save=False)
         except Exception:
             self._timeline_fx_proxy_enabled = bool(fx_proxy_enabled)
         rows = raw.get("keys", []) or []

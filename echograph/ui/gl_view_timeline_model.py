@@ -2440,8 +2440,15 @@ class GraphGLTimelineModelMixin:
         self._timeline_material_last_frame = int(frame)
         return (max(0.0, float(step)), max(0.0, float(proc_time)))
 
-    def _timeline_set_material_live_mode(self, enabled: bool, *, sync_button: bool = True) -> None:
+    def _timeline_set_material_live_mode(
+        self,
+        enabled: bool,
+        *,
+        sync_button: bool = True,
+        save: bool = True,
+    ) -> None:
         live = bool(enabled)
+        prev_live = bool(getattr(self, "_timeline_material_live_mode", True))
         self._timeline_material_live_mode = live
         try:
             self._timeline_material_last_frame = None
@@ -2464,6 +2471,11 @@ class GraphGLTimelineModelMixin:
             self.update()
         except Exception:
             pass
+        if save and (live != prev_live):
+            try:
+                self._timeline_save_to_disk()
+            except Exception:
+                pass
 
     def _timeline_on_material_live_toggled(self, checked: bool) -> None:
         self._timeline_set_material_live_mode(bool(checked), sync_button=False)
@@ -2480,8 +2492,15 @@ class GraphGLTimelineModelMixin:
         except Exception:
             return True
 
-    def _timeline_set_fx_instances_enabled(self, enabled: bool, *, sync_button: bool = True) -> None:
+    def _timeline_set_fx_instances_enabled(
+        self,
+        enabled: bool,
+        *,
+        sync_button: bool = True,
+        save: bool = True,
+    ) -> None:
         allow_instances = bool(enabled)
+        prev_allow_instances = bool(getattr(self, "_timeline_fx_instances_enabled", True))
         self._timeline_fx_instances_enabled = allow_instances
         btn = getattr(self, "_timeline_fx_instances_btn", None)
         if sync_button and btn is not None:
@@ -2500,14 +2519,26 @@ class GraphGLTimelineModelMixin:
             self.update()
         except Exception:
             pass
+        if save and (allow_instances != prev_allow_instances):
+            try:
+                self._timeline_save_to_disk()
+            except Exception:
+                pass
 
-    def _timeline_set_fx_proxy_enabled(self, enabled: bool) -> None:
-        self._timeline_fx_proxy_enabled = bool(enabled)
+    def _timeline_set_fx_proxy_enabled(self, enabled: bool, *, save: bool = True) -> None:
+        proxy_enabled = bool(enabled)
+        prev_proxy_enabled = bool(getattr(self, "_timeline_fx_proxy_enabled", True))
+        self._timeline_fx_proxy_enabled = proxy_enabled
         self._update_timeline_fx_instances_button()
         try:
             self.update()
         except Exception:
             pass
+        if save and (proxy_enabled != prev_proxy_enabled):
+            try:
+                self._timeline_save_to_disk()
+            except Exception:
+                pass
 
     def _timeline_on_fx_instances_toggled(self, checked: bool) -> None:
         self._timeline_set_fx_instances_enabled(bool(checked), sync_button=False)
