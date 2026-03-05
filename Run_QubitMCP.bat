@@ -3,18 +3,28 @@ setlocal
 set "SCRIPT_DIR=%~dp0"
 set "VENV_DIR=%SCRIPT_DIR%.venv"
 set "PYTHONW=%VENV_DIR%\Scripts\pythonw.exe"
+set "SETUP_BAT=%SCRIPT_DIR%setup.bat"
 
-REM --- Create venv if missing
+REM --- Ensure core app env exists (delegates install logic to setup.bat)
 if not exist "%PYTHONW%" (
-  echo [setup] Creating venv...
-  py -3 -m venv "%VENV_DIR%" || (echo Failed to create venv. Ensure the Python launcher 'py' is installed. & pause & exit /b 1)
-  call "%VENV_DIR%\Scripts\activate.bat"
-  python -m pip install --upgrade pip setuptools wheel
-  if exist "%SCRIPT_DIR%requirements.txt" (
-    pip install -r "%SCRIPT_DIR%requirements.txt"
-  ) else (
-    pip install PySide6
+  if not exist "%SETUP_BAT%" (
+    echo [setup] Missing setup.bat at "%SETUP_BAT%"
+    pause
+    exit /b 1
   )
+  echo [setup] Core environment missing. Running setup.bat core...
+  call "%SETUP_BAT%" core
+  if errorlevel 1 (
+    echo [setup] setup.bat core failed.
+    pause
+    exit /b 1
+  )
+)
+
+if not exist "%PYTHONW%" (
+  echo [setup] Missing venv launcher after setup: "%PYTHONW%"
+  pause
+  exit /b 1
 )
 
 REM --- Launch (force working dir to script folder so relative paths/icons work)

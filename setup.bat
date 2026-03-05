@@ -14,9 +14,25 @@ set "BASE_PY_EXE="
 set "BASE_PY_ARG="
 set "BASE_PY_MM="
 set "PIP_DISABLE_PIP_VERSION_CHECK=1"
+set "SETUP_MODE=%~1"
+
+if not defined SETUP_MODE set "SETUP_MODE=full"
+if /I "%SETUP_MODE%"=="--core" set "SETUP_MODE=core"
+if /I "%SETUP_MODE%"=="--full" set "SETUP_MODE=full"
+if /I "%SETUP_MODE%"=="/core" set "SETUP_MODE=core"
+if /I "%SETUP_MODE%"=="/full" set "SETUP_MODE=full"
+if /I "%SETUP_MODE%"=="help" goto :usage
+if /I "%SETUP_MODE%"=="--help" goto :usage
+if /I "%SETUP_MODE%"=="/?" goto :usage
+
+if /I not "%SETUP_MODE%"=="core" if /I not "%SETUP_MODE%"=="full" (
+  echo [setup] ERROR: Unknown mode "%SETUP_MODE%".
+  goto :usage_fail
+)
 
 echo [setup] ==== START %DATE% %TIME% ==== > "%LOG%"
 echo [setup] Repo: %CD% >> "%LOG%"
+echo [setup] Mode: %SETUP_MODE% >> "%LOG%"
 
 if exist "%LOCALAPPDATA%\Programs\Python\Python310\python.exe" (
   set "BASE_PY_EXE=%LOCALAPPDATA%\Programs\Python\Python310\python.exe"
@@ -92,11 +108,16 @@ echo [setup] Base Python version: %BASE_PY_MM% >> "%LOG%"
 call :ensure_venv ".venv" "root" || goto :fail
 call :install_requirements ".venv\Scripts\python.exe" "%MAIN_REQ%" "root requirements" || goto :fail
 
-call :ensure_venv "nodes\librarian\.venv" "librarian" || goto :fail
-call :install_requirements "nodes\librarian\.venv\Scripts\python.exe" "%LIB_REQ%" "librarian requirements" || goto :fail
+if /I "%SETUP_MODE%"=="full" (
+  call :ensure_venv "nodes\librarian\.venv" "librarian" || goto :fail
+  call :install_requirements "nodes\librarian\.venv\Scripts\python.exe" "%LIB_REQ%" "librarian requirements" || goto :fail
+) else (
+  echo [setup] Skipping librarian setup (mode=%SETUP_MODE%).
+  echo [setup] Skipping librarian setup (mode=%SETUP_MODE%). >> "%LOG%"
+)
 
-echo [setup] SUCCESS
-echo [setup] SUCCESS >> "%LOG%"
+echo [setup] SUCCESS (%SETUP_MODE%)
+echo [setup] SUCCESS (%SETUP_MODE%) >> "%LOG%"
 echo [setup] Log: %LOG%
 popd
 exit /b 0
@@ -204,5 +225,19 @@ exit /b 0
 echo [setup] FAILED. See %LOG%
 echo [setup] FAILED. See %LOG% >> "%LOG%"
 type "%LOG%"
+popd
+exit /b 1
+
+:usage
+echo Usage: setup.bat [core^|full]
+echo   core = setup root app env only
+echo   full = setup root + librarian envs (default)
+popd
+exit /b 0
+
+:usage_fail
+echo Usage: setup.bat [core^|full]
+echo   core = setup root app env only
+echo   full = setup root + librarian envs (default)
 popd
 exit /b 1
