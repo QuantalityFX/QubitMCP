@@ -186,17 +186,21 @@ class GraphView(QtWidgets.QGraphicsView):
                         current_local = current.mapFrom(widget, widget_pos)
                     except Exception:
                         current_local = widget_pos
-                wants_handler = getattr(current, "_wants_graph_view_short_right_click_local", None)
-                if callable(wants_handler):
+                wants_handler_local = getattr(current, "_wants_graph_view_short_right_click_local", None)
+                if callable(wants_handler_local):
                     try:
-                        if bool(wants_handler(current_local)):
+                        if bool(wants_handler_local(current_local)):
                             return True
                     except Exception:
                         pass
-                elif callable(getattr(current, "_handle_graph_view_short_right_click_local", None)):
-                    return True
-                if callable(getattr(current, "_handle_graph_view_short_right_click", None)):
-                    return True
+                wants_handler_global = getattr(current, "_wants_graph_view_short_right_click", None)
+                if callable(wants_handler_global):
+                    try:
+                        global_pos = self.viewport().mapToGlobal(viewport_pos)
+                        if bool(wants_handler_global(global_pos)):
+                            return True
+                    except Exception:
+                        pass
                 try:
                     current = current.parentWidget()
                 except Exception:
