@@ -3723,11 +3723,20 @@ class NodeItem(QtWidgets.QGraphicsObject):
         return assets
 
     def _open_scene_assets(self) -> None:
+        parent = _top_level_parent_for_dialog()
+        if parent is None:
+            try:
+                parent = self.window()
+            except Exception:
+                parent = None
+        suppress_dialogs = bool(getattr(parent, "_workflow_load_in_progress", False)) if parent is not None else False
+
         assets = self._collect_scene_assets()
         if not assets:
-            QtWidgets.QMessageBox.information(
-                _top_level_parent_for_dialog(), "Scene", "No 3D assets connected."
-            )
+            if not bool(suppress_dialogs):
+                QtWidgets.QMessageBox.information(
+                    _top_level_parent_for_dialog(), "Scene", "No 3D assets connected."
+                )
             return
 
         # Ensure splats start visible on open (avoid auto-hidden splats)
@@ -3755,18 +3764,19 @@ class NodeItem(QtWidgets.QGraphicsObject):
         except Exception:
             pass
 
-        parent = _top_level_parent_for_dialog()
         if parent is None:
-            QtWidgets.QMessageBox.warning(
-                _top_level_parent_for_dialog(), "Scene", "3D view is not available."
-            )
+            if not bool(suppress_dialogs):
+                QtWidgets.QMessageBox.warning(
+                    _top_level_parent_for_dialog(), "Scene", "3D view is not available."
+                )
             return
 
         handler = getattr(parent, "open_scene_assets", None)
         if not callable(handler):
-            QtWidgets.QMessageBox.warning(
-                _top_level_parent_for_dialog(), "Scene", "3D view is not available."
-            )
+            if not bool(suppress_dialogs):
+                QtWidgets.QMessageBox.warning(
+                    _top_level_parent_for_dialog(), "Scene", "3D view is not available."
+                )
             return
 
         try:

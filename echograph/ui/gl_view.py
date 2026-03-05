@@ -835,6 +835,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._timeline_curves_mode = False
         self._timeline_material_live_mode = True
         self._timeline_fx_instances_enabled = True
+        self._timeline_fx_proxy_enabled = True
         self._timeline_material_last_frame = None
         self._timeline_material_fps_override = 0.0
         self._timeline_curve_min = -5.0

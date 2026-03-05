@@ -2269,6 +2269,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._bigedit_registry = {}
         self._recent_files = _load_recent_graphs()
         self._hotkey_shortcuts = {}
+        self._workflow_load_in_progress = False
         self._update_window_title()
         self._timeline_controller = TimelineController(self)
         self._suspend_panel_layout_persist = False
@@ -3225,7 +3226,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         except Exception:
             print("[open_3d_model] loader error:\n" + traceback.format_exc(), flush=True)
 
-    def open_scene_assets(self, assets, frame: bool = True) -> None:
+    def open_scene_assets(self, assets, frame: bool = True) -> bool:
         import traceback
         import time
 
@@ -3266,7 +3267,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         if not assets:
             _scene_log("open_scene_assets: no assets")
             print("[open_scene_assets] no assets", flush=True)
-            return
+            return False
 
         # Ensure outliner selection/gizmo start cleared on scene open
         try:
@@ -3404,7 +3405,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         if not clean:
             _scene_log("open_scene_assets: no valid scene assets")
             print("[open_scene_assets] no valid scene assets", flush=True)
-            return
+            return False
         _scene_log(f"open_scene_assets: clean_count={len(clean)}")
 
         # Debounce duplicate loads (prevents repeated reload loops)
@@ -3459,7 +3460,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             last_sig = getattr(self, "_scene_assets_sig", None)
             last_ts = float(getattr(self, "_scene_assets_ts", 0.0) or 0.0)
             if sig == last_sig and (now - last_ts) < 0.5:
-                return
+                return True
             self._scene_assets_sig = sig
             self._scene_assets_ts = now
         except Exception:
@@ -3474,7 +3475,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         gl_view = getattr(self, "gl_view", None)
         if gl_view is None:
             print("[open_scene_assets] gl_view is None", flush=True)
-            return
+            return False
         try:
             self._timeline_controller.sync_timeline_context()
         except Exception:
@@ -3500,7 +3501,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             try:
                 _scene_log(f"open_scene_assets: load_scene_assets count={len(clean)} frame={frame}")
                 loader(clean, frame=frame)
-                return
+                return True
             except Exception:
                 print("[open_scene_assets] loader error:\n" + traceback.format_exc(), flush=True)
 
@@ -3508,13 +3509,15 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         first = next((e for e in clean if (e.get("path") or "").strip()), None)
         if first is None:
             _scene_log("open_scene_assets: no fallback path-backed asset")
-            return
+            return False
         try:
             gl_view.load_model_path(first["path"], first.get("texture"), frame=frame)
             if frame and hasattr(gl_view, "_on_frame_clicked"):
                 gl_view._on_frame_clicked()
+            return True
         except Exception:
             print("[open_scene_assets] fallback failed:\n" + traceback.format_exc(), flush=True)
+        return False
 
     def set_scene_asset_visible(self, owner: str, visible: bool) -> None:
         gl_view = getattr(self, "gl_view", None)
@@ -4504,30 +4507,153 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             settings.pop("active_scene_node", None)
         data["settings"] = settings
 
-    def _restore_workflow_active_scene(self, scene_name: str | None) -> None:
+    def _restore_workflow_active_scene(self, scene_name: str | None) -> bool:
         target = str(scene_name or "").strip()
         if not target:
-            return
+            return False
+        target_norm = target.lower()
         sc = getattr(self, "scene", None)
         node_items = getattr(sc, "_node_items", None)
         if not isinstance(node_items, dict):
-            return
+            return False
         item = node_items.get(target)
         if not isinstance(item, NodeItem):
-            return
+            try:
+                for name, cand in list(node_items.items()):
+                    if not isinstance(cand, NodeItem):
+                        continue
+                    if str(name or "").strip().lower() == target_norm:
+                        item = cand
+                        break
+            except Exception:
+                item = None
+        if not isinstance(item, NodeItem):
+            scene_nodes = []
+            try:
+                for cand in list(node_items.values()):
+                    if not isinstance(cand, NodeItem):
+                        continue
+                    kind_c = (getattr(getattr(cand, "model", None), "kind", "") or "").strip().lower()
+                    if kind_c in {"scene", "scene_assembly", "scene_outliner"}:
+                        scene_nodes.append(cand)
+            except Exception:
+                scene_nodes = []
+            if len(scene_nodes) == 1:
+                item = scene_nodes[0]
+        if not isinstance(item, NodeItem):
+            return False
         kind = (getattr(getattr(item, "model", None), "kind", "") or "").strip().lower()
         if kind not in {"scene", "scene_assembly", "scene_outliner"}:
-            return
+            return False
+        assets = []
         try:
             collect = getattr(item, "_collect_scene_assets", None)
-            if callable(collect) and not (collect() or []):
-                return
+            if callable(collect):
+                assets = list(collect() or [])
+        except Exception:
+            assets = []
+        if not assets:
+            return False
+        try:
+            if str(getattr(self, "_view_mode", "2d") or "").strip().lower() == "2d":
+                self._set_view_mode("split")
+        except Exception:
+            pass
+        glv = getattr(self, "gl_view", None)
+        if glv is None:
+            return False
+        try:
+            if bool(getattr(glv, "_use_moderngl", False)):
+                if getattr(glv, "_mgl_ctx", None) is None:
+                    return False
+                if getattr(glv, "_mgl_scene", None) is None:
+                    return False
         except Exception:
             pass
         try:
-            item._open_scene_assets()
+            self._active_scene_node = getattr(item, "model", None)
         except Exception:
             pass
+        loaded = False
+        try:
+            loaded = bool(self.open_scene_assets(assets, frame=True))
+        except Exception:
+            loaded = False
+        if not loaded:
+            return False
+        try:
+            err = str(getattr(glv, "_mgl_error", "") or "").strip().lower()
+            if "context not ready" in err or "scene assembly not ready" in err:
+                return False
+        except Exception:
+            pass
+        try:
+            glv = getattr(self, "gl_view", None)
+            if glv is not None:
+                raw = ""
+                getter = getattr(item, "_param_value", None)
+                if callable(getter):
+                    raw = str(getter("splat_depth_test") or "").strip()
+                glv._mgl_splat_depth_test = raw
+        except Exception:
+            pass
+        try:
+            getter = getattr(item, "_param_value", None)
+            thumb_base = str(getter("thumbnail") or "").strip() if callable(getter) else ""
+            if thumb_base:
+                base_path = Path(thumb_base).expanduser()
+                if not base_path.is_absolute():
+                    try:
+                        cur = str(getattr(self, "_current_path", "") or "").strip()
+                        if cur:
+                            base_path = (Path(cur).expanduser().resolve().parent / base_path).resolve()
+                    except Exception:
+                        pass
+                folder = base_path.parent
+                sel = str(getattr(item, "_scene_selected_snapshot", "") or "").strip()
+                if not sel and callable(getter):
+                    sel = str(getter("thumbnail_choice") or "").strip()
+                snap_png = base_path
+                if sel:
+                    try:
+                        sel_path = Path(sel).expanduser()
+                        snap_png = sel_path if sel_path.is_absolute() else (folder / sel_path)
+                    except Exception:
+                        snap_png = folder / sel
+                if not snap_png.exists():
+                    snap_png = base_path
+                cam_path = snap_png.with_suffix(".json")
+                if cam_path.exists():
+                    with open(cam_path, "r", encoding="utf-8") as f:
+                        cam = json.load(f)
+                    glv = getattr(self, "gl_view", None)
+
+                    def _apply_cam() -> None:
+                        try:
+                            if glv is None:
+                                return
+                            if hasattr(glv, "_mgl_queue_camera_state"):
+                                glv._mgl_queue_camera_state(cam)
+                            elif hasattr(glv, "_mgl_apply_camera_state"):
+                                glv._mgl_apply_camera_state(cam)
+                        except Exception:
+                            pass
+
+                    QtCore.QTimer.singleShot(0, _apply_cam)
+                    QtCore.QTimer.singleShot(250, _apply_cam)
+                    QtCore.QTimer.singleShot(900, _apply_cam)
+                    QtCore.QTimer.singleShot(1500, _apply_cam)
+                    QtCore.QTimer.singleShot(2400, _apply_cam)
+        except Exception:
+            pass
+        try:
+            if sc is not None:
+                sc.clearSelection()
+            item.setSelected(True)
+            item.clicked.emit(item.model)
+        except Exception:
+            pass
+        return True
 
     def _restore_workflow_active_scene_deferred(
         self,
@@ -4535,11 +4661,13 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         *,
         workflow_path: str | None = None,
         delay_ms: int = 260,
+        max_attempts: int = 24,
     ) -> None:
         target = str(scene_name or "").strip()
         if not target:
             return
         expected_path = str(workflow_path or getattr(self, "_current_path", "") or "").strip()
+        attempts = {"count": 0}
 
         def _apply() -> None:
             try:
@@ -4550,7 +4678,26 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             except Exception:
                 return
             try:
-                self._restore_workflow_active_scene(target)
+                if bool(getattr(self, "_workflow_load_in_progress", False)):
+                    attempts["count"] = int(attempts.get("count", 0)) + 1
+                    if int(attempts["count"]) >= int(max(1, int(max_attempts))):
+                        return
+                    QtCore.QTimer.singleShot(max(80, int(delay_ms)), _apply)
+                    return
+            except Exception:
+                pass
+            restored = False
+            try:
+                restored = bool(self._restore_workflow_active_scene(target))
+            except Exception:
+                restored = False
+            if restored:
+                return
+            attempts["count"] = int(attempts.get("count", 0)) + 1
+            if int(attempts["count"]) >= int(max(1, int(max_attempts))):
+                return
+            try:
+                QtCore.QTimer.singleShot(max(80, int(delay_ms)), _apply)
             except Exception:
                 pass
 
@@ -4935,6 +5082,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             pass
 
     def _open_selected_node_view(self) -> None:
+        if bool(getattr(self, "_workflow_load_in_progress", False)):
+            return
         try:
             if actions._focus_is_text_input():
                 return
@@ -5017,7 +5166,9 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         t_load_start = time.perf_counter()
         path = (path or "").strip()
         if not path:
+            self._workflow_load_in_progress = False
             return False
+        self._workflow_load_in_progress = True
         json_ms = 0.0
         deserialize_ms = 0.0
         post_ms = 0.0
@@ -5037,6 +5188,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 error=str(e),
                 total_ms=round((time.perf_counter() - t_load_start) * 1000.0, 3),
             )
+            self._workflow_load_in_progress = False
             QtWidgets.QMessageBox.critical(self, APP_TITLE, f"Failed to open:\n{e}")
             return False
 
@@ -5063,6 +5215,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 json_ms=round(json_ms, 3),
                 total_ms=round((time.perf_counter() - t_load_start) * 1000.0, 3),
             )
+            self._workflow_load_in_progress = False
             QtWidgets.QMessageBox.critical(self, APP_TITLE, f"Failed to open:\n{e}")
             return False
 
@@ -5227,6 +5380,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             frame_ms=round(frame_ms, 3),
             deserialize_profile=deserialize_profile if isinstance(deserialize_profile, dict) else {},
         )
+        self._workflow_load_in_progress = False
         return True
 
     def _open_graph(self):

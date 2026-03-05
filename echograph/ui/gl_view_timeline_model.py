@@ -2474,6 +2474,12 @@ class GraphGLTimelineModelMixin:
         except Exception:
             return True
 
+    def _timeline_fx_proxy_is_enabled(self) -> bool:
+        try:
+            return bool(getattr(self, "_timeline_fx_proxy_enabled", True))
+        except Exception:
+            return True
+
     def _timeline_set_fx_instances_enabled(self, enabled: bool, *, sync_button: bool = True) -> None:
         allow_instances = bool(enabled)
         self._timeline_fx_instances_enabled = allow_instances
@@ -2495,8 +2501,37 @@ class GraphGLTimelineModelMixin:
         except Exception:
             pass
 
+    def _timeline_set_fx_proxy_enabled(self, enabled: bool) -> None:
+        self._timeline_fx_proxy_enabled = bool(enabled)
+        self._update_timeline_fx_instances_button()
+        try:
+            self.update()
+        except Exception:
+            pass
+
     def _timeline_on_fx_instances_toggled(self, checked: bool) -> None:
         self._timeline_set_fx_instances_enabled(bool(checked), sync_button=False)
+
+    def _timeline_on_fx_instances_context_menu(self, pos) -> None:
+        btn = getattr(self, "_timeline_fx_instances_btn", None)
+        if btn is None:
+            return
+        menu = QtWidgets.QMenu(btn)
+        proxy_action = menu.addAction("Show Proxy Rings")
+        proxy_action.setCheckable(True)
+        proxy_action.setChecked(bool(self._timeline_fx_proxy_is_enabled()))
+        proxy_action.toggled.connect(self._timeline_set_fx_proxy_enabled)
+        try:
+            global_pos = btn.mapToGlobal(pos)
+        except Exception:
+            global_pos = QtGui.QCursor.pos()
+        try:
+            menu.exec(global_pos)
+        except Exception:
+            try:
+                menu.exec_(global_pos)
+            except Exception:
+                pass
 
     def _update_timeline_fx_instances_button(self) -> None:
         btn = getattr(self, "_timeline_fx_instances_btn", None)
@@ -2534,10 +2569,13 @@ class GraphGLTimelineModelMixin:
             except Exception:
                 pass
         try:
+            proxy_enabled = bool(self._timeline_fx_proxy_is_enabled())
             if allow_instances:
-                btn.setToolTip("FX trail instance input enabled")
+                tip = "FX instances enabled"
             else:
-                btn.setToolTip("FX trail instance input disabled")
+                tip = "FX instances disabled"
+            proxy_tip = "ON" if proxy_enabled else "OFF"
+            btn.setToolTip(f"{tip} | Proxy Rings: {proxy_tip} (right-click to change)")
         except Exception:
             pass
 

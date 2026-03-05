@@ -478,6 +478,8 @@ class GraphGLTimelineIOMixin:
                 else None
             ),
             "loop_enabled": bool(getattr(self, "_timeline_loop_enabled", True)),
+            "fx_instances_enabled": bool(getattr(self, "_timeline_fx_instances_enabled", True)),
+            "fx_proxy_enabled": bool(getattr(self, "_timeline_fx_proxy_enabled", True)),
             "keys": keys_out,
         }
         try:
@@ -490,7 +492,17 @@ class GraphGLTimelineIOMixin:
         path = getattr(self, "_timeline_anim_path", None)
         self._timeline_keys = {}
         self._timeline_curve_selected = set()
+        fx_instances_enabled = True
+        fx_proxy_enabled = True
         if path is None or not path.exists():
+            try:
+                self._timeline_set_fx_instances_enabled(bool(fx_instances_enabled))
+            except Exception:
+                self._timeline_fx_instances_enabled = bool(fx_instances_enabled)
+            try:
+                self._timeline_set_fx_proxy_enabled(bool(fx_proxy_enabled))
+            except Exception:
+                self._timeline_fx_proxy_enabled = bool(fx_proxy_enabled)
             self._timeline_total_max = max(240, int(self._timeline_current_frame()))
             self._timeline_sync_range_controls(keep_current_visible=True, refresh_key_markers=True)
             self._timeline_update_key_count_label()
@@ -514,12 +526,33 @@ class GraphGLTimelineIOMixin:
             raw = {}
         if not isinstance(raw, dict):
             raw = {}
+        def _bool_value(val, default: bool = True) -> bool:
+            if isinstance(val, bool):
+                return bool(val)
+            if isinstance(val, (int, float)):
+                return bool(val)
+            txt = str(val or "").strip().lower()
+            if txt in {"0", "false", "off", "no"}:
+                return False
+            if txt in {"1", "true", "on", "yes"}:
+                return True
+            return bool(default)
+        fx_instances_enabled = _bool_value(raw.get("fx_instances_enabled", True), default=True)
+        fx_proxy_enabled = _bool_value(raw.get("fx_proxy_enabled", True), default=True)
         try:
             fps = float(raw.get("fps", 24.0))
             if fps > 0.0:
                 self._timeline_fps = fps
         except Exception:
             self._timeline_fps = 24.0
+        try:
+            self._timeline_set_fx_instances_enabled(bool(fx_instances_enabled))
+        except Exception:
+            self._timeline_fx_instances_enabled = bool(fx_instances_enabled)
+        try:
+            self._timeline_set_fx_proxy_enabled(bool(fx_proxy_enabled))
+        except Exception:
+            self._timeline_fx_proxy_enabled = bool(fx_proxy_enabled)
         rows = raw.get("keys", []) or []
         data: Dict[int, Dict[str, object]] = {}
         for row in rows:

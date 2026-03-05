@@ -2339,6 +2339,7 @@ class MGLRendererMixin:
         payload["_fx_active_owner"] = active_owner
         live_pos = self._mgl_fx_current_owner_pos(active_owner)
         allow_instances = bool(getattr(self, "_timeline_fx_instances_enabled", True))
+        show_proxy = bool(getattr(self, "_timeline_fx_proxy_enabled", True))
         instance_path = str(payload.get("instance_path") or "").strip() if allow_instances else ""
         stamp = (
             int(frame),
@@ -2360,6 +2361,7 @@ class MGLRendererMixin:
             repr(payload.get("age_scale_points")),
             tuple(self._mgl_fx_owner_candidates(payload)),
             bool(allow_instances),
+            bool(show_proxy),
             instance_path,
             repr(dict(payload.get("instance_material") or {})),
             str(payload.get("instance_texture") or ""),
@@ -2369,8 +2371,10 @@ class MGLRendererMixin:
             if instance_path:
                 if payload.get("_fx_instance_models") and isinstance(payload.get("_fx_instance_mesh"), dict):
                     return True
-            elif payload.get("vao") is not None:
+            elif bool(show_proxy) and payload.get("vao") is not None:
                 return True
+            elif not bool(show_proxy):
+                return False
 
         if instance_path:
             loaded_path = str(payload.get("_fx_instance_loaded_path") or "").strip()
@@ -2437,6 +2441,20 @@ class MGLRendererMixin:
 
         if isinstance(payload.get("_fx_instance_mesh"), dict):
             self._mgl_fx_release_mesh_cache(item, payload)
+
+        if not bool(show_proxy):
+            for res in list(getattr(item, "resources", None) or []):
+                if res is not None and hasattr(res, "release"):
+                    try:
+                        res.release()
+                    except Exception:
+                        pass
+            item.resources = []
+            payload.pop("vao", None)
+            payload.pop("mode", None)
+            payload["_fx_stamp"] = stamp
+            item.payload = payload
+            return False
 
         line_points = self._mgl_fx_build_trail_line_points(payload, frame)
         for res in list(getattr(item, "resources", None) or []):
