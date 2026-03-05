@@ -33,6 +33,7 @@ _MATERIAL_NODE_ICON = None
 _UV_UNWRAP_ICON = None
 _TRANSFORMS_ICON = None
 _GANTT_ICON = None
+_FX_NODE_ICON = None
 
 
 def _load_pm(rel_icon_name: str):
@@ -253,3 +254,11 @@ def _gantt_icon():
         return _GANTT_ICON
     _GANTT_ICON = _load_pm("Calendar_Icon.png")
     return _GANTT_ICON
+
+
+def _fx_node_icon():
+    global _FX_NODE_ICON
+    if _FX_NODE_ICON is not None:
+        return _FX_NODE_ICON
+    _FX_NODE_ICON = _load_pm("FX_node_icon.png")
+    return _FX_NODE_ICON

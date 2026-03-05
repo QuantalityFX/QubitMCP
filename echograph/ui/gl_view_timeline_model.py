@@ -1347,10 +1347,11 @@ class GraphGLTimelineModelMixin:
         if not changed:
             return False
         entry["camera_state"] = {}
-        try:
-            self._timeline_apply_frame_if_keyed(int(self._timeline_current_frame()), force=True)
-        except Exception:
-            pass
+        if bool(commit):
+            try:
+                self._timeline_apply_frame_if_keyed(int(self._timeline_current_frame()), force=True)
+            except Exception:
+                pass
         canvas = getattr(self, "_timeline_curves_canvas", None)
         if canvas is not None:
             try:
@@ -1970,6 +1971,9 @@ class GraphGLTimelineModelMixin:
         icon_material_live = None
         icon_material_live_on = None
         icon_material_live_off = None
+        icon_fx_switch = None
+        icon_fx_switch_on = None
+        icon_fx_switch_off = None
         icon_handle_straight = None
         icon_handle_tied = None
         icon_handle_untied = None
@@ -1988,6 +1992,8 @@ class GraphGLTimelineModelMixin:
             material_live_on_path = root / "icons" / "LiveMaterial_Icon.png"
             material_live_off_path = root / "icons" / "LiveMaterial_Off_Icon.png"
             material_live_legacy_path = root / "icons" / "MaterialGenerator_Icon_S.png"
+            fx_switch_on_path = root / "icons" / "fx_switch_On_icon.png"
+            fx_switch_off_path = root / "icons" / "fx_switch_off_icon.png"
             handle_straight_path = root / "icons" / "StreightCurve_Icon.png"
             handle_tied_path = root / "icons" / "Tiehandles_Icon.png"
             handle_untied_path = root / "icons" / "Untiedhandle_Icon.png"
@@ -2013,6 +2019,15 @@ class GraphGLTimelineModelMixin:
             if icon_material_live_off is None:
                 icon_material_live_off = icon_material_live_on
             icon_material_live = icon_material_live_on
+            if fx_switch_on_path.exists():
+                icon_fx_switch_on = QtGui.QIcon(str(fx_switch_on_path))
+            if fx_switch_off_path.exists():
+                icon_fx_switch_off = QtGui.QIcon(str(fx_switch_off_path))
+            if icon_fx_switch_on is None:
+                icon_fx_switch_on = icon_fx_switch_off
+            if icon_fx_switch_off is None:
+                icon_fx_switch_off = icon_fx_switch_on
+            icon_fx_switch = icon_fx_switch_on
             if handle_straight_path.exists():
                 icon_handle_straight = QtGui.QIcon(str(handle_straight_path))
             if handle_tied_path.exists():
@@ -2042,6 +2057,9 @@ class GraphGLTimelineModelMixin:
             icon_material_live = None
             icon_material_live_on = None
             icon_material_live_off = None
+            icon_fx_switch = None
+            icon_fx_switch_on = None
+            icon_fx_switch_off = None
             icon_handle_straight = None
             icon_handle_tied = None
             icon_handle_untied = None
@@ -2058,6 +2076,9 @@ class GraphGLTimelineModelMixin:
         self._timeline_icon_material_live = icon_material_live
         self._timeline_icon_material_live_on = icon_material_live_on
         self._timeline_icon_material_live_off = icon_material_live_off
+        self._timeline_icon_fx_switch = icon_fx_switch
+        self._timeline_icon_fx_switch_on = icon_fx_switch_on
+        self._timeline_icon_fx_switch_off = icon_fx_switch_off
         self._timeline_icon_handle_straight = icon_handle_straight
         self._timeline_icon_handle_tied = icon_handle_tied
         self._timeline_icon_handle_untied = icon_handle_untied
@@ -2447,6 +2468,79 @@ class GraphGLTimelineModelMixin:
     def _timeline_on_material_live_toggled(self, checked: bool) -> None:
         self._timeline_set_material_live_mode(bool(checked), sync_button=False)
 
+    def _timeline_fx_instances_are_enabled(self) -> bool:
+        try:
+            return bool(getattr(self, "_timeline_fx_instances_enabled", True))
+        except Exception:
+            return True
+
+    def _timeline_set_fx_instances_enabled(self, enabled: bool, *, sync_button: bool = True) -> None:
+        allow_instances = bool(enabled)
+        self._timeline_fx_instances_enabled = allow_instances
+        btn = getattr(self, "_timeline_fx_instances_btn", None)
+        if sync_button and btn is not None:
+            try:
+                btn.blockSignals(True)
+                btn.setChecked(bool(allow_instances))
+            except Exception:
+                pass
+            finally:
+                try:
+                    btn.blockSignals(False)
+                except Exception:
+                    pass
+        self._update_timeline_fx_instances_button()
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    def _timeline_on_fx_instances_toggled(self, checked: bool) -> None:
+        self._timeline_set_fx_instances_enabled(bool(checked), sync_button=False)
+
+    def _update_timeline_fx_instances_button(self) -> None:
+        btn = getattr(self, "_timeline_fx_instances_btn", None)
+        if btn is None:
+            return
+        self._load_timeline_button_icons()
+        allow_instances = self._timeline_fx_instances_are_enabled()
+        icon_on = getattr(self, "_timeline_icon_fx_switch_on", None)
+        icon_off = getattr(self, "_timeline_icon_fx_switch_off", None)
+        icon = icon_on if allow_instances else icon_off
+        if icon is None:
+            icon = getattr(self, "_timeline_icon_fx_switch", None)
+        if icon is not None:
+            try:
+                btn.setIcon(icon)
+                btn.setText("")
+                inner = max(12, min(int(btn.width()), int(btn.height())) - 2)
+                btn.setIconSize(QtCore.QSize(inner, inner))
+            except Exception:
+                pass
+        else:
+            try:
+                btn.setIcon(QtGui.QIcon())
+                btn.setText("FX" if allow_instances else "FX Off")
+            except Exception:
+                pass
+        try:
+            btn.blockSignals(True)
+            btn.setChecked(bool(allow_instances))
+        except Exception:
+            pass
+        finally:
+            try:
+                btn.blockSignals(False)
+            except Exception:
+                pass
+        try:
+            if allow_instances:
+                btn.setToolTip("FX trail instance input enabled")
+            else:
+                btn.setToolTip("FX trail instance input disabled")
+        except Exception:
+            pass
+
     def _update_timeline_material_live_button(self) -> None:
         btn = getattr(self, "_timeline_material_live_btn", None)
         if btn is None:
@@ -2744,7 +2838,8 @@ class GraphGLTimelineModelMixin:
             self._timeline_curve_selected = set()
         self._timeline_total_max = max(int(getattr(self, "_timeline_total_max", 240) or 240), int(active_frame))
         self._timeline_sync_range_controls(keep_current_visible=False, refresh_key_markers=True)
-        self._timeline_apply_frame_if_keyed(int(current_frame), force=True)
+        if bool(commit):
+            self._timeline_apply_frame_if_keyed(int(current_frame), force=True)
         canvas = getattr(self, "_timeline_curves_canvas", None)
         if canvas is not None:
             try:
@@ -2875,7 +2970,8 @@ class GraphGLTimelineModelMixin:
         }
         self._timeline_total_max = max(int(getattr(self, "_timeline_total_max", 240) or 240), int(max_frame))
         self._timeline_sync_range_controls(keep_current_visible=False, refresh_key_markers=True)
-        self._timeline_apply_frame_if_keyed(int(current_frame), force=True)
+        if bool(commit):
+            self._timeline_apply_frame_if_keyed(int(current_frame), force=True)
         canvas = getattr(self, "_timeline_curves_canvas", None)
         if canvas is not None:
             try:
@@ -3037,7 +3133,8 @@ class GraphGLTimelineModelMixin:
         }
         self._timeline_total_max = max(int(getattr(self, "_timeline_total_max", 240) or 240), int(max_frame))
         self._timeline_sync_range_controls(keep_current_visible=False, refresh_key_markers=True)
-        self._timeline_apply_frame_if_keyed(int(current_frame), force=True)
+        if bool(commit):
+            self._timeline_apply_frame_if_keyed(int(current_frame), force=True)
         canvas = getattr(self, "_timeline_curves_canvas", None)
         if canvas is not None:
             try:
@@ -3658,6 +3755,23 @@ class GraphGLTimelineModelMixin:
                 except Exception:
                     pass
         self._timeline_apply_frame_if_keyed(frame, force=True)
+        allow_aux_updates = True
+        slider = getattr(self, "_timeline_frame_slider", None)
+        if slider is not None:
+            try:
+                if bool(slider.isSliderDown()):
+                    now_t = float(time.perf_counter())
+                    last_t = float(getattr(self, "_timeline_scrub_aux_last_t", 0.0) or 0.0)
+                    if (now_t - last_t) < 0.05:
+                        allow_aux_updates = False
+                    else:
+                        self._timeline_scrub_aux_last_t = now_t
+                else:
+                    self._timeline_scrub_aux_last_t = 0.0
+            except Exception:
+                pass
+        if not bool(allow_aux_updates):
+            return
         try:
             self._timeline_apply_other_owner_frames(frame)
         except Exception:

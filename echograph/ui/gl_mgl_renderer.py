@@ -2338,7 +2338,8 @@ class MGLRendererMixin:
         active_owner = self._mgl_fx_pick_owner(payload) or target_owner
         payload["_fx_active_owner"] = active_owner
         live_pos = self._mgl_fx_current_owner_pos(active_owner)
-        instance_path = str(payload.get("instance_path") or "").strip()
+        allow_instances = bool(getattr(self, "_timeline_fx_instances_enabled", True))
+        instance_path = str(payload.get("instance_path") or "").strip() if allow_instances else ""
         stamp = (
             int(frame),
             tuple(round(float(v), 5) for v in live_pos) if isinstance(live_pos, (list, tuple)) else None,
@@ -2358,6 +2359,7 @@ class MGLRendererMixin:
             round(float(payload.get("age_scale_max", 1.0)), 5),
             repr(payload.get("age_scale_points")),
             tuple(self._mgl_fx_owner_candidates(payload)),
+            bool(allow_instances),
             instance_path,
             repr(dict(payload.get("instance_material") or {})),
             str(payload.get("instance_texture") or ""),

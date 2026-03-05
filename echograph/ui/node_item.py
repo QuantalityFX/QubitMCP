@@ -5738,6 +5738,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "texture layer",
                 "mnaterial",
                 "material",
+                "fx",
+                "fx_trail",
                 "transforms",
                 "gantt_chart",
                 "gantt chart",
@@ -5905,6 +5907,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 icon_pm = node_icons._texture_layer_icon() or node_icons._output_icon()
             elif kind_lower in ("mnaterial", "material"):
                 icon_pm = node_icons._material_node_icon() or node_icons._output_icon()
+            elif kind_lower in ("fx", "fx_trail"):
+                icon_pm = node_icons._fx_node_icon() or node_icons._output_icon()
             elif kind_lower == "transforms":
                 icon_pm = node_icons._transforms_icon() or node_icons._output_icon()
             elif kind_lower in ("gantt_chart", "gantt chart", "gant_chart", "gant chart"):
@@ -5937,7 +5941,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     size = int(max(34, size * 0.792))
                 if kind_lower in ("texture_layer", "texture layer"):
                     size = int(max(36, size * 0.855))
-                if kind_lower in ("mnaterial", "material"):
+                if kind_lower in ("mnaterial", "material", "fx", "fx_trail"):
                     size = int(max(36, size * 0.88))
                 if kind_lower in ("chatbot", "chat bot", "chat_bot"):
                     size = int(size * 1.13)

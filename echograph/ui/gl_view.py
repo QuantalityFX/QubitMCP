@@ -828,11 +828,13 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._timeline_play_btn = None
         self._timeline_curves_btn = None
         self._timeline_material_live_btn = None
+        self._timeline_fx_instances_btn = None
         self._timeline_handle_straight_btn = None
         self._timeline_handle_tied_btn = None
         self._timeline_handle_untied_btn = None
         self._timeline_curves_mode = False
         self._timeline_material_live_mode = True
+        self._timeline_fx_instances_enabled = True
         self._timeline_material_last_frame = None
         self._timeline_material_fps_override = 0.0
         self._timeline_curve_min = -5.0
@@ -846,6 +848,9 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._timeline_icon_material_live = None
         self._timeline_icon_material_live_on = None
         self._timeline_icon_material_live_off = None
+        self._timeline_icon_fx_switch = None
+        self._timeline_icon_fx_switch_on = None
+        self._timeline_icon_fx_switch_off = None
         self._timeline_icon_handle_straight = None
         self._timeline_icon_handle_tied = None
         self._timeline_icon_handle_untied = None
