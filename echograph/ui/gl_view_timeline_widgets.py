@@ -1106,6 +1106,114 @@ class GraphGLTimelineWidgetsMixin:
                         out[axis].sort(key=lambda r: int(r[0]))
                     return out
 
+                def _axis_curve_rows(self):
+                    out = {i: [] for i in range(6)}
+                    slider = getattr(self._view, "_timeline_frame_slider", None)
+                    if slider is None:
+                        return out
+                    try:
+                        start = int(max(0, int(getattr(self._view, "_timeline_view_start", 0) or 0)))
+                    except Exception:
+                        start = 0
+                    try:
+                        local_max = int(max(0, int(slider.maximum())))
+                    except Exception:
+                        local_max = 0
+                    end = start + local_max
+                    keys = getattr(self._view, "_timeline_keys", {}) or {}
+                    try:
+                        items = sorted(keys.items(), key=lambda kv: int(kv[0]))
+                    except Exception:
+                        items = list(keys.items())
+                    prev_by_axis = {i: None for i in range(6)}
+                    next_by_axis = {i: None for i in range(6)}
+                    for frame_raw, entry in items:
+                        try:
+                            frame = int(frame_raw)
+                        except Exception:
+                            continue
+                        if frame < start:
+                            side = "left"
+                        elif frame > end:
+                            side = "right"
+                        else:
+                            side = "visible"
+                            local = frame - start
+                            x = self._view._timeline_slider_to_tracks_x(int(local))
+                            if x is None:
+                                continue
+                        for axis in self._view._timeline_axes_for_entry(entry):
+                            axis_i = int(axis)
+                            if not bool(self._view._timeline_axis_is_visible(axis_i)):
+                                continue
+                            val = self._view._timeline_axis_value_for_entry(entry, axis_i)
+                            if val is None:
+                                continue
+                            if side == "left":
+                                best = prev_by_axis.get(axis_i)
+                                if best is None or int(frame) > int(best[0]):
+                                    prev_by_axis[axis_i] = (int(frame), float(val))
+                            elif side == "right":
+                                best = next_by_axis.get(axis_i)
+                                if best is None or int(frame) < int(best[0]):
+                                    next_by_axis[axis_i] = (int(frame), float(val))
+                            else:
+                                out[axis_i].append((int(frame), float(val), float(x), float(self._value_to_y(val))))
+                    for axis in range(6):
+                        rows = list(out.get(axis, []) or [])
+                        prev_row = prev_by_axis.get(axis)
+                        if isinstance(prev_row, tuple) and len(prev_row) >= 2:
+                            pf = int(prev_row[0])
+                            pv = float(prev_row[1])
+                            px = self._curve_x_for_local(float(pf - start))
+                            if px is not None:
+                                rows.insert(0, (pf, pv, float(px), float(self._value_to_y(pv))))
+                        next_row = next_by_axis.get(axis)
+                        if isinstance(next_row, tuple) and len(next_row) >= 2:
+                            nf = int(next_row[0])
+                            nv = float(next_row[1])
+                            nx = self._curve_x_for_local(float(nf - start))
+                            if nx is not None:
+                                rows.append((nf, nv, float(nx), float(self._value_to_y(nv))))
+                        if len(rows) == 1:
+                            base = rows[0]
+                            frame0 = int(base[0])
+                            val0 = float(base[1])
+                            if frame0 < start:
+                                xx = self._curve_x_for_local(float(local_max))
+                                if xx is not None:
+                                    rows.append((int(end), val0, float(xx), float(self._value_to_y(val0))))
+                            elif frame0 > end:
+                                xx = self._curve_x_for_local(0.0)
+                                if xx is not None:
+                                    rows.insert(0, (int(start), val0, float(xx), float(self._value_to_y(val0))))
+                        rows.sort(key=lambda r: int(r[0]))
+                        out[axis] = rows
+                    return out
+
+                def _curve_x_bounds(self):
+                    rect = self._graph_rect()
+                    span = float(max(64, int(rect.width()) * 6))
+                    return (float(rect.left()) - span, float(rect.right()) + span)
+
+                def _clamp_curve_x(self, x_val: float) -> float:
+                    try:
+                        xv = float(x_val)
+                    except Exception:
+                        xv = 0.0
+                    min_x, max_x = self._curve_x_bounds()
+                    if xv < min_x:
+                        return float(min_x)
+                    if xv > max_x:
+                        return float(max_x)
+                    return float(xv)
+
+                def _curve_x_for_local(self, local_frame: float):
+                    x_val = self._view._timeline_local_frame_to_tracks_x_float(float(local_frame), clamp=False)
+                    if x_val is None:
+                        return None
+                    return float(self._clamp_curve_x(float(x_val)))
+
                 def _nearest_point(self, posf):
                     pts_by_axis = self._axis_points()
                     best = None
@@ -1200,10 +1308,18 @@ class GraphGLTimelineWidgetsMixin:
                             out_dx, out_dy = tuple(h.get("out", (3.0, 0.0)))
                         except Exception:
                             out_dx, out_dy = (3.0, 0.0)
-                        xin = self._view._timeline_local_frame_to_tracks_x_float((float(frame) - float(start)) + float(in_dx))
-                        xout = self._view._timeline_local_frame_to_tracks_x_float((float(frame) - float(start)) + float(out_dx))
+                        xin = self._view._timeline_local_frame_to_tracks_x_float(
+                            (float(frame) - float(start)) + float(in_dx),
+                            clamp=False,
+                        )
+                        xout = self._view._timeline_local_frame_to_tracks_x_float(
+                            (float(frame) - float(start)) + float(out_dx),
+                            clamp=False,
+                        )
                         if xin is None or xout is None:
                             continue
+                        xin = self._clamp_curve_x(float(xin))
+                        xout = self._clamp_curve_x(float(xout))
                         yin = self._value_to_y(float(val) + float(in_dy))
                         yout = self._value_to_y(float(val) + float(out_dy))
                         out.append(
@@ -1275,13 +1391,14 @@ class GraphGLTimelineWidgetsMixin:
                         p.drawText(2, y - 2, f"{vv}")
 
                     pts_by_axis = self._axis_points()
+                    curve_rows_by_axis = self._axis_curve_rows()
                     try:
                         start = int(max(0, int(getattr(self._view, "_timeline_view_start", 0) or 0)))
                     except Exception:
                         start = 0
                     selected = self._selected_set()
                     for axis in range(6):
-                        rows = pts_by_axis.get(axis, [])
+                        rows = curve_rows_by_axis.get(axis, [])
                         if not rows:
                             continue
                         col = self._view._timeline_axis_color(axis)
@@ -1324,12 +1441,20 @@ class GraphGLTimelineWidgetsMixin:
                                     in_dx, in_dy = tuple(h2.get("in", (-3.0, 0.0)))
                                 except Exception:
                                     in_dx, in_dy = (-3.0, 0.0)
-                                c1x = self._view._timeline_local_frame_to_tracks_x_float((float(f1) - float(start)) + float(out_dx))
-                                c2x = self._view._timeline_local_frame_to_tracks_x_float((float(f2) - float(start)) + float(in_dx))
+                                c1x = self._view._timeline_local_frame_to_tracks_x_float(
+                                    (float(f1) - float(start)) + float(out_dx),
+                                    clamp=False,
+                                )
+                                c2x = self._view._timeline_local_frame_to_tracks_x_float(
+                                    (float(f2) - float(start)) + float(in_dx),
+                                    clamp=False,
+                                )
                                 if c1x is None:
                                     c1x = float(x1)
                                 if c2x is None:
                                     c2x = float(x2)
+                                c1x = self._clamp_curve_x(float(c1x))
+                                c2x = self._clamp_curve_x(float(c2x))
                                 c1y = self._value_to_y(float(v1) + float(out_dy))
                                 c2y = self._value_to_y(float(v2) + float(in_dy))
                                 path.cubicTo(
@@ -1340,7 +1465,8 @@ class GraphGLTimelineWidgetsMixin:
                         p.setBrush(QtCore.Qt.NoBrush)
                         p.setPen(QtGui.QPen(col, 2))
                         p.drawPath(path)
-                        for frame, _val, x, y in rows:
+                        rows_visible = pts_by_axis.get(axis, [])
+                        for frame, _val, x, y in rows_visible:
                             key = (int(axis), int(frame))
                             if key in selected:
                                 p.setPen(QtGui.QPen(QtGui.QColor("#f59e0b"), 1.2))

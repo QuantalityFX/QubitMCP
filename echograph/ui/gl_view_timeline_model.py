@@ -1433,7 +1433,12 @@ class GraphGLTimelineModelMixin:
                 pass
         self._update_timeline_handle_mode_buttons()
 
-    def _timeline_local_frame_to_tracks_x_float(self, local_frame: float) -> Optional[float]:
+    def _timeline_local_frame_to_tracks_x_float(
+        self,
+        local_frame: float,
+        *,
+        clamp: bool = True,
+    ) -> Optional[float]:
         try:
             lf = float(local_frame)
         except Exception:
@@ -1448,10 +1453,45 @@ class GraphGLTimelineModelMixin:
             return None
         if maxv < minv:
             return None
-        if lf < float(minv):
-            lf = float(minv)
-        if lf > float(maxv):
-            lf = float(maxv)
+        if bool(clamp):
+            if lf < float(minv):
+                lf = float(minv)
+            if lf > float(maxv):
+                lf = float(maxv)
+        elif lf < float(minv) or lf > float(maxv):
+            x_min = self._timeline_slider_to_tracks_x(int(minv))
+            x_max = self._timeline_slider_to_tracks_x(int(maxv))
+            step = None
+            span_frames = int(maxv - minv)
+            if span_frames > 0 and x_min is not None and x_max is not None:
+                step = (float(x_max) - float(x_min)) / float(span_frames)
+            if step is None:
+                x0 = self._timeline_slider_to_tracks_x(int(minv))
+                x1 = self._timeline_slider_to_tracks_x(int(minv + 1)) if int(minv + 1) <= int(maxv) else None
+                if x0 is not None and x1 is not None:
+                    step = float(x1) - float(x0)
+            if step is None:
+                tracks = getattr(self, "_timeline_tracks_frame", None)
+                if tracks is not None:
+                    try:
+                        w = float(max(1, int(tracks.width())))
+                        span = float(max(1, int(maxv) - int(minv)))
+                        step = w / span
+                    except Exception:
+                        step = 1.0
+                else:
+                    step = 1.0
+            if lf < float(minv):
+                if x_min is None:
+                    if x_max is None:
+                        return None
+                    x_min = float(x_max) - (float(step) * float(max(0, span_frames)))
+                return float(x_min) + ((float(lf) - float(minv)) * float(step))
+            if x_max is None:
+                if x_min is None:
+                    return None
+                x_max = float(x_min) + (float(step) * float(max(0, span_frames)))
+            return float(x_max) + ((float(lf) - float(maxv)) * float(step))
         lo = int(math.floor(lf))
         hi = int(math.ceil(lf))
         x_lo = self._timeline_slider_to_tracks_x(int(lo))
