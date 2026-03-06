@@ -112,8 +112,8 @@ if /I "%SETUP_MODE%"=="full" (
   call :ensure_venv "nodes\librarian\.venv" "librarian" || goto :fail
   call :install_requirements "nodes\librarian\.venv\Scripts\python.exe" "%LIB_REQ%" "librarian requirements" || goto :fail
 ) else (
-  echo [setup] Skipping librarian setup (mode=%SETUP_MODE%).
-  echo [setup] Skipping librarian setup (mode=%SETUP_MODE%). >> "%LOG%"
+  echo [setup] Skipping librarian setup ^(mode=%SETUP_MODE%^).
+  echo [setup] Skipping librarian setup ^(mode=%SETUP_MODE%^). >> "%LOG%"
 )
 
 echo [setup] SUCCESS (%SETUP_MODE%)

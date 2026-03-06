@@ -6035,10 +6035,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             self.setCursor(QtCore.Qt.PointingHandCursor)
             e.accept()
             return
-        kind = (self.model.kind or "").lower()
-        if kind == "note":
-            self.unsetCursor()
-        elif self._note_resize_available():
+        if self._note_resize_available():
             mode = self._note_hit_test(e.pos())
             cursor = self._note_cursor_for_mode(mode)
             if cursor:

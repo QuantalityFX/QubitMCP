@@ -1,0 +1,13 @@
+[setup] ==== START Thu 03/05/2026 19:14:13.16 ==== 
+[setup] Repo: V:\Source\Repos\QubitMCP 
+[setup] Mode: core 
+[setup] Base Python: C:\Users\ErnestoCG\AppData\Local\Programs\Python\Python310\python.exe 
+[setup] Base Python version: 3.10 
+[setup] Preparing root venv (.venv) 
+[setup] Upgrading pip tooling in root venv... 
+[setup] Tooling ready in root venv. 
+[setup] Installing root requirements from V:\Source\Repos\QubitMCP\requirements.txt 
+[setup] Live pip output follows for root requirements. 
+[setup] Completed root requirements. 
+[setup] Skipping librarian setup (mode=core). 
+[setup] SUCCESS (core) 
