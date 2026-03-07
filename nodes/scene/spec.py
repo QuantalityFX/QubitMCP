@@ -1552,6 +1552,65 @@ def _resolve_window(node_item):
     return None
 
 
+def _norm_path_key(path: str) -> str:
+    text = str(path or "").strip()
+    if not text:
+        return ""
+    try:
+        return os.path.normcase(os.path.normpath(text))
+    except Exception:
+        return text.lower()
+
+
+def _force_scene_wire_white(win, wire_paths) -> None:
+    targets = {_norm_path_key(p) for p in (wire_paths or []) if str(p or "").strip()}
+    if not targets or win is None:
+        return
+    try:
+        glv = getattr(win, "gl_view", None)
+    except Exception:
+        glv = None
+    if glv is None:
+        return
+    renderer = getattr(glv, "_mgl_renderer", None) or glv
+    scene_obj = getattr(renderer, "_mgl_scene", None)
+    if scene_obj is None:
+        return
+
+    items = []
+    iter_by_tag = getattr(scene_obj, "iter_by_tag", None)
+    if callable(iter_by_tag):
+        try:
+            items = list(iter_by_tag("scene-wire"))
+        except Exception:
+            items = []
+    if not items:
+        try:
+            items = [it for it in scene_obj.items() if str(getattr(it, "tag", "") or "") == "scene-wire"]
+        except Exception:
+            items = []
+
+    changed = False
+    for item in items:
+        payload = getattr(item, "payload", None)
+        if not isinstance(payload, dict):
+            continue
+        key = _norm_path_key(payload.get("path"))
+        if key not in targets:
+            continue
+        payload["color"] = (1.0, 1.0, 1.0, 1.0)
+        changed = True
+
+    if changed:
+        try:
+            renderer.update()
+        except Exception:
+            try:
+                glv.update()
+            except Exception:
+                pass
+
+
 class SceneAssemblyWidget(QtWidgets.QWidget):
     def __init__(self, node_item, parent=None):
         super().__init__(parent)
@@ -1631,6 +1690,11 @@ class SceneAssemblyWidget(QtWidgets.QWidget):
             "Connect one or more 3D import, primitive, material, volume, UV unwrap, texture, texture layer, texture pro, or camera nodes first.",
             )
             return
+        wire_paths = [
+            str(a.get("path") or "").strip()
+            for a in assets
+            if isinstance(a, dict) and bool(a.get("wire_only")) and not bool(a.get("volume"))
+        ]
         # Ensure splats start visible on open (avoid auto-hidden splats)
         try:
             raw_hidden = getattr(self._node_item, "model", None)
@@ -1691,6 +1755,10 @@ class SceneAssemblyWidget(QtWidgets.QWidget):
         except Exception:
             pass
         handler(assets)
+        try:
+            _force_scene_wire_white(win, wire_paths)
+        except Exception:
+            pass
 
 
 def augment_infocard_footer(card, footer_layout) -> bool:

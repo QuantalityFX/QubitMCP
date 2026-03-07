@@ -318,6 +318,17 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Export FBX plugin import failed:", e)
 
+    # 14.1) Export OBJ
+    try:
+        from nodes import export_obj
+        if hasattr(export_obj, "register"):
+            export_obj.register()
+            _safe_probe("export_obj")
+        else:
+            print("[EchoGraph] Export OBJ module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Export OBJ plugin import failed:", e)
+
     # 15) Render Sequence
     try:
         from nodes import render as render_node

@@ -584,6 +584,65 @@ def _resolve_window(node_item):
     return None
 
 
+def _norm_path_key(path: str) -> str:
+    text = str(path or "").strip()
+    if not text:
+        return ""
+    try:
+        return os.path.normcase(os.path.normpath(text))
+    except Exception:
+        return text.lower()
+
+
+def _force_scene_wire_white(win, wire_paths) -> None:
+    targets = {_norm_path_key(p) for p in (wire_paths or []) if str(p or "").strip()}
+    if not targets or win is None:
+        return
+    try:
+        glv = getattr(win, "gl_view", None)
+    except Exception:
+        glv = None
+    if glv is None:
+        return
+    renderer = getattr(glv, "_mgl_renderer", None) or glv
+    scene_obj = getattr(renderer, "_mgl_scene", None)
+    if scene_obj is None:
+        return
+
+    items = []
+    iter_by_tag = getattr(scene_obj, "iter_by_tag", None)
+    if callable(iter_by_tag):
+        try:
+            items = list(iter_by_tag("scene-wire"))
+        except Exception:
+            items = []
+    if not items:
+        try:
+            items = [it for it in scene_obj.items() if str(getattr(it, "tag", "") or "") == "scene-wire"]
+        except Exception:
+            items = []
+
+    changed = False
+    for item in items:
+        payload = getattr(item, "payload", None)
+        if not isinstance(payload, dict):
+            continue
+        key = _norm_path_key(payload.get("path"))
+        if key not in targets:
+            continue
+        payload["color"] = (1.0, 1.0, 1.0, 1.0)
+        changed = True
+
+    if changed:
+        try:
+            renderer.update()
+        except Exception:
+            try:
+                glv.update()
+            except Exception:
+                pass
+
+
 def _set_node_param_value(node_item, name: str, value: str, *, notify_scene: bool = False) -> None:
     model = getattr(node_item, "model", None)
     if model is None:
@@ -841,10 +900,12 @@ if QtWidgets is not None and QtCore is not None:
                     pass
                 try:
                     handler(assets, frame=True)
+                    _force_scene_wire_white(win, [path])
                     return
                 except TypeError:
                     try:
                         handler(assets)
+                        _force_scene_wire_white(win, [path])
                         return
                     except Exception:
                         pass
