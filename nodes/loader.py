@@ -230,6 +230,17 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] FX plugin import failed:", e)
 
+    # 8.98) Wire
+    try:
+        from nodes import wire
+        if hasattr(wire, "register"):
+            wire.register()
+            _safe_probe("wire")
+        else:
+            print("[EchoGraph] Wire module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Wire plugin import failed:", e)
+
     # 9) GPT Prompt
     try:
         from nodes import gpt_prompt

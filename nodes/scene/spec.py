@@ -347,6 +347,46 @@ def _resolve_input_item(scene, node_item, port_names=None):
     if scene is None or node_item is None:
         return None, "", ""
 
+    def _switch_active_edge(item):
+        try:
+            edges = list(scene._ordered_in_edges(item))
+        except Exception:
+            try:
+                edges = list(scene._in_edges(item))
+            except Exception:
+                edges = []
+        if not edges:
+            return None
+        if len(edges) == 1:
+            return edges[0]
+
+        model = getattr(item, "model", None)
+        by_name = {}
+        for edge in edges:
+            src = getattr(edge, "src", None)
+            src_model = getattr(src, "model", None)
+            src_name = (getattr(src_model, "name", "") or "").strip()
+            if src_name and src_name not in by_name:
+                by_name[src_name] = edge
+
+        ordered = []
+        for name in (getattr(model, "switch_inputs", None) or []):
+            edge = by_name.get(str(name))
+            if edge is not None:
+                ordered.append(edge)
+        for edge in edges:
+            if edge not in ordered:
+                ordered.append(edge)
+        if not ordered:
+            return edges[0]
+
+        try:
+            idx = int(getattr(model, "switch_index", 0) or 0)
+        except Exception:
+            idx = 0
+        idx = max(0, min(idx, len(ordered) - 1))
+        return ordered[idx]
+
     def _trace(item, depth=0, visited=None):
         if item is None or depth > 8:
             return None, "", ""
@@ -360,15 +400,9 @@ def _resolve_input_item(scene, node_item, port_names=None):
             return None, "", ""
         kind = (getattr(m, "kind", "") or "").strip().lower()
         if kind == "switch":
-            try:
-                edges = list(scene._ordered_in_edges(item))
-            except Exception:
-                try:
-                    edges = list(scene._in_edges(item))
-                except Exception:
-                    edges = []
-            if edges:
-                return _trace(getattr(edges[0], "src", None), depth + 1, visited)
+            edge = _switch_active_edge(item)
+            if edge is not None:
+                return _trace(getattr(edge, "src", None), depth + 1, visited)
         if kind in {"fx", "fx_trail"}:
             try:
                 edges = list(scene._ordered_in_edges(item))
@@ -552,6 +586,22 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
         if v > max_val:
             return max_val
         return v
+
+    def _set_param(model, name: str, value: str) -> None:
+        if model is None:
+            return
+        key = (name or "").strip().lower()
+        params = list(getattr(model, "params", None) or [])
+        for entry in params:
+            if (entry.get("name") or "").strip().lower() == key:
+                entry["value"] = str(value or "")
+                break
+        else:
+            params.append({"name": name, "value": str(value or "")})
+        try:
+            model.params = params
+        except Exception:
+            pass
 
     def _find_upstream_transform(start_item):
         item = start_item
@@ -1191,10 +1241,56 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                 owner_kind = upstream_kind or owner_kind
                 if not path and upstream_path:
                     path = upstream_path
+        elif kind == "switch":
+            # Switch is a pass-through node; use the currently active branch.
+            upstream_item, upstream_kind, upstream_path = _resolve_input_item(scene, src_item, {"mesh", "path", "source"})
+            if upstream_item is not None and getattr(upstream_item, "model", None) is not None:
+                owner_item = upstream_item
+                owner_model = getattr(upstream_item, "model", owner_model)
+                owner_kind = upstream_kind or owner_kind
+                texture_model = owner_model
+                texture_kind = owner_kind
+            if upstream_path:
+                path = upstream_path
         elif kind == "transforms":
             upstream_item, upstream_kind, upstream_path = _resolve_input_item(scene, src_item)
             if upstream_path:
                 path = upstream_path
+        elif kind == "wire":
+            # Always resolve live source from the current graph so rewiring does not
+            # depend on pressing the Wire node "View" button.
+            order_mode = _param_value(model, "order") or "id"
+            source_path = ""
+            try:
+                from nodes.wire import spec as _wire_spec  # type: ignore
+                resolve_src_fn = getattr(_wire_spec, "_resolve_wire_source", None)
+                norm_fn = getattr(_wire_spec, "_normalize_order", None)
+                build_fn = getattr(_wire_spec, "_build_wire_obj_from_ply", None)
+
+                if callable(resolve_src_fn):
+                    source_path = str(resolve_src_fn(src_item) or "").strip()
+                if not source_path:
+                    source_path = (
+                        _param_value(model, "source")
+                        or _param_value(model, "mesh")
+                        or path
+                    ).strip()
+                if not source_path:
+                    _up_item, _up_kind, _up_path = _resolve_input_item(scene, src_item, {"mesh", "source", "path"})
+                    source_path = (_up_path or "").strip()
+
+                if callable(norm_fn):
+                    order_mode = str(norm_fn(order_mode))
+
+                if source_path and callable(build_fn):
+                    out_path, _detail = build_fn(source_path, mode=order_mode)
+                    if out_path:
+                        path = str(out_path).strip()
+                        _set_param(model, "source", source_path)
+                        _set_param(model, "order", order_mode)
+                        _set_param(model, "path", path)
+            except Exception:
+                pass
 
         if not path:
             if kind in _MATERIAL_KINDS:
@@ -1332,6 +1428,11 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
         if vol_path:
             wire_only = True
             is_volume = True
+            texture_provider = None
+            texture = ""
+        elif kind == "wire":
+            # Wire node outputs polyline OBJ data (v/l). Render it with the wire pass.
+            wire_only = True
             texture_provider = None
             texture = ""
         xf = _lookup_xform(xforms, node_name)
@@ -1564,6 +1665,31 @@ class SceneAssemblyWidget(QtWidgets.QWidget):
                 "3D view is not available.",
             )
             return
+        try:
+            has_wire_paths = any(
+                bool(a.get("wire_only")) and not bool(a.get("volume"))
+                for a in assets
+                if isinstance(a, dict)
+            )
+            if has_wire_paths and win is not None:
+                glv = getattr(win, "gl_view", None)
+                if glv is not None:
+                    toggle = getattr(glv, "_mgl_wireframe_toggle", None)
+                    if toggle is not None:
+                        try:
+                            if not bool(toggle.isChecked()):
+                                toggle.setChecked(True)
+                        except Exception:
+                            pass
+                    else:
+                        on_toggle = getattr(glv, "_on_mgl_wireframe_toggled", None)
+                        if callable(on_toggle):
+                            try:
+                                on_toggle(True)
+                            except Exception:
+                                pass
+        except Exception:
+            pass
         handler(assets)
 
 
