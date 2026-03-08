@@ -53,6 +53,8 @@ _PLY_SCALAR_TYPES = {
     "float64": "d",
 }
 
+_WIRE_CACHE_VERSION = "wire-v2"
+
 
 def _sanitize_name(name: str) -> str:
     safe = re.sub(r"[^a-zA-Z0-9_-]+", "_", (name or "").strip())
@@ -222,6 +224,44 @@ def _safe_float(value):
         return None
 
 
+def _json_payload(json_path: Path) -> dict:
+    try:
+        payload = json.loads(json_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _state_key(raw) -> str:
+    text = str(raw or "").strip().lower()
+    if not text:
+        return ""
+    try:
+        if text.startswith("0x"):
+            return f"0x{int(text, 16):x}"
+        return f"0x{int(text, 0):x}"
+    except Exception:
+        return text
+
+
+def _same_point(a, b, eps: float = 1e-8) -> bool:
+    try:
+        return (
+            abs(float(a[0]) - float(b[0])) <= eps
+            and abs(float(a[1]) - float(b[1])) <= eps
+            and abs(float(a[2]) - float(b[2])) <= eps
+        )
+    except Exception:
+        return False
+
+
+def _open_polyline(points: list[tuple[float, float, float]]) -> list[tuple[float, float, float]]:
+    out = [(float(x), float(y), float(z)) for x, y, z in (points or [])]
+    if len(out) >= 3 and _same_point(out[0], out[-1]):
+        out = out[:-1]
+    return out
+
+
 def _find_sidecar_json_for_ply(ply_path: Path) -> Path | None:
     stem = ply_path.stem
     candidates = []
@@ -243,11 +283,7 @@ def _find_sidecar_json_for_ply(ply_path: Path) -> Path | None:
     return None
 
 
-def _json_rows(json_path: Path) -> list[dict]:
-    try:
-        payload = json.loads(json_path.read_text(encoding="utf-8"))
-    except Exception:
-        return []
+def _json_rows_from_payload(payload: dict) -> list[dict]:
     points = payload.get("points")
     if not isinstance(points, list):
         return []
@@ -269,13 +305,20 @@ def _json_rows(json_path: Path) -> list[dict]:
                 "point_id": _safe_int(p.get("point_id")),
                 "probability": _safe_float(p.get("probability")),
                 "hamming_weight": _safe_float(p.get("hamming_weight")),
+                "hex_state": _state_key(p.get("hex_state")),
+                "decimal_state": _safe_int(p.get("decimal_state")),
             }
         )
+        if not out[-1]["hex_state"] and out[-1]["decimal_state"] is not None:
+            out[-1]["hex_state"] = f"0x{int(out[-1]['decimal_state']):x}"
     return out
 
 
-def _ordered_points_from_json(json_path: Path, mode: str) -> list[tuple[float, float, float]]:
-    rows = _json_rows(json_path)
+def _json_rows(json_path: Path) -> list[dict]:
+    return _json_rows_from_payload(_json_payload(json_path))
+
+
+def _ordered_points_from_rows(rows: list[dict], mode: str) -> list[tuple[float, float, float]]:
     if len(rows) < 2:
         return []
 
@@ -301,6 +344,81 @@ def _ordered_points_from_json(json_path: Path, mode: str) -> list[tuple[float, f
         pass
 
     return [(float(r["x"]), float(r["y"]), float(r["z"])) for r in rows]
+
+
+def _ordered_points_from_json(json_path: Path, mode: str) -> list[tuple[float, float, float]]:
+    return _ordered_points_from_rows(_json_rows(json_path), mode)
+
+
+def _json_key_sequences(payload: dict) -> list[list[str]]:
+    result_payload = payload.get("result_payload")
+    if not isinstance(result_payload, dict):
+        return []
+
+    raw_key = result_payload.get("Key")
+    if not isinstance(raw_key, list):
+        return []
+    if raw_key and not isinstance(raw_key[0], (list, tuple)):
+        raw_key = [raw_key]
+
+    out = []
+    for seq in raw_key:
+        if not isinstance(seq, (list, tuple)):
+            continue
+        states = []
+        for token in seq:
+            key = _state_key(token)
+            if key:
+                states.append(key)
+        if states:
+            out.append(states)
+    return out
+
+
+def _ordered_polylines_from_json(json_path: Path, mode: str) -> list[list[tuple[float, float, float]]]:
+    payload = _json_payload(json_path)
+    rows = _json_rows_from_payload(payload)
+    if len(rows) < 2:
+        return []
+
+    mode = _normalize_order(mode)
+    if mode == "id":
+        key_seqs = _json_key_sequences(payload)
+        if key_seqs:
+            by_state = {}
+            for row in rows:
+                key = str(row.get("hex_state") or "").strip().lower()
+                if key and key not in by_state:
+                    by_state[key] = row
+
+            if by_state:
+                polylines = []
+                used_states = set()
+                for seq in key_seqs:
+                    poly = []
+                    for state in seq:
+                        row = by_state.get(state)
+                        if row is None:
+                            continue
+                        point = (float(row["x"]), float(row["y"]), float(row["z"]))
+                        if poly and _same_point(poly[-1], point):
+                            continue
+                        poly.append(point)
+                        used_states.add(state)
+                    poly = _open_polyline(poly)
+                    if len(poly) >= 2:
+                        polylines.append(poly)
+
+                # Keep legacy full-point behavior unless JSON explicitly carries
+                # multiple paths, or the key coverage spans all known states.
+                if polylines and (len(polylines) > 1 or len(used_states) >= len(rows)):
+                    return polylines
+
+    points = _ordered_points_from_rows(rows, mode)
+    points = _open_polyline(points)
+    if len(points) < 2:
+        return []
+    return [points]
 
 
 def _x_looks_like_point_id(points: list[tuple[float, float, float]]) -> bool:
@@ -434,7 +552,7 @@ def _load_points_from_ply(path: Path) -> list[tuple[float, float, float]]:
 
 def _signature_for_wire_cache(source_path: Path, mode: str, json_path: Path | None) -> str:
     mode = _normalize_order(mode)
-    parts = [str(source_path.resolve()), mode]
+    parts = [_WIRE_CACHE_VERSION, str(source_path.resolve()), mode]
     try:
         st = source_path.stat()
         parts.extend([str(int(st.st_size)), str(int(st.st_mtime_ns))])
@@ -454,7 +572,24 @@ def _signature_for_wire_cache(source_path: Path, mode: str, json_path: Path | No
     return "|".join(parts)
 
 
-def _write_wire_obj(path: Path, points: list[tuple[float, float, float]], source_path: Path, mode: str, json_path: Path | None) -> None:
+def _write_wire_obj(
+    path: Path,
+    polylines: list[list[tuple[float, float, float]]],
+    source_path: Path,
+    mode: str,
+    json_path: Path | None,
+) -> None:
+    clean_polylines = []
+    total_points = 0
+    for poly in polylines or []:
+        opened = _open_polyline(poly)
+        if len(opened) < 2:
+            continue
+        clean_polylines.append(opened)
+        total_points += len(opened)
+    if total_points < 2 or not clean_polylines:
+        raise RuntimeError("Wire needs at least 2 points.")
+
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="\n") as f:
         f.write("# EchoGraph wire path\n")
@@ -462,19 +597,24 @@ def _write_wire_obj(path: Path, points: list[tuple[float, float, float]], source
         f.write(f"# mode={_normalize_order(mode)}\n")
         if json_path is not None:
             f.write(f"# json={json_path}\n")
-        for x, y, z in points:
-            f.write(f"v {float(x):.9g} {float(y):.9g} {float(z):.9g}\n")
+        f.write(f"# curves={len(clean_polylines)}\n")
+        for poly in clean_polylines:
+            for x, y, z in poly:
+                f.write(f"v {float(x):.9g} {float(y):.9g} {float(z):.9g}\n")
 
-        count = int(len(points))
+        first_idx = 1
         chunk = 2048
-        start = 0
-        while start < (count - 1):
-            end = min(start + chunk, count)
-            if (end - start) < 2:
-                break
-            indices = " ".join(str(i) for i in range(start + 1, end + 1))
-            f.write(f"l {indices}\n")
-            start = end - 1
+        for poly in clean_polylines:
+            count = int(len(poly))
+            start = 0
+            while start < (count - 1):
+                end = min(start + chunk, count)
+                if (end - start) < 2:
+                    break
+                indices = " ".join(str(first_idx + i) for i in range(start, end))
+                f.write(f"l {indices}\n")
+                start = end - 1
+            first_idx += count
 
 
 def _build_wire_obj_from_ply(source_path: str, mode: str = "id") -> tuple[str, str]:
@@ -495,27 +635,30 @@ def _build_wire_obj_from_ply(source_path: str, mode: str = "id") -> tuple[str, s
     if out_path.exists():
         return str(out_path), "cached"
 
-    points = []
+    polylines = []
     used_json = False
     if json_path is not None:
-        points = _ordered_points_from_json(json_path, mode)
-        used_json = bool(points)
+        polylines = _ordered_polylines_from_json(json_path, mode)
+        used_json = bool(polylines)
 
-    if not points:
+    if not polylines:
         ply_points = _load_points_from_ply(src)
         if len(ply_points) < 2:
             return "", "PLY has fewer than 2 points."
-        points = _order_points_from_ply(ply_points, mode)
+        points = _open_polyline(_order_points_from_ply(ply_points, mode))
+        if len(points) >= 2:
+            polylines = [points]
 
-    if len(points) < 2:
+    total_points = sum(len(poly) for poly in polylines)
+    if total_points < 2:
         return "", "Wire needs at least 2 points."
 
     try:
-        _write_wire_obj(out_path, points, src, mode, json_path if used_json else None)
+        _write_wire_obj(out_path, polylines, src, mode, json_path if used_json else None)
     except Exception as exc:
         return "", f"Failed writing wire OBJ: {exc}"
 
-    detail = f"{len(points)} pts via {'json' if used_json else 'ply'}"
+    detail = f"{total_points} pts / {len(polylines)} curve(s) via {'json' if used_json else 'ply'}"
     return str(out_path), detail
 
 

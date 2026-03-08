@@ -23,6 +23,7 @@ _TEXTURE_KINDS = {"texture", "texture_pro", "texture_layer"}
 
 _EYE_ICON_CACHE = {}
 _FX_LOG_ENABLED = True
+_SCENE_LOG_TIMES = {}
 
 
 def _fx_log(msg: str) -> None:
@@ -45,6 +46,61 @@ def _fx_debug_enabled(model) -> bool:
 
 def _material_debug_enabled(model) -> bool:
     return str(_param_value(model, "debug_log") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _scene_debug_enabled(model) -> bool:
+    return str(_param_value(model, "debug_log") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _scene_log(node_item, msg: str, *, key: str | None = None, interval: float = 0.0) -> None:
+    model = getattr(node_item, "model", None) if node_item is not None else None
+    if not _scene_debug_enabled(model):
+        return
+    if key and interval > 0.0:
+        try:
+            now = float(time.time())
+            last = float(_SCENE_LOG_TIMES.get(str(key), 0.0) or 0.0)
+            if (now - last) < float(interval):
+                return
+            _SCENE_LOG_TIMES[str(key)] = now
+        except Exception:
+            pass
+    try:
+        root = Path(__file__).resolve().parents[2]
+        log_dir = root / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        node_name = str(getattr(model, "name", "") or "").strip() if model is not None else ""
+        with (log_dir / "scene_view_debug.log").open("a", encoding="utf-8") as f:
+            f.write(f"{ts} [{node_name or 'scene'}] {msg}\n")
+    except Exception:
+        pass
+
+
+def _scene_timeline_frame(node_item) -> int:
+    try:
+        scene = node_item.scene()
+    except Exception:
+        scene = None
+    if scene is None:
+        return 0
+    try:
+        views = scene.views()
+        if not views:
+            return 0
+        win = views[0].window()
+    except Exception:
+        return 0
+    glv = getattr(win, "gl_view", None) if win is not None else None
+    if glv is None:
+        return 0
+    fn = getattr(glv, "_timeline_current_frame", None)
+    if not callable(fn):
+        return 0
+    try:
+        return max(0, int(fn()))
+    except Exception:
+        return 0
 
 
 def _eye_icon(visible: bool) -> QtGui.QIcon:
@@ -108,6 +164,42 @@ def _set_param_value(model, name: str, value: str) -> None:
             entry["value"] = value
             return
     params.append({"name": name, "value": value})
+
+
+def _owner_in_map(mapping, owner: str) -> bool:
+    if not isinstance(mapping, dict):
+        return False
+    key = str(owner or "").strip()
+    if not key:
+        return False
+    if key in mapping:
+        return True
+    lo = key.lower()
+    for k in mapping.keys():
+        try:
+            if str(k).strip().lower() == lo:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _owner_map_get(mapping, owner: str, default=None):
+    if not isinstance(mapping, dict):
+        return default
+    key = str(owner or "").strip()
+    if not key:
+        return default
+    if key in mapping:
+        return mapping.get(key, default)
+    lo = key.lower()
+    for k, v in mapping.items():
+        try:
+            if str(k).strip().lower() == lo:
+                return v
+        except Exception:
+            continue
+    return default
 
 
 def _clamp01(value, default: float = 0.0) -> float:
@@ -530,6 +622,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
     scene = node_item.scene()
     if scene is None:
         return []
+    dbg_collect = _scene_debug_enabled(getattr(node_item, "model", None))
 
     def _norm_path(p: str) -> str:
         try:
@@ -943,6 +1036,23 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             in_edges = list(scene._in_edges(node_item))
         except Exception:
             in_edges = []
+    if dbg_collect:
+        node_name = str(getattr(getattr(node_item, "model", None), "name", "") or "").strip()
+        _scene_log(
+            node_item,
+            "collect_start frame="
+            + str(_scene_timeline_frame(node_item))
+            + " node="
+            + (node_name or "<scene>")
+            + " edges="
+            + str(len(in_edges))
+            + " hidden="
+            + str(len(hidden))
+            + " xforms="
+            + str(len(xforms)),
+            key="scene_collect_start_" + (node_name or "<scene>"),
+            interval=0.02,
+        )
 
     assets: List[Dict[str, str]] = []
     seen = set()
@@ -1525,6 +1635,108 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                     f"radius={float(fx_entry.get('radius', 0.35) or 0.35):.4f} "
                     f"sides={int(fx_entry.get('sides', 28) or 28)} aliases={aliases!r}"
                 )
+    if dbg_collect:
+        frame_idx = _scene_timeline_frame(node_item)
+        splat_rows = []
+        for a in assets:
+            if not isinstance(a, dict):
+                continue
+            ext_hint = str(a.get("ext") or "").strip().lower()
+            if not ext_hint:
+                ext_hint = Path(str(a.get("path") or "").strip()).suffix.lower()
+            if ext_hint == ".ply":
+                splat_rows.append(a)
+        _scene_log(
+            node_item,
+            "collect_done frame="
+            + str(frame_idx)
+            + " assets="
+            + str(len(assets))
+            + " splats="
+            + str(len(splat_rows)),
+            key="scene_collect_done_" + str(getattr(getattr(node_item, "model", None), "name", "") or "<scene>"),
+            interval=0.02,
+        )
+        for row in splat_rows:
+            owner = str(row.get("node") or "").strip()
+            path = str(row.get("path") or "").strip()
+            xf = row.get("xform") if isinstance(row.get("xform"), dict) else {}
+            pos = xf.get("pos", (0.0, 0.0, 0.0)) if isinstance(xf, dict) else (0.0, 0.0, 0.0)
+            rot = xf.get("rot", (0.0, 0.0, 0.0)) if isinstance(xf, dict) else (0.0, 0.0, 0.0)
+            scl = xf.get("scl", (1.0, 1.0, 1.0)) if isinstance(xf, dict) else (1.0, 1.0, 1.0)
+            _scene_log(
+                node_item,
+                "splat_asset frame="
+                + str(frame_idx)
+                + " owner="
+                + (owner or "<none>")
+                + " path="
+                + path
+                + " pos="
+                + str(tuple(pos))
+                + " rot="
+                + str(tuple(rot))
+                + " scl="
+                + str(tuple(scl)),
+            )
+            try:
+                win = _resolve_window(node_item)
+                glv = getattr(win, "gl_view", None) if win is not None else None
+                renderer = getattr(glv, "_mgl_renderer", None) or glv
+                live = None
+                get_splat = getattr(renderer, "_mgl_get_scene_splat_xform", None) if renderer is not None else None
+                get_asset = getattr(renderer, "_mgl_get_scene_asset_xform", None) if renderer is not None else None
+                if callable(get_splat):
+                    try:
+                        live = get_splat(owner)
+                    except Exception:
+                        live = None
+                if not isinstance(live, dict) and callable(get_asset):
+                    try:
+                        live = get_asset(owner)
+                    except Exception:
+                        live = None
+                if isinstance(live, dict):
+                    _scene_log(
+                        node_item,
+                        "splat_live frame="
+                        + str(frame_idx)
+                        + " owner="
+                        + (owner or "<none>")
+                        + " pos="
+                        + str(tuple(live.get("pos", (0.0, 0.0, 0.0))))
+                        + " rot="
+                        + str(tuple(live.get("rot", (0.0, 0.0, 0.0))))
+                        + " scl="
+                        + str(tuple(live.get("scl", (1.0, 1.0, 1.0)))),
+                    )
+                try:
+                    owner_name = str(getattr(glv, "_timeline_owner_name", "") or "").strip() if glv is not None else ""
+                    overrides = getattr(glv, "_timeline_manual_override_owners", None) if glv is not None else None
+                    if isinstance(overrides, set):
+                        ov_count = len(overrides)
+                        ov_has = (owner.lower() in {str(x).strip().lower() for x in overrides}) if owner else False
+                    else:
+                        ov_count = 0
+                        ov_has = False
+                    _scene_log(
+                        node_item,
+                        "timeline_state frame="
+                        + str(frame_idx)
+                        + " target_owner="
+                        + (owner_name or "<none>")
+                        + " override_count="
+                        + str(ov_count)
+                        + " owner_has_override="
+                        + ("1" if ov_has else "0"),
+                        key="scene_timeline_state_" + (str(getattr(getattr(node_item, "model", None), "name", "") or "<scene>")),
+                        interval=0.2,
+                    )
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
     return assets
 
 
@@ -1690,6 +1902,16 @@ class SceneAssemblyWidget(QtWidgets.QWidget):
             "Connect one or more 3D import, primitive, material, volume, UV unwrap, texture, texture layer, texture pro, or camera nodes first.",
             )
             return
+        try:
+            _scene_log(
+                self._node_item,
+                "view_click frame="
+                + str(_scene_timeline_frame(self._node_item))
+                + " assets="
+                + str(len(assets)),
+            )
+        except Exception:
+            pass
         wire_paths = [
             str(a.get("path") or "").strip()
             for a in assets
@@ -1752,6 +1974,34 @@ class SceneAssemblyWidget(QtWidgets.QWidget):
                                 on_toggle(True)
                             except Exception:
                                 pass
+        except Exception:
+            pass
+        try:
+            splat_rows = [
+                a
+                for a in assets
+                if isinstance(a, dict) and str(a.get("ext") or "").strip().lower() == ".ply"
+            ]
+            _scene_log(
+                self._node_item,
+                "view_dispatch frame="
+                + str(_scene_timeline_frame(self._node_item))
+                + " splats="
+                + str(len(splat_rows))
+                + " wires="
+                + str(len(wire_paths)),
+            )
+            for row in splat_rows:
+                xf = row.get("xform") if isinstance(row.get("xform"), dict) else {}
+                _scene_log(
+                    self._node_item,
+                    "view_splat owner="
+                    + str(row.get("node") or "")
+                    + " path="
+                    + str(row.get("path") or "")
+                    + " xform="
+                    + str(xf or {}),
+                )
         except Exception:
             pass
         handler(assets)
@@ -2208,7 +2458,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             getf = getattr(glv, "_mgl_get_scene_asset_xform", None)
             try:
                 splat_map = getattr(glv, "_mgl_scene_splats", None)
-                if isinstance(splat_map, dict) and owner in splat_map:
+                if _owner_in_map(splat_map, owner):
                     getf = getattr(glv, "_mgl_get_scene_splat_xform", getf)
             except Exception:
                 pass
@@ -2237,7 +2487,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             try:
                 getf = getattr(glv, "_mgl_get_scene_asset_xform", None)
                 splat_map = getattr(glv, "_mgl_scene_splats", None)
-                if isinstance(splat_map, dict) and owner in splat_map:
+                if _owner_in_map(splat_map, owner):
                     getf = getattr(glv, "_mgl_get_scene_splat_xform", getf)
                 if callable(getf):
                     raw_before = getf(owner) or {}
@@ -2256,7 +2506,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             is_splat = False
             try:
                 splat_map = getattr(glv, "_mgl_scene_splats", None)
-                if isinstance(splat_map, dict) and owner in splat_map:
+                if _owner_in_map(splat_map, owner):
                     is_splat = True
             except Exception:
                 is_splat = False
@@ -2308,11 +2558,29 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                             sync_view(owner)
             except Exception:
                 pass
-            # Persist updated xform back to the scene node model (for workflow save)
+            # Ask host window to refresh/persist scene xforms when available.
             try:
                 win = card.window()
                 if win is not None and hasattr(win, "update_scene_asset_xform"):
                     win.update_scene_asset_xform(owner)
+            except Exception:
+                pass
+            # Also persist directly from the outliner values so timeline-driven
+            # scene reloads keep the intended manual transform.
+            try:
+                node_ref = getattr(card, "_node_ref", None)
+                if node_ref is not None:
+                    xforms = getattr(node_ref, "_scene_xforms", None)
+                    if not isinstance(xforms, dict):
+                        xforms = {}
+                    else:
+                        xforms = dict(xforms)
+                    xforms[str(owner)] = {
+                        "pos": [float(pos[0]), float(pos[1]), float(pos[2])],
+                        "rot": [float(rot[0]), float(rot[1]), float(rot[2])],
+                        "scl": [float(scl[0]), float(scl[1]), float(scl[2])],
+                    }
+                    setattr(node_ref, "_scene_xforms", xforms)
             except Exception:
                 pass
 
@@ -2405,7 +2673,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                             splat_map = getattr(renderer, "_mgl_scene_splats_world", None)
                             if not isinstance(splat_map, dict) or not splat_map:
                                 splat_map = getattr(renderer, "_mgl_scene_splats", None)
-                            if isinstance(splat_map, dict) and owner in splat_map:
+                            if _owner_in_map(splat_map, owner):
                                 is_splat = True
                         except Exception:
                             is_splat = False
@@ -2427,8 +2695,8 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                                     getattr(renderer, "_mgl_scene_splats_bounds_local", None)
                                     or getattr(renderer, "_mgl_scene_splat_bounds_by_owner", None)
                                 )
-                                if isinstance(bounds_map, dict) and owner in bounds_map:
-                                    mins, maxs = bounds_map.get(owner) or (None, None)
+                                if _owner_in_map(bounds_map, owner):
+                                    mins, maxs = _owner_map_get(bounds_map, owner, (None, None)) or (None, None)
                                     if mins is not None and maxs is not None:
                                         pivot = (
                                             (float(mins[0]) + float(maxs[0])) * 0.5,

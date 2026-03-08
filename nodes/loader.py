@@ -241,6 +241,17 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Wire plugin import failed:", e)
 
+    # 8.99) PLY Sequence
+    try:
+        from nodes import ply_sequence
+        if hasattr(ply_sequence, "register"):
+            ply_sequence.register()
+            _safe_probe("ply_sequence")
+        else:
+            print("[EchoGraph] PLY Sequence module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] PLY Sequence plugin import failed:", e)
+
     # 9) GPT Prompt
     try:
         from nodes import gpt_prompt
