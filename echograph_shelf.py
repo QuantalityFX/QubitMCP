@@ -3269,9 +3269,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             print("[open_scene_assets] no assets", flush=True)
             return False
 
-        # Ensure outliner selection/gizmo start cleared on scene open
+        # Only clear selection on full scene opens. Playback refreshes (`frame=False`)
+        # must preserve outliner/timeline owner context across frame swaps.
         try:
-            if hasattr(self, "clear_scene_asset_selection"):
+            if bool(frame) and hasattr(self, "clear_scene_asset_selection"):
                 self.clear_scene_asset_selection()
         except Exception:
             pass
@@ -3479,8 +3480,32 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         if gl_view is None:
             print("[open_scene_assets] gl_view is None", flush=True)
             return False
+        preserve_owner = ""
+        if not bool(frame):
+            # Playback refresh: preserve current scene-owner selection/gizmo binding.
+            try:
+                active_scene = getattr(self, "_active_scene_node", None)
+                cards = getattr(self, "_card_by_node", None)
+                if isinstance(cards, dict):
+                    for card in cards.values():
+                        if getattr(card, "_node_ref", None) is not active_scene:
+                            continue
+                        if not bool(getattr(card, "_scene_outliner_user_selected", False)):
+                            continue
+                        preserve_owner = str(getattr(card, "_scene_selected_owner", "") or "").strip()
+                        if preserve_owner:
+                            break
+            except Exception:
+                preserve_owner = ""
+            if not preserve_owner:
+                try:
+                    preserve_owner = str(getattr(gl_view, "_xform_gizmo_owner", "") or "").strip()
+                except Exception:
+                    preserve_owner = ""
         try:
-            self._timeline_controller.sync_timeline_context()
+            # Full scene open: timeline context can be rebuilt immediately.
+            if bool(frame):
+                self._timeline_controller.sync_timeline_context()
         except Exception:
             pass
         try:
@@ -3504,6 +3529,21 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             try:
                 _scene_log(f"open_scene_assets: load_scene_assets count={len(clean)} frame={frame}")
                 loader(clean, frame=frame)
+                if (not bool(frame)) and preserve_owner:
+                    # Re-assert selected owner after frame-swap reloads.
+                    def _restore_owner_selection(owner_name=str(preserve_owner)):
+                        try:
+                            self.select_scene_asset(owner_name)
+                        except Exception:
+                            pass
+                        try:
+                            self._timeline_controller.sync_timeline_context()
+                        except Exception:
+                            pass
+                    try:
+                        QtCore.QTimer.singleShot(0, _restore_owner_selection)
+                    except Exception:
+                        _restore_owner_selection()
                 return True
             except Exception:
                 print("[open_scene_assets] loader error:\n" + traceback.format_exc(), flush=True)
@@ -3546,6 +3586,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         owner = (owner or "").strip()
         if not owner:
             return
+        owner_l = owner.lower()
 
         for card in (getattr(self, "_card_by_node", {}) or {}).values():
             outliner = getattr(card, "_scene_outliner_widget", None)
@@ -3556,9 +3597,28 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                     it = outliner.item(i)
                     if it is None:
                         continue
-                    if (it.data(QtCore.Qt.UserRole) or "") == owner:
+                    item_owner = str(it.data(QtCore.Qt.UserRole) or "").strip()
+                    if item_owner.lower() == owner_l:
                         outliner.setCurrentRow(i)
                         outliner.scrollToItem(it)
+                        # Keep logical owner selection in sync even if row-change
+                        # signals were temporarily blocked during a refresh.
+                        try:
+                            card._scene_selected_owner = item_owner or owner
+                            card._scene_selected_kind = str(it.data(QtCore.Qt.UserRole + 1) or "").strip().lower() or None
+                            card._scene_outliner_user_selected = True
+                        except Exception:
+                            pass
+                        try:
+                            panel = getattr(card, "_xform_panel", None)
+                            if panel is not None:
+                                panel.setEnabled(True)
+                        except Exception:
+                            pass
+                        try:
+                            self._timeline_controller.sync_timeline_context()
+                        except Exception:
+                            pass
                         return
             except Exception:
                 pass

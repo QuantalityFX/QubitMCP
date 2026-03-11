@@ -2865,6 +2865,13 @@ def augment_infocard_footer(card, footer_layout) -> bool:
 
         def _refresh(scene_override=None):
             prev_owner = getattr(card, "_scene_selected_owner", None)
+            if not prev_owner:
+                try:
+                    cur_item = outliner.currentItem()
+                    if cur_item is not None:
+                        prev_owner = str(cur_item.data(QtCore.Qt.UserRole) or "").strip() or None
+                except Exception:
+                    prev_owner = None
             try:
                 outliner.blockSignals(True)
             except Exception:
@@ -3134,13 +3141,15 @@ def augment_infocard_footer(card, footer_layout) -> bool:
 
             # Restore prior selection if possible; otherwise clear selection/gizmo.
             selected_row = None
-            if prev_owner and bool(getattr(card, "_scene_outliner_user_selected", False)):
+            if prev_owner:
                 try:
+                    prev_owner_l = str(prev_owner).strip().lower()
                     for i in range(outliner.count()):
                         it = outliner.item(i)
                         if it is None:
                             continue
-                        if (it.data(QtCore.Qt.UserRole) or "") == prev_owner:
+                        item_owner = str(it.data(QtCore.Qt.UserRole) or "").strip().lower()
+                        if item_owner == prev_owner_l:
                             selected_row = i
                             break
                 except Exception:

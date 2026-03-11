@@ -140,9 +140,9 @@ class TimelineController:
         except Exception:
             project_path = None
         owner_name = None
+        card = None
         try:
             active_name = str(scene_name or "").strip()
-            card = None
             cards = getattr(win, "_card_by_node", None)
             if isinstance(cards, dict):
                 if active_name:
@@ -159,6 +159,17 @@ class TimelineController:
                     owner_name = raw_owner
         except Exception:
             owner_name = None
+        if owner_name is None and card is not None:
+            # Fallback to current outliner row even when the user-selected flag is stale.
+            try:
+                outliner = getattr(card, "_scene_outliner_widget", None)
+                current_item = outliner.currentItem() if outliner is not None else None
+                if current_item is not None:
+                    raw_owner = str(current_item.data(QtCore.Qt.UserRole) or "").strip()
+                    if raw_owner:
+                        owner_name = raw_owner
+            except Exception:
+                pass
         if owner_name is None:
             try:
                 raw_owner = str(getattr(gv, "_xform_gizmo_owner", "") or "").strip()

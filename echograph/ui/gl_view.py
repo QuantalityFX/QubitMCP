@@ -2377,10 +2377,6 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         if not mode or mode == "default":
             return False
         interacting = False
-        try:
-            interacting = bool(getattr(self, "_fps_nav_active", False))
-        except Exception:
-            interacting = False
         if not interacting:
             try:
                 keys = getattr(self, "_fps_nav_keys", None)
@@ -2388,6 +2384,14 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                     interacting = True
             except Exception:
                 pass
+        if not interacting:
+            # `_fps_nav_active` can stay true while fly mode is idle; only treat
+            # FPS nav as interaction when look-anchor state is currently active.
+            try:
+                if bool(getattr(self, "_fps_nav_active", False)):
+                    interacting = getattr(self, "_fps_nav_cursor_anchor", None) is not None
+            except Exception:
+                interacting = False
         if not interacting:
             try:
                 interacting = bool(getattr(self, "_mgl_orbit_dragging", False))
@@ -2956,7 +2960,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         if enabled:
             self._orbit_cam_enabled = False
             self._fps_camera_active = True
-            self._fps_nav_active = True
+            self._fps_nav_active = False
             self._fps_nav_last_t = time.perf_counter()
             self._fps_nav_keys = set()
             self._fps_nav_look_last_pos = None
@@ -3915,18 +3919,84 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                     self._select_scene_camera(selected)
             except Exception:
                 pass
-            # Clear selection/gizmo on fresh scene load
-            self._xform_gizmo_owner = None
-            self._xform_gizmo_owner_kind = None
-            self._xform_gizmo_pos_locked = False
-            self._xform_gizmo_pos = (0.0, 0.0, 0.0)
-            # Also clear outliner selection if available
-            try:
-                w = self.window()
-                if w is not None and hasattr(w, "clear_scene_asset_selection"):
-                    w.clear_scene_asset_selection()
-            except Exception:
-                pass
+            # Keep selection/gizmo stable across frame-refresh scene swaps (ply_sequence playback).
+            if bool(frame):
+                # Full scene load: clear selection/gizmo to avoid stale state.
+                self._xform_gizmo_owner = None
+                self._xform_gizmo_owner_kind = None
+                self._xform_gizmo_pos_locked = False
+                self._xform_gizmo_pos = (0.0, 0.0, 0.0)
+                try:
+                    w = self.window()
+                    if w is not None and hasattr(w, "clear_scene_asset_selection"):
+                        w.clear_scene_asset_selection()
+                except Exception:
+                    pass
+            else:
+                # Timeline refresh: preserve selected owner when still present and refresh gizmo world position.
+                try:
+                    sel_owner = str(getattr(self, "_xform_gizmo_owner", "") or "").strip()
+                    if sel_owner and _dict_has_casefold(owner_kind_map, sel_owner):
+                        renderer = getattr(self, "_mgl_renderer", None) or self
+                        is_splat = bool(_dict_lookup_casefold(owner_kind_map, sel_owner))
+                        getf = (
+                            getattr(renderer, "_mgl_get_scene_splat_xform", None)
+                            if is_splat
+                            else getattr(renderer, "_mgl_get_scene_asset_xform", None)
+                        )
+                        xf = getf(sel_owner) if callable(getf) else {}
+                        try:
+                            xf_pos = tuple((xf or {}).get("pos", (0.0, 0.0, 0.0)))
+                            pos = (
+                                float(xf_pos[0]),
+                                float(xf_pos[1]),
+                                float(xf_pos[2]),
+                            )
+                        except Exception:
+                            pos = (0.0, 0.0, 0.0)
+                        if is_splat:
+                            pivot = None
+                            try:
+                                bounds_map = (
+                                    getattr(renderer, "_mgl_scene_splats_bounds_local", None)
+                                    or getattr(renderer, "_mgl_scene_splat_bounds_by_owner", None)
+                                )
+                                mins = maxs = None
+                                b = _dict_lookup_casefold(bounds_map, sel_owner)
+                                if isinstance(b, (list, tuple)) and len(b) >= 2:
+                                    mins, maxs = b[0], b[1]
+                                pivot_fn = getattr(renderer, "_mgl_owner_pivot_local", None)
+                                if callable(pivot_fn):
+                                    raw = (
+                                        pivot_fn(sel_owner, mins, maxs)
+                                        if (mins is not None and maxs is not None)
+                                        else pivot_fn(sel_owner)
+                                    )
+                                    if isinstance(raw, (list, tuple)) and len(raw) >= 3:
+                                        pivot = (
+                                            float(raw[0]),
+                                            float(raw[1]),
+                                            float(raw[2]),
+                                        )
+                                if pivot is None and mins is not None and maxs is not None:
+                                    pivot = (
+                                        (float(mins[0]) + float(maxs[0])) * 0.5,
+                                        (float(mins[1]) + float(maxs[1])) * 0.5,
+                                        (float(mins[2]) + float(maxs[2])) * 0.5,
+                                    )
+                            except Exception:
+                                pivot = None
+                            if pivot is not None:
+                                pos = (
+                                    float(pos[0] + pivot[0]),
+                                    float(pos[1] + pivot[1]),
+                                    float(pos[2] + pivot[2]),
+                                )
+                        self._xform_gizmo_owner_kind = "splat" if is_splat else "mesh"
+                        self._xform_gizmo_pos_locked = False
+                        self._xform_gizmo_pos = pos
+                except Exception:
+                    pass
             self.update()
             return
 
