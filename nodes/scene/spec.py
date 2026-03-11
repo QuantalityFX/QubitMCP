@@ -982,6 +982,14 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             texture = _param_value(owner_model, "texture") if ext == ".obj" else ""
 
         xform_offset = owner_kind in ("split_volume", "volume_selector")
+        splat_zero_pivot = False
+        if ext == ".ply":
+            try:
+                if owner_kind == "ply_sequence" or _chain_has_kind(base_item, {"ply_sequence"}):
+                    xform_offset = True
+                    splat_zero_pivot = True
+            except Exception:
+                pass
         if not xform_offset:
             try:
                 if _chain_has_kind(base_item, {"split_volume", "volume_selector"}):
@@ -1024,6 +1032,8 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                 entry["debug_log"] = True
             if xform_offset:
                 entry["xform_offset"] = True
+            if splat_zero_pivot:
+                entry["splat_zero_pivot"] = True
             if texture_provider is not None:
                 entry["texture_provider"] = texture_provider
             entries.append(entry)
@@ -1547,6 +1557,14 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             texture = ""
         xf = _lookup_xform(xforms, node_name)
         xform_offset = owner_kind in ("split_volume", "volume_selector")
+        splat_zero_pivot = False
+        if ext == ".ply":
+            try:
+                if owner_kind == "ply_sequence" or _chain_has_kind(src_item, {"ply_sequence"}):
+                    xform_offset = True
+                    splat_zero_pivot = True
+            except Exception:
+                pass
         if not xform_offset:
             try:
                 if _chain_has_kind(src_item, {"split_volume", "volume_selector"}):
@@ -1585,6 +1603,8 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             entry["debug_log"] = True
         if xform_offset:
             entry["xform_offset"] = True
+        if splat_zero_pivot:
+            entry["splat_zero_pivot"] = True
         if wire_only:
             entry["wire_only"] = True
             entry["volume"] = is_volume
@@ -2691,18 +2711,28 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                         if is_splat:
                             pivot = None
                             try:
+                                mins = maxs = None
                                 bounds_map = (
                                     getattr(renderer, "_mgl_scene_splats_bounds_local", None)
                                     or getattr(renderer, "_mgl_scene_splat_bounds_by_owner", None)
                                 )
                                 if _owner_in_map(bounds_map, owner):
                                     mins, maxs = _owner_map_get(bounds_map, owner, (None, None)) or (None, None)
-                                    if mins is not None and maxs is not None:
+                                pivot_fn = getattr(renderer, "_mgl_owner_pivot_local", None)
+                                if callable(pivot_fn):
+                                    raw_pivot = pivot_fn(owner, mins, maxs) if (mins is not None and maxs is not None) else pivot_fn(owner)
+                                    if isinstance(raw_pivot, (list, tuple)) and len(raw_pivot) >= 3:
                                         pivot = (
-                                            (float(mins[0]) + float(maxs[0])) * 0.5,
-                                            (float(mins[1]) + float(maxs[1])) * 0.5,
-                                            (float(mins[2]) + float(maxs[2])) * 0.5,
+                                            float(raw_pivot[0]),
+                                            float(raw_pivot[1]),
+                                            float(raw_pivot[2]),
                                         )
+                                if pivot is None and mins is not None and maxs is not None:
+                                    pivot = (
+                                        (float(mins[0]) + float(maxs[0])) * 0.5,
+                                        (float(mins[1]) + float(maxs[1])) * 0.5,
+                                        (float(mins[2]) + float(maxs[2])) * 0.5,
+                                    )
                             except Exception:
                                 pivot = None
                             if pivot is not None:

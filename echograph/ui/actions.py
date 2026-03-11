@@ -520,18 +520,33 @@ def _apply_xform_entry(win, entry: dict, use_before: bool) -> bool:
             if is_splat:
                 pivot = None
                 try:
+                    mins = maxs = None
                     bounds_map = (
                         getattr(renderer, "_mgl_scene_splats_bounds_local", None)
                         or getattr(renderer, "_mgl_scene_splat_bounds_by_owner", None)
                     )
-                    if isinstance(bounds_map, dict) and owner in bounds_map:
-                        mins, maxs = bounds_map.get(owner) or (None, None)
-                        if mins is not None and maxs is not None:
-                            pivot = (
-                                (float(mins[0]) + float(maxs[0])) * 0.5,
-                                (float(mins[1]) + float(maxs[1])) * 0.5,
-                                (float(mins[2]) + float(maxs[2])) * 0.5,
-                            )
+                    if isinstance(bounds_map, dict):
+                        if owner in bounds_map:
+                            mins, maxs = bounds_map.get(owner) or (None, None)
+                        else:
+                            owner_l = str(owner or "").strip().lower()
+                            for k, v in bounds_map.items():
+                                try:
+                                    if str(k).strip().lower() == owner_l:
+                                        mins, maxs = v or (None, None)
+                                        break
+                                except Exception:
+                                    continue
+                    pivot_fn = getattr(renderer, "_mgl_owner_pivot_local", None)
+                    if callable(pivot_fn):
+                        raw = pivot_fn(owner, mins, maxs) if (mins is not None and maxs is not None) else pivot_fn(owner)
+                        pivot = (float(raw[0]), float(raw[1]), float(raw[2]))
+                    elif mins is not None and maxs is not None:
+                        pivot = (
+                            (float(mins[0]) + float(maxs[0])) * 0.5,
+                            (float(mins[1]) + float(maxs[1])) * 0.5,
+                            (float(mins[2]) + float(maxs[2])) * 0.5,
+                        )
                 except Exception:
                     pivot = None
                 if pivot is not None:

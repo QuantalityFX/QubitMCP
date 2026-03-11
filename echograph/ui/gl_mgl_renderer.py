@@ -2526,28 +2526,59 @@ class MGLRendererMixin:
         )
         return payload.get("vao") is not None
 
+    def _mgl_lookup_owner_entry(self, mapping, owner: str):
+        if not isinstance(mapping, dict):
+            return None, None
+        key = str(owner or "").strip()
+        if not key:
+            return None, None
+        if key in mapping:
+            return key, mapping.get(key)
+        lk = key.lower()
+        for k, v in mapping.items():
+            try:
+                if str(k).strip().lower() == lk:
+                    return k, v
+            except Exception:
+                continue
+        return None, None
+
     def _mgl_get_scene_asset_xform(self, owner: str):
+        owner_key = str(owner or "").strip()
         d = getattr(self, "_mgl_scene_xforms_by_owner", None)
         if not isinstance(d, dict):
             d = {}
             setattr(self, "_mgl_scene_xforms_by_owner", d)
-        x = d.get(owner)
+        _, x = self._mgl_lookup_owner_entry(d, owner_key)
         if isinstance(x, dict):
             return x
+        # Shelf-side owner routing can briefly call the mesh getter for splat owners.
+        splat_map = getattr(self, "_mgl_scene_splat_xforms_by_owner", None)
+        _, sx = self._mgl_lookup_owner_entry(splat_map, owner_key)
+        if isinstance(sx, dict):
+            return sx
         x = {"pos": (0.0, 0.0, 0.0), "rot": (0.0, 0.0, 0.0), "scl": (1.0, 1.0, 1.0)}
-        d[owner] = x
+        if owner_key:
+            d[owner_key] = x
         return x
 
     def _mgl_get_scene_splat_xform(self, owner: str):
+        owner_key = str(owner or "").strip()
         d = getattr(self, "_mgl_scene_splat_xforms_by_owner", None)
         if not isinstance(d, dict):
             d = {}
             setattr(self, "_mgl_scene_splat_xforms_by_owner", d)
-        x = d.get(owner)
+        _, x = self._mgl_lookup_owner_entry(d, owner_key)
         if isinstance(x, dict):
             return x
+        # Mirror mesh lookup fallback for mixed owner-map callers.
+        mesh_map = getattr(self, "_mgl_scene_xforms_by_owner", None)
+        _, mx = self._mgl_lookup_owner_entry(mesh_map, owner_key)
+        if isinstance(mx, dict):
+            return mx
         x = {"pos": (0.0, 0.0, 0.0), "rot": (0.0, 0.0, 0.0), "scl": (1.0, 1.0, 1.0)}
-        d[owner] = x
+        if owner_key:
+            d[owner_key] = x
         return x
 
     def _mgl_set_scene_asset_xform(
@@ -2911,11 +2942,20 @@ class MGLRendererMixin:
                 rx = ry = rz = 0.0
                 sx = sy = sz = 1.0
 
-            # pivot = LOCAL bounds center if available, else current center
+            # pivot = owner override -> LOCAL bounds center -> current center
             try:
+                bmin = bmax = None
                 b = (bounds_local or {}).get(owner)
                 if b is not None:
                     bmin, bmax = b
+                piv_map = getattr(self, "_mgl_scene_pivot_local_by_owner", None)
+                piv_override = self._mgl_casefold_get(piv_map, owner)
+                if isinstance(piv_override, (list, tuple)) and len(piv_override) >= 3:
+                    pivot = np.array(
+                        [float(piv_override[0]), float(piv_override[1]), float(piv_override[2])],
+                        dtype=np.float32,
+                    )
+                elif bmin is not None and bmax is not None:
                     pivot = ((bmin + bmax) * 0.5).astype(np.float32)
                 else:
                     pivot = a15[:, :3].mean(axis=0).astype(np.float32)
@@ -8135,6 +8175,7 @@ class MGLRendererMixin:
             pass
 
         # Ensure offset-mode owners are always registered for this scene load.
+        splat_zero_pivot_owners = set()
         try:
             offset_map = {}
             for entry in assets or []:
@@ -8150,6 +8191,14 @@ class MGLRendererMixin:
                 if not name:
                     continue
                 offset_map[name] = True
+                try:
+                    ext_hint = str(entry.get("ext") or "").strip().lower()
+                    if not ext_hint:
+                        ext_hint = Path(str(entry.get("path", "") or "").strip()).suffix.lower()
+                    if ext_hint == ".ply" and bool(entry.get("splat_zero_pivot", False)):
+                        splat_zero_pivot_owners.add(str(name))
+                except Exception:
+                    pass
             self._mgl_scene_xform_offset_by_owner = offset_map
         except Exception:
             pass
@@ -8175,6 +8224,18 @@ class MGLRendererMixin:
             # Preserve xforms loaded from workflow
             self._mgl_scene_xforms_by_owner = prev_mesh_xforms
             self._mgl_scene_splat_xforms_by_owner = prev_splat_xforms
+        except Exception:
+            pass
+
+        # Some sequence-driven splats should always rotate/scale around local origin.
+        try:
+            if splat_zero_pivot_owners:
+                piv = getattr(self, "_mgl_scene_pivot_local_by_owner", None)
+                if not isinstance(piv, dict):
+                    piv = {}
+                for owner_name in splat_zero_pivot_owners:
+                    piv[str(owner_name)] = (0.0, 0.0, 0.0)
+                self._mgl_scene_pivot_local_by_owner = piv
         except Exception:
             pass
 

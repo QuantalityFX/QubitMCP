@@ -228,10 +228,6 @@ def _patch_renderer_splat_anchor() -> None:
                 cfg_norm[name] = value
                 cfg_norm[name.lower()] = value
 
-            centers = getattr(self, "_ply_sequence_anchor_centers", None)
-            if not isinstance(centers, dict):
-                centers = {}
-
             bounds_local = getattr(self, "_mgl_scene_splats_bounds_local", None)
             if not isinstance(bounds_local, dict):
                 bounds_local = {}
@@ -252,12 +248,6 @@ def _patch_renderer_splat_anchor() -> None:
                 seq_pivot_owners = set()
 
             active = {str(owner).strip().lower() for owner in splat_map.keys()}
-            for stale in list(centers.keys()):
-                if str(stale).strip().lower() not in active:
-                    try:
-                        del centers[stale]
-                    except Exception:
-                        pass
             for stale in list(seq_pivot_owners):
                 if str(stale).strip().lower() not in active:
                     try:
@@ -277,11 +267,6 @@ def _patch_renderer_splat_anchor() -> None:
                 conf = cfg_norm.get(owner_name) or cfg_norm.get(owner_name.lower()) or {}
                 lock_root = bool(conf.get("lock", False))
                 if not lock_root:
-                    if owner_name in centers:
-                        try:
-                            del centers[owner_name]
-                        except Exception:
-                            pass
                     if owner_name in seq_pivot_owners:
                         try:
                             seq_pivot_owners.discard(owner_name)
@@ -302,49 +287,24 @@ def _patch_renderer_splat_anchor() -> None:
                     continue
 
                 try:
-                    cur_center = ((a[:, :3].min(axis=0) + a[:, :3].max(axis=0)) * 0.5).astype(np_mod.float32)
-                except Exception:
-                    continue
-
-                anchor_key = str(conf.get("key") or owner_name).strip()
-                rec = centers.get(owner_name)
-                if not isinstance(rec, dict) or str(rec.get("key") or "") != anchor_key:
-                    rec = {"key": anchor_key, "center": cur_center}
-                    centers[owner_name] = rec
-
-                anchor_center = rec.get("center")
-                try:
-                    anchor_center = np_mod.asarray(anchor_center, dtype=np_mod.float32)
-                    if anchor_center.shape[0] != 3:
-                        anchor_center = cur_center
-                except Exception:
-                    anchor_center = cur_center
-                rec["center"] = anchor_center
-
-                shift = (anchor_center - cur_center).astype(np_mod.float32)
-                if float(np_mod.linalg.norm(shift)) > 1.0e-12:
-                    a[:, :3] = a[:, :3] + shift[None, :]
-                splat_map[owner] = a
-                try:
                     mins = a[:, :3].min(axis=0).astype(np_mod.float32)
                     maxs = a[:, :3].max(axis=0).astype(np_mod.float32)
                     bounds_local[owner] = (mins, maxs)
                 except Exception:
                     pass
+                # Keep sequence frames in authored local space and use a fixed
+                # local origin pivot so growth does not move scene transforms.
+                splat_map[owner] = a
                 try:
                     pivots[owner_name] = (
-                        float(anchor_center[0]),
-                        float(anchor_center[1]),
-                        float(anchor_center[2]),
+                        0.0,
+                        0.0,
+                        0.0,
                     )
                     seq_pivot_owners.add(owner_name)
                 except Exception:
                     pass
 
-            try:
-                setattr(self, "_ply_sequence_anchor_centers", centers)
-            except Exception:
-                pass
             try:
                 setattr(self, "_ply_sequence_anchor_pivot_owners", seq_pivot_owners)
             except Exception:

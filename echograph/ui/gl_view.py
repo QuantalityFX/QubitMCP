@@ -3675,15 +3675,82 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 self._set_scene_camera_options(cam_entries)
             except Exception:
                 pass
-            # Reset per-owner xforms so reopen uses saved workflow values
+            def _owner_name(entry: dict) -> str:
+                name = (entry.get("node") or "").strip()
+                if name:
+                    return name
+                path_str = str(entry.get("path", "") or "").strip()
+                if path_str:
+                    try:
+                        return Path(path_str).name
+                    except Exception:
+                        return ""
+                return ""
+
+            def _owner_ext(entry: dict) -> str:
+                ext = str(entry.get("ext") or "").strip().lower()
+                if ext:
+                    return ext
+                try:
+                    return Path(str(entry.get("path", "") or "")).suffix.lower()
+                except Exception:
+                    return ""
+
+            def _dict_lookup_casefold(d, key: str):
+                if not isinstance(d, dict):
+                    return None
+                if key in d:
+                    return d.get(key)
+                lk = str(key or "").strip().lower()
+                for k, v in d.items():
+                    try:
+                        if str(k).strip().lower() == lk:
+                            return v
+                    except Exception:
+                        continue
+                return None
+
+            def _dict_has_casefold(d, key: str) -> bool:
+                if not isinstance(d, dict):
+                    return False
+                if key in d:
+                    return True
+                lk = str(key or "").strip().lower()
+                for k in d.keys():
+                    try:
+                        if str(k).strip().lower() == lk:
+                            return True
+                    except Exception:
+                        continue
+                return False
+
+            def _xf_is_identity(xf) -> bool:
+                if not isinstance(xf, dict):
+                    return True
+                try:
+                    pos = xf.get("pos", (0.0, 0.0, 0.0))
+                    rot = xf.get("rot", (0.0, 0.0, 0.0))
+                    scl = xf.get("scl", (1.0, 1.0, 1.0))
+                    return (
+                        all(abs(float(v)) < 1e-6 for v in (pos or (0.0, 0.0, 0.0)))
+                        and all(abs(float(v)) < 1e-6 for v in (rot or (0.0, 0.0, 0.0)))
+                        and all(abs(float(v) - 1.0) < 1e-6 for v in (scl or (1.0, 1.0, 1.0)))
+                    )
+                except Exception:
+                    return False
+
             try:
-                self._mgl_scene_xforms_by_owner = {}
+                prev_mesh_xforms = dict(getattr(self, "_mgl_scene_xforms_by_owner", None) or {})
             except Exception:
-                pass
+                prev_mesh_xforms = {}
             try:
-                self._mgl_scene_splat_xforms_by_owner = {}
+                prev_splat_xforms = dict(getattr(self, "_mgl_scene_splat_xforms_by_owner", None) or {})
             except Exception:
-                pass
+                prev_splat_xforms = {}
+            seeded_mesh_xforms = {}
+            seeded_splat_xforms = {}
+            owner_kind_map = {}
+            splat_zero_pivot_map = {}
             try:
                 self._mgl_scene_xform_offset_by_owner = {}
             except Exception:
@@ -3698,11 +3765,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 for entry in assets or []:
                     if not isinstance(entry, dict):
                         continue
-                    name = (entry.get("node") or "").strip()
-                    if not name:
-                        path_str = str(entry.get("path", "") or "").strip()
-                        if path_str:
-                            name = Path(path_str).name
+                    name = _owner_name(entry)
                     if not name:
                         continue
                     vis_map[name] = bool(entry.get("visible", True))
@@ -3730,14 +3793,14 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 for entry in assets or []:
                     if not isinstance(entry, dict):
                         continue
-                    if not entry.get("xform_offset"):
+                    name = _owner_name(entry)
+                    if not name:
                         continue
-                    name = (entry.get("node") or "").strip()
-                    if not name:
-                        path_str = str(entry.get("path", "") or "").strip()
-                        if path_str:
-                            name = Path(path_str).name
-                    if not name:
+                    ext = _owner_ext(entry)
+                    owner_kind_map[name] = (ext == ".ply")
+                    if ext == ".ply":
+                        splat_zero_pivot_map[name] = bool(entry.get("splat_zero_pivot", False))
+                    if not entry.get("xform_offset"):
                         continue
                     offset_map[name] = True
                 if offset_map:
@@ -3754,40 +3817,96 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 for entry in assets or []:
                     if not isinstance(entry, dict):
                         continue
-                    name = (entry.get("node") or "").strip()
-                    if not name:
-                        path_str = str(entry.get("path", "") or "").strip()
-                        if path_str:
-                            name = Path(path_str).name
+                    name = _owner_name(entry)
                     if not name:
                         continue
                     xf = entry.get("xform")
                     if not isinstance(xf, dict):
                         continue
-                    if entry.get("xform_offset"):
+                    is_splat = bool(owner_kind_map.get(name, False))
+                    if entry.get("xform_offset") and _xf_is_identity(xf):
                         try:
-                            pos = xf.get("pos", (0.0, 0.0, 0.0))
-                            rot = xf.get("rot", (0.0, 0.0, 0.0))
-                            scl = xf.get("scl", (1.0, 1.0, 1.0))
-                            if (
-                                all(abs(float(v)) < 1e-6 for v in (pos or (0.0, 0.0, 0.0)))
-                                and all(abs(float(v)) < 1e-6 for v in (rot or (0.0, 0.0, 0.0)))
-                                and all(abs(float(v) - 1.0) < 1e-6 for v in (scl or (1.0, 1.0, 1.0)))
-                            ):
-                                continue
+                            prev_raw = (
+                                _dict_lookup_casefold(prev_splat_xforms, name)
+                                if is_splat
+                                else _dict_lookup_casefold(prev_mesh_xforms, name)
+                            )
+                            if isinstance(prev_raw, dict) and not _xf_is_identity(prev_raw):
+                                seeded_prev = dict(prev_raw)
+                                if is_splat and bool(splat_zero_pivot_map.get(name, False)):
+                                    seeded_prev["pos"] = (0.0, 0.0, 0.0)
+                                if is_splat:
+                                    seeded_splat_xforms[name] = seeded_prev
+                                else:
+                                    seeded_mesh_xforms[name] = seeded_prev
                         except Exception:
                             pass
-                    ext = str(entry.get("ext") or "").lower()
-                    if not ext:
-                        ext = Path(str(entry.get("path", "") or "")).suffix.lower()
-                    if ext == ".ply":
-                        self._mgl_scene_splat_xforms_by_owner[name] = dict(xf)
+                        continue
+                    if is_splat:
+                        seeded_splat_xforms[name] = dict(xf)
                     else:
-                        self._mgl_scene_xforms_by_owner[name] = dict(xf)
+                        seeded_mesh_xforms[name] = dict(xf)
+
+                for name, is_splat in owner_kind_map.items():
+                    if is_splat:
+                        if _dict_has_casefold(seeded_splat_xforms, name):
+                            continue
+                        prev_raw = _dict_lookup_casefold(prev_splat_xforms, name)
+                        if isinstance(prev_raw, dict):
+                            seeded_splat_xforms[name] = dict(prev_raw)
+                    else:
+                        if _dict_has_casefold(seeded_mesh_xforms, name):
+                            continue
+                        prev_raw = _dict_lookup_casefold(prev_mesh_xforms, name)
+                        if isinstance(prev_raw, dict):
+                            seeded_mesh_xforms[name] = dict(prev_raw)
+                self._mgl_scene_xforms_by_owner = seeded_mesh_xforms
+                self._mgl_scene_splat_xforms_by_owner = seeded_splat_xforms
             except Exception:
                 pass
             try:
                 self._mgl_load_scene_assets(assets, frame=frame)
+            except Exception:
+                pass
+            # Final pass: enforce per-owner xforms after scene load (ply_sequence frame swaps).
+            try:
+                renderer = getattr(self, "_mgl_renderer", None) or self
+                setf = getattr(renderer, "_mgl_set_scene_asset_xform", None)
+                rebuild_splats = getattr(renderer, "_mgl_rebuild_scene_splats", None)
+                if callable(setf):
+                    applied = 0
+                    touched_splats = False
+                    for name, is_splat in owner_kind_map.items():
+                        xf_raw = (
+                            _dict_lookup_casefold(self._mgl_scene_splat_xforms_by_owner, name)
+                            if is_splat
+                            else _dict_lookup_casefold(self._mgl_scene_xforms_by_owner, name)
+                        )
+                        if not isinstance(xf_raw, dict):
+                            continue
+                        try:
+                            setf(
+                                name,
+                                pos=xf_raw.get("pos"),
+                                rot=xf_raw.get("rot"),
+                                scl=xf_raw.get("scl"),
+                                apply_to_scene_models=not bool(is_splat),
+                                use_splat_xform=bool(is_splat),
+                            )
+                            applied += 1
+                            if is_splat:
+                                touched_splats = True
+                        except Exception:
+                            continue
+                    if touched_splats and callable(rebuild_splats):
+                        try:
+                            rebuild_splats(preserve_camera=True)
+                        except Exception:
+                            pass
+                    try:
+                        self._mgl_log("scene: post-load xform enforce applied=" + str(applied))
+                    except Exception:
+                        pass
             except Exception:
                 pass
             try:

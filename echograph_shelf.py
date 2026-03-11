@@ -3345,6 +3345,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             }
             if "xform_offset" in entry:
                 clean_entry["xform_offset"] = bool(entry.get("xform_offset"))
+            if "splat_zero_pivot" in entry:
+                clean_entry["splat_zero_pivot"] = bool(entry.get("splat_zero_pivot"))
             if "wire_only" in entry:
                 clean_entry["wire_only"] = bool(entry.get("wire_only"))
             if "volume" in entry:
@@ -3439,6 +3441,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                         _round3((xf or {}).get("rot"), (0.0, 0.0, 0.0)),
                         _round3((xf or {}).get("scl"), (1.0, 1.0, 1.0)),
                         bool(entry.get("xform_offset", False)),
+                        bool(entry.get("splat_zero_pivot", False)),
                         bool(entry.get("enabled", True)),
                         int(entry.get("samples", 28) or 28),
                         int(entry.get("frame_step", 1) or 1),
@@ -3676,24 +3679,127 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             return
         gl_view = getattr(self, "gl_view", None)
         xf = None
+        xf_from_explicit_cache = False
+
+        def _map_lookup_casefold(mapping, key: str):
+            if not isinstance(mapping, dict):
+                return None
+            if key in mapping:
+                return mapping.get(key)
+            lk = str(key or "").strip().lower()
+            for k, v in mapping.items():
+                try:
+                    if str(k).strip().lower() == lk:
+                        return v
+                except Exception:
+                    continue
+            return None
+
+        def _map_has_casefold(mapping, key: str) -> bool:
+            if not isinstance(mapping, dict):
+                return False
+            if key in mapping:
+                return True
+            lk = str(key or "").strip().lower()
+            for k in mapping.keys():
+                try:
+                    if str(k).strip().lower() == lk:
+                        return True
+                except Exception:
+                    continue
+            return False
+
+        def _norm_triplet(values, default):
+            seq = values if isinstance(values, (list, tuple)) else default
+            try:
+                return (
+                    float(seq[0]),
+                    float(seq[1]),
+                    float(seq[2]),
+                )
+            except Exception:
+                return (
+                    float(default[0]),
+                    float(default[1]),
+                    float(default[2]),
+                )
+
+        def _normalize_xf(raw):
+            if not isinstance(raw, dict):
+                return None
+            return {
+                "pos": _norm_triplet(raw.get("pos", (0.0, 0.0, 0.0)), (0.0, 0.0, 0.0)),
+                "rot": _norm_triplet(raw.get("rot", (0.0, 0.0, 0.0)), (0.0, 0.0, 0.0)),
+                "scl": _norm_triplet(raw.get("scl", (1.0, 1.0, 1.0)), (1.0, 1.0, 1.0)),
+            }
+
+        def _xf_is_identity(raw) -> bool:
+            norm = _normalize_xf(raw)
+            if not isinstance(norm, dict):
+                return False
+            try:
+                pos = norm.get("pos", (0.0, 0.0, 0.0))
+                rot = norm.get("rot", (0.0, 0.0, 0.0))
+                scl = norm.get("scl", (1.0, 1.0, 1.0))
+                return (
+                    all(abs(float(v)) < 1e-6 for v in pos)
+                    and all(abs(float(v)) < 1e-6 for v in rot)
+                    and all(abs(float(v) - 1.0) < 1e-6 for v in scl)
+                )
+            except Exception:
+                return False
+
         try:
             if gl_view is not None:
-                is_splat = False
-                try:
-                    splat_map = getattr(gl_view, "_mgl_scene_splats", None)
-                    if isinstance(splat_map, dict) and owner in splat_map:
-                        is_splat = True
-                except Exception:
-                    is_splat = False
-                getf = (
-                    getattr(gl_view, "_mgl_get_scene_splat_xform", None)
-                    if is_splat
-                    else getattr(gl_view, "_mgl_get_scene_asset_xform", None)
-                )
+                renderer = getattr(gl_view, "_mgl_renderer", None) or gl_view
+                sources = (renderer, gl_view)
+
+                def _first_dict_attr(attr_name: str):
+                    for src in sources:
+                        try:
+                            m = getattr(src, attr_name, None)
+                        except Exception:
+                            m = None
+                        if isinstance(m, dict):
+                            return m
+                    return None
+
+                splat_live_map = _first_dict_attr("_mgl_scene_splats")
+                splat_world_map = _first_dict_attr("_mgl_scene_splats_world")
+                is_splat = _map_has_casefold(splat_live_map, owner) or _map_has_casefold(splat_world_map, owner)
+
+                explicit_splat_xf = _map_lookup_casefold(_first_dict_attr("_mgl_scene_splat_xforms_by_owner"), owner)
+                explicit_mesh_xf = _map_lookup_casefold(_first_dict_attr("_mgl_scene_xforms_by_owner"), owner)
+                chosen_xf = None
+                if is_splat and isinstance(explicit_splat_xf, dict):
+                    chosen_xf = explicit_splat_xf
+                elif (not is_splat) and isinstance(explicit_mesh_xf, dict):
+                    chosen_xf = explicit_mesh_xf
+                elif isinstance(explicit_splat_xf, dict) and not isinstance(explicit_mesh_xf, dict):
+                    chosen_xf = explicit_splat_xf
+                    is_splat = True
+                elif isinstance(explicit_mesh_xf, dict):
+                    chosen_xf = explicit_mesh_xf
+                elif isinstance(explicit_splat_xf, dict):
+                    chosen_xf = explicit_splat_xf
+                    is_splat = True
+
+                if isinstance(chosen_xf, dict):
+                    xf = _normalize_xf(chosen_xf)
+                    xf_from_explicit_cache = True
+
+                getf = None
+                if xf is None:
+                    getf = (
+                        getattr(renderer, "_mgl_get_scene_splat_xform", None)
+                        if is_splat
+                        else getattr(renderer, "_mgl_get_scene_asset_xform", None)
+                    )
                 if callable(getf):
-                    xf = getf(owner)
+                    xf = _normalize_xf(getf(owner))
         except Exception:
             xf = None
+            xf_from_explicit_cache = False
         for card in (getattr(self, "_card_by_node", {}) or {}).values():
             if getattr(card, "_scene_selected_owner", None) != owner:
                 # still allow persistence update if the card contains this owner
@@ -3729,7 +3835,28 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 xforms = getattr(node, "_scene_xforms", None)
                 if not isinstance(xforms, dict):
                     xforms = {}
-                xforms[str(owner)] = {
+                store_key = str(owner)
+                prev_saved_xf = None
+                owner_l = owner.lower()
+                for k, v in xforms.items():
+                    try:
+                        if str(k).strip().lower() == owner_l:
+                            store_key = str(k)
+                            prev_saved_xf = v
+                            break
+                    except Exception:
+                        continue
+                if prev_saved_xf is None:
+                    prev_saved_xf = xforms.get(store_key)
+                # Avoid clobbering a good saved xform with transient identity from getter fallback.
+                if (
+                    (not bool(xf_from_explicit_cache))
+                    and _xf_is_identity(xf)
+                    and isinstance(prev_saved_xf, dict)
+                    and (not _xf_is_identity(prev_saved_xf))
+                ):
+                    continue
+                xforms[store_key] = {
                     "pos": list(xf.get("pos", (0.0, 0.0, 0.0))),
                     "rot": list(xf.get("rot", (0.0, 0.0, 0.0))),
                     "scl": list(xf.get("scl", (1.0, 1.0, 1.0))),

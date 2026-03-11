@@ -2189,8 +2189,18 @@ def _handle_mouse_press_moderngl_left_gizmo_owner_is_splat(self, *, renderer, ow
         splat_map = getattr(renderer, "_mgl_scene_splats_world", None)
         if not isinstance(splat_map, dict) or not splat_map:
             splat_map = getattr(renderer, "_mgl_scene_splats", None)
-        if isinstance(splat_map, dict) and owner in splat_map:
-            is_splat = True
+        if isinstance(splat_map, dict):
+            if owner in splat_map:
+                is_splat = True
+            else:
+                owner_l = str(owner or "").strip().lower()
+                for k in splat_map.keys():
+                    try:
+                        if str(k).strip().lower() == owner_l:
+                            is_splat = True
+                            break
+                    except Exception:
+                        continue
     except Exception:
         is_splat = False
     return is_splat
@@ -3436,10 +3446,38 @@ def _handle_mouse_move_moderngl_xform_translate_apply_owner_pivot(self, *, owner
     bounds_map = getattr(renderer, "_mgl_scene_splats_bounds_local", None) or getattr(
         renderer, "_mgl_scene_splat_bounds_by_owner", None
     )
-    if isinstance(bounds_map, dict) and owner in bounds_map:
-        bmin, bmax = bounds_map.get(owner) or (None, None)
-        if bmin is not None and bmax is not None:
-            return (bmin + bmax) * 0.5
+    bmin = bmax = None
+    try:
+        if isinstance(bounds_map, dict):
+            if owner in bounds_map:
+                bmin, bmax = bounds_map.get(owner) or (None, None)
+            else:
+                owner_l = str(owner or "").strip().lower()
+                for k, v in bounds_map.items():
+                    try:
+                        if str(k).strip().lower() == owner_l:
+                            bmin, bmax = v or (None, None)
+                            break
+                    except Exception:
+                        continue
+    except Exception:
+        bmin = bmax = None
+    try:
+        pivot_fn = getattr(renderer, "_mgl_owner_pivot_local", None)
+        if callable(pivot_fn):
+            raw = pivot_fn(owner, bmin, bmax) if (bmin is not None and bmax is not None) else pivot_fn(owner)
+            return (float(raw[0]), float(raw[1]), float(raw[2]))
+    except Exception:
+        pass
+    if bmin is not None and bmax is not None:
+        try:
+            return (
+                (float(bmin[0]) + float(bmax[0])) * 0.5,
+                (float(bmin[1]) + float(bmax[1])) * 0.5,
+                (float(bmin[2]) + float(bmax[2])) * 0.5,
+            )
+        except Exception:
+            return None
     return None
 
 def _handle_mouse_move_moderngl_xform_translate_apply_owner_sync(self, *, owner):
@@ -4132,19 +4170,10 @@ def _handle_mouse_release_moderngl_log_splat_drag_end(self):
             if callable(get_xf) and owner:
                 xf = get_xf(owner) or {}
             xf_pos = tuple((xf or {}).get("pos", (0.0, 0.0, 0.0)))
-            pivot = None
-            bounds_map = (
-                getattr(renderer, "_mgl_scene_splats_bounds_local", None)
-                or getattr(renderer, "_mgl_scene_splat_bounds_by_owner", None)
+            pivot = self._handle_mouse_move_moderngl_xform_translate_apply_owner_pivot(
+                owner=owner,
+                renderer=renderer,
             )
-            if isinstance(bounds_map, dict) and owner in bounds_map:
-                mins, maxs = bounds_map.get(owner) or (None, None)
-                if mins is not None and maxs is not None:
-                    pivot = (
-                        (float(mins[0]) + float(maxs[0])) * 0.5,
-                        (float(mins[1]) + float(maxs[1])) * 0.5,
-                        (float(mins[2]) + float(maxs[2])) * 0.5,
-                    )
             self._mgl_log(
                 "splat: drag_end owner="
                 + str(owner)
@@ -4335,8 +4364,18 @@ def _handle_mouse_release_moderngl_pick_owner_is_splat(self, *, owner, renderer)
         splat_map = getattr(renderer, "_mgl_scene_splats_world", None)
         if not isinstance(splat_map, dict) or not splat_map:
             splat_map = getattr(renderer, "_mgl_scene_splats", None)
-        if isinstance(splat_map, dict) and owner in splat_map:
-            is_splat = True
+        if isinstance(splat_map, dict):
+            if owner in splat_map:
+                is_splat = True
+            else:
+                owner_l = str(owner or "").strip().lower()
+                for k in splat_map.keys():
+                    try:
+                        if str(k).strip().lower() == owner_l:
+                            is_splat = True
+                            break
+                    except Exception:
+                        continue
     except Exception:
         is_splat = False
     return is_splat
@@ -4354,22 +4393,10 @@ def _handle_mouse_release_moderngl_pick_owner_xf_pos(self, *, owner, renderer, i
 
 def _handle_mouse_release_moderngl_pick_owner_splat_pivot(self, *, owner, renderer):
     # For splats, xform.pos is an offset from the local pivot.
-    try:
-        bounds_map = (
-            getattr(renderer, "_mgl_scene_splats_bounds_local", None)
-            or getattr(renderer, "_mgl_scene_splat_bounds_by_owner", None)
-        )
-        if isinstance(bounds_map, dict) and owner in bounds_map:
-            mins, maxs = bounds_map.get(owner) or (None, None)
-            if mins is not None and maxs is not None:
-                return (
-                    (float(mins[0]) + float(maxs[0])) * 0.5,
-                    (float(mins[1]) + float(maxs[1])) * 0.5,
-                    (float(mins[2]) + float(maxs[2])) * 0.5,
-                )
-    except Exception:
-        pass
-    return None
+    return self._handle_mouse_move_moderngl_xform_translate_apply_owner_pivot(
+        owner=owner,
+        renderer=renderer,
+    )
 
 def _handle_mouse_release_moderngl_pick_owner_splat_bounds_center(self, *, owner, renderer):
     try:
@@ -4377,8 +4404,19 @@ def _handle_mouse_release_moderngl_pick_owner_splat_bounds_center(self, *, owner
             getattr(renderer, "_mgl_scene_splats_bounds_local", None)
             or getattr(renderer, "_mgl_scene_splat_bounds_by_owner", None)
         )
-        if isinstance(bounds_map, dict) and owner in bounds_map:
-            mins, maxs = bounds_map.get(owner) or (None, None)
+        if isinstance(bounds_map, dict):
+            mins = maxs = None
+            if owner in bounds_map:
+                mins, maxs = bounds_map.get(owner) or (None, None)
+            else:
+                owner_l = str(owner or "").strip().lower()
+                for k, v in bounds_map.items():
+                    try:
+                        if str(k).strip().lower() == owner_l:
+                            mins, maxs = v or (None, None)
+                            break
+                    except Exception:
+                        continue
             if mins is not None and maxs is not None:
                 return (
                     (float(mins[0]) + float(maxs[0])) * 0.5,

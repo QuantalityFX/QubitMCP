@@ -543,6 +543,62 @@ def _refresh_connected_scenes(node_item, changed_name: str, *, follow_camera: bo
 
     # Follow Cam is preview-only; scene refresh should keep viewport stable.
     _ = bool(follow_camera)
+
+    def _reapply_asset_xforms(asset_rows) -> int:
+        glv = getattr(win, "gl_view", None) if win is not None else None
+        renderer = getattr(glv, "_mgl_renderer", None) or glv
+        if renderer is None:
+            return 0
+        setf = getattr(renderer, "_mgl_set_scene_asset_xform", None)
+        if not callable(setf):
+            return 0
+        rebuild_splats = getattr(renderer, "_mgl_rebuild_scene_splats", None)
+        applied = 0
+        touched_splats = False
+        for entry in asset_rows or []:
+            if not isinstance(entry, dict):
+                continue
+            owner = str(entry.get("node") or "").strip()
+            if not owner:
+                path_hint = str(entry.get("path") or "").strip()
+                if path_hint:
+                    try:
+                        owner = Path(path_hint).name
+                    except Exception:
+                        owner = ""
+            if not owner:
+                continue
+            xf = entry.get("xform")
+            if not isinstance(xf, dict):
+                continue
+            ext = str(entry.get("ext") or "").strip().lower()
+            if not ext:
+                try:
+                    ext = Path(str(entry.get("path") or "").strip()).suffix.lower()
+                except Exception:
+                    ext = ""
+            is_splat = ext == ".ply"
+            try:
+                setf(
+                    owner,
+                    pos=xf.get("pos"),
+                    rot=xf.get("rot"),
+                    scl=xf.get("scl"),
+                    apply_to_scene_models=not bool(is_splat),
+                    use_splat_xform=bool(is_splat),
+                )
+                applied += 1
+                if is_splat:
+                    touched_splats = True
+            except Exception:
+                continue
+        if touched_splats and callable(rebuild_splats):
+            try:
+                rebuild_splats(preserve_camera=True)
+            except Exception:
+                pass
+        return int(applied)
+
     refreshed = 0
     for item in candidates:
         model = getattr(item, "model", None)
@@ -559,15 +615,31 @@ def _refresh_connected_scenes(node_item, changed_name: str, *, follow_camera: bo
             assets = []
         if not assets:
             continue
+        dispatched = False
         try:
             handler(assets, frame=False)
-            refreshed += 1
+            dispatched = True
         except TypeError:
             try:
                 handler(assets)
-                refreshed += 1
+                dispatched = True
             except Exception:
                 pass
+        except Exception:
+            pass
+        if not dispatched:
+            continue
+        refreshed += 1
+        try:
+            applied = _reapply_asset_xforms(assets)
+            _log_throttled(
+                "scene_refresh_apply_" + str(changed_name),
+                "scene_refresh_xforms changed_name="
+                + str(changed_name)
+                + " applied="
+                + str(int(applied)),
+                interval=0.2,
+            )
         except Exception:
             pass
     _log_throttled(
