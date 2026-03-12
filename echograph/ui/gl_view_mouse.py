@@ -2230,7 +2230,8 @@ def _handle_mouse_press_moderngl_left_pick_start(self, e, alt_pressed):
 
 def _handle_mouse_press_moderngl_middle_start(self, e, alt_pressed):
     if e.button() == QtCore.Qt.MiddleButton:
-        if not alt_pressed:
+        fly_mode = bool(getattr(self, "_fly_mode_enabled", False))
+        if not alt_pressed and not fly_mode:
             e.ignore()
             return True
         self._mgl_prev_x = e.x()
@@ -3696,21 +3697,45 @@ def _handle_mouse_move_moderngl_arcball_drag(self, e):
     return False
 
 def _handle_mouse_move_moderngl_pan_drag(self, e):
-    if e.buttons() & QtCore.Qt.MiddleButton and self._mgl_center is not None:
+    if e.buttons() & QtCore.Qt.MiddleButton:
+        fly_mode = bool(getattr(self, "_fly_mode_enabled", False))
+        if (not fly_mode) and (self._mgl_center is None):
+            return False
         try:
-            if not (e.modifiers() & QtCore.Qt.AltModifier):
+            if (not fly_mode) and not (e.modifiers() & QtCore.Qt.AltModifier):
                 return True
         except Exception:
             pass
         dx = e.x() - self._mgl_prev_x
         dy = e.y() - self._mgl_prev_y
         pan_scale = self._handle_mouse_move_moderngl_pan_drag_scale()
-        right, up = self._handle_mouse_move_moderngl_pan_drag_basis()
-        delta = (-dx * pan_scale) * right + (dy * pan_scale) * up
-        self._mgl_center += delta
+        moved = False
+        if fly_mode:
+            cam = getattr(self, "_fps_camera", None)
+            if cam is not None and bool(getattr(self, "_fps_camera_active", False)):
+                try:
+                    cam.move(
+                        0.0,
+                        (-dx * pan_scale),
+                        (dy * pan_scale),
+                        roll_locked=False,
+                    )
+                    moved = True
+                    try:
+                        self._camera_selector_apply_fps_to_locked_owner(sync_ui=True)
+                    except Exception:
+                        pass
+                except Exception:
+                    moved = False
+        if not moved and self._mgl_center is not None:
+            right, up = self._handle_mouse_move_moderngl_pan_drag_basis()
+            delta = (-dx * pan_scale) * right + (dy * pan_scale) * up
+            self._mgl_center += delta
+            moved = True
         self._mgl_prev_x = e.x()
         self._mgl_prev_y = e.y()
-        self.update()
+        if moved:
+            self.update()
         e.accept()
         return True
     return False
