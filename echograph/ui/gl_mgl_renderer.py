@@ -2594,6 +2594,7 @@ class MGLRendererMixin:
             return
         if np is None:
             return
+        owner_norm = str(owner).strip().lower()
 
         x = self._mgl_get_scene_splat_xform(owner) if use_splat_xform else self._mgl_get_scene_asset_xform(owner)
         if pos is not None:
@@ -2621,7 +2622,9 @@ class MGLRendererMixin:
             else:
                 bounds_map = getattr(self, "_mgl_scene_bounds_by_owner", None)
 
-            b = (bounds_map or {}).get(owner) if isinstance(bounds_map, dict) else None
+            b = None
+            if isinstance(bounds_map, dict):
+                _, b = self._mgl_lookup_owner_entry(bounds_map, owner)
             if b is not None:
                 bmin, bmax = b
                 cx, cy, cz = self._mgl_owner_pivot_local(owner, bmin, bmax)
@@ -2732,7 +2735,8 @@ class MGLRendererMixin:
                 for tag in ("scene-model", "scene-wire", "scene-volume", "scene-camera"):
                     for item in scene.iter_by_tag(tag):
                         payload = getattr(item, "payload", None) or {}
-                        if payload.get("owner") != owner:
+                        item_owner = str(payload.get("owner") or "").strip().lower()
+                        if item_owner != owner_norm:
                             continue
                         payload["model"] = model
                         try:

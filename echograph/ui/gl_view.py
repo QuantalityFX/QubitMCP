@@ -2735,6 +2735,18 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
     def _select_default_camera(self) -> None:
         self._camera_select_mode = "default"
         self._camera_select_lock_enabled = False
+        try:
+            win = self.window()
+            ctl = getattr(win, "_timeline_controller", None) if win is not None else None
+            sync_ctx = getattr(ctl, "sync_timeline_context", None)
+            if callable(sync_ctx):
+                sync_ctx()
+            else:
+                set_ctx = getattr(self, "set_timeline_scene_context", None)
+                if callable(set_ctx):
+                    set_ctx(owner_name=None)
+        except Exception:
+            pass
         state = getattr(self, "_camera_select_saved_default_state", None)
         if isinstance(state, dict):
             try:
@@ -2776,20 +2788,67 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                         self._camera_select_saved_default_state = saved
             except Exception:
                 pass
-        should_sync_view = bool(getattr(self, "_camera_select_lock_enabled", False))
-        if should_sync_view:
-            if not bool(self._sync_selected_scene_camera_view(owner_key)):
-                self._select_default_camera()
-                return
-        else:
-            # Keep unlocked camera selection non-invasive: validate owner without forcing viewport jump.
-            try:
-                if self._build_scene_camera_pose(owner_key) is None:
-                    self._select_default_camera()
-                    return
-            except Exception:
-                self._select_default_camera()
-                return
+        # Apply the selected camera pose immediately (no timeline scrub required)
+        # without mutating unrelated owner tracks.
+        try:
+            frame = int(self._timeline_current_frame())
+        except Exception:
+            frame = 0
+        try:
+            target_owner = str(getattr(self, "_timeline_owner_name", "") or "").strip()
+        except Exception:
+            target_owner = ""
+        try:
+            if target_owner and target_owner.lower() == owner_key.lower():
+                self._timeline_apply_frame_if_keyed(frame, force=False)
+            else:
+                keys_map = None
+                list_paths = getattr(self, "_timeline_owner_file_paths", None)
+                read_keys = getattr(self, "_timeline_read_owner_keys_file", None)
+                if callable(list_paths) and callable(read_keys):
+                    for path in list_paths() or []:
+                        try:
+                            file_owner, file_keys = read_keys(path)
+                        except Exception:
+                            continue
+                        if str(file_owner or "").strip().lower() != owner_key.lower():
+                            continue
+                        if isinstance(file_keys, dict):
+                            keys_map = file_keys
+                        break
+                if isinstance(keys_map, dict) and keys_map:
+                    xyz_eval, rxyz_eval = self._timeline_eval_frame_values_for_owner_keys(
+                        owner_key,
+                        keys_map,
+                        frame,
+                    )
+                    if not (xyz_eval is None and rxyz_eval is None):
+                        if xyz_eval is None:
+                            xyz_eval = self._timeline_owner_current_xyz(owner_key)
+                        if xyz_eval is not None:
+                            self._timeline_apply_owner_xyz_only(owner_key, xyz_eval, rxyz=rxyz_eval)
+        except Exception:
+            pass
+
+        if not bool(self._sync_selected_scene_camera_view(owner_key)):
+            self._select_default_camera()
+            return
+
+        try:
+            set_ctx = getattr(self, "set_timeline_scene_context", None)
+            if callable(set_ctx):
+                scene_name = str(getattr(self, "_timeline_scene_name", "") or "").strip() or None
+                project_path = None
+                try:
+                    win = self.window()
+                    raw_path = str(getattr(win, "_current_path", "") or "").strip() if win is not None else ""
+                    if raw_path:
+                        project_path = raw_path
+                except Exception:
+                    project_path = None
+                set_ctx(scene_name=scene_name, project_path=project_path, owner_name=owner_key)
+        except Exception:
+            pass
 
         self._camera_select_mode = owner_key
         try:

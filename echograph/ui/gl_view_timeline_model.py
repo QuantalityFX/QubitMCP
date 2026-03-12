@@ -28,9 +28,18 @@ class GraphGLTimelineModelMixin:
 
     def _timeline_target_owner(self) -> str:
         try:
-            return str(getattr(self, "_timeline_owner_name", "") or "").strip()
+            owner = str(getattr(self, "_timeline_owner_name", "") or "").strip()
         except Exception:
-            return ""
+            owner = ""
+        if owner:
+            return owner
+        try:
+            mode = str(getattr(self, "_camera_select_mode", "default") or "default").strip()
+        except Exception:
+            mode = "default"
+        if mode and mode.lower() != "default":
+            return mode
+        return ""
 
     def _timeline_owner_file_paths(self) -> List[Path]:
         scene_name = str(getattr(self, "_timeline_scene_name", "") or "").strip()
@@ -218,6 +227,78 @@ class GraphGLTimelineModelMixin:
         finally:
             self._timeline_owner_name = old_owner
             self._timeline_keys = old_keys if isinstance(old_keys, dict) else {}
+
+    def _timeline_keys_map_for_owner(self, owner: str) -> Dict[int, Dict[str, object]]:
+        key = str(owner or "").strip()
+        if not key:
+            return {}
+        key_norm = self._timeline_owner_norm(key)
+        try:
+            current_owner = str(getattr(self, "_timeline_owner_name", "") or "").strip()
+        except Exception:
+            current_owner = ""
+        if key_norm and key_norm == self._timeline_owner_norm(current_owner):
+            current_keys = getattr(self, "_timeline_keys", None)
+            if isinstance(current_keys, dict):
+                return current_keys
+        try:
+            renderer = getattr(self, "_mgl_renderer", None) or self
+            map_fn = getattr(renderer, "_mgl_timeline_owner_keys_map", None)
+            if callable(map_fn):
+                keys_map = map_fn(key)
+                if isinstance(keys_map, dict):
+                    return keys_map
+        except Exception:
+            pass
+        list_paths = getattr(self, "_timeline_owner_file_paths", None)
+        read_keys = getattr(self, "_timeline_read_owner_keys_file", None)
+        if not callable(list_paths) or not callable(read_keys):
+            return {}
+        for path in list_paths() or []:
+            try:
+                file_owner, file_keys = read_keys(path)
+            except Exception:
+                continue
+            if self._timeline_owner_norm(file_owner) != key_norm:
+                continue
+            if isinstance(file_keys, dict):
+                return file_keys
+            break
+        return {}
+
+    def _timeline_apply_selected_camera_owner_frame(self, frame: int) -> None:
+        try:
+            mode = str(getattr(self, "_camera_select_mode", "default") or "default").strip()
+        except Exception:
+            mode = "default"
+        if not mode or mode.lower() == "default":
+            return
+        owner = mode
+        owner_norm = self._timeline_owner_norm(owner)
+        if not owner_norm:
+            return
+        if owner_norm == self._timeline_owner_norm(self._timeline_target_owner()):
+            return
+        keys_map = self._timeline_keys_map_for_owner(owner)
+        if not isinstance(keys_map, dict) or not keys_map:
+            return
+        try:
+            f = int(frame)
+        except Exception:
+            f = 0
+        xyz_eval, rxyz_eval = self._timeline_eval_frame_values_for_owner_keys(owner, keys_map, f)
+        if xyz_eval is None and rxyz_eval is None:
+            return
+        if xyz_eval is None:
+            xyz_eval = self._timeline_owner_current_xyz(owner)
+        try:
+            self._timeline_clear_manual_override(owner)
+        except Exception:
+            pass
+        try:
+            self._timeline_apply_owner_xyz_only(owner, xyz_eval, rxyz=rxyz_eval)
+        except Exception:
+            pass
 
     def _timeline_apply_other_owner_frames(self, frame: int) -> None:
         try:
@@ -3840,6 +3921,12 @@ class GraphGLTimelineModelMixin:
             except Exception:
                 pass
         if not bool(allow_aux_updates):
+            try:
+                # Keep the viewed dropdown camera in lockstep while scrubbing even
+                # when outliner timeline ownership points to a different owner.
+                self._timeline_apply_selected_camera_owner_frame(frame)
+            except Exception:
+                pass
             return
         try:
             self._timeline_apply_other_owner_frames(frame)
