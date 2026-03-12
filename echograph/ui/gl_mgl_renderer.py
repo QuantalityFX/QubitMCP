@@ -5737,6 +5737,11 @@ class MGLRendererMixin:
                 except Exception:
                     pass
                 try:
+                    if _prev_depth_func is not None:
+                        self._mgl_ctx.depth_func = _prev_depth_func
+                except Exception:
+                    pass
+                try:
                     if prev_depth_test:
                         self._mgl_ctx.enable(moderngl.DEPTH_TEST)
                     else:
@@ -5785,6 +5790,11 @@ class MGLRendererMixin:
                     prev_depth_test = bool(getattr(self._mgl_ctx, "depth_test", True))
                 except Exception:
                     prev_depth_test = True
+                prev_depth_func = None
+                try:
+                    prev_depth_func = getattr(self._mgl_ctx, "depth_func", None)
+                except Exception:
+                    prev_depth_func = None
 
                 # depth test for splats (toggle from scene node param if available)
                 depth_on = True
@@ -5801,6 +5811,11 @@ class MGLRendererMixin:
                         self._mgl_ctx.enable(moderngl.DEPTH_TEST)
                     else:
                         self._mgl_ctx.disable(moderngl.DEPTH_TEST)
+                except Exception:
+                    pass
+                try:
+                    # Keep splat depth compare deterministic regardless of other passes.
+                    self._mgl_ctx.depth_func = "<="
                 except Exception:
                     pass
 
@@ -5927,6 +5942,11 @@ class MGLRendererMixin:
                             self._mgl_ctx.enable(moderngl.DEPTH_TEST)
                         else:
                             self._mgl_ctx.disable(moderngl.DEPTH_TEST)
+                    except Exception:
+                        pass
+                    try:
+                        if prev_depth_func is not None:
+                            self._mgl_ctx.depth_func = prev_depth_func
                     except Exception:
                         pass
 
