@@ -3735,7 +3735,14 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                             "aspect_height": aspect_height,
                         }
                     )
-                self._set_scene_camera_options(cam_entries)
+                if cam_entries:
+                    self._set_scene_camera_options(cam_entries)
+                elif bool(frame):
+                    self._set_scene_camera_options([])
+                else:
+                    # During frame-refresh scene swaps, camera metadata can be
+                    # omitted transiently; keep current dropdown options stable.
+                    self._refresh_camera_selector_dropdown()
             except Exception:
                 pass
             def _owner_name(entry: dict) -> str:
