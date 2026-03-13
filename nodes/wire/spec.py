@@ -53,7 +53,7 @@ _PLY_SCALAR_TYPES = {
     "float64": "d",
 }
 
-_WIRE_CACHE_VERSION = "wire-v2"
+_WIRE_CACHE_VERSION = "wire-v3"
 
 
 def _sanitize_name(name: str) -> str:
@@ -95,6 +95,10 @@ def _normalize_order(raw: str) -> str:
     if mode in {"id", "file", "x", "y", "z", "probability", "hamming"}:
         return mode
     return "id"
+
+
+def _normalize_group_attr(raw: str) -> str:
+    return str(raw or "").strip()
 
 
 def _ensure_param(node_item, name: str, default: str = "") -> None:
@@ -297,7 +301,8 @@ def _json_rows_from_payload(payload: dict) -> list[dict]:
         z = _safe_float(p.get("z"))
         if x is None or y is None or z is None:
             continue
-        out.append(
+        row = dict(p)
+        row.update(
             {
                 "x": float(x),
                 "y": float(y),
@@ -309,8 +314,9 @@ def _json_rows_from_payload(payload: dict) -> list[dict]:
                 "decimal_state": _safe_int(p.get("decimal_state")),
             }
         )
-        if not out[-1]["hex_state"] and out[-1]["decimal_state"] is not None:
-            out[-1]["hex_state"] = f"0x{int(out[-1]['decimal_state']):x}"
+        if not row["hex_state"] and row["decimal_state"] is not None:
+            row["hex_state"] = f"0x{int(row['decimal_state']):x}"
+        out.append(row)
     return out
 
 
@@ -350,6 +356,57 @@ def _ordered_points_from_json(json_path: Path, mode: str) -> list[tuple[float, f
     return _ordered_points_from_rows(_json_rows(json_path), mode)
 
 
+def _row_attr_value(row: dict, attr: str):
+    key = _normalize_group_attr(attr).lower()
+    if (not key) or (not isinstance(row, dict)):
+        return None
+    direct = row.get(key)
+    if direct is not None:
+        return direct
+    for rk, rv in row.items():
+        if str(rk or "").strip().lower() == key:
+            return rv
+    return None
+
+
+def _group_rows_by_attr(rows: list[dict], group_attr: str) -> list[list[dict]]:
+    if not rows:
+        return []
+    attr = _normalize_group_attr(group_attr)
+    if not attr:
+        return [list(rows)]
+
+    groups = {}
+    order = []
+    seen_attr_value = False
+    for row in rows:
+        raw = _row_attr_value(row, attr)
+        if raw is None:
+            key = ""
+        else:
+            text = str(raw).strip()
+            key = text
+            if text:
+                seen_attr_value = True
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(row)
+
+    if not seen_attr_value:
+        return [list(rows)]
+    return [groups[key] for key in order if len(groups.get(key) or []) > 0]
+
+
+def _ordered_polylines_from_grouped_rows(rows: list[dict], mode: str, group_attr: str) -> list[list[tuple[float, float, float]]]:
+    polylines = []
+    for group_rows in _group_rows_by_attr(rows, group_attr):
+        points = _open_polyline(_ordered_points_from_rows(group_rows, mode))
+        if len(points) >= 2:
+            polylines.append(points)
+    return polylines
+
+
 def _json_key_sequences(payload: dict) -> list[list[str]]:
     result_payload = payload.get("result_payload")
     if not isinstance(result_payload, dict):
@@ -375,14 +432,21 @@ def _json_key_sequences(payload: dict) -> list[list[str]]:
     return out
 
 
-def _ordered_polylines_from_json(json_path: Path, mode: str) -> list[list[tuple[float, float, float]]]:
+def _ordered_polylines_from_json(
+    json_path: Path,
+    mode: str,
+    group_attr: str = "name",
+) -> list[list[tuple[float, float, float]]]:
     payload = _json_payload(json_path)
     rows = _json_rows_from_payload(payload)
     if len(rows) < 2:
         return []
 
     mode = _normalize_order(mode)
-    if mode == "id":
+    grouped_rows = _group_rows_by_attr(rows, group_attr)
+    has_multiple_groups = len(grouped_rows) > 1
+
+    if mode == "id" and not has_multiple_groups:
         key_seqs = _json_key_sequences(payload)
         if key_seqs:
             by_state = {}
@@ -414,11 +478,7 @@ def _ordered_polylines_from_json(json_path: Path, mode: str) -> list[list[tuple[
                 if polylines and (len(polylines) > 1 or len(used_states) >= len(rows)):
                     return polylines
 
-    points = _ordered_points_from_rows(rows, mode)
-    points = _open_polyline(points)
-    if len(points) < 2:
-        return []
-    return [points]
+    return _ordered_polylines_from_grouped_rows(rows, mode, group_attr)
 
 
 def _x_looks_like_point_id(points: list[tuple[float, float, float]]) -> bool:
@@ -494,7 +554,7 @@ def _read_ply_header(path: Path):
     return fmt, int(vertex_count), list(vertex_props), int(header_end)
 
 
-def _load_points_from_ply(path: Path) -> list[tuple[float, float, float]]:
+def _load_rows_from_ply(path: Path) -> list[dict]:
     fmt, vertex_count, props, header_end = _read_ply_header(path)
     if vertex_count <= 0 or not props:
         return []
@@ -507,7 +567,7 @@ def _load_points_from_ply(path: Path) -> list[tuple[float, float, float]]:
     iz = names.index("z")
 
     if fmt == "ascii":
-        points = []
+        rows = []
         with path.open("rb") as f:
             f.seek(header_end)
             for _ in range(vertex_count):
@@ -515,13 +575,29 @@ def _load_points_from_ply(path: Path) -> list[tuple[float, float, float]]:
                 if not line:
                     break
                 parts = line.decode("utf-8", errors="replace").strip().split()
-                if len(parts) <= max(ix, iy, iz):
+                if len(parts) < len(props) or len(parts) <= max(ix, iy, iz):
                     continue
+                row = {}
                 try:
-                    points.append((float(parts[ix]), float(parts[iy]), float(parts[iz])))
+                    for idx, (ptype, pname) in enumerate(props):
+                        token = parts[idx]
+                        t = str(ptype).strip().lower()
+                        if t in {"float", "float32", "double", "float64"}:
+                            row[pname] = float(token)
+                        else:
+                            row[pname] = int(float(token))
                 except Exception:
                     continue
-        return points
+                x = _safe_float(row.get("x"))
+                y = _safe_float(row.get("y"))
+                z = _safe_float(row.get("z"))
+                if x is None or y is None or z is None:
+                    continue
+                row["x"] = float(x)
+                row["y"] = float(y)
+                row["z"] = float(z)
+                rows.append(row)
+        return rows
 
     if fmt not in {"binary_little_endian", "binary_big_endian"}:
         return []
@@ -535,7 +611,7 @@ def _load_points_from_ply(path: Path) -> list[tuple[float, float, float]]:
         row_codes.append(code)
     row_struct = struct.Struct(endian + "".join(row_codes))
 
-    points = []
+    rows = []
     with path.open("rb") as f:
         f.seek(header_end)
         for _ in range(vertex_count):
@@ -543,16 +619,55 @@ def _load_points_from_ply(path: Path) -> list[tuple[float, float, float]]:
             if len(raw) < row_struct.size:
                 break
             vals = row_struct.unpack(raw)
+            row = {}
             try:
-                points.append((float(vals[ix]), float(vals[iy]), float(vals[iz])))
+                for idx, (_ptype, pname) in enumerate(props):
+                    row[pname] = vals[idx]
             except Exception:
                 continue
-    return points
+            x = _safe_float(row.get("x"))
+            y = _safe_float(row.get("y"))
+            z = _safe_float(row.get("z"))
+            if x is None or y is None or z is None:
+                continue
+            row["x"] = float(x)
+            row["y"] = float(y)
+            row["z"] = float(z)
+            rows.append(row)
+    return rows
 
 
-def _signature_for_wire_cache(source_path: Path, mode: str, json_path: Path | None) -> str:
+def _load_points_from_ply(path: Path) -> list[tuple[float, float, float]]:
+    return [(float(r["x"]), float(r["y"]), float(r["z"])) for r in _load_rows_from_ply(path)]
+
+
+def _order_points_from_ply_rows(rows: list[dict], mode: str) -> list[tuple[float, float, float]]:
+    if len(rows) < 2:
+        return []
     mode = _normalize_order(mode)
-    parts = [_WIRE_CACHE_VERSION, str(source_path.resolve()), mode]
+    if mode == "id" and all(r.get("point_id") is not None for r in rows):
+        ordered = sorted(rows, key=lambda r: int(r.get("point_id") or 0))
+        return [(float(r["x"]), float(r["y"]), float(r["z"])) for r in ordered]
+    points = [(float(r["x"]), float(r["y"]), float(r["z"])) for r in rows]
+    return _order_points_from_ply(points, mode)
+
+
+def _ordered_polylines_from_ply(path: Path, mode: str, group_attr: str = "name") -> list[list[tuple[float, float, float]]]:
+    rows = _load_rows_from_ply(path)
+    if len(rows) < 2:
+        return []
+    polylines = []
+    for group_rows in _group_rows_by_attr(rows, group_attr):
+        points = _open_polyline(_order_points_from_ply_rows(group_rows, mode))
+        if len(points) >= 2:
+            polylines.append(points)
+    return polylines
+
+
+def _signature_for_wire_cache(source_path: Path, mode: str, json_path: Path | None, group_attr: str) -> str:
+    mode = _normalize_order(mode)
+    group_key = _normalize_group_attr(group_attr).lower()
+    parts = [_WIRE_CACHE_VERSION, str(source_path.resolve()), mode, group_key]
     try:
         st = source_path.stat()
         parts.extend([str(int(st.st_size)), str(int(st.st_mtime_ns))])
@@ -578,6 +693,7 @@ def _write_wire_obj(
     source_path: Path,
     mode: str,
     json_path: Path | None,
+    group_attr: str,
 ) -> None:
     clean_polylines = []
     total_points = 0
@@ -595,6 +711,7 @@ def _write_wire_obj(
         f.write("# EchoGraph wire path\n")
         f.write(f"# source={source_path}\n")
         f.write(f"# mode={_normalize_order(mode)}\n")
+        f.write(f"# group_attr={_normalize_group_attr(group_attr)}\n")
         if json_path is not None:
             f.write(f"# json={json_path}\n")
         f.write(f"# curves={len(clean_polylines)}\n")
@@ -617,7 +734,7 @@ def _write_wire_obj(
             first_idx += count
 
 
-def _build_wire_obj_from_ply(source_path: str, mode: str = "id") -> tuple[str, str]:
+def _build_wire_obj_from_ply(source_path: str, mode: str = "id", group_attr: str = "name") -> tuple[str, str]:
     src = Path(str(source_path or "").strip())
     if not src.exists():
         return "", "Input path not found."
@@ -625,10 +742,11 @@ def _build_wire_obj_from_ply(source_path: str, mode: str = "id") -> tuple[str, s
         return "", "Wire supports .ply inputs."
 
     mode = _normalize_order(mode)
+    group_attr = _normalize_group_attr(group_attr)
     wants_json = mode in {"id", "probability", "hamming"}
     json_path = _find_sidecar_json_for_ply(src) if wants_json else None
 
-    sig = _signature_for_wire_cache(src, mode, json_path)
+    sig = _signature_for_wire_cache(src, mode, json_path, group_attr)
     digest = hashlib.sha1(sig.encode("utf-8")).hexdigest()[:16]
     out_dir = Path(tempfile.gettempdir()) / "EchoGraph" / "wire_cache"
     out_path = out_dir / f"{src.stem}__wire__{digest}.obj"
@@ -638,9 +756,11 @@ def _build_wire_obj_from_ply(source_path: str, mode: str = "id") -> tuple[str, s
     polylines = []
     used_json = False
     if json_path is not None:
-        polylines = _ordered_polylines_from_json(json_path, mode)
+        polylines = _ordered_polylines_from_json(json_path, mode, group_attr=group_attr)
         used_json = bool(polylines)
 
+    if not polylines:
+        polylines = _ordered_polylines_from_ply(src, mode, group_attr=group_attr)
     if not polylines:
         ply_points = _load_points_from_ply(src)
         if len(ply_points) < 2:
@@ -654,7 +774,7 @@ def _build_wire_obj_from_ply(source_path: str, mode: str = "id") -> tuple[str, s
         return "", "Wire needs at least 2 points."
 
     try:
-        _write_wire_obj(out_path, polylines, src, mode, json_path if used_json else None)
+        _write_wire_obj(out_path, polylines, src, mode, json_path if used_json else None, group_attr)
     except Exception as exc:
         return "", f"Failed writing wire OBJ: {exc}"
 
@@ -823,7 +943,9 @@ def _refresh_wire_params(node_item) -> None:
 
     enabled = _bool_param(_param_value(model, "enabled"), default=True)
     order_mode = _normalize_order(_param_value(model, "order") or "id")
+    group_attr = _normalize_group_attr(_param_value(model, "group_attr") or "name")
     _set_node_param_value(node_item, "order", order_mode, notify_scene=False)
+    _set_node_param_value(node_item, "group_attr", group_attr, notify_scene=False)
 
     src_path = (_resolve_wire_source(node_item) or "").strip()
     _set_node_param_value(node_item, "source", src_path, notify_scene=False)
@@ -832,7 +954,7 @@ def _refresh_wire_params(node_item) -> None:
         _set_node_param_value(node_item, "path", "", notify_scene=False)
         return
 
-    out_path, _detail = _build_wire_obj_from_ply(src_path, mode=order_mode)
+    out_path, _detail = _build_wire_obj_from_ply(src_path, mode=order_mode, group_attr=group_attr)
     if not out_path:
         _set_node_param_value(node_item, "path", "", notify_scene=False)
         return
@@ -922,7 +1044,9 @@ if QtWidgets is not None and QtCore is not None:
             model = getattr(self._node_item, "model", None)
             enabled = _bool_param(_param_value(model, "enabled"), default=True)
             order_mode = _normalize_order(_param_value(model, "order") or "id")
+            group_attr = _normalize_group_attr(_param_value(model, "group_attr") or "name")
             self._set_param("order", order_mode, notify_scene=False)
+            self._set_param("group_attr", group_attr, notify_scene=False)
 
             src_path = (_resolve_wire_source(self._node_item) or "").strip()
             self._set_param("source", src_path, notify_scene=False)
@@ -952,7 +1076,7 @@ if QtWidgets is not None and QtCore is not None:
                 self._set_param("path", "", notify_scene=True)
                 return
 
-            out_path, detail = _build_wire_obj_from_ply(src_path, mode=order_mode)
+            out_path, detail = _build_wire_obj_from_ply(src_path, mode=order_mode, group_attr=group_attr)
             if not out_path:
                 self._status.setText(detail or "Wire build failed.")
                 self._view_btn.setEnabled(False)
@@ -963,7 +1087,8 @@ if QtWidgets is not None and QtCore is not None:
             try:
                 node_name = _sanitize_name(getattr(model, "name", "") or "wire")
                 src_stem = _sanitize_name(Path(src_path).stem)
-                local_out = _wire_dir(self._node_item) / f"{node_name}_{src_stem}_{order_mode}.obj"
+                group_key = _sanitize_name(group_attr or "none")
+                local_out = _wire_dir(self._node_item) / f"{node_name}_{src_stem}_{order_mode}_{group_key}.obj"
                 if not local_out.exists() or os.path.getmtime(out_path) >= os.path.getmtime(str(local_out)):
                     try:
                         local_out.write_text(Path(out_path).read_text(encoding="utf-8"), encoding="utf-8")
@@ -981,6 +1106,7 @@ if QtWidgets is not None and QtCore is not None:
             model = getattr(self._node_item, "model", None)
             enabled = _bool_param(_param_value(model, "enabled"), default=True)
             order_mode = _normalize_order(_param_value(model, "order") or "id")
+            group_attr = _normalize_group_attr(_param_value(model, "group_attr") or "name")
             src_path = str((_resolve_wire_source(self._node_item) or _param_value(model, "source") or "").strip())
             try:
                 path = _param_value(self._node_item.model, "path")
@@ -990,7 +1116,7 @@ if QtWidgets is not None and QtCore is not None:
             # View is preview-only; do not require or trigger a graph refresh here.
             if enabled and src_path and os.path.exists(src_path) and Path(src_path).suffix.lower() == ".ply":
                 try:
-                    preview_path, detail = _build_wire_obj_from_ply(src_path, mode=order_mode)
+                    preview_path, detail = _build_wire_obj_from_ply(src_path, mode=order_mode, group_attr=group_attr)
                     if preview_path:
                         path = str(preview_path)
                         self._status.setText(detail or Path(src_path).name)
@@ -1066,6 +1192,7 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, "path", "")
     _ensure_param(node_item, "enabled", "1")
     _ensure_param(node_item, "order", "id")
+    _ensure_param(node_item, "group_attr", "name")
     _ensure_hidden_params(getattr(node_item, "model", None), ("mesh", "source", "path"))
     if hasattr(node_item, "ensure_input"):
         node_item.ensure_input("mesh")

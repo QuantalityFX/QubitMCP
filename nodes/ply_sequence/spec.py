@@ -679,20 +679,24 @@ if QtWidgets is not None and QtCore is not None:
             row.setContentsMargins(0, 0, 0, 0)
             row.setSpacing(4)
 
+            self._path_label = QtWidgets.QLabel("Path")
+            self._path_label.setStyleSheet("color:#cbd5e1;")
+            self._path_label.setMinimumWidth(36)
+            row.addWidget(self._path_label, 0)
+
             self._source_edit = QtWidgets.QLineEdit()
             self._source_edit.setPlaceholderText("First frame .ply")
             self._source_edit.editingFinished.connect(self._on_source_committed)
             row.addWidget(self._source_edit, 1)
 
-            self._browse_btn = QtWidgets.QPushButton("Browse")
-            self._browse_btn.setFixedWidth(70)
+            self._browse_btn = QtWidgets.QToolButton()
+            btn_style = QtWidgets.QApplication.style()
+            if btn_style:
+                self._browse_btn.setIcon(btn_style.standardIcon(QtWidgets.QStyle.SP_DialogOpenButton))
+            self._browse_btn.setToolTip("Choose file")
+            self._browse_btn.setFixedSize(22, 22)
             self._browse_btn.clicked.connect(self._on_browse_clicked)
             row.addWidget(self._browse_btn, 0)
-
-            self._view_btn = QtWidgets.QPushButton("View")
-            self._view_btn.setFixedWidth(58)
-            self._view_btn.clicked.connect(self._on_view_clicked)
-            row.addWidget(self._view_btn, 0)
 
             layout.addLayout(row, 0)
 
@@ -713,6 +717,48 @@ if QtWidgets is not None and QtCore is not None:
             self._status.setStyleSheet("color:#94a3b8;font-size:11px;")
             layout.addWidget(self._status, 0)
 
+            # Keep action controls pinned at the bottom like Import.
+            layout.addItem(
+                QtWidgets.QSpacerItem(
+                    0,
+                    0,
+                    QtWidgets.QSizePolicy.Minimum,
+                    QtWidgets.QSizePolicy.Expanding,
+                )
+            )
+
+            row3 = QtWidgets.QHBoxLayout()
+            row3.setContentsMargins(0, 0, 0, 0)
+            row3.setSpacing(6)
+
+            self._view_btn = QtWidgets.QPushButton("View")
+            self._view_btn.setFixedWidth(64)
+            self._view_btn_style_view = (
+                "QPushButton{background:#2563eb;color:#f8fafc;border-radius:4px;padding:2px 8px;}"
+                "QPushButton:hover{background:#1d4ed8;}"
+                "QPushButton:disabled{background:#334155;color:#94a3b8;}"
+            )
+            self._view_btn_style_stop = (
+                "QPushButton{background:#dc2626;color:#f8fafc;border-radius:4px;padding:2px 8px;}"
+                "QPushButton:hover{background:#b91c1c;}"
+                "QPushButton:disabled{background:#334155;color:#94a3b8;}"
+            )
+            self._view_btn.setStyleSheet(self._view_btn_style_view)
+            self._view_btn.clicked.connect(self._on_view_clicked)
+            row3.addWidget(self._view_btn, 0, QtCore.Qt.AlignLeft)
+
+            row3.addStretch(1)
+
+            self._reload_btn = QtWidgets.QToolButton()
+            btn_style = QtWidgets.QApplication.style()
+            if btn_style:
+                self._reload_btn.setIcon(btn_style.standardIcon(QtWidgets.QStyle.SP_BrowserReload))
+            self._reload_btn.setFixedSize(24, 24)
+            self._reload_btn.clicked.connect(self._on_reload_clicked)
+            row3.addWidget(self._reload_btn, 0, QtCore.Qt.AlignLeft)
+
+            layout.addLayout(row3, 0)
+
             self._timer = QtCore.QTimer(self)
             self._timer.setInterval(40)
             self._timer.timeout.connect(self._on_timer_tick)
@@ -723,7 +769,7 @@ if QtWidgets is not None and QtCore is not None:
             _log("widget_init node=" + self._node_name)
 
         def sizeHint(self):
-            return QtCore.QSize(260, 90)
+            return QtCore.QSize(260, 124)
 
         def _ensure_scene(self):
             if self._scene is None:
@@ -755,6 +801,24 @@ if QtWidgets is not None and QtCore is not None:
         def _set_param(self, name: str, value: str, notify_scene: bool = True):
             _set_node_param_value(self._node_item, name, value, notify_scene=notify_scene)
 
+        def _sync_view_button(self, enabled: bool | None = None) -> None:
+            active = bool(self._preview_active)
+            try:
+                self._view_btn.setText("Stop" if active else "View")
+            except Exception:
+                pass
+            try:
+                self._view_btn.setStyleSheet(
+                    self._view_btn_style_stop if active else self._view_btn_style_view
+                )
+            except Exception:
+                pass
+            if enabled is not None:
+                try:
+                    self._view_btn.setEnabled(bool(enabled))
+                except Exception:
+                    pass
+
         def _source_is_input_driven(self) -> bool:
             try:
                 src = (_resolve_sequence_source_from_input(self._node_item) or "").strip()
@@ -762,13 +826,19 @@ if QtWidgets is not None and QtCore is not None:
                 src = ""
             return bool(src)
 
+        def _commit_manual_source(self, *, notify_scene: bool = True) -> str:
+            if self._source_is_input_driven():
+                return ""
+            text = str(self._source_edit.text() or "").strip()
+            self._set_param("source", text, notify_scene=notify_scene)
+            return text
+
         def _on_source_committed(self):
             if self._source_is_input_driven():
                 _log("source_commit ignored node=" + self._node_name + " reason=input_driven")
                 self._schedule_sync()
                 return
-            text = str(self._source_edit.text() or "").strip()
-            self._set_param("source", text, notify_scene=True)
+            text = self._commit_manual_source(notify_scene=True)
             _log("source_commit node=" + self._node_name + " source=" + text)
             self._schedule_sync()
 
@@ -794,6 +864,23 @@ if QtWidgets is not None and QtCore is not None:
             _log("source_browse node=" + self._node_name + " source=" + str(chosen))
             self._schedule_sync()
 
+        def _invalidate_sequence_cache(self, reason: str = "manual") -> None:
+            self._seq_seed = ""
+            self._seq_paths = []
+            self._last_frame = None
+            # Force path reapply so current frame can be reopened after reload.
+            self._last_path = ""
+            _log("seq_cache_reset node=" + self._node_name + " reason=" + str(reason))
+
+        def _on_reload_clicked(self):
+            if not self._source_is_input_driven():
+                committed = self._commit_manual_source(notify_scene=True)
+                if committed:
+                    _log("source_commit_on_reload node=" + self._node_name + " source=" + committed)
+            self._invalidate_sequence_cache("button")
+            self._status.setText("Reloading sequence...")
+            self._sync_state()
+
         def _on_loop_toggled(self, checked: bool):
             self._set_param("loop", "1" if bool(checked) else "0", notify_scene=True)
             _log("loop_toggle node=" + self._node_name + " loop=" + ("1" if bool(checked) else "0"))
@@ -805,17 +892,23 @@ if QtWidgets is not None and QtCore is not None:
             self._schedule_sync()
 
         def _on_view_clicked(self):
-            path = str(_param_value(getattr(self._node_item, "model", None), "path") or "").strip()
             if self._preview_active:
                 self._preview_active = False
-                self._view_btn.setText("View")
+                self._sync_view_button(self._view_btn.isEnabled())
                 _log("preview_stop node=" + self._node_name)
                 # Preview had priority; force a scene refresh on current path now.
                 self._last_path = ""
                 self._schedule_sync()
                 return
+            if not self._source_is_input_driven():
+                committed = self._commit_manual_source(notify_scene=True)
+                if committed:
+                    _log("source_commit_on_view node=" + self._node_name + " source=" + committed)
+            # Ensure path is resolved from the latest source before preview starts.
+            self._sync_state()
+            path = str(_param_value(getattr(self._node_item, "model", None), "path") or "").strip()
             self._preview_active = True
-            self._view_btn.setText("Stop")
+            self._sync_view_button(True)
             _log("preview_start node=" + self._node_name)
             if path:
                 follow_camera = _bool_param(
@@ -895,10 +988,14 @@ if QtWidgets is not None and QtCore is not None:
             src_path = src_input
             if not src_path:
                 src_path = _resolve_source_path(self._node_item, _param_value(model, "source"))
-            self._set_param("source", src_path, notify_scene=False)
+            self._set_param("source", src_path, notify_scene=True)
 
             try:
-                if self._source_edit.text() != src_path:
+                user_editing = bool(self._source_edit.hasFocus()) and (not bool(src_input))
+            except Exception:
+                user_editing = False
+            try:
+                if (not user_editing) and (self._source_edit.text() != src_path):
                     self._source_edit.blockSignals(True)
                     self._source_edit.setText(src_path)
                     self._source_edit.blockSignals(False)
@@ -925,20 +1022,24 @@ if QtWidgets is not None and QtCore is not None:
                     )
             except Exception:
                 pass
+            try:
+                if hasattr(self, "_reload_btn") and self._reload_btn is not None:
+                    self._reload_btn.setToolTip("Reload file")
+                    self._reload_btn.setEnabled(bool(enabled) and bool(src_path))
+            except Exception:
+                pass
 
             if not enabled:
                 self._status.setText("Disabled.")
-                self._view_btn.setEnabled(False)
-                self._view_btn.setText("View")
                 self._preview_active = False
+                self._sync_view_button(False)
                 self._apply_path("", "disabled", int(_timeline_frame_for_node(self._node_item)))
                 return
 
             if not src_path:
                 self._status.setText("No source .ply.")
-                self._view_btn.setEnabled(False)
-                self._view_btn.setText("View")
                 self._preview_active = False
+                self._sync_view_button(False)
                 self._apply_path("", "no_source", int(_timeline_frame_for_node(self._node_item)))
                 self._seq_paths = []
                 self._seq_seed = ""
@@ -946,9 +1047,8 @@ if QtWidgets is not None and QtCore is not None:
 
             if not os.path.exists(src_path):
                 self._status.setText("Source path not found.")
-                self._view_btn.setEnabled(False)
-                self._view_btn.setText("View")
                 self._preview_active = False
+                self._sync_view_button(False)
                 self._apply_path("", "source_missing", int(_timeline_frame_for_node(self._node_item)))
                 self._seq_paths = []
                 self._seq_seed = ""
@@ -956,9 +1056,8 @@ if QtWidgets is not None and QtCore is not None:
 
             if Path(src_path).suffix.lower() != ".ply":
                 self._status.setText("Sequence expects .ply source.")
-                self._view_btn.setEnabled(False)
-                self._view_btn.setText("View")
                 self._preview_active = False
+                self._sync_view_button(False)
                 self._apply_path("", "wrong_ext", int(_timeline_frame_for_node(self._node_item)))
                 self._seq_paths = []
                 self._seq_seed = ""
@@ -972,9 +1071,8 @@ if QtWidgets is not None and QtCore is not None:
 
             if not self._seq_paths:
                 self._status.setText("No sequence frames found.")
-                self._view_btn.setEnabled(False)
-                self._view_btn.setText("View")
                 self._preview_active = False
+                self._sync_view_button(False)
                 self._apply_path("", "no_frames", int(_timeline_frame_for_node(self._node_item)))
                 return
 
@@ -982,15 +1080,13 @@ if QtWidgets is not None and QtCore is not None:
             target = _pick_frame_path(self._seq_paths, frame, loop=loop)
             if target is None:
                 self._status.setText("No frame for current time.")
-                self._view_btn.setEnabled(False)
-                self._view_btn.setText("View")
                 self._preview_active = False
+                self._sync_view_button(False)
                 self._apply_path("", "no_target", int(frame))
                 return
 
             path = str(target)
-            self._view_btn.setEnabled(True)
-            self._view_btn.setText("Stop" if self._preview_active else "View")
+            self._sync_view_button(True)
 
             idx = 0
             try:
@@ -1026,7 +1122,7 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, "follow_camera", "0")
     _ensure_hidden_params(
         getattr(node_item, "model", None),
-        ("mesh", "path", "debug_log", "follow_camera"),
+        ("mesh", "source", "path", "debug_log", "follow_camera", "enabled", "loop"),
     )
     if hasattr(node_item, "ensure_input"):
         node_item.ensure_input("mesh")
