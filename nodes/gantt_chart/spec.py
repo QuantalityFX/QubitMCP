@@ -688,38 +688,113 @@ def _load_gantt_sidecar_snapshot(node_item) -> bool:
     return changed
 
 
-def _resolve_note_source(node_item):
+def _ordered_in_edges(node_item):
     scene = None
     try:
         scene = node_item.scene()
     except Exception:
         scene = None
     if scene is None:
-        return None, None
+        return []
     try:
-        in_edges = list(scene._ordered_in_edges(node_item))
+        return list(scene._ordered_in_edges(node_item))
     except Exception:
         try:
-            in_edges = list(scene._in_edges(node_item))
+            return list(scene._in_edges(node_item))
         except Exception:
-            in_edges = []
+            return []
+
+
+def _resolve_note_sources(node_item):
+    in_edges = _ordered_in_edges(node_item)
     if not in_edges:
-        return None, None
-    chosen = None
+        return [], False
+    note_sources = []
+    seen = set()
+    invalid_inputs = False
     for edge in in_edges:
         port_name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
-        if (port_name or "").strip().lower() in {"note", "source"}:
-            chosen = edge
-            break
-    if chosen is None:
-        chosen = in_edges[0]
-    src_item = getattr(chosen, "src", None)
-    src_model = getattr(src_item, "model", None)
-    if src_model is None:
-        return None, None
-    if (getattr(src_model, "kind", "") or "").strip().lower() != "note":
-        return src_item, None
-    return src_item, src_model
+        is_note_port = (port_name or "").strip().lower() in {"note", "source", ""}
+        src_item = getattr(edge, "src", None)
+        src_model = getattr(src_item, "model", None)
+        if src_model is None:
+            if is_note_port:
+                invalid_inputs = True
+            continue
+        if (getattr(src_model, "kind", "") or "").strip().lower() != "note":
+            if is_note_port:
+                invalid_inputs = True
+            continue
+        marker = id(src_item)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        note_sources.append((src_item, src_model))
+    if in_edges and not note_sources:
+        invalid_inputs = True
+    return note_sources, invalid_inputs
+
+
+def _resolve_note_source(node_item):
+    note_sources, invalid_inputs = _resolve_note_sources(node_item)
+    if note_sources:
+        return note_sources[0]
+    if invalid_inputs:
+        for edge in _ordered_in_edges(node_item):
+            src_item = getattr(edge, "src", None)
+            src_model = getattr(src_item, "model", None)
+            if src_item is not None and src_model is not None and (getattr(src_model, "kind", "") or "").strip().lower() != "note":
+                return src_item, None
+            if src_item is not None and src_model is None:
+                return src_item, None
+    return None, None
+
+
+def _task_storage_key(source_name: str, task_name: str) -> str:
+    return json.dumps([str(source_name or "").strip(), str(task_name or "").strip()], separators=(",", ":"))
+
+
+def _parse_task_storage_key(raw_key: str) -> tuple[str | None, str]:
+    text = str(raw_key or "").strip()
+    if not text:
+        return None, ""
+    if text.startswith("["):
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, (list, tuple)) and len(parsed) >= 2:
+                source_name = str(parsed[0] or "").strip()
+                task_name = str(parsed[1] or "").strip()
+                if source_name and task_name:
+                    return source_name, task_name
+        except Exception:
+            pass
+    return None, text
+
+
+def _canonical_task_key(
+    raw_key: str,
+    *,
+    valid_task_ids: set[str],
+    by_source_task: dict[tuple[str, str], str],
+    by_task_name: dict[str, list[str]],
+) -> str | None:
+    key = str(raw_key or "").strip()
+    if not key:
+        return None
+    if key in valid_task_ids:
+        return key
+    source_name, task_name = _parse_task_storage_key(key)
+    task_lookup = task_name.strip().lower()
+    if not task_lookup:
+        return None
+    if source_name:
+        candidate = by_source_task.get((source_name.strip().lower(), task_lookup))
+        if candidate:
+            return candidate
+    candidates = by_task_name.get(task_lookup) or []
+    if not candidates:
+        return None
+    return candidates[0]
 
 
 def _dialog_parent_for_node(node_item):
@@ -752,8 +827,15 @@ def _read_source_task_value(model, task_name: str) -> str:
     return ""
 
 
-def _write_source_task_value(node_item, task_name: str, value: str, *, notify_scene: bool = True) -> bool:
-    src_item, src_model = _resolve_note_source(node_item)
+def _write_source_task_value(
+    node_item,
+    src_item,
+    src_model,
+    task_name: str,
+    value: str,
+    *,
+    notify_scene: bool = True,
+) -> bool:
     if src_model is None:
         return False
     key = (task_name or "").strip().lower()
@@ -822,8 +904,7 @@ def _completed_task_names(model) -> set[str]:
     return out
 
 
-def _write_source_completed_tasks(node_item, names: set[str], *, notify_scene: bool = True) -> bool:
-    src_item, src_model = _resolve_note_source(node_item)
+def _write_source_completed_tasks(node_item, src_item, src_model, names: set[str], *, notify_scene: bool = True) -> bool:
     if src_model is None:
         return False
     clean = {str(name) for name in (names or set()) if str(name).strip()}
@@ -1361,6 +1442,7 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
     renameRequested = QtCore.Signal(int)
     reorderRequested = QtCore.Signal(int, int)
     selectionRequested = QtCore.Signal(int)
+    groupToggleRequested = QtCore.Signal(int)
 
     def __init__(self, parent=None):
         super().__init__(QtCore.Qt.Vertical, parent)
@@ -1368,6 +1450,9 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
         self._completed_sections: set[int] = set()
         self._progress_values: dict[int, int] = {}
         self._notification_sections: set[int] = set()
+        self._group_sections: set[int] = set()
+        self._expanded_group_sections: set[int] = set()
+        self._child_sections: set[int] = set()
         self._notification_icon = _load_icon_pixmap("bell_icon.png")
         self._dragging_section: int | None = None
         self._drag_start_visual_index: int | None = None
@@ -1377,6 +1462,7 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
         self._drop_indicator_index: int | None = None
         self._checkbox_pressed_section: int | None = None
         self._progress_pressed_section: int | None = None
+        self._group_pressed_section: int | None = None
         self.setDefaultAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
 
     def set_selected_section(self, section: int | None) -> None:
@@ -1422,6 +1508,69 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
             self.viewport().update()
         except Exception:
             self.update()
+
+    def set_group_sections(self, expanded_by_section: dict[int, bool], child_sections: set[int] | None = None) -> None:
+        group_map = {}
+        for section, expanded in (expanded_by_section or {}).items():
+            if int(section) < 0:
+                continue
+            group_map[int(section)] = bool(expanded)
+        new_group_sections = set(group_map.keys())
+        new_expanded = {section for section, expanded in group_map.items() if expanded}
+        new_children = {int(section) for section in (child_sections or set()) if int(section) >= 0}
+        if (
+            new_group_sections == self._group_sections
+            and new_expanded == self._expanded_group_sections
+            and new_children == self._child_sections
+        ):
+            return
+        self._group_sections = new_group_sections
+        self._expanded_group_sections = new_expanded
+        self._child_sections = new_children
+        try:
+            self.viewport().update()
+        except Exception:
+            self.update()
+
+    def _is_group_section(self, logical_index: int) -> bool:
+        return int(logical_index) in self._group_sections
+
+    def _is_child_section(self, logical_index: int) -> bool:
+        return int(logical_index) in self._child_sections
+
+    def _group_toggle_rect(self, rect: QtCore.QRect) -> QtCore.QRect:
+        size = max(9, min(12, int(rect.height()) - 10))
+        x = int(rect.left() + 8)
+        y = int(rect.top() + ((rect.height() - size) / 2.0))
+        return QtCore.QRect(x, y, size, size)
+
+    def _group_toggle_rect_for_section(self, logical_index: int) -> QtCore.QRect:
+        top = int(self.sectionPosition(int(logical_index)))
+        return self._group_toggle_rect(QtCore.QRect(0, top, self.viewport().width(), int(self.sectionSize(int(logical_index)))))
+
+    def _paint_group_triangle(self, painter, rect: QtCore.QRect, expanded: bool, selected: bool) -> None:
+        painter.save()
+        painter.setPen(QtCore.Qt.NoPen)
+        painter.setBrush(QtGui.QColor("#f8fafc") if selected else QtGui.QColor("#dbe4ee"))
+        cx = int(rect.center().x())
+        left = int(rect.left() + 1)
+        right = int(rect.right() - 1)
+        top = int(rect.top() + 1)
+        bottom = int(rect.bottom() - 1)
+        if expanded:
+            points = [
+                QtCore.QPoint(cx, top),
+                QtCore.QPoint(left, bottom),
+                QtCore.QPoint(right, bottom),
+            ]
+        else:
+            points = [
+                QtCore.QPoint(left, top),
+                QtCore.QPoint(right, top),
+                QtCore.QPoint(cx, bottom),
+            ]
+        painter.drawPolygon(QtGui.QPolygon(points))
+        painter.restore()
 
     def _progress_rect(self, rect: QtCore.QRect) -> QtCore.QRect:
         checkbox_rect = self._checkbox_rect(rect)
@@ -1484,15 +1633,20 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
     def _paint_task_section(self, painter, rect, logical_index, *, force_selected: bool | None = None, ghost: bool = False, placeholder: bool = False):
         if not rect.isValid():
             return
+        logical = int(logical_index)
+        is_group = self._is_group_section(logical)
+        is_child = self._is_child_section(logical)
         painter.save()
         if ghost:
             try:
                 painter.setOpacity(0.96)
             except Exception:
                 pass
-        is_selected = int(logical_index) == self._selected_section if force_selected is None else bool(force_selected)
+        is_selected = logical == self._selected_section if force_selected is None else bool(force_selected)
         if placeholder:
             painter.fillRect(rect, QtGui.QColor("#10151c"))
+        elif is_group:
+            painter.fillRect(rect, QtGui.QColor("#29405a") if is_selected else QtGui.QColor("#1a2735"))
         else:
             painter.fillRect(rect, QtGui.QColor("#1d4f74") if is_selected else QtGui.QColor("#141c27"))
         pen = QtGui.QPen(QtGui.QColor("#223041"), 1)
@@ -1507,15 +1661,25 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
         except Exception:
             text = ""
         font = painter.font()
-        font.setBold(bool(is_selected))
+        font.setBold(bool(is_selected) or is_group)
         painter.setFont(font)
         painter.setPen(QtGui.QColor("#f8fafc") if is_selected else QtGui.QColor("#dbe4ee"))
+        if is_group:
+            toggle_rect = self._group_toggle_rect(rect)
+            self._paint_group_triangle(painter, toggle_rect, logical in self._expanded_group_sections, is_selected)
+            text_left = int(toggle_rect.right() + 8)
+            text_rect = QtCore.QRect(text_left, int(rect.top()) - 2, max(0, int(rect.right()) - text_left - 6), int(rect.height()) + 4)
+            painter.drawText(text_rect, int(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter), text)
+            painter.restore()
+            return
         checkbox_rect = self._checkbox_rect(rect)
         progress_rect = self._progress_rect(rect)
         notification_rect = self._notification_rect(rect)
-        text_rect = rect.adjusted(8, -2, -int(rect.width() - notification_rect.left() + 4), -2)
+        text_left = int(rect.left() + (24 if is_child else 8))
+        text_right = int(notification_rect.left() - 4)
+        text_rect = QtCore.QRect(text_left, int(rect.top()) - 2, max(0, text_right - text_left), int(rect.height()) + 4)
         painter.drawText(text_rect, int(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter), text)
-        if int(logical_index) in self._notification_sections and self._notification_icon is not None and not self._notification_icon.isNull():
+        if logical in self._notification_sections and self._notification_icon is not None and not self._notification_icon.isNull():
             icon_target = QtCore.QRect(notification_rect)
             source_rect = self._notification_icon.rect()
             if source_rect.width() > 0 and source_rect.height() > 0:
@@ -1528,13 +1692,13 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
                     painter.setOpacity(1.0)
                 except Exception:
                     pass
-        progress = self._progress_values.get(int(logical_index), 0)
+        progress = self._progress_values.get(logical, 0)
         painter.setBrush(QtGui.QColor("#10161d"))
         painter.setPen(QtGui.QPen(QtGui.QColor("#475569"), 1))
         painter.drawRoundedRect(QtCore.QRectF(progress_rect.adjusted(0, 0, -1, -1)), 3.0, 3.0)
         painter.setPen(QtGui.QColor("#cbd5e1"))
         painter.drawText(progress_rect.adjusted(3, -1, -5, -1), int(QtCore.Qt.AlignCenter), str(progress))
-        checkbox_checked = int(logical_index) in self._completed_sections
+        checkbox_checked = logical in self._completed_sections
         painter.setBrush(QtGui.QColor("#12151a"))
         painter.setPen(QtGui.QPen(QtGui.QColor("#475569"), 1))
         painter.drawRoundedRect(QtCore.QRectF(checkbox_rect.adjusted(0, 0, -1, -1)), 3.0, 3.0)
@@ -1580,6 +1744,19 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
     def mousePressEvent(self, event):
         if event.button() == QtCore.Qt.LeftButton:
             logical_index = int(self.logicalIndexAt(event.pos()))
+            if logical_index >= 0 and self._is_group_section(logical_index):
+                if self._group_toggle_rect_for_section(logical_index).contains(event.pos()):
+                    self._group_pressed_section = logical_index
+                else:
+                    self._group_pressed_section = None
+                self._dragging_section = None
+                self._drag_start_visual_index = None
+                self._drag_grab_offset = None
+                self._drag_pointer_y = None
+                self._set_drop_indicator_y(None)
+                self._set_drop_indicator_index(None)
+                event.accept()
+                return
             if logical_index >= 0 and self._progress_rect_for_section(logical_index).contains(event.pos()):
                 self._progress_pressed_section = logical_index
                 event.accept()
@@ -1605,6 +1782,9 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        if self._group_pressed_section is not None:
+            event.accept()
+            return
         if self._progress_pressed_section is not None:
             event.accept()
             return
@@ -1625,6 +1805,17 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        if self._group_pressed_section is not None:
+            logical_index = int(self._group_pressed_section)
+            pressed = (
+                event.button() == QtCore.Qt.LeftButton
+                and self._group_toggle_rect_for_section(logical_index).contains(event.pos())
+            )
+            self._group_pressed_section = None
+            if pressed:
+                self.groupToggleRequested.emit(logical_index)
+            event.accept()
+            return
         if self._progress_pressed_section is not None:
             logical_index = int(self._progress_pressed_section)
             pressed = self._progress_rect_for_section(logical_index).contains(event.pos())
@@ -1673,6 +1864,9 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
         if event.button() == QtCore.Qt.LeftButton:
             logical_index = int(self.logicalIndexAt(event.pos()))
             if logical_index >= 0:
+                if self._is_group_section(logical_index):
+                    event.accept()
+                    return
                 if self._progress_rect_for_section(logical_index).contains(event.pos()):
                     event.accept()
                     return
@@ -1686,6 +1880,7 @@ class _GanttTaskHeader(QtWidgets.QHeaderView):
 
     def leaveEvent(self, event):
         super().leaveEvent(event)
+        self._group_pressed_section = None
         self._progress_pressed_section = None
         self._checkbox_pressed_section = None
         if self._dragging_section is None:
@@ -1784,8 +1979,7 @@ class _GanttMonthStrip(QtWidgets.QWidget):
         painter.end()
 
 
-def _reorder_note_params(node_item, ordered_names: list[str]) -> bool:
-    src_item, src_model = _resolve_note_source(node_item)
+def _reorder_note_params(node_item, src_item, src_model, ordered_names: list[str]) -> bool:
     if src_model is None:
         return False
     params = list(getattr(src_model, "params", None) or [])
@@ -1929,9 +2123,17 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._scene = None
         self._scene_connected = False
         self._sync_pending = False
-        self._source_name = ""
+        self._source_names: list[str] = []
         self._source_invalid = False
         self._task_names: list[str] = []
+        self._task_display_names: dict[str, str] = {}
+        self._task_source_names: dict[str, str] = {}
+        self._task_source_refs: dict[str, tuple[object, object]] = {}
+        self._source_info_by_name: dict[str, dict[str, object]] = {}
+        self._group_order: list[str] = []
+        self._group_tasks: dict[str, list[str]] = {}
+        self._group_expanded: dict[str, bool] = {}
+        self._row_entries: list[dict[str, str]] = []
         self._assignments: dict[str, tuple[str, str]] = {}
         self._completed_tasks: set[str] = set()
         self._task_progress: dict[str, int] = {}
@@ -1970,7 +2172,7 @@ class GanttChartWidget(QtWidgets.QFrame):
         status_row.setContentsMargins(0, 0, 0, 6)
         status_row.setSpacing(10)
 
-        self._source_label = QtWidgets.QLabel("Connect a Note node to this input.")
+        self._source_label = QtWidgets.QLabel("Connect one or more Note nodes to this input.")
         self._source_label.setStyleSheet("QLabel{color:#93a4b8;font-weight:600;}")
         status_row.addWidget(self._source_label, 1)
 
@@ -2052,6 +2254,10 @@ class GanttChartWidget(QtWidgets.QFrame):
             pass
         try:
             self._table.verticalHeader().selectionRequested.connect(self._on_task_header_clicked)
+        except Exception:
+            pass
+        try:
+            self._table.verticalHeader().groupToggleRequested.connect(self._on_group_toggle_requested)
         except Exception:
             pass
 
@@ -2283,6 +2489,93 @@ class GanttChartWidget(QtWidgets.QFrame):
         span = self._visible_assignment_span(task)
         return None if span is None else int(span[0])
 
+    def _rebuild_row_entries(self) -> None:
+        rows: list[dict[str, str]] = []
+        for group_name in self._group_order:
+            rows.append({"kind": "group", "group": str(group_name)})
+            if self._group_expanded.get(group_name, True):
+                for task_id in (self._group_tasks.get(group_name) or []):
+                    rows.append({"kind": "task", "group": str(group_name), "task": str(task_id)})
+        self._row_entries = rows
+
+    def _row_entry(self, row: int) -> dict[str, str] | None:
+        if row < 0 or row >= len(self._row_entries):
+            return None
+        return self._row_entries[row]
+
+    def _task_for_row(self, row: int) -> str | None:
+        entry = self._row_entry(row)
+        if not entry or entry.get("kind") != "task":
+            return None
+        task_id = str(entry.get("task") or "").strip()
+        return task_id or None
+
+    def _row_for_task(self, task_id: str | None) -> int | None:
+        key = str(task_id or "").strip()
+        if not key:
+            return None
+        for row, entry in enumerate(self._row_entries):
+            if entry.get("kind") != "task":
+                continue
+            if str(entry.get("task") or "").strip() == key:
+                return row
+        return None
+
+    def _task_name_for_id(self, task_id: str) -> str:
+        return str(self._task_display_names.get(str(task_id or ""), "") or "")
+
+    def _task_group_name(self, task_id: str) -> str:
+        return str(self._task_source_names.get(str(task_id or ""), "") or "")
+
+    def _task_display_label(self, task_id: str) -> str:
+        task_name = self._task_name_for_id(task_id)
+        group_name = self._task_group_name(task_id)
+        if group_name and task_name:
+            return f"{group_name} / {task_name}"
+        return task_name or group_name or str(task_id or "").strip()
+
+    def _source_ref_for_task(self, task_id: str):
+        return self._task_source_refs.get(str(task_id or ""), (None, None))
+
+    def _set_source_task_completed(self, task_id: str, checked: bool, *, notify_scene: bool) -> bool:
+        source_name = self._task_group_name(task_id)
+        source_info = self._source_info_by_name.get(source_name) or {}
+        src_item = source_info.get("item")
+        src_model = source_info.get("model")
+        task_name = self._task_name_for_id(task_id)
+        if not task_name or src_model is None:
+            return False
+        completed_names = set(_completed_task_names(src_model))
+        if checked:
+            completed_names.add(task_name)
+        else:
+            completed_names.discard(task_name)
+        return _write_source_completed_tasks(
+            self._node_item,
+            src_item,
+            src_model,
+            completed_names,
+            notify_scene=notify_scene,
+        )
+
+    def _toggle_group(self, group_name: str) -> None:
+        name = str(group_name or "").strip()
+        if not name or name not in self._group_expanded:
+            return
+        expanded = bool(self._group_expanded.get(name, True))
+        self._group_expanded[name] = not expanded
+        if expanded and self._selected_task in set(self._group_tasks.get(name) or []):
+            self._selected_task = None
+        self._rebuild_row_entries()
+        self._rebuild_table()
+        self._update_labels()
+
+    def _on_group_toggle_requested(self, section: int) -> None:
+        entry = self._row_entry(int(section))
+        if not entry or entry.get("kind") != "group":
+            return
+        self._toggle_group(str(entry.get("group") or ""))
+
     def _sync_view_start_from_params(self, *, force: bool = False):
         model = getattr(self._node_item, "model", None)
         fallback = self._base_start_date
@@ -2355,13 +2648,13 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._today_jump_button.raise_()
 
     def _on_progress_edit_requested(self, section: int, rect_obj):
-        if section < 0 or section >= len(self._task_names):
+        task = self._task_for_row(int(section))
+        if not task:
             return
         try:
             rect = QtCore.QRect(rect_obj)
         except Exception:
             return
-        task = self._task_names[section]
         self._progress_edit_section = int(section)
         self._progress_editor.setGeometry(rect.adjusted(0, 0, 0, 0))
         self._progress_editor.setValue(int(self._task_progress.get(task, 0)))
@@ -2383,9 +2676,12 @@ class GanttChartWidget(QtWidgets.QFrame):
             self._progress_editor.hide()
         except Exception:
             pass
-        if section is None or section < 0 or section >= len(self._task_names):
+        if section is None:
             return
-        self._set_task_progress(self._task_names[section], int(self._progress_editor.value()))
+        task = self._task_for_row(int(section))
+        if not task:
+            return
+        self._set_task_progress(task, int(self._progress_editor.value()))
 
     def _update_notification_button(self) -> None:
         selected_task = str(self._selected_task or "").strip()
@@ -2395,11 +2691,12 @@ class GanttChartWidget(QtWidgets.QFrame):
             return
         entry = self._task_notifications.get(selected_task) or {}
         notify_at = _parse_notification_datetime(entry.get("notify_at"))
+        selected_label = self._task_display_label(selected_task)
         if notify_at is None:
-            self._notification_button.setToolTip(f"Schedule a reminder for {selected_task}.")
+            self._notification_button.setToolTip(f"Schedule a reminder for {selected_label}.")
         else:
             self._notification_button.setToolTip(
-                f"Reminder for {selected_task}: {_serialize_notification_datetime(notify_at)}"
+                f"Reminder for {selected_label}: {_serialize_notification_datetime(notify_at)}"
             )
         self._notification_button.setEnabled(True)
 
@@ -2415,7 +2712,7 @@ class GanttChartWidget(QtWidgets.QFrame):
         current_entry = self._task_notifications.get(task) or {}
         dlg = TaskNotificationDialog(
             _dialog_parent_for_node(self._node_item),
-            task_name=task,
+            task_name=self._task_display_label(task),
             initial_when=_parse_notification_datetime(current_entry.get("notify_at")),
             initial_message=str(current_entry.get("message") or ""),
             has_existing=bool(current_entry),
@@ -2448,7 +2745,7 @@ class GanttChartWidget(QtWidgets.QFrame):
     def _show_task_notification(self, task: str, message: str) -> None:
         _play_notification_alert_sound()
         body = str(message or "").strip()
-        task_line = f"Task: {task}"
+        task_line = f"Task: {self._task_display_label(task)}"
         parent = _dialog_parent_for_node(self._node_item)
         box = QtWidgets.QMessageBox(parent)
         box.setWindowTitle("Task Notification")
@@ -2649,10 +2946,70 @@ class GanttChartWidget(QtWidgets.QFrame):
         panel_width = _read_task_panel_width(self._node_item)
         if panel_width != self._task_panel_width:
             self._apply_task_panel_width(panel_width, persist=False)
-        src_item, src_model = _resolve_note_source(self._node_item)
-        self._source_invalid = bool(src_item is not None and src_model is None)
-        self._source_name = getattr(src_model, "name", "") if src_model is not None else ""
-        task_names = _note_task_names(src_model)
+        note_sources, invalid_inputs = _resolve_note_sources(self._node_item)
+        source_names: list[str] = []
+        task_ids: list[str] = []
+        task_display: dict[str, str] = {}
+        task_sources: dict[str, str] = {}
+        task_refs: dict[str, tuple[object, object]] = {}
+        source_info: dict[str, dict[str, object]] = {}
+        group_order: list[str] = []
+        group_tasks: dict[str, list[str]] = {}
+        used_group_names = set()
+        by_source_task: dict[tuple[str, str], str] = {}
+        by_task_name: dict[str, list[str]] = {}
+        for source_index, (src_item, src_model) in enumerate(note_sources):
+            base_name = str(getattr(src_model, "name", "") or "").strip() or f"Note {source_index + 1}"
+            group_name = base_name
+            suffix = 2
+            while group_name.lower() in used_group_names:
+                group_name = f"{base_name} ({suffix})"
+                suffix += 1
+            used_group_names.add(group_name.lower())
+            source_names.append(group_name)
+            group_order.append(group_name)
+            visible_tasks = _note_task_names(src_model)
+            group_task_ids: list[str] = []
+            aliases = [group_name]
+            model_name = str(getattr(src_model, "name", "") or "").strip()
+            if model_name and model_name.lower() != group_name.lower():
+                aliases.append(model_name)
+            for task_name in visible_tasks:
+                task_id = _task_storage_key(group_name, task_name)
+                group_task_ids.append(task_id)
+                task_ids.append(task_id)
+                task_display[task_id] = task_name
+                task_sources[task_id] = group_name
+                task_refs[task_id] = (src_item, src_model)
+                task_key = task_name.strip().lower()
+                if task_key:
+                    for alias in aliases:
+                        by_source_task.setdefault((alias.strip().lower(), task_key), task_id)
+                    by_task_name.setdefault(task_key, []).append(task_id)
+            group_tasks[group_name] = group_task_ids
+            source_info[group_name] = {
+                "item": src_item,
+                "model": src_model,
+                "task_ids": list(group_task_ids),
+                "task_names": list(visible_tasks),
+            }
+
+        self._source_names = source_names
+        self._source_info_by_name = source_info
+        self._task_names = task_ids
+        self._task_display_names = task_display
+        self._task_source_names = task_sources
+        self._task_source_refs = task_refs
+        self._group_order = group_order
+        self._group_tasks = group_tasks
+        self._source_invalid = bool(invalid_inputs and not source_names)
+        previous_group_expanded = dict(self._group_expanded)
+        self._group_expanded = {
+            group_name: bool(previous_group_expanded.get(group_name, True))
+            for group_name in self._group_order
+        }
+        self._rebuild_row_entries()
+
         assignments = _read_assignments(
             self._node_item,
             default_year=self._visible_start_date.year,
@@ -2660,37 +3017,78 @@ class GanttChartWidget(QtWidgets.QFrame):
         )
         progress_map = _read_progress_map(self._node_item)
         notifications = _read_notifications(self._node_item)
-        has_valid_note_source = src_model is not None
-        pruned = {name: day for name, day in assignments.items() if name in task_names}
-        if has_valid_note_source and pruned != assignments:
-            _write_assignments(self._node_item, pruned, notify_scene=False)
-        pruned_progress = {name: value for name, value in progress_map.items() if name in task_names}
-        pruned_notifications = {name: entry for name, entry in notifications.items() if name in task_names}
-        if has_valid_note_source and pruned_notifications != notifications:
+        has_valid_note_source = bool(source_names)
+        valid_task_ids = set(task_ids)
+
+        def _canonicalize(raw_mapping: dict):
+            clean = {}
+            changed = False
+            for raw_key, value in (raw_mapping or {}).items():
+                original_key = str(raw_key or "").strip()
+                canonical = _canonical_task_key(
+                    original_key,
+                    valid_task_ids=valid_task_ids,
+                    by_source_task=by_source_task,
+                    by_task_name=by_task_name,
+                )
+                if canonical is None:
+                    changed = True
+                    continue
+                if canonical != original_key:
+                    changed = True
+                clean[canonical] = value
+            if len(clean) != len(raw_mapping or {}):
+                changed = True
+            return clean, changed
+
+        pruned_assignments, assignments_changed = _canonicalize(assignments)
+        pruned_progress, progress_key_changed = _canonicalize(progress_map)
+        pruned_notifications, notifications_changed = _canonicalize(notifications)
+        if has_valid_note_source and assignments_changed:
+            _write_assignments(self._node_item, pruned_assignments, notify_scene=False)
+        if has_valid_note_source and notifications_changed:
             _write_notifications(self._node_item, pruned_notifications, notify_scene=False)
-        source_completed = _completed_task_names(src_model)
-        completed = {name for name in source_completed if name in task_names}
+
+        completed_ids: set[str] = set()
         synced_progress = dict(pruned_progress)
+        progress_changed = bool(progress_key_changed)
         if has_valid_note_source:
-            progress_changed = pruned_progress != progress_map
-            for task in task_names:
-                current_value = int(synced_progress.get(task, 0))
-                if task in completed:
-                    if current_value != 100:
-                        synced_progress[task] = 100
+            for group_name in self._group_order:
+                info = self._source_info_by_name.get(group_name) or {}
+                src_item = info.get("item")
+                src_model = info.get("model")
+                if src_model is None:
+                    continue
+                source_completed = set(_completed_task_names(src_model))
+                source_task_names = {self._task_name_for_id(task_id) for task_id in (info.get("task_ids") or [])}
+                source_task_names.discard("")
+                cleaned_completed = {name for name in source_completed if name in source_task_names}
+                for task_id in (info.get("task_ids") or []):
+                    task_name = self._task_name_for_id(task_id)
+                    current_value = int(synced_progress.get(task_id, 0))
+                    if task_name in cleaned_completed:
+                        completed_ids.add(task_id)
+                        if current_value != 100:
+                            synced_progress[task_id] = 100
+                            progress_changed = True
+                    elif current_value >= 100:
+                        synced_progress[task_id] = 0
                         progress_changed = True
-                elif current_value >= 100:
-                    synced_progress[task] = 0
-                    progress_changed = True
+                if cleaned_completed != source_completed:
+                    _write_source_completed_tasks(
+                        self._node_item,
+                        src_item,
+                        src_model,
+                        cleaned_completed,
+                        notify_scene=False,
+                    )
             if progress_changed:
                 _write_progress_map(self._node_item, synced_progress, notify_scene=False)
-        if completed != source_completed:
-            _write_source_completed_tasks(self._node_item, completed, notify_scene=False)
-        self._task_names = task_names
-        self._assignments = pruned if has_valid_note_source else assignments
+
+        self._assignments = pruned_assignments if has_valid_note_source else assignments
         self._task_progress = synced_progress if has_valid_note_source else progress_map
         self._task_notifications = pruned_notifications if has_valid_note_source else notifications
-        self._completed_tasks = completed
+        self._completed_tasks = completed_ids if has_valid_note_source else set()
         self._assignment_resize_preview = None
         if self._selected_task not in self._task_names:
             self._selected_task = None
@@ -2699,13 +3097,16 @@ class GanttChartWidget(QtWidgets.QFrame):
 
     def _update_labels(self):
         if self._source_invalid:
-            self._source_label.setText("Connect a Note node to this input.")
+            self._source_label.setText("Connect one or more Note nodes to this input.")
             self._source_label.setStyleSheet("QLabel{color:#fca5a5;font-weight:600;}")
-        elif self._source_name:
-            self._source_label.setText(f"Source: {self._source_name}")
+        elif self._source_names:
+            if len(self._source_names) == 1:
+                self._source_label.setText(f"Source: {self._source_names[0]}")
+            else:
+                self._source_label.setText(f"Sources: {', '.join(self._source_names)}")
             self._source_label.setStyleSheet("QLabel{color:#93a4b8;font-weight:600;}")
         else:
-            self._source_label.setText("Connect a Note node to this input.")
+            self._source_label.setText("Connect one or more Note nodes to this input.")
             self._source_label.setStyleSheet("QLabel{color:#93a4b8;font-weight:600;}")
 
         self._month_strip.set_dates(self._visible_dates, self._today)
@@ -2713,6 +3114,7 @@ class GanttChartWidget(QtWidgets.QFrame):
 
         if self._selected_task:
             raw = self._assignments.get(self._selected_task)
+            selected_label = self._task_display_label(self._selected_task)
             if raw:
                 try:
                     start_iso, end_iso = raw
@@ -2720,22 +3122,22 @@ class GanttChartWidget(QtWidgets.QFrame):
                     assigned_end = date.fromisoformat(str(end_iso))
                     if assigned_start == assigned_end:
                         self._selection_label.setText(
-                            f"Selected: {self._selected_task} -> {calendar.month_abbr[assigned_start.month]} {assigned_start.day}, {assigned_start.year}"
+                            f"Selected: {selected_label} -> {calendar.month_abbr[assigned_start.month]} {assigned_start.day}, {assigned_start.year}"
                         )
                     else:
                         self._selection_label.setText(
-                            f"Selected: {self._selected_task} -> {assigned_start.isoformat()} to {assigned_end.isoformat()}"
+                            f"Selected: {selected_label} -> {assigned_start.isoformat()} to {assigned_end.isoformat()}"
                         )
                 except Exception:
-                    self._selection_label.setText(f"Selected: {self._selected_task} -> {raw}")
+                    self._selection_label.setText(f"Selected: {selected_label} -> {raw}")
             else:
-                self._selection_label.setText(f"Selected: {self._selected_task} -> unscheduled")
+                self._selection_label.setText(f"Selected: {selected_label} -> unscheduled")
         elif self._task_names:
             self._selection_label.setText("Click a task cell to place that task on a day.")
-        elif self._source_name:
-            self._selection_label.setText("The connected note has no visible parameters.")
+        elif self._source_names:
+            self._selection_label.setText("The connected note nodes have no visible parameters.")
         else:
-            self._selection_label.setText("Connect a note task list to place tasks on the chart.")
+            self._selection_label.setText("Connect note task lists to place tasks on the chart.")
         self._update_notification_button()
 
     def _ensure_item(self, row: int, col: int) -> QtWidgets.QTableWidgetItem:
@@ -2785,8 +3187,14 @@ class GanttChartWidget(QtWidgets.QFrame):
                 visible_date = self._visible_dates[day]
                 header_item.setToolTip(f"{calendar.month_name[visible_date.month]} {visible_date.day}, {visible_date.year}")
 
-        self._table.setRowCount(len(self._task_names))
-        for row, task in enumerate(self._task_names):
+        self._table.setRowCount(len(self._row_entries))
+        for row, entry in enumerate(self._row_entries):
+            is_group = entry.get("kind") == "group"
+            group_name = str(entry.get("group") or "")
+            task_id = str(entry.get("task") or "")
+            task_name = self._task_name_for_id(task_id)
+            header_text = group_name if is_group else (task_name or task_id)
+            header_tip = f"{group_name} group" if is_group else self._task_display_label(task_id)
             try:
                 _set_section_resize_mode(self._table.verticalHeader(), row, fixed_mode)
             except Exception:
@@ -2794,16 +3202,19 @@ class GanttChartWidget(QtWidgets.QFrame):
             self._table.setRowHeight(row, _GANTT_TASK_ROW_HEIGHT)
             header_item = self._table.verticalHeaderItem(row)
             if header_item is None:
-                header_item = QtWidgets.QTableWidgetItem(task)
+                header_item = QtWidgets.QTableWidgetItem(header_text)
                 self._table.setVerticalHeaderItem(row, header_item)
-            header_item.setText(task)
-            header_item.setToolTip(task)
+            header_item.setText(header_text)
+            header_item.setToolTip(header_tip)
             for day in range(day_count):
                 cell = self._ensure_item(row, day)
                 cell.setText("")
                 cell.setTextAlignment(int(QtCore.Qt.AlignCenter))
                 visible_date = self._visible_dates[day]
-                cell.setToolTip(f"{task}: {visible_date.isoformat()}")
+                if is_group:
+                    cell.setToolTip(f"{group_name} group")
+                else:
+                    cell.setToolTip(f"{self._task_display_label(task_id)}: {visible_date.isoformat()}")
         self._table.blockSignals(False)
         self._ignore_header_move = False
         self._table.set_today_column(today_column)
@@ -2818,28 +3229,61 @@ class GanttChartWidget(QtWidgets.QFrame):
         label_fg = QtGui.QColor("#dbe4ee")
         selected_label_bg = QtGui.QColor("#1d4f74")
         selected_label_fg = QtGui.QColor("#f8fafc")
+        group_label_bg = QtGui.QColor("#1a2735")
+        group_label_fg = QtGui.QColor("#e2e8f0")
         cell_bg = QtGui.QColor("#10161d")
         weekend_cell_bg = QtGui.QColor("#0c1015")
         selected_row_bg = QtGui.QColor("#16212b")
         weekend_selected_row_bg = QtGui.QColor("#121b23")
+        group_cell_bg = QtGui.QColor("#131d28")
         assigned_bg = QtGui.QColor("#60a5fa")
         completed_assigned_bg = QtGui.QColor("#16a34a")
         assigned_fg = QtGui.QColor("#ecfeff")
-        selected_row = None if self._selected_task not in self._task_names else self._task_names.index(self._selected_task)
+        selected_row = self._row_for_task(self._selected_task)
         assignment_overlays: dict[int, tuple[int, int, QtGui.QColor]] = {}
         progress_overlays: dict[int, tuple[int, int, int]] = {}
+        progress_sections: dict[int, int] = {}
+        completed_sections: set[int] = set()
+        notification_sections: set[int] = set()
+        group_sections: dict[int, bool] = {}
+        child_sections: set[int] = set()
 
-        for row, task in enumerate(self._task_names):
-            is_selected = task == self._selected_task
+        for row, entry in enumerate(self._row_entries):
+            is_group = entry.get("kind") == "group"
+            group_name = str(entry.get("group") or "")
+            task = str(entry.get("task") or "")
+            task_name = self._task_name_for_id(task)
+            header_text = group_name if is_group else (task_name or task)
+            is_selected = bool(task and task == self._selected_task)
             header_item = self._table.verticalHeaderItem(row)
             if header_item is None:
-                header_item = QtWidgets.QTableWidgetItem(task)
+                header_item = QtWidgets.QTableWidgetItem(header_text)
                 self._table.setVerticalHeaderItem(row, header_item)
+            font = header_item.font()
+            if is_group:
+                group_sections[row] = bool(self._group_expanded.get(group_name, True))
+                header_item.setBackground(group_label_bg)
+                header_item.setForeground(group_label_fg)
+                font.setBold(True)
+                for day in range(self._visible_day_count()):
+                    item = self._ensure_item(row, day)
+                    item.setBackground(group_cell_bg)
+                    item.setForeground(group_label_fg)
+                header_item.setFont(font)
+                continue
+
+            child_sections.add(row)
             header_item.setBackground(selected_label_bg if is_selected else label_bg)
             header_item.setForeground(selected_label_fg if is_selected else label_fg)
-            font = header_item.font()
             font.setBold(bool(is_selected))
             header_item.setFont(font)
+
+            progress_value = int(self._task_progress.get(task, 0))
+            progress_sections[row] = progress_value
+            if task in self._completed_tasks:
+                completed_sections.add(row)
+            if task in self._task_notifications:
+                notification_sections.add(row)
 
             assigned_span = self._visible_assignment_span(task)
             if self._assignment_resize_preview is not None and self._assignment_resize_preview[0] == task:
@@ -2847,7 +3291,6 @@ class GanttChartWidget(QtWidgets.QFrame):
                     int(self._assignment_resize_preview[1]),
                     int(self._assignment_resize_preview[2]),
                 )
-            progress_value = int(self._task_progress.get(task, 0))
             for day in range(self._visible_day_count()):
                 item = self._ensure_item(row, day)
                 is_weekend = False
@@ -2879,43 +3322,31 @@ class GanttChartWidget(QtWidgets.QFrame):
                 pass
         if hasattr(header, "set_progress_values"):
             try:
-                header.set_progress_values(
-                    {
-                        row: int(self._task_progress.get(task, 0))
-                        for row, task in enumerate(self._task_names)
-                    }
-                )
+                header.set_progress_values(progress_sections)
             except Exception:
                 pass
         if hasattr(header, "set_completed_sections"):
             try:
-                header.set_completed_sections(
-                    {
-                        row
-                        for row, task in enumerate(self._task_names)
-                        if task in self._completed_tasks
-                    }
-                )
+                header.set_completed_sections(completed_sections)
             except Exception:
                 pass
         if hasattr(header, "set_notification_sections"):
             try:
-                header.set_notification_sections(
-                    {
-                        row
-                        for row, task in enumerate(self._task_names)
-                        if task in self._task_notifications
-                    }
-                )
+                header.set_notification_sections(notification_sections)
+            except Exception:
+                pass
+        if hasattr(header, "set_group_sections"):
+            try:
+                header.set_group_sections(group_sections, child_sections)
             except Exception:
                 pass
         self._table.set_assignment_overlays(assignment_overlays)
         self._table.set_progress_overlays(progress_overlays)
 
     def _on_cell_clicked(self, row: int, col: int):
-        if row < 0 or row >= len(self._task_names):
+        task = self._task_for_row(row)
+        if not task:
             return
-        task = self._task_names[row]
         self._selected_task = task
         assigned_span = self._visible_assignment_span(task)
         if assigned_span is not None and assigned_span[0] <= col <= assigned_span[1]:
@@ -2932,24 +3363,25 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._set_task_day(task, col + 1)
 
     def _on_cell_double_clicked(self, row: int, _col: int):
-        if row < 0 or row >= len(self._task_names):
+        task = self._task_for_row(row)
+        if not task:
             return
-        task = self._task_names[row]
         self._selected_task = task
         self._apply_table_styles()
         self._update_labels()
-        src_item, src_model = _resolve_note_source(self._node_item)
-        if src_model is None:
+        task_name = self._task_name_for_id(task)
+        src_item, src_model = self._source_ref_for_task(task)
+        if src_model is None or not task_name:
             QtWidgets.QMessageBox.information(
                 _dialog_parent_for_node(self._node_item),
                 "Edit Task Value",
                 "Connect a Note node to edit task values from the Gantt chart.",
             )
             return
-        initial_text = _read_source_task_value(src_model, task)
+        initial_text = _read_source_task_value(src_model, task_name)
         dlg = BigTextEditDialog(
             _dialog_parent_for_node(self._node_item),
-            title=f"Edit Task Value: {task}",
+            title=f"Edit Task Value: {self._task_display_label(task)}",
             initial=initial_text,
         )
         try:
@@ -2965,7 +3397,14 @@ class GanttChartWidget(QtWidgets.QFrame):
         new_text = dlg.text()
         if new_text == initial_text:
             return
-        _write_source_task_value(self._node_item, task, new_text, notify_scene=True)
+        _write_source_task_value(
+            self._node_item,
+            src_item,
+            src_model,
+            task_name,
+            new_text,
+            notify_scene=True,
+        )
 
     def _on_header_clicked(self, section: int):
         if section < 0 or section >= self._visible_day_count():
@@ -2976,17 +3415,20 @@ class GanttChartWidget(QtWidgets.QFrame):
             self._selection_label.setText("Click a task cell to place that task on a day.")
 
     def _on_task_header_clicked(self, section: int):
-        if section < 0 or section >= len(self._task_names):
+        task = self._task_for_row(section)
+        if not task:
             return
-        self._selected_task = self._task_names[section]
+        self._selected_task = task
         self._apply_table_styles()
         self._update_labels()
 
     def _on_task_header_rename_requested(self, section: int):
-        if section < 0 or section >= len(self._task_names):
+        task_id = self._task_for_row(section)
+        if not task_id:
             return
-        old_name = self._task_names[section]
-        src_item, src_model = _resolve_note_source(self._node_item)
+        old_name = self._task_name_for_id(task_id)
+        source_name = self._task_group_name(task_id)
+        src_item, src_model = self._source_ref_for_task(task_id)
         if src_item is None or src_model is None:
             QtWidgets.QMessageBox.information(
                 _dialog_parent_for_node(self._node_item),
@@ -3017,14 +3459,16 @@ class GanttChartWidget(QtWidgets.QFrame):
         final_name = str(rename_fn(param_index, desired_name) or "").strip()
         if not final_name:
             return
-        assignments, assignments_changed = _rename_task_key(self._assignments, old_name, final_name)
-        progress_map, progress_changed = _rename_task_key(self._task_progress, old_name, final_name)
-        notifications, notifications_changed = _rename_task_key(self._task_notifications, old_name, final_name)
+        old_task_id = task_id
+        new_task_id = _task_storage_key(source_name, final_name)
+        assignments, assignments_changed = _rename_task_key(self._assignments, old_task_id, new_task_id)
+        progress_map, progress_changed = _rename_task_key(self._task_progress, old_task_id, new_task_id)
+        notifications, notifications_changed = _rename_task_key(self._task_notifications, old_task_id, new_task_id)
         completed = set(self._completed_tasks)
         completed_changed = False
-        if old_name != final_name and old_name in completed:
-            completed.discard(old_name)
-            completed.add(final_name)
+        if old_task_id != new_task_id and old_task_id in completed:
+            completed.discard(old_task_id)
+            completed.add(new_task_id)
             completed_changed = True
         if assignments_changed:
             self._assignments = assignments
@@ -3037,14 +3481,14 @@ class GanttChartWidget(QtWidgets.QFrame):
             _write_notifications(self._node_item, notifications, notify_scene=False)
         if completed_changed:
             self._completed_tasks = completed
-        if self._selected_task == old_name:
-            self._selected_task = final_name
+        if self._selected_task == old_task_id:
+            self._selected_task = new_task_id
         self._schedule_sync()
 
     def _on_task_completion_toggled(self, section: int, checked: bool):
-        if section < 0 or section >= len(self._task_names):
+        task = self._task_for_row(section)
+        if not task:
             return
-        task = self._task_names[section]
         progress_map = dict(self._task_progress)
         progress_map[task] = 100 if checked else 0
         self._task_progress = progress_map
@@ -3054,7 +3498,7 @@ class GanttChartWidget(QtWidgets.QFrame):
             completed.add(task)
         else:
             completed.discard(task)
-        if not _write_source_completed_tasks(self._node_item, completed, notify_scene=True):
+        if not self._set_source_task_completed(task, checked, notify_scene=True):
             return
         self._completed_tasks = completed
         self._apply_table_styles()
@@ -3071,22 +3515,18 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._task_progress = progress_map
         _write_progress_map(self._node_item, progress_map, notify_scene=True)
 
-        src_item, src_model = _resolve_note_source(self._node_item)
-        if src_model is not None:
-            completed = set(self._completed_tasks)
-            if progress_value >= 100:
-                completed.add(task)
-            else:
-                completed.discard(task)
-            if _write_source_completed_tasks(self._node_item, completed, notify_scene=True):
-                self._completed_tasks = completed
-        elif progress_value >= 100:
+        has_source = self._task_group_name(task) in self._source_info_by_name
+        if progress_value >= 100:
             completed = set(self._completed_tasks)
             completed.add(task)
+            if has_source and not self._set_source_task_completed(task, True, notify_scene=True):
+                return
             self._completed_tasks = completed
         else:
             completed = set(self._completed_tasks)
             completed.discard(task)
+            if has_source and not self._set_source_task_completed(task, False, notify_scene=True):
+                return
             self._completed_tasks = completed
         self._apply_table_styles()
         self._update_labels()
@@ -3109,9 +3549,9 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._set_task_day_range(task, assigned_date, assigned_date, notify_scene=True)
 
     def _remove_task_day_at(self, row: int, col: int) -> bool:
-        if row < 0 or row >= len(self._task_names):
+        task = self._task_for_row(row)
+        if not task:
             return False
-        task = self._task_names[row]
         assigned_span = self._visible_assignment_span(task)
         if assigned_span is None or not (assigned_span[0] <= col <= assigned_span[1]):
             return False
@@ -3126,9 +3566,9 @@ class GanttChartWidget(QtWidgets.QFrame):
         return True
 
     def _on_assignment_resize_moved(self, row: int, col: int, edge: int):
-        if row < 0 or row >= len(self._task_names):
+        task = self._task_for_row(row)
+        if not task:
             return
-        task = self._task_names[row]
         assigned_span = self._visible_assignment_span(task)
         if assigned_span is None:
             return
@@ -3143,11 +3583,11 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._update_labels()
 
     def _on_assignment_resize_finished(self, row: int, col: int, edge: int):
-        if row < 0 or row >= len(self._task_names):
+        task = self._task_for_row(row)
+        if not task:
             self._assignment_resize_preview = None
             self._apply_table_styles()
             return
-        task = self._task_names[row]
         dates = self._assignment_dates_for_task(task)
         assigned_span = self._visible_assignment_span(task)
         if dates is None or assigned_span is None:
@@ -3169,20 +3609,20 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._set_task_day_range(task, target_start_date, target_end_date, notify_scene=True)
 
     def _on_assignment_move_moved(self, row: int, start_col: int, end_col: int):
-        if row < 0 or row >= len(self._task_names):
+        task = self._task_for_row(row)
+        if not task:
             return
-        task = self._task_names[row]
         self._selected_task = task
         self._assignment_resize_preview = (task, int(start_col), int(end_col))
         self._apply_table_styles()
         self._update_labels()
 
     def _on_assignment_move_finished(self, row: int, start_col: int, end_col: int):
-        if row < 0 or row >= len(self._task_names):
+        task = self._task_for_row(row)
+        if not task:
             self._assignment_resize_preview = None
             self._apply_table_styles()
             return
-        task = self._task_names[row]
         assigned_span = self._visible_assignment_span(task)
         target_start_col = max(0, min(int(start_col), max(0, len(self._visible_dates) - 1)))
         target_end_col = max(target_start_col, min(int(end_col), max(0, len(self._visible_dates) - 1)))
@@ -3251,24 +3691,54 @@ class GanttChartWidget(QtWidgets.QFrame):
         if not self._task_names:
             return
         try:
-            start_index = int(start_visual_index)
-            insert_index = int(drop_indicator_index)
+            start_row = int(start_visual_index)
+            drop_index = int(drop_indicator_index)
         except Exception:
             return
-        if start_index < 0 or start_index >= len(self._task_names):
+        task_id = self._task_for_row(start_row)
+        if not task_id:
             return
-        ordered = list(self._task_names)
-        moved_task = ordered.pop(start_index)
+        source_name = self._task_group_name(task_id)
+        source_info = self._source_info_by_name.get(source_name) or {}
+        src_item = source_info.get("item")
+        src_model = source_info.get("model")
+        if src_item is None or src_model is None:
+            return
+        source_task_ids = list(self._group_tasks.get(source_name) or [])
+        if len(source_task_ids) <= 1:
+            return
+        visible_group_rows = [
+            row
+            for row, entry in enumerate(self._row_entries)
+            if entry.get("kind") == "task" and str(entry.get("group") or "") == source_name
+        ]
+        if not visible_group_rows:
+            return
+        min_boundary = int(visible_group_rows[0])
+        max_boundary = int(visible_group_rows[-1]) + 1
+        if drop_index < min_boundary or drop_index > max_boundary:
+            return
+        try:
+            start_index = source_task_ids.index(task_id)
+        except ValueError:
+            return
+        insert_index = 0
+        for row in visible_group_rows:
+            if int(row) < drop_index:
+                insert_index += 1
+        ordered_ids = list(source_task_ids)
+        moved_task = ordered_ids.pop(start_index)
         if insert_index > start_index:
             insert_index -= 1
-        insert_index = max(0, min(len(ordered), insert_index))
-        ordered.insert(insert_index, moved_task)
-        if ordered == self._task_names:
+        insert_index = max(0, min(len(ordered_ids), int(insert_index)))
+        ordered_ids.insert(insert_index, moved_task)
+        if ordered_ids == source_task_ids:
             return
-        if _reorder_note_params(self._node_item, ordered):
-            self._task_names = ordered
-            self._rebuild_table()
-            self._update_labels()
+        ordered_names = [self._task_name_for_id(task_key) for task_key in ordered_ids if self._task_name_for_id(task_key)]
+        if not ordered_names:
+            return
+        if _reorder_note_params(self._node_item, src_item, src_model, ordered_names):
+            self._schedule_sync()
 
 
 def render_node_body(node_item, y_cursor: int) -> int:
