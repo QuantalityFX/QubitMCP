@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import calendar
+import csv
 import html
 import json
 from datetime import date, datetime, timedelta
@@ -26,6 +27,7 @@ _NOTIFICATION_PARAM = "notification_data"
 _VIEW_MONTH_PARAM = "view_month"
 _VIEW_START_PARAM = "view_start_date"
 _TASK_PANEL_WIDTH_PARAM = "task_panel_width"
+_GROUP_STATE_PARAM = "group_state_data"
 _VISIBLE_DAY_COUNT = 31
 _GANTT_DAY_COLUMN_WIDTH = 24
 _GANTT_TASK_ROW_HEIGHT = 28
@@ -39,6 +41,27 @@ _TODAY_MARKER_Y_OFFSET = -8
 _GANTT_SIDECAR_SUFFIX = ".gantt_chart.json"
 
 _ICON_PIXMAP_CACHE: dict[str, QtGui.QPixmap | None] = {}
+_GANTT_TRANSFER_BUFFER: dict[str, object] | None = None
+
+
+def _set_gantt_transfer_buffer(payload: dict[str, object] | None) -> None:
+    global _GANTT_TRANSFER_BUFFER
+    if not isinstance(payload, dict):
+        _GANTT_TRANSFER_BUFFER = None
+        return
+    try:
+        _GANTT_TRANSFER_BUFFER = json.loads(json.dumps(payload))
+    except Exception:
+        _GANTT_TRANSFER_BUFFER = None
+
+
+def _get_gantt_transfer_buffer() -> dict[str, object] | None:
+    if not isinstance(_GANTT_TRANSFER_BUFFER, dict):
+        return None
+    try:
+        return json.loads(json.dumps(_GANTT_TRANSFER_BUFFER))
+    except Exception:
+        return None
 
 
 def _param_value(model, name: str) -> str:
@@ -109,6 +132,7 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, _VIEW_MONTH_PARAM, f"{view_start.year:04d}-{view_start.month:02d}")
     _ensure_param(node_item, _VIEW_START_PARAM, view_start.isoformat())
     _ensure_param(node_item, _TASK_PANEL_WIDTH_PARAM, str(_GANTT_TASK_PANEL_DEFAULT_WIDTH))
+    _ensure_param(node_item, _GROUP_STATE_PARAM, "{}")
     _ensure_hidden_params(
         model,
         [
@@ -118,6 +142,7 @@ def build_ports(node_item) -> None:
             _VIEW_MONTH_PARAM,
             _VIEW_START_PARAM,
             _TASK_PANEL_WIDTH_PARAM,
+            _GROUP_STATE_PARAM,
         ],
     )
 
@@ -329,6 +354,19 @@ def _coerce_progress_value(raw) -> int | None:
     return max(0, min(100, value))
 
 
+def _coerce_bool_value(raw) -> bool | None:
+    if isinstance(raw, bool):
+        return bool(raw)
+    if isinstance(raw, (int, float)):
+        return bool(int(raw))
+    text = str(raw or "").strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
 def _read_progress_map(node_item) -> dict[str, int]:
     model = getattr(node_item, "model", None)
     if model is None:
@@ -350,6 +388,31 @@ def _read_progress_map(node_item) -> dict[str, int]:
         progress = _coerce_progress_value(value)
         if progress is not None:
             clean[task] = progress
+    return clean
+
+
+def _read_group_state(node_item) -> dict[str, bool]:
+    model = getattr(node_item, "model", None)
+    if model is None:
+        return {}
+    raw = _param_value(model, _GROUP_STATE_PARAM).strip()
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    clean: dict[str, bool] = {}
+    for name, value in data.items():
+        key = str(name or "").strip()
+        if not key:
+            continue
+        parsed = _coerce_bool_value(value)
+        if parsed is None:
+            continue
+        clean[key] = bool(parsed)
     return clean
 
 
@@ -496,6 +559,25 @@ def _write_task_panel_width(node_item, width: int) -> None:
     _write_gantt_sidecar_snapshot(node_item)
 
 
+def _write_group_state(node_item, mapping: dict[str, bool], *, notify_scene: bool = False) -> None:
+    clean: dict[str, bool] = {}
+    for name, value in (mapping or {}).items():
+        key = str(name or "").strip()
+        if not key:
+            continue
+        parsed = _coerce_bool_value(value)
+        if parsed is None:
+            continue
+        clean[key] = bool(parsed)
+    _set_param_value(
+        node_item,
+        _GROUP_STATE_PARAM,
+        json.dumps(clean, sort_keys=True, separators=(",", ":")),
+        notify_scene=notify_scene,
+    )
+    _write_gantt_sidecar_snapshot(node_item)
+
+
 def _rename_task_key(mapping: dict, old_name: str, new_name: str):
     clean = dict(mapping or {})
     old_key = str(old_name or "").strip()
@@ -542,6 +624,102 @@ def _gantt_sidecar_path(node_item) -> Path | None:
         return None
 
 
+def _gantt_transfer_log_dir(node_item) -> Path | None:
+    candidates = []
+    workflow_path = _workflow_path_for_node(node_item)
+    if workflow_path is not None:
+        try:
+            candidates.append(workflow_path.parent / "gantt_chart" / "transfer_logs")
+        except Exception:
+            pass
+    try:
+        candidates.append(Path(__file__).resolve().parents[2] / "gantt_chart" / "transfer_logs")
+    except Exception:
+        pass
+    for candidate in candidates:
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            return candidate
+        except Exception:
+            continue
+    return None
+
+
+def _gantt_transfer_log_path(node_item, chart_name: str) -> Path | None:
+    directory = _gantt_transfer_log_dir(node_item)
+    if directory is None:
+        return None
+    safe_name = "".join(ch if (str(ch).isalnum() or ch in ("-", "_")) else "_" for ch in str(chart_name or "gantt_chart"))
+    safe_name = safe_name.strip("_") or "gantt_chart"
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return directory / f"{safe_name}_copy_{stamp}.csv"
+
+
+def _gantt_transfer_pointer_path(node_item) -> Path | None:
+    directory = _gantt_transfer_log_dir(node_item)
+    if directory is None:
+        return None
+    return directory / "latest_transfer_log.txt"
+
+
+def _write_gantt_transfer_pointer(node_item, log_path: Path) -> None:
+    pointer = _gantt_transfer_pointer_path(node_item)
+    if pointer is None:
+        return
+    try:
+        pointer.write_text(str(log_path), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _read_gantt_transfer_pointer(node_item) -> Path | None:
+    pointer = _gantt_transfer_pointer_path(node_item)
+    if pointer is None or not pointer.is_file():
+        return None
+    try:
+        path_text = pointer.read_text(encoding="utf-8").strip()
+    except Exception:
+        return None
+    if not path_text:
+        return None
+    try:
+        candidate = Path(path_text)
+    except Exception:
+        return None
+    return candidate if candidate.is_file() else None
+
+
+def _latest_gantt_transfer_log(node_item) -> Path | None:
+    directory = _gantt_transfer_log_dir(node_item)
+    if directory is None or not directory.is_dir():
+        return None
+    try:
+        matches = sorted(directory.glob("*_copy_*.csv"), key=lambda p: p.stat().st_mtime, reverse=True)
+    except Exception:
+        matches = []
+    for match in matches:
+        if match.is_file():
+            return match
+    return None
+
+
+def _resolve_gantt_transfer_log_path(node_item) -> Path | None:
+    payload = _get_gantt_transfer_buffer()
+    if isinstance(payload, dict):
+        log_path_text = str(payload.get("log_path") or "").strip()
+        if log_path_text:
+            try:
+                candidate = Path(log_path_text)
+            except Exception:
+                candidate = None
+            if candidate is not None and candidate.is_file():
+                return candidate
+    pointed = _read_gantt_transfer_pointer(node_item)
+    if pointed is not None:
+        return pointed
+    return _latest_gantt_transfer_log(node_item)
+
+
 def _read_gantt_sidecar_nodes(node_item) -> dict[str, dict]:
     path = _gantt_sidecar_path(node_item)
     if path is None or not path.is_file():
@@ -578,6 +756,7 @@ def _write_gantt_sidecar_snapshot(node_item) -> None:
         "notification_data": _param_value(model, _NOTIFICATION_PARAM).strip() or "{}",
         "view_start_date": _param_value(model, _VIEW_START_PARAM).strip(),
         "task_panel_width": _param_value(model, _TASK_PANEL_WIDTH_PARAM).strip(),
+        "group_state_data": _param_value(model, _GROUP_STATE_PARAM).strip() or "{}",
     }
     try:
         path.write_text(json.dumps({"nodes": nodes}, indent=2), encoding="utf-8")
@@ -685,6 +864,32 @@ def _load_gantt_sidecar_snapshot(node_item) -> bool:
                     notify_scene=False,
                 )
                 changed = True
+    current_group_state = _param_value(model, _GROUP_STATE_PARAM)
+    sidecar_group_state = entry.get("group_state_data")
+    if _json_param_is_empty(current_group_state):
+        if isinstance(sidecar_group_state, dict):
+            sidecar_group_state = json.dumps(sidecar_group_state, sort_keys=True, separators=(",", ":"))
+        sidecar_group_state = str(sidecar_group_state or "").strip() or "{}"
+        try:
+            parsed_group_state = json.loads(sidecar_group_state)
+            if isinstance(parsed_group_state, dict):
+                clean_group_state = {}
+                for group_name, raw_value in parsed_group_state.items():
+                    key = str(group_name or "").strip()
+                    if not key:
+                        continue
+                    parsed = _coerce_bool_value(raw_value)
+                    if parsed is None:
+                        continue
+                    clean_group_state[key] = bool(parsed)
+                sidecar_group_state = json.dumps(clean_group_state, sort_keys=True, separators=(",", ":"))
+            else:
+                sidecar_group_state = "{}"
+        except Exception:
+            sidecar_group_state = "{}"
+        if not _json_param_is_empty(sidecar_group_state):
+            _set_param_value(node_item, _GROUP_STATE_PARAM, sidecar_group_state, notify_scene=False)
+            changed = True
     return changed
 
 
@@ -795,6 +1000,18 @@ def _canonical_task_key(
     if not candidates:
         return None
     return candidates[0]
+
+
+def _normalized_source_key(raw: str) -> str:
+    text = str(raw or "").strip().lower()
+    if not text:
+        return ""
+    if text.endswith(")") and "(" in text:
+        base, _, tail = text.rpartition("(")
+        token = tail[:-1].strip()
+        if token.isdigit():
+            text = base.strip()
+    return text
 
 
 def _dialog_parent_for_node(node_item):
@@ -969,6 +1186,33 @@ def _today_icon() -> QtGui.QIcon | None:
         return None
 
 
+def _paint_gantt_button_chrome(
+    painter,
+    rect: QtCore.QRect,
+    *,
+    enabled: bool,
+    hovered: bool,
+    pressed: bool,
+) -> None:
+    if not rect.isValid():
+        return
+    if pressed:
+        fill = QtGui.QColor("#000000")
+        border = QtGui.QColor("#e2e8f0")
+    elif hovered and enabled:
+        fill = QtGui.QColor(24, 34, 46, 220)
+        border = QtGui.QColor("#93a4b8")
+    elif enabled:
+        fill = QtGui.QColor(18, 24, 32, 175)
+        border = QtGui.QColor(71, 85, 105, 180)
+    else:
+        fill = QtGui.QColor(18, 24, 32, 115)
+        border = QtGui.QColor(51, 65, 85, 120)
+    painter.setPen(QtGui.QPen(border, 1))
+    painter.setBrush(QtGui.QBrush(fill))
+    painter.drawRoundedRect(QtCore.QRectF(rect.adjusted(1, 1, -1, -1)), 3.0, 3.0)
+
+
 class _GanttNotificationButton(QtWidgets.QAbstractButton):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -977,6 +1221,8 @@ class _GanttNotificationButton(QtWidgets.QAbstractButton):
         self.setToolTip("Select a task to schedule a reminder.")
         self.setFocusPolicy(QtCore.Qt.NoFocus)
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+        self.setAttribute(QtCore.Qt.WA_Hover, True)
+        self.setMouseTracking(True)
 
     def sizeHint(self):
         return QtCore.QSize(28, 28)
@@ -985,17 +1231,44 @@ class _GanttNotificationButton(QtWidgets.QAbstractButton):
         painter = QtGui.QPainter(self)
         try:
             painter.setRenderHint(QtGui.QPainter.SmoothPixmapTransform, True)
+            painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
         except Exception:
             pass
+        hovered = bool(self.underMouse())
+        pressed = bool(self.isDown())
+        _paint_gantt_button_chrome(
+            painter,
+            self.rect(),
+            enabled=bool(self.isEnabled()),
+            hovered=hovered,
+            pressed=pressed,
+        )
         if self._icon_pm is not None and not self._icon_pm.isNull():
-            target = QtCore.QRect(0, 0, min(self.width() - 4, 18), min(self.height() - 4, 18))
+            target = QtCore.QRect(0, 0, min(self.width() - 7, 17), min(self.height() - 7, 17))
             target.moveCenter(self.rect().center())
+            if pressed:
+                target.translate(0, 1)
             try:
-                painter.setOpacity(0.82 if self.isEnabled() else 0.45)
+                if not self.isEnabled():
+                    painter.setOpacity(0.45)
+                elif pressed:
+                    painter.setOpacity(1.0)
+                elif hovered:
+                    painter.setOpacity(0.95)
+                else:
+                    painter.setOpacity(0.82)
             except Exception:
                 pass
             painter.drawPixmap(target, self._icon_pm, self._icon_pm.rect())
         painter.end()
+
+    def enterEvent(self, event):
+        super().enterEvent(event)
+        self.update()
+
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+        self.update()
 
 
 class _GanttTodayButton(QtWidgets.QAbstractButton):
@@ -1007,6 +1280,8 @@ class _GanttTodayButton(QtWidgets.QAbstractButton):
         self.setToolTip(f"Jump to today: {self._today.isoformat()}")
         self.setFocusPolicy(QtCore.Qt.NoFocus)
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+        self.setAttribute(QtCore.Qt.WA_Hover, True)
+        self.setMouseTracking(True)
 
     def sizeHint(self):
         return QtCore.QSize(28, 28)
@@ -1016,12 +1291,35 @@ class _GanttTodayButton(QtWidgets.QAbstractButton):
         try:
             painter.setRenderHint(QtGui.QPainter.SmoothPixmapTransform, True)
             painter.setRenderHint(QtGui.QPainter.TextAntialiasing, True)
+            painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
         except Exception:
             pass
+        hovered = bool(self.underMouse())
+        pressed = bool(self.isDown())
+        _paint_gantt_button_chrome(
+            painter,
+            self.rect(),
+            enabled=bool(self.isEnabled()),
+            hovered=hovered,
+            pressed=pressed,
+        )
         if self._icon_pm is not None and not self._icon_pm.isNull():
-            target = QtCore.QRect(0, 0, min(self.width() - 2, 24), min(self.height() - 2, 24))
+            target = QtCore.QRect(0, 0, min(self.width() - 5, 21), min(self.height() - 5, 21))
             target.moveCenter(self.rect().center())
             target.moveTop(max(0, int((self.height() - target.height()) / 2.0)))
+            if pressed:
+                target.translate(0, 1)
+            try:
+                if not self.isEnabled():
+                    painter.setOpacity(0.5)
+                elif pressed:
+                    painter.setOpacity(1.0)
+                elif hovered:
+                    painter.setOpacity(0.96)
+                else:
+                    painter.setOpacity(0.9)
+            except Exception:
+                pass
             painter.drawPixmap(target, self._icon_pm, self._icon_pm.rect())
         font = painter.font()
         font.setBold(True)
@@ -1032,8 +1330,132 @@ class _GanttTodayButton(QtWidgets.QAbstractButton):
         painter.setFont(font)
         painter.setPen(QtGui.QColor("#f8fafc"))
         text_rect = QtCore.QRect(target) if self._icon_pm is not None and not self._icon_pm.isNull() else self.rect()
-        painter.drawText(text_rect.adjusted(0, 1, 0, 0), int(QtCore.Qt.AlignCenter), str(self._today.day))
+        painter.drawText(text_rect.adjusted(0, 1 if pressed else 0, 0, 0), int(QtCore.Qt.AlignCenter), str(self._today.day))
         painter.end()
+
+    def enterEvent(self, event):
+        super().enterEvent(event)
+        self.update()
+
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+        self.update()
+
+
+class _GanttCopyButton(QtWidgets.QAbstractButton):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._icon_pm = _load_icon_pixmap("Copy_Icon.png")
+        self.setCursor(QtCore.Qt.PointingHandCursor)
+        self.setToolTip("Copy this chart's assignments and progress.")
+        self.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+        self.setAttribute(QtCore.Qt.WA_Hover, True)
+        self.setMouseTracking(True)
+
+    def sizeHint(self):
+        return QtCore.QSize(28, 28)
+
+    def paintEvent(self, event):
+        painter = QtGui.QPainter(self)
+        try:
+            painter.setRenderHint(QtGui.QPainter.SmoothPixmapTransform, True)
+            painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        except Exception:
+            pass
+        hovered = bool(self.underMouse())
+        pressed = bool(self.isDown())
+        _paint_gantt_button_chrome(
+            painter,
+            self.rect(),
+            enabled=bool(self.isEnabled()),
+            hovered=hovered,
+            pressed=pressed,
+        )
+        if self._icon_pm is not None and not self._icon_pm.isNull():
+            target = QtCore.QRect(0, 0, min(self.width() - 7, 17), min(self.height() - 7, 17))
+            target.moveCenter(self.rect().center())
+            if pressed:
+                target.translate(0, 1)
+            try:
+                if not self.isEnabled():
+                    painter.setOpacity(0.45)
+                elif pressed:
+                    painter.setOpacity(1.0)
+                elif hovered:
+                    painter.setOpacity(0.97)
+                else:
+                    painter.setOpacity(0.9)
+            except Exception:
+                pass
+            painter.drawPixmap(target, self._icon_pm, self._icon_pm.rect())
+        painter.end()
+
+    def enterEvent(self, event):
+        super().enterEvent(event)
+        self.update()
+
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+        self.update()
+
+
+class _GanttPasteButton(QtWidgets.QAbstractButton):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._icon_pm = _load_icon_pixmap("Paste_Icon.png")
+        self.setCursor(QtCore.Qt.PointingHandCursor)
+        self.setToolTip("Paste assignments and progress from copied chart data.")
+        self.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+        self.setAttribute(QtCore.Qt.WA_Hover, True)
+        self.setMouseTracking(True)
+
+    def sizeHint(self):
+        return QtCore.QSize(28, 28)
+
+    def paintEvent(self, event):
+        painter = QtGui.QPainter(self)
+        try:
+            painter.setRenderHint(QtGui.QPainter.SmoothPixmapTransform, True)
+            painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        except Exception:
+            pass
+        hovered = bool(self.underMouse())
+        pressed = bool(self.isDown())
+        _paint_gantt_button_chrome(
+            painter,
+            self.rect(),
+            enabled=bool(self.isEnabled()),
+            hovered=hovered,
+            pressed=pressed,
+        )
+        if self._icon_pm is not None and not self._icon_pm.isNull():
+            target = QtCore.QRect(0, 0, min(self.width() - 7, 17), min(self.height() - 7, 17))
+            target.moveCenter(self.rect().center())
+            if pressed:
+                target.translate(0, 1)
+            try:
+                if not self.isEnabled():
+                    painter.setOpacity(0.45)
+                elif pressed:
+                    painter.setOpacity(1.0)
+                elif hovered:
+                    painter.setOpacity(0.97)
+                else:
+                    painter.setOpacity(0.9)
+            except Exception:
+                pass
+            painter.drawPixmap(target, self._icon_pm, self._icon_pm.rect())
+        painter.end()
+
+    def enterEvent(self, event):
+        super().enterEvent(event)
+        self.update()
+
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+        self.update()
 
 
 class _GanttTaskDividerHandle(QtWidgets.QWidget):
@@ -2304,6 +2726,14 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._notification_button.setEnabled(False)
         self._notification_button.clicked.connect(self._open_notification_dialog)
         self._notification_button.raise_()
+        self._copy_button = _GanttCopyButton(self._table)
+        self._copy_button.setEnabled(False)
+        self._copy_button.clicked.connect(self._copy_chart_data)
+        self._copy_button.raise_()
+        self._paste_button = _GanttPasteButton(self._table)
+        self._paste_button.setEnabled(False)
+        self._paste_button.clicked.connect(self._paste_chart_data)
+        self._paste_button.raise_()
 
         self._progress_editor = QtWidgets.QSpinBox(self._table.verticalHeader().viewport())
         self._progress_editor.setRange(0, 100)
@@ -2564,6 +2994,7 @@ class GanttChartWidget(QtWidgets.QFrame):
             return
         expanded = bool(self._group_expanded.get(name, True))
         self._group_expanded[name] = not expanded
+        _write_group_state(self._node_item, self._group_expanded, notify_scene=False)
         if expanded and self._selected_task in set(self._group_tasks.get(name) or []):
             self._selected_task = None
         self._rebuild_row_entries()
@@ -2639,13 +3070,18 @@ class GanttChartWidget(QtWidgets.QFrame):
             return
         button_size = max(18, min(24, corner_width - 4, header_height - 4))
         gap = 6
-        group_width = (button_size * 2) + gap
+        buttons = [
+            self._notification_button,
+            self._today_jump_button,
+            self._copy_button,
+            self._paste_button,
+        ]
+        group_width = (button_size * len(buttons)) + (gap * max(0, len(buttons) - 1))
         x = max(0, frame + int((corner_width - group_width) / 2.0))
         y = max(0, frame + int((header_height - button_size) / 2.0))
-        self._notification_button.setGeometry(x, y, button_size, button_size)
-        self._today_jump_button.setGeometry(x + button_size + gap, y, button_size, button_size)
-        self._notification_button.raise_()
-        self._today_jump_button.raise_()
+        for index, button in enumerate(buttons):
+            button.setGeometry(x + (index * (button_size + gap)), y, button_size, button_size)
+            button.raise_()
 
     def _on_progress_edit_requested(self, section: int, rect_obj):
         task = self._task_for_row(int(section))
@@ -2699,6 +3135,271 @@ class GanttChartWidget(QtWidgets.QFrame):
                 f"Reminder for {selected_label}: {_serialize_notification_datetime(notify_at)}"
             )
         self._notification_button.setEnabled(True)
+
+    def _update_transfer_buttons(self) -> None:
+        has_tasks = bool(self._task_names)
+        self._copy_button.setEnabled(has_tasks)
+        if has_tasks:
+            self._copy_button.setToolTip("Copy this chart's assignments and progress to a CSV log.")
+        else:
+            self._copy_button.setToolTip("No tasks available to copy.")
+        log_path = _resolve_gantt_transfer_log_path(self._node_item)
+        has_log = bool(log_path is not None and log_path.is_file())
+        can_paste = bool(has_tasks and has_log)
+        self._paste_button.setEnabled(can_paste)
+        if not has_tasks:
+            self._paste_button.setToolTip("No tasks available to paste into.")
+        elif not has_log:
+            self._paste_button.setToolTip("Copy chart data first.")
+        else:
+            self._paste_button.setToolTip(f"Paste from copied log: {log_path.name}")
+
+    def _copy_chart_data(self) -> None:
+        if not self._task_names:
+            self._update_transfer_buttons()
+            return
+        chart_model = getattr(self._node_item, "model", None)
+        chart_name = str(getattr(chart_model, "name", "") or "").strip() or "gantt_chart"
+        log_path = _gantt_transfer_log_path(self._node_item, chart_name)
+        if log_path is None:
+            QtWidgets.QMessageBox.warning(
+                _dialog_parent_for_node(self._node_item),
+                "Copy Gantt Data",
+                "Unable to prepare a transfer-log location for this workflow.",
+            )
+            self._update_transfer_buttons()
+            return
+        copied_at = datetime.now().replace(microsecond=0).isoformat(sep=" ")
+        rows = []
+        scheduled_count = 0
+        for task_id in self._task_names:
+            task_name = self._task_name_for_id(task_id)
+            if not task_name:
+                continue
+            assignment_raw = self._assignments.get(task_id)
+            start_date = ""
+            end_date = ""
+            if assignment_raw:
+                start_date = str(assignment_raw[0] or "")
+                end_date = str(assignment_raw[1] or "")
+                scheduled_count += 1
+            progress = _coerce_progress_value(self._task_progress.get(task_id, 0))
+            if progress is None:
+                progress = 0
+            rows.append(
+                {
+                    "source_chart": chart_name,
+                    "source": self._task_group_name(task_id),
+                    "task": task_name,
+                    "progress": int(progress),
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "copied_at": copied_at,
+                }
+            )
+        if not rows:
+            self._update_transfer_buttons()
+            return
+        try:
+            with log_path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=[
+                        "source_chart",
+                        "source",
+                        "task",
+                        "progress",
+                        "start_date",
+                        "end_date",
+                        "copied_at",
+                    ],
+                )
+                writer.writeheader()
+                for row in rows:
+                    writer.writerow(row)
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(
+                _dialog_parent_for_node(self._node_item),
+                "Copy Gantt Data",
+                f"Failed to write transfer log:\n{exc}",
+            )
+            self._update_transfer_buttons()
+            return
+        _set_gantt_transfer_buffer(
+            {
+                "version": 2,
+                "log_path": str(log_path),
+                "copied_at": copied_at,
+                "row_count": len(rows),
+            }
+        )
+        _write_gantt_transfer_pointer(self._node_item, log_path)
+        self._selection_label.setText(
+            f"Copied {len(rows)} tasks ({scheduled_count} scheduled) to {log_path.name}"
+        )
+        self._update_transfer_buttons()
+
+    def _paste_chart_data(self) -> None:
+        log_path = _resolve_gantt_transfer_log_path(self._node_item)
+        if log_path is None or not log_path.is_file():
+            QtWidgets.QMessageBox.information(
+                _dialog_parent_for_node(self._node_item),
+                "Paste Gantt Data",
+                "No copied Gantt log is available yet. Use Copy first.",
+            )
+            self._update_transfer_buttons()
+            return
+        _set_gantt_transfer_buffer(
+            {
+                "version": 2,
+                "log_path": str(log_path),
+            }
+        )
+        task_rows = []
+        try:
+            with log_path.open("r", newline="", encoding="utf-8-sig") as handle:
+                reader = csv.DictReader(handle)
+                for row in reader:
+                    if isinstance(row, dict):
+                        task_rows.append(row)
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(
+                _dialog_parent_for_node(self._node_item),
+                "Paste Gantt Data",
+                f"Failed to read copied log:\n{exc}",
+            )
+            self._update_transfer_buttons()
+            return
+        if not task_rows:
+            QtWidgets.QMessageBox.information(
+                _dialog_parent_for_node(self._node_item),
+                "Paste Gantt Data",
+                "The copied log file has no task rows.",
+            )
+            self._update_transfer_buttons()
+            return
+        if not self._task_names:
+            self._update_transfer_buttons()
+            return
+
+        by_source_task: dict[tuple[str, str], str] = {}
+        by_source_task_normalized: dict[tuple[str, str], str] = {}
+        by_task_name: dict[str, list[str]] = {}
+        for task_id in self._task_names:
+            source_key = self._task_group_name(task_id).strip().lower()
+            source_key_norm = _normalized_source_key(source_key)
+            task_key = self._task_name_for_id(task_id).strip().lower()
+            if not task_key:
+                continue
+            by_source_task.setdefault((source_key, task_key), task_id)
+            if source_key_norm:
+                by_source_task_normalized.setdefault((source_key_norm, task_key), task_id)
+            by_task_name.setdefault(task_key, []).append(task_id)
+
+        assignments = dict(self._assignments)
+        progress_map = dict(self._task_progress)
+        completed_by_source: dict[str, set[str]] = {}
+        touched_sources: set[str] = set()
+        used_task_ids: set[str] = set()
+        matched_count = 0
+        for raw_entry in task_rows:
+            if not isinstance(raw_entry, dict):
+                continue
+            raw_task = str(raw_entry.get("task") or "").strip()
+            if not raw_task:
+                continue
+            source_hint = str(raw_entry.get("source") or "").strip().lower()
+            source_hint_norm = _normalized_source_key(source_hint)
+            task_key = raw_task.lower()
+            task_id = by_source_task.get((source_hint, task_key))
+            if task_id is None and source_hint_norm:
+                task_id = by_source_task_normalized.get((source_hint_norm, task_key))
+            if task_id is None:
+                candidates = by_task_name.get(task_key) or []
+                if not candidates:
+                    continue
+                if source_hint_norm:
+                    normalized_candidates = [
+                        candidate
+                        for candidate in candidates
+                        if _normalized_source_key(self._task_group_name(candidate)) == source_hint_norm
+                    ]
+                    if len(normalized_candidates) == 1:
+                        task_id = normalized_candidates[0]
+                    elif normalized_candidates:
+                        candidates = normalized_candidates
+                task_id = None
+                for candidate in candidates:
+                    if candidate not in used_task_ids:
+                        task_id = candidate
+                        break
+                if task_id is None:
+                    task_id = candidates[0]
+            used_task_ids.add(task_id)
+            matched_count += 1
+
+            start_text = str(raw_entry.get("start_date") or "").strip()
+            end_text = str(raw_entry.get("end_date") or "").strip()
+            if not start_text and not end_text:
+                assignments.pop(task_id, None)
+            else:
+                normalized = _coerce_assignment_entry(
+                    [start_text, end_text],
+                    default_year=self._visible_start_date.year,
+                    default_month=self._visible_start_date.month,
+                )
+                if normalized is not None:
+                    assignments[task_id] = normalized
+                else:
+                    assignments.pop(task_id, None)
+
+            progress = _coerce_progress_value(raw_entry.get("progress"))
+            if progress is None:
+                progress = 0
+            progress_map[task_id] = progress
+
+            source_name = self._task_group_name(task_id)
+            task_name = self._task_name_for_id(task_id)
+            if source_name and task_name:
+                touched_sources.add(source_name)
+                if source_name not in completed_by_source:
+                    source_info = self._source_info_by_name.get(source_name) or {}
+                    src_model = source_info.get("model")
+                    completed_by_source[source_name] = set(_completed_task_names(src_model))
+                if progress >= 100:
+                    completed_by_source[source_name].add(task_name)
+                else:
+                    completed_by_source[source_name].discard(task_name)
+
+        if matched_count <= 0:
+            QtWidgets.QMessageBox.information(
+                _dialog_parent_for_node(self._node_item),
+                "Paste Gantt Data",
+                "No matching tasks were found for the copied data.",
+            )
+            self._update_transfer_buttons()
+            return
+
+        self._assignments = assignments
+        self._task_progress = progress_map
+        _write_assignments(self._node_item, assignments, notify_scene=False)
+        _write_progress_map(self._node_item, progress_map, notify_scene=False)
+        for source_name in touched_sources:
+            source_info = self._source_info_by_name.get(source_name) or {}
+            src_item = source_info.get("item")
+            src_model = source_info.get("model")
+            if src_model is None:
+                continue
+            _write_source_completed_tasks(
+                self._node_item,
+                src_item,
+                src_model,
+                completed_by_source.get(source_name, set()),
+                notify_scene=False,
+            )
+        self._selection_label.setText(f"Pasted data from {log_path.name} into {matched_count} task rows.")
+        self._schedule_sync()
+        self._update_transfer_buttons()
 
     def _open_notification_dialog(self) -> None:
         task = str(self._selected_task or "").strip()
@@ -3003,11 +3704,17 @@ class GanttChartWidget(QtWidgets.QFrame):
         self._group_order = group_order
         self._group_tasks = group_tasks
         self._source_invalid = bool(invalid_inputs and not source_names)
+        persisted_group_state = _read_group_state(self._node_item)
         previous_group_expanded = dict(self._group_expanded)
-        self._group_expanded = {
-            group_name: bool(previous_group_expanded.get(group_name, True))
-            for group_name in self._group_order
-        }
+        next_group_expanded: dict[str, bool] = {}
+        for group_name in self._group_order:
+            if group_name in previous_group_expanded:
+                next_group_expanded[group_name] = bool(previous_group_expanded.get(group_name, True))
+            elif group_name in persisted_group_state:
+                next_group_expanded[group_name] = bool(persisted_group_state.get(group_name, True))
+            else:
+                next_group_expanded[group_name] = True
+        self._group_expanded = next_group_expanded
         self._rebuild_row_entries()
 
         assignments = _read_assignments(
@@ -3019,6 +3726,14 @@ class GanttChartWidget(QtWidgets.QFrame):
         notifications = _read_notifications(self._node_item)
         has_valid_note_source = bool(source_names)
         valid_task_ids = set(task_ids)
+        desired_group_state = {group_name: bool(self._group_expanded.get(group_name, True)) for group_name in self._group_order}
+        persisted_visible_group_state = {
+            group_name: bool(value)
+            for group_name, value in (persisted_group_state or {}).items()
+            if group_name in self._group_order
+        }
+        if has_valid_note_source and desired_group_state != persisted_visible_group_state:
+            _write_group_state(self._node_item, desired_group_state, notify_scene=False)
 
         def _canonicalize(raw_mapping: dict):
             clean = {}
@@ -3139,6 +3854,7 @@ class GanttChartWidget(QtWidgets.QFrame):
         else:
             self._selection_label.setText("Connect note task lists to place tasks on the chart.")
         self._update_notification_button()
+        self._update_transfer_buttons()
 
     def _ensure_item(self, row: int, col: int) -> QtWidgets.QTableWidgetItem:
         item = self._table.item(row, col)
