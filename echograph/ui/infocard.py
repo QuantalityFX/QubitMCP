@@ -735,9 +735,25 @@ class InfoCard(QtWidgets.QFrame):
             if sc:
                 sc.refresh_node_widget(self._node_ref.name)
                 if getattr(sc, "_current_output_name", None):
-                    seq = sc.ordered_upstream_items(sc._current_output_name)
-                    if hasattr(sc.views()[0].window(), "populate_branch_info"):
-                        sc.views()[0].window().populate_branch_info([it.model for it in seq])
+                    try:
+                        seq = sc.ordered_upstream_items(sc._current_output_name)
+                        views = sc.views()
+                        if views:
+                            win = views[0].window()
+                            if hasattr(win, "populate_branch_info"):
+                                win.populate_branch_info([it.model for it in seq])
+                    except Exception:
+                        pass
+                try:
+                    if hasattr(sc, "linksChanged"):
+                        sc.linksChanged.emit()
+                except Exception:
+                    pass
+                try:
+                    if hasattr(sc, "paramChanged"):
+                        sc.paramChanged.emit(self._node_ref.name, list(getattr(self._node_ref, "params", []) or []))
+                except Exception:
+                    pass
 
         up.clicked.connect(lambda: _move_selected(-1))
         down.clicked.connect(lambda: _move_selected(+1))

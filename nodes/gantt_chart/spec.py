@@ -910,31 +910,76 @@ def _ordered_in_edges(node_item):
             return []
 
 
+def _collect_note_sources_from_item(
+    source_item,
+    *,
+    seen_note_items: set[int],
+    active_path: set[int],
+) -> tuple[list[tuple[object, object]], bool, bool]:
+    if source_item is None:
+        return [], True, False
+    marker = id(source_item)
+    if marker in active_path:
+        return [], True, False
+    active_path.add(marker)
+    try:
+        source_model = getattr(source_item, "model", None)
+        if source_model is None:
+            return [], True, False
+        kind = (getattr(source_model, "kind", "") or "").strip().lower()
+        if kind == "note":
+            if marker in seen_note_items:
+                return [], False, True
+            seen_note_items.add(marker)
+            return [(source_item, source_model)], False, True
+        if kind != "append":
+            return [], True, False
+        upstream_edges = _ordered_in_edges(source_item)
+        if not upstream_edges:
+            return [], True, False
+        note_sources: list[tuple[object, object]] = []
+        invalid_inputs = False
+        had_note_candidate = False
+        for upstream_edge in upstream_edges:
+            upstream_item = getattr(upstream_edge, "src", None)
+            child_sources, child_invalid, child_candidate = _collect_note_sources_from_item(
+                upstream_item,
+                seen_note_items=seen_note_items,
+                active_path=active_path,
+            )
+            if child_sources:
+                note_sources.extend(child_sources)
+            if child_invalid:
+                invalid_inputs = True
+            if child_candidate:
+                had_note_candidate = True
+        if not note_sources and not had_note_candidate:
+            invalid_inputs = True
+        return note_sources, invalid_inputs, had_note_candidate
+    finally:
+        active_path.discard(marker)
+
+
 def _resolve_note_sources(node_item):
     in_edges = _ordered_in_edges(node_item)
     if not in_edges:
         return [], False
-    note_sources = []
-    seen = set()
+    note_sources: list[tuple[object, object]] = []
+    seen_note_items: set[int] = set()
     invalid_inputs = False
     for edge in in_edges:
         port_name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
         is_note_port = (port_name or "").strip().lower() in {"note", "source", ""}
         src_item = getattr(edge, "src", None)
-        src_model = getattr(src_item, "model", None)
-        if src_model is None:
-            if is_note_port:
-                invalid_inputs = True
-            continue
-        if (getattr(src_model, "kind", "") or "").strip().lower() != "note":
-            if is_note_port:
-                invalid_inputs = True
-            continue
-        marker = id(src_item)
-        if marker in seen:
-            continue
-        seen.add(marker)
-        note_sources.append((src_item, src_model))
+        resolved_sources, has_invalid, _ = _collect_note_sources_from_item(
+            src_item,
+            seen_note_items=seen_note_items,
+            active_path=set(),
+        )
+        if resolved_sources:
+            note_sources.extend(resolved_sources)
+        if is_note_port and has_invalid:
+            invalid_inputs = True
     if in_edges and not note_sources:
         invalid_inputs = True
     return note_sources, invalid_inputs
