@@ -83,6 +83,7 @@ def register_defaults() -> None:
     register("camera",    stripe_color="#f59e0b")
     register("output",    stripe_color="#a855f7")
     register("llm",       stripe_color="#14b8a6")
+    register("local_server", stripe_color="#14b8a6")
     register("database",  stripe_color="#16a34a")
     # librarian plugins can override this later
     register("librarian", stripe_color="#74d603")

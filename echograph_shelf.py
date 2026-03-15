@@ -641,7 +641,7 @@ def set_global_llm_scale(new_scale: float, scene=None):
         for item in list(getattr(scene, "_node_items", {}).values()):
             try:
                 kind = (item.model.kind or "").lower()
-                if kind in ("llm", "html_preview"):
+                if kind in ("llm", "local_server", "local server", "localserver", "html_preview"):
                     item._recompute_height()
                     item._build_widgets()
             except Exception:
@@ -4209,7 +4209,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             lambda v: (set_global_llm_scale(max(0.25, min(1.75, v/100.0)), self.scene),
                     self._llm_value_lbl.setText(f"{v}%"))
         )
-        grid.addWidget(QtWidgets.QLabel("LLM Scale"), 0, 0)
+        grid.addWidget(QtWidgets.QLabel("Local Server Scale"), 0, 0)
         grid.addWidget(self._llm_slider, 0, 1)
         grid.addWidget(self._llm_value_lbl, 0, 2)
         refresh_btn = QtWidgets.QToolButton(panel)

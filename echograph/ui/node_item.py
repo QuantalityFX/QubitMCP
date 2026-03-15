@@ -795,7 +795,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
         return QtCore.QRectF(left, top, max(24.0, right - left), 24.0)
 
     def _header_badge_text(self) -> str:
-        return (self.model.kind or "node").upper()
+        kind = (self.model.kind or "node").strip()
+        key = kind.lower()
+        if key in ("llm", "local_server", "local server", "localserver"):
+            return "LOCAL_SERVER"
+        return kind.upper()
 
     def _header_badge_width(self) -> float:
         badge = self._header_badge_text()
@@ -1609,7 +1613,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             params_h += self._PADDING  # breathing room below params
 
         # Kind-specific body additions
-        if kind == "llm":
+        if kind in ("llm", "local_server", "local server", "localserver"):
             S = self._current_llm_scale()
             body_h = int(LLM_NODE_H_BASE * S)
             node_w = max(self._BASE_W, int(LLM_NODE_W_BASE * S))
@@ -2776,7 +2780,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 y_cursor = self._build_scene_summary(y_cursor)
 
             # --- LLM embedded webview ---
-            if kind_lower == "llm":
+            if kind_lower in ("llm", "local_server", "local server", "localserver"):
                 if WebEngine is None:
                     row = QtWidgets.QWidget()
                     lay = QtWidgets.QVBoxLayout(row); lay.setContentsMargins(6,0,6,0); lay.setSpacing(6)
@@ -5641,7 +5645,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         if emit_scene:
             self._schedule_param_emit()
 
-        if (self.model.kind or "").lower() == "llm":
+        if (self.model.kind or "").lower() in ("llm", "local_server", "local server", "localserver"):
             try:
                 name = (self.model.params[idx]["name"] or "").lower()
             except Exception:
@@ -5733,6 +5737,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "chatbot",
                 "chat bot",
                 "chat_bot",
+                "local_server",
+                "local server",
+                "localserver",
                 "scene",
                 "scene_assembly",
                 "scene_outliner",
@@ -5891,7 +5898,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             icon_pm = None
             if kind_lower == "database":
                 icon_pm = node_icons._db_icon()
-            elif kind_lower == "llm":
+            elif kind_lower in ("llm", "local_server", "local server", "localserver"):
                 icon_pm = node_icons._llm_server_icon()
             elif kind_lower in ("llm_prompt",):
                 icon_pm = node_icons._llm_icon()

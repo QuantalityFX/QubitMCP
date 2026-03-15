@@ -48,4 +48,5 @@ def register_defaults() -> None:
     register("import",   stripe_color="#3b82f6")  # blue
     register("output",   stripe_color="#a855f7")  # purple
     register("llm",      stripe_color="#14b8a6")  # teal
+    register("local_server", stripe_color="#14b8a6")  # teal (llm alias)
     register("librarian", stripe_color="#74d603") # lime (plugin can override)

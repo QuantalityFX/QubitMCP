@@ -231,6 +231,9 @@ def _kind_label(kind: str) -> str:
     text = (kind or "").strip()
     if not text:
         return "Node"
+    key = text.lower().replace(" ", "_")
+    if key in ("llm", "local_server", "localserver"):
+        return "Local Server"
     acronyms = {"llm": "LLM", "uv": "UV", "fbx": "FBX", "html": "HTML"}
     words = []
     for part in text.split("_"):
@@ -245,7 +248,9 @@ def _kind_icon(kind: str) -> QtGui.QIcon:
     icon_pm = None
     if key == "database":
         icon_pm = node_icons._db_icon()
-    elif key in ("llm", "llm_prompt"):
+    elif key in ("llm", "local_server", "local server", "localserver"):
+        icon_pm = node_icons._llm_server_icon()
+    elif key == "llm_prompt":
         icon_pm = node_icons._llm_icon()
     elif key == "append":
         icon_pm = node_icons._append_icon()
@@ -328,7 +333,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
         self.kind_edit = QtWidgets.QComboBox()
         self.kind_edit.setEditable(True)
         self._kinds = [
-            "node","camera","import","instance","primitive","uv_unwrap","texture","texture_pro","texture_layer","material","split_volume","transforms","fx","scene","render","video_player","export_fbx","html_preview","python","switch","output","llm",
+            "node","camera","import","instance","primitive","uv_unwrap","texture","texture_pro","texture_layer","material","split_volume","transforms","fx","scene","render","video_player","export_fbx","html_preview","python","switch","output","local_server",
             "gantt_chart",
             "llm_prompt","chatbot","librarian","note","append","image_collection","database"
         ]
@@ -437,7 +442,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
         def _toggle_code_box(kind_text):
             kind = (kind_text or "").strip().lower()
             code_box.setVisible(kind == "python")
-            is_llm = (kind == "llm")
+            is_llm = kind in ("llm", "local_server", "local server", "localserver")
             self._llm_row.setVisible(is_llm)
 
         self.kind_edit.currentTextChanged.connect(_toggle_code_box)
@@ -501,12 +506,18 @@ class CreateNodeDialog(QtWidgets.QDialog):
 
     def result_payload(self):
         params = [{"name": self.param_list.item(i).text(), "value": ""} for i in range(self.param_list.count())]
-        kind = self.kind_edit.currentText().strip() or "node"
+        kind_raw = self.kind_edit.currentText().strip() or "node"
+        kind_key = kind_raw.lower().replace(" ", "_")
+        if kind_key == "localserver":
+            kind_key = "local_server"
+        if kind_key == "llm":
+            kind_key = "local_server"
+        kind = "local_server" if kind_key == "local_server" else kind_raw
         code = None
         if kind.lower() == "python":
             code_text = self.code_edit.toPlainText()
             code = code_text if code_text.strip() else ""
-        if kind.lower() == "llm":
+        if kind.lower().replace(" ", "_") in ("llm", "local_server", "localserver"):
             url_val = (self._llm_url_edit.text() or "").strip() or LLM_URL
             names = {p["name"].strip().lower() for p in params}
             if "url" in names:
