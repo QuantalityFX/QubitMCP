@@ -186,6 +186,39 @@ code {
   margin-top: 2px;
 }
 
+.tool-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.tool-wrap {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 6px;
+  width: 20%;
+}
+
+.tool-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #10151b;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font-size: 13px;
+}
+
+.tool-item img {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+  flex: 0 0 16px;
+}
+
 .steps {
   padding-left: 18px;
 }
@@ -243,5 +276,8 @@ th {
   }
   .content {
     padding: 20px 18px 60px;
+  }
+  .tool-wrap {
+    width: 100%;
   }
 }

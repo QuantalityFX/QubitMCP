@@ -25,6 +25,9 @@
           <a href="#viewport">3D Viewport</a>
           <a href="#gizmos">Gizmos and Transforms</a>
           <a href="#rendering">Viewport Controls</a>
+          <a href="#animation-timeline">Animation Timeline</a>
+          <a href="#audio-panel">Audio Panel</a>
+          <a href="#panel-layouts">Panel Layout Presets</a>
           <a href="#hotkeys">Hotkeys</a>
           <a href="#settings">Settings</a>
           <a href="#nodes">Node Catalog</a>
@@ -212,6 +215,68 @@
           </ul>
         </section>
 
+        <section id="animation-timeline" class="section">
+          <h2><img class="inline-icon" src="../icons/keyframe_Icon.png" alt="Timeline icon" /> Animation Timeline</h2>
+          <ul class="bullet">
+            <li>Open from top bar <strong>Panels -> Timeline</strong>.</li>
+            <li>If you enable timeline while in 2D mode, QubitMCP auto-switches to <strong>Split</strong> view.</li>
+            <li>Keyframing channels include <code>Px</code>, <code>Py</code>, <code>Pz</code>, <code>Rx</code>, <code>Ry</code>, and <code>Rz</code>.</li>
+            <li>Use <code>ply_sequence</code> for frame-by-frame PLY playback workflows that sync well with timeline scrubbing.</li>
+            <li>Timeline sessions are context-aware and load per active scene (and selected scene owner when applicable).</li>
+            <li>Use <strong>[</strong> and <strong>]</strong> controls for start/end range and the loop control for playback looping.</li>
+          </ul>
+          <div class="tool-wrap">
+            <div class="tool-grid">
+              <div class="tool-item"><img src="../icons/PlayButton_icon.png" alt="Play icon" /><span>Play/Pause</span></div>
+              <div class="tool-item"><img src="../icons/keyframe_Icon.png" alt="Set key icon" /><span>Set Key</span></div>
+              <div class="tool-item"><img src="../icons/RemoveKey_Icon.png" alt="Delete key icon" /><span>Delete Selected Keys</span></div>
+              <div class="tool-item"><img src="../icons/CurveEditor_Icon.png" alt="Curves icon" /><span>Curves Mode</span></div>
+              <div class="tool-item"><img src="../icons/StreightCurve_Icon.png" alt="Straight handle icon" /><span>Straight Handles</span></div>
+              <div class="tool-item"><img src="../icons/Tiehandles_Icon.png" alt="Tied handle icon" /><span>Tied Handles</span></div>
+              <div class="tool-item"><img src="../icons/Untiedhandle_Icon.png" alt="Untied handle icon" /><span>Untied Handles</span></div>
+              <div class="tool-item"><img src="../icons/LiveMaterial_Icon.png" alt="Material live icon" /><span>Material Live Mode</span></div>
+              <div class="tool-item"><img src="../icons/fx_switch_On_icon.png" alt="FX instances icon" /><span>FX Instances Toggle</span></div>
+            </div>
+          </div>
+        </section>
+
+        <section id="audio-panel" class="section">
+          <h2><img class="inline-icon" src="../icons/Sound_On_Icon.png" alt="Audio icon" /> Audio Panel</h2>
+          <ul class="bullet">
+            <li>Open from top bar <strong>Panels -> Audio</strong> (enabling Audio also enables Timeline).</li>
+            <li>Audio panel appears above the timeline with <strong>Load Audio</strong>, <strong>Clear</strong>, and mute controls.</li>
+            <li>Supported picker filter includes common formats like <code>wav</code>, <code>mp3</code>, <code>ogg</code>, <code>flac</code>, <code>aac</code>, and <code>m4a</code>.</li>
+            <li>Waveform playhead syncs to timeline frame and FPS during playback and scrubbing.</li>
+            <li>Audio file path + mute state are persisted per scene context in project-side timeline config files.</li>
+          </ul>
+          <div class="tool-wrap">
+            <div class="tool-grid">
+              <div class="tool-item"><img src="../icons/Import_File_Icon.png" alt="Load audio icon" /><span>Load Audio</span></div>
+              <div class="tool-item"><img src="../icons/Refresh_Icon.png" alt="Clear audio icon" /><span>Clear Audio</span></div>
+              <div class="tool-item"><img src="../icons/Sound_On_Icon.png" alt="Unmuted icon" /><span>Sound On</span></div>
+              <div class="tool-item"><img src="../icons/Sound_Off_Icon.png" alt="Muted icon" /><span>Sound Off</span></div>
+            </div>
+          </div>
+        </section>
+
+        <section id="panel-layouts" class="section">
+          <h2><img class="inline-icon" src="../icons/TabIcon.png" alt="Panels icon" /> Panel Layout Presets</h2>
+          <ul class="bullet">
+            <li>Use top bar <strong>Panels</strong> menu for quick panel visibility controls: <strong>Timeline</strong>, <strong>Audio</strong>, and <strong>Save Layout</strong>.</li>
+            <li><strong>Save Layout</strong> stores current panel visibility as the app-global default layout preset.</li>
+            <li>Settings menu includes <strong>Auto Save Layout</strong> to automatically persist panel visibility changes.</li>
+            <li>Global layout state is persisted in <code>app_settings.json</code>.</li>
+            <li>Workflow files also store panel visibility under <code>settings.panel_layout</code> and restore it on load.</li>
+          </ul>
+          <div class="callout">
+            <strong>Animation session files:</strong> timeline keys/range/audio settings are stored under
+            <code>&lt;workflow folder&gt;\projects\</code>, for example
+            <code>&lt;scene&gt;_timeline.json</code>,
+            <code>&lt;scene&gt;_timeline_range.json</code>, and
+            <code>&lt;scene&gt;_audio.json</code>.
+          </div>
+        </section>
+
         <section id="hotkeys" class="section">
           <h2>Hotkeys (Default)</h2>
           <p>All bindings are editable in the Hotkeys dialog and persisted to <code>hotkeys.json</code>.</p>
@@ -234,6 +299,8 @@
                 <tr><td>Gizmo Translate / Rotate / Scale</td><td>T / R / E</td></tr>
                 <tr><td>Wireframe Toggle</td><td>H</td></tr>
                 <tr><td>Grid Toggle</td><td>G</td></tr>
+                <tr><td>Timeline Play / Pause</td><td>Space</td></tr>
+                <tr><td>Timeline Set Key</td><td>K</td></tr>
                 <tr><td>View Mode 2D / Split / 3D</td><td>1 / 2 / 3</td></tr>
                 <tr><td>Add Wire Pin</td><td>Ctrl+LeftClick</td></tr>
                 <tr><td>Remove Wire</td><td>Alt+LeftClick</td></tr>
@@ -249,6 +316,7 @@
             <li><strong>Pan Base / Pan Exp / Pan Boost</strong>: viewport panning response.</li>
             <li><strong>Gizmo Zoom</strong>: transform tool sensitivity.</li>
             <li><strong>Debug Log</strong>: diagnostic logging toggle.</li>
+            <li><strong>Auto Save Layout</strong>: automatically captures timeline/audio panel visibility as global layout default.</li>
           </ul>
         </section>
 
