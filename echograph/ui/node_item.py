@@ -5902,13 +5902,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
             elif kind_lower in ("scene", "scene_assembly", "scene_outliner"):
                 icon_pm = node_icons._scene_icon()
             elif kind_lower in ("camera", "scene_camera"):
-                icon_pm = node_icons._screengrab_icon()
+                icon_pm = node_icons._camera_node_icon() or node_icons._screengrab_icon()
             elif kind_lower in ("render", "render_sequence", "render node"):
                 icon_pm = node_icons._render_node_icon() or node_icons._output_icon()
             elif kind_lower in ("video_player", "video player", "videoplayer"):
                 icon_pm = node_icons._video_player_icon() or node_icons._render_node_icon() or node_icons._output_icon()
             elif kind_lower == "instance":
                 icon_pm = node_icons._instance_icon() or node_icons._output_icon()
+            elif kind_lower in ("split_volume", "volume_selector"):
+                icon_pm = node_icons._volume_split_icon() or node_icons._output_icon()
             elif kind_lower in ("uv_unwrap", "uv unwrap"):
                 icon_pm = node_icons._uv_unwrap_icon() or node_icons._output_icon()
             elif kind_lower in ("texture", "texture_pro", "texture pro"):

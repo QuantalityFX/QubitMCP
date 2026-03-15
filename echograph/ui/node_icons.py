@@ -34,6 +34,8 @@ _UV_UNWRAP_ICON = None
 _TRANSFORMS_ICON = None
 _GANTT_ICON = None
 _FX_NODE_ICON = None
+_CAMERA_NODE_ICON = None
+_VOLUME_SPLIT_ICON = None
 
 
 def _load_pm(rel_icon_name: str):
@@ -206,6 +208,26 @@ def _instance_icon():
         return _INSTANCE_ICON
     _INSTANCE_ICON = _load_pm("instance_icon.png")
     return _INSTANCE_ICON
+
+
+def _camera_node_icon():
+    global _CAMERA_NODE_ICON
+    if _CAMERA_NODE_ICON is not None:
+        return _CAMERA_NODE_ICON
+    _CAMERA_NODE_ICON = (
+        _load_pm("Camera_icon.png")
+        or _load_pm("Camera _Icon.png")
+        or _load_pm("CameraCtrl_On_Icon.png")
+    )
+    return _CAMERA_NODE_ICON
+
+
+def _volume_split_icon():
+    global _VOLUME_SPLIT_ICON
+    if _VOLUME_SPLIT_ICON is not None:
+        return _VOLUME_SPLIT_ICON
+    _VOLUME_SPLIT_ICON = _load_pm("volume_split_icon.png") or _load_pm("grid_on_icon.png")
+    return _VOLUME_SPLIT_ICON
 
 
 def _texture_layer_icon():

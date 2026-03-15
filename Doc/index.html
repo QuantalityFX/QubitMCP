@@ -25,6 +25,7 @@
           <a href="#viewport">3D Viewport</a>
           <a href="#gizmos">Gizmos and Transforms</a>
           <a href="#rendering">Viewport Controls</a>
+          <a href="#viewport-left-panel">Viewport Left Panel</a>
           <a href="#animation-timeline">Animation Timeline</a>
           <a href="#audio-panel">Audio Panel</a>
           <a href="#panel-layouts">Panel Layout Presets</a>
@@ -208,11 +209,33 @@
         <section id="rendering" class="section">
           <h2>Viewport Controls</h2>
           <ul class="bullet">
-            <li><strong>Grid</strong> toggle for orientation and scale reference.</li>
+            <li><strong>Left viewport toolbar</strong> includes quick icons for <strong>Frame</strong>, <strong>Snapshot</strong>, <strong>Gizmo Space</strong> (World/Local), <strong>Camera Orbit</strong> (locked/free), <strong>Fly Mode</strong>, <strong>Grid</strong>, <strong>Zoom Mode</strong>, and <strong>Stats</strong> with <strong>Copy Stats</strong>.</li>
+            <li><strong>Transform tools</strong> (Translate/Rotate/Scale) are available in viewport workflows and map to <strong>T</strong>, <strong>R</strong>, and <strong>E</strong>.</li>
+            <li><strong>Grid</strong> toggle provides orientation and scale reference.</li>
             <li><strong>Wireframe</strong> toggle, default hotkey <strong>H</strong>.</li>
             <li><strong>Gizmo visibility</strong> toggle for clean previews.</li>
             <li><strong>Snapshot</strong> capture tools for scene reviews.</li>
+            <li><strong>Stats overlay</strong> toggle in the 3D viewport side controls shows FPS and render/debug details, with a copy-stats action for quick reporting.</li>
           </ul>
+        </section>
+
+        <section id="viewport-left-panel" class="section">
+          <h2><img class="inline-icon" src="../icons/WorldGizmoOn_Icon.png" alt="Viewport panel icon" /> Viewport Left Panel</h2>
+          <ul class="bullet">
+            <li>The left panel is a fast-access icon strip for camera/view actions and viewport toggles.</li>
+            <li><strong>Zoom toggle</strong> uses <code>GizmoZoom_On_Icon.png</code> / <code>GizmoZoom_Off_Icon.png</code> for Infinite vs Legacy zoom mode.</li>
+          </ul>
+          <div class="tool-wrap">
+            <div class="tool-grid">
+              <div class="tool-item"><img src="../icons/Frame_Icon.png" alt="Frame icon" /><span>Frame Selection</span></div>
+              <div class="tool-item"><img src="../icons/WorldGizmoOn_Icon.png" alt="Gizmo space icon" /><span>Gizmo Space World/Local</span></div>
+              <div class="tool-item"><img src="../icons/CameraCtrl_On_Icon.png" alt="Camera orbit icon" /><span>Camera Orbit Lock/Free</span></div>
+              <div class="tool-item"><img src="../icons/FlyModeJoystick_On_Icon.png" alt="Fly mode icon" /><span>Fly Mode Toggle</span></div>
+              <div class="tool-item"><img src="../icons/grid_on_icon.png" alt="Grid icon" /><span>Grid Toggle</span></div>
+              <div class="tool-item"><img src="../icons/GizmoZoom_On_Icon.png" alt="Zoom mode icon" /><span>Zoom Mode Toggle</span></div>
+              <div class="tool-item"><img src="../icons/Copy_Icon.png" alt="Copy stats icon" /><span>Copy Stats</span></div>
+            </div>
+          </div>
         </section>
 
         <section id="animation-timeline" class="section">
@@ -350,20 +373,10 @@
             </div>
 
             <div class="card">
-              <h3>Media and Review</h3>
-              <ul class="node-list">
-                <li><img class="node-inline-icon" src="../icons/explorer_button_icon.png" alt="HTML icon" /><span><strong>html_preview</strong>: in-node HTML rendering.</span></li>
-                <li><img class="node-inline-icon" src="../icons/PhotoCollection.png" alt="Image collection icon" /><span><strong>image_collection</strong>: assemble and preview image sets.</span></li>
-                <li><img class="node-inline-icon" src="../icons/ReelVideo_Icon.png" alt="Video icon" /><span><strong>video_player</strong>: timeline playback and clip inspection.</span></li>
-                <li><img class="node-inline-icon" src="../icons/RenderNode_Icon.png" alt="Render icon" /><span><strong>render</strong>: render sequence/export pipeline stage.</span></li>
-              </ul>
-            </div>
-
-            <div class="card">
               <h3>3D and Scene Processing</h3>
               <ul class="node-list">
                 <li><img class="node-inline-icon" src="../icons/Import_File_Icon.png" alt="Import icon" /><span><strong>import</strong>: load mesh or splat assets.</span></li>
-                <li><img class="node-inline-icon" src="../icons/CameraCtrl_On_Icon.png" alt="Camera icon" /><span><strong>camera</strong>: scene camera placement/control node.</span></li>
+                <li><img class="node-inline-icon" src="../icons/Camera_icon.png" alt="Camera icon" /><span><strong>camera</strong>: scene camera placement/control node.</span></li>
                 <li><img class="node-inline-icon" src="../icons/instance_icon.png" alt="Instance icon" /><span><strong>instance</strong>: create repeated scene instances.</span></li>
                 <li><img class="node-inline-icon" src="../icons/GLB_Icon.png" alt="Primitive icon" /><span><strong>primitive</strong>: generate procedural primitive geometry.</span></li>
                 <li><img class="node-inline-icon" src="../icons/UvUnwrapNode_Icon.png" alt="UV icon" /><span><strong>uv_unwrap</strong>: UV workflow stage.</span></li>
@@ -371,7 +384,7 @@
                 <li><img class="node-inline-icon" src="../icons/TextureNode_Icon2.png" alt="Texture pro icon" /><span><strong>texture_pro</strong>: expanded texture processing controls.</span></li>
                 <li><img class="node-inline-icon" src="../icons/layer_Texture_Icon.png" alt="Texture layer icon" /><span><strong>texture_layer</strong>: layered texture compositing.</span></li>
                 <li><img class="node-inline-icon" src="../icons/MaterialGenerator_Icon_S.png" alt="Material icon" /><span><strong>material</strong>: material setup and conversion utilities.</span></li>
-                <li><img class="node-inline-icon" src="../icons/grid_on_icon.png" alt="Volume icon" /><span><strong>split_volume</strong> / <strong>volume_selector</strong>: filter/split geometry by volume.</span></li>
+                <li><img class="node-inline-icon" src="../icons/volume_split_icon.png" alt="Volume split icon" /><span><strong>split_volume</strong> / <strong>volume_selector</strong>: filter/split geometry by volume.</span></li>
                 <li><img class="node-inline-icon" src="../icons/TranformNode_Icon.png" alt="Transform icon" /><span><strong>transforms</strong>: apply translate/rotate/scale offsets in-chain.</span></li>
                 <li><img class="node-inline-icon" src="../icons/FX_node_icon.png" alt="FX icon" /><span><strong>fx</strong>: post-process and trail-style pipeline stage.</span></li>
                 <li><img class="node-inline-icon" src="../icons/StreightArrow_Icon.png" alt="Wire icon" /><span><strong>wire</strong>: wire and curve-based geometry path workflows.</span></li>
@@ -379,6 +392,16 @@
                 <li><img class="node-inline-icon" src="../icons/Scene_Icon.png" alt="Scene icon" /><span><strong>scene</strong>: assemble and manage multi-asset scenes.</span></li>
                 <li><img class="node-inline-icon" src="../icons/FBX_Icon.png" alt="FBX icon" /><span><strong>export_fbx</strong>: export to FBX.</span></li>
                 <li><img class="node-inline-icon" src="../icons/OBJ_Icon.png" alt="OBJ icon" /><span><strong>export_obj</strong>: export to OBJ/MTL.</span></li>
+              </ul>
+            </div>
+
+            <div class="card">
+              <h3>Media and Review</h3>
+              <ul class="node-list">
+                <li><img class="node-inline-icon" src="../icons/explorer_button_icon.png" alt="HTML icon" /><span><strong>html_preview</strong>: in-node HTML rendering.</span></li>
+                <li><img class="node-inline-icon" src="../icons/PhotoCollection.png" alt="Image collection icon" /><span><strong>image_collection</strong>: assemble and preview image sets.</span></li>
+                <li><img class="node-inline-icon" src="../icons/ReelVideo_Icon.png" alt="Video icon" /><span><strong>video_player</strong>: timeline playback and clip inspection.</span></li>
+                <li><img class="node-inline-icon" src="../icons/RenderNode_Icon.png" alt="Render icon" /><span><strong>render</strong>: render sequence/export pipeline stage.</span></li>
               </ul>
             </div>
           </div>
