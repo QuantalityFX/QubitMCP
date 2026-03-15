@@ -27,6 +27,9 @@ _SCREENGRAB_ICON = None
 _RENDER_NODE_ICON = None
 _VIDEO_PLAYER_ICON = None
 _INSTANCE_ICON = None
+_PRIMITIVE_ICON = None
+_HTML_PREVIEW_ICON = None
+_IMAGE_COLLECTION_ICON = None
 _TEXTURE_LAYER_ICON = None
 _TEXTURE_NODE_ICON = None
 _MATERIAL_NODE_ICON = None
@@ -208,6 +211,30 @@ def _instance_icon():
         return _INSTANCE_ICON
     _INSTANCE_ICON = _load_pm("instance_icon.png")
     return _INSTANCE_ICON
+
+
+def _primitive_icon():
+    global _PRIMITIVE_ICON
+    if _PRIMITIVE_ICON is not None:
+        return _PRIMITIVE_ICON
+    _PRIMITIVE_ICON = _load_pm("Primitive_Icon.png")
+    return _PRIMITIVE_ICON
+
+
+def _html_preview_icon():
+    global _HTML_PREVIEW_ICON
+    if _HTML_PREVIEW_ICON is not None:
+        return _HTML_PREVIEW_ICON
+    _HTML_PREVIEW_ICON = _load_pm("HTML_Preview.png") or _load_pm("explorer_button_icon.png")
+    return _HTML_PREVIEW_ICON
+
+
+def _image_collection_icon():
+    global _IMAGE_COLLECTION_ICON
+    if _IMAGE_COLLECTION_ICON is not None:
+        return _IMAGE_COLLECTION_ICON
+    _IMAGE_COLLECTION_ICON = _load_pm("PhotoCollection.png")
+    return _IMAGE_COLLECTION_ICON
 
 
 def _camera_node_icon():

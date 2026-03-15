@@ -5739,6 +5739,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "camera",
                 "scene_camera",
                 "instance",
+                "primitive",
+                "html_preview",
+                "html preview",
+                "htmlpreview",
+                "image_collection",
+                "imagecollection",
                 "uv_unwrap",
                 "uv unwrap",
                 "texture",
@@ -5750,6 +5756,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "material",
                 "fx",
                 "fx_trail",
+                "split_volume",
+                "volume_selector",
                 "transforms",
                 "gantt_chart",
                 "gantt chart",
@@ -5895,6 +5903,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 icon_pm = node_icons._librarian_icon()
             elif kind_lower == "import":
                 icon_pm = getattr(self, "_import_icon_pm", None) or node_icons._import_icon()
+            elif kind_lower in ("html_preview", "html preview", "htmlpreview"):
+                icon_pm = node_icons._html_preview_icon() or node_icons._output_icon()
+            elif kind_lower in ("image_collection", "imagecollection"):
+                icon_pm = node_icons._image_collection_icon() or node_icons._output_icon()
             elif kind_lower == "switch":
                 icon_pm = node_icons._switch_icon()
             elif kind_lower in ("chatbot", "chat bot", "chat_bot"):
@@ -5909,6 +5921,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 icon_pm = node_icons._video_player_icon() or node_icons._render_node_icon() or node_icons._output_icon()
             elif kind_lower == "instance":
                 icon_pm = node_icons._instance_icon() or node_icons._output_icon()
+            elif kind_lower == "primitive":
+                icon_pm = node_icons._primitive_icon() or node_icons._output_icon()
             elif kind_lower in ("split_volume", "volume_selector"):
                 icon_pm = node_icons._volume_split_icon() or node_icons._output_icon()
             elif kind_lower in ("uv_unwrap", "uv unwrap"):

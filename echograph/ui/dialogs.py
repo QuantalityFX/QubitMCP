@@ -5,6 +5,7 @@ from pathlib import Path
 
 from echograph.qt_compat import QtCore, QtGui, QtWidgets, _qexec
 from echograph.constants import LLM_URL, APP_TITLE
+from echograph.ui import node_icons
 try:
     from nodes.python.highlighter import PythonSyntaxHighlighter
 except Exception:  # pragma: no cover - optional plugin import
@@ -226,52 +227,204 @@ class CommentGroupDialog(QtWidgets.QDialog):
         return {"title": title, "body": body, "color": self._selected_color}
 
 # -------- Create Node Dialog --------
+def _kind_label(kind: str) -> str:
+    text = (kind or "").strip()
+    if not text:
+        return "Node"
+    acronyms = {"llm": "LLM", "uv": "UV", "fbx": "FBX", "html": "HTML"}
+    words = []
+    for part in text.split("_"):
+        if not part:
+            continue
+        words.append(acronyms.get(part.lower(), part.capitalize()))
+    return " ".join(words) if words else "Node"
+
+
+def _kind_icon(kind: str) -> QtGui.QIcon:
+    key = (kind or "").strip().lower()
+    icon_pm = None
+    if key == "database":
+        icon_pm = node_icons._db_icon()
+    elif key in ("llm", "llm_prompt"):
+        icon_pm = node_icons._llm_icon()
+    elif key == "append":
+        icon_pm = node_icons._append_icon()
+    elif key == "note":
+        icon_pm = node_icons._note_icon()
+    elif key == "librarian":
+        icon_pm = node_icons._librarian_icon()
+    elif key == "import":
+        icon_pm = node_icons._import_icon()
+    elif key == "switch":
+        icon_pm = node_icons._switch_icon()
+    elif key == "chatbot":
+        icon_pm = node_icons._chatbot_icon()
+    elif key == "scene":
+        icon_pm = node_icons._scene_icon()
+    elif key == "camera":
+        icon_pm = node_icons._camera_node_icon() or node_icons._screengrab_icon()
+    elif key == "render":
+        icon_pm = node_icons._render_node_icon() or node_icons._output_icon()
+    elif key == "video_player":
+        icon_pm = node_icons._video_player_icon() or node_icons._output_icon()
+    elif key == "instance":
+        icon_pm = node_icons._instance_icon() or node_icons._output_icon()
+    elif key == "primitive":
+        icon_pm = node_icons._primitive_icon() or node_icons._output_icon()
+    elif key == "html_preview":
+        icon_pm = node_icons._html_preview_icon() or node_icons._output_icon()
+    elif key == "image_collection":
+        icon_pm = node_icons._image_collection_icon() or node_icons._output_icon()
+    elif key == "split_volume":
+        icon_pm = node_icons._volume_split_icon() or node_icons._output_icon()
+    elif key == "uv_unwrap":
+        icon_pm = node_icons._uv_unwrap_icon() or node_icons._output_icon()
+    elif key in ("texture", "texture_pro"):
+        icon_pm = node_icons._texture_node_icon() or node_icons._output_icon()
+    elif key == "texture_layer":
+        icon_pm = node_icons._texture_layer_icon() or node_icons._output_icon()
+    elif key == "material":
+        icon_pm = node_icons._material_node_icon() or node_icons._output_icon()
+    elif key == "fx":
+        icon_pm = node_icons._fx_node_icon() or node_icons._output_icon()
+    elif key == "transforms":
+        icon_pm = node_icons._transforms_icon() or node_icons._output_icon()
+    elif key == "gantt_chart":
+        icon_pm = node_icons._gantt_icon() or node_icons._output_icon()
+    elif key == "export_fbx":
+        icon_pm = node_icons._fbx_icon() or node_icons._output_icon()
+    elif key == "output":
+        icon_pm = node_icons._output_icon()
+    elif key == "python":
+        icon_pm = node_icons._python_icon()
+    if icon_pm is not None:
+        return QtGui.QIcon(icon_pm)
+    style = QtWidgets.QApplication.style()
+    if style is not None:
+        return style.standardIcon(QtWidgets.QStyle.SP_FileIcon)
+    return QtGui.QIcon()
+
+
 class CreateNodeDialog(QtWidgets.QDialog):
     def __init__(self, parent=None, existing_names=None):
         super().__init__(parent)
         self.setWindowTitle("Create Node")
         self.setModal(True)
-        self.setMinimumWidth(420)
+        self.setMinimumSize(620, 500)
+        self.resize(640, 520)
         self._existing = set(existing_names or [])
 
-        form = QtWidgets.QFormLayout(); form.setLabelAlignment(QtCore.Qt.AlignRight)
+        form = QtWidgets.QGridLayout()
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setHorizontalSpacing(6)
+        form.setVerticalSpacing(0)
 
+        name_label = QtWidgets.QLabel("Node name:")
+        name_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
         self.name_edit = QtWidgets.QLineEdit(); self.name_edit.setPlaceholderText("e.g. My Tool")
-        form.addRow("Node name:", self.name_edit)
+        form.addWidget(name_label, 0, 0)
+        form.addWidget(self.name_edit, 0, 1)
 
         self.kind_edit = QtWidgets.QComboBox()
         self.kind_edit.setEditable(True)
-        kinds = [
+        self._kinds = [
             "node","camera","import","instance","primitive","uv_unwrap","texture","texture_pro","texture_layer","material","split_volume","transforms","fx","scene","render","video_player","export_fbx","html_preview","python","switch","output","llm",
             "gantt_chart",
             "llm_prompt","chatbot","librarian","note","append","image_collection","database"
         ]
         try:
-            kinds.remove("note")
+            self._kinds.remove("note")
         except ValueError:
             pass
-        kinds.insert(0, "note")
-        self.kind_edit.addItems(kinds)
+        self._kinds.insert(0, "note")
+        self.kind_edit.addItems(self._kinds)
         self.kind_edit.setEditText("note")
-        form.addRow("Node type:", self.kind_edit)
+        kind_label = QtWidgets.QLabel("Node type:")
+        kind_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        form.addWidget(kind_label, 1, 0)
+        form.addWidget(self.kind_edit, 1, 1)
 
         self._llm_url_label = QtWidgets.QLabel("URL:")
         self._llm_url_edit  = QtWidgets.QLineEdit()
         self._llm_url_edit.setPlaceholderText("http://127.0.0.1:7860")
         self._llm_url_edit.setText(LLM_URL)
-        form.addRow(self._llm_url_label, self._llm_url_edit)
-        self._llm_url_label.setVisible(False)
-        self._llm_url_edit.setVisible(False)
+        self._llm_url_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        label_col_width = max(
+            name_label.sizeHint().width(),
+            kind_label.sizeHint().width(),
+            self._llm_url_label.sizeHint().width(),
+        )
+        name_label.setFixedWidth(label_col_width)
+        kind_label.setFixedWidth(label_col_width)
+        self._llm_url_label.setFixedWidth(label_col_width)
+        form.setColumnStretch(1, 1)
+
+        self._llm_row = QtWidgets.QWidget()
+        llm_row = QtWidgets.QHBoxLayout(self._llm_row)
+        llm_row.setContentsMargins(0, 0, 0, 0)
+        llm_row.setSpacing(6)
+        llm_row.addWidget(self._llm_url_label, 0, QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        llm_row.addWidget(self._llm_url_edit, 1)
+        self._llm_row.setVisible(False)
+
+        nodes_box = QtWidgets.QGroupBox("Existing Nodes (click to create)")
+        nodes_box.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Fixed)
+        qv = QtWidgets.QVBoxLayout(nodes_box); qv.setContentsMargins(4,4,4,4); qv.setSpacing(0)
+        quick_grid = QtWidgets.QGridLayout()
+        quick_grid.setContentsMargins(0, 0, 0, 0)
+        quick_grid.setHorizontalSpacing(3)
+        quick_grid.setVerticalSpacing(3)
+        quick_cols = 4
+        for idx, kind in enumerate(self._kinds):
+            row, col = divmod(idx, quick_cols)
+            btn = QtWidgets.QToolButton()
+            btn.setAutoRaise(True)
+            btn.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
+            btn.setText(_kind_label(kind))
+            btn.setToolTip(kind)
+            btn.setIcon(_kind_icon(kind))
+            btn.setIconSize(QtCore.QSize(18, 18))
+            btn.setMinimumHeight(28)
+            btn.setMinimumWidth(117)
+            btn.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+            btn.setStyleSheet(
+                "QToolButton{"
+                "background:transparent;"
+                "border:1px solid transparent;"
+                "border-radius:4px;"
+                "padding:1px 4px;"
+                "}"
+                "QToolButton:hover{"
+                "border:1px solid #22c55e;"
+                "background:rgba(34,197,94,0.18);"
+                "}"
+                "QToolButton:pressed{"
+                "border:1px solid #16a34a;"
+                "background:rgba(34,197,94,0.28);"
+                "}"
+            )
+            btn.clicked.connect(lambda _checked=False, k=kind: self._quick_create_from_kind(k))
+            quick_grid.addWidget(btn, row, col)
+        for col in range(quick_cols):
+            quick_grid.setColumnStretch(col, 1)
+        qv.addLayout(quick_grid)
+        nodes_box.setFixedHeight(nodes_box.sizeHint().height())
 
         param_box = QtWidgets.QGroupBox("Parameters (optional)")
-        pv = QtWidgets.QVBoxLayout(param_box); pv.setContentsMargins(8,8,8,8); pv.setSpacing(6)
+        param_box.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Fixed)
+        pv = QtWidgets.QVBoxLayout(param_box); pv.setContentsMargins(4,4,4,4); pv.setSpacing(3)
         self.param_list = QtWidgets.QListWidget()
         self.param_list.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        self.param_list.setMinimumHeight(56)
+        self.param_list.setMaximumHeight(88)
         btns = QtWidgets.QHBoxLayout()
+        btns.setContentsMargins(0, 0, 0, 0)
+        btns.setSpacing(8)
         add_btn = QtWidgets.QPushButton("Add…"); rem_btn = QtWidgets.QPushButton("Remove")
         btns.addWidget(add_btn); btns.addWidget(rem_btn); btns.addStretch(1)
         pv.addWidget(self.param_list); pv.addLayout(btns)
         add_btn.clicked.connect(self._add_param); rem_btn.clicked.connect(self._remove_param)
+        param_box.setFixedHeight(param_box.sizeHint().height())
 
         code_box = QtWidgets.QGroupBox("Initial Python (optional)")
         code_box.setCheckable(False)
@@ -285,8 +438,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
             kind = (kind_text or "").strip().lower()
             code_box.setVisible(kind == "python")
             is_llm = (kind == "llm")
-            self._llm_url_label.setVisible(is_llm)
-            self._llm_url_edit.setVisible(is_llm)
+            self._llm_row.setVisible(is_llm)
 
         self.kind_edit.currentTextChanged.connect(_toggle_code_box)
         _toggle_code_box(self.kind_edit.currentText())
@@ -295,10 +447,17 @@ class CreateNodeDialog(QtWidgets.QDialog):
         bb.accepted.connect(self._accept); bb.rejected.connect(self.reject)
 
         layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(0)
         layout.addLayout(form)
+        layout.addWidget(self._llm_row)
+        layout.addSpacing(4)
+        layout.addWidget(nodes_box)
+        layout.addSpacing(4)
         layout.addWidget(param_box)
         layout.addWidget(code_box)
         layout.addWidget(bb)
+        layout.setAlignment(QtCore.Qt.AlignTop)
 
     def showEvent(self, e):
         super().showEvent(e)
@@ -325,6 +484,13 @@ class CreateNodeDialog(QtWidgets.QDialog):
         for it in self.param_list.selectedItems():
             row = self.param_list.row(it)
             self.param_list.takeItem(row)
+
+    def _quick_create_from_kind(self, kind: str):
+        kind = (kind or "").strip()
+        if not kind:
+            return
+        self.kind_edit.setEditText(kind)
+        self._accept()
 
     def _accept(self):
         name = self.name_edit.text().strip()
