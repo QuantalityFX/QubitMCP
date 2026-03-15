@@ -1,7 +1,7 @@
 from pathlib import Path
 from .qt_compat import QtGui
 
-APP_TITLE = "Qubit 1.0.0"
+APP_TITLE = "QubitMCP 1.1.0"
 KEY_BIGEDIT = "Ctrl+B"
 
 LLM_URL = "http://127.0.0.1:7860"

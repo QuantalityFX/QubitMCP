@@ -3,18 +3,20 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>QubitMCP 1.0.1 Manual</title>
+    <title>QubitMCP 1.1.0 Manual</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <div class="layout">
       <aside class="sidebar">
         <div class="brand">
-          <div class="brand-title">QubitMCP 1.0.1</div>
+          <img class="brand-logo" src="../icons/QubitMCP_Icon_s.png" alt="QubitMCP icon" />
+          <div class="brand-title">QubitMCP 1.1.0</div>
           <div class="brand-sub">User + Developer Manual</div>
         </div>
         <nav class="nav">
           <a href="#overview">Overview</a>
+          <a href="#latest-updates">Latest Updates</a>
           <a href="#quick-start">Quick Start</a>
           <a href="#setup-launch">Setup and Launch</a>
           <a href="#ui-tour">UI Tour</a>
@@ -55,6 +57,38 @@
             <li>3D stack with import, primitive, texturing, split volume, transforms, scene, and FBX export.</li>
             <li>Configurable hotkeys saved in <code>hotkeys.json</code>.</li>
           </ul>
+        </section>
+
+        <section id="latest-updates" class="section">
+          <h2>Latest Updates</h2>
+          <div class="grid two">
+            <div class="card feature-card">
+              <h3><img class="inline-icon" src="../icons/Calendar_Icon.png" alt="Calendar icon" /> Gantt Multi-Note Groups</h3>
+              <ul class="bullet">
+                <li>Gantt now supports multiple connected <code>note</code> sources at once.</li>
+                <li>Each note node becomes a collapsible group using the note node name as the group header.</li>
+                <li>Group expand or collapse state is saved and restored with the workflow.</li>
+                <li>Gantt can consume an <code>append</code> node input and preserve append order as group order.</li>
+              </ul>
+            </div>
+            <div class="card feature-card">
+              <h3><img class="inline-icon" src="../icons/Copy_Icon.png" alt="Copy icon" /> Copy/Paste Scheduling Between Gantt Nodes</h3>
+              <ul class="bullet">
+                <li>Copy captures task names, completion percentages, and assigned day ranges.</li>
+                <li>Copy writes a CSV transfer log in <code>gantt_chart/transfer_logs</code>.</li>
+                <li>Paste maps by task name and applies schedule/progress to matching tasks on another Gantt node.</li>
+                <li>Transfer works even when the destination chart has additional note groups connected.</li>
+              </ul>
+            </div>
+            <div class="card feature-card">
+              <h3><img class="inline-icon" src="../icons/Paste_Icon.png" alt="Paste icon" /> Gantt UI Interaction Polish</h3>
+              <ul class="bullet">
+                <li>Corner action buttons now include hover border feedback.</li>
+                <li>Pressed state uses a black background for clearer click confirmation.</li>
+                <li>Copy and paste buttons use dedicated icon assets for quick recognition.</li>
+              </ul>
+            </div>
+          </div>
         </section>
 
         <section id="quick-start" class="section">
@@ -222,45 +256,65 @@
           <h2>Node Catalog</h2>
           <p class="muted">Current kinds available from Create Node and plugin registration.</p>
 
-          <h3>Core and Utility</h3>
-          <ul class="bullet">
-            <li><strong>note</strong>: rich note node with display controls.</li>
-            <li><strong>node</strong>: general purpose text and parameter node.</li>
-            <li><strong>append</strong>: concatenate upstream text in graph order.</li>
-            <li><strong>switch</strong>: select active branch from multiple inputs.</li>
-            <li><strong>output</strong>: terminal output collector node.</li>
-            <li><strong>python</strong>: execute custom Python scripts from graph context.</li>
-          </ul>
+          <div class="grid two">
+            <div class="card">
+              <h3>Core and Utility</h3>
+              <ul class="node-list">
+                <li><img class="node-inline-icon" src="../icons/Electric_Pen_Icon.png" alt="Note icon" /><span><strong>note</strong>: note tasks and text content with per-parameter controls.</span></li>
+                <li><img class="node-inline-icon" src="../icons/TabIcon.png" alt="Node icon" /><span><strong>node</strong>: general purpose parameter node.</span></li>
+                <li><img class="node-inline-icon" src="../icons/append_icon.png" alt="Append icon" /><span><strong>append</strong>: ordered input aggregation; can now drive Gantt group order.</span></li>
+                <li><img class="node-inline-icon" src="../icons/Switch_Icon.png" alt="Switch icon" /><span><strong>switch</strong>: single-branch selection from multiple upstream nodes.</span></li>
+                <li><img class="node-inline-icon" src="../icons/Calendar_Icon.png" alt="Gantt icon" /><span><strong>gantt_chart</strong>: scheduling board with multi-note grouping, collapse state persistence, and CSV copy/paste transfer.</span></li>
+                <li><img class="node-inline-icon" src="../icons/Python_Icon.png" alt="Python icon" /><span><strong>python</strong>: run custom scripts in graph context.</span></li>
+                <li><img class="node-inline-icon" src="../icons/Out_Node_Icon.png" alt="Output icon" /><span><strong>output</strong>: terminal collector for final graph output.</span></li>
+              </ul>
+            </div>
 
-          <h3>AI and Knowledge</h3>
-          <ul class="bullet">
-            <li><strong>llm</strong>: base LLM node configuration.</li>
-            <li><strong>llm_prompt</strong>: prompt execution with provider and model settings.</li>
-            <li><strong>chatbot</strong>: conversational interface using LLM plus history.</li>
-            <li><strong>database</strong>: persistent storage used by chatbot and workflows.</li>
-            <li><strong>librarian</strong>: indexed document search, summarize, and analysis service.</li>
-          </ul>
+            <div class="card">
+              <h3>AI and Knowledge</h3>
+              <ul class="node-list">
+                <li><img class="node-inline-icon" src="../icons/LLM_Icon.png" alt="LLM icon" /><span><strong>llm</strong>: provider and endpoint configuration.</span></li>
+                <li><img class="node-inline-icon" src="../icons/LLM_Icon.png" alt="Prompt icon" /><span><strong>llm_prompt</strong>: prompt execution and response generation.</span></li>
+                <li><img class="node-inline-icon" src="../icons/Chatbot_Icon.png" alt="Chatbot icon" /><span><strong>chatbot</strong>: conversation workflows with memory/history support.</span></li>
+                <li><img class="node-inline-icon" src="../icons/Database_Icon.png" alt="Database icon" /><span><strong>database</strong>: persistence layer for graph and chat data.</span></li>
+                <li><img class="node-inline-icon" src="../icons/librarian_search_Icon.png" alt="Librarian icon" /><span><strong>librarian</strong>: document indexing, search, summarize, and analysis.</span></li>
+              </ul>
+            </div>
 
-          <h3>Media</h3>
-          <ul class="bullet">
-            <li><strong>html_preview</strong>: render HTML content in node view.</li>
-            <li><strong>image_collection</strong>: assemble and preview image groups.</li>
-          </ul>
+            <div class="card">
+              <h3>Media and Review</h3>
+              <ul class="node-list">
+                <li><img class="node-inline-icon" src="../icons/explorer_button_icon.png" alt="HTML icon" /><span><strong>html_preview</strong>: in-node HTML rendering.</span></li>
+                <li><img class="node-inline-icon" src="../icons/PhotoCollection.png" alt="Image collection icon" /><span><strong>image_collection</strong>: assemble and preview image sets.</span></li>
+                <li><img class="node-inline-icon" src="../icons/ReelVideo_Icon.png" alt="Video icon" /><span><strong>video_player</strong>: timeline playback and clip inspection.</span></li>
+                <li><img class="node-inline-icon" src="../icons/RenderNode_Icon.png" alt="Render icon" /><span><strong>render</strong>: render sequence/export pipeline stage.</span></li>
+              </ul>
+            </div>
 
-          <h3>3D and Scene Processing</h3>
-          <ul class="bullet">
-            <li><strong>import</strong>: load mesh or splat assets.</li>
-            <li><strong>instance</strong>: create additional scene instances from upstream assets.</li>
-            <li><strong>primitive</strong>: generate primitive geometry inputs.</li>
-            <li><strong>uv_unwrap</strong>: UV pipeline stage for texture workflows.</li>
-            <li><strong>texture</strong>: base texturing stage.</li>
-            <li><strong>texture_pro</strong>: extended texturing provider stage.</li>
-            <li><strong>texture_layer</strong>: layered texture composition stage.</li>
-            <li><strong>split_volume</strong>: split or select volume regions (volume selector).</li>
-            <li><strong>transforms</strong>: apply transform offsets in processing chains.</li>
-            <li><strong>scene</strong>: assemble and view multiple assets in one scene context.</li>
-            <li><strong>export_fbx</strong>: export scene or processed output to FBX.</li>
-          </ul>
+            <div class="card">
+              <h3>3D and Scene Processing</h3>
+              <ul class="node-list">
+                <li><img class="node-inline-icon" src="../icons/Import_File_Icon.png" alt="Import icon" /><span><strong>import</strong>: load mesh or splat assets.</span></li>
+                <li><img class="node-inline-icon" src="../icons/CameraCtrl_On_Icon.png" alt="Camera icon" /><span><strong>camera</strong>: scene camera placement/control node.</span></li>
+                <li><img class="node-inline-icon" src="../icons/instance_icon.png" alt="Instance icon" /><span><strong>instance</strong>: create repeated scene instances.</span></li>
+                <li><img class="node-inline-icon" src="../icons/GLB_Icon.png" alt="Primitive icon" /><span><strong>primitive</strong>: generate procedural primitive geometry.</span></li>
+                <li><img class="node-inline-icon" src="../icons/UvUnwrapNode_Icon.png" alt="UV icon" /><span><strong>uv_unwrap</strong>: UV workflow stage.</span></li>
+                <li><img class="node-inline-icon" src="../icons/TextureNode_Icon.png" alt="Texture icon" /><span><strong>texture</strong>: base texturing stage.</span></li>
+                <li><img class="node-inline-icon" src="../icons/TextureNode_Icon2.png" alt="Texture pro icon" /><span><strong>texture_pro</strong>: expanded texture processing controls.</span></li>
+                <li><img class="node-inline-icon" src="../icons/layer_Texture_Icon.png" alt="Texture layer icon" /><span><strong>texture_layer</strong>: layered texture compositing.</span></li>
+                <li><img class="node-inline-icon" src="../icons/MaterialGenerator_Icon_S.png" alt="Material icon" /><span><strong>material</strong>: material setup and conversion utilities.</span></li>
+                <li><img class="node-inline-icon" src="../icons/grid_on_icon.png" alt="Volume icon" /><span><strong>split_volume</strong> / <strong>volume_selector</strong>: filter/split geometry by volume.</span></li>
+                <li><img class="node-inline-icon" src="../icons/TranformNode_Icon.png" alt="Transform icon" /><span><strong>transforms</strong>: apply translate/rotate/scale offsets in-chain.</span></li>
+                <li><img class="node-inline-icon" src="../icons/FX_node_icon.png" alt="FX icon" /><span><strong>fx</strong>: post-process and trail-style pipeline stage.</span></li>
+                <li><img class="node-inline-icon" src="../icons/StreightArrow_Icon.png" alt="Wire icon" /><span><strong>wire</strong>: wire and curve-based geometry path workflows.</span></li>
+                <li><img class="node-inline-icon" src="../icons/PLT_Icon.png" alt="PLY sequence icon" /><span><strong>ply_sequence</strong>: sequence playback/control for PLY streams.</span></li>
+                <li><img class="node-inline-icon" src="../icons/Scene_Icon.png" alt="Scene icon" /><span><strong>scene</strong>: assemble and manage multi-asset scenes.</span></li>
+                <li><img class="node-inline-icon" src="../icons/FBX_Icon.png" alt="FBX icon" /><span><strong>export_fbx</strong>: export to FBX.</span></li>
+                <li><img class="node-inline-icon" src="../icons/OBJ_Icon.png" alt="OBJ icon" /><span><strong>export_obj</strong>: export to OBJ/MTL.</span></li>
+              </ul>
+            </div>
+          </div>
+          <p class="muted">Aliases also exist for some node kinds (for example <code>scene_assembly</code>, <code>scene_outliner</code>, <code>exportfbx</code>, and <code>video player</code>).</p>
         </section>
 
         <section id="pipelines" class="section">
@@ -273,7 +327,7 @@
                 <li>Optional processing: <code>uv_unwrap</code>, <code>texture</code>/<code>texture_pro</code>/<code>texture_layer</code>, <code>split_volume</code>, <code>transforms</code>.</li>
                 <li>Use <code>instance</code> when you need repeated assets.</li>
                 <li>Connect into <code>scene</code> and review in 3D viewport.</li>
-                <li>Finish with <code>export_fbx</code> for DCC handoff.</li>
+                <li>Finish with <code>export_fbx</code> or <code>export_obj</code> for DCC handoff.</li>
               </ol>
             </div>
             <div class="card">
@@ -283,6 +337,16 @@
                 <li>Build or load librarian index and run search or summarize.</li>
                 <li>Use <code>llm_prompt</code> or <code>chatbot</code> for response generation.</li>
                 <li>Attach <code>database</code> for persistence and <code>append</code> plus <code>output</code> for final aggregation.</li>
+              </ol>
+            </div>
+            <div class="card">
+              <h3>Task Planning Workflow (Gantt)</h3>
+              <ol class="steps">
+                <li>Create one or more <code>note</code> nodes with task parameters.</li>
+                <li>Optional: combine notes through <code>append</code> and use append order to control Gantt group order.</li>
+                <li>Connect to <code>gantt_chart</code> and assign dates or progress per task row.</li>
+                <li>Use collapse or expand on note groups to focus planning.</li>
+                <li>Use copy/paste buttons to transfer schedule + progress into another Gantt chart instance.</li>
               </ol>
             </div>
           </div>
@@ -295,6 +359,8 @@
             <li>Librarian launch issues: run <code>nodes\librarian\librarianSetup.bat</code> and review <code>nodes\librarian\librarian_child.log</code> and <code>nodes\librarian\librarian_crash.log</code>.</li>
             <li>Hotkey mismatch: open Hotkeys dialog and confirm bindings, or regenerate <code>hotkeys.json</code>.</li>
             <li>Wireframe default is <code>H</code>; if not, verify <code>gl_wireframe_toggle</code> in <code>hotkeys.json</code>.</li>
+            <li>Gantt copy/paste debugging: inspect CSV transfer logs under <code>gantt_chart\transfer_logs</code>.</li>
+            <li>If Gantt group order is stale after append reorder, press <strong>Apply Order</strong> on the append node so downstream charts refresh.</li>
           </ul>
         </section>
 
