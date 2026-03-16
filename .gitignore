@@ -41,3 +41,6 @@ __pycache__/
 
 # Debug logs
 /logs/
+
+# tanya voice
+/tanya/

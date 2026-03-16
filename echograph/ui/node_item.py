@@ -1687,6 +1687,16 @@ class NodeItem(QtWidgets.QGraphicsObject):
         elif kind in ("chatbot", "chat bot", "chat_bot"):
             body_h = self._CHATBOT_BODY_H
             node_w = max(self._BASE_W, self._CHATBOT_BODY_W)
+        elif kind in ("voice_actor", "voice actor", "voiceactor"):
+            # Keep the voice node large enough so transcript/status controls do not clip.
+            body_h = 300
+            node_w = max(self._BASE_W, 460)
+            try:
+                from nodes.voice_actor import spec as _voice_actor_spec  # type: ignore
+                body_h = max(body_h, int(getattr(_voice_actor_spec, "VOICE_ACTOR_BODY_H", body_h)))
+                node_w = max(node_w, int(getattr(_voice_actor_spec, "VOICE_ACTOR_BODY_W", node_w)))
+            except Exception:
+                pass
         elif kind == "primitive":
             body_h = 32
             node_w = self._BASE_W
@@ -5723,6 +5733,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
             elif kind_lower in ("render", "render_sequence", "render node"):
                 # Render icon is larger than default and floats above the node.
                 extra_top = 120.0
+            elif kind_lower in ("voice_actor", "voice actor", "voiceactor"):
+                # Voice icon sits larger and higher than default.
+                extra_top = 120.0
             elif kind_lower in (
                 "database",
                 "llm",
@@ -5918,6 +5931,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 icon_pm = node_icons._switch_icon()
             elif kind_lower in ("chatbot", "chat bot", "chat_bot"):
                 icon_pm = node_icons._chatbot_icon()
+            elif kind_lower in ("voice_actor", "voice actor", "voiceactor"):
+                icon_pm = node_icons._voice_actor_icon() or node_icons._output_icon()
             elif kind_lower in ("scene", "scene_assembly", "scene_outliner"):
                 icon_pm = node_icons._scene_icon()
             elif kind_lower in ("camera", "scene_camera"):
@@ -5978,6 +5993,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     size = int(max(36, size * 0.88))
                 if kind_lower in ("chatbot", "chat bot", "chat_bot"):
                     size = int(size * 1.13)
+                if kind_lower in ("voice_actor", "voice actor", "voiceactor"):
+                    size = int(size * 1.28)
+                    size = int(min(170, max(58, size)))
                 pm_scaled = icon_pm.scaled(size, size, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
                 x = (self.width - pm_scaled.width()) / 2.0
                 # float above the top bar

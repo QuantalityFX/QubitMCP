@@ -39,6 +39,7 @@ _GANTT_ICON = None
 _FX_NODE_ICON = None
 _CAMERA_NODE_ICON = None
 _VOLUME_SPLIT_ICON = None
+_VOICE_ACTOR_ICON = None
 
 
 def _load_pm(rel_icon_name: str):
@@ -311,3 +312,11 @@ def _fx_node_icon():
         return _FX_NODE_ICON
     _FX_NODE_ICON = _load_pm("FX_node_icon.png")
     return _FX_NODE_ICON
+
+
+def _voice_actor_icon():
+    global _VOICE_ACTOR_ICON
+    if _VOICE_ACTOR_ICON is not None:
+        return _VOICE_ACTOR_ICON
+    _VOICE_ACTOR_ICON = _load_pm("TanyaAI_Icon.png")
+    return _VOICE_ACTOR_ICON

@@ -10,6 +10,7 @@ if errorlevel 1 (
 set "LOG=%CD%\setup.log"
 set "MAIN_REQ=%CD%\requirements.txt"
 set "LIB_REQ=%CD%\nodes\librarian\requirements.txt"
+set "VOICE_DEPS=SpeechRecognition pyttsx3 pyaudio"
 set "BASE_PY_EXE="
 set "BASE_PY_ARG="
 set "BASE_PY_MM="
@@ -107,6 +108,7 @@ echo [setup] Base Python version: %BASE_PY_MM% >> "%LOG%"
 
 call :ensure_venv ".venv" "root" || goto :fail
 call :install_requirements ".venv\Scripts\python.exe" "%MAIN_REQ%" "root requirements" || goto :fail
+call :install_voice_deps ".venv\Scripts\python.exe" "root voice dependencies" || goto :fail
 
 if /I "%SETUP_MODE%"=="full" (
   call :ensure_venv "nodes\librarian\.venv" "librarian" || goto :fail
@@ -197,6 +199,22 @@ echo [setup] Installing %LABEL% from %REQ% >> "%LOG%"
 echo [setup] This step may take several minutes; live pip output follows.
 echo [setup] Live pip output follows for %LABEL%. >> "%LOG%"
 "%PY%" -m pip install --progress-bar on -r "%REQ%"
+if errorlevel 1 (
+  echo [setup] ERROR: Failed to install %LABEL%. >> "%LOG%"
+  exit /b 1
+)
+echo [setup] Completed %LABEL%.
+echo [setup] Completed %LABEL%. >> "%LOG%"
+exit /b 0
+
+:install_voice_deps
+set "PY=%~1"
+set "LABEL=%~2"
+
+echo [setup] Installing %LABEL%...
+echo [setup] Installing %LABEL%: %VOICE_DEPS% >> "%LOG%"
+echo [setup] Live pip output follows for %LABEL%. >> "%LOG%"
+"%PY%" -m pip install --progress-bar on %VOICE_DEPS%
 if errorlevel 1 (
   echo [setup] ERROR: Failed to install %LABEL%. >> "%LOG%"
   exit /b 1

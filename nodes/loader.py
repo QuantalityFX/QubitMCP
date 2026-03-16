@@ -1,4 +1,4 @@
-# loader.py
+﻿# loader.py
 """
 Central plugin bootstrapper for EchoGraph.
 Call bootstrap_plugins() after nodes/ is on sys.path and nodes.core is imported.
@@ -285,6 +285,16 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Database plugin import failed:", e)
 
+    # 11.5) Voice Actor
+    try:
+        from nodes import voice_actor
+        if hasattr(voice_actor, "register"):
+            voice_actor.register()
+            _safe_probe("voice_actor")
+        else:
+            print("[EchoGraph] Voice Actor module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Voice Actor plugin import failed:", e)
     # 12) Image Collection
     try:
         from nodes import image_collection
@@ -361,3 +371,4 @@ def bootstrap_plugins():
             print("[EchoGraph] Video Player module has no 'register' function.")
     except Exception as e:
         print("[EchoGraph] Video Player plugin import failed:", e)
+
