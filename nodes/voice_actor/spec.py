@@ -358,6 +358,8 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._listen_icon = _voice_action_icon("Mic_Icon.png")
         self._speak_icon = _voice_action_icon("Voice_Icon.png")
         self._chatbot_icon = _voice_action_icon("Chatbot_Icon.png")
+        self._replay_icon = _voice_action_icon("PlayButton_icon.png")
+        self._stop_icon = _voice_action_icon("StopButton_icon.png")
         self._scene = None
         self._scene_connected = False
         self._param_refresh_pending = False
@@ -367,6 +369,11 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._chatbot_input_item = None
         self._last_chatbot_token = ""
         self._pending_chatbot_text = ""
+        self._last_tts_text = ""
+        self._tts_lock = threading.Lock()
+        self._tts_engine = None
+        self._tts_playing = False
+        self._tts_user_stopped = False
         model = getattr(self._node_item, "model", None)
         saved_mode = _param_value(model, VOICE_ACTOR_MODE_KEY, "").strip().lower()
         self._mode = "text_to_voice" if saved_mode == "text_to_voice" else "voice_to_text"
@@ -389,6 +396,30 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._action_btn = QtWidgets.QPushButton()
         self._action_btn.setIconSize(QtCore.QSize(14, 14))
         self._action_btn.clicked.connect(self._on_action_clicked)
+
+        self._replay_btn = QtWidgets.QPushButton("Replay")
+        self._replay_btn.setStyleSheet(
+            "QPushButton{background:#334155;color:#e2e8f0;border:1px solid #475569;"
+            "border-radius:4px;padding:4px 8px;}"
+            "QPushButton:hover{background:#3f4d62;}"
+            "QPushButton:disabled{background:#1f2937;color:#64748b;border-color:#334155;}"
+        )
+        if not self._replay_icon.isNull():
+            self._replay_btn.setIcon(self._replay_icon)
+            self._replay_btn.setIconSize(QtCore.QSize(14, 14))
+        self._replay_btn.clicked.connect(self._replay_last)
+
+        self._stop_btn = QtWidgets.QPushButton("Stop")
+        self._stop_btn.setStyleSheet(
+            "QPushButton{background:#7f1d1d;color:#f8fafc;border:1px solid #b91c1c;"
+            "border-radius:4px;padding:4px 8px;}"
+            "QPushButton:hover{background:#991b1b;}"
+            "QPushButton:disabled{background:#1f2937;color:#64748b;border-color:#334155;}"
+        )
+        if not self._stop_icon.isNull():
+            self._stop_btn.setIcon(self._stop_icon)
+            self._stop_btn.setIconSize(QtCore.QSize(14, 14))
+        self._stop_btn.clicked.connect(self._stop_audio)
 
         self._copy_btn = QtWidgets.QPushButton("Copy")
         self._copy_btn.setStyleSheet(
@@ -433,6 +464,8 @@ class VoiceActorWidget(QtWidgets.QWidget):
         top.setSpacing(6)
         top.addWidget(self._mode_btn, 1)
         top.addWidget(self._action_btn, 0)
+        top.addWidget(self._replay_btn, 0)
+        top.addWidget(self._stop_btn, 0)
         top.addWidget(self._copy_btn, 0)
 
         selector = QtWidgets.QHBoxLayout()
@@ -473,7 +506,9 @@ class VoiceActorWidget(QtWidgets.QWidget):
             self._action_btn.setText("Auto")
             self._action_btn.setStyleSheet(_auto_button_style())
             self._action_btn.setIcon(self._chatbot_icon)
-            self._action_btn.setToolTip("Auto-speaking latest chatbot response.")
+            self._action_btn.setToolTip("Replay the latest chatbot response.")
+            self._replay_btn.setToolTip("Replay the last spoken output.")
+            self._stop_btn.setToolTip("Stop speech immediately.")
             return
         if self._mode == "voice_to_text":
             self._mode_btn.setText("Voice -> Text")
@@ -489,6 +524,8 @@ class VoiceActorWidget(QtWidgets.QWidget):
             self._action_btn.setStyleSheet(_button_style("#1d4ed8", "#60a5fa", "#2563eb"))
             self._action_btn.setIcon(self._speak_icon)
             self._action_btn.setToolTip("Speak text from input or transcript box.")
+        self._replay_btn.setToolTip("Replay the last spoken output.")
+        self._stop_btn.setToolTip("Stop speech immediately.")
 
     def _set_mode(self, mode: str, *, persist: bool = True) -> None:
         normalized = "text_to_voice" if str(mode or "").strip().lower() == "text_to_voice" else "voice_to_text"
@@ -642,7 +679,9 @@ class VoiceActorWidget(QtWidgets.QWidget):
 
         self._apply_mode_ui()
         self._mode_btn.setEnabled(not self._busy and not self._chatbot_connected)
-        self._action_btn.setEnabled(not self._busy and not self._chatbot_connected)
+        self._action_btn.setEnabled(not self._busy)
+        self._replay_btn.setEnabled(not self._busy)
+        self._stop_btn.setEnabled(bool(self._busy and self._tts_playing))
 
     def _on_param_selection_changed(self, _index: int) -> None:
         if self._syncing_param_combo:
@@ -672,7 +711,9 @@ class VoiceActorWidget(QtWidgets.QWidget):
     def _set_busy(self, active: bool, label: str = "") -> None:
         self._busy = bool(active)
         self._mode_btn.setEnabled(not self._busy and not self._chatbot_connected)
-        self._action_btn.setEnabled(not self._busy and not self._chatbot_connected)
+        self._action_btn.setEnabled(not self._busy)
+        self._replay_btn.setEnabled(not self._busy)
+        self._stop_btn.setEnabled(bool(self._busy and self._tts_playing))
         self._copy_btn.setEnabled(not self._busy)
         self._param_combo.setEnabled(bool(self._source_param_options) and not self._busy and not self._chatbot_connected)
         try:
@@ -720,12 +761,40 @@ class VoiceActorWidget(QtWidgets.QWidget):
         clipboard.setText(text)
         self._set_status("Transcript copied.")
 
+    def _replay_last(self) -> None:
+        if self._busy:
+            return
+        text = (self._last_tts_text or "").strip()
+        if text:
+            self._speak_text(text, source="replay")
+            return
+        text, source = self._resolve_tts_text()
+        self._speak_text(text, source=source if source else "replay")
+
+    def _stop_audio(self) -> None:
+        if not self._tts_playing:
+            self._set_status("Nothing is playing.")
+            return
+        self._pending_chatbot_text = ""
+        engine = None
+        with self._tts_lock:
+            self._tts_user_stopped = True
+            engine = self._tts_engine
+        if engine is not None:
+            try:
+                engine.stop()
+            except Exception:
+                pass
+        self._stop_btn.setEnabled(False)
+        self._set_status("Stopping speech...")
+
     def _on_action_clicked(self) -> None:
         if self._busy:
             return
         self._refresh_source_param_options()
         if self._chatbot_connected:
-            self._set_status("Auto mode: waiting for chatbot response...")
+            text, source = self._resolve_tts_text()
+            self._speak_text(text, source=source)
             return
         if self._mode == "voice_to_text":
             self._start_stt()
@@ -816,10 +885,17 @@ class VoiceActorWidget(QtWidgets.QWidget):
             self._set_status("Speaking selected parameter value...")
         elif source in ("chatbot_auto", "chatbot_latest"):
             self._set_status("Auto-speaking latest chatbot response...")
+        elif source == "replay":
+            self._set_status("Replaying last output...")
         elif source == "input":
             self._set_status("Speaking text from wired input...")
         else:
             self._set_status("Speaking transcript...")
+        self._last_tts_text = clean
+        with self._tts_lock:
+            self._tts_user_stopped = False
+            self._tts_playing = True
+            self._tts_engine = None
         self._set_busy(True, "speaking")
         threading.Thread(target=self._tts_worker, args=(clean,), daemon=True).start()
         return True
@@ -832,6 +908,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
                 if token:
                     self._last_chatbot_token = token
                 return text.strip(), "chatbot_latest"
+            return "", "chatbot_latest"
 
         selected_key = str(self._selected_param_key or "").strip()
         if selected_key:
@@ -853,22 +930,42 @@ class VoiceActorWidget(QtWidgets.QWidget):
 
     def _tts_worker(self, text: str) -> None:
         error = ""
+        user_stopped = False
+        engine = None
         try:
             engine = pyttsx3.init()
-            engine.say(text)
-            engine.runAndWait()
-            try:
-                engine.stop()
-            except Exception:
-                pass
+            with self._tts_lock:
+                self._tts_engine = engine
+                user_stopped = bool(self._tts_user_stopped)
+            if user_stopped:
+                error = "__stopped__"
+            else:
+                engine.say(text)
+                engine.runAndWait()
         except Exception as exc:
             error = f"Text-to-speech failed: {exc}"
+        finally:
+            if engine is not None:
+                try:
+                    engine.stop()
+                except Exception:
+                    pass
+            with self._tts_lock:
+                if self._tts_engine is engine:
+                    self._tts_engine = None
+                user_stopped = bool(self._tts_user_stopped)
+                self._tts_playing = False
+        if user_stopped and not error:
+            error = "__stopped__"
         self._tts_done.emit(error)
 
     @QtCore.Slot(str)
     def _finish_tts(self, error: str) -> None:
         self._set_busy(False, "")
         if error:
+            if str(error).strip() == "__stopped__":
+                self._set_status("Speech stopped.")
+                return
             self._set_status(error, error=True)
             return
         self._set_status("Speech playback complete.")
