@@ -25,36 +25,65 @@ VOICE_ACTOR_NODE_ALIASES = [
 
 VOICE_ACTOR_BODY_W = 460
 VOICE_ACTOR_BODY_H = 300
+VOICE_ACTOR_SELECTED_PARAM_KEY = "__voice_actor_selected_param"
+VOICE_ACTOR_MODE_KEY = "__voice_actor_mode"
+
+
+def _ordered_in_edges(scene, node_item) -> list:
+    if not scene or not node_item:
+        return []
+    try:
+        ordered = list(scene._ordered_in_edges(node_item))
+        if ordered:
+            return ordered
+    except Exception:
+        pass
+    try:
+        return list(scene._in_edges(node_item))
+    except Exception:
+        return []
+
+
+def _edge_port_name(edge) -> str:
+    for attr in ("dst_port_name", "dst_label", "dst_name"):
+        if hasattr(edge, attr):
+            raw = getattr(edge, attr)
+            if raw is not None:
+                text = str(raw).strip()
+                if text:
+                    return text
+    return ""
+
+
+def _input_edges(scene, node_item, port_name: str) -> list:
+    edges = _ordered_in_edges(scene, node_item)
+    if not edges:
+        return []
+    target = (port_name or "").strip().lower()
+    if not target:
+        return edges
+    out = []
+    for edge in edges:
+        if _edge_port_name(edge).strip().lower() == target:
+            out.append(edge)
+    if out:
+        return out
+    # Fall back to all incoming edges when no explicit port-name match exists.
+    return edges
 
 
 def _text_from_input(scene, node_item, port_name: str) -> str:
-    if not scene or not node_item:
-        return ""
-    try:
-        in_edges = list(scene._in_edges(node_item))
-    except Exception:
-        in_edges = []
-
-    def _edge_matches_name(edge) -> bool:
-        for attr in ("dst_port_name", "dst_label", "dst_name"):
-            if hasattr(edge, attr) and getattr(edge, attr) == port_name:
-                return True
-        return False
-
-    named_edges = [edge for edge in in_edges if _edge_matches_name(edge)]
+    named_edges = _input_edges(scene, node_item, port_name)
     if not named_edges:
         return ""
-    try:
-        ordered = [edge for edge in scene._ordered_in_edges(node_item) if edge in named_edges]
-        if ordered:
-            named_edges = ordered
-    except Exception:
-        pass
 
     parts = []
     for edge in named_edges:
+        src = getattr(edge, "src", None)
+        if src is None:
+            continue
         try:
-            text = scene.resolve_text_value(edge.src)
+            text = scene.resolve_text_value(src)
         except Exception:
             text = ""
         if text:
@@ -70,6 +99,79 @@ def _set_node_info(node_item, text: str) -> None:
     if (getattr(model, "info", "") or "") == value:
         return
     model.info = value
+    scene = node_item.scene() if hasattr(node_item, "scene") else None
+    if scene is None:
+        return
+    try:
+        scene.paramChanged.emit(model.name, list(getattr(model, "params", None) or []))
+    except Exception:
+        pass
+
+
+def _param_value(model, name: str, default: str = "") -> str:
+    if model is None:
+        return default
+    key = (name or "").strip().lower()
+    for entry in (getattr(model, "params", None) or []):
+        if (entry.get("name") or "").strip().lower() == key:
+            return str(entry.get("value", "") or "")
+    return default
+
+
+def _ensure_hidden_params(model, names) -> bool:
+    if model is None:
+        return False
+    params = list(getattr(model, "params", None) or [])
+    store_key = "__ui_hidden_params"
+    existing = None
+    for entry in params:
+        if (entry.get("name") or "").strip().lower() == store_key:
+            existing = entry
+            break
+    changed = False
+    if existing is None:
+        existing = {"name": store_key, "value": ""}
+        params.append(existing)
+        changed = True
+    raw = str(existing.get("value", "") or "")
+    hidden = {part.strip().lower() for part in raw.split(",") if part.strip()}
+    for name in names or []:
+        key = str(name or "").strip().lower()
+        if key and key not in hidden:
+            hidden.add(key)
+            changed = True
+    packed = ",".join(sorted(hidden))
+    if str(existing.get("value", "") or "") != packed:
+        existing["value"] = packed
+        changed = True
+    if changed:
+        model.params = params
+    return changed
+
+
+def _set_node_param(node_item, name: str, value: str) -> None:
+    model = getattr(node_item, "model", None)
+    if model is None:
+        return
+    params = list(getattr(model, "params", None) or [])
+    key = (name or "").strip().lower()
+    changed = False
+    found = False
+    clean_value = str(value or "")
+    for entry in params:
+        if (entry.get("name") or "").strip().lower() == key:
+            found = True
+            if str(entry.get("value", "") or "") != clean_value:
+                entry["value"] = clean_value
+                changed = True
+            break
+    if not found:
+        params.append({"name": name, "value": clean_value})
+        changed = True
+    model.params = params
+    hidden_changed = _ensure_hidden_params(model, [name])
+    if not changed and not hidden_changed:
+        return
     scene = node_item.scene() if hasattr(node_item, "scene") else None
     if scene is None:
         return
@@ -140,11 +242,24 @@ class VoiceActorWidget(QtWidgets.QWidget):
     def __init__(self, node_item, parent=None):
         super().__init__(parent)
         self._node_item = node_item
-        self._mode = "voice_to_text"
         self._busy = False
         self._syncing_text = False
         self._listen_icon = _voice_action_icon("Mic_Icon.png")
         self._speak_icon = _voice_action_icon("Voice_Icon.png")
+        self._scene = None
+        self._scene_connected = False
+        self._param_refresh_pending = False
+        self._syncing_param_combo = False
+        self._source_param_options = []
+        model = getattr(self._node_item, "model", None)
+        saved_mode = _param_value(model, VOICE_ACTOR_MODE_KEY, "").strip().lower()
+        self._mode = "text_to_voice" if saved_mode == "text_to_voice" else "voice_to_text"
+        self._selected_param_key = _param_value(model, VOICE_ACTOR_SELECTED_PARAM_KEY, "")
+        self._had_note_input = False
+        if self._selected_param_key:
+            _ensure_hidden_params(model, [VOICE_ACTOR_SELECTED_PARAM_KEY])
+        if saved_mode:
+            _ensure_hidden_params(model, [VOICE_ACTOR_MODE_KEY])
 
         self.setMinimumSize(VOICE_ACTOR_BODY_W, VOICE_ACTOR_BODY_H)
         try:
@@ -186,6 +301,17 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._status.setWordWrap(True)
         self._status.setStyleSheet("QLabel{color:#94a3b8;}")
 
+        self._param_label = QtWidgets.QLabel("Read param:")
+        self._param_label.setStyleSheet("QLabel{color:#94a3b8;}")
+        self._param_combo = QtWidgets.QComboBox()
+        self._param_combo.setStyleSheet(
+            "QComboBox{background:#11151c;color:#e6edf3;border:1px solid #334155;border-radius:4px;padding:3px 8px;}"
+            "QComboBox:disabled{background:#1f2937;color:#94a3b8;border-color:#334155;}"
+            "QComboBox QAbstractItemView{background:#0f1216;color:#e6edf3;selection-background-color:#1e3a8a;}"
+        )
+        self._param_combo.setToolTip("Pick which connected parameter to speak in Text -> Voice mode.")
+        self._param_combo.currentIndexChanged.connect(self._on_param_selection_changed)
+
         top = QtWidgets.QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
         top.setSpacing(6)
@@ -193,10 +319,17 @@ class VoiceActorWidget(QtWidgets.QWidget):
         top.addWidget(self._action_btn, 0)
         top.addWidget(self._copy_btn, 0)
 
+        selector = QtWidgets.QHBoxLayout()
+        selector.setContentsMargins(0, 0, 0, 0)
+        selector.setSpacing(6)
+        selector.addWidget(self._param_label, 0)
+        selector.addWidget(self._param_combo, 1)
+
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(6)
         layout.addLayout(top, 0)
+        layout.addLayout(selector, 0)
         layout.addWidget(self._transcript, 1)
         layout.addWidget(self._status, 0)
 
@@ -207,6 +340,8 @@ class VoiceActorWidget(QtWidgets.QWidget):
         if initial_text:
             self._set_transcript(initial_text)
         self._apply_mode_ui()
+        self._ensure_scene_connections()
+        self._refresh_source_param_options()
 
     def sizeHint(self):
         return QtCore.QSize(VOICE_ACTOR_BODY_W, VOICE_ACTOR_BODY_H)
@@ -230,6 +365,149 @@ class VoiceActorWidget(QtWidgets.QWidget):
             self._action_btn.setIcon(self._speak_icon)
             self._action_btn.setToolTip("Speak text from input or transcript box.")
 
+    def _set_mode(self, mode: str, *, persist: bool = True) -> None:
+        normalized = "text_to_voice" if str(mode or "").strip().lower() == "text_to_voice" else "voice_to_text"
+        if self._mode != normalized:
+            self._mode = normalized
+            self._apply_mode_ui()
+        if persist:
+            _set_node_param(self._node_item, VOICE_ACTOR_MODE_KEY, self._mode)
+
+    def _ensure_scene_connections(self) -> None:
+        if self._scene is None:
+            try:
+                self._scene = self._node_item.scene()
+            except Exception:
+                self._scene = None
+        if self._scene is None or self._scene_connected:
+            return
+        if hasattr(self._scene, "linksChanged"):
+            try:
+                self._scene.linksChanged.connect(self._on_scene_links_changed)
+            except Exception:
+                pass
+        if hasattr(self._scene, "paramChanged"):
+            try:
+                self._scene.paramChanged.connect(self._on_scene_param_changed)
+            except Exception:
+                pass
+        self._scene_connected = True
+
+    def _on_scene_links_changed(self, *_args) -> None:
+        self._schedule_param_refresh()
+
+    def _on_scene_param_changed(self, *_args) -> None:
+        self._schedule_param_refresh()
+
+    def _schedule_param_refresh(self) -> None:
+        self._ensure_scene_connections()
+        if self._param_refresh_pending:
+            return
+        self._param_refresh_pending = True
+        QtCore.QTimer.singleShot(0, self._refresh_source_param_options)
+
+    def _collect_source_param_options(self) -> tuple[list, bool]:
+        self._ensure_scene_connections()
+        scene = self._scene
+        if scene is None:
+            return [], False
+        edges = _input_edges(scene, self._node_item, "text")
+        if not edges:
+            return [], False
+        multiple_sources = len(edges) > 1
+        options = []
+        note_input_connected = False
+        for edge_index, edge in enumerate(edges, start=1):
+            src_item = getattr(edge, "src", None)
+            src_model = getattr(src_item, "model", None)
+            if src_model is None:
+                continue
+            kind = str(getattr(src_model, "kind", "") or "").strip().lower()
+            if kind == "note":
+                note_input_connected = True
+            source_name = str(getattr(src_model, "name", "") or "").strip() or f"Input {edge_index}"
+            source_key = str(getattr(src_model, "name", "") or source_name).strip().lower()
+            for param_index, entry in enumerate(getattr(src_model, "params", None) or []):
+                if not isinstance(entry, dict):
+                    continue
+                param_name = str(entry.get("name", "") or "").strip()
+                if not param_name:
+                    continue
+                key_name = param_name.lower()
+                if key_name == "__ui_hidden_params" or key_name.startswith("__"):
+                    continue
+                value = str(entry.get("value", "") or "")
+                label = f"[{param_index}] {param_name}"
+                if multiple_sources:
+                    label = f"{source_name} - {label}"
+                if not value.strip():
+                    label = f"{label} (empty)"
+                option_key = f"{source_key}::{param_index}::{key_name}"
+                options.append(
+                    {
+                        "key": option_key,
+                        "label": label,
+                        "value": value,
+                    }
+                )
+        return options, note_input_connected
+
+    def _refresh_source_param_options(self) -> None:
+        self._param_refresh_pending = False
+        options, note_connected = self._collect_source_param_options()
+        if note_connected and not self._had_note_input and self._mode != "text_to_voice":
+            self._set_mode("text_to_voice")
+        self._had_note_input = note_connected
+        self._source_param_options = options
+        current_key = str(self._selected_param_key or "").strip()
+        if current_key and not any(str(opt.get("key", "")) == current_key for opt in options):
+            current_key = ""
+            self._selected_param_key = ""
+            _set_node_param(self._node_item, VOICE_ACTOR_SELECTED_PARAM_KEY, "")
+
+        self._syncing_param_combo = True
+        try:
+            self._param_combo.blockSignals(True)
+            self._param_combo.clear()
+            self._param_combo.addItem("Auto (wired text / transcript)", "")
+            for opt in options:
+                self._param_combo.addItem(str(opt.get("label", "")), str(opt.get("key", "")))
+
+            selected_index = 0
+            if current_key:
+                for idx in range(self._param_combo.count()):
+                    if str(self._param_combo.itemData(idx) or "") == current_key:
+                        selected_index = idx
+                        break
+            self._param_combo.setCurrentIndex(selected_index)
+        finally:
+            self._param_combo.blockSignals(False)
+            self._syncing_param_combo = False
+
+        self._param_combo.setEnabled(bool(options) and not self._busy)
+        if options:
+            self._param_combo.setToolTip("Pick which connected parameter to speak in Text -> Voice mode.")
+        else:
+            self._param_combo.setToolTip("Connect a node with parameters to choose a value for speech.")
+
+    def _on_param_selection_changed(self, _index: int) -> None:
+        if self._syncing_param_combo:
+            return
+        selected_key = str(self._param_combo.currentData() or "").strip()
+        if selected_key == str(self._selected_param_key or "").strip():
+            return
+        self._selected_param_key = selected_key
+        _set_node_param(self._node_item, VOICE_ACTOR_SELECTED_PARAM_KEY, selected_key)
+
+    def _selected_source_param_value(self) -> tuple[str, str]:
+        selected_key = str(self._selected_param_key or "").strip()
+        if not selected_key:
+            return "", ""
+        for opt in self._source_param_options:
+            if str(opt.get("key", "")) == selected_key:
+                return str(opt.get("value", "") or ""), str(opt.get("label", "") or "")
+        return "", ""
+
     def _set_status(self, message: str, *, error: bool = False) -> None:
         self._status.setText(message or "")
         if error:
@@ -242,6 +520,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._mode_btn.setEnabled(not self._busy)
         self._action_btn.setEnabled(not self._busy)
         self._copy_btn.setEnabled(not self._busy)
+        self._param_combo.setEnabled(bool(self._source_param_options) and not self._busy)
         try:
             self._node_item.setBusyState(bool(active), label if active else "")
         except Exception:
@@ -263,10 +542,9 @@ class VoiceActorWidget(QtWidgets.QWidget):
         if self._busy:
             return
         if self._mode == "voice_to_text":
-            self._mode = "text_to_voice"
+            self._set_mode("text_to_voice")
         else:
-            self._mode = "voice_to_text"
-        self._apply_mode_ui()
+            self._set_mode("voice_to_text")
 
     def _on_transcript_changed(self) -> None:
         if self._syncing_text:
@@ -288,6 +566,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
     def _on_action_clicked(self) -> None:
         if self._busy:
             return
+        self._refresh_source_param_options()
         if self._mode == "voice_to_text":
             self._start_stt()
         else:
@@ -329,6 +608,14 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._set_status("Transcript updated.")
 
     def _resolve_tts_text(self) -> tuple[str, str]:
+        self._refresh_source_param_options()
+        selected_key = str(self._selected_param_key or "").strip()
+        if selected_key:
+            value, _label = self._selected_source_param_value()
+            if value.strip():
+                return value.strip(), "selected_param"
+            return "", "selected_param"
+
         scene = self._node_item.scene()
         wired = _text_from_input(scene, self._node_item, "text")
         if wired.strip():
@@ -345,9 +632,17 @@ class VoiceActorWidget(QtWidgets.QWidget):
             return
         text, source = self._resolve_tts_text()
         if not text:
-            self._set_status("No text to speak. Connect input 'text' or type transcript.", error=True)
+            if source == "selected_param":
+                self._set_status(
+                    "Selected parameter is empty. Choose another parameter or fill its value.",
+                    error=True,
+                )
+            else:
+                self._set_status("No text to speak. Connect input 'text' or type transcript.", error=True)
             return
-        if source == "input":
+        if source == "selected_param":
+            self._set_status("Speaking selected parameter value...")
+        elif source == "input":
             self._set_status("Speaking text from wired input...")
         else:
             self._set_status("Speaking transcript...")
