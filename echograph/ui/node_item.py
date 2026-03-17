@@ -432,6 +432,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
         self._note_resizing = False
         self._import_path_committed = None
         self._skip_release_super = False
+        self._edge_state_cache_version = -1
+        self._edge_state_wired_inputs: set[str] = set()
+        self._edge_state_has_default_input = False
+        self._navigation_lite_mode = False
        # Let the spec add named inputs (e.g., Librarian: query/docs_dir/mode/top_k/action)
         try:
             spec = core.get_spec((self.model.kind or "node").lower())
@@ -1083,34 +1087,86 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 return canonical or name_key
         return None
 
-    def _wired_named_inputs(self) -> set[str]:
-        wired = set()
+    def _edge_state(self) -> tuple[set[str], bool]:
         sc = self.scene()
         if sc is None:
-            return wired
+            self._edge_state_cache_version = -1
+            self._edge_state_wired_inputs = set()
+            self._edge_state_has_default_input = False
+            return set(), False
+
         try:
-            in_edges = sc._in_edges(self)
+            version = int(getattr(sc, "_edge_index_version", 0))
         except Exception:
-            in_edges = []
-        for e in in_edges:
-            name = getattr(e, "dst_port_name", None) or getattr(e, "dst_label", None) or getattr(e, "dst_name", None)
-            if name:
-                wired.add(str(name).strip().lower())
+            version = 0
+
+        if version != int(getattr(self, "_edge_state_cache_version", -1)):
+            wired = set()
+            has_default = False
+            try:
+                in_edges = sc._in_edges(self)
+            except Exception:
+                in_edges = []
+            for e in in_edges:
+                name = (
+                    getattr(e, "dst_port_name", None)
+                    or getattr(e, "dst_label", None)
+                    or getattr(e, "dst_name", None)
+                )
+                if name:
+                    wired.add(str(name).strip().lower())
+                else:
+                    has_default = True
+            self._edge_state_cache_version = version
+            self._edge_state_wired_inputs = wired
+            self._edge_state_has_default_input = has_default
+
+        return set(self._edge_state_wired_inputs), bool(self._edge_state_has_default_input)
+
+    def _wired_named_inputs(self) -> set[str]:
+        wired, _ = self._edge_state()
         return wired
 
     def _has_default_input_edge(self) -> bool:
-        sc = self.scene()
-        if sc is None:
-            return False
+        _, has_default = self._edge_state()
+        return bool(has_default)
+
+    def _iter_ui_proxies(self):
+        for pr in list(getattr(self, "_param_proxies", []) or []):
+            if pr is not None:
+                yield pr
+        for pr in list(getattr(self, "_plugin_proxies", []) or []):
+            if pr is not None:
+                yield pr
+        sw = getattr(self, "_switch_proxy", None)
+        if sw is not None:
+            yield sw
+        llm = getattr(self, "_llm_proxy", None)
+        if llm is not None:
+            yield llm
+
+    def _apply_navigation_lite_visibility(self) -> None:
+        if (self.model.kind or "").lower() != "note":
+            return
+        show_widgets = not bool(getattr(self, "_navigation_lite_mode", False))
+        for pr in self._iter_ui_proxies():
+            try:
+                pr.setVisible(show_widgets)
+            except Exception:
+                pass
+
+    def set_navigation_lite_mode(self, enabled: bool) -> None:
+        if (self.model.kind or "").lower() != "note":
+            return
+        enabled = bool(enabled)
+        if enabled == bool(getattr(self, "_navigation_lite_mode", False)):
+            return
+        self._navigation_lite_mode = enabled
+        self._apply_navigation_lite_visibility()
         try:
-            in_edges = sc._in_edges(self)
+            self.update()
         except Exception:
-            in_edges = []
-        for e in in_edges:
-            name = getattr(e, "dst_port_name", None) or getattr(e, "dst_label", None) or getattr(e, "dst_name", None)
-            if not str(name or "").strip():
-                return True
-        return False
+            pass
 
     # back-compat aliases some specs may call
     def add_input_port(self, name: str):
@@ -2851,6 +2907,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
         finally:
             self._is_building = False
+        self._apply_navigation_lite_visibility()
 
     def _build_import_summary(self, y_cursor: int) -> int:
         self._sync_import_icon_cache()

@@ -80,6 +80,15 @@ class GraphView(QtWidgets.QGraphicsView):
         self._drag_mode_prev = None
         self._pre_3d_transform = None
         self._last_interaction_ts = 0.0
+        self._edge_update_interval_s = 1.0 / 30.0
+        self._last_edge_update_ts = 0.0
+        self._navigation_perf_active = False
+        self._navigation_note_threshold = 6
+        self._navigation_note_lite_applied = False
+        self._navigation_idle_timer = QtCore.QTimer(self)
+        self._navigation_idle_timer.setSingleShot(True)
+        self._navigation_idle_timer.setInterval(140)
+        self._navigation_idle_timer.timeout.connect(self._end_navigation_perf_mode)
 
     def _dispatch_embedded_short_right_click(self, viewport_pos: QtCore.QPoint) -> bool:
         scene = self.scene()
@@ -212,6 +221,72 @@ class GraphView(QtWidgets.QGraphicsView):
             self._last_interaction_ts = time.perf_counter()
         except Exception:
             pass
+
+    def _set_note_navigation_lite(self, enabled: bool) -> None:
+        sc = self.scene()
+        enabled = bool(enabled)
+        if sc is None:
+            if not enabled:
+                self._navigation_note_lite_applied = False
+            return
+
+        if enabled:
+            if bool(getattr(self, "_navigation_note_lite_applied", False)):
+                return
+            notes = []
+            for item in getattr(sc, "_node_items", {}).values():
+                try:
+                    kind = (getattr(getattr(item, "model", None), "kind", "") or "").lower()
+                except Exception:
+                    kind = ""
+                if kind == "note":
+                    notes.append(item)
+            if len(notes) < int(getattr(self, "_navigation_note_threshold", 6)):
+                return
+            for item in notes:
+                fn = getattr(item, "set_navigation_lite_mode", None)
+                if callable(fn):
+                    try:
+                        fn(True)
+                    except Exception:
+                        pass
+            self._navigation_note_lite_applied = True
+            return
+
+        if not bool(getattr(self, "_navigation_note_lite_applied", False)):
+            return
+        for item in getattr(sc, "_node_items", {}).values():
+            fn = getattr(item, "set_navigation_lite_mode", None)
+            if callable(fn):
+                try:
+                    fn(False)
+                except Exception:
+                    pass
+        self._navigation_note_lite_applied = False
+
+    def _begin_navigation_perf_mode(self) -> None:
+        if not bool(getattr(self, "_navigation_perf_active", False)):
+            self._navigation_perf_active = True
+            self._set_note_navigation_lite(True)
+        self._bump_navigation_perf_mode()
+
+    def _bump_navigation_perf_mode(self) -> None:
+        timer = getattr(self, "_navigation_idle_timer", None)
+        if timer is not None:
+            try:
+                timer.start()
+            except Exception:
+                pass
+
+    def _end_navigation_perf_mode(self) -> None:
+        timer = getattr(self, "_navigation_idle_timer", None)
+        if timer is not None:
+            try:
+                timer.stop()
+            except Exception:
+                pass
+        self._navigation_perf_active = False
+        self._set_note_navigation_lite(False)
 
     def _update_temp_wire_from_view(self, viewport_pos):
         sc = self.scene()
@@ -362,8 +437,9 @@ class GraphView(QtWidgets.QGraphicsView):
                     except Exception:
                         pass
             self._reset_3d_camera()
-            self._apply_3d_projection()
+            self._apply_3d_projection(force_edges=True)
         else:
+            self._end_navigation_perf_mode()
             if sc is not None:
                 for cg in getattr(sc, "_comment_groups", []):
                     try:
@@ -495,12 +571,14 @@ class GraphView(QtWidgets.QGraphicsView):
         sy = -y2 * scale
         return sx, sy, z_cam
 
-    def _apply_3d_projection(self):
+    def _apply_3d_projection(self, *, interactive: bool = False, force_edges: bool = False):
         if not self._mode_3d:
             return
         sc = self.scene()
         if sc is None:
             return
+        if interactive:
+            self._begin_navigation_perf_mode()
         try:
             center_vp = self.viewport().rect().center()
             anchor = self.mapToScene(center_vp)
@@ -603,11 +681,29 @@ class GraphView(QtWidgets.QGraphicsView):
                 cg.setZValue(self._depth_zvalue(z_cam) - 0.05)
             except Exception:
                 pass
-        for edge in getattr(sc, "_edges", []):
+        should_update_edges = True
+        edge_now = None
+        if interactive and not force_edges:
             try:
-                edge.updatePath()
+                edge_now = time.perf_counter()
+                last = float(getattr(self, "_last_edge_update_ts", 0.0))
+                interval = max(0.0, float(getattr(self, "_edge_update_interval_s", 0.0)))
+                should_update_edges = (edge_now - last) >= interval
             except Exception:
-                pass
+                should_update_edges = True
+        if should_update_edges:
+            for edge in getattr(sc, "_edges", []):
+                try:
+                    edge.updatePath()
+                except Exception:
+                    pass
+            if edge_now is None:
+                try:
+                    edge_now = time.perf_counter()
+                except Exception:
+                    edge_now = None
+            if edge_now is not None:
+                self._last_edge_update_ts = float(edge_now)
         try:
             self.viewport().update()
         except Exception:
@@ -616,7 +712,7 @@ class GraphView(QtWidgets.QGraphicsView):
     def resizeEvent(self, e):
         super().resizeEvent(e)
         if self._mode_3d:
-            self._apply_3d_projection()
+            self._apply_3d_projection(force_edges=True)
 
     def keyPressEvent(self, e: QtGui.QKeyEvent):
         if self._mode_3d:
@@ -714,18 +810,21 @@ class GraphView(QtWidgets.QGraphicsView):
         self._mark_interaction()
         if self._mode_3d:
             if e.button() == QtCore.Qt.LeftButton:
+                self._begin_navigation_perf_mode()
                 self._orbit_dragging = True
                 self._orbit_last_pos = e.pos()
                 self.viewport().setCursor(QtCore.Qt.ClosedHandCursor)
                 e.accept()
                 return
             if e.button() == QtCore.Qt.MiddleButton:
+                self._begin_navigation_perf_mode()
                 self._pan_dragging = True
                 self._pan_last_pos = e.pos()
                 self.viewport().setCursor(QtCore.Qt.OpenHandCursor)
                 e.accept()
                 return
             if e.button() == QtCore.Qt.RightButton:
+                self._begin_navigation_perf_mode()
                 self._dolly_dragging = True
                 self._dolly_press_pos = e.pos()
                 self._dolly_start_dist = float(self._cam_dist)
@@ -786,6 +885,7 @@ class GraphView(QtWidgets.QGraphicsView):
                     except Exception:
                         pass
         if e.button() == QtCore.Qt.MiddleButton:
+            self._begin_navigation_perf_mode()
             self._mm_dragging = True
             self._mm_last_pos = e.pos()
             self.viewport().setCursor(QtCore.Qt.ClosedHandCursor)
@@ -831,6 +931,8 @@ class GraphView(QtWidgets.QGraphicsView):
                     self._orbit_dragging = False
                     self._orbit_last_pos = None
                     self.viewport().setCursor(QtCore.Qt.ArrowCursor)
+                    if not (self._orbit_dragging or self._pan_dragging or self._dolly_dragging):
+                        self._end_navigation_perf_mode()
                     self._update_temp_wire_from_view(e.pos())
                     e.accept()
                     return
@@ -839,7 +941,7 @@ class GraphView(QtWidgets.QGraphicsView):
                 self._cam_yaw -= float(delta.x()) * self._orbit_sensitivity
                 self._cam_pitch -= float(delta.y()) * self._orbit_sensitivity
                 self._cam_pitch = max(-1.45, min(1.45, self._cam_pitch))
-                self._apply_3d_projection()
+                self._apply_3d_projection(interactive=True)
                 self._update_temp_wire_from_view(e.pos())
                 e.accept()
                 return
@@ -848,13 +950,15 @@ class GraphView(QtWidgets.QGraphicsView):
                     self._pan_dragging = False
                     self._pan_last_pos = None
                     self.viewport().setCursor(QtCore.Qt.ArrowCursor)
+                    if not (self._orbit_dragging or self._pan_dragging or self._dolly_dragging):
+                        self._end_navigation_perf_mode()
                     self._update_temp_wire_from_view(e.pos())
                     e.accept()
                     return
                 delta = self.mapToScene(e.pos()) - self.mapToScene(self._pan_last_pos)
                 self._pan_last_pos = e.pos()
                 self._cam_pan = QtCore.QPointF(self._cam_pan.x() + delta.x(), self._cam_pan.y() + delta.y())
-                self._apply_3d_projection()
+                self._apply_3d_projection(interactive=True)
                 self._update_temp_wire_from_view(e.pos())
                 e.accept()
                 return
@@ -864,6 +968,8 @@ class GraphView(QtWidgets.QGraphicsView):
                     self._dolly_press_pos = None
                     self._dolly_start_dist = None
                     self.viewport().setCursor(QtCore.Qt.ArrowCursor)
+                    if not (self._orbit_dragging or self._pan_dragging or self._dolly_dragging):
+                        self._end_navigation_perf_mode()
                     self._update_temp_wire_from_view(e.pos())
                     e.accept()
                     return
@@ -876,7 +982,7 @@ class GraphView(QtWidgets.QGraphicsView):
                     factor = base ** (-exponent) if distance > 0 else base ** (exponent)
                     target = self._dolly_start_dist / factor
                     self._cam_dist = max(self._min_cam_dist, min(self._max_cam_dist, target))
-                self._apply_3d_projection()
+                self._apply_3d_projection(interactive=True)
                 self._update_temp_wire_from_view(e.pos())
                 e.accept()
                 return
@@ -889,12 +995,14 @@ class GraphView(QtWidgets.QGraphicsView):
                 self._mm_dragging = False
                 self._mm_last_pos = None
                 self.viewport().setCursor(QtCore.Qt.ArrowCursor)
+                self._end_navigation_perf_mode()
                 # fall through to default handling
             else:
                 delta = e.pos() - self._mm_last_pos
                 self._mm_last_pos = e.pos()
                 self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta.x())
                 self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
+                self._begin_navigation_perf_mode()
                 self._update_temp_wire_from_view(e.pos())
                 e.accept()
                 return
@@ -904,6 +1012,7 @@ class GraphView(QtWidgets.QGraphicsView):
             if not (e.buttons() & QtCore.Qt.RightButton):
                 self._rc_dragging = False
                 self._rc_press_pos = None
+                self._end_navigation_perf_mode()
                 # don’t treat as context tap; this was a drag that ended elsewhere
                 e.accept()
                 return
@@ -922,6 +1031,7 @@ class GraphView(QtWidgets.QGraphicsView):
             T.scale(factor, factor)
             T.translate(-p.x(), -p.y())
             self.setTransform(T)
+            self._begin_navigation_perf_mode()
             if abs(factor - 1.0) > 1e-3:
                 self._rc_did_zoom = True
             self._update_temp_wire_from_view(e.pos())
@@ -957,12 +1067,15 @@ class GraphView(QtWidgets.QGraphicsView):
                 self._dolly_start_dist = None
             if not (self._orbit_dragging or self._pan_dragging or self._dolly_dragging):
                 self.viewport().setCursor(QtCore.Qt.ArrowCursor)
+                self._apply_3d_projection(force_edges=True)
+                self._end_navigation_perf_mode()
             e.accept()
             return
         if e.button() == QtCore.Qt.MiddleButton:
             self._mm_dragging = False
             self._mm_last_pos = None
             self.viewport().setCursor(QtCore.Qt.ArrowCursor)
+            self._end_navigation_perf_mode()
             e.accept(); return
 
         if e.button() == QtCore.Qt.RightButton:
@@ -976,6 +1089,7 @@ class GraphView(QtWidgets.QGraphicsView):
                 self._rc_dragging = False
                 self._rc_press_pos = None
                 self._rc_did_zoom = False
+                self._end_navigation_perf_mode()
                 self._dispatch_embedded_short_right_click(dispatch_pos)
                 e.accept(); return
 
@@ -984,6 +1098,7 @@ class GraphView(QtWidgets.QGraphicsView):
                 self._rc_dragging = False
                 self._rc_press_pos = None
                 self._rc_did_zoom = False
+                self._end_navigation_perf_mode()
                 e.accept(); return
 
             # Otherwise, it might be a context click if we didn’t move much
@@ -997,6 +1112,7 @@ class GraphView(QtWidgets.QGraphicsView):
             self._rc_dragging = False
             self._rc_press_pos = None
             self._rc_did_zoom = False
+            self._end_navigation_perf_mode()
 
             if is_context and not self._is_over_llm_view(e.pos()):
                 if self._dispatch_embedded_short_right_click(e.pos()):
@@ -1015,10 +1131,11 @@ class GraphView(QtWidgets.QGraphicsView):
     def wheelEvent(self, e: QtGui.QWheelEvent):
         self._mark_interaction()
         if self._mode_3d:
+            self._begin_navigation_perf_mode()
             delta = e.angleDelta().y()
             factor = 1.15 if delta > 0 else 1 / 1.15
             self._cam_dist = max(self._min_cam_dist, min(self._max_cam_dist, self._cam_dist / factor))
-            self._apply_3d_projection()
+            self._apply_3d_projection(interactive=True)
             try:
                 vp = e.position()
             except AttributeError:
@@ -1026,6 +1143,7 @@ class GraphView(QtWidgets.QGraphicsView):
             self._update_temp_wire_from_view(vp)
             e.accept()
             return
+        self._begin_navigation_perf_mode()
         factor = 1.15 if e.angleDelta().y() > 0 else 1/1.15
         try:
             vp = e.position()

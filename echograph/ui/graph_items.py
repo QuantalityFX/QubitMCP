@@ -509,6 +509,12 @@ class EdgeItem(QtWidgets.QGraphicsPathItem):
     def setPortNames(self, src_name: str | None, dst_name: str | None):
         self.src_port_name = src_name
         self.dst_port_name = dst_name
+        sc = self.scene()
+        if sc is not None and hasattr(sc, "_mark_edge_index_dirty"):
+            try:
+                sc._mark_edge_index_dirty()
+            except Exception:
+                pass
         self.updatePath()
         self.update()
 

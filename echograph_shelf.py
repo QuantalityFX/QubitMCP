@@ -737,6 +737,9 @@ class GraphScene(QtWidgets.QGraphicsScene):
         self._nodes_by_name = {}
         self._node_items = {}
         self._edges = []
+        self._edge_index_by_dst = {}
+        self._edge_index_dirty = True
+        self._edge_index_version = 0
         self._comment_groups = []
         self._moving_comment_group = False
         self._drag_src_item = None
@@ -1198,6 +1201,8 @@ class GraphScene(QtWidgets.QGraphicsScene):
             try: self.removeItem(e)
             except Exception: pass
         self._edges.clear()
+        self._edge_index_by_dst = {}
+        self._mark_edge_index_dirty()
         for cg in list(self._comment_groups):
             try: self.removeItem(cg)
             except Exception:
@@ -1253,6 +1258,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
         src = self._node_items[src_name]; dst = self._node_items[dst_name]
         edge = EdgeItem(src, dst, dst_port_name=dst_port_name)
         self._edges.append(edge); self.addItem(edge)
+        self._mark_edge_index_dirty()
 
         dst_kind = (dst.model.kind or "").lower()
         if dst_kind in ("append", "switch"):
@@ -1299,6 +1305,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
         return edge
 
     def _on_edge_removed(self, edge: 'EdgeItem'):
+        self._mark_edge_index_dirty()
         dst = edge.dst; src = edge.src
         dst_kind = (dst.model.kind or "").lower()
         try:
@@ -1363,6 +1370,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
                 try:
                     if e in self._edges:
                         self._edges.remove(e)
+                        self._mark_edge_index_dirty()
                 except Exception:
                     pass
                 try: self._on_edge_removed(e)
@@ -2014,7 +2022,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
 
         # --- helpers -------------------------------------------------------------
         def _in_edges(it):
-            return [e for e in self._edges if e.dst is it]
+            return self._in_edges(it)
 
         def _ordered_in_edges(it):
             kind = (it.model.kind or "").lower()
@@ -2077,8 +2085,31 @@ class GraphScene(QtWidgets.QGraphicsScene):
         return [it.model for it in ordered_items]
 
     # --- helpers to honor Append order everywhere -------------------------------
+    def _mark_edge_index_dirty(self):
+        self._edge_index_dirty = True
+        try:
+            self._edge_index_version = int(getattr(self, "_edge_index_version", 0)) + 1
+        except Exception:
+            self._edge_index_version = 0
+
+    def _rebuild_edge_index(self):
+        if not bool(getattr(self, "_edge_index_dirty", True)):
+            return
+        by_dst = {}
+        for e in getattr(self, "_edges", []):
+            dst = getattr(e, "dst", None)
+            if dst is None:
+                continue
+            if dst in by_dst:
+                by_dst[dst].append(e)
+            else:
+                by_dst[dst] = [e]
+        self._edge_index_by_dst = by_dst
+        self._edge_index_dirty = False
+
     def _in_edges(self, it):
-        return [e for e in self._edges if e.dst is it]
+        self._rebuild_edge_index()
+        return self._edge_index_by_dst.get(it, [])
 
     def _ordered_in_edges(self, it):
         kind = (it.model.kind or "").lower()
