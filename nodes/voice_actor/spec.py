@@ -32,10 +32,36 @@ VOICE_ACTOR_BODY_W = 460
 VOICE_ACTOR_BODY_H = 300
 VOICE_ACTOR_SELECTED_PARAM_KEY = "__voice_actor_selected_param"
 VOICE_ACTOR_MODE_KEY = "__voice_actor_mode"
+VOICE_ACTOR_VOICE_KEY = "__voice_actor_voice"
+VOICE_AUTO_FEMALE = "__auto_female__"
 CHATBOT_NODE_KINDS = {"chatbot", "chat bot", "chat_bot"}
 DATABASE_NODE_KINDS = {"database"}
 CHATBOT_DB_NAME = "my_database"
 CHATBOT_DEFAULT_COLLECTION = "EchoGragh"
+FEMALE_VOICE_HINTS = (
+    "female",
+    "woman",
+    "zira",
+    "hazel",
+    "aria",
+    "sarah",
+    "susan",
+    "allison",
+    "ava",
+    "sonia",
+    "jenny",
+    "emma",
+)
+MALE_VOICE_HINTS = (
+    "male",
+    "man",
+    "david",
+    "mark",
+    "george",
+    "james",
+    "richard",
+    "guy",
+)
 
 
 def _ordered_in_edges(scene, node_item) -> list:
@@ -283,6 +309,66 @@ def _latest_chatbot_response(scene, chatbot_item) -> tuple[str, str, str]:
                 pass
 
 
+def _pick_female_voice_id(engine) -> str:
+    if engine is None:
+        return ""
+    try:
+        voices = list(engine.getProperty("voices") or [])
+    except Exception:
+        voices = []
+    best_id = ""
+    best_score = -999.0
+    for idx, voice in enumerate(voices):
+        name = str(getattr(voice, "name", "") or "")
+        voice_id = str(getattr(voice, "id", "") or "")
+        langs = getattr(voice, "languages", None) or []
+        lang_text = " ".join([str(x or "") for x in langs])
+        blob = f"{name} {voice_id} {lang_text}".strip().lower()
+        if not blob:
+            continue
+        score = 0.0
+        for hint in FEMALE_VOICE_HINTS:
+            if hint in blob:
+                score += 2.0
+        for hint in MALE_VOICE_HINTS:
+            if hint in blob:
+                score -= 2.0
+        if "english" in blob or " en" in blob:
+            score += 0.25
+        score -= float(idx) * 0.0001
+        if score > best_score:
+            best_score = score
+            best_id = voice_id
+    if best_score <= 0.0:
+        return ""
+    return best_id
+
+
+def _available_tts_voices() -> list[dict]:
+    if pyttsx3 is None:
+        return []
+    engine = None
+    voices = []
+    try:
+        engine = pyttsx3.init()
+        raw = list(engine.getProperty("voices") or [])
+        for voice in raw:
+            voice_id = str(getattr(voice, "id", "") or "").strip()
+            if not voice_id:
+                continue
+            name = str(getattr(voice, "name", "") or "").strip() or voice_id
+            voices.append({"id": voice_id, "name": name})
+    except Exception:
+        voices = []
+    finally:
+        if engine is not None:
+            try:
+                engine.stop()
+            except Exception:
+                pass
+    return voices
+
+
 def _copy_icon() -> QtGui.QIcon:
     try:
         icon_path = Path(__file__).resolve().parents[2] / "icons" / "Copy_Icon.png"
@@ -374,15 +460,21 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._tts_engine = None
         self._tts_playing = False
         self._tts_user_stopped = False
+        self._tts_voice_options = []
+        self._syncing_voice_combo = False
         model = getattr(self._node_item, "model", None)
         saved_mode = _param_value(model, VOICE_ACTOR_MODE_KEY, "").strip().lower()
         self._mode = "text_to_voice" if saved_mode == "text_to_voice" else "voice_to_text"
         self._selected_param_key = _param_value(model, VOICE_ACTOR_SELECTED_PARAM_KEY, "")
+        saved_voice_key = _param_value(model, VOICE_ACTOR_VOICE_KEY, "").strip()
+        self._selected_voice_key = saved_voice_key or VOICE_AUTO_FEMALE
         self._had_note_input = False
         if self._selected_param_key:
             _ensure_hidden_params(model, [VOICE_ACTOR_SELECTED_PARAM_KEY])
         if saved_mode:
             _ensure_hidden_params(model, [VOICE_ACTOR_MODE_KEY])
+        if saved_voice_key:
+            _ensure_hidden_params(model, [VOICE_ACTOR_VOICE_KEY])
 
         self.setMinimumSize(VOICE_ACTOR_BODY_W, VOICE_ACTOR_BODY_H)
         try:
@@ -448,7 +540,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._status.setWordWrap(True)
         self._status.setStyleSheet("QLabel{color:#94a3b8;}")
 
-        self._param_label = QtWidgets.QLabel("Read param:")
+        self._param_label = QtWidgets.QLabel("Read:")
         self._param_label.setStyleSheet("QLabel{color:#94a3b8;}")
         self._param_combo = QtWidgets.QComboBox()
         self._param_combo.setStyleSheet(
@@ -458,6 +550,17 @@ class VoiceActorWidget(QtWidgets.QWidget):
         )
         self._param_combo.setToolTip("Pick which connected parameter to speak in Text -> Voice mode.")
         self._param_combo.currentIndexChanged.connect(self._on_param_selection_changed)
+
+        self._voice_label = QtWidgets.QLabel("Voice:")
+        self._voice_label.setStyleSheet("QLabel{color:#94a3b8;}")
+        self._voice_combo = QtWidgets.QComboBox()
+        self._voice_combo.setStyleSheet(
+            "QComboBox{background:#11151c;color:#e6edf3;border:1px solid #334155;border-radius:4px;padding:3px 8px;}"
+            "QComboBox:disabled{background:#1f2937;color:#94a3b8;border-color:#334155;}"
+            "QComboBox QAbstractItemView{background:#0f1216;color:#e6edf3;selection-background-color:#1e3a8a;}"
+        )
+        self._voice_combo.setToolTip("Select which installed speech voice to use.")
+        self._voice_combo.currentIndexChanged.connect(self._on_voice_selection_changed)
 
         top = QtWidgets.QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
@@ -473,6 +576,8 @@ class VoiceActorWidget(QtWidgets.QWidget):
         selector.setSpacing(6)
         selector.addWidget(self._param_label, 0)
         selector.addWidget(self._param_combo, 1)
+        selector.addWidget(self._voice_label, 0)
+        selector.addWidget(self._voice_combo, 1)
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
@@ -490,6 +595,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
             self._set_transcript(initial_text)
         self._apply_mode_ui()
         self._ensure_scene_connections()
+        self._refresh_voice_options()
         self._refresh_source_param_options()
 
     def sizeHint(self):
@@ -682,6 +788,51 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._action_btn.setEnabled(not self._busy)
         self._replay_btn.setEnabled(not self._busy)
         self._stop_btn.setEnabled(bool(self._busy and self._tts_playing))
+        self._voice_combo.setEnabled(bool(self._tts_voice_options) and pyttsx3 is not None and not self._busy)
+
+    def _refresh_voice_options(self) -> None:
+        options = [{"id": VOICE_AUTO_FEMALE, "name": "Auto (Female)"}]
+        seen_ids = {VOICE_AUTO_FEMALE}
+        for voice in _available_tts_voices():
+            voice_id = str(voice.get("id", "") or "").strip()
+            if not voice_id or voice_id in seen_ids:
+                continue
+            seen_ids.add(voice_id)
+            voice_name = str(voice.get("name", "") or "").strip() or voice_id
+            options.append({"id": voice_id, "name": voice_name})
+
+        selected_key = str(self._selected_voice_key or "").strip() or VOICE_AUTO_FEMALE
+        if not any(str(opt.get("id", "")) == selected_key for opt in options):
+            selected_key = VOICE_AUTO_FEMALE
+            self._selected_voice_key = selected_key
+            _set_node_param(self._node_item, VOICE_ACTOR_VOICE_KEY, selected_key)
+
+        self._tts_voice_options = options
+        self._syncing_voice_combo = True
+        try:
+            self._voice_combo.blockSignals(True)
+            self._voice_combo.clear()
+            selected_index = 0
+            for idx, option in enumerate(options):
+                label = str(option.get("name", "") or "")
+                value = str(option.get("id", "") or "")
+                self._voice_combo.addItem(label, value)
+                if value == selected_key:
+                    selected_index = idx
+            self._voice_combo.setCurrentIndex(selected_index)
+        finally:
+            self._voice_combo.blockSignals(False)
+            self._syncing_voice_combo = False
+
+        if pyttsx3 is None:
+            self._voice_combo.setEnabled(False)
+            self._voice_combo.setToolTip("Missing dependency: pyttsx3. Install: pip install pyttsx3")
+        elif self._busy:
+            self._voice_combo.setEnabled(False)
+            self._voice_combo.setToolTip("Voice selection is disabled while audio is active.")
+        else:
+            self._voice_combo.setEnabled(True)
+            self._voice_combo.setToolTip("Select which installed speech voice to use.")
 
     def _on_param_selection_changed(self, _index: int) -> None:
         if self._syncing_param_combo:
@@ -691,6 +842,15 @@ class VoiceActorWidget(QtWidgets.QWidget):
             return
         self._selected_param_key = selected_key
         _set_node_param(self._node_item, VOICE_ACTOR_SELECTED_PARAM_KEY, selected_key)
+
+    def _on_voice_selection_changed(self, _index: int) -> None:
+        if self._syncing_voice_combo:
+            return
+        selected_key = str(self._voice_combo.currentData() or "").strip() or VOICE_AUTO_FEMALE
+        if selected_key == str(self._selected_voice_key or "").strip():
+            return
+        self._selected_voice_key = selected_key
+        _set_node_param(self._node_item, VOICE_ACTOR_VOICE_KEY, selected_key)
 
     def _selected_source_param_value(self) -> tuple[str, str]:
         selected_key = str(self._selected_param_key or "").strip()
@@ -716,6 +876,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._stop_btn.setEnabled(bool(self._busy and self._tts_playing))
         self._copy_btn.setEnabled(not self._busy)
         self._param_combo.setEnabled(bool(self._source_param_options) and not self._busy and not self._chatbot_connected)
+        self._voice_combo.setEnabled(bool(self._tts_voice_options) and pyttsx3 is not None and not self._busy)
         try:
             self._node_item.setBusyState(bool(active), label if active else "")
         except Exception:
@@ -896,8 +1057,9 @@ class VoiceActorWidget(QtWidgets.QWidget):
             self._tts_user_stopped = False
             self._tts_playing = True
             self._tts_engine = None
+        voice_key = str(self._selected_voice_key or "").strip() or VOICE_AUTO_FEMALE
         self._set_busy(True, "speaking")
-        threading.Thread(target=self._tts_worker, args=(clean,), daemon=True).start()
+        threading.Thread(target=self._tts_worker, args=(clean, voice_key), daemon=True).start()
         return True
 
     def _resolve_tts_text(self) -> tuple[str, str]:
@@ -928,12 +1090,27 @@ class VoiceActorWidget(QtWidgets.QWidget):
         text, source = self._resolve_tts_text()
         self._speak_text(text, source=source)
 
-    def _tts_worker(self, text: str) -> None:
+    def _tts_worker(self, text: str, voice_key: str) -> None:
         error = ""
         user_stopped = False
         engine = None
         try:
             engine = pyttsx3.init()
+            selected_voice_key = str(voice_key or "").strip() or VOICE_AUTO_FEMALE
+            voice_applied = False
+            if selected_voice_key != VOICE_AUTO_FEMALE:
+                try:
+                    engine.setProperty("voice", selected_voice_key)
+                    voice_applied = True
+                except Exception:
+                    voice_applied = False
+            if not voice_applied:
+                female_voice_id = _pick_female_voice_id(engine)
+                if female_voice_id:
+                    try:
+                        engine.setProperty("voice", female_voice_id)
+                    except Exception:
+                        pass
             with self._tts_lock:
                 self._tts_engine = engine
                 user_stopped = bool(self._tts_user_stopped)
