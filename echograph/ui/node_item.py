@@ -1480,14 +1480,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
             if sc and hasattr(sc, "set_node_params"):
                 try:
                     sc.set_node_params(self.model.name, params)
+                    return
                 except Exception:
                     pass
+            self._schedule_rebuild()
         try:
             QtCore.QTimer.singleShot(0, _apply_to_scene)
         except Exception:
             _apply_to_scene()
-
-        self._schedule_rebuild()
         return final
 
     def _prompt_rename_param(self, idx: int) -> None:
@@ -1558,13 +1558,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
             if sc and hasattr(sc, "set_node_params"):
                 try:
                     sc.set_node_params(self.model.name, params)
+                    return
                 except Exception:
                     pass
+            self._schedule_rebuild()
         try:
             QtCore.QTimer.singleShot(0, _apply_to_scene)
         except Exception:
             _apply_to_scene()
-        self._schedule_rebuild()
 
     def _pop_last_param(self):
         params = list(self.model.params or [])
@@ -1601,13 +1602,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
             if sc and hasattr(sc, "set_node_params"):
                 try:
                     sc.set_node_params(self.model.name, params)
+                    return
                 except Exception:
                     pass
+            self._schedule_rebuild()
         try:
             QtCore.QTimer.singleShot(0, _apply_to_scene)
         except Exception:
             _apply_to_scene()
-        self._schedule_rebuild()
 
 
     def _normalize_url(self, s: str) -> str:
@@ -2501,16 +2503,16 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
                 wired_inputs = self._wired_named_inputs()
                 named_inputs = {n.strip().lower() for n in self.input_port_names()}
+                hidden_params = self._ui_hidden_params_set()
 
                 for i, p in enumerate(self.model.params):
                     pname = p.get("name", "")
                     pval  = p.get("value", "")
                     pname_key = (pname or "").strip().lower()
-                    hidden = self._ui_hidden_params_set()
 
                     if pname_key == "__ui_hidden_params":
                         continue
-                    if pname_key in hidden:
+                    if pname_key in hidden_params:
                         continue
 
                     has_port = pname_key in named_inputs
