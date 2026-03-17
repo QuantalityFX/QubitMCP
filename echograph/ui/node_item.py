@@ -1475,15 +1475,17 @@ class NodeItem(QtWidgets.QGraphicsObject):
         self._rename_hidden_param_value(params, old, final)
         self.model.params = params
 
+        self._schedule_rebuild()
+
         def _apply_to_scene():
             sc = self.scene()
             if sc and hasattr(sc, "set_node_params"):
                 try:
-                    sc.set_node_params(self.model.name, params)
+                    sc.set_node_params(self.model.name, params, rebuild=False, emit=True)
                     return
                 except Exception:
                     pass
-            self._schedule_rebuild()
+            self._emit_param_changed()
         try:
             QtCore.QTimer.singleShot(0, _apply_to_scene)
         except Exception:
@@ -1552,16 +1554,17 @@ class NodeItem(QtWidgets.QGraphicsObject):
         params = list(self.model.params or [])
         params.append({"name": nm, "value": value})
         self.model.params = params
+        self._schedule_rebuild()
         # Defer scene updates to avoid re-entrancy while building widgets
         def _apply_to_scene():
             sc = self.scene()
             if sc and hasattr(sc, "set_node_params"):
                 try:
-                    sc.set_node_params(self.model.name, params)
+                    sc.set_node_params(self.model.name, params, rebuild=False, emit=True)
                     return
                 except Exception:
                     pass
-            self._schedule_rebuild()
+            self._emit_param_changed()
         try:
             QtCore.QTimer.singleShot(0, _apply_to_scene)
         except Exception:
@@ -1597,15 +1600,17 @@ class NodeItem(QtWidgets.QGraphicsObject):
             except Exception:
                 pass
 
+        self._schedule_rebuild()
+
         def _apply_to_scene():
             sc = self.scene()
             if sc and hasattr(sc, "set_node_params"):
                 try:
-                    sc.set_node_params(self.model.name, params)
+                    sc.set_node_params(self.model.name, params, rebuild=False, emit=True)
                     return
                 except Exception:
                     pass
-            self._schedule_rebuild()
+            self._emit_param_changed()
         try:
             QtCore.QTimer.singleShot(0, _apply_to_scene)
         except Exception:
