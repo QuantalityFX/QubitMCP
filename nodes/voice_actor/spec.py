@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import threading
+import tempfile
+import time
+import uuid
 from pathlib import Path
 
 from nodes.core import Spec
@@ -15,6 +18,16 @@ try:
     import pyttsx3  # type: ignore
 except Exception:
     pyttsx3 = None
+
+try:
+    from gtts import gTTS  # type: ignore
+except Exception:
+    gTTS = None
+
+try:
+    import pygame  # type: ignore
+except Exception:
+    pygame = None
 
 try:
     from pymongo import MongoClient  # type: ignore
@@ -33,6 +46,7 @@ VOICE_ACTOR_BODY_H = 300
 VOICE_ACTOR_SELECTED_PARAM_KEY = "__voice_actor_selected_param"
 VOICE_ACTOR_MODE_KEY = "__voice_actor_mode"
 VOICE_ACTOR_VOICE_KEY = "__voice_actor_voice"
+VOICE_TANYA_GOOGLE = "__google_tanya__"
 VOICE_AUTO_FEMALE = "__auto_female__"
 CHATBOT_NODE_KINDS = {"chatbot", "chat bot", "chat_bot"}
 DATABASE_NODE_KINDS = {"database"}
@@ -467,7 +481,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._mode = "text_to_voice" if saved_mode == "text_to_voice" else "voice_to_text"
         self._selected_param_key = _param_value(model, VOICE_ACTOR_SELECTED_PARAM_KEY, "")
         saved_voice_key = _param_value(model, VOICE_ACTOR_VOICE_KEY, "").strip()
-        self._selected_voice_key = saved_voice_key or VOICE_AUTO_FEMALE
+        self._selected_voice_key = saved_voice_key or VOICE_TANYA_GOOGLE
         self._had_note_input = False
         if self._selected_param_key:
             _ensure_hidden_params(model, [VOICE_ACTOR_SELECTED_PARAM_KEY])
@@ -788,11 +802,15 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._action_btn.setEnabled(not self._busy)
         self._replay_btn.setEnabled(not self._busy)
         self._stop_btn.setEnabled(bool(self._busy and self._tts_playing))
-        self._voice_combo.setEnabled(bool(self._tts_voice_options) and pyttsx3 is not None and not self._busy)
+        self._voice_combo.setEnabled(bool(self._tts_voice_options) and not self._busy)
 
     def _refresh_voice_options(self) -> None:
-        options = [{"id": VOICE_AUTO_FEMALE, "name": "Auto (Female)"}]
-        seen_ids = {VOICE_AUTO_FEMALE}
+        google_ready = gTTS is not None and pygame is not None
+        google_label = "Google (Tanya)" if google_ready else "Google (Tanya) - install gTTS + pygame"
+        options = [
+            {"id": VOICE_TANYA_GOOGLE, "name": google_label},
+        ]
+        seen_ids = {VOICE_TANYA_GOOGLE}
         for voice in _available_tts_voices():
             voice_id = str(voice.get("id", "") or "").strip()
             if not voice_id or voice_id in seen_ids:
@@ -801,9 +819,9 @@ class VoiceActorWidget(QtWidgets.QWidget):
             voice_name = str(voice.get("name", "") or "").strip() or voice_id
             options.append({"id": voice_id, "name": voice_name})
 
-        selected_key = str(self._selected_voice_key or "").strip() or VOICE_AUTO_FEMALE
+        selected_key = str(self._selected_voice_key or "").strip() or VOICE_TANYA_GOOGLE
         if not any(str(opt.get("id", "")) == selected_key for opt in options):
-            selected_key = VOICE_AUTO_FEMALE
+            selected_key = VOICE_TANYA_GOOGLE
             self._selected_voice_key = selected_key
             _set_node_param(self._node_item, VOICE_ACTOR_VOICE_KEY, selected_key)
 
@@ -824,15 +842,24 @@ class VoiceActorWidget(QtWidgets.QWidget):
             self._voice_combo.blockSignals(False)
             self._syncing_voice_combo = False
 
-        if pyttsx3 is None:
-            self._voice_combo.setEnabled(False)
-            self._voice_combo.setToolTip("Missing dependency: pyttsx3. Install: pip install pyttsx3")
-        elif self._busy:
+        if self._busy:
             self._voice_combo.setEnabled(False)
             self._voice_combo.setToolTip("Voice selection is disabled while audio is active.")
+        elif not google_ready and pyttsx3 is None:
+            self._voice_combo.setEnabled(True)
+            self._voice_combo.setToolTip(
+                "Install dependencies for speech: pip install gTTS pygame pyttsx3"
+            )
+        elif not google_ready:
+            self._voice_combo.setEnabled(True)
+            self._voice_combo.setToolTip(
+                "Google (Tanya) needs gTTS + pygame. Local voices are still available."
+            )
         else:
             self._voice_combo.setEnabled(True)
-            self._voice_combo.setToolTip("Select which installed speech voice to use.")
+            self._voice_combo.setToolTip(
+                "Google (Tanya) matches Tanya project voice. Local voices use system TTS."
+            )
 
     def _on_param_selection_changed(self, _index: int) -> None:
         if self._syncing_param_combo:
@@ -846,7 +873,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
     def _on_voice_selection_changed(self, _index: int) -> None:
         if self._syncing_voice_combo:
             return
-        selected_key = str(self._voice_combo.currentData() or "").strip() or VOICE_AUTO_FEMALE
+        selected_key = str(self._voice_combo.currentData() or "").strip() or VOICE_TANYA_GOOGLE
         if selected_key == str(self._selected_voice_key or "").strip():
             return
         self._selected_voice_key = selected_key
@@ -876,7 +903,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._stop_btn.setEnabled(bool(self._busy and self._tts_playing))
         self._copy_btn.setEnabled(not self._busy)
         self._param_combo.setEnabled(bool(self._source_param_options) and not self._busy and not self._chatbot_connected)
-        self._voice_combo.setEnabled(bool(self._tts_voice_options) and pyttsx3 is not None and not self._busy)
+        self._voice_combo.setEnabled(bool(self._tts_voice_options) and not self._busy)
         try:
             self._node_item.setBusyState(bool(active), label if active else "")
         except Exception:
@@ -944,6 +971,12 @@ class VoiceActorWidget(QtWidgets.QWidget):
         if engine is not None:
             try:
                 engine.stop()
+            except Exception:
+                pass
+        if pygame is not None:
+            try:
+                if pygame.mixer.get_init() and pygame.mixer.music.get_busy():
+                    pygame.mixer.music.stop()
             except Exception:
                 pass
         self._stop_btn.setEnabled(False)
@@ -1024,7 +1057,15 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._speak_text(text, source="chatbot_auto")
 
     def _speak_text(self, text: str, *, source: str) -> bool:
-        if pyttsx3 is None:
+        voice_key = str(self._selected_voice_key or "").strip() or VOICE_TANYA_GOOGLE
+        if voice_key == VOICE_TANYA_GOOGLE:
+            if gTTS is None or pygame is None:
+                self._set_status(
+                    "Google voice missing dependencies. Install: pip install gTTS pygame",
+                    error=True,
+                )
+                return False
+        elif pyttsx3 is None:
             self._set_status(
                 "Missing dependency: pyttsx3. Install: pip install pyttsx3",
                 error=True,
@@ -1057,7 +1098,6 @@ class VoiceActorWidget(QtWidgets.QWidget):
             self._tts_user_stopped = False
             self._tts_playing = True
             self._tts_engine = None
-        voice_key = str(self._selected_voice_key or "").strip() or VOICE_AUTO_FEMALE
         self._set_busy(True, "speaking")
         threading.Thread(target=self._tts_worker, args=(clean, voice_key), daemon=True).start()
         return True
@@ -1094,34 +1134,70 @@ class VoiceActorWidget(QtWidgets.QWidget):
         error = ""
         user_stopped = False
         engine = None
+        temp_file = None
         try:
-            engine = pyttsx3.init()
-            selected_voice_key = str(voice_key or "").strip() or VOICE_AUTO_FEMALE
-            voice_applied = False
-            if selected_voice_key != VOICE_AUTO_FEMALE:
-                try:
-                    engine.setProperty("voice", selected_voice_key)
-                    voice_applied = True
-                except Exception:
-                    voice_applied = False
-            if not voice_applied:
-                female_voice_id = _pick_female_voice_id(engine)
-                if female_voice_id:
-                    try:
-                        engine.setProperty("voice", female_voice_id)
-                    except Exception:
-                        pass
-            with self._tts_lock:
-                self._tts_engine = engine
-                user_stopped = bool(self._tts_user_stopped)
-            if user_stopped:
-                error = "__stopped__"
+            selected_voice_key = str(voice_key or "").strip() or VOICE_TANYA_GOOGLE
+            if selected_voice_key == VOICE_TANYA_GOOGLE:
+                if gTTS is None or pygame is None:
+                    raise RuntimeError("Google voice dependencies are missing. Install: pip install gTTS pygame")
+                temp_file = Path(tempfile.gettempdir()) / f"voice_actor_{uuid.uuid4().hex}.mp3"
+                tts = gTTS(text=text, lang="en")
+                tts.save(str(temp_file))
+                if not pygame.mixer.get_init():
+                    pygame.mixer.init()
+                pygame.mixer.music.load(str(temp_file))
+                pygame.mixer.music.play()
+                while pygame.mixer.music.get_busy():
+                    with self._tts_lock:
+                        user_stopped = bool(self._tts_user_stopped)
+                    if user_stopped:
+                        try:
+                            pygame.mixer.music.stop()
+                        except Exception:
+                            pass
+                        break
+                    time.sleep(0.05)
             else:
-                engine.say(text)
-                engine.runAndWait()
+                engine = pyttsx3.init()
+                voice_applied = False
+                if selected_voice_key != VOICE_AUTO_FEMALE:
+                    try:
+                        engine.setProperty("voice", selected_voice_key)
+                        voice_applied = True
+                    except Exception:
+                        voice_applied = False
+                if not voice_applied:
+                    female_voice_id = _pick_female_voice_id(engine)
+                    if female_voice_id:
+                        try:
+                            engine.setProperty("voice", female_voice_id)
+                        except Exception:
+                            pass
+                with self._tts_lock:
+                    self._tts_engine = engine
+                    user_stopped = bool(self._tts_user_stopped)
+                if user_stopped:
+                    error = "__stopped__"
+                else:
+                    engine.say(text)
+                    engine.runAndWait()
         except Exception as exc:
             error = f"Text-to-speech failed: {exc}"
         finally:
+            if pygame is not None:
+                try:
+                    if pygame.mixer.get_init():
+                        try:
+                            pygame.mixer.music.unload()
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            if temp_file is not None:
+                try:
+                    temp_file.unlink()
+                except Exception:
+                    pass
             if engine is not None:
                 try:
                     engine.stop()

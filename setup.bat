@@ -7,10 +7,19 @@ if errorlevel 1 (
   exit /b 1
 )
 
-set "LOG=%CD%\setup.log"
+set "LOG_DIR=%CD%\logs"
+if not exist "%LOG_DIR%" (
+  mkdir "%LOG_DIR%" >nul 2>&1
+)
+if not exist "%LOG_DIR%" (
+  echo [setup] ERROR: Could not create logs folder: %LOG_DIR%
+  popd
+  exit /b 1
+)
+set "LOG=%LOG_DIR%\setup.log"
 set "MAIN_REQ=%CD%\requirements.txt"
 set "LIB_REQ=%CD%\nodes\librarian\requirements.txt"
-set "VOICE_DEPS=SpeechRecognition pyttsx3 pyaudio"
+set "VOICE_DEPS=SpeechRecognition pyttsx3 pyaudio gTTS pygame"
 set "BASE_PY_EXE="
 set "BASE_PY_ARG="
 set "BASE_PY_MM="
@@ -233,9 +242,27 @@ exit /b %ERRORLEVEL%
 
 :get_base_py_mm
 set "BASE_PY_MM="
+if /I "%BASE_PY_ARG%"=="-3.10" (
+  set "BASE_PY_MM=3.10"
+  exit /b 0
+)
+if /I "%BASE_PY_ARG%"=="-3.12" (
+  set "BASE_PY_MM=3.12"
+  exit /b 0
+)
+if /I "%BASE_PY_EXE%"=="%LOCALAPPDATA%\Programs\Python\Python310\python.exe" (
+  set "BASE_PY_MM=3.10"
+  exit /b 0
+)
+if /I "%BASE_PY_EXE%"=="%LOCALAPPDATA%\Programs\Python\Python312\python.exe" (
+  set "BASE_PY_MM=3.12"
+  exit /b 0
+)
 set "VER_TMP=%TEMP%\_qubit_setup_base_py_%RANDOM%.txt"
-call :base_py -c "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')" > "%VER_TMP%" 2>nul
+call :base_py --version > "%VER_TMP%" 2>&1
 if exist "%VER_TMP%" set /p BASE_PY_MM=<"%VER_TMP%"
+if defined BASE_PY_MM for /f "tokens=2" %%i in ("%BASE_PY_MM%") do set "BASE_PY_MM=%%i"
+if defined BASE_PY_MM set "BASE_PY_MM=%BASE_PY_MM:~0,4%"
 if exist "%VER_TMP%" del /f /q "%VER_TMP%" >nul 2>&1
 exit /b 0
 
