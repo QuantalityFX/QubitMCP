@@ -201,6 +201,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
     _BASE_W = 220
     _BASE_H = 72
+    _NOTE_DEFAULT_W = _BASE_W * 2
     _PARAM_ROW_H = 24
     _PADDING = 8
     _NOTE_FEATURED_H = 160
@@ -1826,6 +1827,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     new_w = max(new_w, max(self._BASE_W, custom_w))
                 if custom_h is not None and custom_h > 0:
                     new_h = max(new_h, max(self._BASE_H, custom_h))
+            else:
+                new_w = max(new_w, float(self._NOTE_DEFAULT_W))
         elif kind in ("gantt_chart", "gantt chart", "gant_chart", "gant chart"):
             try:
                 self._gantt_chart_min_w = float(new_w)
