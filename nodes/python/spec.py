@@ -174,6 +174,14 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             except Exception:
                 pass
 
+        def _emit_output_changed():
+            if sc is None or not hasattr(sc, "paramChanged"):
+                return
+            try:
+                sc.paramChanged.emit(node.name, list(getattr(node, "params", None) or []))
+            except Exception:
+                pass
+
 
         def _clear_busy_state():
             if python_item:
@@ -192,6 +200,18 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                     exec(src, ns, ns)
                 out = out_buf.getvalue().strip()
                 err = err_buf.getvalue().strip()
+                if not err:
+                    output_value = ns.get("output_text", None)
+                    if output_value is None:
+                        output_value = ns.get("result", None)
+                    if output_value is None and out:
+                        output_value = out
+                    if output_value is not None:
+                        try:
+                            node.info = str(output_value)
+                        except Exception:
+                            pass
+                QtCore.QTimer.singleShot(0, card, _emit_output_changed)
                 if err:
                     _notify(err, error=True)
                 elif out:

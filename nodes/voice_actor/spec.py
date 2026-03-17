@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import threading
 import tempfile
 import time
@@ -246,6 +248,130 @@ def _set_node_param(node_item, name: str, value: str) -> None:
 def _kind_of_item(node_item) -> str:
     model = getattr(node_item, "model", None)
     return str(getattr(model, "kind", "") or "").strip().lower()
+
+
+def _node_name(node_item) -> str:
+    model = getattr(node_item, "model", None)
+    return str(getattr(model, "name", "") or "").strip().lower()
+
+
+def _find_upstream_chatbot(scene, node_item, max_depth: int = 6, _visited=None):
+    if not scene or node_item is None:
+        return None
+    if _kind_of_item(node_item) in CHATBOT_NODE_KINDS:
+        return node_item
+    if max_depth <= 0:
+        return None
+    if _visited is None:
+        _visited = set()
+    marker = id(node_item)
+    if marker in _visited:
+        return None
+    _visited.add(marker)
+    for edge in _ordered_in_edges(scene, node_item):
+        src = getattr(edge, "src", None)
+        if src is None:
+            continue
+        found = _find_upstream_chatbot(scene, src, max_depth=max_depth - 1, _visited=_visited)
+        if found is not None:
+            return found
+    return None
+
+
+def _python_inputs(scene, python_item) -> tuple[dict, str]:
+    inputs = {}
+    primary_input = ""
+    for idx, edge in enumerate(_ordered_in_edges(scene, python_item), start=1):
+        src = getattr(edge, "src", None)
+        if src is None:
+            continue
+        try:
+            txt = scene.resolve_text_value(src)
+        except Exception:
+            txt = ""
+        text = str(txt or "").strip()
+        if not text:
+            continue
+        if not primary_input:
+            primary_input = text
+        src_name = _node_name(src) or f"in{idx}"
+        inputs.setdefault(src_name, text)
+        inputs.setdefault(f"in{idx}", text)
+    return inputs, primary_input
+
+
+def _run_python_transform(scene, python_item) -> tuple[str, str]:
+    model = getattr(python_item, "model", None)
+    if model is None:
+        return "", "Python transform node is unavailable."
+    src = str(getattr(model, "code", "") or "").strip()
+    if not src:
+        return "", "Python transform node has no code."
+
+    params_map = {}
+    raw_params = list(getattr(model, "params", None) or [])
+    for idx, p in enumerate(raw_params):
+        if not isinstance(p, dict):
+            continue
+        name = str(p.get("name") or f"param{idx+1}")
+        params_map[name] = p.get("value", "")
+
+    inputs, primary_input = _python_inputs(scene, python_item)
+    ns = {
+        "__name__": "__echograph_exec__",
+        "node": model,
+        "params": params_map,
+        "raw_params": raw_params,
+        "inputs": inputs,
+        "primary_input": primary_input,
+        "graph_scene": scene,
+    }
+    try:
+        ns["QtCore"] = QtCore
+        ns["QtGui"] = QtGui
+        ns["QtWidgets"] = QtWidgets
+    except Exception:
+        pass
+
+    out_buf = io.StringIO()
+    err_buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out_buf), contextlib.redirect_stderr(err_buf):
+            exec(src, ns, ns)
+    except Exception as exc:
+        return "", f"Python transform execution failed: {exc}"
+
+    stderr_text = err_buf.getvalue().strip()
+    if stderr_text:
+        return "", f"Python transform error: {stderr_text}"
+
+    out_text = out_buf.getvalue().strip()
+    output_text = ns.get("output_text", None)
+    if output_text is None:
+        output_text = ns.get("result", None)
+    if output_text is None:
+        output_text = getattr(model, "info", "")
+    if output_text is None:
+        output_text = out_text
+    clean = str(output_text or "").strip()
+
+    changed = False
+    if clean and str(getattr(model, "info", "") or "") != clean:
+        try:
+            model.info = clean
+            changed = True
+        except Exception:
+            pass
+
+    if changed and scene is not None and hasattr(scene, "paramChanged"):
+        try:
+            scene.paramChanged.emit(model.name, list(getattr(model, "params", None) or []))
+        except Exception:
+            pass
+
+    if not clean:
+        return "", "Python transform produced empty output."
+    return clean, ""
 
 
 def _param_from_item(node_item, name: str, default: str = "") -> str:
@@ -535,9 +661,12 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._source_param_options = []
         self._chatbot_connected = False
         self._chatbot_input_item = None
+        self._chatbot_proxy_item = None
+        self._chatbot_via_proxy = False
         self._last_chatbot_token = ""
         self._pending_chatbot_text = ""
         self._last_tts_text = ""
+        self._processing_chatbot_auto = False
         self._tts_lock = threading.Lock()
         self._tts_engine = None
         self._tts_playing = False
@@ -776,18 +905,19 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._param_refresh_pending = True
         QtCore.QTimer.singleShot(0, self._refresh_source_param_options)
 
-    def _collect_source_param_options(self) -> tuple[list, bool, object]:
+    def _collect_source_param_options(self) -> tuple[list, bool, object, object]:
         self._ensure_scene_connections()
         scene = self._scene
         if scene is None:
-            return [], False, None
+            return [], False, None, None
         edges = _input_edges(scene, self._node_item, "text")
         if not edges:
-            return [], False, None
+            return [], False, None, None
         multiple_sources = len(edges) > 1
         options = []
         note_input_connected = False
         chatbot_input_item = None
+        chatbot_proxy_item = None
         for edge_index, edge in enumerate(edges, start=1):
             src_item = getattr(edge, "src", None)
             src_model = getattr(src_item, "model", None)
@@ -799,6 +929,13 @@ class VoiceActorWidget(QtWidgets.QWidget):
             if kind in CHATBOT_NODE_KINDS:
                 if chatbot_input_item is None:
                     chatbot_input_item = src_item
+                continue
+            upstream_chatbot = _find_upstream_chatbot(scene, src_item, max_depth=6)
+            if upstream_chatbot is not None:
+                if chatbot_input_item is None:
+                    chatbot_input_item = upstream_chatbot
+                if chatbot_proxy_item is None:
+                    chatbot_proxy_item = src_item
                 continue
             source_name = str(getattr(src_model, "name", "") or "").strip() or f"Input {edge_index}"
             source_key = str(getattr(src_model, "name", "") or source_name).strip().lower()
@@ -825,11 +962,11 @@ class VoiceActorWidget(QtWidgets.QWidget):
                         "value": value,
                     }
                 )
-        return options, note_input_connected, chatbot_input_item
+        return options, note_input_connected, chatbot_input_item, chatbot_proxy_item
 
     def _refresh_source_param_options(self) -> None:
         self._param_refresh_pending = False
-        options, note_connected, chatbot_item = self._collect_source_param_options()
+        options, note_connected, chatbot_item, chatbot_proxy = self._collect_source_param_options()
         chatbot_connected = chatbot_item is not None
         if note_connected and not chatbot_connected and not self._had_note_input and self._mode != "text_to_voice":
             self._set_mode("text_to_voice")
@@ -844,6 +981,8 @@ class VoiceActorWidget(QtWidgets.QWidget):
             self._pending_chatbot_text = ""
         self._chatbot_connected = chatbot_connected
         self._chatbot_input_item = chatbot_item
+        self._chatbot_proxy_item = chatbot_proxy
+        self._chatbot_via_proxy = bool(chatbot_connected and chatbot_proxy is not None and chatbot_proxy is not chatbot_item)
         self._source_param_options = options
         current_key = str(self._selected_param_key or "").strip()
         if current_key and not any(str(opt.get("key", "")) == current_key for opt in options):
@@ -856,7 +995,10 @@ class VoiceActorWidget(QtWidgets.QWidget):
             self._param_combo.blockSignals(True)
             self._param_combo.clear()
             if self._chatbot_connected:
-                self._param_combo.addItem("Chatbot latest response (Auto)", "")
+                if self._chatbot_via_proxy:
+                    self._param_combo.addItem("Chatbot -> Python output (Auto)", "")
+                else:
+                    self._param_combo.addItem("Chatbot latest response (Auto)", "")
                 self._param_combo.setCurrentIndex(0)
             else:
                 self._param_combo.addItem("Auto (wired text / transcript)", "")
@@ -876,7 +1018,10 @@ class VoiceActorWidget(QtWidgets.QWidget):
 
         if self._chatbot_connected:
             self._param_combo.setEnabled(False)
-            self._param_combo.setToolTip("Chatbot input uses automatic latest-response speech.")
+            if self._chatbot_via_proxy:
+                self._param_combo.setToolTip("Chatbot input through Python uses automatic speech.")
+            else:
+                self._param_combo.setToolTip("Chatbot input uses automatic latest-response speech.")
         elif options:
             self._param_combo.setEnabled(not self._busy)
             self._param_combo.setToolTip("Pick which connected parameter to speak in Text -> Voice mode.")
@@ -1183,6 +1328,8 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._set_status("Transcript updated.")
 
     def _maybe_trigger_chatbot_auto(self, changed_name=None) -> None:
+        if self._processing_chatbot_auto:
+            return
         if not self._chatbot_connected:
             self._refresh_source_param_options()
             if not self._chatbot_connected:
@@ -1190,23 +1337,57 @@ class VoiceActorWidget(QtWidgets.QWidget):
         source_item = self._chatbot_input_item
         if source_item is None:
             return
-        source_name = str(getattr(getattr(source_item, "model", None), "name", "") or "").strip().lower()
-        changed_key = str(changed_name or "").strip().lower()
-        if changed_key and source_name and changed_key != source_name:
-            return
-        if self._mode != "text_to_voice":
-            self._set_mode("text_to_voice")
-        text, token, _err = _latest_chatbot_response(self._scene, source_item)
-        if not text:
-            return
-        if token and token == self._last_chatbot_token:
-            return
-        self._last_chatbot_token = token
-        self._set_transcript(text)
-        if self._busy:
-            self._pending_chatbot_text = text
-            return
-        self._speak_text(text, source="chatbot_auto")
+        self._processing_chatbot_auto = True
+        try:
+            source_name = _node_name(source_item)
+            proxy_name = _node_name(self._chatbot_proxy_item)
+            changed_key = str(changed_name or "").strip().lower()
+            if self._chatbot_via_proxy:
+                allowed = {k for k in (source_name, proxy_name) if k}
+                if changed_key and allowed and changed_key not in allowed:
+                    return
+            else:
+                if changed_key and source_name and changed_key != source_name:
+                    return
+            if self._mode != "text_to_voice":
+                self._set_mode("text_to_voice")
+
+            text = ""
+            token = ""
+            if self._chatbot_via_proxy:
+                _db_text, token, _err = _latest_chatbot_response(self._scene, source_item)
+                if token and token == self._last_chatbot_token:
+                    return
+                proxy_item = self._chatbot_proxy_item
+                if proxy_item is not None and _kind_of_item(proxy_item) == "python":
+                    text, py_error = _run_python_transform(self._scene, proxy_item)
+                    if py_error and py_error != "Python transform produced empty output.":
+                        self._set_status(py_error, error=True)
+                        return
+                if not text:
+                    text = _text_from_input(self._scene, self._node_item, "text").strip()
+                if not text:
+                    self._set_status("Waiting for Python output from chatbot response...")
+                    return
+            else:
+                text, token, _err = _latest_chatbot_response(self._scene, source_item)
+                if not text:
+                    return
+                text = text.strip()
+                if not text:
+                    return
+
+            if token and token == self._last_chatbot_token:
+                return
+            if token:
+                self._last_chatbot_token = token
+            self._set_transcript(text)
+            if self._busy:
+                self._pending_chatbot_text = text
+                return
+            self._speak_text(text, source="chatbot_auto")
+        finally:
+            self._processing_chatbot_auto = False
 
     def _speak_text(self, text: str, *, source: str) -> bool:
         voice_key = str(self._selected_voice_key or "").strip() or VOICE_TANYA_GOOGLE
@@ -1257,6 +1438,21 @@ class VoiceActorWidget(QtWidgets.QWidget):
     def _resolve_tts_text(self) -> tuple[str, str]:
         self._refresh_source_param_options()
         if self._chatbot_connected and self._chatbot_input_item is not None:
+            if self._chatbot_via_proxy:
+                scene = self._node_item.scene()
+                proxy_item = self._chatbot_proxy_item
+                if proxy_item is not None and _kind_of_item(proxy_item) == "python":
+                    text, _py_error = _run_python_transform(scene, proxy_item)
+                    if text.strip():
+                        return text.strip(), "chatbot_latest"
+                wired = _text_from_input(scene, self._node_item, "text")
+                if wired.strip():
+                    return wired.strip(), "chatbot_latest"
+                local = (self._transcript.toPlainText() or "").strip()
+                if local:
+                    return local, "chatbot_latest"
+                return "", "chatbot_latest"
+
             text, token, _err = _latest_chatbot_response(self._scene, self._chatbot_input_item)
             if text.strip():
                 if token:
