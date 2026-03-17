@@ -19,7 +19,7 @@ if not exist "%LOG_DIR%" (
 set "LOG=%LOG_DIR%\setup.log"
 set "MAIN_REQ=%CD%\requirements.txt"
 set "LIB_REQ=%CD%\nodes\librarian\requirements.txt"
-set "VOICE_DEPS=SpeechRecognition pyttsx3 pyaudio gTTS pygame"
+set "VOICE_DEPS=SpeechRecognition pyttsx3 pyaudio gTTS pygame faster-whisper"
 set "BASE_PY_EXE="
 set "BASE_PY_ARG="
 set "BASE_PY_MM="

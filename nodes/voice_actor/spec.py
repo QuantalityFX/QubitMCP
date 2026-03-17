@@ -30,6 +30,11 @@ except Exception:
     pygame = None
 
 try:
+    from faster_whisper import WhisperModel  # type: ignore
+except Exception:
+    WhisperModel = None
+
+try:
     from pymongo import MongoClient  # type: ignore
 except Exception:
     MongoClient = None
@@ -46,8 +51,13 @@ VOICE_ACTOR_BODY_H = 300
 VOICE_ACTOR_SELECTED_PARAM_KEY = "__voice_actor_selected_param"
 VOICE_ACTOR_MODE_KEY = "__voice_actor_mode"
 VOICE_ACTOR_VOICE_KEY = "__voice_actor_voice"
+VOICE_ACTOR_STT_METHOD_KEY = "__voice_actor_stt_method"
 VOICE_TANYA_GOOGLE = "__google_tanya__"
 VOICE_AUTO_FEMALE = "__auto_female__"
+STT_METHOD_LOCAL_WHISPER = "local_whisper"
+STT_METHOD_GOOGLE = "google"
+LOCAL_WHISPER_MODEL_NAME = "base"
+LOCAL_WHISPER_LANGUAGE = "en"
 CHATBOT_NODE_KINDS = {"chatbot", "chat bot", "chat_bot"}
 DATABASE_NODE_KINDS = {"database"}
 CHATBOT_DB_NAME = "my_database"
@@ -76,6 +86,9 @@ MALE_VOICE_HINTS = (
     "richard",
     "guy",
 )
+
+_WHISPER_MODEL = None
+_WHISPER_MODEL_LOCK = threading.Lock()
 
 
 def _ordered_in_edges(scene, node_item) -> list:
@@ -383,6 +396,61 @@ def _available_tts_voices() -> list[dict]:
     return voices
 
 
+def _normalize_stt_method(value: str) -> str:
+    key = str(value or "").strip().lower()
+    if key == STT_METHOD_GOOGLE:
+        return STT_METHOD_GOOGLE
+    return STT_METHOD_LOCAL_WHISPER
+
+
+def _whisper_model():
+    if WhisperModel is None:
+        return None, "Missing dependency: faster-whisper. Run setup.bat or pip install faster-whisper."
+    global _WHISPER_MODEL
+    with _WHISPER_MODEL_LOCK:
+        if _WHISPER_MODEL is not None:
+            return _WHISPER_MODEL, ""
+        try:
+            _WHISPER_MODEL = WhisperModel(
+                LOCAL_WHISPER_MODEL_NAME,
+                device="cpu",
+                compute_type="int8",
+            )
+        except Exception as exc:
+            return None, f"Local Whisper init failed: {exc}"
+        return _WHISPER_MODEL, ""
+
+
+def _transcribe_local_whisper(audio_wav: bytes) -> tuple[str, str]:
+    model, err = _whisper_model()
+    if err or model is None:
+        return "", err or "Local Whisper model is unavailable."
+    wav_path = Path(tempfile.gettempdir()) / f"voice_actor_stt_{uuid.uuid4().hex}.wav"
+    try:
+        wav_path.write_bytes(audio_wav)
+        segments, _info = model.transcribe(
+            str(wav_path),
+            language=LOCAL_WHISPER_LANGUAGE,
+            vad_filter=True,
+        )
+        parts = []
+        for segment in segments:
+            text = str(getattr(segment, "text", "") or "").strip()
+            if text:
+                parts.append(text)
+        transcript = " ".join(parts).strip()
+        if not transcript:
+            return "", "Speech detected but transcript was empty."
+        return transcript, ""
+    except Exception as exc:
+        return "", f"Local Whisper transcription failed: {exc}"
+    finally:
+        try:
+            wav_path.unlink()
+        except Exception:
+            pass
+
+
 def _copy_icon() -> QtGui.QIcon:
     try:
         icon_path = Path(__file__).resolve().parents[2] / "icons" / "Copy_Icon.png"
@@ -476,12 +544,15 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._tts_user_stopped = False
         self._tts_voice_options = []
         self._syncing_voice_combo = False
+        self._syncing_stt_combo = False
         model = getattr(self._node_item, "model", None)
         saved_mode = _param_value(model, VOICE_ACTOR_MODE_KEY, "").strip().lower()
         self._mode = "text_to_voice" if saved_mode == "text_to_voice" else "voice_to_text"
         self._selected_param_key = _param_value(model, VOICE_ACTOR_SELECTED_PARAM_KEY, "")
         saved_voice_key = _param_value(model, VOICE_ACTOR_VOICE_KEY, "").strip()
         self._selected_voice_key = saved_voice_key or VOICE_TANYA_GOOGLE
+        saved_stt_method = _param_value(model, VOICE_ACTOR_STT_METHOD_KEY, "").strip()
+        self._selected_stt_method = _normalize_stt_method(saved_stt_method or STT_METHOD_LOCAL_WHISPER)
         self._had_note_input = False
         if self._selected_param_key:
             _ensure_hidden_params(model, [VOICE_ACTOR_SELECTED_PARAM_KEY])
@@ -489,6 +560,8 @@ class VoiceActorWidget(QtWidgets.QWidget):
             _ensure_hidden_params(model, [VOICE_ACTOR_MODE_KEY])
         if saved_voice_key:
             _ensure_hidden_params(model, [VOICE_ACTOR_VOICE_KEY])
+        if saved_stt_method:
+            _ensure_hidden_params(model, [VOICE_ACTOR_STT_METHOD_KEY])
 
         self.setMinimumSize(VOICE_ACTOR_BODY_W, VOICE_ACTOR_BODY_H)
         try:
@@ -576,6 +649,17 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._voice_combo.setToolTip("Select which installed speech voice to use.")
         self._voice_combo.currentIndexChanged.connect(self._on_voice_selection_changed)
 
+        self._stt_label = QtWidgets.QLabel("STT:")
+        self._stt_label.setStyleSheet("QLabel{color:#94a3b8;}")
+        self._stt_combo = QtWidgets.QComboBox()
+        self._stt_combo.setStyleSheet(
+            "QComboBox{background:#11151c;color:#e6edf3;border:1px solid #334155;border-radius:4px;padding:3px 8px;}"
+            "QComboBox:disabled{background:#1f2937;color:#94a3b8;border-color:#334155;}"
+            "QComboBox QAbstractItemView{background:#0f1216;color:#e6edf3;selection-background-color:#1e3a8a;}"
+        )
+        self._stt_combo.setToolTip("Select speech-to-text engine for Listen mode.")
+        self._stt_combo.currentIndexChanged.connect(self._on_stt_method_changed)
+
         top = QtWidgets.QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
         top.setSpacing(6)
@@ -592,6 +676,8 @@ class VoiceActorWidget(QtWidgets.QWidget):
         selector.addWidget(self._param_combo, 1)
         selector.addWidget(self._voice_label, 0)
         selector.addWidget(self._voice_combo, 1)
+        selector.addWidget(self._stt_label, 0)
+        selector.addWidget(self._stt_combo, 1)
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
@@ -610,6 +696,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._apply_mode_ui()
         self._ensure_scene_connections()
         self._refresh_voice_options()
+        self._refresh_stt_method_options()
         self._refresh_source_param_options()
 
     def sizeHint(self):
@@ -803,6 +890,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._replay_btn.setEnabled(not self._busy)
         self._stop_btn.setEnabled(bool(self._busy and self._tts_playing))
         self._voice_combo.setEnabled(bool(self._tts_voice_options) and not self._busy)
+        self._stt_combo.setEnabled(not self._busy)
 
     def _refresh_voice_options(self) -> None:
         google_ready = gTTS is not None and pygame is not None
@@ -861,6 +949,45 @@ class VoiceActorWidget(QtWidgets.QWidget):
                 "Google (Tanya) matches Tanya project voice. Local voices use system TTS."
             )
 
+    def _refresh_stt_method_options(self) -> None:
+        whisper_ready = WhisperModel is not None
+        local_label = "Local Whisper (Default)" if whisper_ready else "Local Whisper - install faster-whisper"
+        options = [
+            {"id": STT_METHOD_LOCAL_WHISPER, "name": local_label},
+            {"id": STT_METHOD_GOOGLE, "name": "Google (Cloud)"},
+        ]
+        selected_key = _normalize_stt_method(self._selected_stt_method)
+        if selected_key not in {STT_METHOD_LOCAL_WHISPER, STT_METHOD_GOOGLE}:
+            selected_key = STT_METHOD_LOCAL_WHISPER
+            self._selected_stt_method = selected_key
+            _set_node_param(self._node_item, VOICE_ACTOR_STT_METHOD_KEY, selected_key)
+
+        self._syncing_stt_combo = True
+        try:
+            self._stt_combo.blockSignals(True)
+            self._stt_combo.clear()
+            selected_index = 0
+            for idx, option in enumerate(options):
+                label = str(option.get("name", "") or "")
+                value = str(option.get("id", "") or "")
+                self._stt_combo.addItem(label, value)
+                if value == selected_key:
+                    selected_index = idx
+            self._stt_combo.setCurrentIndex(selected_index)
+        finally:
+            self._stt_combo.blockSignals(False)
+            self._syncing_stt_combo = False
+
+        if self._busy:
+            self._stt_combo.setEnabled(False)
+            self._stt_combo.setToolTip("STT method is disabled while the node is busy.")
+        elif not whisper_ready:
+            self._stt_combo.setEnabled(True)
+            self._stt_combo.setToolTip("Install faster-whisper for local transcription; Google remains available.")
+        else:
+            self._stt_combo.setEnabled(True)
+            self._stt_combo.setToolTip("Local Whisper is the default transcription method.")
+
     def _on_param_selection_changed(self, _index: int) -> None:
         if self._syncing_param_combo:
             return
@@ -878,6 +1005,15 @@ class VoiceActorWidget(QtWidgets.QWidget):
             return
         self._selected_voice_key = selected_key
         _set_node_param(self._node_item, VOICE_ACTOR_VOICE_KEY, selected_key)
+
+    def _on_stt_method_changed(self, _index: int) -> None:
+        if self._syncing_stt_combo:
+            return
+        selected_key = _normalize_stt_method(self._stt_combo.currentData() or "")
+        if selected_key == str(self._selected_stt_method or "").strip():
+            return
+        self._selected_stt_method = selected_key
+        _set_node_param(self._node_item, VOICE_ACTOR_STT_METHOD_KEY, selected_key)
 
     def _selected_source_param_value(self) -> tuple[str, str]:
         selected_key = str(self._selected_param_key or "").strip()
@@ -904,6 +1040,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._copy_btn.setEnabled(not self._busy)
         self._param_combo.setEnabled(bool(self._source_param_options) and not self._busy and not self._chatbot_connected)
         self._voice_combo.setEnabled(bool(self._tts_voice_options) and not self._busy)
+        self._stt_combo.setEnabled(not self._busy)
         try:
             self._node_item.setBusyState(bool(active), label if active else "")
         except Exception:
@@ -1002,21 +1139,36 @@ class VoiceActorWidget(QtWidgets.QWidget):
                 error=True,
             )
             return
+        stt_method = _normalize_stt_method(self._selected_stt_method)
+        if stt_method == STT_METHOD_LOCAL_WHISPER and WhisperModel is None:
+            self._set_status(
+                "Missing dependency: faster-whisper. Run setup.bat to enable Local Whisper.",
+                error=True,
+            )
+            return
         self._set_busy(True, "listening")
-        self._set_status("Listening...")
-        threading.Thread(target=self._stt_worker, daemon=True).start()
+        if stt_method == STT_METHOD_LOCAL_WHISPER:
+            self._set_status("Listening... (Local Whisper)")
+        else:
+            self._set_status("Listening... (Google)")
+        threading.Thread(target=self._stt_worker, args=(stt_method,), daemon=True).start()
 
-    def _stt_worker(self) -> None:
+    def _stt_worker(self, stt_method: str) -> None:
         transcript = ""
         error = ""
+        selected_method = _normalize_stt_method(stt_method)
         try:
             recognizer = sr.Recognizer()
             with sr.Microphone() as source:
                 recognizer.adjust_for_ambient_noise(source, duration=0.4)
                 audio = recognizer.listen(source, timeout=8, phrase_time_limit=20)
-            transcript = (recognizer.recognize_google(audio) or "").strip()
-            if not transcript:
-                error = "Speech detected but transcript was empty."
+            if selected_method == STT_METHOD_LOCAL_WHISPER:
+                wav_data = audio.get_wav_data(convert_rate=16000, convert_width=2)
+                transcript, error = _transcribe_local_whisper(wav_data)
+            else:
+                transcript = (recognizer.recognize_google(audio) or "").strip()
+                if not transcript:
+                    error = "Speech detected but transcript was empty."
         except Exception as exc:
             error = _format_stt_error(exc)
         self._stt_done.emit(transcript, error)
