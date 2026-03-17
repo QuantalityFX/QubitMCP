@@ -91,6 +91,27 @@ def _copy_icon() -> QtGui.QIcon:
     return QtGui.QIcon()
 
 
+def _voice_action_icon(filename: str) -> QtGui.QIcon:
+    try:
+        icon_path = Path(__file__).resolve().parents[2] / "icons" / filename
+        if icon_path.exists():
+            icon = QtGui.QIcon(str(icon_path))
+            if not icon.isNull():
+                return icon
+    except Exception:
+        pass
+    return QtGui.QIcon()
+
+
+def _button_style(background: str, border: str, hover: str) -> str:
+    return (
+        f"QPushButton{{background:{background};color:#f8fafc;border:1px solid {border};"
+        "border-radius:4px;padding:4px 10px;}"
+        f"QPushButton:hover{{background:{hover};}}"
+        "QPushButton:disabled{background:#334155;color:#94a3b8;border-color:#334155;}"
+    )
+
+
 def _format_stt_error(exc: Exception) -> str:
     if sr is not None:
         wait_timeout = getattr(sr, "WaitTimeoutError", None)
@@ -122,6 +143,8 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._mode = "voice_to_text"
         self._busy = False
         self._syncing_text = False
+        self._listen_icon = _voice_action_icon("Mic_Icon.png")
+        self._speak_icon = _voice_action_icon("Voice_Icon.png")
 
         self.setMinimumSize(VOICE_ACTOR_BODY_W, VOICE_ACTOR_BODY_H)
         try:
@@ -133,12 +156,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._mode_btn.clicked.connect(self._toggle_mode)
 
         self._action_btn = QtWidgets.QPushButton()
-        self._action_btn.setStyleSheet(
-            "QPushButton{background:#0f766e;color:#f8fafc;border:1px solid #0d9488;"
-            "border-radius:4px;padding:4px 10px;}"
-            "QPushButton:hover{background:#0d9488;}"
-            "QPushButton:disabled{background:#334155;color:#94a3b8;border-color:#334155;}"
-        )
+        self._action_btn.setIconSize(QtCore.QSize(14, 14))
         self._action_btn.clicked.connect(self._on_action_clicked)
 
         self._copy_btn = QtWidgets.QPushButton("Copy")
@@ -199,23 +217,17 @@ class VoiceActorWidget(QtWidgets.QWidget):
     def _apply_mode_ui(self) -> None:
         if self._mode == "voice_to_text":
             self._mode_btn.setText("Voice -> Text")
-            self._mode_btn.setStyleSheet(
-                "QPushButton{background:#0f766e;color:#f8fafc;border:1px solid #0d9488;"
-                "border-radius:4px;padding:4px 8px;}"
-                "QPushButton:hover{background:#0d9488;}"
-                "QPushButton:disabled{background:#334155;color:#94a3b8;border-color:#334155;}"
-            )
+            self._mode_btn.setStyleSheet(_button_style("#4d1616", "#6a2222", "#5a1b1b"))
             self._action_btn.setText("Listen")
+            self._action_btn.setStyleSheet(_button_style("#6b1f1f", "#8b2b2b", "#7a2323"))
+            self._action_btn.setIcon(self._listen_icon)
             self._action_btn.setToolTip("Listen on microphone and transcribe speech.")
         else:
             self._mode_btn.setText("Text -> Voice")
-            self._mode_btn.setStyleSheet(
-                "QPushButton{background:#7c3aed;color:#f8fafc;border:1px solid #8b5cf6;"
-                "border-radius:4px;padding:4px 8px;}"
-                "QPushButton:hover{background:#8b5cf6;}"
-                "QPushButton:disabled{background:#334155;color:#94a3b8;border-color:#334155;}"
-            )
+            self._mode_btn.setStyleSheet(_button_style("#1e3a8a", "#3b5bb0", "#23459f"))
             self._action_btn.setText("Speak")
+            self._action_btn.setStyleSheet(_button_style("#1d4ed8", "#60a5fa", "#2563eb"))
+            self._action_btn.setIcon(self._speak_icon)
             self._action_btn.setToolTip("Speak text from input or transcript box.")
 
     def _set_status(self, message: str, *, error: bool = False) -> None:
