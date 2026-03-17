@@ -19,6 +19,8 @@ CHATBOT_NODE_ALIASES = [
     "chat_bot",
 ]
 CHATBOT_NODE_KINDS = {CHATBOT_NODE_KIND, *CHATBOT_NODE_ALIASES}
+VOICE_ACTOR_NODE_KINDS = {"voice_actor", "voice actor", "voiceactor"}
+VOICE_INPUT_PORT = "voice_input"
 
 DB_NAME = "my_database"
 COLLECTION = "EchoGragh"
@@ -57,10 +59,11 @@ def _ensure_param(node_item, name: str, default: str = "") -> None:
 def build_ports(node_item) -> None:
     _ensure_param(node_item, "llm_prompt", "")
     _ensure_param(node_item, "database", "")
+    _ensure_param(node_item, VOICE_INPUT_PORT, "")
     model = getattr(node_item, "model", None)
     params = getattr(model, "params", None) if model is not None else None
     if isinstance(params, list):
-        desired = ["llm_prompt", "database"]
+        desired = ["llm_prompt", "database", VOICE_INPUT_PORT]
         ordered = []
         used = set()
         for name in desired:
@@ -76,7 +79,7 @@ def build_ports(node_item) -> None:
             if idx not in used:
                 ordered.append(entry)
         model.params = ordered
-    for port in ("llm_prompt", "database"):
+    for port in ("llm_prompt", "database", VOICE_INPUT_PORT):
         if hasattr(node_item, "ensure_input"):
             node_item.ensure_input(port)
 
@@ -181,6 +184,15 @@ def _connected_prompt_node(scene, node_item):
     return _find_input_node(scene, node_item, {"llm_prompt", "prompt_node", "llm"}, gpt_spec.PROMPT_NODE_KINDS)
 
 
+def _connected_voice_actor(scene, node_item):
+    return _find_input_node(
+        scene,
+        node_item,
+        {VOICE_INPUT_PORT, "voice", "transcript", "voice_actor"},
+        VOICE_ACTOR_NODE_KINDS,
+    )
+
+
 def _load_history(cfg: dict) -> list[dict]:
     if MongoClient is None:
         raise RuntimeError("pymongo is not installed; cannot read history.")
@@ -213,6 +225,10 @@ class ChatbotWidget(QtWidgets.QWidget):
         self._node_item = node_item
         self._scene = None
         self._scene_connected = False
+        self._sending = False
+        self._pending_voice_prompt = ""
+        self._last_voice_source = ""
+        self._last_voice_transcript = ""
         self.setMinimumSize(CHATBOT_BODY_W, CHATBOT_BODY_H)
         try:
             self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
@@ -287,16 +303,19 @@ class ChatbotWidget(QtWidgets.QWidget):
 
     def _ensure_scene(self):
         if self._scene is None:
-            self._scene = self._node_item.scene()
+            try:
+                self._scene = self._node_item.scene()
+            except Exception:
+                self._scene = None
         if self._scene and not self._scene_connected:
             if hasattr(self._scene, "linksChanged"):
                 try:
-                    self._scene.linksChanged.connect(self._refresh_history)
+                    self._scene.linksChanged.connect(self._on_scene_links_changed)
                 except Exception:
                     pass
             if hasattr(self._scene, "paramChanged"):
                 try:
-                    self._scene.paramChanged.connect(lambda *_: self._refresh_history())
+                    self._scene.paramChanged.connect(self._on_scene_param_changed)
                 except Exception:
                     pass
             self._scene_connected = True
@@ -305,9 +324,70 @@ class ChatbotWidget(QtWidgets.QWidget):
                     self._init_timer.stop()
             except Exception:
                 pass
+            self._sync_voice_baseline(scene=self._scene)
         return self._scene
 
+    def _on_scene_links_changed(self, *_args):
+        self._refresh_history()
+        self._sync_voice_baseline()
+
+    def _on_scene_param_changed(self, name=None, _params=None):
+        self._refresh_history()
+        self._handle_voice_param_change(name)
+
+    def _sync_voice_baseline(self, scene=None):
+        if scene is None:
+            scene = self._ensure_scene()
+        if scene is None:
+            return
+        voice_item = _connected_voice_actor(scene, self._node_item)
+        if voice_item is None:
+            self._last_voice_source = ""
+            self._last_voice_transcript = ""
+            return
+        voice_model = getattr(voice_item, "model", None)
+        source_name = str(getattr(voice_model, "name", "") or "").strip().lower() if voice_model is not None else ""
+        transcript = str(getattr(voice_model, "info", "") or "").strip() if voice_model is not None else ""
+        self._last_voice_source = source_name
+        self._last_voice_transcript = transcript
+
+    def _voice_mode(self, voice_item) -> str:
+        mode = (_param_value_from_node(voice_item, "__voice_actor_mode") or "").strip().lower()
+        return mode or "voice_to_text"
+
+    def _handle_voice_param_change(self, changed_name=None):
+        scene = self._ensure_scene()
+        if scene is None:
+            return
+        voice_item = _connected_voice_actor(scene, self._node_item)
+        if voice_item is None:
+            self._last_voice_source = ""
+            self._last_voice_transcript = ""
+            return
+        voice_model = getattr(voice_item, "model", None)
+        if voice_model is None:
+            return
+        source_name = str(getattr(voice_model, "name", "") or "").strip().lower()
+        changed_key = str(changed_name or "").strip().lower()
+        if changed_key and source_name and changed_key != source_name:
+            return
+
+        transcript = str(getattr(voice_model, "info", "") or "").strip()
+        if self._voice_mode(voice_item) != "voice_to_text":
+            self._last_voice_source = source_name
+            self._last_voice_transcript = transcript
+            return
+        if not transcript:
+            return
+        if source_name == self._last_voice_source and transcript == self._last_voice_transcript:
+            return
+
+        self._last_voice_source = source_name
+        self._last_voice_transcript = transcript
+        self._submit_prompt(transcript, from_voice=True)
+
     def _set_sending(self, active: bool):
+        self._sending = bool(active)
         self._input.setEnabled(not active)
         self._send_btn.setEnabled(not active)
         self._refresh_btn.setEnabled(not active)
@@ -476,16 +556,30 @@ class ChatbotWidget(QtWidgets.QWidget):
     @QtCore.Slot(bool, str)
     def _finish_send(self, ok: bool, message: str):
         self._set_sending(False)
+        pending = (self._pending_voice_prompt or "").strip()
+        self._pending_voice_prompt = ""
         if not ok:
             QtWidgets.QMessageBox.warning(self, "Chatbot", message or "Request failed.")
             return
         self._input.setText("")
         self._refresh_history()
+        if pending:
+            try:
+                QtCore.QTimer.singleShot(0, lambda p=pending: self._submit_prompt(p, from_voice=True))
+            except Exception:
+                self._submit_prompt(pending, from_voice=True)
 
-    def _on_send(self):
-        prompt_text = (self._input.text() or "").strip()
+    def _submit_prompt(self, prompt_text: str, *, from_voice: bool = False):
+        prompt_text = (prompt_text or "").strip()
         if not prompt_text:
             return
+        if self._sending:
+            if from_voice:
+                self._pending_voice_prompt = prompt_text
+            return
+        if from_voice:
+            self._input.setText(prompt_text)
+
         scene = self._ensure_scene()
         node_item = self._node_item
         if not scene or not node_item:
@@ -581,6 +675,9 @@ class ChatbotWidget(QtWidgets.QWidget):
             )
 
         threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_send(self):
+        self._submit_prompt(self._input.text() or "", from_voice=False)
 
 
 def render_node_body(node_item, y_cursor: int) -> int:
