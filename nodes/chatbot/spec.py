@@ -553,14 +553,28 @@ class ChatbotWidget(QtWidgets.QWidget):
         parts.append("Assistant:")
         return "\n\n".join([p for p in parts if p]).strip()
 
-    @QtCore.Slot(bool, str)
-    def _finish_send(self, ok: bool, message: str):
+    @QtCore.Slot(bool, str, str)
+    def _finish_send(self, ok: bool, message: str, response_text: str):
         self._set_sending(False)
         pending = (self._pending_voice_prompt or "").strip()
         self._pending_voice_prompt = ""
         if not ok:
             QtWidgets.QMessageBox.warning(self, "Chatbot", message or "Request failed.")
             return
+        clean_response = (response_text or "").strip()
+        if clean_response:
+            model = getattr(self._node_item, "model", None)
+            if model is not None:
+                try:
+                    model.info = clean_response
+                except Exception:
+                    pass
+                scene = self._ensure_scene()
+                if scene is not None and hasattr(scene, "paramChanged"):
+                    try:
+                        scene.paramChanged.emit(model.name, list(getattr(model, "params", None) or []))
+                    except Exception:
+                        pass
         self._input.setText("")
         self._refresh_history()
         if pending:
@@ -648,6 +662,7 @@ class ChatbotWidget(QtWidgets.QWidget):
         def _worker():
             ok = False
             message = ""
+            response_text = ""
             try:
                 if provider == "openai":
                     response_text, raw_payload = gpt_spec._call_openai(api_key, model, temperature, combined_prompt)
@@ -672,6 +687,7 @@ class ChatbotWidget(QtWidgets.QWidget):
                 QtCore.Qt.QueuedConnection,
                 QtCore.Q_ARG(bool, bool(ok)),
                 QtCore.Q_ARG(str, message),
+                QtCore.Q_ARG(str, response_text),
             )
 
         threading.Thread(target=_worker, daemon=True).start()

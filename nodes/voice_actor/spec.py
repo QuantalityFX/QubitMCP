@@ -16,6 +16,11 @@ try:
 except Exception:
     pyttsx3 = None
 
+try:
+    from pymongo import MongoClient  # type: ignore
+except Exception:
+    MongoClient = None
+
 
 VOICE_ACTOR_NODE_KIND = "voice_actor"
 VOICE_ACTOR_NODE_ALIASES = [
@@ -27,6 +32,10 @@ VOICE_ACTOR_BODY_W = 460
 VOICE_ACTOR_BODY_H = 300
 VOICE_ACTOR_SELECTED_PARAM_KEY = "__voice_actor_selected_param"
 VOICE_ACTOR_MODE_KEY = "__voice_actor_mode"
+CHATBOT_NODE_KINDS = {"chatbot", "chat bot", "chat_bot"}
+DATABASE_NODE_KINDS = {"database"}
+CHATBOT_DB_NAME = "my_database"
+CHATBOT_DEFAULT_COLLECTION = "EchoGragh"
 
 
 def _ordered_in_edges(scene, node_item) -> list:
@@ -181,6 +190,99 @@ def _set_node_param(node_item, name: str, value: str) -> None:
         pass
 
 
+def _kind_of_item(node_item) -> str:
+    model = getattr(node_item, "model", None)
+    return str(getattr(model, "kind", "") or "").strip().lower()
+
+
+def _param_from_item(node_item, name: str, default: str = "") -> str:
+    model = getattr(node_item, "model", None)
+    return _param_value(model, name, default)
+
+
+def _find_input_node(scene, node_item, port_names: set[str], kind_set: set[str] | None = None):
+    if not scene or not node_item:
+        return None
+    try:
+        in_edges = list(scene._in_edges(node_item))
+    except Exception:
+        in_edges = []
+    wanted_ports = {str(p or "").strip().lower() for p in (port_names or set()) if str(p or "").strip()}
+    for edge in in_edges:
+        dst_port = _edge_port_name(edge).strip().lower()
+        if wanted_ports and dst_port not in wanted_ports:
+            continue
+        src = getattr(edge, "src", None)
+        if src is None:
+            continue
+        if kind_set is None:
+            return src
+        if _kind_of_item(src) in kind_set:
+            return src
+    if kind_set:
+        for edge in in_edges:
+            src = getattr(edge, "src", None)
+            if src is None:
+                continue
+            if _kind_of_item(src) in kind_set:
+                return src
+    return None
+
+
+def _chatbot_db_config(scene, chatbot_item):
+    db_item = _find_input_node(scene, chatbot_item, {"database", "db"}, DATABASE_NODE_KINDS)
+    if db_item is None:
+        return None
+    return {
+        "mongo_uri": _param_from_item(db_item, "mongo_uri", "mongodb://localhost:27017") or "mongodb://localhost:27017",
+        "project": _param_from_item(db_item, "project", ""),
+        "collection": _param_from_item(db_item, "collection", CHATBOT_DEFAULT_COLLECTION) or CHATBOT_DEFAULT_COLLECTION,
+    }
+
+
+def _latest_chatbot_response(scene, chatbot_item) -> tuple[str, str, str]:
+    if scene is None or chatbot_item is None:
+        return "", "", "Chatbot input is unavailable."
+    if MongoClient is None:
+        return "", "", "Missing dependency: pymongo. Install: pip install pymongo"
+    cfg = _chatbot_db_config(scene, chatbot_item)
+    if not cfg:
+        return "", "", "Connected chatbot has no database input."
+    project = str(cfg.get("project", "") or "").strip()
+    if not project:
+        return "", "", "Connected chatbot database has no selected project."
+    uri = str(cfg.get("mongo_uri", "") or "").strip() or "mongodb://localhost:27017"
+    collection_name = str(cfg.get("collection", "") or "").strip() or CHATBOT_DEFAULT_COLLECTION
+
+    client = None
+    try:
+        client = MongoClient(uri)
+        coll = client[CHATBOT_DB_NAME][collection_name]
+        doc = coll.find_one({"$or": [{"name": project}, {"project": project}]}) or {}
+        history = doc.get("history") or []
+        if not isinstance(history, list) or not history:
+            return "", "", "No chatbot history found in database."
+        for idx in range(len(history) - 1, -1, -1):
+            entry = history[idx]
+            if not isinstance(entry, dict):
+                continue
+            response = str(entry.get("response", "") or "").strip()
+            if not response:
+                continue
+            stamp = str(entry.get("timestamp", "") or f"{idx}")
+            token = f"{stamp}|{idx}|{len(history)}"
+            return response, token, ""
+        return "", "", "No assistant response found in chatbot history."
+    except Exception as exc:
+        return "", "", f"Failed to read chatbot history: {exc}"
+    finally:
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
+
+
 def _copy_icon() -> QtGui.QIcon:
     try:
         icon_path = Path(__file__).resolve().parents[2] / "icons" / "Copy_Icon.png"
@@ -211,6 +313,15 @@ def _button_style(background: str, border: str, hover: str) -> str:
         "border-radius:4px;padding:4px 10px;}"
         f"QPushButton:hover{{background:{hover};}}"
         "QPushButton:disabled{background:#334155;color:#94a3b8;border-color:#334155;}"
+    )
+
+
+def _auto_button_style() -> str:
+    return (
+        "QPushButton{background:#ca8a04;color:#111827;border:1px solid #facc15;"
+        "border-radius:4px;padding:4px 10px;}"
+        "QPushButton:hover{background:#d97706;}"
+        "QPushButton:disabled{background:#a16207;color:#fde68a;border-color:#d97706;}"
     )
 
 
@@ -246,11 +357,16 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._syncing_text = False
         self._listen_icon = _voice_action_icon("Mic_Icon.png")
         self._speak_icon = _voice_action_icon("Voice_Icon.png")
+        self._chatbot_icon = _voice_action_icon("Chatbot_Icon.png")
         self._scene = None
         self._scene_connected = False
         self._param_refresh_pending = False
         self._syncing_param_combo = False
         self._source_param_options = []
+        self._chatbot_connected = False
+        self._chatbot_input_item = None
+        self._last_chatbot_token = ""
+        self._pending_chatbot_text = ""
         model = getattr(self._node_item, "model", None)
         saved_mode = _param_value(model, VOICE_ACTOR_MODE_KEY, "").strip().lower()
         self._mode = "text_to_voice" if saved_mode == "text_to_voice" else "voice_to_text"
@@ -350,6 +466,15 @@ class VoiceActorWidget(QtWidgets.QWidget):
         return QtCore.QSize(VOICE_ACTOR_BODY_W, VOICE_ACTOR_BODY_H)
 
     def _apply_mode_ui(self) -> None:
+        if self._chatbot_connected:
+            self._mode_btn.setText("Text -> Voice")
+            self._mode_btn.setStyleSheet(_button_style("#1e3a8a", "#3b5bb0", "#23459f"))
+            self._mode_btn.setToolTip("Chatbot input forces Text -> Voice auto mode.")
+            self._action_btn.setText("Auto")
+            self._action_btn.setStyleSheet(_auto_button_style())
+            self._action_btn.setIcon(self._chatbot_icon)
+            self._action_btn.setToolTip("Auto-speaking latest chatbot response.")
+            return
         if self._mode == "voice_to_text":
             self._mode_btn.setText("Voice -> Text")
             self._mode_btn.setStyleSheet(_button_style("#4d1616", "#6a2222", "#5a1b1b"))
@@ -396,8 +521,9 @@ class VoiceActorWidget(QtWidgets.QWidget):
     def _on_scene_links_changed(self, *_args) -> None:
         self._schedule_param_refresh()
 
-    def _on_scene_param_changed(self, *_args) -> None:
+    def _on_scene_param_changed(self, name=None, _params=None) -> None:
         self._schedule_param_refresh()
+        self._maybe_trigger_chatbot_auto(name)
 
     def _schedule_param_refresh(self) -> None:
         self._ensure_scene_connections()
@@ -406,17 +532,18 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._param_refresh_pending = True
         QtCore.QTimer.singleShot(0, self._refresh_source_param_options)
 
-    def _collect_source_param_options(self) -> tuple[list, bool]:
+    def _collect_source_param_options(self) -> tuple[list, bool, object]:
         self._ensure_scene_connections()
         scene = self._scene
         if scene is None:
-            return [], False
+            return [], False, None
         edges = _input_edges(scene, self._node_item, "text")
         if not edges:
-            return [], False
+            return [], False, None
         multiple_sources = len(edges) > 1
         options = []
         note_input_connected = False
+        chatbot_input_item = None
         for edge_index, edge in enumerate(edges, start=1):
             src_item = getattr(edge, "src", None)
             src_model = getattr(src_item, "model", None)
@@ -425,6 +552,10 @@ class VoiceActorWidget(QtWidgets.QWidget):
             kind = str(getattr(src_model, "kind", "") or "").strip().lower()
             if kind == "note":
                 note_input_connected = True
+            if kind in CHATBOT_NODE_KINDS:
+                if chatbot_input_item is None:
+                    chatbot_input_item = src_item
+                continue
             source_name = str(getattr(src_model, "name", "") or "").strip() or f"Input {edge_index}"
             source_key = str(getattr(src_model, "name", "") or source_name).strip().lower()
             for param_index, entry in enumerate(getattr(src_model, "params", None) or []):
@@ -450,14 +581,25 @@ class VoiceActorWidget(QtWidgets.QWidget):
                         "value": value,
                     }
                 )
-        return options, note_input_connected
+        return options, note_input_connected, chatbot_input_item
 
     def _refresh_source_param_options(self) -> None:
         self._param_refresh_pending = False
-        options, note_connected = self._collect_source_param_options()
-        if note_connected and not self._had_note_input and self._mode != "text_to_voice":
+        options, note_connected, chatbot_item = self._collect_source_param_options()
+        chatbot_connected = chatbot_item is not None
+        if note_connected and not chatbot_connected and not self._had_note_input and self._mode != "text_to_voice":
+            self._set_mode("text_to_voice")
+        if chatbot_connected and self._mode != "text_to_voice":
             self._set_mode("text_to_voice")
         self._had_note_input = note_connected
+        if chatbot_connected and not self._chatbot_connected:
+            _text, token, _err = _latest_chatbot_response(self._scene, chatbot_item)
+            self._last_chatbot_token = token
+        if not chatbot_connected:
+            self._last_chatbot_token = ""
+            self._pending_chatbot_text = ""
+        self._chatbot_connected = chatbot_connected
+        self._chatbot_input_item = chatbot_item
         self._source_param_options = options
         current_key = str(self._selected_param_key or "").strip()
         if current_key and not any(str(opt.get("key", "")) == current_key for opt in options):
@@ -469,26 +611,38 @@ class VoiceActorWidget(QtWidgets.QWidget):
         try:
             self._param_combo.blockSignals(True)
             self._param_combo.clear()
-            self._param_combo.addItem("Auto (wired text / transcript)", "")
-            for opt in options:
-                self._param_combo.addItem(str(opt.get("label", "")), str(opt.get("key", "")))
+            if self._chatbot_connected:
+                self._param_combo.addItem("Chatbot latest response (Auto)", "")
+                self._param_combo.setCurrentIndex(0)
+            else:
+                self._param_combo.addItem("Auto (wired text / transcript)", "")
+                for opt in options:
+                    self._param_combo.addItem(str(opt.get("label", "")), str(opt.get("key", "")))
 
-            selected_index = 0
-            if current_key:
-                for idx in range(self._param_combo.count()):
-                    if str(self._param_combo.itemData(idx) or "") == current_key:
-                        selected_index = idx
-                        break
-            self._param_combo.setCurrentIndex(selected_index)
+                selected_index = 0
+                if current_key:
+                    for idx in range(self._param_combo.count()):
+                        if str(self._param_combo.itemData(idx) or "") == current_key:
+                            selected_index = idx
+                            break
+                self._param_combo.setCurrentIndex(selected_index)
         finally:
             self._param_combo.blockSignals(False)
             self._syncing_param_combo = False
 
-        self._param_combo.setEnabled(bool(options) and not self._busy)
-        if options:
+        if self._chatbot_connected:
+            self._param_combo.setEnabled(False)
+            self._param_combo.setToolTip("Chatbot input uses automatic latest-response speech.")
+        elif options:
+            self._param_combo.setEnabled(not self._busy)
             self._param_combo.setToolTip("Pick which connected parameter to speak in Text -> Voice mode.")
         else:
+            self._param_combo.setEnabled(False)
             self._param_combo.setToolTip("Connect a node with parameters to choose a value for speech.")
+
+        self._apply_mode_ui()
+        self._mode_btn.setEnabled(not self._busy and not self._chatbot_connected)
+        self._action_btn.setEnabled(not self._busy and not self._chatbot_connected)
 
     def _on_param_selection_changed(self, _index: int) -> None:
         if self._syncing_param_combo:
@@ -517,10 +671,10 @@ class VoiceActorWidget(QtWidgets.QWidget):
 
     def _set_busy(self, active: bool, label: str = "") -> None:
         self._busy = bool(active)
-        self._mode_btn.setEnabled(not self._busy)
-        self._action_btn.setEnabled(not self._busy)
+        self._mode_btn.setEnabled(not self._busy and not self._chatbot_connected)
+        self._action_btn.setEnabled(not self._busy and not self._chatbot_connected)
         self._copy_btn.setEnabled(not self._busy)
-        self._param_combo.setEnabled(bool(self._source_param_options) and not self._busy)
+        self._param_combo.setEnabled(bool(self._source_param_options) and not self._busy and not self._chatbot_connected)
         try:
             self._node_item.setBusyState(bool(active), label if active else "")
         except Exception:
@@ -540,6 +694,9 @@ class VoiceActorWidget(QtWidgets.QWidget):
 
     def _toggle_mode(self) -> None:
         if self._busy:
+            return
+        if self._chatbot_connected:
+            self._set_status("Auto mode enabled by connected chatbot input.")
             return
         if self._mode == "voice_to_text":
             self._set_mode("text_to_voice")
@@ -567,6 +724,9 @@ class VoiceActorWidget(QtWidgets.QWidget):
         if self._busy:
             return
         self._refresh_source_param_options()
+        if self._chatbot_connected:
+            self._set_status("Auto mode: waiting for chatbot response...")
+            return
         if self._mode == "voice_to_text":
             self._start_stt()
         else:
@@ -607,8 +767,72 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._set_transcript(transcript)
         self._set_status("Transcript updated.")
 
+    def _maybe_trigger_chatbot_auto(self, changed_name=None) -> None:
+        if not self._chatbot_connected:
+            self._refresh_source_param_options()
+            if not self._chatbot_connected:
+                return
+        source_item = self._chatbot_input_item
+        if source_item is None:
+            return
+        source_name = str(getattr(getattr(source_item, "model", None), "name", "") or "").strip().lower()
+        changed_key = str(changed_name or "").strip().lower()
+        if changed_key and source_name and changed_key != source_name:
+            return
+        if self._mode != "text_to_voice":
+            self._set_mode("text_to_voice")
+        text, token, _err = _latest_chatbot_response(self._scene, source_item)
+        if not text:
+            return
+        if token and token == self._last_chatbot_token:
+            return
+        self._last_chatbot_token = token
+        self._set_transcript(text)
+        if self._busy:
+            self._pending_chatbot_text = text
+            return
+        self._speak_text(text, source="chatbot_auto")
+
+    def _speak_text(self, text: str, *, source: str) -> bool:
+        if pyttsx3 is None:
+            self._set_status(
+                "Missing dependency: pyttsx3. Install: pip install pyttsx3",
+                error=True,
+            )
+            return False
+        clean = (text or "").strip()
+        if not clean:
+            if source == "selected_param":
+                self._set_status(
+                    "Selected parameter is empty. Choose another parameter or fill its value.",
+                    error=True,
+                )
+            elif source in ("chatbot_auto", "chatbot_latest"):
+                self._set_status("No chatbot response available to speak yet.", error=True)
+            else:
+                self._set_status("No text to speak. Connect input 'text' or type transcript.", error=True)
+            return False
+        if source == "selected_param":
+            self._set_status("Speaking selected parameter value...")
+        elif source in ("chatbot_auto", "chatbot_latest"):
+            self._set_status("Auto-speaking latest chatbot response...")
+        elif source == "input":
+            self._set_status("Speaking text from wired input...")
+        else:
+            self._set_status("Speaking transcript...")
+        self._set_busy(True, "speaking")
+        threading.Thread(target=self._tts_worker, args=(clean,), daemon=True).start()
+        return True
+
     def _resolve_tts_text(self) -> tuple[str, str]:
         self._refresh_source_param_options()
+        if self._chatbot_connected and self._chatbot_input_item is not None:
+            text, token, _err = _latest_chatbot_response(self._scene, self._chatbot_input_item)
+            if text.strip():
+                if token:
+                    self._last_chatbot_token = token
+                return text.strip(), "chatbot_latest"
+
         selected_key = str(self._selected_param_key or "").strip()
         if selected_key:
             value, _label = self._selected_source_param_value()
@@ -624,30 +848,8 @@ class VoiceActorWidget(QtWidgets.QWidget):
         return local, "transcript"
 
     def _start_tts(self) -> None:
-        if pyttsx3 is None:
-            self._set_status(
-                "Missing dependency: pyttsx3. Install: pip install pyttsx3",
-                error=True,
-            )
-            return
         text, source = self._resolve_tts_text()
-        if not text:
-            if source == "selected_param":
-                self._set_status(
-                    "Selected parameter is empty. Choose another parameter or fill its value.",
-                    error=True,
-                )
-            else:
-                self._set_status("No text to speak. Connect input 'text' or type transcript.", error=True)
-            return
-        if source == "selected_param":
-            self._set_status("Speaking selected parameter value...")
-        elif source == "input":
-            self._set_status("Speaking text from wired input...")
-        else:
-            self._set_status("Speaking transcript...")
-        self._set_busy(True, "speaking")
-        threading.Thread(target=self._tts_worker, args=(text,), daemon=True).start()
+        self._speak_text(text, source=source)
 
     def _tts_worker(self, text: str) -> None:
         error = ""
@@ -670,6 +872,10 @@ class VoiceActorWidget(QtWidgets.QWidget):
             self._set_status(error, error=True)
             return
         self._set_status("Speech playback complete.")
+        pending = (self._pending_chatbot_text or "").strip()
+        self._pending_chatbot_text = ""
+        if pending:
+            self._speak_text(pending, source="chatbot_auto")
 
 
 def render_node_body(node_item, y_cursor: int) -> int:
