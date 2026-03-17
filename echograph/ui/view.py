@@ -83,6 +83,8 @@ class GraphView(QtWidgets.QGraphicsView):
         self._edge_update_interval_s = 1.0 / 30.0
         self._last_edge_update_ts = 0.0
         self._navigation_perf_active = False
+        # Keep note content stable during navigation; hiding is opt-in only.
+        self._navigation_note_lite_enabled = False
         self._navigation_note_threshold = 6
         self._navigation_note_lite_applied = False
         self._navigation_idle_timer = QtCore.QTimer(self)
@@ -225,6 +227,18 @@ class GraphView(QtWidgets.QGraphicsView):
     def _set_note_navigation_lite(self, enabled: bool) -> None:
         sc = self.scene()
         enabled = bool(enabled)
+        if not bool(getattr(self, "_navigation_note_lite_enabled", False)):
+            if bool(getattr(self, "_navigation_note_lite_applied", False)):
+                for item in getattr(sc, "_node_items", {}).values() if sc is not None else []:
+                    fn = getattr(item, "set_navigation_lite_mode", None)
+                    if callable(fn):
+                        try:
+                            fn(False)
+                        except Exception:
+                            pass
+            self._navigation_note_lite_applied = False
+            return
+
         if sc is None:
             if not enabled:
                 self._navigation_note_lite_applied = False
