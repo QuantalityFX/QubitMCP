@@ -873,8 +873,8 @@ class VoiceActorWidget(QtWidgets.QWidget):
         top.addWidget(self._mode_btn, 1)
         top.addWidget(self._action_btn, 0)
         top.addWidget(self._pause_btn, 0)
-        top.addWidget(self._stop_btn, 0)
         top.addWidget(self._replay_btn, 0)
+        top.addWidget(self._stop_btn, 0)
         top.addWidget(self._copy_btn, 0)
 
         selector = QtWidgets.QHBoxLayout()
@@ -973,12 +973,12 @@ class VoiceActorWidget(QtWidgets.QWidget):
                 self._action_btn.setToolTip("Speak text from input or transcript box.")
 
         if listening_active:
-            self._replay_role = "erase"
-            self._replay_btn.setText("Erase")
+            self._replay_role = "backspace"
+            self._replay_btn.setText("Back")
             self._replay_btn.setStyleSheet(_tool_button_style("#334155", "#475569", "#3f4d62", text="#e2e8f0"))
-            if not self._eraser_icon.isNull():
-                self._replay_btn.setIcon(self._eraser_icon)
-            self._replay_btn.setToolTip("Clear transcript.")
+            if not self._backspace_icon.isNull():
+                self._replay_btn.setIcon(self._backspace_icon)
+            self._replay_btn.setToolTip("Undo the last transcript chunk.")
         else:
             self._replay_role = "replay"
             self._replay_btn.setText("Replay")
@@ -987,20 +987,12 @@ class VoiceActorWidget(QtWidgets.QWidget):
                 self._replay_btn.setIcon(self._replay_icon)
             self._replay_btn.setToolTip("Replay the last spoken output.")
 
-        if active_processing:
-            self._stop_role = "backspace"
-            self._stop_btn.setText("Back")
-            self._stop_btn.setStyleSheet(_tool_button_style("#334155", "#475569", "#3f4d62", text="#e2e8f0"))
-            if not self._backspace_icon.isNull():
-                self._stop_btn.setIcon(self._backspace_icon)
-            self._stop_btn.setToolTip("Undo the last transcript chunk.")
-        else:
-            self._stop_role = "erase"
-            self._stop_btn.setText("Erase")
-            self._stop_btn.setStyleSheet(_tool_button_style("#334155", "#475569", "#3f4d62", text="#e2e8f0"))
-            if not self._eraser_icon.isNull():
-                self._stop_btn.setIcon(self._eraser_icon)
-            self._stop_btn.setToolTip("Clear transcript.")
+        self._stop_role = "erase"
+        self._stop_btn.setText("Erase")
+        self._stop_btn.setStyleSheet(_tool_button_style("#334155", "#475569", "#3f4d62", text="#e2e8f0"))
+        if not self._eraser_icon.isNull():
+            self._stop_btn.setIcon(self._eraser_icon)
+        self._stop_btn.setToolTip("Clear transcript.")
 
     def _apply_mode_ui(self) -> None:
         if self._chatbot_connected:
@@ -1082,14 +1074,12 @@ class VoiceActorWidget(QtWidgets.QWidget):
             self._action_btn.setEnabled(bool(self._busy and can_stop_action))
         else:
             self._action_btn.setEnabled(not self._busy)
-        if self._replay_role == "erase":
-            self._replay_btn.setEnabled(bool(self._busy and can_erase))
+        if self._replay_role == "backspace":
+            self._replay_btn.setEnabled(bool(self._busy and can_backspace))
         else:
             self._replay_btn.setEnabled(not self._busy)
-        if self._stop_role == "backspace":
-            self._stop_btn.setEnabled(bool(self._busy and can_backspace))
         if self._stop_role == "erase":
-            self._stop_btn.setEnabled(bool((not self._busy) and can_erase))
+            self._stop_btn.setEnabled(bool(can_erase))
         self._pause_btn.setEnabled(bool(self._busy and can_control_listening))
         self._copy_btn.setEnabled(not self._busy)
         self._param_combo.setEnabled(bool(self._source_param_options) and not self._busy and not self._chatbot_connected)
@@ -1529,15 +1519,12 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._update_control_states()
 
     def _on_replay_or_erase_clicked(self) -> None:
-        if self._replay_role == "erase":
-            self._erase_last_spoken_segment()
+        if self._replay_role == "backspace":
+            self._undo_last_transcript_chunk()
             return
         self._replay_last()
 
     def _on_backspace_or_erase_clicked(self) -> None:
-        if self._stop_role == "backspace":
-            self._undo_last_transcript_chunk()
-            return
         if self._stop_role == "erase":
             self._erase_last_spoken_segment()
             return
