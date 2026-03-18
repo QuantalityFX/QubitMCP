@@ -50,6 +50,7 @@ VOICE_ACTOR_NODE_ALIASES = [
 
 VOICE_ACTOR_BODY_W = 460
 VOICE_ACTOR_BODY_H = 300
+VOICE_ACTOR_ICON_BTN_SIDE = 56
 VOICE_ACTOR_SELECTED_PARAM_KEY = "__voice_actor_selected_param"
 VOICE_ACTOR_MODE_KEY = "__voice_actor_mode"
 VOICE_ACTOR_VOICE_KEY = "__voice_actor_voice"
@@ -604,18 +605,74 @@ def _voice_action_icon(filename: str) -> QtGui.QIcon:
 def _button_style(background: str, border: str, hover: str) -> str:
     return (
         f"QPushButton{{background:{background};color:#f8fafc;border:1px solid {border};"
-        "border-radius:4px;padding:4px 10px;}"
+        "border-radius:4px;padding:2px 4px;font-size:10px;}"
         f"QPushButton:hover{{background:{hover};}}"
         "QPushButton:disabled{background:#334155;color:#94a3b8;border-color:#334155;}"
+        f"QToolButton{{background:{background};color:#f8fafc;border:1px solid {border};"
+        "border-radius:4px;"
+        "padding-top:8px;padding-bottom:2px;padding-left:4px;padding-right:4px;font-size:9px;}"
+        f"QToolButton:hover{{background:{hover};}}"
+        "QToolButton:disabled{background:#334155;color:#94a3b8;border-color:#334155;}"
     )
 
 
 def _auto_button_style() -> str:
     return (
         "QPushButton{background:#ca8a04;color:#111827;border:1px solid #facc15;"
-        "border-radius:4px;padding:4px 10px;}"
+        "border-radius:4px;padding:2px 4px;font-size:10px;}"
         "QPushButton:hover{background:#d97706;}"
         "QPushButton:disabled{background:#a16207;color:#fde68a;border-color:#d97706;}"
+        "QToolButton{background:#ca8a04;color:#111827;border:1px solid #facc15;"
+        "border-radius:4px;"
+        "padding-top:8px;padding-bottom:2px;padding-left:4px;padding-right:4px;font-size:9px;}"
+        "QToolButton:hover{background:#d97706;}"
+        "QToolButton:disabled{background:#a16207;color:#fde68a;border-color:#d97706;}"
+    )
+
+
+def _tool_button_style(
+    background: str,
+    border: str,
+    hover: str,
+    *,
+    text: str = "#f8fafc",
+    disabled_background: str = "#1f2937",
+    disabled_text: str = "#64748b",
+    disabled_border: str = "#334155",
+) -> str:
+    return (
+        f"QToolButton{{background:{background};color:{text};border:1px solid {border};"
+        "border-radius:4px;"
+        "padding-top:8px;padding-bottom:2px;padding-left:4px;padding-right:4px;font-size:9px;}"
+        f"QToolButton:hover{{background:{hover};}}"
+        f"QToolButton:disabled{{background:{disabled_background};color:{disabled_text};border-color:{disabled_border};}}"
+    )
+
+
+def _pause_button_style(*, paused: bool = False, flash: bool = False) -> str:
+    if paused:
+        if flash:
+            background = "#92400e"
+            border = "#f59e0b"
+            hover = "#b45309"
+        else:
+            background = "#78350f"
+            border = "#d97706"
+            hover = "#92400e"
+        text = "#fffbeb"
+    else:
+        background = "#334155"
+        border = "#475569"
+        hover = "#3f4d62"
+        text = "#e2e8f0"
+    return _tool_button_style(
+        background,
+        border,
+        hover,
+        text=text,
+        disabled_background="#1f2937",
+        disabled_text="#64748b",
+        disabled_border="#334155",
     )
 
 
@@ -642,6 +699,7 @@ def build_ports(node_item) -> None:
 
 class VoiceActorWidget(QtWidgets.QWidget):
     _stt_done = QtCore.Signal(str, str)
+    _stt_chunk = QtCore.Signal(str)
     _tts_done = QtCore.Signal(str)
 
     def __init__(self, node_item, parent=None):
@@ -653,6 +711,8 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._speak_icon = _voice_action_icon("Voice_Icon.png")
         self._chatbot_icon = _voice_action_icon("Chatbot_Icon.png")
         self._replay_icon = _voice_action_icon("PlayButton_icon.png")
+        self._eraser_icon = _voice_action_icon("Eraser_Icon.png")
+        self._pause_icon = _voice_action_icon("Pause_Icon.png")
         self._stop_icon = _voice_action_icon("StopButton_icon.png")
         self._scene = None
         self._scene_connected = False
@@ -674,6 +734,19 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._tts_voice_options = []
         self._syncing_voice_combo = False
         self._syncing_stt_combo = False
+        self._stt_state_lock = threading.Lock()
+        self._stt_listening = False
+        self._stt_paused = False
+        self._stt_stop_requested = False
+        self._stt_session_has_new_text = False
+        self._stt_session_base_text = ""
+        self._stt_last_pause_snapshot = ""
+        self._pause_flash_state = False
+        self._pause_flash_timer = QtCore.QTimer(self)
+        self._pause_flash_timer.setInterval(420)
+        self._pause_flash_timer.timeout.connect(self._on_pause_flash_tick)
+        self._replay_role = "replay"
+        self._stop_role = "stop"
         model = getattr(self._node_item, "model", None)
         saved_mode = _param_value(model, VOICE_ACTOR_MODE_KEY, "").strip().lower()
         self._mode = "text_to_voice" if saved_mode == "text_to_voice" else "voice_to_text"
@@ -699,46 +772,48 @@ class VoiceActorWidget(QtWidgets.QWidget):
             pass
 
         self._mode_btn = QtWidgets.QPushButton()
+        self._mode_btn.setFixedSize(VOICE_ACTOR_ICON_BTN_SIDE, VOICE_ACTOR_ICON_BTN_SIDE)
+        try:
+            self._mode_btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+        except Exception:
+            pass
         self._mode_btn.clicked.connect(self._toggle_mode)
 
-        self._action_btn = QtWidgets.QPushButton()
-        self._action_btn.setIconSize(QtCore.QSize(14, 14))
+        self._action_btn = QtWidgets.QToolButton()
+        self._configure_icon_button(self._action_btn, icon_size=18)
         self._action_btn.clicked.connect(self._on_action_clicked)
 
-        self._replay_btn = QtWidgets.QPushButton("Replay")
-        self._replay_btn.setStyleSheet(
-            "QPushButton{background:#334155;color:#e2e8f0;border:1px solid #475569;"
-            "border-radius:4px;padding:4px 8px;}"
-            "QPushButton:hover{background:#3f4d62;}"
-            "QPushButton:disabled{background:#1f2937;color:#64748b;border-color:#334155;}"
-        )
+        self._replay_btn = QtWidgets.QToolButton()
+        self._configure_icon_button(self._replay_btn)
+        self._replay_btn.setText("Replay")
+        self._replay_btn.setStyleSheet(_tool_button_style("#334155", "#475569", "#3f4d62", text="#e2e8f0"))
         if not self._replay_icon.isNull():
             self._replay_btn.setIcon(self._replay_icon)
-            self._replay_btn.setIconSize(QtCore.QSize(14, 14))
-        self._replay_btn.clicked.connect(self._replay_last)
+        self._replay_btn.clicked.connect(self._on_replay_or_erase_clicked)
 
-        self._stop_btn = QtWidgets.QPushButton("Stop")
-        self._stop_btn.setStyleSheet(
-            "QPushButton{background:#7f1d1d;color:#f8fafc;border:1px solid #b91c1c;"
-            "border-radius:4px;padding:4px 8px;}"
-            "QPushButton:hover{background:#991b1b;}"
-            "QPushButton:disabled{background:#1f2937;color:#64748b;border-color:#334155;}"
-        )
+        self._pause_btn = QtWidgets.QToolButton()
+        self._configure_icon_button(self._pause_btn)
+        self._pause_btn.setText("Pause")
+        self._pause_btn.setStyleSheet(_pause_button_style(paused=False, flash=False))
+        if not self._pause_icon.isNull():
+            self._pause_btn.setIcon(self._pause_icon)
+        self._pause_btn.clicked.connect(self._toggle_pause_listening)
+
+        self._stop_btn = QtWidgets.QToolButton()
+        self._configure_icon_button(self._stop_btn)
+        self._stop_btn.setText("Stop")
+        self._stop_btn.setStyleSheet(_tool_button_style("#7f1d1d", "#b91c1c", "#991b1b", text="#f8fafc"))
         if not self._stop_icon.isNull():
             self._stop_btn.setIcon(self._stop_icon)
-            self._stop_btn.setIconSize(QtCore.QSize(14, 14))
-        self._stop_btn.clicked.connect(self._stop_audio)
+        self._stop_btn.clicked.connect(self._on_stop_or_erase_clicked)
 
-        self._copy_btn = QtWidgets.QPushButton("Copy")
-        self._copy_btn.setStyleSheet(
-            "QPushButton{background:#1f2937;color:#e2e8f0;border:1px solid #475569;"
-            "border-radius:4px;padding:4px 8px;}"
-            "QPushButton:hover{background:#273449;}"
-        )
+        self._copy_btn = QtWidgets.QToolButton()
+        self._configure_icon_button(self._copy_btn)
+        self._copy_btn.setText("Copy")
+        self._copy_btn.setStyleSheet(_tool_button_style("#1f2937", "#475569", "#273449", text="#e2e8f0"))
         copy_icon = _copy_icon()
         if not copy_icon.isNull():
             self._copy_btn.setIcon(copy_icon)
-            self._copy_btn.setIconSize(QtCore.QSize(14, 14))
         self._copy_btn.clicked.connect(self._copy_transcript)
 
         self._transcript = QtWidgets.QPlainTextEdit()
@@ -792,11 +867,13 @@ class VoiceActorWidget(QtWidgets.QWidget):
         top = QtWidgets.QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
         top.setSpacing(6)
-        top.addWidget(self._mode_btn, 1)
+        top.addWidget(self._mode_btn, 0)
         top.addWidget(self._action_btn, 0)
-        top.addWidget(self._replay_btn, 0)
+        top.addWidget(self._pause_btn, 0)
         top.addWidget(self._stop_btn, 0)
+        top.addWidget(self._replay_btn, 0)
         top.addWidget(self._copy_btn, 0)
+        top.addStretch(1)
 
         selector = QtWidgets.QHBoxLayout()
         selector.setContentsMargins(0, 0, 0, 0)
@@ -817,6 +894,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
         layout.addWidget(self._status, 0)
 
         self._stt_done.connect(self._finish_stt)
+        self._stt_chunk.connect(self._on_stt_chunk)
         self._tts_done.connect(self._finish_tts)
 
         initial_text = (getattr(getattr(self._node_item, "model", None), "info", "") or "").strip()
@@ -834,9 +912,74 @@ class VoiceActorWidget(QtWidgets.QWidget):
     def minimumSizeHint(self):
         return QtCore.QSize(VOICE_ACTOR_BODY_W, VOICE_ACTOR_BODY_H)
 
+    def _configure_icon_button(self, button, *, icon_size: int = 16) -> None:
+        try:
+            button.setToolButtonStyle(QtCore.Qt.ToolButtonTextUnderIcon)
+        except Exception:
+            pass
+        icon_px = max(12, int(icon_size or 16))
+        button.setIconSize(QtCore.QSize(icon_px, icon_px))
+        button.setMinimumSize(VOICE_ACTOR_ICON_BTN_SIDE, VOICE_ACTOR_ICON_BTN_SIDE)
+        button.setMaximumSize(VOICE_ACTOR_ICON_BTN_SIDE, VOICE_ACTOR_ICON_BTN_SIDE)
+        try:
+            button.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+        except Exception:
+            pass
+
+    def _erase_target_text(self) -> str:
+        target = str(self._stt_last_pause_snapshot or "")
+        if target:
+            return target
+        return str(self._stt_session_base_text or "")
+
+    def _can_erase_last_spoken(self) -> bool:
+        current = str(self._transcript.toPlainText() or "")
+        if not current.strip():
+            return False
+        listening, _paused, _stop_requested = self._stt_state()
+        if not listening:
+            return True
+        target = self._erase_target_text()
+        return current != target
+
+    def _update_contextual_action_roles(self) -> None:
+        listening, _paused, _stop_requested = self._stt_state()
+        listening_active = bool(listening)
+        speaking_active = bool(self._tts_playing)
+
+        if listening_active:
+            self._replay_role = "erase"
+            self._replay_btn.setText("Erase")
+            self._replay_btn.setStyleSheet(_tool_button_style("#111827", "#374151", "#1f2937", text="#e5e7eb"))
+            if not self._eraser_icon.isNull():
+                self._replay_btn.setIcon(self._eraser_icon)
+            self._replay_btn.setToolTip("Erase the latest spoken segment and keep text from before the last pause.")
+        else:
+            self._replay_role = "replay"
+            self._replay_btn.setText("Replay")
+            self._replay_btn.setStyleSheet(_tool_button_style("#334155", "#475569", "#3f4d62", text="#e2e8f0"))
+            if not self._replay_icon.isNull():
+                self._replay_btn.setIcon(self._replay_icon)
+            self._replay_btn.setToolTip("Replay the last spoken output.")
+
+        if listening_active or speaking_active:
+            self._stop_role = "stop"
+            self._stop_btn.setText("Stop")
+            self._stop_btn.setStyleSheet(_tool_button_style("#7f1d1d", "#b91c1c", "#991b1b", text="#f8fafc"))
+            if not self._stop_icon.isNull():
+                self._stop_btn.setIcon(self._stop_icon)
+            self._stop_btn.setToolTip("Stop speech or listening immediately.")
+        else:
+            self._stop_role = "erase"
+            self._stop_btn.setText("Erase")
+            self._stop_btn.setStyleSheet(_tool_button_style("#111827", "#374151", "#1f2937", text="#e5e7eb"))
+            if not self._eraser_icon.isNull():
+                self._stop_btn.setIcon(self._eraser_icon)
+            self._stop_btn.setToolTip("Erase the latest spoken segment and keep text from before the last pause.")
+
     def _apply_mode_ui(self) -> None:
         if self._chatbot_connected:
-            self._mode_btn.setText("Text -> Voice")
+            self._mode_btn.setText("Text\nVoice")
             self._mode_btn.setStyleSheet(_button_style("#1e3a8a", "#3b5bb0", "#23459f"))
             self._mode_btn.setToolTip("Chatbot input forces Text -> Voice auto mode.")
             self._action_btn.setText("Auto")
@@ -844,24 +987,84 @@ class VoiceActorWidget(QtWidgets.QWidget):
             self._action_btn.setIcon(self._chatbot_icon)
             self._action_btn.setToolTip("Replay the latest chatbot response.")
             self._replay_btn.setToolTip("Replay the last spoken output.")
+            self._pause_btn.setToolTip("Pause is available in Voice -> Text listen mode.")
             self._stop_btn.setToolTip("Stop speech immediately.")
+            self._update_pause_button_ui()
+            self._update_control_states()
             return
         if self._mode == "voice_to_text":
-            self._mode_btn.setText("Voice -> Text")
+            self._mode_btn.setText("Voice\nText")
             self._mode_btn.setStyleSheet(_button_style("#4d1616", "#6a2222", "#5a1b1b"))
             self._action_btn.setText("Listen")
             self._action_btn.setStyleSheet(_button_style("#6b1f1f", "#8b2b2b", "#7a2323"))
             self._action_btn.setIcon(self._listen_icon)
-            self._action_btn.setToolTip("Listen on microphone and transcribe speech.")
+            self._action_btn.setToolTip("Listen continuously and transcribe speech.")
+            self._pause_btn.setToolTip("Pause/resume active listening.")
         else:
-            self._mode_btn.setText("Text -> Voice")
+            self._mode_btn.setText("Text\nVoice")
             self._mode_btn.setStyleSheet(_button_style("#1e3a8a", "#3b5bb0", "#23459f"))
             self._action_btn.setText("Speak")
             self._action_btn.setStyleSheet(_button_style("#1d4ed8", "#60a5fa", "#2563eb"))
             self._action_btn.setIcon(self._speak_icon)
             self._action_btn.setToolTip("Speak text from input or transcript box.")
+            self._pause_btn.setToolTip("Pause is available in Voice -> Text listen mode.")
         self._replay_btn.setToolTip("Replay the last spoken output.")
-        self._stop_btn.setToolTip("Stop speech immediately.")
+        self._stop_btn.setToolTip("Stop speech or listening immediately.")
+        self._update_pause_button_ui()
+        self._update_control_states()
+
+    def _stt_state(self) -> tuple[bool, bool, bool]:
+        with self._stt_state_lock:
+            return bool(self._stt_listening), bool(self._stt_paused), bool(self._stt_stop_requested)
+
+    def _set_stt_state(
+        self,
+        *,
+        listening: bool | None = None,
+        paused: bool | None = None,
+        stop_requested: bool | None = None,
+    ) -> None:
+        with self._stt_state_lock:
+            if listening is not None:
+                self._stt_listening = bool(listening)
+            if paused is not None:
+                self._stt_paused = bool(paused)
+            if stop_requested is not None:
+                self._stt_stop_requested = bool(stop_requested)
+
+    def _update_pause_button_ui(self) -> None:
+        listening, paused, _stop_requested = self._stt_state()
+        flashing = bool(paused and listening and self._pause_flash_state)
+        self._pause_btn.setText("Paused" if paused and listening else "Pause")
+        self._pause_btn.setStyleSheet(_pause_button_style(paused=bool(paused and listening), flash=flashing))
+        if paused and listening:
+            if not self._pause_flash_timer.isActive():
+                self._pause_flash_timer.start()
+        else:
+            if self._pause_flash_timer.isActive():
+                self._pause_flash_timer.stop()
+            self._pause_flash_state = False
+
+    def _update_control_states(self) -> None:
+        self._update_contextual_action_roles()
+        listening, _paused, stop_requested = self._stt_state()
+        can_control_listening = bool(listening and not stop_requested)
+        can_erase = self._can_erase_last_spoken()
+        self._mode_btn.setEnabled(not self._busy and not self._chatbot_connected)
+        self._action_btn.setEnabled(not self._busy)
+        if self._replay_role == "erase":
+            self._replay_btn.setEnabled(bool(self._busy and can_control_listening and can_erase))
+        else:
+            self._replay_btn.setEnabled(not self._busy)
+        if self._stop_role == "erase":
+            self._stop_btn.setEnabled(bool((not self._busy) and can_erase))
+        else:
+            self._stop_btn.setEnabled(bool(self._busy and (self._tts_playing or can_control_listening)))
+        self._pause_btn.setEnabled(bool(self._busy and can_control_listening))
+        self._copy_btn.setEnabled(not self._busy)
+        self._param_combo.setEnabled(bool(self._source_param_options) and not self._busy and not self._chatbot_connected)
+        self._voice_combo.setEnabled(bool(self._tts_voice_options) and not self._busy)
+        self._stt_combo.setEnabled(not self._busy)
 
     def _set_mode(self, mode: str, *, persist: bool = True) -> None:
         normalized = "text_to_voice" if str(mode or "").strip().lower() == "text_to_voice" else "voice_to_text"
@@ -1030,12 +1233,6 @@ class VoiceActorWidget(QtWidgets.QWidget):
             self._param_combo.setToolTip("Connect a node with parameters to choose a value for speech.")
 
         self._apply_mode_ui()
-        self._mode_btn.setEnabled(not self._busy and not self._chatbot_connected)
-        self._action_btn.setEnabled(not self._busy)
-        self._replay_btn.setEnabled(not self._busy)
-        self._stop_btn.setEnabled(bool(self._busy and self._tts_playing))
-        self._voice_combo.setEnabled(bool(self._tts_voice_options) and not self._busy)
-        self._stt_combo.setEnabled(not self._busy)
 
     def _refresh_voice_options(self) -> None:
         google_ready = gTTS is not None and pygame is not None
@@ -1178,20 +1375,14 @@ class VoiceActorWidget(QtWidgets.QWidget):
 
     def _set_busy(self, active: bool, label: str = "") -> None:
         self._busy = bool(active)
-        self._mode_btn.setEnabled(not self._busy and not self._chatbot_connected)
-        self._action_btn.setEnabled(not self._busy)
-        self._replay_btn.setEnabled(not self._busy)
-        self._stop_btn.setEnabled(bool(self._busy and self._tts_playing))
-        self._copy_btn.setEnabled(not self._busy)
-        self._param_combo.setEnabled(bool(self._source_param_options) and not self._busy and not self._chatbot_connected)
-        self._voice_combo.setEnabled(bool(self._tts_voice_options) and not self._busy)
-        self._stt_combo.setEnabled(not self._busy)
+        self._update_pause_button_ui()
+        self._update_control_states()
         try:
             self._node_item.setBusyState(bool(active), label if active else "")
         except Exception:
             pass
 
-    def _set_transcript(self, text: str) -> None:
+    def _set_transcript(self, text: str, *, publish: bool = True) -> None:
         value = text or ""
         try:
             self._syncing_text = True
@@ -1201,7 +1392,19 @@ class VoiceActorWidget(QtWidgets.QWidget):
         finally:
             self._transcript.blockSignals(False)
             self._syncing_text = False
-        _set_node_info(self._node_item, value)
+        if publish:
+            _set_node_info(self._node_item, value)
+
+    def _append_transcript(self, text: str, *, publish: bool = False) -> None:
+        chunk = (text or "").strip()
+        if not chunk:
+            return
+        current = self._transcript.toPlainText() or ""
+        if current and not current.endswith((" ", "\n", "\t")):
+            merged = f"{current} {chunk}"
+        else:
+            merged = f"{current}{chunk}"
+        self._set_transcript(merged, publish=publish)
 
     def _toggle_mode(self) -> None:
         if self._busy:
@@ -1218,6 +1421,38 @@ class VoiceActorWidget(QtWidgets.QWidget):
         if self._syncing_text:
             return
         _set_node_info(self._node_item, self._transcript.toPlainText())
+        self._update_control_states()
+
+    def _toggle_pause_listening(self) -> None:
+        listening, paused, stop_requested = self._stt_state()
+        if not listening or stop_requested:
+            self._set_status("Pause is available only while listening.")
+            return
+        if not paused:
+            self._stt_last_pause_snapshot = str(self._transcript.toPlainText() or "")
+            self._set_stt_state(paused=True)
+        else:
+            self._set_stt_state(paused=False)
+        self._pause_flash_state = False
+        self._update_pause_button_ui()
+        self._update_control_states()
+        if not paused:
+            self._set_status("Listening paused.")
+        else:
+            stt_method = _normalize_stt_method(self._selected_stt_method)
+            if stt_method == STT_METHOD_LOCAL_WHISPER:
+                self._set_status("Listening resumed... (Local Whisper)")
+            else:
+                self._set_status("Listening resumed... (Google)")
+
+    def _on_pause_flash_tick(self) -> None:
+        listening, paused, _stop_requested = self._stt_state()
+        if not listening or not paused:
+            self._pause_flash_state = False
+            self._update_pause_button_ui()
+            return
+        self._pause_flash_state = not self._pause_flash_state
+        self._update_pause_button_ui()
 
     def _copy_transcript(self) -> None:
         text = (self._transcript.toPlainText() or "").strip()
@@ -1231,6 +1466,31 @@ class VoiceActorWidget(QtWidgets.QWidget):
         clipboard.setText(text)
         self._set_status("Transcript copied.")
 
+    def _erase_last_spoken_segment(self) -> None:
+        target = self._erase_target_text()
+        current = str(self._transcript.toPlainText() or "")
+        if current == target:
+            self._set_status("Nothing new to erase.")
+            return
+        listening, _paused, _stop_requested = self._stt_state()
+        self._set_transcript(target, publish=not listening)
+        if listening:
+            self._stt_session_has_new_text = bool(target != self._stt_session_base_text)
+        self._set_status("Latest spoken segment erased.")
+        self._update_control_states()
+
+    def _on_replay_or_erase_clicked(self) -> None:
+        if self._replay_role == "erase":
+            self._erase_last_spoken_segment()
+            return
+        self._replay_last()
+
+    def _on_stop_or_erase_clicked(self) -> None:
+        if self._stop_role == "erase":
+            self._erase_last_spoken_segment()
+            return
+        self._stop_audio()
+
     def _replay_last(self) -> None:
         if self._busy:
             return
@@ -1242,6 +1502,14 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._speak_text(text, source=source if source else "replay")
 
     def _stop_audio(self) -> None:
+        listening, _paused, stop_requested = self._stt_state()
+        if listening and not stop_requested:
+            self._set_stt_state(stop_requested=True, paused=False)
+            self._pause_flash_state = False
+            self._update_pause_button_ui()
+            self._update_control_states()
+            self._set_status("Stopping listening...")
+            return
         if not self._tts_playing:
             self._set_status("Nothing is playing.")
             return
@@ -1291,41 +1559,117 @@ class VoiceActorWidget(QtWidgets.QWidget):
                 error=True,
             )
             return
+        # Start each listen session as a fresh message transcription.
+        self._set_transcript("", publish=True)
+        self._stt_session_base_text = ""
+        self._stt_last_pause_snapshot = ""
+        self._set_stt_state(listening=True, paused=False, stop_requested=False)
+        self._stt_session_has_new_text = False
+        self._pause_flash_state = False
+        self._update_pause_button_ui()
         self._set_busy(True, "listening")
         if stt_method == STT_METHOD_LOCAL_WHISPER:
-            self._set_status("Listening... (Local Whisper)")
+            self._set_status("Listening... (Local Whisper). Use Pause/Stop to control capture.")
         else:
-            self._set_status("Listening... (Google)")
+            self._set_status("Listening... (Google). Use Pause/Stop to control capture.")
         threading.Thread(target=self._stt_worker, args=(stt_method,), daemon=True).start()
 
     def _stt_worker(self, stt_method: str) -> None:
-        transcript = ""
+        transcript_parts = []
         error = ""
         selected_method = _normalize_stt_method(stt_method)
+        wait_timeout = getattr(sr, "WaitTimeoutError", None) if sr is not None else None
+        unknown_value = getattr(sr, "UnknownValueError", None) if sr is not None else None
+        request_error = getattr(sr, "RequestError", None) if sr is not None else None
         try:
             recognizer = sr.Recognizer()
             with sr.Microphone() as source:
                 recognizer.adjust_for_ambient_noise(source, duration=0.4)
-                audio = recognizer.listen(source, timeout=8, phrase_time_limit=20)
-            if selected_method == STT_METHOD_LOCAL_WHISPER:
-                wav_data = audio.get_wav_data(convert_rate=16000, convert_width=2)
-                transcript, error = _transcribe_local_whisper(wav_data)
-            else:
-                transcript = (recognizer.recognize_google(audio) or "").strip()
-                if not transcript:
-                    error = "Speech detected but transcript was empty."
+                while True:
+                    listening, paused, stop_requested = self._stt_state()
+                    if not listening or stop_requested:
+                        break
+                    if paused:
+                        time.sleep(0.08)
+                        continue
+                    try:
+                        audio = recognizer.listen(source, timeout=1.2, phrase_time_limit=20)
+                    except Exception as exc:
+                        if wait_timeout and isinstance(exc, wait_timeout):
+                            continue
+                        error = _format_stt_error(exc)
+                        break
+                    chunk = ""
+                    if selected_method == STT_METHOD_LOCAL_WHISPER:
+                        wav_data = audio.get_wav_data(convert_rate=16000, convert_width=2)
+                        chunk, chunk_error = _transcribe_local_whisper(wav_data)
+                        if chunk_error:
+                            if chunk_error == "Speech detected but transcript was empty.":
+                                continue
+                            error = chunk_error
+                            break
+                    else:
+                        try:
+                            chunk = (recognizer.recognize_google(audio) or "").strip()
+                        except Exception as exc:
+                            if unknown_value and isinstance(exc, unknown_value):
+                                continue
+                            if request_error and isinstance(exc, request_error):
+                                error = f"Speech recognition service failed: {exc}"
+                            else:
+                                error = _format_stt_error(exc)
+                            break
+                    clean_chunk = str(chunk or "").strip()
+                    if not clean_chunk:
+                        continue
+                    transcript_parts.append(clean_chunk)
+                    self._stt_chunk.emit(clean_chunk)
         except Exception as exc:
             error = _format_stt_error(exc)
+        _listening, _paused, stop_requested = self._stt_state()
+        if stop_requested and not error:
+            error = "__stopped__"
+        transcript = " ".join(transcript_parts).strip()
         self._stt_done.emit(transcript, error)
+
+    @QtCore.Slot(str)
+    def _on_stt_chunk(self, chunk: str) -> None:
+        clean = (chunk or "").strip()
+        if not clean:
+            return
+        self._stt_session_has_new_text = True
+        self._append_transcript(clean, publish=False)
+        self._update_control_states()
 
     @QtCore.Slot(str, str)
     def _finish_stt(self, transcript: str, error: str) -> None:
+        had_new_text = bool(self._stt_session_has_new_text)
+        self._stt_session_has_new_text = False
+        self._set_stt_state(listening=False, paused=False, stop_requested=False)
+        self._pause_flash_state = False
+        self._update_pause_button_ui()
         self._set_busy(False, "")
+        if transcript and not had_new_text:
+            self._append_transcript(transcript, publish=False)
+            had_new_text = True
+        if had_new_text:
+            _set_node_info(self._node_item, self._transcript.toPlainText() or "")
         if error:
+            if str(error).strip() == "__stopped__":
+                if had_new_text:
+                    self._set_status("Listening stopped. Transcript updated.")
+                else:
+                    self._set_status("Listening stopped.")
+                return
+            if had_new_text:
+                self._set_status(f"{error} Transcript kept from captured speech.", error=True)
+                return
             self._set_status(error, error=True)
             return
-        self._set_transcript(transcript)
-        self._set_status("Transcript updated.")
+        if had_new_text:
+            self._set_status("Transcript updated.")
+        else:
+            self._set_status("No speech captured.")
 
     def _maybe_trigger_chatbot_auto(self, changed_name=None) -> None:
         if self._processing_chatbot_auto:
