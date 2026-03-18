@@ -710,6 +710,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._listen_icon = _voice_action_icon("Mic_Icon.png")
         self._speak_icon = _voice_action_icon("Voice_Icon.png")
         self._chatbot_icon = _voice_action_icon("Chatbot_Icon.png")
+        self._backspace_icon = _voice_action_icon("StreightArrow_Left_Icon.png")
         self._replay_icon = _voice_action_icon("PlayButton_icon.png")
         self._eraser_icon = _voice_action_icon("Eraser_Icon.png")
         self._pause_icon = _voice_action_icon("Pause_Icon.png")
@@ -745,8 +746,10 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._pause_flash_timer = QtCore.QTimer(self)
         self._pause_flash_timer.setInterval(420)
         self._pause_flash_timer.timeout.connect(self._on_pause_flash_tick)
+        self._action_role = "action"
         self._replay_role = "replay"
-        self._stop_role = "stop"
+        self._stop_role = "erase"
+        self._transcript_undo_stack = []
         model = getattr(self._node_item, "model", None)
         saved_mode = _param_value(model, VOICE_ACTOR_MODE_KEY, "").strip().lower()
         self._mode = "text_to_voice" if saved_mode == "text_to_voice" else "voice_to_text"
@@ -801,11 +804,11 @@ class VoiceActorWidget(QtWidgets.QWidget):
 
         self._stop_btn = QtWidgets.QToolButton()
         self._configure_icon_button(self._stop_btn)
-        self._stop_btn.setText("Stop")
-        self._stop_btn.setStyleSheet(_tool_button_style("#7f1d1d", "#b91c1c", "#991b1b", text="#f8fafc"))
-        if not self._stop_icon.isNull():
-            self._stop_btn.setIcon(self._stop_icon)
-        self._stop_btn.clicked.connect(self._on_stop_or_erase_clicked)
+        self._stop_btn.setText("Erase")
+        self._stop_btn.setStyleSheet(_tool_button_style("#334155", "#475569", "#3f4d62", text="#e2e8f0"))
+        if not self._eraser_icon.isNull():
+            self._stop_btn.setIcon(self._eraser_icon)
+        self._stop_btn.clicked.connect(self._on_backspace_or_erase_clicked)
 
         self._copy_btn = QtWidgets.QToolButton()
         self._configure_icon_button(self._copy_btn)
@@ -931,20 +934,43 @@ class VoiceActorWidget(QtWidgets.QWidget):
             return target
         return str(self._stt_session_base_text or "")
 
+    def _can_backspace_transcript(self) -> bool:
+        return bool(self._transcript_undo_stack)
+
     def _can_erase_last_spoken(self) -> bool:
         current = str(self._transcript.toPlainText() or "")
-        if not current.strip():
-            return False
-        listening, _paused, _stop_requested = self._stt_state()
-        if not listening:
-            return True
-        target = self._erase_target_text()
-        return current != target
+        return bool(current.strip())
 
     def _update_contextual_action_roles(self) -> None:
         listening, _paused, _stop_requested = self._stt_state()
         listening_active = bool(listening)
         speaking_active = bool(self._tts_playing)
+        active_processing = bool(listening_active or speaking_active)
+
+        if active_processing:
+            self._action_role = "stop"
+            self._action_btn.setText("Stop")
+            self._action_btn.setStyleSheet(_tool_button_style("#7f1d1d", "#b91c1c", "#991b1b", text="#f8fafc"))
+            if not self._stop_icon.isNull():
+                self._action_btn.setIcon(self._stop_icon)
+            self._action_btn.setToolTip("Stop speech or listening immediately.")
+        else:
+            self._action_role = "action"
+            if self._chatbot_connected:
+                self._action_btn.setText("Auto")
+                self._action_btn.setStyleSheet(_auto_button_style())
+                self._action_btn.setIcon(self._chatbot_icon)
+                self._action_btn.setToolTip("Replay the latest chatbot response.")
+            elif self._mode == "voice_to_text":
+                self._action_btn.setText("Listen")
+                self._action_btn.setStyleSheet(_button_style("#6b1f1f", "#8b2b2b", "#7a2323"))
+                self._action_btn.setIcon(self._listen_icon)
+                self._action_btn.setToolTip("Listen continuously and transcribe speech.")
+            else:
+                self._action_btn.setText("Speak")
+                self._action_btn.setStyleSheet(_button_style("#1d4ed8", "#60a5fa", "#2563eb"))
+                self._action_btn.setIcon(self._speak_icon)
+                self._action_btn.setToolTip("Speak text from input or transcript box.")
 
         if listening_active:
             self._replay_role = "erase"
@@ -952,7 +978,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
             self._replay_btn.setStyleSheet(_tool_button_style("#334155", "#475569", "#3f4d62", text="#e2e8f0"))
             if not self._eraser_icon.isNull():
                 self._replay_btn.setIcon(self._eraser_icon)
-            self._replay_btn.setToolTip("Erase the latest spoken segment and keep text from before the last pause.")
+            self._replay_btn.setToolTip("Clear transcript.")
         else:
             self._replay_role = "replay"
             self._replay_btn.setText("Replay")
@@ -961,20 +987,20 @@ class VoiceActorWidget(QtWidgets.QWidget):
                 self._replay_btn.setIcon(self._replay_icon)
             self._replay_btn.setToolTip("Replay the last spoken output.")
 
-        if listening_active or speaking_active:
-            self._stop_role = "stop"
-            self._stop_btn.setText("Stop")
-            self._stop_btn.setStyleSheet(_tool_button_style("#7f1d1d", "#b91c1c", "#991b1b", text="#f8fafc"))
-            if not self._stop_icon.isNull():
-                self._stop_btn.setIcon(self._stop_icon)
-            self._stop_btn.setToolTip("Stop speech or listening immediately.")
+        if active_processing:
+            self._stop_role = "backspace"
+            self._stop_btn.setText("Back")
+            self._stop_btn.setStyleSheet(_tool_button_style("#334155", "#475569", "#3f4d62", text="#e2e8f0"))
+            if not self._backspace_icon.isNull():
+                self._stop_btn.setIcon(self._backspace_icon)
+            self._stop_btn.setToolTip("Undo the last transcript chunk.")
         else:
             self._stop_role = "erase"
             self._stop_btn.setText("Erase")
             self._stop_btn.setStyleSheet(_tool_button_style("#334155", "#475569", "#3f4d62", text="#e2e8f0"))
             if not self._eraser_icon.isNull():
                 self._stop_btn.setIcon(self._eraser_icon)
-            self._stop_btn.setToolTip("Erase the latest spoken segment and keep text from before the last pause.")
+            self._stop_btn.setToolTip("Clear transcript.")
 
     def _apply_mode_ui(self) -> None:
         if self._chatbot_connected:
@@ -1048,17 +1074,22 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._update_contextual_action_roles()
         listening, _paused, stop_requested = self._stt_state()
         can_control_listening = bool(listening and not stop_requested)
+        can_stop_action = bool(self._tts_playing or can_control_listening)
+        can_backspace = self._can_backspace_transcript()
         can_erase = self._can_erase_last_spoken()
         self._mode_btn.setEnabled(not self._busy and not self._chatbot_connected)
-        self._action_btn.setEnabled(not self._busy)
+        if self._action_role == "stop":
+            self._action_btn.setEnabled(bool(self._busy and can_stop_action))
+        else:
+            self._action_btn.setEnabled(not self._busy)
         if self._replay_role == "erase":
-            self._replay_btn.setEnabled(bool(self._busy and can_control_listening and can_erase))
+            self._replay_btn.setEnabled(bool(self._busy and can_erase))
         else:
             self._replay_btn.setEnabled(not self._busy)
+        if self._stop_role == "backspace":
+            self._stop_btn.setEnabled(bool(self._busy and can_backspace))
         if self._stop_role == "erase":
             self._stop_btn.setEnabled(bool((not self._busy) and can_erase))
-        else:
-            self._stop_btn.setEnabled(bool(self._busy and (self._tts_playing or can_control_listening)))
         self._pause_btn.setEnabled(bool(self._busy and can_control_listening))
         self._copy_btn.setEnabled(not self._busy)
         self._param_combo.setEnabled(bool(self._source_param_options) and not self._busy and not self._chatbot_connected)
@@ -1403,6 +1434,10 @@ class VoiceActorWidget(QtWidgets.QWidget):
             merged = f"{current} {chunk}"
         else:
             merged = f"{current}{chunk}"
+        if merged != current:
+            self._transcript_undo_stack.append(current)
+            if len(self._transcript_undo_stack) > 200:
+                self._transcript_undo_stack = self._transcript_undo_stack[-200:]
         self._set_transcript(merged, publish=publish)
 
     def _toggle_mode(self) -> None:
@@ -1419,6 +1454,8 @@ class VoiceActorWidget(QtWidgets.QWidget):
     def _on_transcript_changed(self) -> None:
         if self._syncing_text:
             return
+        if not self._busy:
+            self._transcript_undo_stack.clear()
         _set_node_info(self._node_item, self._transcript.toPlainText())
         self._update_control_states()
 
@@ -1466,16 +1503,29 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._set_status("Transcript copied.")
 
     def _erase_last_spoken_segment(self) -> None:
-        target = self._erase_target_text()
         current = str(self._transcript.toPlainText() or "")
-        if current == target:
-            self._set_status("Nothing new to erase.")
+        if not current.strip():
+            self._set_status("Transcript is already empty.")
             return
+        self._set_transcript("", publish=not self._busy)
+        self._transcript_undo_stack.clear()
+        self._stt_session_has_new_text = False
+        self._stt_session_base_text = ""
+        self._stt_last_pause_snapshot = ""
+        self._set_status("Transcript cleared.")
+        self._update_control_states()
+
+    def _undo_last_transcript_chunk(self) -> None:
+        if not self._transcript_undo_stack:
+            self._set_status("Nothing to undo.")
+            self._update_control_states()
+            return
+        previous_text = str(self._transcript_undo_stack.pop() or "")
         listening, _paused, _stop_requested = self._stt_state()
-        self._set_transcript(target, publish=not listening)
+        self._set_transcript(previous_text, publish=not listening)
         if listening:
-            self._stt_session_has_new_text = bool(target != self._stt_session_base_text)
-        self._set_status("Latest spoken segment erased.")
+            self._stt_session_has_new_text = bool(previous_text.strip())
+        self._set_status("Undid last transcript chunk.")
         self._update_control_states()
 
     def _on_replay_or_erase_clicked(self) -> None:
@@ -1484,11 +1534,13 @@ class VoiceActorWidget(QtWidgets.QWidget):
             return
         self._replay_last()
 
-    def _on_stop_or_erase_clicked(self) -> None:
+    def _on_backspace_or_erase_clicked(self) -> None:
+        if self._stop_role == "backspace":
+            self._undo_last_transcript_chunk()
+            return
         if self._stop_role == "erase":
             self._erase_last_spoken_segment()
             return
-        self._stop_audio()
 
     def _replay_last(self) -> None:
         if self._busy:
@@ -1528,11 +1580,13 @@ class VoiceActorWidget(QtWidgets.QWidget):
                     pygame.mixer.music.stop()
             except Exception:
                 pass
-        self._stop_btn.setEnabled(False)
+        self._update_control_states()
         self._set_status("Stopping speech...")
 
     def _on_action_clicked(self) -> None:
         if self._busy:
+            if self._action_role == "stop":
+                self._stop_audio()
             return
         self._refresh_source_param_options()
         if self._chatbot_connected:
@@ -1560,6 +1614,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
             return
         # Start each listen session as a fresh message transcription.
         self._set_transcript("", publish=True)
+        self._transcript_undo_stack.clear()
         self._stt_session_base_text = ""
         self._stt_last_pause_snapshot = ""
         self._set_stt_state(listening=True, paused=False, stop_requested=False)
@@ -1568,9 +1623,9 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._update_pause_button_ui()
         self._set_busy(True, "listening")
         if stt_method == STT_METHOD_LOCAL_WHISPER:
-            self._set_status("Listening... (Local Whisper). Use Pause/Stop to control capture.")
+            self._set_status("Listening... (Local Whisper). Use Pause and Stop to control capture.")
         else:
-            self._set_status("Listening... (Google). Use Pause/Stop to control capture.")
+            self._set_status("Listening... (Google). Use Pause and Stop to control capture.")
         threading.Thread(target=self._stt_worker, args=(stt_method,), daemon=True).start()
 
     def _stt_worker(self, stt_method: str) -> None:
@@ -1644,6 +1699,8 @@ class VoiceActorWidget(QtWidgets.QWidget):
     def _finish_stt(self, transcript: str, error: str) -> None:
         had_new_text = bool(self._stt_session_has_new_text)
         self._stt_session_has_new_text = False
+        # Chatbot handoff is done on stop; clear undo cache so it does not accumulate forever.
+        self._transcript_undo_stack.clear()
         self._set_stt_state(listening=False, paused=False, stop_requested=False)
         self._pause_flash_state = False
         self._update_pause_button_ui()
