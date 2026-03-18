@@ -772,9 +772,9 @@ class VoiceActorWidget(QtWidgets.QWidget):
             pass
 
         self._mode_btn = QtWidgets.QPushButton()
-        self._mode_btn.setFixedSize(VOICE_ACTOR_ICON_BTN_SIDE, VOICE_ACTOR_ICON_BTN_SIDE)
+        self._mode_btn.setFixedHeight(VOICE_ACTOR_ICON_BTN_SIDE)
         try:
-            self._mode_btn.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+            self._mode_btn.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         except Exception:
             pass
         self._mode_btn.clicked.connect(self._toggle_mode)
@@ -867,13 +867,12 @@ class VoiceActorWidget(QtWidgets.QWidget):
         top = QtWidgets.QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
         top.setSpacing(6)
-        top.addWidget(self._mode_btn, 0)
+        top.addWidget(self._mode_btn, 1)
         top.addWidget(self._action_btn, 0)
         top.addWidget(self._pause_btn, 0)
         top.addWidget(self._stop_btn, 0)
         top.addWidget(self._replay_btn, 0)
         top.addWidget(self._copy_btn, 0)
-        top.addStretch(1)
 
         selector = QtWidgets.QHBoxLayout()
         selector.setContentsMargins(0, 0, 0, 0)
@@ -950,7 +949,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
         if listening_active:
             self._replay_role = "erase"
             self._replay_btn.setText("Erase")
-            self._replay_btn.setStyleSheet(_tool_button_style("#111827", "#374151", "#1f2937", text="#e5e7eb"))
+            self._replay_btn.setStyleSheet(_tool_button_style("#334155", "#475569", "#3f4d62", text="#e2e8f0"))
             if not self._eraser_icon.isNull():
                 self._replay_btn.setIcon(self._eraser_icon)
             self._replay_btn.setToolTip("Erase the latest spoken segment and keep text from before the last pause.")
@@ -972,14 +971,14 @@ class VoiceActorWidget(QtWidgets.QWidget):
         else:
             self._stop_role = "erase"
             self._stop_btn.setText("Erase")
-            self._stop_btn.setStyleSheet(_tool_button_style("#111827", "#374151", "#1f2937", text="#e5e7eb"))
+            self._stop_btn.setStyleSheet(_tool_button_style("#334155", "#475569", "#3f4d62", text="#e2e8f0"))
             if not self._eraser_icon.isNull():
                 self._stop_btn.setIcon(self._eraser_icon)
             self._stop_btn.setToolTip("Erase the latest spoken segment and keep text from before the last pause.")
 
     def _apply_mode_ui(self) -> None:
         if self._chatbot_connected:
-            self._mode_btn.setText("Text\nVoice")
+            self._mode_btn.setText("Text --> Voice")
             self._mode_btn.setStyleSheet(_button_style("#1e3a8a", "#3b5bb0", "#23459f"))
             self._mode_btn.setToolTip("Chatbot input forces Text -> Voice auto mode.")
             self._action_btn.setText("Auto")
@@ -993,7 +992,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
             self._update_control_states()
             return
         if self._mode == "voice_to_text":
-            self._mode_btn.setText("Voice\nText")
+            self._mode_btn.setText("Voice --> Text")
             self._mode_btn.setStyleSheet(_button_style("#4d1616", "#6a2222", "#5a1b1b"))
             self._action_btn.setText("Listen")
             self._action_btn.setStyleSheet(_button_style("#6b1f1f", "#8b2b2b", "#7a2323"))
@@ -1001,7 +1000,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
             self._action_btn.setToolTip("Listen continuously and transcribe speech.")
             self._pause_btn.setToolTip("Pause/resume active listening.")
         else:
-            self._mode_btn.setText("Text\nVoice")
+            self._mode_btn.setText("Text --> Voice")
             self._mode_btn.setStyleSheet(_button_style("#1e3a8a", "#3b5bb0", "#23459f"))
             self._action_btn.setText("Speak")
             self._action_btn.setStyleSheet(_button_style("#1d4ed8", "#60a5fa", "#2563eb"))
