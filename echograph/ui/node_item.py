@@ -1761,6 +1761,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 node_w = max(node_w, int(getattr(_voice_actor_spec, "VOICE_ACTOR_BODY_W", node_w)))
             except Exception:
                 pass
+        elif kind == "output":
+            body_h = 58
+            node_w = max(self._BASE_W, 220)
+            try:
+                from nodes.output import spec as _output_spec  # type: ignore
+                body_h = max(body_h, int(getattr(_output_spec, "OUTPUT_BODY_H", body_h)))
+                node_w = max(node_w, int(getattr(_output_spec, "OUTPUT_BODY_W", node_w)))
+            except Exception:
+                pass
         elif kind == "primitive":
             body_h = 32
             node_w = self._BASE_W
@@ -1813,6 +1822,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
         extra_pad = self._PADDING
         if kind in ("import", "scene", "scene_assembly", "scene_outliner"):
             extra_pad = 0.0
+        elif kind == "output":
+            extra_pad = self._PADDING + 4.0
         new_h = max(self._BASE_H, header_h + switch_h + params_h + body_h + extra_pad)
 
         if kind == "note":

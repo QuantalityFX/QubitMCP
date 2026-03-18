@@ -907,6 +907,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._refresh_voice_options()
         self._refresh_stt_method_options()
         self._refresh_source_param_options()
+        self._queue_deferred_scene_bootstrap()
 
     def sizeHint(self):
         return QtCore.QSize(VOICE_ACTOR_BODY_W, VOICE_ACTOR_BODY_H)
@@ -1113,6 +1114,14 @@ class VoiceActorWidget(QtWidgets.QWidget):
             except Exception:
                 pass
         self._scene_connected = True
+
+    def _queue_deferred_scene_bootstrap(self) -> None:
+        QtCore.QTimer.singleShot(0, self._bootstrap_scene_bindings)
+        QtCore.QTimer.singleShot(120, self._bootstrap_scene_bindings)
+
+    def _bootstrap_scene_bindings(self) -> None:
+        self._ensure_scene_connections()
+        self._schedule_param_refresh()
 
     def _on_scene_links_changed(self, *_args) -> None:
         self._schedule_param_refresh()

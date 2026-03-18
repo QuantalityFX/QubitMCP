@@ -1,6 +1,7 @@
 # nodes/output/__init__.py
 from .spec import OUTPUT_SPEC
 
+
 def register(core=None):
     if core is None:
         from nodes import core as _core
@@ -10,5 +11,7 @@ def register(core=None):
     _core.register(
         "output",
         stripe_color=OUTPUT_SPEC.stripe_color,
-        augment_infocard_footer=None,
+        augment_infocard_footer=OUTPUT_SPEC.augment_infocard_footer,
+        render_node_body=OUTPUT_SPEC.render_node_body,
+        build_ports=OUTPUT_SPEC.build_ports,
     )
