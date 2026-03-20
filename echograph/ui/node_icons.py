@@ -40,6 +40,7 @@ _FX_NODE_ICON = None
 _CAMERA_NODE_ICON = None
 _VOLUME_SPLIT_ICON = None
 _VOICE_ACTOR_ICON = None
+_MEDIGATOR_ICON = None
 
 
 def _load_pm(rel_icon_name: str):
@@ -320,3 +321,11 @@ def _voice_actor_icon():
         return _VOICE_ACTOR_ICON
     _VOICE_ACTOR_ICON = _load_pm("TanyaAI_Icon.png")
     return _VOICE_ACTOR_ICON
+
+
+def _medigator_icon():
+    global _MEDIGATOR_ICON
+    if _MEDIGATOR_ICON is not None:
+        return _MEDIGATOR_ICON
+    _MEDIGATOR_ICON = _load_pm("Python_Icon.png") or _load_pm("Server_Icon.png")
+    return _MEDIGATOR_ICON

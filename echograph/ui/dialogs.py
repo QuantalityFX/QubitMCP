@@ -266,6 +266,8 @@ def _kind_icon(kind: str) -> QtGui.QIcon:
         icon_pm = node_icons._chatbot_icon()
     elif key in ("voice_actor", "voice actor", "voiceactor"):
         icon_pm = node_icons._voice_actor_icon() or node_icons._output_icon()
+    elif key in ("medigator_agent", "mediator_agent", "medigator", "mediator"):
+        icon_pm = node_icons._medigator_icon() or node_icons._python_icon() or node_icons._output_icon()
     elif key == "scene":
         icon_pm = node_icons._scene_icon()
     elif key == "camera":
@@ -337,7 +339,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
         self._kinds = [
             "node","camera","import","instance","primitive","uv_unwrap","texture","texture_pro","texture_layer","material","split_volume","transforms","fx","scene","render","video_player","export_fbx","html_preview","python","switch","output","local_server",
             "gantt_chart",
-            "llm_prompt","chatbot","voice_actor","librarian","note","append","image_collection","database"
+            "llm_prompt","chatbot","voice_actor","medigator_agent","librarian","note","append","image_collection","database"
         ]
         try:
             self._kinds.remove("note")
