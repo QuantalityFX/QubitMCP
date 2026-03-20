@@ -47,6 +47,7 @@ VOICE_ACTOR_NODE_ALIASES = [
     "voice actor",
     "voiceactor",
 ]
+VOICE_ACTOR_NODE_KINDS = {VOICE_ACTOR_NODE_KIND, *VOICE_ACTOR_NODE_ALIASES}
 
 VOICE_ACTOR_BODY_W = 460
 VOICE_ACTOR_BODY_H = 300
@@ -61,6 +62,16 @@ STT_METHOD_LOCAL_WHISPER = "local_whisper"
 STT_METHOD_GOOGLE = "google"
 LOCAL_WHISPER_MODEL_NAME = "base"
 LOCAL_WHISPER_LANGUAGE = "en"
+STT_IDLE_CONFIRM_SECONDS = 2.2
+STT_IDLE_CONFIRM_RESPONSE_SECONDS = 10.0
+STT_SEND_CONFIRM_WORDS = {"yes", "yeah", "yep", "yup", "done", "send", "okay", "ok"}
+STT_CONTINUE_LISTENING_WORDS = {"no", "nope", "wait", "continue", "hold"}
+STT_STOP_SPEAKING_PHRASES = (
+    "stop speaking",
+    "stop talking",
+    "stop the voice",
+    "stop playback",
+)
 CHATBOT_NODE_KINDS = {"chatbot", "chat bot", "chat_bot"}
 DATABASE_NODE_KINDS = {"database"}
 CHATBOT_DB_NAME = "my_database"
@@ -348,12 +359,12 @@ def _run_python_transform(scene, python_item) -> tuple[str, str]:
 
     out_text = out_buf.getvalue().strip()
     output_text = ns.get("output_text", None)
-    if output_text is None:
+    if output_text is None or not str(output_text).strip():
         output_text = ns.get("result", None)
-    if output_text is None:
-        output_text = getattr(model, "info", "")
-    if output_text is None:
+    if output_text is None or not str(output_text).strip():
         output_text = out_text
+    if output_text is None or not str(output_text).strip():
+        output_text = getattr(model, "info", "")
     clean = str(output_text or "").strip()
 
     changed = False
@@ -700,6 +711,8 @@ def build_ports(node_item) -> None:
 class VoiceActorWidget(QtWidgets.QWidget):
     _stt_done = QtCore.Signal(str, str)
     _stt_chunk = QtCore.Signal(str)
+    _stt_status = QtCore.Signal(str)
+    _stt_command = QtCore.Signal(str)
     _tts_done = QtCore.Signal(str)
 
     def __init__(self, node_item, parent=None):
@@ -897,6 +910,8 @@ class VoiceActorWidget(QtWidgets.QWidget):
 
         self._stt_done.connect(self._finish_stt)
         self._stt_chunk.connect(self._on_stt_chunk)
+        self._stt_status.connect(self._on_stt_status)
+        self._stt_command.connect(self._on_stt_command)
         self._tts_done.connect(self._finish_tts)
 
         initial_text = (getattr(getattr(self._node_item, "model", None), "info", "") or "").strip()
@@ -1624,6 +1639,197 @@ class VoiceActorWidget(QtWidgets.QWidget):
             self._set_status("Listening... (Google). Use Pause and Stop to control capture.")
         threading.Thread(target=self._stt_worker, args=(stt_method,), daemon=True).start()
 
+    @QtCore.Slot(str)
+    def _on_stt_status(self, message: str) -> None:
+        text = str(message or "").strip()
+        if not text:
+            return
+        self._set_status(text)
+
+    @QtCore.Slot(str)
+    def _on_stt_command(self, command: str) -> None:
+        cmd = str(command or "").strip().lower()
+        if cmd != "stop_speaking":
+            return
+        stopped_any = self._interrupt_other_voice_actors()
+        if stopped_any:
+            self._set_status("Stopped speech. Listening...")
+        else:
+            self._set_status("No active speech found. Listening...")
+
+    def _resume_stt_after_send(self) -> None:
+        listening, _paused, stop_requested = self._stt_state()
+        if listening or stop_requested or self._busy:
+            return
+        if self._mode != "voice_to_text":
+            return
+        self._start_stt()
+
+    def _is_stop_speaking_command(self, text: str) -> bool:
+        cleaned = str(text or "").strip().lower()
+        if not cleaned:
+            return False
+        compact = " ".join(cleaned.split())
+        if compact.startswith("please "):
+            compact = compact[len("please "):].strip()
+        for phrase in STT_STOP_SPEAKING_PHRASES:
+            if phrase and compact == phrase:
+                return True
+        tokens = [part.strip(".,!?;:") for part in compact.split() if part.strip(".,!?;:")]
+        if len(tokens) <= 4 and tokens:
+            if tokens[0] == "stop" and any(tok.startswith("speak") or tok in {"talking", "playback", "voice"} for tok in tokens[1:]):
+                return True
+        return False
+
+    def _stop_tts_only(self, *, reason: str = "") -> bool:
+        if not self._tts_playing:
+            self._pending_chatbot_text = ""
+            return False
+        self._pending_chatbot_text = ""
+        engine = None
+        with self._tts_lock:
+            self._tts_user_stopped = True
+            engine = self._tts_engine
+        if engine is not None:
+            try:
+                engine.stop()
+            except Exception:
+                pass
+        if pygame is not None:
+            try:
+                if pygame.mixer.get_init() and pygame.mixer.music.get_busy():
+                    pygame.mixer.music.stop()
+            except Exception:
+                pass
+        if reason:
+            self._set_status(reason)
+        self._update_control_states()
+        return True
+
+    def _interrupt_other_voice_actors(self) -> bool:
+        scene = self._scene
+        if scene is None:
+            try:
+                scene = self._node_item.scene()
+            except Exception:
+                scene = None
+        if scene is None:
+            return False
+        node_items = list(getattr(scene, "_node_items", {}).values() or [])
+        stopped_any = False
+        for item in node_items:
+            if item is None or item is self._node_item:
+                continue
+            if _kind_of_item(item) not in VOICE_ACTOR_NODE_KINDS:
+                continue
+            for proxy in list(getattr(item, "_plugin_proxies", []) or []):
+                if proxy is None or not hasattr(proxy, "widget"):
+                    continue
+                widget = proxy.widget()
+                if widget is None or widget is self:
+                    continue
+                stop_fn = getattr(widget, "_stop_tts_only", None)
+                if callable(stop_fn):
+                    try:
+                        if stop_fn(reason="Speech stopped by voice command."):
+                            stopped_any = True
+                    except Exception:
+                        pass
+        return stopped_any
+
+    def _stt_confirmation_action(self, text: str) -> str:
+        cleaned = str(text or "").strip().lower()
+        if not cleaned:
+            return ""
+        compact = " ".join(cleaned.split())
+        if "not yet" in cleaned or "keep listening" in cleaned:
+            return "continue"
+        if "send it" in cleaned:
+            return "send"
+        if compact in {"go ahead", "go ahead send", "please send"}:
+            return "send"
+        tokens = {
+            part.strip(".,!?;:")
+            for part in cleaned.split()
+            if part.strip(".,!?;:")
+        }
+        if tokens & STT_CONTINUE_LISTENING_WORDS:
+            return "continue"
+        if tokens & STT_SEND_CONFIRM_WORDS:
+            return "send"
+        return ""
+
+    def _speak_stt_send_confirmation_prompt(self) -> None:
+        prompt = "Are you ready to send? Say yes, done, or send."
+        selected_voice_key = str(self._selected_voice_key or "").strip() or VOICE_TANYA_GOOGLE
+
+        # Prefer Tanya (Google TTS) for the listen confirmation prompt when available.
+        if selected_voice_key == VOICE_TANYA_GOOGLE and gTTS is not None and pygame is not None:
+            temp_file = None
+            loaded = False
+            try:
+                temp_file = Path(tempfile.gettempdir()) / f"voice_actor_prompt_{uuid.uuid4().hex}.mp3"
+                tts = gTTS(text=prompt, lang="en")
+                tts.save(str(temp_file))
+                if not pygame.mixer.get_init():
+                    pygame.mixer.init()
+                # Do not interrupt active playback from another voice actor.
+                if pygame.mixer.music.get_busy():
+                    raise RuntimeError("Prompt playback skipped while speech is active.")
+                pygame.mixer.music.load(str(temp_file))
+                loaded = True
+                pygame.mixer.music.play()
+                while pygame.mixer.music.get_busy():
+                    time.sleep(0.05)
+                return
+            except Exception:
+                pass
+            finally:
+                if loaded and pygame is not None:
+                    try:
+                        if pygame.mixer.get_init():
+                            try:
+                                pygame.mixer.music.unload()
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                if temp_file is not None:
+                    try:
+                        temp_file.unlink()
+                    except Exception:
+                        pass
+
+        if pyttsx3 is None:
+            return
+        engine = None
+        try:
+            engine = pyttsx3.init()
+            voice_applied = False
+            if selected_voice_key and selected_voice_key not in {VOICE_TANYA_GOOGLE, VOICE_AUTO_FEMALE}:
+                try:
+                    engine.setProperty("voice", selected_voice_key)
+                    voice_applied = True
+                except Exception:
+                    voice_applied = False
+            if not voice_applied:
+                female_voice_id = _pick_female_voice_id(engine)
+                if female_voice_id:
+                    try:
+                        engine.setProperty("voice", female_voice_id)
+                    except Exception:
+                        pass
+            engine.say(prompt)
+            engine.runAndWait()
+        except Exception:
+            pass
+        finally:
+            if engine is not None:
+                try:
+                    engine.stop()
+                except Exception:
+                    pass
+
     def _stt_worker(self, stt_method: str) -> None:
         transcript_parts = []
         error = ""
@@ -1631,6 +1837,33 @@ class VoiceActorWidget(QtWidgets.QWidget):
         wait_timeout = getattr(sr, "WaitTimeoutError", None) if sr is not None else None
         unknown_value = getattr(sr, "UnknownValueError", None) if sr is not None else None
         request_error = getattr(sr, "RequestError", None) if sr is not None else None
+        awaiting_send_confirmation = False
+        awaiting_started_at = 0.0
+        prompt_response_until = 0.0
+        last_voice_activity = time.monotonic()
+        send_confirmed = False
+
+        def _maybe_prompt_send_confirmation(now: float) -> bool:
+            nonlocal awaiting_send_confirmation
+            nonlocal awaiting_started_at
+            nonlocal prompt_response_until
+            nonlocal last_voice_activity
+
+            should_prompt = (
+                bool(transcript_parts)
+                and not awaiting_send_confirmation
+                and (now - last_voice_activity) >= STT_IDLE_CONFIRM_SECONDS
+            )
+            if not should_prompt:
+                return False
+            awaiting_send_confirmation = True
+            self._stt_status.emit("Are you ready to send? Say yes, done, or send.")
+            self._speak_stt_send_confirmation_prompt()
+            awaiting_started_at = time.monotonic()
+            prompt_response_until = awaiting_started_at + STT_IDLE_CONFIRM_RESPONSE_SECONDS
+            last_voice_activity = awaiting_started_at
+            return True
+
         try:
             recognizer = sr.Recognizer()
             with sr.Microphone() as source:
@@ -1642,10 +1875,17 @@ class VoiceActorWidget(QtWidgets.QWidget):
                     if paused:
                         time.sleep(0.08)
                         continue
+                    now = time.monotonic()
+                    if awaiting_send_confirmation and (now - awaiting_started_at) >= STT_IDLE_CONFIRM_RESPONSE_SECONDS:
+                        awaiting_send_confirmation = False
+                        prompt_response_until = 0.0
+                        last_voice_activity = now
+                        self._stt_status.emit("Continuing to listen...")
                     try:
                         audio = recognizer.listen(source, timeout=1.2, phrase_time_limit=20)
                     except Exception as exc:
                         if wait_timeout and isinstance(exc, wait_timeout):
+                            _maybe_prompt_send_confirmation(time.monotonic())
                             continue
                         error = _format_stt_error(exc)
                         break
@@ -1655,6 +1895,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
                         chunk, chunk_error = _transcribe_local_whisper(wav_data)
                         if chunk_error:
                             if chunk_error == "Speech detected but transcript was empty.":
+                                _maybe_prompt_send_confirmation(time.monotonic())
                                 continue
                             error = chunk_error
                             break
@@ -1663,6 +1904,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
                             chunk = (recognizer.recognize_google(audio) or "").strip()
                         except Exception as exc:
                             if unknown_value and isinstance(exc, unknown_value):
+                                _maybe_prompt_send_confirmation(time.monotonic())
                                 continue
                             if request_error and isinstance(exc, request_error):
                                 error = f"Speech recognition service failed: {exc}"
@@ -1671,14 +1913,48 @@ class VoiceActorWidget(QtWidgets.QWidget):
                             break
                     clean_chunk = str(chunk or "").strip()
                     if not clean_chunk:
+                        _maybe_prompt_send_confirmation(time.monotonic())
+                        continue
+                    if self._is_stop_speaking_command(clean_chunk):
+                        awaiting_send_confirmation = False
+                        prompt_response_until = 0.0
+                        last_voice_activity = time.monotonic()
+                        self._stt_status.emit("Stopping speech playback...")
+                        self._stt_command.emit("stop_speaking")
+                        continue
+                    confirmation_window_active = awaiting_send_confirmation or (time.monotonic() <= prompt_response_until)
+                    if confirmation_window_active:
+                        lowered = clean_chunk.lower()
+                        prompt_phrase_heard = "are you ready to send" in lowered
+                        command_text = lowered.replace("are you ready to send", " ").strip() if prompt_phrase_heard else clean_chunk
+                        action = self._stt_confirmation_action(command_text)
+                        if action == "send":
+                            send_confirmed = True
+                            awaiting_send_confirmation = False
+                            prompt_response_until = 0.0
+                            self._stt_status.emit("Sending message...")
+                            self._set_stt_state(stop_requested=True, paused=False)
+                            break
+                        if action == "continue":
+                            awaiting_send_confirmation = False
+                            prompt_response_until = 0.0
+                            last_voice_activity = time.monotonic()
+                            self._stt_status.emit("Continuing to listen...")
+                            continue
+                        if prompt_phrase_heard:
+                            continue
+                        # Keep confirmation mode active until timeout or explicit send/continue.
+                        awaiting_send_confirmation = True
+                        self._stt_status.emit("Say yes, done, or send to send. Say no or wait to continue.")
                         continue
                     transcript_parts.append(clean_chunk)
+                    last_voice_activity = time.monotonic()
                     self._stt_chunk.emit(clean_chunk)
         except Exception as exc:
             error = _format_stt_error(exc)
         _listening, _paused, stop_requested = self._stt_state()
         if stop_requested and not error:
-            error = "__stopped__"
+            error = "__sent__" if send_confirmed else "__stopped__"
         transcript = " ".join(transcript_parts).strip()
         self._stt_done.emit(transcript, error)
 
@@ -1707,6 +1983,13 @@ class VoiceActorWidget(QtWidgets.QWidget):
         if had_new_text:
             _set_node_info(self._node_item, self._transcript.toPlainText() or "")
         if error:
+            if str(error).strip() == "__sent__":
+                if had_new_text:
+                    self._set_status("Message sent. Listening for commands...")
+                else:
+                    self._set_status("Listening for commands...")
+                QtCore.QTimer.singleShot(120, self._resume_stt_after_send)
+                return
             if str(error).strip() == "__stopped__":
                 if had_new_text:
                     self._set_status("Listening stopped. Transcript updated.")
@@ -1750,18 +2033,19 @@ class VoiceActorWidget(QtWidgets.QWidget):
 
             text = ""
             token = ""
+            db_text = ""
+            py_error = ""
             if self._chatbot_via_proxy:
-                _db_text, token, _err = _latest_chatbot_response(self._scene, source_item)
-                if token and token == self._last_chatbot_token:
-                    return
+                db_text, token, _err = _latest_chatbot_response(self._scene, source_item)
                 proxy_item = self._chatbot_proxy_item
                 if proxy_item is not None and _kind_of_item(proxy_item) == "python":
                     text, py_error = _run_python_transform(self._scene, proxy_item)
                     if py_error and py_error != "Python transform produced empty output.":
-                        self._set_status(py_error, error=True)
-                        return
+                        self._set_status(f"{py_error} Falling back to chatbot response.", error=True)
                 if not text:
                     text = _text_from_input(self._scene, self._node_item, "text").strip()
+                if not text:
+                    text = str(db_text or "").strip()
                 if not text:
                     self._set_status("Waiting for Python output from chatbot response...")
                     return
@@ -1773,8 +2057,11 @@ class VoiceActorWidget(QtWidgets.QWidget):
                 if not text:
                     return
 
-            if token and token == self._last_chatbot_token:
-                return
+            same_token = bool(token and token == self._last_chatbot_token)
+            if same_token:
+                current_text = str(self._transcript.toPlainText() or "").strip()
+                if current_text == text.strip():
+                    return
             if token:
                 self._last_chatbot_token = token
             self._set_transcript(text)
@@ -1836,6 +2123,9 @@ class VoiceActorWidget(QtWidgets.QWidget):
         if self._chatbot_connected and self._chatbot_input_item is not None:
             if self._chatbot_via_proxy:
                 scene = self._node_item.scene()
+                db_text, token, _err = _latest_chatbot_response(self._scene, self._chatbot_input_item)
+                if token:
+                    self._last_chatbot_token = token
                 proxy_item = self._chatbot_proxy_item
                 if proxy_item is not None and _kind_of_item(proxy_item) == "python":
                     text, _py_error = _run_python_transform(scene, proxy_item)
@@ -1844,6 +2134,8 @@ class VoiceActorWidget(QtWidgets.QWidget):
                 wired = _text_from_input(scene, self._node_item, "text")
                 if wired.strip():
                     return wired.strip(), "chatbot_latest"
+                if db_text.strip():
+                    return db_text.strip(), "chatbot_latest"
                 local = (self._transcript.toPlainText() or "").strip()
                 if local:
                     return local, "chatbot_latest"

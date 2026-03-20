@@ -184,13 +184,54 @@ def _connected_prompt_node(scene, node_item):
     return _find_input_node(scene, node_item, {"llm_prompt", "prompt_node", "llm"}, gpt_spec.PROMPT_NODE_KINDS)
 
 
+def _edge_port_name(edge) -> str:
+    for attr in ("dst_port_name", "dst_label", "dst_name"):
+        if hasattr(edge, attr):
+            raw = getattr(edge, attr)
+            if raw:
+                return str(raw).strip().lower()
+    return ""
+
+
+def _voice_actor_mode_from_item(voice_item) -> str:
+    mode = (_param_value_from_node(voice_item, "__voice_actor_mode") or "").strip().lower()
+    return mode or "voice_to_text"
+
+
 def _connected_voice_actor(scene, node_item):
-    return _find_input_node(
-        scene,
-        node_item,
-        {VOICE_INPUT_PORT, "voice", "transcript", "voice_actor"},
-        VOICE_ACTOR_NODE_KINDS,
-    )
+    if not scene or not node_item:
+        return None
+    try:
+        in_edges = list(scene._in_edges(node_item))
+    except Exception:
+        in_edges = []
+    if not in_edges:
+        return None
+
+    port_names = {VOICE_INPUT_PORT, "voice", "transcript", "voice_actor"}
+    candidates = []
+    for edge in in_edges:
+        src = getattr(edge, "src", None)
+        if src is None:
+            continue
+        kind = (getattr(getattr(src, "model", None), "kind", "") or "").strip().lower()
+        if kind not in VOICE_ACTOR_NODE_KINDS:
+            continue
+        candidates.append((_edge_port_name(edge), src))
+    if not candidates:
+        return None
+
+    named = [src for port, src in candidates if port in port_names]
+    if named:
+        for src in named:
+            if _voice_actor_mode_from_item(src) == "voice_to_text":
+                return src
+        return named[0]
+
+    for _port, src in candidates:
+        if _voice_actor_mode_from_item(src) == "voice_to_text":
+            return src
+    return candidates[0][1]
 
 
 def _load_history(cfg: dict) -> list[dict]:
@@ -378,6 +419,8 @@ class ChatbotWidget(QtWidgets.QWidget):
             self._last_voice_transcript = transcript
             return
         if not transcript:
+            self._last_voice_source = source_name
+            self._last_voice_transcript = ""
             return
         if source_name == self._last_voice_source and transcript == self._last_voice_transcript:
             return
