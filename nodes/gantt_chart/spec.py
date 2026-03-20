@@ -3,6 +3,7 @@ from __future__ import annotations
 import calendar
 import csv
 import html
+import io
 import json
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -42,6 +43,15 @@ _GANTT_SIDECAR_SUFFIX = ".gantt_chart.json"
 
 _ICON_PIXMAP_CACHE: dict[str, QtGui.QPixmap | None] = {}
 _GANTT_TRANSFER_BUFFER: dict[str, object] | None = None
+_GANTT_CSV_FIELDS = [
+    "source_chart",
+    "source",
+    "task",
+    "progress",
+    "start_date",
+    "end_date",
+    "copied_at",
+]
 
 
 def _set_gantt_transfer_buffer(payload: dict[str, object] | None) -> None:
@@ -998,6 +1008,154 @@ def _resolve_note_source(node_item):
             if src_item is not None and src_model is None:
                 return src_item, None
     return None, None
+
+
+def _gantt_csv_rows_for_output(node_item) -> list[dict[str, object]]:
+    chart_model = getattr(node_item, "model", None)
+    if chart_model is None:
+        return []
+    chart_name = str(getattr(chart_model, "name", "") or "").strip() or "gantt_chart"
+    today = date.today()
+    view_start = _parse_view_start(
+        _param_value(chart_model, _VIEW_START_PARAM),
+        fallback=date(today.year, today.month, 1),
+    )
+    note_sources, _invalid_inputs = _resolve_note_sources(node_item)
+    if not note_sources:
+        return []
+
+    task_ids: list[str] = []
+    task_display: dict[str, str] = {}
+    task_sources: dict[str, str] = {}
+    source_models: dict[str, object] = {}
+    source_task_ids: dict[str, list[str]] = {}
+    used_group_names: set[str] = set()
+    by_source_task: dict[tuple[str, str], str] = {}
+    by_task_name: dict[str, list[str]] = {}
+
+    for source_index, (_src_item, src_model) in enumerate(note_sources):
+        base_name = str(getattr(src_model, "name", "") or "").strip() or f"Note {source_index + 1}"
+        group_name = base_name
+        suffix = 2
+        while group_name.lower() in used_group_names:
+            group_name = f"{base_name} ({suffix})"
+            suffix += 1
+        used_group_names.add(group_name.lower())
+        source_models[group_name] = src_model
+        source_task_ids[group_name] = []
+
+        aliases = [group_name]
+        model_name = str(getattr(src_model, "name", "") or "").strip()
+        if model_name and model_name.lower() != group_name.lower():
+            aliases.append(model_name)
+
+        for task_name in _note_task_names(src_model):
+            task_id = _task_storage_key(group_name, task_name)
+            task_ids.append(task_id)
+            source_task_ids[group_name].append(task_id)
+            task_display[task_id] = str(task_name)
+            task_sources[task_id] = group_name
+            task_key = str(task_name).strip().lower()
+            if task_key:
+                for alias in aliases:
+                    by_source_task.setdefault((alias.strip().lower(), task_key), task_id)
+                by_task_name.setdefault(task_key, []).append(task_id)
+
+    valid_task_ids = set(task_ids)
+    assignments = _read_assignments(
+        node_item,
+        default_year=view_start.year,
+        default_month=view_start.month,
+    )
+    progress_map = _read_progress_map(node_item)
+
+    def _canonicalize(raw_mapping: dict):
+        clean = {}
+        changed = False
+        for raw_key, value in (raw_mapping or {}).items():
+            original_key = str(raw_key or "").strip()
+            canonical = _canonical_task_key(
+                original_key,
+                valid_task_ids=valid_task_ids,
+                by_source_task=by_source_task,
+                by_task_name=by_task_name,
+            )
+            if canonical is None:
+                changed = True
+                continue
+            if canonical != original_key:
+                changed = True
+            clean[canonical] = value
+        if len(clean) != len(raw_mapping or {}):
+            changed = True
+        return clean, changed
+
+    pruned_assignments, _ = _canonicalize(assignments)
+    pruned_progress, _ = _canonicalize(progress_map)
+    synced_progress = dict(pruned_progress)
+
+    for group_name, group_task_ids in source_task_ids.items():
+        src_model = source_models.get(group_name)
+        if src_model is None:
+            continue
+        source_completed = set(_completed_task_names(src_model))
+        if not source_completed:
+            continue
+        source_task_names = {task_display.get(task_id, "") for task_id in group_task_ids}
+        source_task_names.discard("")
+        cleaned_completed = {name for name in source_completed if name in source_task_names}
+        for task_id in group_task_ids:
+            task_name = task_display.get(task_id, "")
+            current_value = int(synced_progress.get(task_id, 0))
+            if task_name in cleaned_completed:
+                if current_value != 100:
+                    synced_progress[task_id] = 100
+            elif current_value >= 100:
+                synced_progress[task_id] = 0
+
+    copied_at = datetime.now().replace(microsecond=0).isoformat(sep=" ")
+    rows: list[dict[str, object]] = []
+    for task_id in task_ids:
+        task_name = str(task_display.get(task_id, "") or "").strip()
+        if not task_name:
+            continue
+        assignment_raw = pruned_assignments.get(task_id)
+        start_date = ""
+        end_date = ""
+        if assignment_raw:
+            try:
+                start_date = str(assignment_raw[0] or "")
+                end_date = str(assignment_raw[1] or "")
+            except Exception:
+                start_date = str(assignment_raw or "")
+                end_date = start_date
+        progress = _coerce_progress_value(synced_progress.get(task_id, 0))
+        if progress is None:
+            progress = 0
+        rows.append(
+            {
+                "source_chart": chart_name,
+                "source": str(task_sources.get(task_id, "") or ""),
+                "task": task_name,
+                "progress": int(progress),
+                "start_date": start_date,
+                "end_date": end_date,
+                "copied_at": copied_at,
+            }
+        )
+    return rows
+
+
+def export_csv_text(node_item) -> str:
+    rows = _gantt_csv_rows_for_output(node_item)
+    if not rows:
+        return ""
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=_GANTT_CSV_FIELDS, lineterminator="\n")
+    writer.writeheader()
+    for row in rows:
+        writer.writerow(row)
+    return buffer.getvalue().strip()
 
 
 def _task_storage_key(source_name: str, task_name: str) -> str:

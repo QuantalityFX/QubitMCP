@@ -46,6 +46,14 @@ DB_NAME = "my_database"
 COLLECTION = "EchoGragh"
 _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 _UNC_PATH_RE = re.compile(r"^[\\/]{2}[^\\/]+[\\/]+[^\\/]+")
+_GANTT_CSV_REQUIRED_COLUMNS = (
+    "source_chart",
+    "source",
+    "task",
+    "progress",
+    "start_date",
+    "end_date",
+)
 
 def _text_from_input(card, node_item, port_name: str) -> str:
     sc = getattr(card, "_graph_scene", None)
@@ -273,6 +281,29 @@ def _collect_paths_from_text(text: str | None) -> List[Path]:
         collected.extend(_parse_path_list(text))
     return collected
 
+
+def _looks_like_gantt_csv_blob(text: str | None) -> bool:
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    if not lines:
+        return False
+    header = [part.strip().lower() for part in lines[0].split(",")]
+    required = list(_GANTT_CSV_REQUIRED_COLUMNS)
+    if len(header) < len(required):
+        return False
+    return header[:len(required)] == required
+
+
+def _inline_contexts_from_text(text: str | None) -> List[Tuple[Path, str]]:
+    raw = (text or "").strip()
+    if not raw:
+        return []
+    if _looks_like_gantt_csv_blob(raw):
+        return [(Path("gantt_chart.csv"), raw)]
+    return []
+
 def _paths_from_params(node) -> List[Path]:
     if not node:
         return []
@@ -325,6 +356,56 @@ def _load_file_contexts(paths: Sequence[Path]) -> Tuple[List[Tuple[Path, str]], 
         total += len(data)
         contexts.append((path, data))
     return contexts, warnings
+
+
+def _resolve_file_contexts(files_value: str | None, node_model) -> Tuple[List[Tuple[Path, str]], List[str], List[str]]:
+    inline_contexts = _inline_contexts_from_text(files_value)
+    wired_paths = [] if inline_contexts else _collect_paths_from_text(files_value)
+    param_paths = _paths_from_params(node_model)
+    file_paths = _dedupe_paths(param_paths + wired_paths)
+    file_labels = [p.name for p in file_paths]
+    contexts, warnings = _load_file_contexts(file_paths)
+
+    if inline_contexts:
+        total = sum(len(snippet) for _, snippet in contexts)
+        for inline_path, inline_text in inline_contexts:
+            data = (inline_text or "").strip()
+            if not data:
+                continue
+            name = inline_path.name
+            if len(data) > MAX_FILE_CHARS:
+                data = data[:MAX_FILE_CHARS] + "\n...\n"
+                warnings.append(f"{name} trimmed to {MAX_FILE_CHARS} characters.")
+            if total + len(data) > MAX_TOTAL_CHARS:
+                remaining = max(0, MAX_TOTAL_CHARS - total)
+                if remaining <= 0:
+                    warnings.append("Context limit reached; skipped inline Gantt CSV data.")
+                    continue
+                data = data[:remaining] + "\n...\n"
+                warnings.append(f"{name} truncated to stay under total context limit.")
+            total += len(data)
+            contexts.append((inline_path, data))
+            if name not in file_labels:
+                file_labels.append(name)
+    return contexts, warnings, file_labels
+
+
+def _history_file_contexts(
+    contexts: Sequence[Tuple[Path, str]],
+    *,
+    max_files: int = 4,
+    max_chars: int = 12000,
+) -> List[dict[str, str]]:
+    out: List[dict[str, str]] = []
+    for path, snippet in list(contexts or [])[: max(0, int(max_files))]:
+        name = str(getattr(path, "name", str(path)) or "").strip() or "attached_context.txt"
+        text = (snippet or "").strip()
+        if not text:
+            continue
+        if len(text) > max_chars:
+            text = text[:max_chars] + "\n...\n"
+        out.append({"name": name, "content": text})
+    return out
 
 def _compose_prompt(prompt: str, contexts: Sequence[Tuple[Path, str]]) -> str:
     cleaned_prompt = (prompt or "").strip()
@@ -502,6 +583,7 @@ def _write_to_mongo(
     model: str,
     temperature: float,
     files: list[str] | None = None,
+    file_contexts: list[dict[str, str]] | None = None,
 ):
     if MongoClient is None:
         raise RuntimeError("pymongo is not installed; cannot write to Mongo. Install pymongo or disconnect the Database node.")
@@ -540,6 +622,18 @@ def _write_to_mongo(
         entry["note"] = note
     if files:
         entry["files"] = list(files)
+    if file_contexts:
+        clean_contexts: list[dict[str, str]] = []
+        for context_entry in file_contexts:
+            if not isinstance(context_entry, dict):
+                continue
+            name = str(context_entry.get("name") or "").strip() or "attached_context.txt"
+            content = str(context_entry.get("content") or "").strip()
+            if not content:
+                continue
+            clean_contexts.append({"name": name, "content": content})
+        if clean_contexts:
+            entry["file_contexts"] = clean_contexts
     coll.update_one({"$or": [{"name": project}, {"project": project}]}, {"$push": {"history": entry}})
     return project
 
@@ -663,11 +757,8 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 return
 
         files_value = _val("files")
-        wired_paths = _collect_paths_from_text(files_value)
-        param_paths = _paths_from_params(node)
-        file_paths = _dedupe_paths(param_paths + wired_paths)
-        file_labels = [p.name for p in file_paths]
-        contexts, warnings = _load_file_contexts(file_paths)
+        contexts, warnings, file_labels = _resolve_file_contexts(files_value, node)
+        history_file_contexts = _history_file_contexts(contexts)
         combined_prompt = _compose_prompt(prompt_text, contexts)
         temperature = _float_value(_val("temperature"), DEFAULT_TEMPERATURE)
         node_item = _node_item()
@@ -705,6 +796,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                         model,
                         temperature,
                         files=file_labels,
+                        file_contexts=history_file_contexts,
                     )
                 else:
                     output_path.parent.mkdir(parents=True, exist_ok=True)

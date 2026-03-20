@@ -997,6 +997,18 @@ class GraphScene(QtWidgets.QGraphicsScene):
             return []
         model = item.model
         kind = (model.kind or "").lower()
+        if kind in ("gantt_chart", "gantt chart", "gant_chart", "gant chart"):
+            csv_text = ""
+            try:
+                from nodes.gantt_chart import spec as _gantt_spec
+                exporter = getattr(_gantt_spec, "export_csv_text", None)
+                if callable(exporter):
+                    csv_text = str(exporter(item) or "").strip()
+            except Exception:
+                csv_text = ""
+            if csv_text:
+                return [{"node": model.name, "param": "csv", "text": csv_text}]
+            return []
         segments = []
 
         params = list(model.params or [])

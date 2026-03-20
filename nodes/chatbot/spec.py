@@ -552,14 +552,24 @@ class ChatbotWidget(QtWidgets.QWidget):
             prompt = (entry.get("prompt") or "").strip()
             response = (entry.get("response") or "").strip()
             files = entry.get("files") or []
+            file_contexts = entry.get("file_contexts") or []
             if isinstance(files, str):
                 files = [files]
+            if isinstance(file_contexts, dict):
+                file_contexts = [file_contexts]
             if prompt:
                 self._add_bubble(prompt, role="user")
                 if files:
                     file_list = ", ".join([str(f) for f in files if f])
                     if file_list:
                         self._add_bubble(f"Files: {file_list}", role="files")
+                for context_entry in file_contexts:
+                    if not isinstance(context_entry, dict):
+                        continue
+                    context_name = str(context_entry.get("name") or "").strip() or "attached_context.txt"
+                    context_text = str(context_entry.get("content") or "").strip()
+                    if context_text:
+                        self._add_bubble(f"{context_name}:\n{context_text}", role="files")
             if response:
                 self._add_bubble(response, role="assistant")
         try:
@@ -677,11 +687,11 @@ class ChatbotWidget(QtWidgets.QWidget):
 
         system_prompt = (val("prompt") or "").strip()
         files_value = (val("files") or "").strip()
-        wired_paths = gpt_spec._collect_paths_from_text(files_value)
-        param_paths = gpt_spec._paths_from_params(getattr(prompt_node, "model", None))
-        file_paths = gpt_spec._dedupe_paths(param_paths + wired_paths)
-        file_labels = [p.name for p in file_paths]
-        contexts, _warnings = gpt_spec._load_file_contexts(file_paths)
+        contexts, _warnings, file_labels = gpt_spec._resolve_file_contexts(
+            files_value,
+            getattr(prompt_node, "model", None),
+        )
+        history_file_contexts = gpt_spec._history_file_contexts(contexts)
 
         try:
             history = _load_history(db_cfg)
@@ -720,6 +730,7 @@ class ChatbotWidget(QtWidgets.QWidget):
                     model,
                     temperature,
                     files=file_labels,
+                    file_contexts=history_file_contexts,
                 )
                 ok = True
             except Exception as exc:
