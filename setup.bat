@@ -19,7 +19,7 @@ if not exist "%LOG_DIR%" (
 set "LOG=%LOG_DIR%\setup.log"
 set "MAIN_REQ=%CD%\requirements.txt"
 set "LIB_REQ=%CD%\nodes\librarian\requirements.txt"
-set "VOICE_DEPS=SpeechRecognition pyttsx3 pyaudio gTTS pygame faster-whisper"
+set "VOICE_DEPS=SpeechRecognition pyttsx3 pyaudio gTTS pygame faster-whisper pymongo"
 set "BASE_PY_EXE="
 set "BASE_PY_ARG="
 set "BASE_PY_MM="
@@ -118,6 +118,7 @@ echo [setup] Base Python version: %BASE_PY_MM% >> "%LOG%"
 call :ensure_venv ".venv" "root" || goto :fail
 call :install_requirements ".venv\Scripts\python.exe" "%MAIN_REQ%" "root requirements" || goto :fail
 call :install_voice_deps ".venv\Scripts\python.exe" "root voice dependencies" || goto :fail
+call :check_medigator_runtime
 
 if /I "%SETUP_MODE%"=="full" (
   call :ensure_venv "nodes\librarian\.venv" "librarian" || goto :fail
@@ -230,6 +231,46 @@ if errorlevel 1 (
 )
 echo [setup] Completed %LABEL%.
 echo [setup] Completed %LABEL%. >> "%LOG%"
+exit /b 0
+
+:check_medigator_runtime
+set "HAS_NODE=1"
+set "HAS_NPX=1"
+set "HAS_CODEX_SCRIPT=0"
+
+where node >nul 2>&1
+if errorlevel 1 set "HAS_NODE=0"
+
+where npx >nul 2>&1
+if errorlevel 1 set "HAS_NPX=0"
+
+if exist "%CD%\tools\codex.ps1" set "HAS_CODEX_SCRIPT=1"
+
+if "%HAS_NODE%%HAS_NPX%"=="11" (
+  echo [setup] Medigator runtime tools ready ^(node, npx^).
+  echo [setup] Medigator runtime tools ready ^(node, npx^). >> "%LOG%"
+) else (
+  echo [setup] WARNING: Medigator runtime is incomplete.
+  echo [setup] WARNING: Medigator runtime is incomplete. >> "%LOG%"
+  if "%HAS_NODE%"=="0" (
+    echo [setup] WARNING: Missing tool: node
+    echo [setup] WARNING: Missing tool: node >> "%LOG%"
+  )
+  if "%HAS_NPX%"=="0" (
+    echo [setup] WARNING: Missing tool: npx
+    echo [setup] WARNING: Missing tool: npx >> "%LOG%"
+  )
+  echo [setup] WARNING: Install Node.js to run tools\codex.ps1 from Medigator.
+  echo [setup] WARNING: Install Node.js to run tools\codex.ps1 from Medigator. >> "%LOG%"
+)
+
+if "%HAS_CODEX_SCRIPT%"=="1" (
+  echo [setup] Medigator launch script found: tools\codex.ps1
+  echo [setup] Medigator launch script found: tools\codex.ps1 >> "%LOG%"
+) else (
+  echo [setup] WARNING: Medigator launch script not found: tools\codex.ps1
+  echo [setup] WARNING: Medigator launch script not found: tools\codex.ps1 >> "%LOG%"
+)
 exit /b 0
 
 :base_py
