@@ -44,53 +44,12 @@ echo [setup] ==== START %DATE% %TIME% ==== > "%LOG%"
 echo [setup] Repo: %CD% >> "%LOG%"
 echo [setup] Mode: %SETUP_MODE% >> "%LOG%"
 
-if exist "%LOCALAPPDATA%\Programs\Python\Python310\python.exe" (
-  set "BASE_PY_EXE=%LOCALAPPDATA%\Programs\Python\Python310\python.exe"
-)
-
-if not defined BASE_PY_EXE (
-  where py >nul 2>&1
-  if not errorlevel 1 (
-    py -3.10 -c "import sys" >nul 2>&1
-    if not errorlevel 1 (
-      set "BASE_PY_EXE=py"
-      set "BASE_PY_ARG=-3.10"
-    )
-  )
-)
-
-if not defined BASE_PY_EXE (
-  if exist "%LOCALAPPDATA%\Programs\Python\Python312\python.exe" (
-    set "BASE_PY_EXE=%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
-  )
-)
-
-if not defined BASE_PY_EXE (
-  where py >nul 2>&1
-  if not errorlevel 1 (
-    py -3.12 -c "import sys" >nul 2>&1
-    if not errorlevel 1 (
-      set "BASE_PY_EXE=py"
-      set "BASE_PY_ARG=-3.12"
-    )
-  )
-)
-
-if not defined BASE_PY_EXE (
-  where py >nul 2>&1
-  if not errorlevel 1 (
-    py -3 -c "import sys" >nul 2>&1
-    if not errorlevel 1 (
-      set "BASE_PY_EXE=py"
-      set "BASE_PY_ARG=-3"
-    )
-  )
-)
-
-if not defined BASE_PY_EXE (
-  where python >nul 2>&1
-  if not errorlevel 1 set "BASE_PY_EXE=python"
-)
+call :try_base_python "%LOCALAPPDATA%\Programs\Python\Python310\python.exe" ""
+call :try_base_python "py" "-3.10"
+call :try_base_python "%LOCALAPPDATA%\Programs\Python\Python312\python.exe" ""
+call :try_base_python "py" "-3.12"
+call :try_base_python "py" "-3"
+call :try_base_python "python" ""
 
 if not defined BASE_PY_EXE (
   echo [setup] ERROR: Could not find a usable Python interpreter. >> "%LOG%"
@@ -273,6 +232,49 @@ if "%HAS_CODEX_SCRIPT%"=="1" (
 )
 exit /b 0
 
+:try_base_python
+if defined BASE_PY_EXE exit /b 0
+set "CANDIDATE_EXE=%~1"
+set "CANDIDATE_ARG=%~2"
+
+if not defined CANDIDATE_EXE exit /b 1
+
+if /I "%CANDIDATE_EXE%"=="py" (
+  where py >nul 2>&1
+  if errorlevel 1 exit /b 1
+  if defined CANDIDATE_ARG (
+    py %CANDIDATE_ARG% -c "import sys" >nul 2>&1
+  ) else (
+    py -3 -c "import sys" >nul 2>&1
+  )
+  if errorlevel 1 exit /b 1
+  set "BASE_PY_EXE=py"
+  set "BASE_PY_ARG=%CANDIDATE_ARG%"
+  exit /b 0
+)
+
+if /I "%CANDIDATE_EXE%"=="python" (
+  where python >nul 2>&1
+  if errorlevel 1 exit /b 1
+  python -c "import sys" >nul 2>&1
+  if errorlevel 1 exit /b 1
+  set "BASE_PY_EXE=python"
+  set "BASE_PY_ARG="
+  exit /b 0
+)
+
+if not exist "%CANDIDATE_EXE%" exit /b 1
+if defined CANDIDATE_ARG (
+  "%CANDIDATE_EXE%" %CANDIDATE_ARG% -c "import sys" >nul 2>&1
+) else (
+  "%CANDIDATE_EXE%" -c "import sys" >nul 2>&1
+)
+if errorlevel 1 exit /b 1
+
+set "BASE_PY_EXE=%CANDIDATE_EXE%"
+set "BASE_PY_ARG="
+exit /b 0
+
 :base_py
 if defined BASE_PY_ARG (
   "%BASE_PY_EXE%" %BASE_PY_ARG% %*
@@ -315,15 +317,17 @@ popd
 exit /b 1
 
 :usage
-echo Usage: setup.bat [core^|full]
-echo   core = setup root app env only
-echo   full = setup root + librarian envs (default)
+call :print_usage
 popd
 exit /b 0
 
 :usage_fail
+call :print_usage
+popd
+exit /b 1
+
+:print_usage
 echo Usage: setup.bat [core^|full]
 echo   core = setup root app env only
 echo   full = setup root + librarian envs (default)
-popd
-exit /b 1
+exit /b 0
