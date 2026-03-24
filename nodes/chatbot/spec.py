@@ -270,6 +270,7 @@ class ChatbotWidget(QtWidgets.QWidget):
         self._pending_voice_prompt = ""
         self._last_voice_source = ""
         self._last_voice_transcript = ""
+        self._last_voice_mode = ""
         self.setMinimumSize(CHATBOT_BODY_W, CHATBOT_BODY_H)
         try:
             self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
@@ -385,12 +386,15 @@ class ChatbotWidget(QtWidgets.QWidget):
         if voice_item is None:
             self._last_voice_source = ""
             self._last_voice_transcript = ""
+            self._last_voice_mode = ""
             return
         voice_model = getattr(voice_item, "model", None)
         source_name = str(getattr(voice_model, "name", "") or "").strip().lower() if voice_model is not None else ""
         transcript = str(getattr(voice_model, "info", "") or "").strip() if voice_model is not None else ""
+        mode = self._voice_mode(voice_item)
         self._last_voice_source = source_name
         self._last_voice_transcript = transcript
+        self._last_voice_mode = mode
 
     def _voice_mode(self, voice_item) -> str:
         mode = (_param_value_from_node(voice_item, "__voice_actor_mode") or "").strip().lower()
@@ -404,6 +408,7 @@ class ChatbotWidget(QtWidgets.QWidget):
         if voice_item is None:
             self._last_voice_source = ""
             self._last_voice_transcript = ""
+            self._last_voice_mode = ""
             return
         voice_model = getattr(voice_item, "model", None)
         if voice_model is None:
@@ -414,7 +419,13 @@ class ChatbotWidget(QtWidgets.QWidget):
             return
 
         transcript = str(getattr(voice_model, "info", "") or "").strip()
-        if self._voice_mode(voice_item) != "voice_to_text":
+        mode = self._voice_mode(voice_item)
+        if mode != self._last_voice_mode:
+            self._last_voice_mode = mode
+            self._last_voice_source = source_name
+            self._last_voice_transcript = transcript
+            return
+        if mode != "voice_to_text":
             self._last_voice_source = source_name
             self._last_voice_transcript = transcript
             return
@@ -425,6 +436,7 @@ class ChatbotWidget(QtWidgets.QWidget):
         if source_name == self._last_voice_source and transcript == self._last_voice_transcript:
             return
 
+        self._last_voice_mode = mode
         self._last_voice_source = source_name
         self._last_voice_transcript = transcript
         self._submit_prompt(transcript, from_voice=True)

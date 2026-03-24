@@ -219,8 +219,8 @@ if "%HAS_NODE%%HAS_NPX%"=="11" (
     echo [setup] WARNING: Missing tool: npx
     echo [setup] WARNING: Missing tool: npx >> "%LOG%"
   )
-  echo [setup] WARNING: Install Node.js to run tools\codex.ps1 from Medigator.
-  echo [setup] WARNING: Install Node.js to run tools\codex.ps1 from Medigator. >> "%LOG%"
+  echo [setup] WARNING: Install Node.js to run Medigator via tools\codex.ps1.
+  echo [setup] WARNING: Install Node.js to run Medigator via tools\codex.ps1. >> "%LOG%"
 )
 
 if "%HAS_CODEX_SCRIPT%"=="1" (

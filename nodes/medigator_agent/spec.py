@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import hashlib
 import subprocess
 import threading
 from pathlib import Path
@@ -20,6 +21,15 @@ MEDIGATOR_NODE_KINDS = {MEDIGATOR_NODE_KIND, *MEDIGATOR_NODE_ALIASES}
 MEDIGATOR_BODY_W = 560
 MEDIGATOR_BODY_H = 340
 MEDIGATOR_MEMORY_ROOT = "medigator_agents"
+MEDIGATOR_DEFAULT_SYSTEM_PROMPT = (
+    "You are Medigator, a conversation mediator. "
+    "Use the provided history and latest voice input to craft the next assistant reply. "
+    "Return only the assistant response text."
+)
+MEDIGATOR_MAX_SYSTEM_CHARS = 4000
+MEDIGATOR_MAX_HISTORY_CHARS = 24000
+MEDIGATOR_MAX_VOICE_CHARS = 8000
+MEDIGATOR_CODEX_MODEL = "gpt-5.3-codex"
 
 
 def _repo_root() -> Path:
@@ -63,6 +73,148 @@ def _format_ts() -> str:
     return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _ordered_in_edges(scene, node_item) -> list:
+    if not scene or not node_item:
+        return []
+    try:
+        ordered = list(scene._ordered_in_edges(node_item))
+        if ordered:
+            return ordered
+    except Exception:
+        pass
+    try:
+        return list(scene._in_edges(node_item))
+    except Exception:
+        return []
+
+
+def _edge_port_name(edge) -> str:
+    for attr in ("dst_port_name", "dst_label", "dst_name"):
+        if hasattr(edge, attr):
+            raw = getattr(edge, attr)
+            if raw is not None:
+                text = str(raw).strip()
+                if text:
+                    return text
+    return ""
+
+
+def _input_edges(scene, node_item, port_name: str) -> list:
+    edges = _ordered_in_edges(scene, node_item)
+    if not edges:
+        return []
+    target = (port_name or "").strip().lower()
+    if not target:
+        return edges
+    out = []
+    for edge in edges:
+        if _edge_port_name(edge).strip().lower() == target:
+            out.append(edge)
+    if out:
+        return out
+    return edges
+
+
+def _text_from_input(scene, node_item, port_name: str) -> str:
+    named_edges = _input_edges(scene, node_item, port_name)
+    if not named_edges:
+        return ""
+
+    parts = []
+    for edge in named_edges:
+        src = getattr(edge, "src", None)
+        if src is None:
+            continue
+        if _kind_of_item(src) in {"voice_actor", "voice actor", "voiceactor"}:
+            text = _voice_actor_transcript(src)
+        else:
+            try:
+                text = scene.resolve_text_value(src)
+            except Exception:
+                text = ""
+        if text:
+            parts.append(text.strip())
+    return "\n\n".join(parts).strip()
+
+
+def _node_name(node_item) -> str:
+    model = getattr(node_item, "model", None)
+    return str(getattr(model, "name", "") or "").strip().lower()
+
+
+def _kind_of_item(node_item) -> str:
+    model = getattr(node_item, "model", None)
+    return str(getattr(model, "kind", "") or "").strip().lower()
+
+
+def _voice_actor_transcript(node_item) -> str:
+    model = getattr(node_item, "model", None)
+    return str(getattr(model, "info", "") or "").strip()
+
+
+def _voice_actor_mode_from_item(node_item) -> str:
+    model = getattr(node_item, "model", None)
+    for entry in (getattr(model, "params", None) or []):
+        key = str(entry.get("name", "") or "").strip().lower()
+        if key != "__voice_actor_mode":
+            continue
+        value = str(entry.get("value", "") or "").strip().lower()
+        return value or "voice_to_text"
+    return "voice_to_text"
+
+
+def _set_node_info(node_item, text: str) -> None:
+    model = getattr(node_item, "model", None)
+    if model is None:
+        return
+    value = text or ""
+    if (getattr(model, "info", "") or "") == value:
+        return
+    model.info = value
+    scene = node_item.scene() if hasattr(node_item, "scene") else None
+    if scene is None:
+        return
+    try:
+        scene.paramChanged.emit(model.name, list(getattr(model, "params", None) or []))
+    except Exception:
+        pass
+
+
+def _trim_text(text: str, limit: int, *, keep_tail: bool = False) -> str:
+    clean = str(text or "").strip()
+    if limit <= 0 or len(clean) <= limit:
+        return clean
+    if keep_tail:
+        return clean[-limit:]
+    return clean[:limit]
+
+
+def _compose_medigator_prompt(system_prompt: str, chatbot_history: str, voice_input: str) -> tuple[str, str]:
+    clean_system = _trim_text(system_prompt, MEDIGATOR_MAX_SYSTEM_CHARS, keep_tail=False)
+    clean_history = _trim_text(chatbot_history, MEDIGATOR_MAX_HISTORY_CHARS, keep_tail=True)
+    clean_voice = _trim_text(voice_input, MEDIGATOR_MAX_VOICE_CHARS, keep_tail=True)
+    payload = "\n\n".join(
+        [
+            clean_system,
+            clean_history,
+            clean_voice,
+        ]
+    )
+    signature = hashlib.sha1(payload.encode("utf-8")).hexdigest()
+    prompt = (
+        f"{clean_system or MEDIGATOR_DEFAULT_SYSTEM_PROMPT}\n\n"
+        "Task:\n"
+        "1. Read the conversation history and the latest voice input.\n"
+        "2. Produce the best next assistant reply.\n"
+        "3. Return only the assistant response text.\n\n"
+        "Conversation history:\n"
+        f"{clean_history or '(none)'}\n\n"
+        "Latest voice input:\n"
+        f"{clean_voice or '(none)'}\n"
+    )
+    return prompt, signature
+
+
 def build_ports(node_item) -> None:
     if not hasattr(node_item, "ensure_input"):
         return
@@ -72,7 +224,7 @@ def build_ports(node_item) -> None:
 
 class MedigatorConsoleWidget(QtWidgets.QWidget):
     _console_append = QtCore.Signal(str)
-    _command_done = QtCore.Signal(int, str)
+    _command_done = QtCore.Signal(int, str, str, str, str)
 
     def __init__(self, node_item, parent=None):
         super().__init__(parent)
@@ -81,6 +233,15 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
         self._process = None
         self._process_lock = threading.Lock()
         self._running = False
+        self._scene = None
+        self._scene_connected = False
+        self._last_processed_signature = ""
+        self._last_voice_mode = ""
+        self._last_auto_voice_input = ""
+        self._auto_baseline_ready = False
+        self._pending_prompt = ""
+        self._pending_signature = ""
+        self._pending_source = ""
 
         self.setMinimumSize(MEDIGATOR_BODY_W, MEDIGATOR_BODY_H)
         try:
@@ -112,12 +273,16 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
         self._status = QtWidgets.QLabel("Ready.")
         self._status.setStyleSheet("QLabel{color:#94a3b8;}")
 
-        self._run_btn = QtWidgets.QPushButton("Run")
+        self._run_btn = QtWidgets.QPushButton("Run Cmd")
+        self._process_btn = QtWidgets.QPushButton("Process Inputs")
+        self._auto_chk = QtWidgets.QCheckBox("Auto")
+        self._auto_chk.setChecked(True)
         self._stop_btn = QtWidgets.QPushButton("Stop")
         self._clear_btn = QtWidgets.QPushButton("Clear")
         self._open_btn = QtWidgets.QPushButton("Open Folder")
 
         self._run_btn.clicked.connect(self._run_command)
+        self._process_btn.clicked.connect(self._process_inputs_manual)
         self._stop_btn.clicked.connect(self._stop_command)
         self._clear_btn.clicked.connect(self._clear_console)
         self._open_btn.clicked.connect(self._open_workspace_folder)
@@ -125,6 +290,11 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
         self._run_btn.setStyleSheet(
             "QPushButton{background:#1d4ed8;color:#e2e8f0;border:1px solid #1e3a8a;border-radius:4px;padding:4px 10px;}"
             "QPushButton:hover{background:#1e40af;}"
+            "QPushButton:disabled{background:#334155;color:#94a3b8;border-color:#334155;}"
+        )
+        self._process_btn.setStyleSheet(
+            "QPushButton{background:#0f766e;color:#e2e8f0;border:1px solid #115e59;border-radius:4px;padding:4px 10px;}"
+            "QPushButton:hover{background:#0d9488;}"
             "QPushButton:disabled{background:#334155;color:#94a3b8;border-color:#334155;}"
         )
         self._stop_btn.setStyleSheet(
@@ -140,12 +310,15 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
             "QPushButton{background:#1f2937;color:#e5e7eb;border:1px solid #475569;border-radius:4px;padding:4px 10px;}"
             "QPushButton:hover{background:#273449;}"
         )
+        self._auto_chk.setStyleSheet("QCheckBox{color:#cbd5e1;}")
 
         command_row = QtWidgets.QHBoxLayout()
         command_row.setContentsMargins(0, 0, 0, 0)
         command_row.setSpacing(6)
         command_row.addWidget(self._command_edit, 1)
         command_row.addWidget(self._run_btn, 0)
+        command_row.addWidget(self._process_btn, 0)
+        command_row.addWidget(self._auto_chk, 0)
         command_row.addWidget(self._stop_btn, 0)
         command_row.addWidget(self._clear_btn, 0)
         command_row.addWidget(self._open_btn, 0)
@@ -161,6 +334,12 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
         self._console_append.connect(self._append_console_line)
         self._command_done.connect(self._on_command_done)
         self._update_controls()
+
+        self._scene_timer = QtCore.QTimer(self)
+        self._scene_timer.setInterval(250)
+        self._scene_timer.timeout.connect(self._ensure_scene)
+        self._scene_timer.start()
+        QtCore.QTimer.singleShot(650, self._sync_auto_baseline)
 
     def sizeHint(self):
         return QtCore.QSize(MEDIGATOR_BODY_W, MEDIGATOR_BODY_H)
@@ -220,8 +399,251 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
 
     def _update_controls(self) -> None:
         self._run_btn.setEnabled(not self._running)
+        self._process_btn.setEnabled(not self._running)
         self._stop_btn.setEnabled(self._running)
         self._command_edit.setEnabled(not self._running)
+        self._auto_chk.setEnabled(not self._running)
+
+    def _auto_enabled(self) -> bool:
+        try:
+            return bool(self._auto_chk.isChecked())
+        except Exception:
+            return True
+
+    def _ensure_scene(self):
+        if self._scene is None:
+            try:
+                self._scene = self._node_item.scene()
+            except Exception:
+                self._scene = None
+        if self._scene is not None and not self._scene_connected:
+            if hasattr(self._scene, "linksChanged"):
+                try:
+                    self._scene.linksChanged.connect(self._on_scene_links_changed)
+                except Exception:
+                    pass
+            if hasattr(self._scene, "paramChanged"):
+                try:
+                    self._scene.paramChanged.connect(self._on_scene_param_changed)
+                except Exception:
+                    pass
+            self._scene_connected = True
+            try:
+                if self._scene_timer is not None:
+                    self._scene_timer.stop()
+            except Exception:
+                pass
+            self._sync_auto_baseline()
+        return self._scene
+
+    def _sync_auto_baseline(self) -> None:
+        scene = self._ensure_scene()
+        if scene is None:
+            return
+        _system_prompt, _chatbot_history, voice_input = self._collect_inputs()
+        self._last_auto_voice_input = str(voice_input or "").strip()
+        voice_item = self._connected_voice_actor_item()
+        if voice_item is None:
+            self._last_voice_mode = ""
+        else:
+            self._last_voice_mode = _voice_actor_mode_from_item(voice_item)
+        self._auto_baseline_ready = True
+
+    def _connected_source_names(self) -> set[str]:
+        scene = self._ensure_scene()
+        if scene is None:
+            return set()
+        names = set()
+        for edge in _ordered_in_edges(scene, self._node_item):
+            src = getattr(edge, "src", None)
+            if src is None:
+                continue
+            name = _node_name(src)
+            if name:
+                names.add(name)
+        return names
+
+    def _connected_voice_actor_item(self):
+        scene = self._ensure_scene()
+        if scene is None:
+            return None
+        for edge in _input_edges(scene, self._node_item, "voice_input"):
+            src = getattr(edge, "src", None)
+            if src is None:
+                continue
+            if _kind_of_item(src) in {"voice_actor", "voice actor", "voiceactor"}:
+                return src
+        return None
+
+    def _collect_inputs(self) -> tuple[str, str, str]:
+        scene = self._ensure_scene()
+        if scene is None:
+            return "", "", ""
+        system_prompt = _text_from_input(scene, self._node_item, "system_prompt")
+        chatbot_history = _text_from_input(scene, self._node_item, "chatbot_history")
+        voice_input = _text_from_input(scene, self._node_item, "voice_input")
+        return system_prompt, chatbot_history, voice_input
+
+    def _queue_pending(self, prompt: str, signature: str, source: str) -> None:
+        self._pending_prompt = str(prompt or "")
+        self._pending_signature = str(signature or "")
+        self._pending_source = str(source or "auto")
+
+    def _dequeue_pending(self) -> tuple[str, str, str]:
+        prompt = self._pending_prompt
+        signature = self._pending_signature
+        source = self._pending_source
+        self._pending_prompt = ""
+        self._pending_signature = ""
+        self._pending_source = ""
+        return prompt, signature, source
+
+    def _process_inputs_if_available(self) -> None:
+        self._maybe_process_inputs(force=False, source="auto")
+
+    def _process_inputs_manual(self) -> None:
+        self._maybe_process_inputs(force=True, source="manual")
+
+    def _maybe_process_inputs(self, changed_name=None, *, force: bool, source: str) -> None:
+        if not force and not self._auto_enabled():
+            return
+        if not force and not self._auto_baseline_ready:
+            self._sync_auto_baseline()
+        scene = self._ensure_scene()
+        if scene is None:
+            return
+        changed_key = str(changed_name or "").strip().lower()
+        if changed_key:
+            source_names = self._connected_source_names()
+            if source_names and changed_key not in source_names:
+                return
+
+        voice_item = self._connected_voice_actor_item()
+        if voice_item is None:
+            self._last_voice_mode = ""
+        else:
+            current_voice_mode = _voice_actor_mode_from_item(voice_item)
+            if (
+                not force
+                and bool(self._last_voice_mode)
+                and current_voice_mode != self._last_voice_mode
+            ):
+                # Mode toggles are control events and should not dispatch downstream calls.
+                self._last_voice_mode = current_voice_mode
+                return
+            self._last_voice_mode = current_voice_mode
+
+        system_prompt, chatbot_history, voice_input = self._collect_inputs()
+        clean_voice_input = str(voice_input or "").strip()
+        if not clean_voice_input:
+            if not force:
+                self._last_auto_voice_input = ""
+            if force:
+                self._set_status("No voice_input text available.", error=True)
+            return
+        if not force and clean_voice_input == self._last_auto_voice_input:
+            return
+        if not force:
+            self._last_auto_voice_input = clean_voice_input
+
+        prompt, signature = _compose_medigator_prompt(system_prompt, chatbot_history, voice_input)
+        if not force and signature == self._last_processed_signature:
+            return
+        if self._running:
+            self._queue_pending(prompt, signature, source)
+            return
+        self._run_codex_prompt(prompt, signature, source)
+
+    def _run_codex_prompt(self, prompt: str, signature: str, source: str) -> None:
+        if self._running:
+            self._queue_pending(prompt, signature, source)
+            return
+        mode = "auto" if source == "auto" else "manual"
+        self._set_running(True)
+        self._set_status(f"Running Codex ({mode})...")
+        self._write_history(f"tools\\codex.ps1 -Exec <medigator:{mode}>")
+        threading.Thread(
+            target=self._codex_worker,
+            args=(prompt, signature, source),
+            daemon=True,
+        ).start()
+
+    def _codex_worker(self, prompt: str, signature: str, source: str) -> None:
+        exit_code = -1
+        error_text = ""
+        response_text = ""
+        process = None
+        output_path = None
+        try:
+            codex_script = _repo_root() / "tools" / "codex.ps1"
+            if not codex_script.exists():
+                raise RuntimeError(f"Missing Codex launcher: {codex_script}")
+
+            stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            prompt_path = self._workspace_dir / f"medigator_prompt_{stamp}.md"
+            output_path = self._workspace_dir / f"medigator_response_{stamp}.txt"
+            prompt_path.write_text(prompt or "", encoding="utf-8")
+
+            cmd = [
+                "powershell",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(codex_script),
+                "-Exec",
+                "-Model",
+                MEDIGATOR_CODEX_MODEL,
+                "-Cd",
+                str(_repo_root()),
+                "-OutputLastMessage",
+                str(output_path),
+            ]
+
+            self._console_append.emit(f"$ {subprocess.list2cmdline(cmd)}")
+            process = subprocess.Popen(
+                cmd,
+                cwd=str(self._workspace_dir),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+            )
+            with self._process_lock:
+                self._process = process
+
+            if process.stdin is not None:
+                process.stdin.write(prompt or "")
+                if not str(prompt or "").endswith("\n"):
+                    process.stdin.write("\n")
+                process.stdin.flush()
+                process.stdin.close()
+
+            if process.stdout is not None:
+                for raw in process.stdout:
+                    self._console_append.emit(raw.rstrip("\n"))
+
+            exit_code = int(process.wait())
+            if output_path.exists():
+                try:
+                    response_text = output_path.read_text(encoding="utf-8", errors="ignore").strip()
+                except Exception:
+                    response_text = ""
+
+            if exit_code != 0 and not error_text:
+                error_text = f"Codex exited with code {exit_code}."
+            if exit_code == 0 and not response_text:
+                error_text = "Codex completed but produced no output text."
+        except Exception as exc:
+            error_text = f"Failed to run Codex: {exc}"
+        finally:
+            with self._process_lock:
+                if self._process is process:
+                    self._process = None
+            self._command_done.emit(exit_code, error_text, response_text, signature, source)
 
     def _run_command(self) -> None:
         if self._running:
@@ -272,7 +694,7 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
             with self._process_lock:
                 if self._process is process:
                     self._process = None
-            self._command_done.emit(exit_code, error_text)
+            self._command_done.emit(exit_code, error_text, "", "", "manual_command")
 
     def _stop_command(self) -> None:
         proc = None
@@ -288,17 +710,52 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
         except Exception as exc:
             self._set_status(f"Stop failed: {exc}", error=True)
 
-    @QtCore.Slot(int, str)
-    def _on_command_done(self, exit_code: int, error_text: str) -> None:
+    @QtCore.Slot(int, str, str, str, str)
+    def _on_command_done(
+        self,
+        exit_code: int,
+        error_text: str,
+        response_text: str,
+        signature: str,
+        source: str,
+    ) -> None:
         self._set_running(False)
+
+        clean_source = (source or "").strip().lower()
+        is_codex_process = clean_source in {"auto", "manual"}
+
         if error_text:
             self._console_append.emit(error_text)
             self._set_status(error_text, error=True)
-            return
-        if int(exit_code) == 0:
-            self._set_status("Command finished.")
+        elif is_codex_process:
+            output = str(response_text or "").strip()
+            if output:
+                _set_node_info(self._node_item, output)
+                self._console_append.emit("[medigator] Response published to node output.")
+                self._last_processed_signature = str(signature or self._last_processed_signature)
+                if clean_source == "auto":
+                    self._set_status("Auto-processing complete.")
+                else:
+                    self._set_status("Processing complete.")
+            else:
+                self._set_status("Codex returned empty output.", error=True)
         else:
-            self._set_status(f"Command exited with code {exit_code}.", error=True)
+            if int(exit_code) == 0:
+                self._set_status("Command finished.")
+            else:
+                self._set_status(f"Command exited with code {exit_code}.", error=True)
+
+        pending_prompt, pending_signature, pending_source = self._dequeue_pending()
+        if pending_prompt:
+            if pending_signature and pending_signature == self._last_processed_signature:
+                return
+            self._run_codex_prompt(pending_prompt, pending_signature, pending_source or "auto")
+
+    def _on_scene_links_changed(self, *_args):
+        self._sync_auto_baseline()
+
+    def _on_scene_param_changed(self, name=None, _params=None):
+        self._maybe_process_inputs(changed_name=name, force=False, source="auto")
 
     def _clear_console(self) -> None:
         self._console.clear()
@@ -353,4 +810,3 @@ MEDIGATOR_SPEC = Spec(
     render_node_body=render_node_body,
     build_ports=build_ports,
 )
-

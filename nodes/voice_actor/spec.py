@@ -73,6 +73,10 @@ STT_STOP_SPEAKING_PHRASES = (
     "stop playback",
 )
 CHATBOT_NODE_KINDS = {"chatbot", "chat bot", "chat_bot"}
+# Only treat narrow relay/proxy nodes as chatbot-auto sources.
+# This keeps auto speech working through common pass-through nodes
+# without matching unrelated agent chains (for example Medigator).
+CHATBOT_PROXY_NODE_KINDS = {"python", "output", "wire", "switch"}
 DATABASE_NODE_KINDS = {"database"}
 CHATBOT_DB_NAME = "my_database"
 CHATBOT_DEFAULT_COLLECTION = "EchoGragh"
@@ -103,6 +107,42 @@ MALE_VOICE_HINTS = (
 
 _WHISPER_MODEL = None
 _WHISPER_MODEL_LOCK = threading.Lock()
+_TTS_PLAYBACK_LOCK = threading.Lock()
+
+
+def _new_gtts(text: str):
+    if gTTS is None:
+        return None
+    # Newer gTTS builds support timeout; older builds may not.
+    try:
+        return gTTS(text=text, lang="en", timeout=8)
+    except TypeError:
+        return gTTS(text=text, lang="en")
+
+
+def _save_gtts_mp3(text: str, target_path: Path, *, timeout_seconds: float = 12.0) -> str:
+    done = threading.Event()
+    errors = []
+
+    def _worker():
+        try:
+            tts = _new_gtts(text)
+            if tts is None:
+                raise RuntimeError("Google voice dependency is unavailable.")
+            tts.save(str(target_path))
+        except Exception as exc:
+            errors.append(str(exc))
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+    done.wait(max(1.0, float(timeout_seconds)))
+    if not done.is_set():
+        return f"Google TTS timed out after {timeout_seconds:.0f}s."
+    if errors:
+        return errors[0]
+    return ""
 
 
 def _ordered_in_edges(scene, node_item) -> list:
@@ -745,6 +785,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._tts_engine = None
         self._tts_playing = False
         self._tts_user_stopped = False
+        self._tts_using_pygame = False
         self._tts_voice_options = []
         self._syncing_voice_combo = False
         self._syncing_stt_combo = False
@@ -755,6 +796,12 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._stt_session_has_new_text = False
         self._stt_session_base_text = ""
         self._stt_last_pause_snapshot = ""
+        self._stt_prompt_lock = threading.Lock()
+        self._stt_prompt_stop_event = threading.Event()
+        self._stt_prompt_thread = None
+        self._stt_prompt_engine = None
+        self._stt_prompt_playing = False
+        self._stt_prompt_uses_pygame = False
         self._pause_flash_state = False
         self._pause_flash_timer = QtCore.QTimer(self)
         self._pause_flash_timer.setInterval(420)
@@ -1177,13 +1224,14 @@ class VoiceActorWidget(QtWidgets.QWidget):
                 if chatbot_input_item is None:
                     chatbot_input_item = src_item
                 continue
-            upstream_chatbot = _find_upstream_chatbot(scene, src_item, max_depth=6)
-            if upstream_chatbot is not None:
-                if chatbot_input_item is None:
-                    chatbot_input_item = upstream_chatbot
-                if chatbot_proxy_item is None:
-                    chatbot_proxy_item = src_item
-                continue
+            if kind in CHATBOT_PROXY_NODE_KINDS:
+                upstream_chatbot = _find_upstream_chatbot(scene, src_item, max_depth=6)
+                if upstream_chatbot is not None:
+                    if chatbot_input_item is None:
+                        chatbot_input_item = upstream_chatbot
+                    if chatbot_proxy_item is None:
+                        chatbot_proxy_item = src_item
+                    continue
             source_name = str(getattr(src_model, "name", "") or "").strip() or f"Input {edge_index}"
             source_key = str(getattr(src_model, "name", "") or source_name).strip().lower()
             for param_index, entry in enumerate(getattr(src_model, "params", None) or []):
@@ -1567,6 +1615,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
         listening, _paused, stop_requested = self._stt_state()
         if listening and not stop_requested:
             self._set_stt_state(stop_requested=True, paused=False)
+            self._stop_stt_send_confirmation_prompt()
             self._pause_flash_state = False
             self._update_pause_button_ui()
             self._update_control_states()
@@ -1577,15 +1626,17 @@ class VoiceActorWidget(QtWidgets.QWidget):
             return
         self._pending_chatbot_text = ""
         engine = None
+        using_pygame = False
         with self._tts_lock:
             self._tts_user_stopped = True
             engine = self._tts_engine
+            using_pygame = bool(self._tts_using_pygame)
         if engine is not None:
             try:
                 engine.stop()
             except Exception:
                 pass
-        if pygame is not None:
+        if using_pygame and pygame is not None:
             try:
                 if pygame.mixer.get_init() and pygame.mixer.music.get_busy():
                     pygame.mixer.music.stop()
@@ -1623,6 +1674,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
                 error=True,
             )
             return
+        self._stop_stt_send_confirmation_prompt()
         # Start each listen session as a fresh message transcription.
         self._set_transcript("", publish=True)
         self._transcript_undo_stack.clear()
@@ -1675,10 +1727,6 @@ class VoiceActorWidget(QtWidgets.QWidget):
         for phrase in STT_STOP_SPEAKING_PHRASES:
             if phrase and compact == phrase:
                 return True
-        tokens = [part.strip(".,!?;:") for part in compact.split() if part.strip(".,!?;:")]
-        if len(tokens) <= 4 and tokens:
-            if tokens[0] == "stop" and any(tok.startswith("speak") or tok in {"talking", "playback", "voice"} for tok in tokens[1:]):
-                return True
         return False
 
     def _stop_tts_only(self, *, reason: str = "") -> bool:
@@ -1687,15 +1735,17 @@ class VoiceActorWidget(QtWidgets.QWidget):
             return False
         self._pending_chatbot_text = ""
         engine = None
+        using_pygame = False
         with self._tts_lock:
             self._tts_user_stopped = True
             engine = self._tts_engine
+            using_pygame = bool(self._tts_using_pygame)
         if engine is not None:
             try:
                 engine.stop()
             except Exception:
                 pass
-        if pygame is not None:
+        if using_pygame and pygame is not None:
             try:
                 if pygame.mixer.get_init() and pygame.mixer.music.get_busy():
                     pygame.mixer.music.stop()
@@ -1759,74 +1809,144 @@ class VoiceActorWidget(QtWidgets.QWidget):
             return "send"
         return ""
 
+    def _start_stt_send_confirmation_prompt(self) -> None:
+        self._stop_stt_send_confirmation_prompt()
+        self._stt_prompt_stop_event.clear()
+        worker = threading.Thread(target=self._speak_stt_send_confirmation_prompt, daemon=True)
+        with self._stt_prompt_lock:
+            self._stt_prompt_thread = worker
+        worker.start()
+
+    def _stop_stt_send_confirmation_prompt(self) -> None:
+        self._stt_prompt_stop_event.set()
+        engine = None
+        prompt_playing = False
+        prompt_uses_pygame = False
+        with self._stt_prompt_lock:
+            engine = self._stt_prompt_engine
+            prompt_playing = bool(self._stt_prompt_playing)
+            prompt_uses_pygame = bool(self._stt_prompt_uses_pygame)
+        if engine is not None:
+            try:
+                engine.stop()
+            except Exception:
+                pass
+        if prompt_playing and prompt_uses_pygame and pygame is not None:
+            try:
+                if pygame.mixer.get_init() and pygame.mixer.music.get_busy():
+                    pygame.mixer.music.stop()
+            except Exception:
+                pass
+
     def _speak_stt_send_confirmation_prompt(self) -> None:
         prompt = "Are you ready to send? Say yes, done, or send."
         selected_voice_key = str(self._selected_voice_key or "").strip() or VOICE_TANYA_GOOGLE
+        stop_event = self._stt_prompt_stop_event
+        prompt_slot = False
+        with self._stt_prompt_lock:
+            self._stt_prompt_playing = True
+            self._stt_prompt_engine = None
+            self._stt_prompt_uses_pygame = False
 
-        # Prefer Tanya (Google TTS) for the listen confirmation prompt when available.
-        if selected_voice_key == VOICE_TANYA_GOOGLE and gTTS is not None and pygame is not None:
-            temp_file = None
-            loaded = False
+        try:
             try:
-                temp_file = Path(tempfile.gettempdir()) / f"voice_actor_prompt_{uuid.uuid4().hex}.mp3"
-                tts = gTTS(text=prompt, lang="en")
-                tts.save(str(temp_file))
-                if not pygame.mixer.get_init():
-                    pygame.mixer.init()
-                # Do not interrupt active playback from another voice actor.
-                if pygame.mixer.music.get_busy():
-                    raise RuntimeError("Prompt playback skipped while speech is active.")
-                pygame.mixer.music.load(str(temp_file))
-                loaded = True
-                pygame.mixer.music.play()
-                while pygame.mixer.music.get_busy():
-                    time.sleep(0.05)
+                prompt_slot = _TTS_PLAYBACK_LOCK.acquire(blocking=False)
+            except Exception:
+                prompt_slot = False
+            if not prompt_slot:
                 return
+            if stop_event.is_set():
+                return
+
+            # Prefer Tanya (Google TTS) for the listen confirmation prompt when available.
+            if selected_voice_key == VOICE_TANYA_GOOGLE and gTTS is not None and pygame is not None:
+                temp_file = None
+                loaded = False
+                try:
+                    temp_file = Path(tempfile.gettempdir()) / f"voice_actor_prompt_{uuid.uuid4().hex}.mp3"
+                    save_err = _save_gtts_mp3(prompt, temp_file, timeout_seconds=8.0)
+                    if save_err:
+                        raise RuntimeError(save_err)
+                    if stop_event.is_set():
+                        return
+                    if not pygame.mixer.get_init():
+                        pygame.mixer.init()
+                    if pygame.mixer.music.get_busy():
+                        raise RuntimeError("pygame mixer busy")
+                    pygame.mixer.music.load(str(temp_file))
+                    loaded = True
+                    with self._stt_prompt_lock:
+                        self._stt_prompt_uses_pygame = True
+                    pygame.mixer.music.play()
+                    while pygame.mixer.music.get_busy():
+                        if stop_event.is_set():
+                            try:
+                                pygame.mixer.music.stop()
+                            except Exception:
+                                pass
+                            break
+                        time.sleep(0.03)
+                    return
+                except Exception:
+                    pass
+                finally:
+                    if loaded and pygame is not None:
+                        try:
+                            if pygame.mixer.get_init():
+                                try:
+                                    pygame.mixer.music.unload()
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+                    if temp_file is not None:
+                        try:
+                            temp_file.unlink()
+                        except Exception:
+                            pass
+
+            if pyttsx3 is None or stop_event.is_set():
+                return
+            engine = None
+            try:
+                engine = pyttsx3.init()
+                with self._stt_prompt_lock:
+                    self._stt_prompt_engine = engine
+                voice_applied = False
+                if selected_voice_key and selected_voice_key not in {VOICE_TANYA_GOOGLE, VOICE_AUTO_FEMALE}:
+                    try:
+                        engine.setProperty("voice", selected_voice_key)
+                        voice_applied = True
+                    except Exception:
+                        voice_applied = False
+                if not voice_applied:
+                    female_voice_id = _pick_female_voice_id(engine)
+                    if female_voice_id:
+                        try:
+                            engine.setProperty("voice", female_voice_id)
+                        except Exception:
+                            pass
+                if stop_event.is_set():
+                    return
+                engine.say(prompt)
+                engine.runAndWait()
             except Exception:
                 pass
             finally:
-                if loaded and pygame is not None:
+                if engine is not None:
                     try:
-                        if pygame.mixer.get_init():
-                            try:
-                                pygame.mixer.music.unload()
-                            except Exception:
-                                pass
+                        engine.stop()
                     except Exception:
                         pass
-                if temp_file is not None:
-                    try:
-                        temp_file.unlink()
-                    except Exception:
-                        pass
-
-        if pyttsx3 is None:
-            return
-        engine = None
-        try:
-            engine = pyttsx3.init()
-            voice_applied = False
-            if selected_voice_key and selected_voice_key not in {VOICE_TANYA_GOOGLE, VOICE_AUTO_FEMALE}:
-                try:
-                    engine.setProperty("voice", selected_voice_key)
-                    voice_applied = True
-                except Exception:
-                    voice_applied = False
-            if not voice_applied:
-                female_voice_id = _pick_female_voice_id(engine)
-                if female_voice_id:
-                    try:
-                        engine.setProperty("voice", female_voice_id)
-                    except Exception:
-                        pass
-            engine.say(prompt)
-            engine.runAndWait()
-        except Exception:
-            pass
         finally:
-            if engine is not None:
+            with self._stt_prompt_lock:
+                self._stt_prompt_engine = None
+                self._stt_prompt_playing = False
+                self._stt_prompt_uses_pygame = False
+                self._stt_prompt_thread = None
+            if prompt_slot:
                 try:
-                    engine.stop()
+                    _TTS_PLAYBACK_LOCK.release()
                 except Exception:
                     pass
 
@@ -1858,7 +1978,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
                 return False
             awaiting_send_confirmation = True
             self._stt_status.emit("Are you ready to send? Say yes, done, or send.")
-            self._speak_stt_send_confirmation_prompt()
+            self._start_stt_send_confirmation_prompt()
             awaiting_started_at = time.monotonic()
             prompt_response_until = awaiting_started_at + STT_IDLE_CONFIRM_RESPONSE_SECONDS
             last_voice_activity = awaiting_started_at
@@ -1918,6 +2038,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
                     if self._is_stop_speaking_command(clean_chunk):
                         awaiting_send_confirmation = False
                         prompt_response_until = 0.0
+                        self._stop_stt_send_confirmation_prompt()
                         last_voice_activity = time.monotonic()
                         self._stt_status.emit("Stopping speech playback...")
                         self._stt_command.emit("stop_speaking")
@@ -1932,26 +2053,35 @@ class VoiceActorWidget(QtWidgets.QWidget):
                             send_confirmed = True
                             awaiting_send_confirmation = False
                             prompt_response_until = 0.0
+                            self._stop_stt_send_confirmation_prompt()
                             self._stt_status.emit("Sending message...")
                             self._set_stt_state(stop_requested=True, paused=False)
                             break
                         if action == "continue":
                             awaiting_send_confirmation = False
                             prompt_response_until = 0.0
+                            self._stop_stt_send_confirmation_prompt()
                             last_voice_activity = time.monotonic()
                             self._stt_status.emit("Continuing to listen...")
                             continue
                         if prompt_phrase_heard:
                             continue
-                        # Keep confirmation mode active until timeout or explicit send/continue.
-                        awaiting_send_confirmation = True
-                        self._stt_status.emit("Say yes, done, or send to send. Say no or wait to continue.")
+                        # User continued talking; treat it as transcript and leave confirmation mode.
+                        awaiting_send_confirmation = False
+                        prompt_response_until = 0.0
+                        self._stop_stt_send_confirmation_prompt()
+                        transcript_parts.append(clean_chunk)
+                        last_voice_activity = time.monotonic()
+                        self._stt_status.emit("Continuing to listen...")
+                        self._stt_chunk.emit(clean_chunk)
                         continue
+                    self._stop_stt_send_confirmation_prompt()
                     transcript_parts.append(clean_chunk)
                     last_voice_activity = time.monotonic()
                     self._stt_chunk.emit(clean_chunk)
         except Exception as exc:
             error = _format_stt_error(exc)
+        self._stop_stt_send_confirmation_prompt()
         _listening, _paused, stop_requested = self._stt_state()
         if stop_requested and not error:
             error = "__sent__" if send_confirmed else "__stopped__"
@@ -2114,6 +2244,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
             self._tts_user_stopped = False
             self._tts_playing = True
             self._tts_engine = None
+            self._tts_using_pygame = False
         self._set_busy(True, "speaking")
         threading.Thread(target=self._tts_worker, args=(clean, voice_key), daemon=True).start()
         return True
@@ -2171,56 +2302,90 @@ class VoiceActorWidget(QtWidgets.QWidget):
         user_stopped = False
         engine = None
         temp_file = None
+        used_pygame = False
+        playback_slot = False
+
+        def _speak_with_local(local_voice_key: str) -> None:
+            nonlocal engine
+            nonlocal user_stopped
+            nonlocal error
+            if pyttsx3 is None:
+                raise RuntimeError("Missing dependency: pyttsx3. Install: pip install pyttsx3")
+            engine = pyttsx3.init()
+            voice_applied = False
+            if local_voice_key != VOICE_AUTO_FEMALE:
+                try:
+                    engine.setProperty("voice", local_voice_key)
+                    voice_applied = True
+                except Exception:
+                    voice_applied = False
+            if not voice_applied:
+                female_voice_id = _pick_female_voice_id(engine)
+                if female_voice_id:
+                    try:
+                        engine.setProperty("voice", female_voice_id)
+                    except Exception:
+                        pass
+            with self._tts_lock:
+                self._tts_engine = engine
+                user_stopped = bool(self._tts_user_stopped)
+            if user_stopped:
+                error = "__stopped__"
+                return
+            engine.say(text)
+            engine.runAndWait()
+
         try:
             selected_voice_key = str(voice_key or "").strip() or VOICE_TANYA_GOOGLE
-            if selected_voice_key == VOICE_TANYA_GOOGLE:
-                if gTTS is None or pygame is None:
-                    raise RuntimeError("Google voice dependencies are missing. Install: pip install gTTS pygame")
-                temp_file = Path(tempfile.gettempdir()) / f"voice_actor_{uuid.uuid4().hex}.mp3"
-                tts = gTTS(text=text, lang="en")
-                tts.save(str(temp_file))
-                if not pygame.mixer.get_init():
-                    pygame.mixer.init()
-                pygame.mixer.music.load(str(temp_file))
-                pygame.mixer.music.play()
-                while pygame.mixer.music.get_busy():
-                    with self._tts_lock:
-                        user_stopped = bool(self._tts_user_stopped)
-                    if user_stopped:
-                        try:
-                            pygame.mixer.music.stop()
-                        except Exception:
-                            pass
-                        break
-                    time.sleep(0.05)
-            else:
-                engine = pyttsx3.init()
-                voice_applied = False
-                if selected_voice_key != VOICE_AUTO_FEMALE:
-                    try:
-                        engine.setProperty("voice", selected_voice_key)
-                        voice_applied = True
-                    except Exception:
-                        voice_applied = False
-                if not voice_applied:
-                    female_voice_id = _pick_female_voice_id(engine)
-                    if female_voice_id:
-                        try:
-                            engine.setProperty("voice", female_voice_id)
-                        except Exception:
-                            pass
+            while not playback_slot:
+                playback_slot = _TTS_PLAYBACK_LOCK.acquire(timeout=0.1)
+                if playback_slot:
+                    break
                 with self._tts_lock:
-                    self._tts_engine = engine
                     user_stopped = bool(self._tts_user_stopped)
                 if user_stopped:
                     error = "__stopped__"
+                    break
+            if error:
+                return
+
+            if selected_voice_key == VOICE_TANYA_GOOGLE:
+                google_error = ""
+                if gTTS is not None and pygame is not None:
+                    try:
+                        temp_file = Path(tempfile.gettempdir()) / f"voice_actor_{uuid.uuid4().hex}.mp3"
+                        save_err = _save_gtts_mp3(text, temp_file, timeout_seconds=12.0)
+                        if save_err:
+                            raise RuntimeError(save_err)
+                        if not pygame.mixer.get_init():
+                            pygame.mixer.init()
+                        with self._tts_lock:
+                            self._tts_using_pygame = True
+                        used_pygame = True
+                        pygame.mixer.music.load(str(temp_file))
+                        pygame.mixer.music.play()
+                        while pygame.mixer.music.get_busy():
+                            with self._tts_lock:
+                                user_stopped = bool(self._tts_user_stopped)
+                            if user_stopped:
+                                try:
+                                    pygame.mixer.music.stop()
+                                except Exception:
+                                    pass
+                                break
+                            time.sleep(0.05)
+                    except Exception as exc:
+                        google_error = str(exc)
                 else:
-                    engine.say(text)
-                    engine.runAndWait()
+                    google_error = "Google voice dependencies are missing."
+                if google_error and not user_stopped:
+                    _speak_with_local(VOICE_AUTO_FEMALE)
+            else:
+                _speak_with_local(selected_voice_key)
         except Exception as exc:
             error = f"Text-to-speech failed: {exc}"
         finally:
-            if pygame is not None:
+            if used_pygame and pygame is not None:
                 try:
                     if pygame.mixer.get_init():
                         try:
@@ -2239,9 +2404,15 @@ class VoiceActorWidget(QtWidgets.QWidget):
                     engine.stop()
                 except Exception:
                     pass
+            if playback_slot:
+                try:
+                    _TTS_PLAYBACK_LOCK.release()
+                except Exception:
+                    pass
             with self._tts_lock:
                 if self._tts_engine is engine:
                     self._tts_engine = None
+                self._tts_using_pygame = False
                 user_stopped = bool(self._tts_user_stopped)
                 self._tts_playing = False
         if user_stopped and not error:
