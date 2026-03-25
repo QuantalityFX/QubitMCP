@@ -80,6 +80,9 @@ CHATBOT_PROXY_NODE_KINDS = {"python", "output", "wire", "switch"}
 DATABASE_NODE_KINDS = {"database"}
 CHATBOT_DB_NAME = "my_database"
 CHATBOT_DEFAULT_COLLECTION = "EchoGragh"
+VOICE_AUDIO_MODE_BILATERAL = "bilateral"
+VOICE_AUDIO_MODE_TURN_TAKING = "turn_taking"
+VOICE_MIC_DEVICE_DEFAULT = None
 FEMALE_VOICE_HINTS = (
     "female",
     "woman",
@@ -581,6 +584,34 @@ def _normalize_stt_method(value: str) -> str:
     return STT_METHOD_LOCAL_WHISPER
 
 
+def _normalize_voice_audio_mode(value: str) -> str:
+    key = str(value or "").strip().lower()
+    if key in {"turn_taking", "turn-taking", "turntaking", "single", "single_talk"}:
+        return VOICE_AUDIO_MODE_TURN_TAKING
+    return VOICE_AUDIO_MODE_BILATERAL
+
+
+def _normalize_voice_mic_device_index(value):
+    if value is None:
+        return VOICE_MIC_DEVICE_DEFAULT
+    if isinstance(value, bool):
+        value = int(value)
+    if isinstance(value, (int, float)):
+        idx = int(value)
+        return idx if idx >= 0 else VOICE_MIC_DEVICE_DEFAULT
+    text = str(value or "").strip()
+    if not text:
+        return VOICE_MIC_DEVICE_DEFAULT
+    low = text.lower()
+    if low in {"default", "system", "auto", "none", "-1"}:
+        return VOICE_MIC_DEVICE_DEFAULT
+    try:
+        idx = int(text)
+        return idx if idx >= 0 else VOICE_MIC_DEVICE_DEFAULT
+    except Exception:
+        return VOICE_MIC_DEVICE_DEFAULT
+
+
 def _whisper_model():
     if WhisperModel is None:
         return None, "Missing dependency: faster-whisper. Run setup.bat or pip install faster-whisper."
@@ -779,6 +810,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._chatbot_via_proxy = False
         self._last_chatbot_token = ""
         self._pending_chatbot_text = ""
+        self._turn_taking_paused_actors = []
         self._last_tts_text = ""
         self._processing_chatbot_auto = False
         self._tts_lock = threading.Lock()
@@ -1715,7 +1747,45 @@ class VoiceActorWidget(QtWidgets.QWidget):
             return
         if self._mode != "voice_to_text":
             return
+        if self._scene_voice_audio_mode() == VOICE_AUDIO_MODE_TURN_TAKING and self._other_voice_actor_is_speaking():
+            try:
+                QtCore.QTimer.singleShot(160, self._resume_stt_after_send)
+            except Exception:
+                pass
+            return
         self._start_stt()
+
+    def _other_voice_actor_is_speaking(self) -> bool:
+        scene = self._scene
+        if scene is None:
+            try:
+                scene = self._node_item.scene()
+            except Exception:
+                scene = None
+        if scene is None:
+            return False
+        for item in list(getattr(scene, "_node_items", {}).values() or []):
+            if item is None or item is self._node_item:
+                continue
+            if _kind_of_item(item) not in VOICE_ACTOR_NODE_KINDS:
+                continue
+            for proxy in list(getattr(item, "_plugin_proxies", []) or []):
+                if proxy is None or not hasattr(proxy, "widget"):
+                    continue
+                widget = proxy.widget()
+                if widget is None or widget is self:
+                    continue
+                try:
+                    if bool(getattr(widget, "_tts_playing", False)):
+                        return True
+                except Exception:
+                    pass
+                try:
+                    if bool(getattr(widget, "_stt_prompt_playing", False)):
+                        return True
+                except Exception:
+                    pass
+        return False
 
     def _is_stop_speaking_command(self, text: str) -> bool:
         cleaned = str(text or "").strip().lower()
@@ -1755,6 +1825,146 @@ class VoiceActorWidget(QtWidgets.QWidget):
             self._set_status(reason)
         self._update_control_states()
         return True
+
+    def _scene_voice_audio_mode(self) -> str:
+        scene = self._scene
+        if scene is None:
+            try:
+                scene = self._node_item.scene()
+            except Exception:
+                scene = None
+        if scene is None:
+            return VOICE_AUDIO_MODE_BILATERAL
+        raw = ""
+        try:
+            raw = str(getattr(scene, "_voice_actor_audio_mode", "") or "").strip()
+        except Exception:
+            raw = ""
+        if not raw:
+            try:
+                settings = getattr(scene, "_view_settings", None)
+                if isinstance(settings, dict):
+                    raw = str(settings.get("voice_audio_mode", "") or "").strip()
+            except Exception:
+                raw = ""
+        return _normalize_voice_audio_mode(raw)
+
+    def _scene_voice_mic_device_index(self):
+        scene = self._scene
+        if scene is None:
+            try:
+                scene = self._node_item.scene()
+            except Exception:
+                scene = None
+        if scene is None:
+            return VOICE_MIC_DEVICE_DEFAULT
+        raw = None
+        try:
+            raw = getattr(scene, "_voice_actor_mic_device_index", VOICE_MIC_DEVICE_DEFAULT)
+        except Exception:
+            raw = VOICE_MIC_DEVICE_DEFAULT
+        if raw in (None, "", "none", "default", "system", "auto", -1, "-1"):
+            try:
+                settings = getattr(scene, "_view_settings", None)
+                if isinstance(settings, dict):
+                    raw = settings.get("voice_mic_device_index", VOICE_MIC_DEVICE_DEFAULT)
+            except Exception:
+                raw = VOICE_MIC_DEVICE_DEFAULT
+        return _normalize_voice_mic_device_index(raw)
+
+    def _pause_listening_for_turn_taking(self) -> bool:
+        listening, _paused, stop_requested = self._stt_state()
+        if not listening or stop_requested:
+            return False
+        self._set_stt_state(stop_requested=True, paused=False)
+        self._stop_stt_send_confirmation_prompt()
+        self._pause_flash_state = False
+        self._update_pause_button_ui()
+        self._update_control_states()
+        self._set_status("Listening paused for turn-taking output.")
+        return True
+
+    def _wait_until_listening_stopped_for_turn_taking(self, timeout_seconds: float = 2.2) -> bool:
+        end_at = time.monotonic() + max(0.2, float(timeout_seconds or 0.0))
+        while time.monotonic() < end_at:
+            listening, _paused, _stop_requested = self._stt_state()
+            if not listening:
+                return True
+            time.sleep(0.05)
+        listening, _paused, _stop_requested = self._stt_state()
+        return not listening
+
+    def _resume_listening_after_turn_taking(self) -> bool:
+        listening, _paused, stop_requested = self._stt_state()
+        if listening:
+            return False
+        if stop_requested or self._busy:
+            try:
+                QtCore.QTimer.singleShot(140, self._resume_listening_after_turn_taking)
+            except Exception:
+                pass
+            return False
+        if self._mode != "voice_to_text":
+            return False
+        self._start_stt()
+        return True
+
+    def _pause_other_voice_actors_for_turn_taking(self) -> list:
+        if self._scene_voice_audio_mode() != VOICE_AUDIO_MODE_TURN_TAKING:
+            return []
+        scene = self._scene
+        if scene is None:
+            try:
+                scene = self._node_item.scene()
+            except Exception:
+                scene = None
+        if scene is None:
+            return []
+        paused_widgets = []
+        node_items = list(getattr(scene, "_node_items", {}).values() or [])
+        for item in node_items:
+            if item is None or item is self._node_item:
+                continue
+            if _kind_of_item(item) not in VOICE_ACTOR_NODE_KINDS:
+                continue
+            for proxy in list(getattr(item, "_plugin_proxies", []) or []):
+                if proxy is None or not hasattr(proxy, "widget"):
+                    continue
+                widget = proxy.widget()
+                if widget is None or widget is self:
+                    continue
+                pause_fn = getattr(widget, "_pause_listening_for_turn_taking", None)
+                if not callable(pause_fn):
+                    continue
+                try:
+                    if pause_fn():
+                        paused_widgets.append(widget)
+                except Exception:
+                    pass
+        for widget in paused_widgets:
+            wait_fn = getattr(widget, "_wait_until_listening_stopped_for_turn_taking", None)
+            if callable(wait_fn):
+                try:
+                    wait_fn(timeout_seconds=2.2)
+                except Exception:
+                    pass
+        return paused_widgets
+
+    def _resume_turn_taking_paused_actors(self) -> None:
+        paused = list(getattr(self, "_turn_taking_paused_actors", []) or [])
+        self._turn_taking_paused_actors = []
+        if not paused:
+            return
+        for widget in paused:
+            if widget is None or widget is self:
+                continue
+            resume_fn = getattr(widget, "_resume_listening_after_turn_taking", None)
+            if not callable(resume_fn):
+                continue
+            try:
+                resume_fn()
+            except Exception:
+                pass
 
     def _interrupt_other_voice_actors(self) -> bool:
         scene = self._scene
@@ -1986,7 +2196,11 @@ class VoiceActorWidget(QtWidgets.QWidget):
 
         try:
             recognizer = sr.Recognizer()
-            with sr.Microphone() as source:
+            mic_index = _normalize_voice_mic_device_index(self._scene_voice_mic_device_index())
+            mic_kwargs = {}
+            if mic_index is not None:
+                mic_kwargs["device_index"] = int(mic_index)
+            with sr.Microphone(**mic_kwargs) as source:
                 recognizer.adjust_for_ambient_noise(source, duration=0.4)
                 while True:
                     listening, paused, stop_requested = self._stt_state()
@@ -2240,6 +2454,9 @@ class VoiceActorWidget(QtWidgets.QWidget):
         else:
             self._set_status("Speaking transcript...")
         self._last_tts_text = clean
+        # Clear any stale turn-taking pause list from an interrupted prior playback.
+        self._resume_turn_taking_paused_actors()
+        self._turn_taking_paused_actors = self._pause_other_voice_actors_for_turn_taking()
         with self._tts_lock:
             self._tts_user_stopped = False
             self._tts_playing = True
@@ -2379,7 +2596,8 @@ class VoiceActorWidget(QtWidgets.QWidget):
                 else:
                     google_error = "Google voice dependencies are missing."
                 if google_error and not user_stopped:
-                    _speak_with_local(VOICE_AUTO_FEMALE)
+                    error = f"Tanya (Google) voice failed: {google_error}"
+                    return
             else:
                 _speak_with_local(selected_voice_key)
         except Exception as exc:
@@ -2422,6 +2640,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
     @QtCore.Slot(str)
     def _finish_tts(self, error: str) -> None:
         self._set_busy(False, "")
+        self._resume_turn_taking_paused_actors()
         if error:
             if str(error).strip() == "__stopped__":
                 self._set_status("Speech stopped.")

@@ -38,6 +38,11 @@ from echograph.constants import (
     script_dir
 )
 
+try:
+    import speech_recognition as _speech_recognition  # type: ignore
+except Exception:
+    _speech_recognition = None
+
 # Librarian IPC glue (redirect old private helpers to the new service)
 from echograph.services.librarian_ipc import (
     outbox_dir,
@@ -68,6 +73,10 @@ _RECENT_GRAPHS_PATH = script_dir() / "recent_graphs.json"
 _RECENT_GRAPHS_LIMIT = 10
 _APP_SETTINGS_PATH = script_dir() / "app_settings.json"
 _DEFAULT_PANEL_LAYOUT_PRESET = {"timeline": False, "audio": False}
+_VOICE_AUDIO_MODE_BILATERAL = "bilateral"
+_VOICE_AUDIO_MODE_TURN_TAKING = "turn_taking"
+_VOICE_AUDIO_MODE_DEFAULT = _VOICE_AUDIO_MODE_TURN_TAKING
+_VOICE_MIC_DEVICE_DEFAULT = None
 
 def _load_recent_graphs() -> List[str]:
     try:
@@ -130,6 +139,113 @@ def _normalize_panel_layout_preset(value, fallback=None) -> Dict[str, bool]:
     return {"timeline": bool(base["timeline"]), "audio": bool(base["audio"])}
 
 
+def _normalize_voice_audio_mode(value, fallback: str = _VOICE_AUDIO_MODE_DEFAULT) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"bilateral", "duplex", "full_duplex", "simultaneous"}:
+        return _VOICE_AUDIO_MODE_BILATERAL
+    if text in {"turn_taking", "turn-taking", "turntaking", "single", "single_talk"}:
+        return _VOICE_AUDIO_MODE_TURN_TAKING
+    fb = str(fallback or "").strip().lower()
+    if fb in {"bilateral", "duplex", "full_duplex", "simultaneous"}:
+        return _VOICE_AUDIO_MODE_BILATERAL
+    if fb in {"turn_taking", "turn-taking", "turntaking", "single", "single_talk"}:
+        return _VOICE_AUDIO_MODE_TURN_TAKING
+    return _VOICE_AUDIO_MODE_DEFAULT
+
+
+def _normalize_voice_mic_device_index(value, fallback=_VOICE_MIC_DEVICE_DEFAULT):
+    if value is None:
+        if fallback is None:
+            return _VOICE_MIC_DEVICE_DEFAULT
+        return _normalize_voice_mic_device_index(fallback, _VOICE_MIC_DEVICE_DEFAULT)
+    if isinstance(value, bool):
+        value = int(value)
+    if isinstance(value, (int, float)):
+        idx = int(value)
+        return idx if idx >= 0 else _VOICE_MIC_DEVICE_DEFAULT
+    text = str(value or "").strip()
+    if not text:
+        return _VOICE_MIC_DEVICE_DEFAULT
+    low = text.lower()
+    if low in {"default", "system", "auto", "none", "-1"}:
+        return _VOICE_MIC_DEVICE_DEFAULT
+    try:
+        idx = int(text)
+        return idx if idx >= 0 else _VOICE_MIC_DEVICE_DEFAULT
+    except Exception:
+        pass
+    if fallback is not None and fallback != value:
+        return _normalize_voice_mic_device_index(fallback, _VOICE_MIC_DEVICE_DEFAULT)
+    return _VOICE_MIC_DEVICE_DEFAULT
+
+
+def _list_available_microphone_options() -> List[Dict[str, Any]]:
+    options = [{"device_index": _VOICE_MIC_DEVICE_DEFAULT, "name": "System Default"}]
+    sr_mod = _speech_recognition
+    if sr_mod is None:
+        return options
+    mic_cls = getattr(sr_mod, "Microphone", None)
+    if mic_cls is None:
+        return options
+    output_tokens = ("speaker", "speakers", "headphone", "headphones", "output", "line out", "monitor", "loopback")
+    input_tokens = ("mic", "microphone", "input", "headset", "array", "record", "recording")
+
+    # Prefer PyAudio device metadata so we can filter to input-capable devices.
+    pyaudio_mod = None
+    get_pyaudio = getattr(mic_cls, "get_pyaudio", None)
+    if callable(get_pyaudio):
+        try:
+            pyaudio_mod = get_pyaudio()
+        except Exception:
+            pyaudio_mod = None
+    if pyaudio_mod is not None:
+        pa = None
+        try:
+            pa = pyaudio_mod.PyAudio()
+            count = int(pa.get_device_count() or 0)
+            for idx in range(count):
+                try:
+                    info = pa.get_device_info_by_index(idx) or {}
+                except Exception:
+                    continue
+                try:
+                    max_input = int(info.get("maxInputChannels", 0) or 0)
+                except Exception:
+                    max_input = 0
+                if max_input <= 0:
+                    continue
+                name = str(info.get("name", "") or "").strip() or f"Microphone {idx}"
+                key = name.lower()
+                if any(tok in key for tok in output_tokens) and not any(tok in key for tok in input_tokens):
+                    continue
+                options.append({"device_index": int(idx), "name": f"{idx}: {name}"})
+        except Exception:
+            pass
+        finally:
+            if pa is not None:
+                try:
+                    pa.terminate()
+                except Exception:
+                    pass
+        if len(options) > 1:
+            return options
+
+    # Fallback when PyAudio metadata is unavailable.
+    if not hasattr(mic_cls, "list_microphone_names"):
+        return options
+    try:
+        names = list(mic_cls.list_microphone_names() or [])
+    except Exception:
+        names = []
+    for idx, raw_name in enumerate(names):
+        name = str(raw_name or "").strip() or f"Microphone {idx}"
+        key = name.lower()
+        if any(tok in key for tok in output_tokens) and not any(tok in key for tok in input_tokens):
+            continue
+        options.append({"device_index": int(idx), "name": f"{idx}: {name}"})
+    return options
+
+
 def _load_app_settings() -> Dict[str, Any]:
     raw = {}
     try:
@@ -140,9 +256,16 @@ def _load_app_settings() -> Dict[str, Any]:
         raw = {}
     panel_layout = _normalize_panel_layout_preset(raw.get("panel_layout"), _DEFAULT_PANEL_LAYOUT_PRESET)
     save_layout = _coerce_bool(raw.get("save_layout"), True)
+    voice_audio_mode = _normalize_voice_audio_mode(raw.get("voice_audio_mode"), _VOICE_AUDIO_MODE_DEFAULT)
+    voice_mic_device_index = _normalize_voice_mic_device_index(
+        raw.get("voice_mic_device_index"),
+        _VOICE_MIC_DEVICE_DEFAULT,
+    )
     return {
         "save_layout": bool(save_layout),
         "panel_layout": panel_layout,
+        "voice_audio_mode": voice_audio_mode,
+        "voice_mic_device_index": voice_mic_device_index,
     }
 
 
@@ -150,6 +273,11 @@ def _save_app_settings(settings: Dict[str, Any]) -> None:
     payload = {
         "save_layout": _coerce_bool((settings or {}).get("save_layout"), True),
         "panel_layout": _normalize_panel_layout_preset((settings or {}).get("panel_layout"), _DEFAULT_PANEL_LAYOUT_PRESET),
+        "voice_audio_mode": _normalize_voice_audio_mode((settings or {}).get("voice_audio_mode"), _VOICE_AUDIO_MODE_DEFAULT),
+        "voice_mic_device_index": _normalize_voice_mic_device_index(
+            (settings or {}).get("voice_mic_device_index"),
+            _VOICE_MIC_DEVICE_DEFAULT,
+        ),
     }
     try:
         _APP_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -2322,6 +2450,14 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             app_settings.get("panel_layout"),
             _DEFAULT_PANEL_LAYOUT_PRESET,
         )
+        self._voice_audio_mode = _normalize_voice_audio_mode(
+            app_settings.get("voice_audio_mode"),
+            _VOICE_AUDIO_MODE_DEFAULT,
+        )
+        self._voice_mic_device_index = _normalize_voice_mic_device_index(
+            app_settings.get("voice_mic_device_index"),
+            _VOICE_MIC_DEVICE_DEFAULT,
+        )
 
         central = QtWidgets.QWidget(self)
         v = QtWidgets.QVBoxLayout(central)
@@ -2343,6 +2479,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             self.scene.paramChanged.connect(self._on_params_changed)
         except Exception:
             pass
+        self._apply_voice_audio_mode_to_scene(sync_view_settings=True)
+        self._apply_voice_microphone_to_scene(sync_view_settings=True)
 
         set_global_llm_scale(0.5, self.scene)  # ← apply global LLM scale here
         try:
@@ -4355,6 +4493,28 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         grid.addWidget(save_layout_label, 8, 0, 1, 1, QtCore.Qt.AlignVCenter)
         grid.addWidget(self._save_layout_toggle, 8, 1, 1, 1, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
 
+        voice_audio_label = QtWidgets.QLabel("Turn-Taking Audio")
+        self._voice_audio_toggle = QtWidgets.QCheckBox()
+        self._voice_audio_toggle.setChecked(self._voice_audio_mode_is_turn_taking())
+        self._voice_audio_toggle.setToolTip(
+            "On = turn-taking (pause mic while another actor speaks). Off = bilateral mic+speaker."
+        )
+        self._voice_audio_toggle.toggled.connect(self._on_voice_audio_mode_toggled)
+        grid.addWidget(voice_audio_label, 9, 0, 1, 1, QtCore.Qt.AlignVCenter)
+        grid.addWidget(self._voice_audio_toggle, 9, 1, 1, 1, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+
+        mic_label = QtWidgets.QLabel("Microphone")
+        self._voice_mic_combo = QtWidgets.QComboBox()
+        self._voice_mic_combo.setMinimumWidth(220)
+        self._voice_mic_combo.setStyleSheet(
+            "QComboBox{background:#11151c;color:#e6edf3;border:1px solid #334155;border-radius:4px;padding:2px 8px;}"
+            "QComboBox QAbstractItemView{background:#0f1216;color:#e6edf3;selection-background-color:#1e3a8a;}"
+        )
+        self._voice_mic_combo.currentIndexChanged.connect(self._on_voice_microphone_changed)
+        grid.addWidget(mic_label, 10, 0, 1, 1, QtCore.Qt.AlignVCenter)
+        grid.addWidget(self._voice_mic_combo, 10, 1, 1, 2, QtCore.Qt.AlignVCenter)
+        self._refresh_voice_microphone_options()
+
         panel_action = QtWidgets.QWidgetAction(settings_menu)
         panel_action.setDefaultWidget(panel)
         settings_menu.addAction(panel_action)
@@ -4446,6 +4606,11 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         btn = getattr(self, "_settings_btn", None)
         if btn is None:
             return
+        if bool(active):
+            try:
+                self._refresh_voice_microphone_options()
+            except Exception:
+                pass
         try:
             btn.setProperty("active", bool(active))
             btn.style().unpolish(btn)
@@ -4587,8 +4752,132 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 getattr(self, "_panel_layout_master_preset", None),
                 _DEFAULT_PANEL_LAYOUT_PRESET,
             ),
+            "voice_audio_mode": _normalize_voice_audio_mode(
+                getattr(self, "_voice_audio_mode", _VOICE_AUDIO_MODE_DEFAULT),
+                _VOICE_AUDIO_MODE_DEFAULT,
+            ),
+            "voice_mic_device_index": _normalize_voice_mic_device_index(
+                getattr(self, "_voice_mic_device_index", _VOICE_MIC_DEVICE_DEFAULT),
+                _VOICE_MIC_DEVICE_DEFAULT,
+            ),
         }
         _save_app_settings(payload)
+
+    def _voice_audio_mode_is_bilateral(self) -> bool:
+        mode = _normalize_voice_audio_mode(
+            getattr(self, "_voice_audio_mode", _VOICE_AUDIO_MODE_DEFAULT),
+            _VOICE_AUDIO_MODE_DEFAULT,
+        )
+        return mode == _VOICE_AUDIO_MODE_BILATERAL
+
+    def _voice_audio_mode_is_turn_taking(self) -> bool:
+        return not self._voice_audio_mode_is_bilateral()
+
+    def _apply_voice_audio_mode_to_scene(self, *, sync_view_settings: bool = True) -> None:
+        mode = _normalize_voice_audio_mode(
+            getattr(self, "_voice_audio_mode", _VOICE_AUDIO_MODE_DEFAULT),
+            _VOICE_AUDIO_MODE_DEFAULT,
+        )
+        self._voice_audio_mode = mode
+        sc = getattr(self, "scene", None)
+        if sc is None:
+            return
+        try:
+            setattr(sc, "_voice_actor_audio_mode", mode)
+        except Exception:
+            pass
+        if not sync_view_settings:
+            return
+        try:
+            settings = getattr(sc, "_view_settings", None)
+            if not isinstance(settings, dict):
+                settings = {}
+            settings = dict(settings)
+            settings["voice_audio_mode"] = mode
+            sc._view_settings = settings
+        except Exception:
+            pass
+
+    def _apply_voice_microphone_to_scene(self, *, sync_view_settings: bool = True) -> None:
+        mic_index = _normalize_voice_mic_device_index(
+            getattr(self, "_voice_mic_device_index", _VOICE_MIC_DEVICE_DEFAULT),
+            _VOICE_MIC_DEVICE_DEFAULT,
+        )
+        self._voice_mic_device_index = mic_index
+        sc = getattr(self, "scene", None)
+        if sc is None:
+            return
+        try:
+            setattr(sc, "_voice_actor_mic_device_index", mic_index)
+        except Exception:
+            pass
+        if not sync_view_settings:
+            return
+        try:
+            settings = getattr(sc, "_view_settings", None)
+            if not isinstance(settings, dict):
+                settings = {}
+            settings = dict(settings)
+            settings["voice_mic_device_index"] = mic_index
+            sc._view_settings = settings
+        except Exception:
+            pass
+
+    def _refresh_voice_microphone_options(self) -> None:
+        combo = getattr(self, "_voice_mic_combo", None)
+        if combo is None:
+            return
+        selected = _normalize_voice_mic_device_index(
+            getattr(self, "_voice_mic_device_index", _VOICE_MIC_DEVICE_DEFAULT),
+            _VOICE_MIC_DEVICE_DEFAULT,
+        )
+        options = _list_available_microphone_options()
+        has_selected = any(
+            _normalize_voice_mic_device_index(opt.get("device_index"), _VOICE_MIC_DEVICE_DEFAULT) == selected
+            for opt in options
+        )
+        if not has_selected and selected is not None:
+            options.append({"device_index": selected, "name": f"{selected}: (Unavailable)"})
+        combo.blockSignals(True)
+        try:
+            combo.clear()
+            selected_index = 0
+            for idx, opt in enumerate(options):
+                opt_index = _normalize_voice_mic_device_index(opt.get("device_index"), _VOICE_MIC_DEVICE_DEFAULT)
+                combo.addItem(str(opt.get("name", "") or ""), opt_index)
+                if opt_index == selected:
+                    selected_index = idx
+            combo.setCurrentIndex(selected_index)
+        finally:
+            combo.blockSignals(False)
+        if _speech_recognition is None:
+            combo.setToolTip("Install speech_recognition + pyaudio for microphone device selection.")
+        else:
+            combo.setToolTip("Select the microphone device for Voice Actor listen mode.")
+
+    def _on_voice_microphone_changed(self, _index: int) -> None:
+        combo = getattr(self, "_voice_mic_combo", None)
+        if combo is None:
+            return
+        selected = _normalize_voice_mic_device_index(
+            combo.currentData(),
+            _VOICE_MIC_DEVICE_DEFAULT,
+        )
+        if selected == _normalize_voice_mic_device_index(
+            getattr(self, "_voice_mic_device_index", _VOICE_MIC_DEVICE_DEFAULT),
+            _VOICE_MIC_DEVICE_DEFAULT,
+        ):
+            return
+        self._voice_mic_device_index = selected
+        self._apply_voice_microphone_to_scene(sync_view_settings=True)
+        self._persist_app_layout_settings()
+
+    def _on_voice_audio_mode_toggled(self, checked: bool) -> None:
+        self._voice_audio_mode = (
+            _VOICE_AUDIO_MODE_TURN_TAKING if bool(checked) else _VOICE_AUDIO_MODE_BILATERAL
+        )
+        self._apply_voice_audio_mode_to_scene(sync_view_settings=True)
+        self._persist_app_layout_settings()
 
     def _on_panel_layout_changed(self) -> None:
         if bool(getattr(self, "_suspend_panel_layout_persist", False)):
@@ -4701,6 +4990,14 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             settings = {}
         settings = dict(settings)
         settings["panel_layout"] = self._current_panel_layout_preset()
+        settings["voice_audio_mode"] = _normalize_voice_audio_mode(
+            getattr(self, "_voice_audio_mode", _VOICE_AUDIO_MODE_DEFAULT),
+            _VOICE_AUDIO_MODE_DEFAULT,
+        )
+        settings["voice_mic_device_index"] = _normalize_voice_mic_device_index(
+            getattr(self, "_voice_mic_device_index", _VOICE_MIC_DEVICE_DEFAULT),
+            _VOICE_MIC_DEVICE_DEFAULT,
+        )
         data["settings"] = settings
 
     def _inject_scene_restore_into_workflow_data(self, data: Dict[str, Any]) -> None:
@@ -4965,6 +5262,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._fly_speed_mult = 1.0
         self._splat_log_enabled = False
         self._save_layout_enabled = True
+        self._voice_audio_mode = _VOICE_AUDIO_MODE_DEFAULT
+        self._voice_mic_device_index = _VOICE_MIC_DEVICE_DEFAULT
         if hasattr(self, "_pan_base_slider"):
             try:
                 self._pan_base_slider.blockSignals(True)
@@ -5014,6 +5313,14 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 self._save_layout_toggle.blockSignals(False)
             except Exception:
                 pass
+        if hasattr(self, "_voice_audio_toggle"):
+            try:
+                self._voice_audio_toggle.blockSignals(True)
+                self._voice_audio_toggle.setChecked(self._voice_audio_mode_is_turn_taking())
+                self._voice_audio_toggle.blockSignals(False)
+            except Exception:
+                pass
+        self._refresh_voice_microphone_options()
         if hasattr(self, "_pan_base_value_lbl"):
             try:
                 self._pan_base_value_lbl.setText(f"{self._pan_base:.3f}")
@@ -5040,6 +5347,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             except Exception:
                 pass
         self._apply_pan_settings_to_gl_view()
+        self._apply_voice_audio_mode_to_scene(sync_view_settings=True)
+        self._apply_voice_microphone_to_scene(sync_view_settings=True)
         self._apply_wireframe_color(self._default_wireframe_color(), sync_scene=True)
         self._persist_app_layout_settings()
 
@@ -5074,6 +5383,14 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 settings["gizmo_zoom_scale"] = float(getattr(self, "_gizmo_zoom_scale", 0.02))
                 settings["splat_log"] = bool(getattr(self, "_splat_log_enabled", False))
                 settings["fly_speed_mult"] = float(getattr(self, "_fly_speed_mult", 1.0))
+                settings["voice_audio_mode"] = _normalize_voice_audio_mode(
+                    getattr(self, "_voice_audio_mode", _VOICE_AUDIO_MODE_DEFAULT),
+                    _VOICE_AUDIO_MODE_DEFAULT,
+                )
+                settings["voice_mic_device_index"] = _normalize_voice_mic_device_index(
+                    getattr(self, "_voice_mic_device_index", _VOICE_MIC_DEVICE_DEFAULT),
+                    _VOICE_MIC_DEVICE_DEFAULT,
+                )
                 sc._view_settings = settings
             except Exception:
                 pass
@@ -5491,12 +5808,28 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             splat_log = bool(settings.get("splat_log", getattr(self, "_splat_log_enabled", False)))
         except Exception:
             splat_log = getattr(self, "_splat_log_enabled", False)
+        try:
+            voice_audio_mode = _normalize_voice_audio_mode(
+                settings.get("voice_audio_mode", getattr(self, "_voice_audio_mode", _VOICE_AUDIO_MODE_DEFAULT)),
+                getattr(self, "_voice_audio_mode", _VOICE_AUDIO_MODE_DEFAULT),
+            )
+        except Exception:
+            voice_audio_mode = getattr(self, "_voice_audio_mode", _VOICE_AUDIO_MODE_DEFAULT)
+        try:
+            voice_mic_device_index = _normalize_voice_mic_device_index(
+                settings.get("voice_mic_device_index", getattr(self, "_voice_mic_device_index", _VOICE_MIC_DEVICE_DEFAULT)),
+                getattr(self, "_voice_mic_device_index", _VOICE_MIC_DEVICE_DEFAULT),
+            )
+        except Exception:
+            voice_mic_device_index = getattr(self, "_voice_mic_device_index", _VOICE_MIC_DEVICE_DEFAULT)
         self._pan_base = pan_base
         self._pan_exp = pan_exp
         self._pan_boost = pan_boost
         self._gizmo_zoom_scale = gizmo_zoom
         self._fly_speed_mult = fly_speed
         self._splat_log_enabled = splat_log
+        self._voice_audio_mode = voice_audio_mode
+        self._voice_mic_device_index = voice_mic_device_index
         if hasattr(self, "_pan_base_slider"):
             self._pan_base_slider.blockSignals(True)
             self._pan_base_slider.setValue(int(round(pan_base * 1000.0)))
@@ -5521,6 +5854,11 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             self._splat_log_toggle.blockSignals(True)
             self._splat_log_toggle.setChecked(bool(splat_log))
             self._splat_log_toggle.blockSignals(False)
+        if hasattr(self, "_voice_audio_toggle"):
+            self._voice_audio_toggle.blockSignals(True)
+            self._voice_audio_toggle.setChecked(self._voice_audio_mode_is_turn_taking())
+            self._voice_audio_toggle.blockSignals(False)
+        self._refresh_voice_microphone_options()
         if hasattr(self, "_pan_base_value_lbl"):
             self._pan_base_value_lbl.setText(f"{pan_base:.3f}")
         if hasattr(self, "_pan_exp_value_lbl"):
@@ -5535,6 +5873,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             self._apply_pan_settings_to_gl_view()
         except Exception:
             pass
+        self._apply_voice_audio_mode_to_scene(sync_view_settings=True)
+        self._apply_voice_microphone_to_scene(sync_view_settings=True)
         try:
             light_intensity = settings.get("light_intensity", None)
             if light_intensity is not None:

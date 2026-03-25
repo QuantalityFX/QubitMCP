@@ -3,5 +3,7 @@
   "panel_layout": {
     "timeline": false,
     "audio": false
-  }
+  },
+  "voice_audio_mode": "turn_taking",
+  "voice_mic_device_index": null
 }
