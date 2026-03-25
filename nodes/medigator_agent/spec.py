@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime
 import hashlib
+import os
 import subprocess
 import threading
 from pathlib import Path
@@ -34,6 +35,33 @@ MEDIGATOR_CODEX_MODEL = "gpt-5.3-codex"
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
+
+
+def _hidden_subprocess_kwargs() -> dict:
+    if os.name != "nt":
+        return {}
+    kwargs = {}
+    creationflags = 0
+    if hasattr(subprocess, "CREATE_NO_WINDOW"):
+        try:
+            creationflags |= int(getattr(subprocess, "CREATE_NO_WINDOW"))
+        except Exception:
+            creationflags = creationflags
+    startupinfo = None
+    if hasattr(subprocess, "STARTUPINFO"):
+        try:
+            startupinfo = subprocess.STARTUPINFO()
+            if hasattr(subprocess, "STARTF_USESHOWWINDOW"):
+                startupinfo.dwFlags |= int(getattr(subprocess, "STARTF_USESHOWWINDOW"))
+            if hasattr(subprocess, "SW_HIDE"):
+                startupinfo.wShowWindow = int(getattr(subprocess, "SW_HIDE"))
+        except Exception:
+            startupinfo = None
+    if creationflags:
+        kwargs["creationflags"] = creationflags
+    if startupinfo is not None:
+        kwargs["startupinfo"] = startupinfo
+    return kwargs
 
 
 def _sanitize_folder_name(value: str) -> str:
@@ -611,6 +639,7 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
                 encoding="utf-8",
                 errors="replace",
                 bufsize=1,
+                **_hidden_subprocess_kwargs(),
             )
             with self._process_lock:
                 self._process = process
@@ -681,6 +710,7 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
                 encoding="utf-8",
                 errors="replace",
                 bufsize=1,
+                **_hidden_subprocess_kwargs(),
             )
             with self._process_lock:
                 self._process = process
