@@ -7,7 +7,37 @@ if errorlevel 1 (
   exit /b 1
 )
 
-set "LOG_DIR=%CD%\logs"
+set "REPO_DIR=%CD%"
+set "RESOLVED_APP_HOME="
+call :resolve_app_home "%REPO_DIR%"
+if errorlevel 1 (
+  echo [setup] ERROR: Could not resolve writable app home directory.
+  popd
+  exit /b 1
+)
+if not defined RESOLVED_APP_HOME (
+  echo [setup] ERROR: Writable app home directory is empty.
+  popd
+  exit /b 1
+)
+set "APP_HOME=%RESOLVED_APP_HOME%"
+set "QUBITMCP_HOME=%APP_HOME%"
+
+if not exist "%APP_HOME%" (
+  mkdir "%APP_HOME%" >nul 2>&1
+)
+if not exist "%APP_HOME%" (
+  echo [setup] ERROR: Could not create app home: %APP_HOME%
+  popd
+  exit /b 1
+)
+
+if /I not "%APP_HOME%"=="%REPO_DIR%" (
+  echo [setup] Repo is read-only. Using writable app home:
+  echo         "%APP_HOME%"
+)
+
+set "LOG_DIR=%APP_HOME%\logs"
 if not exist "%LOG_DIR%" (
   mkdir "%LOG_DIR%" >nul 2>&1
 )
@@ -17,8 +47,12 @@ if not exist "%LOG_DIR%" (
   exit /b 1
 )
 set "LOG=%LOG_DIR%\setup.log"
-set "MAIN_REQ=%CD%\requirements.txt"
-set "LIB_REQ=%CD%\nodes\librarian\requirements.txt"
+set "MAIN_REQ=%REPO_DIR%\requirements.txt"
+set "LIB_REQ=%REPO_DIR%\nodes\librarian\requirements.txt"
+set "ROOT_VENV=%APP_HOME%\.venv"
+set "ROOT_PY=%ROOT_VENV%\Scripts\python.exe"
+set "LIB_VENV=%APP_HOME%\librarian\.venv"
+set "LIB_PY=%LIB_VENV%\Scripts\python.exe"
 set "VOICE_DEPS=SpeechRecognition pyttsx3 pyaudio gTTS pygame faster-whisper pymongo"
 set "BASE_PY_EXE="
 set "BASE_PY_ARG="
@@ -41,7 +75,8 @@ if /I not "%SETUP_MODE%"=="core" if /I not "%SETUP_MODE%"=="full" (
 )
 
 echo [setup] ==== START %DATE% %TIME% ==== > "%LOG%"
-echo [setup] Repo: %CD% >> "%LOG%"
+echo [setup] Repo: %REPO_DIR% >> "%LOG%"
+echo [setup] Home: %APP_HOME% >> "%LOG%"
 echo [setup] Mode: %SETUP_MODE% >> "%LOG%"
 
 call :try_base_python "%LOCALAPPDATA%\Programs\Python\Python310\python.exe" ""
@@ -74,14 +109,14 @@ if not defined BASE_PY_MM (
 echo [setup] Base Python version: %BASE_PY_MM%
 echo [setup] Base Python version: %BASE_PY_MM% >> "%LOG%"
 
-call :ensure_venv ".venv" "root" || goto :fail
-call :install_requirements ".venv\Scripts\python.exe" "%MAIN_REQ%" "root requirements" || goto :fail
-call :install_voice_deps ".venv\Scripts\python.exe" "root voice dependencies" || goto :fail
+call :ensure_venv "%ROOT_VENV%" "root" || goto :fail
+call :install_requirements "%ROOT_PY%" "%MAIN_REQ%" "root requirements" || goto :fail
+call :install_voice_deps "%ROOT_PY%" "root voice dependencies" || goto :fail
 call :check_medigator_runtime
 
 if /I "%SETUP_MODE%"=="full" (
-  call :ensure_venv "nodes\librarian\.venv" "librarian" || goto :fail
-  call :install_requirements "nodes\librarian\.venv\Scripts\python.exe" "%LIB_REQ%" "librarian requirements" || goto :fail
+  call :ensure_venv "%LIB_VENV%" "librarian" || goto :fail
+  call :install_requirements "%LIB_PY%" "%LIB_REQ%" "librarian requirements" || goto :fail
 ) else (
   echo [setup] Skipping librarian setup ^(mode=%SETUP_MODE%^).
   echo [setup] Skipping librarian setup ^(mode=%SETUP_MODE%^). >> "%LOG%"
@@ -261,6 +296,32 @@ if errorlevel 1 (
 
 echo [setup] Launcher shortcuts refreshed.
 echo [setup] Launcher shortcuts refreshed. >> "%LOG%"
+exit /b 0
+
+:resolve_app_home
+set "TARGET_DIR=%~f1"
+set "RESOLVED_APP_HOME="
+
+if defined QUBITMCP_HOME (
+  set "RESOLVED_APP_HOME=%QUBITMCP_HOME%"
+  exit /b 0
+)
+
+if not defined TARGET_DIR exit /b 1
+
+set "WRITE_TEST=%TARGET_DIR%\_qubit_write_test_%RANDOM%_%RANDOM%.tmp"
+(echo write-test>"%WRITE_TEST%") >nul 2>&1
+if exist "%WRITE_TEST%" (
+  del /f /q "%WRITE_TEST%" >nul 2>&1
+  set "RESOLVED_APP_HOME=%TARGET_DIR%"
+  exit /b 0
+)
+
+if defined LOCALAPPDATA (
+  set "RESOLVED_APP_HOME=%LOCALAPPDATA%\QubitMCP"
+) else (
+  set "RESOLVED_APP_HOME=%TEMP%\QubitMCP"
+)
 exit /b 0
 
 :try_base_python

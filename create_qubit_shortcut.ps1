@@ -54,8 +54,37 @@ function Get-SafeShortcutNameFromAppTitle {
 
 $shortcutBaseName = Get-SafeShortcutNameFromAppTitle -ConstantsFile $constantsPath -FallbackName "QubitMCP"
 
-$launcherPythonW = Join-Path $repoRoot ".venv\Scripts\pythonw.exe"
-$launcherPython = Join-Path $repoRoot ".venv\Scripts\python.exe"
+$launcherHomeCandidates = @()
+if (-not [string]::IsNullOrWhiteSpace($env:QUBITMCP_HOME)) {
+    $launcherHomeCandidates += $env:QUBITMCP_HOME
+}
+$launcherHomeCandidates += $repoRoot
+if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+    $launcherHomeCandidates += (Join-Path $env:LOCALAPPDATA "QubitMCP")
+}
+
+$launcherHome = $null
+$launcherPath = $null
+foreach ($candidate in ($launcherHomeCandidates | Select-Object -Unique)) {
+    if ([string]::IsNullOrWhiteSpace($candidate)) {
+        continue
+    }
+    $candidatePythonW = Join-Path $candidate ".venv\Scripts\pythonw.exe"
+    $candidatePython = Join-Path $candidate ".venv\Scripts\python.exe"
+    if (Test-Path -LiteralPath $candidatePythonW) {
+        $launcherHome = $candidate
+        $launcherPath = $candidatePythonW
+        break
+    }
+    if (Test-Path -LiteralPath $candidatePython) {
+        $launcherHome = $candidate
+        $launcherPath = $candidatePython
+        break
+    }
+}
+
+$launcherPythonW = if ($launcherHome) { Join-Path $launcherHome ".venv\Scripts\pythonw.exe" } else { "" }
+$launcherPython = if ($launcherHome) { Join-Path $launcherHome ".venv\Scripts\python.exe" } else { "" }
 $entryScript = Join-Path $repoRoot "echograph_app.py"
 $iconPath = Join-Path $repoRoot "icons\QubitMCP_Icon.ico"
 $desktopShortcutPath = Join-Path ([Environment]::GetFolderPath("Desktop")) ($shortcutBaseName + ".lnk")
@@ -64,12 +93,7 @@ if (-not (Test-Path -LiteralPath $entryScript)) {
     throw "Missing app entry script: $entryScript"
 }
 
-$launcherPath = ""
-if (Test-Path -LiteralPath $launcherPythonW) {
-    $launcherPath = $launcherPythonW
-} elseif (Test-Path -LiteralPath $launcherPython) {
-    $launcherPath = $launcherPython
-} else {
+if (-not $launcherPath) {
     throw "Missing launcher python executable. Expected one of: $launcherPythonW or $launcherPython"
 }
 
@@ -294,5 +318,8 @@ try {
 }
 
 Write-Output "[shortcut] Launcher target: $launcherPath"
+if ($launcherHome) {
+    Write-Output "[shortcut] Launcher home: $launcherHome"
+}
 Write-Output "[shortcut] AppUserModelID: $appUserModelId"
 Write-Output "[shortcut] Shortcut name: $shortcutBaseName"
