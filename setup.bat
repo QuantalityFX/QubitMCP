@@ -87,6 +87,8 @@ if /I "%SETUP_MODE%"=="full" (
   echo [setup] Skipping librarian setup ^(mode=%SETUP_MODE%^). >> "%LOG%"
 )
 
+call :create_windows_shortcuts
+
 echo [setup] SUCCESS (%SETUP_MODE%)
 echo [setup] SUCCESS (%SETUP_MODE%) >> "%LOG%"
 echo [setup] Log: %LOG%
@@ -230,6 +232,35 @@ if "%HAS_CODEX_SCRIPT%"=="1" (
   echo [setup] WARNING: Medigator launch script not found: tools\codex.ps1
   echo [setup] WARNING: Medigator launch script not found: tools\codex.ps1 >> "%LOG%"
 )
+exit /b 0
+
+:create_windows_shortcuts
+set "SHORTCUT_SCRIPT=%CD%\create_qubit_shortcut.ps1"
+
+if not exist "%SHORTCUT_SCRIPT%" (
+  echo [setup] WARNING: Shortcut helper not found: %SHORTCUT_SCRIPT%
+  echo [setup] WARNING: Shortcut helper not found: %SHORTCUT_SCRIPT% >> "%LOG%"
+  exit /b 0
+)
+
+where powershell >nul 2>&1
+if errorlevel 1 (
+  echo [setup] WARNING: powershell.exe not found; skipping shortcut creation.
+  echo [setup] WARNING: powershell.exe not found; skipping shortcut creation. >> "%LOG%"
+  exit /b 0
+)
+
+echo [setup] Creating launcher shortcuts...
+echo [setup] Creating launcher shortcuts... >> "%LOG%"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%SHORTCUT_SCRIPT%" -Scope Desktop >> "%LOG%" 2>&1
+if errorlevel 1 (
+  echo [setup] WARNING: Launcher shortcut creation failed.
+  echo [setup] WARNING: Launcher shortcut creation failed. >> "%LOG%"
+  exit /b 0
+)
+
+echo [setup] Launcher shortcuts refreshed.
+echo [setup] Launcher shortcuts refreshed. >> "%LOG%"
 exit /b 0
 
 :try_base_python

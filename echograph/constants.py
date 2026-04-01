@@ -22,5 +22,9 @@ def script_dir() -> Path:
     except Exception:
         return Path.home()
 
-ICON_PATH = script_dir() / "icons" / "QubitMCP_Icon_s.png"
+APP_USER_MODEL_ID = "QuantalityFX.EchoGraph"
+
+ICON_PATH = script_dir() / "icons" / "QubitMCP_Icon.ico"
+if not ICON_PATH.exists():
+    ICON_PATH = script_dir() / "icons" / "QubitMCP_Icon_s.png"
 APP_ICON = QtGui.QIcon(str(ICON_PATH)) if ICON_PATH.exists() else QtGui.QIcon()

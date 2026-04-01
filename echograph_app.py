@@ -47,23 +47,28 @@ try:
 except ImportError:
     from PySide2 import QtWidgets, QtGui, QtCore
 
+# Windows taskbar identity (groups under the same pinned launcher/shortcut)
+APP_USER_MODEL_ID = "QuantalityFX.EchoGraph"
+if sys.platform.startswith("win"):
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
+    except Exception:
+        pass
+
 # Create the app first
 app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
 
 # App/window icon
-icon_path = Path(__file__).parent / "icons" / "QubitMCP_Icon_s.png"
+icons_dir = Path(__file__).parent / "icons"
+icon_path = icons_dir / "QubitMCP_Icon.ico"
+if not icon_path.exists():
+    icon_path = icons_dir / "QubitMCP_Icon_s.png"
+
 if icon_path.exists():
     app.setWindowIcon(QtGui.QIcon(str(icon_path)))
 else:
     print(f"[EchoGraph] Icon not found: {icon_path}")
-
-# Windows taskbar identity (groups as its own app)
-if sys.platform.startswith("win"):
-    try:
-        import ctypes
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("QuantalityFX.EchoGraph")
-    except Exception:
-        pass
 
 # Dark theme for standalone
 def apply_dark(app_):

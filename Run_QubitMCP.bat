@@ -5,6 +5,7 @@ set "VENV_DIR=%SCRIPT_DIR%.venv"
 set "PYTHONW=%VENV_DIR%\Scripts\pythonw.exe"
 set "PYTHONE=%VENV_DIR%\Scripts\python.exe"
 set "SETUP_BAT=%SCRIPT_DIR%setup.bat"
+set "SHORTCUT_SCRIPT=%SCRIPT_DIR%create_qubit_shortcut.ps1"
 set "LAUNCHER="
 
 REM --- Ensure core app env exists (delegates install logic to setup.bat)
@@ -41,6 +42,10 @@ if not defined LAUNCHER (
   echo         "%PYTHONE%"
   pause
   exit /b 1
+)
+
+if exist "%SHORTCUT_SCRIPT%" (
+  powershell -NoProfile -ExecutionPolicy Bypass -File "%SHORTCUT_SCRIPT%" -Scope Desktop >nul 2>&1
 )
 
 REM --- Launch (force working dir to script folder so relative paths/icons work)
