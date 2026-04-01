@@ -2200,99 +2200,113 @@ class VoiceActorWidget(QtWidgets.QWidget):
             mic_kwargs = {}
             if mic_index is not None:
                 mic_kwargs["device_index"] = int(mic_index)
-            with sr.Microphone(**mic_kwargs) as source:
-                recognizer.adjust_for_ambient_noise(source, duration=0.4)
-                while True:
-                    listening, paused, stop_requested = self._stt_state()
-                    if not listening or stop_requested:
-                        break
-                    if paused:
-                        time.sleep(0.08)
-                        continue
-                    now = time.monotonic()
-                    if awaiting_send_confirmation and (now - awaiting_started_at) >= STT_IDLE_CONFIRM_RESPONSE_SECONDS:
-                        awaiting_send_confirmation = False
-                        prompt_response_until = 0.0
-                        last_voice_activity = now
-                        self._stt_status.emit("Continuing to listen...")
-                    try:
-                        audio = recognizer.listen(source, timeout=1.2, phrase_time_limit=20)
-                    except Exception as exc:
-                        if wait_timeout and isinstance(exc, wait_timeout):
-                            _maybe_prompt_send_confirmation(time.monotonic())
-                            continue
-                        error = _format_stt_error(exc)
-                        break
-                    chunk = ""
-                    if selected_method == STT_METHOD_LOCAL_WHISPER:
-                        wav_data = audio.get_wav_data(convert_rate=16000, convert_width=2)
-                        chunk, chunk_error = _transcribe_local_whisper(wav_data)
-                        if chunk_error:
-                            if chunk_error == "Speech detected but transcript was empty.":
-                                _maybe_prompt_send_confirmation(time.monotonic())
-                                continue
-                            error = chunk_error
-                            break
-                    else:
-                        try:
-                            chunk = (recognizer.recognize_google(audio) or "").strip()
-                        except Exception as exc:
-                            if unknown_value and isinstance(exc, unknown_value):
-                                _maybe_prompt_send_confirmation(time.monotonic())
-                                continue
-                            if request_error and isinstance(exc, request_error):
-                                error = f"Speech recognition service failed: {exc}"
-                            else:
-                                error = _format_stt_error(exc)
-                            break
-                    clean_chunk = str(chunk or "").strip()
-                    if not clean_chunk:
-                        _maybe_prompt_send_confirmation(time.monotonic())
-                        continue
-                    if self._is_stop_speaking_command(clean_chunk):
+            ambient_calibrated = False
+            while True:
+                listening, paused, stop_requested = self._stt_state()
+                if not listening or stop_requested:
+                    break
+                if paused:
+                    if awaiting_send_confirmation:
                         awaiting_send_confirmation = False
                         prompt_response_until = 0.0
                         self._stop_stt_send_confirmation_prompt()
-                        last_voice_activity = time.monotonic()
-                        self._stt_status.emit("Stopping speech playback...")
-                        self._stt_command.emit("stop_speaking")
-                        continue
-                    confirmation_window_active = awaiting_send_confirmation or (time.monotonic() <= prompt_response_until)
-                    if confirmation_window_active:
-                        lowered = clean_chunk.lower()
-                        prompt_phrase_heard = "are you ready to send" in lowered
-                        command_text = lowered.replace("are you ready to send", " ").strip() if prompt_phrase_heard else clean_chunk
-                        action = self._stt_confirmation_action(command_text)
-                        if action == "send":
-                            send_confirmed = True
+                    last_voice_activity = time.monotonic()
+                    time.sleep(0.08)
+                    continue
+                with sr.Microphone(**mic_kwargs) as source:
+                    if not ambient_calibrated:
+                        recognizer.adjust_for_ambient_noise(source, duration=0.4)
+                        ambient_calibrated = True
+                    while True:
+                        listening, paused, stop_requested = self._stt_state()
+                        if not listening or stop_requested or paused:
+                            break
+                        now = time.monotonic()
+                        if awaiting_send_confirmation and (now - awaiting_started_at) >= STT_IDLE_CONFIRM_RESPONSE_SECONDS:
                             awaiting_send_confirmation = False
                             prompt_response_until = 0.0
-                            self._stop_stt_send_confirmation_prompt()
-                            self._stt_status.emit("Sending message...")
-                            self._set_stt_state(stop_requested=True, paused=False)
+                            last_voice_activity = now
+                            self._stt_status.emit("Continuing to listen...")
+                        try:
+                            audio = recognizer.listen(source, timeout=1.2, phrase_time_limit=20)
+                        except Exception as exc:
+                            if wait_timeout and isinstance(exc, wait_timeout):
+                                _maybe_prompt_send_confirmation(time.monotonic())
+                                continue
+                            error = _format_stt_error(exc)
                             break
-                        if action == "continue":
+                        chunk = ""
+                        if selected_method == STT_METHOD_LOCAL_WHISPER:
+                            wav_data = audio.get_wav_data(convert_rate=16000, convert_width=2)
+                            chunk, chunk_error = _transcribe_local_whisper(wav_data)
+                            if chunk_error:
+                                if chunk_error == "Speech detected but transcript was empty.":
+                                    _maybe_prompt_send_confirmation(time.monotonic())
+                                    continue
+                                error = chunk_error
+                                break
+                        else:
+                            try:
+                                chunk = (recognizer.recognize_google(audio) or "").strip()
+                            except Exception as exc:
+                                if unknown_value and isinstance(exc, unknown_value):
+                                    _maybe_prompt_send_confirmation(time.monotonic())
+                                    continue
+                                if request_error and isinstance(exc, request_error):
+                                    error = f"Speech recognition service failed: {exc}"
+                                else:
+                                    error = _format_stt_error(exc)
+                                break
+                        clean_chunk = str(chunk or "").strip()
+                        if not clean_chunk:
+                            _maybe_prompt_send_confirmation(time.monotonic())
+                            continue
+                        if self._is_stop_speaking_command(clean_chunk):
                             awaiting_send_confirmation = False
                             prompt_response_until = 0.0
                             self._stop_stt_send_confirmation_prompt()
                             last_voice_activity = time.monotonic()
+                            self._stt_status.emit("Stopping speech playback...")
+                            self._stt_command.emit("stop_speaking")
+                            continue
+                        confirmation_window_active = awaiting_send_confirmation or (time.monotonic() <= prompt_response_until)
+                        if confirmation_window_active:
+                            lowered = clean_chunk.lower()
+                            prompt_phrase_heard = "are you ready to send" in lowered
+                            command_text = lowered.replace("are you ready to send", " ").strip() if prompt_phrase_heard else clean_chunk
+                            action = self._stt_confirmation_action(command_text)
+                            if action == "send":
+                                send_confirmed = True
+                                awaiting_send_confirmation = False
+                                prompt_response_until = 0.0
+                                self._stop_stt_send_confirmation_prompt()
+                                self._stt_status.emit("Sending message...")
+                                self._set_stt_state(stop_requested=True, paused=False)
+                                break
+                            if action == "continue":
+                                awaiting_send_confirmation = False
+                                prompt_response_until = 0.0
+                                self._stop_stt_send_confirmation_prompt()
+                                last_voice_activity = time.monotonic()
+                                self._stt_status.emit("Continuing to listen...")
+                                continue
+                            if prompt_phrase_heard:
+                                continue
+                            # User continued talking; treat it as transcript and leave confirmation mode.
+                            awaiting_send_confirmation = False
+                            prompt_response_until = 0.0
+                            self._stop_stt_send_confirmation_prompt()
+                            transcript_parts.append(clean_chunk)
+                            last_voice_activity = time.monotonic()
                             self._stt_status.emit("Continuing to listen...")
+                            self._stt_chunk.emit(clean_chunk)
                             continue
-                        if prompt_phrase_heard:
-                            continue
-                        # User continued talking; treat it as transcript and leave confirmation mode.
-                        awaiting_send_confirmation = False
-                        prompt_response_until = 0.0
                         self._stop_stt_send_confirmation_prompt()
                         transcript_parts.append(clean_chunk)
                         last_voice_activity = time.monotonic()
-                        self._stt_status.emit("Continuing to listen...")
                         self._stt_chunk.emit(clean_chunk)
-                        continue
-                    self._stop_stt_send_confirmation_prompt()
-                    transcript_parts.append(clean_chunk)
-                    last_voice_activity = time.monotonic()
-                    self._stt_chunk.emit(clean_chunk)
+                if error:
+                    break
         except Exception as exc:
             error = _format_stt_error(exc)
         self._stop_stt_send_confirmation_prompt()

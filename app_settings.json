@@ -5,5 +5,5 @@
     "audio": false
   },
   "voice_audio_mode": "turn_taking",
-  "voice_mic_device_index": null
+  "voice_mic_device_index": 2
 }
