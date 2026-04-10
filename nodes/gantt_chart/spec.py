@@ -2645,18 +2645,6 @@ def _reorder_note_params(node_item, src_item, src_model, ordered_names: list[str
     return True
 
 
-def _qdatetime_from_datetime(value: datetime) -> QtCore.QDateTime:
-    try:
-        return QtCore.QDateTime.fromSecsSinceEpoch(int(value.timestamp()))
-    except Exception:
-        qdt = QtCore.QDateTime.currentDateTime()
-        try:
-            qdt.setSecsSinceEpoch(int(value.timestamp()))
-        except Exception:
-            pass
-        return qdt
-
-
 class TaskNotificationDialog(QtWidgets.QDialog):
     ClearResult = 2
 
@@ -2688,13 +2676,67 @@ class TaskNotificationDialog(QtWidgets.QDialog):
         form.setLabelAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
         form.setFormAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop)
 
-        self._when_edit = QtWidgets.QDateTimeEdit(self)
-        self._when_edit.setCalendarPopup(True)
-        self._when_edit.setDisplayFormat("yyyy-MM-dd HH:mm")
-        self._when_edit.setDateTime(
-            _qdatetime_from_datetime(initial_when or (datetime.now() + timedelta(minutes=5)))
-        )
-        form.addRow("Notify at", self._when_edit)
+        default_when = (initial_when or (datetime.now() + timedelta(minutes=5))).replace(second=0, microsecond=0)
+
+        self._date_edit = QtWidgets.QDateEdit(self)
+        self._date_edit.setCalendarPopup(True)
+        self._date_edit.setDisplayFormat("yyyy-MM-dd")
+        self._date_edit.setDate(QtCore.QDate(default_when.year, default_when.month, default_when.day))
+        form.addRow("Notify date", self._date_edit)
+
+        self._hour_combo = QtWidgets.QComboBox(self)
+        self._hour_combo.addItems([f"{hour:02d}" for hour in range(1, 13)])
+        self._hour_combo.setEditable(True)
+        self._hour_combo.setInsertPolicy(QtWidgets.QComboBox.NoInsert)
+        self._hour_combo.setMaxVisibleItems(12)
+        self._hour_combo.setMinimumWidth(62)
+        hour_edit = self._hour_combo.lineEdit()
+        if hour_edit is not None:
+            hour_edit.setAlignment(QtCore.Qt.AlignCenter)
+            hour_edit.setPlaceholderText("hh")
+            hour_edit.setMaxLength(2)
+            hour_edit.setValidator(QtGui.QIntValidator(1, 12, hour_edit))
+
+        self._minute_combo = QtWidgets.QComboBox(self)
+        self._minute_combo.addItems([f"{minute:02d}" for minute in range(0, 60)])
+        self._minute_combo.setEditable(True)
+        self._minute_combo.setInsertPolicy(QtWidgets.QComboBox.NoInsert)
+        self._minute_combo.setMaxVisibleItems(12)
+        self._minute_combo.setMinimumWidth(62)
+        minute_edit = self._minute_combo.lineEdit()
+        if minute_edit is not None:
+            minute_edit.setAlignment(QtCore.Qt.AlignCenter)
+            minute_edit.setPlaceholderText("mm")
+            minute_edit.setMaxLength(2)
+            minute_edit.setValidator(QtGui.QIntValidator(0, 59, minute_edit))
+
+        self._ampm_combo = QtWidgets.QComboBox(self)
+        self._ampm_combo.addItems(["AM", "PM"])
+        self._ampm_combo.setMinimumWidth(70)
+
+        if initial_when is not None:
+            hour_24 = int(default_when.hour)
+            hour_12 = ((hour_24 + 11) % 12) + 1
+            self._hour_combo.setCurrentText(f"{hour_12:02d}")
+            self._minute_combo.setCurrentText(f"{int(default_when.minute):02d}")
+            self._ampm_combo.setCurrentText("PM" if hour_24 >= 12 else "AM")
+        else:
+            self._hour_combo.setCurrentIndex(-1)
+            self._hour_combo.setEditText("")
+            self._minute_combo.setCurrentIndex(-1)
+            self._minute_combo.setEditText("")
+            self._ampm_combo.setCurrentText("PM" if int(default_when.hour) >= 12 else "AM")
+
+        time_row = QtWidgets.QWidget(self)
+        time_layout = QtWidgets.QHBoxLayout(time_row)
+        time_layout.setContentsMargins(0, 0, 0, 0)
+        time_layout.setSpacing(6)
+        time_layout.addWidget(self._hour_combo)
+        time_layout.addWidget(QtWidgets.QLabel(":", time_row))
+        time_layout.addWidget(self._minute_combo)
+        time_layout.addWidget(self._ampm_combo)
+        time_layout.addStretch(1)
+        form.addRow("Notify time", time_row)
 
         self._message_edit = QtWidgets.QLineEdit(self)
         self._message_edit.setPlaceholderText("Optional reminder message")
@@ -2730,12 +2772,60 @@ class TaskNotificationDialog(QtWidgets.QDialog):
         self.done(self.ClearResult)
 
     def notification_datetime(self) -> datetime:
-        qdt = self._when_edit.dateTime()
         try:
-            return datetime.fromtimestamp(int(qdt.toSecsSinceEpoch())).replace(microsecond=0)
+            selected_qdate = self._date_edit.date()
+            selected_date = date(
+                int(selected_qdate.year()),
+                int(selected_qdate.month()),
+                int(selected_qdate.day()),
+            )
         except Exception:
-            parsed = _parse_notification_datetime(qdt.toString("yyyy-MM-ddTHH:mm:ss"))
-            return parsed or datetime.now().replace(microsecond=0)
+            selected_date = date.today()
+
+        try:
+            hour_text = str(self._hour_combo.currentText() or "").strip()
+            minute_text = str(self._minute_combo.currentText() or "").strip()
+        except Exception:
+            hour_text = ""
+            minute_text = ""
+
+        if hour_text and minute_text:
+            try:
+                hour_12 = int(hour_text)
+                minute = int(minute_text)
+            except Exception:
+                hour_12 = None
+                minute = None
+            if (
+                isinstance(hour_12, int)
+                and isinstance(minute, int)
+                and 1 <= hour_12 <= 12
+                and 0 <= minute <= 59
+            ):
+                period = str(self._ampm_combo.currentText() or "").strip().upper()
+                if period not in ("AM", "PM"):
+                    period = "AM"
+                hour_24 = hour_12 % 12
+                if period == "PM":
+                    hour_24 += 12
+                return datetime(
+                    selected_date.year,
+                    selected_date.month,
+                    selected_date.day,
+                    int(hour_24),
+                    int(minute),
+                    0,
+                )
+
+        automatic = (datetime.now() + timedelta(minutes=5)).replace(second=0, microsecond=0)
+        return datetime(
+            selected_date.year,
+            selected_date.month,
+            selected_date.day,
+            int(automatic.hour),
+            int(automatic.minute),
+            0,
+        )
 
     def message_text(self) -> str:
         return str(self._message_edit.text() or "").strip()
