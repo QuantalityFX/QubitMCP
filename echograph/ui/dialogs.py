@@ -260,6 +260,8 @@ def _kind_icon(kind: str) -> QtGui.QIcon:
         icon_pm = node_icons._librarian_icon()
     elif key == "import":
         icon_pm = node_icons._import_icon()
+    elif key in ("fbx_import", "fbx import", "fbximport"):
+        icon_pm = node_icons._fbx_icon() or node_icons._import_icon()
     elif key == "switch":
         icon_pm = node_icons._switch_icon()
     elif key == "chatbot":
@@ -337,7 +339,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
         self.kind_edit = QtWidgets.QComboBox()
         self.kind_edit.setEditable(True)
         self._kinds = [
-            "node","camera","import","instance","primitive","uv_unwrap","texture","texture_pro","texture_layer","material","split_volume","transforms","fx","scene","render","video_player","export_fbx","html_preview","python","switch","output","local_server",
+            "node","camera","import","fbx_import","instance","primitive","uv_unwrap","texture","texture_pro","texture_layer","material","split_volume","transforms","fx","scene","render","video_player","export_fbx","html_preview","python","switch","output","local_server",
             "gantt_chart",
             "llm_prompt","chatbot","voice_actor","medigator_agent","librarian","note","append","image_collection","database"
         ]

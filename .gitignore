@@ -41,6 +41,7 @@ __pycache__/
 
 # Debug logs
 /logs/
+/tests/_tmp/
 
 # tanya voice
 /tanya/

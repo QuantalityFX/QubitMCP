@@ -340,6 +340,17 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Camera plugin import failed:", e)
 
+    # 13.7) FBX Import
+    try:
+        from nodes import fbx_import
+        if hasattr(fbx_import, "register"):
+            fbx_import.register()
+            _safe_probe("fbx_import")
+        else:
+            print("[EchoGraph] FBX Import module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] FBX Import plugin import failed:", e)
+
     # 14) Export FBX
     try:
         from nodes import export_fbx

@@ -308,6 +308,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     _export_fbx.register()
             except Exception:
                 pass
+        # Ensure FBX Import spec is registered even if the loader was skipped.
+        if (self.model.kind or "").strip().lower() in ("fbx_import", "fbx import", "fbximport"):
+            try:
+                from nodes import fbx_import as _fbx_import  # type: ignore
+                if hasattr(_fbx_import, "register"):
+                    _fbx_import.register()
+            except Exception:
+                pass
         # Ensure Render spec is registered even if the loader was skipped.
         if (self.model.kind or "").strip().lower() in ("render", "render_sequence", "render node"):
             try:
@@ -5836,6 +5844,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "note",
                 "librarian",
                 "import",
+                "fbx_import",
+                "fbx import",
+                "fbximport",
                 "output",
                 "python",
                 "switch",
@@ -6015,6 +6026,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 icon_pm = node_icons._librarian_icon()
             elif kind_lower == "import":
                 icon_pm = getattr(self, "_import_icon_pm", None) or node_icons._import_icon()
+            elif kind_lower in ("fbx_import", "fbx import", "fbximport"):
+                icon_pm = node_icons._fbx_icon() or node_icons._import_icon()
             elif kind_lower in ("html_preview", "html preview", "htmlpreview"):
                 icon_pm = node_icons._html_preview_icon() or node_icons._output_icon()
             elif kind_lower in ("image_collection", "imagecollection"):
