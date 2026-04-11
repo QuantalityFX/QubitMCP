@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 try:
     from PySide6 import QtWidgets, QtGui
@@ -13,6 +13,11 @@ except Exception:
         QtWidgets = None  # type: ignore[assignment]
         QtGui = None  # type: ignore[assignment]
 
+from echograph.rigging.fbx_stage3_ingest import (
+    FBXBindIngestError,
+    compare_skeleton_layout,
+    ingest_fbx_bind_data,
+)
 from nodes.core import Spec
 from nodes.util_graph import param_change_relevant as _param_change_relevant
 
@@ -246,11 +251,103 @@ def _validate_fbx_path(role: str, raw_path: str, base_dir: Path | None) -> Tuple
     return str(path), ""
 
 
+def _append_prefixed_messages(dst: List[str], prefix: str, messages) -> None:
+    for msg in list(messages or []):
+        text = str(msg or "").strip()
+        if text:
+            dst.append(f"{prefix}: {text}")
+
+
+def _is_backend_unavailable(exc: Exception) -> bool:
+    text = str(exc or "").strip().lower()
+    return "pyassimp unavailable" in text
+
+
+def _validate_bind_sources_stage3(
+    *,
+    effective: Dict[str, str],
+    errors: List[str],
+    warnings: List[str],
+) -> Dict[str, Any]:
+    state: Dict[str, Any] = {
+        "rest_result": None,
+        "capture_result": None,
+        "capture_report": None,
+    }
+    rest_path = (effective.get("rest_geometry") or "").strip()
+    if not rest_path:
+        return state
+
+    try:
+        rest_result = ingest_fbx_bind_data(rest_path)
+    except FBXBindIngestError as exc:
+        if _is_backend_unavailable(exc):
+            warnings.append(f"stage3 bind ingest skipped: {exc}")
+        else:
+            errors.append(f"rest_geometry: bind ingest failed: {exc}")
+        return state
+    except Exception as exc:  # pragma: no cover - defensive
+        errors.append(f"rest_geometry: bind ingest failed: {exc}")
+        return state
+
+    state["rest_result"] = rest_result
+    _append_prefixed_messages(warnings, "rest_geometry", getattr(rest_result, "warnings", []))
+
+    capture_path = (effective.get("capture_pose") or "").strip()
+    if not capture_path or capture_path == rest_path:
+        state["capture_result"] = rest_result
+        if not capture_path:
+            effective["capture_pose"] = rest_path
+        return state
+
+    try:
+        capture_result = ingest_fbx_bind_data(
+            capture_path,
+            skeleton_name=rest_result.skeleton.name,
+        )
+    except FBXBindIngestError as exc:
+        if _is_backend_unavailable(exc):
+            warnings.append(
+                f"capture_pose: bind ingest skipped ({exc}); using rest_geometry."
+            )
+        else:
+            warnings.append(
+                f"capture_pose: bind ingest failed ({exc}); override ignored."
+            )
+        effective["capture_pose"] = rest_path
+        state["capture_result"] = rest_result
+        return state
+    except Exception as exc:  # pragma: no cover - defensive
+        warnings.append(f"capture_pose: bind ingest failed ({exc}); override ignored.")
+        effective["capture_pose"] = rest_path
+        state["capture_result"] = rest_result
+        return state
+
+    _append_prefixed_messages(
+        warnings, "capture_pose", getattr(capture_result, "warnings", [])
+    )
+    report = compare_skeleton_layout(rest_result.skeleton, capture_result.skeleton)
+    state["capture_report"] = report
+    _append_prefixed_messages(warnings, "capture_pose", report.warnings)
+    if not report.compatible:
+        for msg in report.errors:
+            text = str(msg or "").strip()
+            if text:
+                warnings.append(f"capture_pose: {text}; override ignored.")
+        effective["capture_pose"] = rest_path
+        state["capture_result"] = rest_result
+        return state
+
+    state["capture_result"] = capture_result
+    return state
+
+
 def resolve_fbx_import_sources(
     node_item,
     *,
     base_dir: Path | None = None,
     persist: bool = False,
+    validate_bind_data: bool | None = None,
 ) -> SourceResolutionResult:
     model = getattr(node_item, "model", None)
     scene = None
@@ -329,6 +426,15 @@ def resolve_fbx_import_sources(
             if not effective[role]:
                 effective[role] = effective["rest_geometry"]
 
+    bind_validation_enabled = bool(persist) if validate_bind_data is None else bool(validate_bind_data)
+    bind_state: Dict[str, Any] = {}
+    if bind_validation_enabled and effective["rest_geometry"]:
+        bind_state = _validate_bind_sources_stage3(
+            effective=effective,
+            errors=errors,
+            warnings=warnings,
+        )
+
     status = "error" if errors else ("warning" if warnings else "ok")
     result = SourceResolutionResult(
         status=status,
@@ -347,6 +453,10 @@ def resolve_fbx_import_sources(
             setattr(model, "_fbx_validation_errors", list(errors))
             setattr(model, "_fbx_validation_warnings", list(warnings))
             setattr(model, "_fbx_validation_messages", list(result.message_lines()))
+            setattr(model, "_fbx_bind_validation_enabled", bool(bind_validation_enabled))
+            setattr(model, "_fbx_bind_rest_result", bind_state.get("rest_result"))
+            setattr(model, "_fbx_bind_capture_result", bind_state.get("capture_result"))
+            setattr(model, "_fbx_bind_capture_report", bind_state.get("capture_report"))
         except Exception:
             pass
 

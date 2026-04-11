@@ -13,6 +13,13 @@ from .fbx_canonical import (
     VertexInfluence,
     VertexSkin,
 )
+from .fbx_stage3_ingest import (
+    FBXBindIngestError,
+    FBXBindIngestResult,
+    SkeletonCompatibilityReport,
+    compare_skeleton_layout,
+    ingest_fbx_bind_data,
+)
 
 __all__ = [
     "SchemaValidationError",
@@ -26,4 +33,9 @@ __all__ = [
     "QuatKeyframe",
     "JointAnimationTrack",
     "AnimationClip",
+    "FBXBindIngestError",
+    "FBXBindIngestResult",
+    "SkeletonCompatibilityReport",
+    "ingest_fbx_bind_data",
+    "compare_skeleton_layout",
 ]

@@ -1,0 +1,693 @@
+from __future__ import annotations
+
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, Iterator, List, Sequence, Tuple
+import math
+
+from .fbx_canonical import (
+    Joint,
+    JointTransform,
+    SkeletalMeshAsset,
+    SkeletonAsset,
+    VertexInfluence,
+    VertexSkin,
+)
+
+_IDENTITY_MATRIX_4X4: Tuple[float, ...] = (
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+)
+
+
+class FBXBindIngestError(RuntimeError):
+    """Raised when deterministic FBX bind ingest fails."""
+
+
+@dataclass(eq=True)
+class FBXBindIngestResult:
+    source_path: str
+    skeleton: SkeletonAsset
+    meshes: List[SkeletalMeshAsset] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+
+
+@dataclass(eq=True)
+class SkeletonCompatibilityReport:
+    compatible: bool
+    errors: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+
+
+@dataclass
+class _NodeRecord:
+    idx: int
+    name: str
+    parent_idx: int | None
+    transform: Tuple[float, ...]
+    node_obj: Any
+
+
+def _safe_text(value: Any, fallback: str) -> str:
+    text = str(value or "").strip()
+    return text or fallback
+
+
+def _unique_name(base: str, used: set[str]) -> str:
+    candidate = base
+    suffix = 2
+    while candidate in used:
+        candidate = f"{base}_{suffix}"
+        suffix += 1
+    used.add(candidate)
+    return candidate
+
+
+def _to_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
+
+
+def _to_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _matrix4_from_obj(value: Any) -> Tuple[float, ...]:
+    if value is None:
+        return _IDENTITY_MATRIX_4X4
+
+    # assimp matrix layout (a1..d4)
+    keys = (
+        "a1", "a2", "a3", "a4",
+        "b1", "b2", "b3", "b4",
+        "c1", "c2", "c3", "c4",
+        "d1", "d2", "d3", "d4",
+    )
+    if all(hasattr(value, key) for key in keys):
+        return tuple(_to_float(getattr(value, key)) for key in keys)
+    if isinstance(value, dict) and all(key in value for key in keys):
+        return tuple(_to_float(value[key]) for key in keys)
+
+    tolist = getattr(value, "tolist", None)
+    if callable(tolist):
+        try:
+            value = tolist()
+        except Exception:
+            pass
+
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        try:
+            if len(value) == 16:
+                return tuple(_to_float(v) for v in value)  # type: ignore[arg-type]
+            if len(value) == 4 and all(
+                isinstance(row, Sequence) and not isinstance(row, (str, bytes)) and len(row) >= 4  # type: ignore[arg-type]
+                for row in value
+            ):
+                out: List[float] = []
+                for row in value:  # type: ignore[assignment]
+                    out.extend(_to_float(row[i]) for i in range(4))  # type: ignore[index]
+                return tuple(out)
+        except Exception:
+            pass
+
+    try:
+        out = [_to_float(value[r][c]) for r in range(4) for c in range(4)]  # type: ignore[index]
+        if len(out) == 16:
+            return tuple(out)
+    except Exception:
+        pass
+
+    return _IDENTITY_MATRIX_4X4
+
+
+def _quat_from_rotation_matrix(m00, m01, m02, m10, m11, m12, m20, m21, m22):
+    trace = m00 + m11 + m22
+    if trace > 0.0:
+        s = math.sqrt(trace + 1.0) * 2.0
+        w = 0.25 * s
+        x = (m21 - m12) / s
+        y = (m02 - m20) / s
+        z = (m10 - m01) / s
+    elif m00 > m11 and m00 > m22:
+        s = math.sqrt(max(0.0, 1.0 + m00 - m11 - m22)) * 2.0
+        w = (m21 - m12) / s if s else 1.0
+        x = 0.25 * s
+        y = (m01 + m10) / s if s else 0.0
+        z = (m02 + m20) / s if s else 0.0
+    elif m11 > m22:
+        s = math.sqrt(max(0.0, 1.0 + m11 - m00 - m22)) * 2.0
+        w = (m02 - m20) / s if s else 1.0
+        x = (m01 + m10) / s if s else 0.0
+        y = 0.25 * s
+        z = (m12 + m21) / s if s else 0.0
+    else:
+        s = math.sqrt(max(0.0, 1.0 + m22 - m00 - m11)) * 2.0
+        w = (m10 - m01) / s if s else 1.0
+        x = (m02 + m20) / s if s else 0.0
+        y = (m12 + m21) / s if s else 0.0
+        z = 0.25 * s
+
+    norm = math.sqrt(max(1e-16, (x * x) + (y * y) + (z * z) + (w * w)))
+    return (x / norm, y / norm, z / norm, w / norm)
+
+
+def _decompose_local_transform(matrix16: Tuple[float, ...]) -> JointTransform:
+    # Assume row-major 4x4 with translation in last column.
+    m00, m01, m02, m03 = matrix16[0], matrix16[1], matrix16[2], matrix16[3]
+    m10, m11, m12, m13 = matrix16[4], matrix16[5], matrix16[6], matrix16[7]
+    m20, m21, m22, m23 = matrix16[8], matrix16[9], matrix16[10], matrix16[11]
+
+    sx = math.sqrt((m00 * m00) + (m10 * m10) + (m20 * m20))
+    sy = math.sqrt((m01 * m01) + (m11 * m11) + (m21 * m21))
+    sz = math.sqrt((m02 * m02) + (m12 * m12) + (m22 * m22))
+    if sx <= 1e-12:
+        sx = 1.0
+    if sy <= 1e-12:
+        sy = 1.0
+    if sz <= 1e-12:
+        sz = 1.0
+
+    r00, r01, r02 = m00 / sx, m01 / sy, m02 / sz
+    r10, r11, r12 = m10 / sx, m11 / sy, m12 / sz
+    r20, r21, r22 = m20 / sx, m21 / sy, m22 / sz
+    qx, qy, qz, qw = _quat_from_rotation_matrix(r00, r01, r02, r10, r11, r12, r20, r21, r22)
+
+    xf = JointTransform(
+        translation=(m03, m13, m23),
+        rotation=(qx, qy, qz, qw),
+        scale=(sx, sy, sz),
+    )
+    xf.validate()
+    return xf
+
+
+def _node_children_sorted(node_obj: Any) -> List[Any]:
+    children = list(getattr(node_obj, "children", None) or [])
+    indexed = list(enumerate(children))
+    indexed.sort(
+        key=lambda item: (
+            _safe_text(getattr(item[1], "name", ""), f"child_{item[0]}").lower(),
+            item[0],
+        )
+    )
+    return [child for _, child in indexed]
+
+
+def _build_node_records(root_node: Any) -> List[_NodeRecord]:
+    records: List[_NodeRecord] = []
+
+    def _visit(node_obj: Any, parent_idx: int | None) -> None:
+        idx = len(records)
+        rec = _NodeRecord(
+            idx=idx,
+            name=_safe_text(getattr(node_obj, "name", ""), f"joint_{idx}"),
+            parent_idx=parent_idx,
+            transform=_matrix4_from_obj(getattr(node_obj, "transformation", None)),
+            node_obj=node_obj,
+        )
+        records.append(rec)
+        for child in _node_children_sorted(node_obj):
+            _visit(child, idx)
+
+    _visit(root_node, None)
+    return records
+
+
+def _sorted_meshes(scene_obj: Any) -> List[Tuple[int, Any]]:
+    meshes = list(getattr(scene_obj, "meshes", None) or [])
+    indexed = list(enumerate(meshes))
+    indexed.sort(
+        key=lambda item: (
+            _safe_text(getattr(item[1], "name", ""), f"mesh_{item[0]}").lower(),
+            item[0],
+        )
+    )
+    return indexed
+
+
+def _sorted_bones(mesh_obj: Any) -> List[Tuple[int, Any]]:
+    bones = list(getattr(mesh_obj, "bones", None) or [])
+    indexed = list(enumerate(bones))
+    indexed.sort(
+        key=lambda item: (
+            _safe_text(getattr(item[1], "name", ""), f"bone_{item[0]}").lower(),
+            item[0],
+        )
+    )
+    return indexed
+
+
+def _weight_vertex_index(weight_obj: Any) -> int:
+    for key in ("vertexid", "vertex_id", "mVertexId", "vertexId"):
+        if hasattr(weight_obj, key):
+            return _to_int(getattr(weight_obj, key), -1)
+        if isinstance(weight_obj, dict) and key in weight_obj:
+            return _to_int(weight_obj[key], -1)
+    if isinstance(weight_obj, Sequence) and not isinstance(weight_obj, (str, bytes)):
+        if len(weight_obj) >= 1:
+            return _to_int(weight_obj[0], -1)
+    return -1
+
+
+def _weight_value(weight_obj: Any) -> float:
+    for key in ("weight", "mWeight", "value"):
+        if hasattr(weight_obj, key):
+            return _to_float(getattr(weight_obj, key), 0.0)
+        if isinstance(weight_obj, dict) and key in weight_obj:
+            return _to_float(weight_obj[key], 0.0)
+    if isinstance(weight_obj, Sequence) and not isinstance(weight_obj, (str, bytes)):
+        if len(weight_obj) >= 2:
+            return _to_float(weight_obj[1], 0.0)
+    return 0.0
+
+
+def _mesh_vertex_count(mesh_obj: Any) -> int:
+    verts = getattr(mesh_obj, "vertices", None)
+    if verts is None:
+        return 0
+    try:
+        return int(len(verts))
+    except Exception:
+        pass
+    return 0
+
+
+def _mesh_faces(mesh_obj: Any) -> List[List[int]]:
+    raw = getattr(mesh_obj, "faces", None)
+    if raw is None:
+        return []
+    tolist = getattr(raw, "tolist", None)
+    if callable(tolist):
+        try:
+            raw = tolist()
+        except Exception:
+            pass
+
+    faces: List[List[int]] = []
+    seq = list(raw) if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)) else []
+    for entry in seq:
+        conv = entry
+        tolist = getattr(conv, "tolist", None)
+        if callable(tolist):
+            try:
+                conv = tolist()
+            except Exception:
+                pass
+        if isinstance(conv, Sequence) and not isinstance(conv, (str, bytes)):
+            face = [_to_int(v, -1) for v in conv]
+        else:
+            face = []
+        face = [idx for idx in face if idx >= 0]
+        if len(face) >= 3:
+            faces.append(face)
+    return faces
+
+
+def _triangulate_faces(faces: Sequence[Sequence[int]]) -> List[int]:
+    tris: List[int] = []
+    for face in faces:
+        if len(face) < 3:
+            continue
+        if len(face) == 3:
+            tris.extend([int(face[0]), int(face[1]), int(face[2])])
+            continue
+        f0 = int(face[0])
+        for i in range(1, len(face) - 1):
+            tris.extend([f0, int(face[i]), int(face[i + 1])])
+    return tris
+
+
+def _select_skeleton_nodes(
+    node_records: Sequence[_NodeRecord],
+    bone_names: Sequence[str],
+    warnings: List[str],
+) -> Tuple[List[int], Dict[str, int]]:
+    name_to_indices: Dict[str, List[int]] = {}
+    for rec in node_records:
+        name_to_indices.setdefault(rec.name, []).append(rec.idx)
+
+    selected: set[int] = set()
+    missing_bones: List[str] = []
+    for bone_name in sorted(set(bone_names)):
+        idxs = name_to_indices.get(bone_name, [])
+        if not idxs:
+            missing_bones.append(bone_name)
+            continue
+        chosen = idxs[0]
+        if len(idxs) > 1:
+            warnings.append(
+                f"Bone '{bone_name}' matched multiple nodes; using first deterministically."
+            )
+        cur = chosen
+        while cur is not None and cur not in selected:
+            selected.add(cur)
+            parent_idx = node_records[cur].parent_idx
+            cur = parent_idx
+
+    ordered = [rec.idx for rec in node_records if rec.idx in selected]
+    synthetic_map: Dict[str, int] = {}
+    for name in sorted(missing_bones):
+        synthetic_map[name] = -1
+    return ordered, synthetic_map
+
+
+def _build_skeleton_asset(
+    path_obj: Path,
+    skeleton_name: str,
+    node_records: Sequence[_NodeRecord],
+    bone_offsets: Dict[str, Tuple[float, ...]],
+    bone_names: Sequence[str],
+    warnings: List[str],
+) -> Tuple[SkeletonAsset, Dict[str, int]]:
+    ordered_node_indices, synthetic_missing = _select_skeleton_nodes(
+        node_records=node_records,
+        bone_names=bone_names,
+        warnings=warnings,
+    )
+
+    used_names: set[str] = set()
+    node_to_joint_idx: Dict[int, int] = {}
+    source_name_to_joint_idx: Dict[str, int] = {}
+    joints: List[Joint] = []
+
+    for node_idx in ordered_node_indices:
+        rec = node_records[node_idx]
+        joint_name = _unique_name(rec.name, used_names)
+        parent_joint_idx = -1
+        if rec.parent_idx is not None and rec.parent_idx in node_to_joint_idx:
+            parent_joint_idx = node_to_joint_idx[rec.parent_idx]
+        joint = Joint(
+            name=joint_name,
+            parent_index=parent_joint_idx,
+            local_bind=_decompose_local_transform(rec.transform),
+            inverse_bind_matrix=bone_offsets.get(rec.name, _IDENTITY_MATRIX_4X4),
+        )
+        joints.append(joint)
+        jidx = len(joints) - 1
+        node_to_joint_idx[node_idx] = jidx
+        if rec.name not in source_name_to_joint_idx:
+            source_name_to_joint_idx[rec.name] = jidx
+
+    for missing_name in sorted(synthetic_missing.keys()):
+        synthetic_name = _unique_name(missing_name, used_names)
+        joint = Joint(
+            name=synthetic_name,
+            parent_index=-1,
+            local_bind=JointTransform(),
+            inverse_bind_matrix=bone_offsets.get(missing_name, _IDENTITY_MATRIX_4X4),
+        )
+        joints.append(joint)
+        jidx = len(joints) - 1
+        if missing_name not in source_name_to_joint_idx:
+            source_name_to_joint_idx[missing_name] = jidx
+        warnings.append(
+            f"Bone '{missing_name}' was not found in node hierarchy; synthetic root joint created."
+        )
+
+    if not joints:
+        # fallback for empty-bone scenes
+        joints.append(
+            Joint(
+                name="root",
+                parent_index=-1,
+                local_bind=JointTransform(),
+                inverse_bind_matrix=_IDENTITY_MATRIX_4X4,
+            )
+        )
+        source_name_to_joint_idx["root"] = 0
+        warnings.append("No bones were found; created synthetic root joint.")
+
+    skeleton = SkeletonAsset(
+        name=skeleton_name,
+        joints=joints,
+        metadata={
+            "source_path": str(path_obj),
+            "stage": "stage3_bind_ingest",
+        },
+    )
+    skeleton.validate()
+    return skeleton, source_name_to_joint_idx
+
+
+def _build_mesh_assets(
+    scene_obj: Any,
+    skeleton: SkeletonAsset,
+    bone_name_to_joint_idx: Dict[str, int],
+    *,
+    max_influences: int,
+    warnings: List[str],
+) -> List[SkeletalMeshAsset]:
+    out: List[SkeletalMeshAsset] = []
+    used_names: set[str] = set()
+
+    for mesh_idx, mesh in _sorted_meshes(scene_obj):
+        vertex_count = _mesh_vertex_count(mesh)
+        if vertex_count <= 0:
+            continue
+
+        raw_mesh_name = _safe_text(getattr(mesh, "name", ""), f"mesh_{mesh_idx}")
+        mesh_name = _unique_name(raw_mesh_name, used_names)
+
+        faces = _mesh_faces(mesh)
+        triangle_indices = _triangulate_faces(faces)
+        triangle_indices = [idx for idx in triangle_indices if 0 <= idx < vertex_count]
+
+        per_vertex: Dict[int, Dict[int, float]] = {}
+        for bone_order, bone in _sorted_bones(mesh):
+            bone_name = _safe_text(getattr(bone, "name", ""), f"bone_{bone_order}")
+            joint_idx = bone_name_to_joint_idx.get(bone_name)
+            if joint_idx is None:
+                warnings.append(
+                    f"Mesh '{mesh_name}' bone '{bone_name}' does not map to skeleton; weights ignored."
+                )
+                continue
+
+            weights = list(getattr(bone, "weights", None) or [])
+            weights.sort(key=lambda w: (_weight_vertex_index(w), _weight_value(w)))
+            for w in weights:
+                vid = _weight_vertex_index(w)
+                wt = _weight_value(w)
+                if vid < 0 or vid >= vertex_count or wt <= 0.0:
+                    continue
+                slot = per_vertex.setdefault(vid, {})
+                slot[joint_idx] = float(slot.get(joint_idx, 0.0)) + float(wt)
+
+        vertex_skins: List[VertexSkin] = []
+        for vid in sorted(per_vertex.keys()):
+            inf_map = per_vertex[vid]
+            packed = [(j, w) for j, w in inf_map.items() if w > 0.0]
+            packed.sort(key=lambda it: (-float(it[1]), int(it[0])))
+            if max_influences > 0 and len(packed) > max_influences:
+                warnings.append(
+                    f"Mesh '{mesh_name}' vertex {vid} had {len(packed)} influences; clamped to {max_influences}."
+                )
+                packed = packed[:max_influences]
+            total = sum(float(w) for _, w in packed)
+            if total <= 0.0:
+                continue
+            influences = [
+                VertexInfluence(joint_index=int(j), weight=float(w) / float(total))
+                for j, w in packed
+            ]
+            vertex_skins.append(VertexSkin(vertex_index=int(vid), influences=influences))
+
+        asset = SkeletalMeshAsset(
+            name=mesh_name,
+            skeleton_name=skeleton.name,
+            vertex_count=vertex_count,
+            triangle_indices=triangle_indices,
+            vertex_skins=vertex_skins,
+            metadata={
+                "source_mesh_index": int(mesh_idx),
+                "source_mesh_name": raw_mesh_name,
+            },
+        )
+        asset.validate(skeleton)
+        out.append(asset)
+
+    return out
+
+
+@contextmanager
+def _load_pyassimp_scene(path_obj: Path) -> Iterator[Any]:
+    try:
+        import pyassimp  # type: ignore
+        from pyassimp import postprocess as ai_post  # type: ignore
+    except Exception as exc:
+        raise FBXBindIngestError(f"pyassimp unavailable: {exc}") from exc
+
+    processing = 0
+    for name in (
+        "aiProcess_JoinIdenticalVertices",
+        "aiProcess_SortByPType",
+        "aiProcess_FindInvalidData",
+        "aiProcess_ImproveCacheLocality",
+        "aiProcess_OptimizeMeshes",
+    ):
+        processing |= int(getattr(ai_post, name, 0) or 0)
+
+    try:
+        with pyassimp.load(str(path_obj), file_type="fbx", processing=processing) as scene:
+            yield scene
+    except Exception as exc:
+        raise FBXBindIngestError(f"Failed to load FBX via pyassimp: {exc}") from exc
+
+
+def _ingest_scene(
+    scene_obj: Any,
+    *,
+    path_obj: Path,
+    skeleton_name: str | None,
+    max_influences: int,
+) -> FBXBindIngestResult:
+    warnings: List[str] = []
+    root = getattr(scene_obj, "rootnode", None)
+    if root is None:
+        raise FBXBindIngestError("FBX scene is missing rootnode.")
+
+    node_records = _build_node_records(root)
+
+    bone_offsets: Dict[str, Tuple[float, ...]] = {}
+    bone_names: List[str] = []
+    for mesh_idx, mesh in _sorted_meshes(scene_obj):
+        for bone_idx, bone in _sorted_bones(mesh):
+            bone_name = _safe_text(getattr(bone, "name", ""), f"bone_{mesh_idx}_{bone_idx}")
+            bone_names.append(bone_name)
+            off = _matrix4_from_obj(getattr(bone, "offsetmatrix", None))
+            prev = bone_offsets.get(bone_name)
+            if prev is None:
+                bone_offsets[bone_name] = off
+            elif prev != off:
+                warnings.append(
+                    f"Bone '{bone_name}' had inconsistent inverse bind matrices; first value kept."
+                )
+
+    skeleton_asset_name = _safe_text(
+        skeleton_name,
+        f"{path_obj.stem}_Skeleton",
+    )
+    skeleton, source_name_to_joint_idx = _build_skeleton_asset(
+        path_obj=path_obj,
+        skeleton_name=skeleton_asset_name,
+        node_records=node_records,
+        bone_offsets=bone_offsets,
+        bone_names=bone_names,
+        warnings=warnings,
+    )
+    mesh_assets = _build_mesh_assets(
+        scene_obj=scene_obj,
+        skeleton=skeleton,
+        bone_name_to_joint_idx=source_name_to_joint_idx,
+        max_influences=max(1, int(max_influences)),
+        warnings=warnings,
+    )
+
+    return FBXBindIngestResult(
+        source_path=str(path_obj),
+        skeleton=skeleton,
+        meshes=mesh_assets,
+        warnings=warnings,
+    )
+
+
+def ingest_fbx_bind_data(
+    path: str | Path,
+    *,
+    skeleton_name: str | None = None,
+    max_influences: int = 8,
+    scene: Any | None = None,
+) -> FBXBindIngestResult:
+    path_obj = Path(path)
+    if scene is not None:
+        return _ingest_scene(
+            scene_obj=scene,
+            path_obj=path_obj,
+            skeleton_name=skeleton_name,
+            max_influences=max_influences,
+        )
+
+    if not path_obj.exists():
+        raise FBXBindIngestError(f"FBX path does not exist: {path_obj}")
+    with _load_pyassimp_scene(path_obj) as scene_obj:
+        return _ingest_scene(
+            scene_obj=scene_obj,
+            path_obj=path_obj,
+            skeleton_name=skeleton_name,
+            max_influences=max_influences,
+        )
+
+
+def _parent_name_map(skeleton: SkeletonAsset) -> Dict[str, str | None]:
+    mapping: Dict[str, str | None] = {}
+    for joint in skeleton.joints:
+        parent_name = None
+        if joint.parent_index >= 0:
+            parent_name = skeleton.joints[joint.parent_index].name
+        mapping[joint.name] = parent_name
+    return mapping
+
+
+def compare_skeleton_layout(
+    base: SkeletonAsset,
+    override: SkeletonAsset,
+) -> SkeletonCompatibilityReport:
+    base.validate()
+    override.validate()
+
+    errors: List[str] = []
+    warnings: List[str] = []
+    base_map = _parent_name_map(base)
+    override_map = _parent_name_map(override)
+
+    for joint_name, parent_name in base_map.items():
+        if joint_name not in override_map:
+            errors.append(f"Missing required joint '{joint_name}'.")
+            continue
+        other_parent = override_map[joint_name]
+        if parent_name != other_parent:
+            errors.append(
+                f"Joint '{joint_name}' parent mismatch: expected {parent_name!r}, got {other_parent!r}."
+            )
+
+    extras = sorted(set(override_map.keys()) - set(base_map.keys()))
+    if extras:
+        warnings.append(
+            "Override contains extra joints not present in base skeleton: "
+            + ", ".join(extras[:12])
+            + (" ..." if len(extras) > 12 else "")
+        )
+
+    return SkeletonCompatibilityReport(
+        compatible=not errors,
+        errors=errors,
+        warnings=warnings,
+    )
+
+
+__all__ = [
+    "FBXBindIngestError",
+    "FBXBindIngestResult",
+    "SkeletonCompatibilityReport",
+    "ingest_fbx_bind_data",
+    "compare_skeleton_layout",
+]
