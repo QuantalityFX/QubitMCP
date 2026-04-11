@@ -1,4 +1,4 @@
-# echograph/ui/node_item.py
+﻿# echograph/ui/node_item.py
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -1421,7 +1421,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 pass
         if button is not None:
             try:
-                button.setText("✓" if completed else "")
+                button.setText("âœ“" if completed else "")
                 button.setStyleSheet(self._note_complete_button_style(checked=completed))
             except Exception:
                 pass
@@ -2449,7 +2449,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     v.addWidget(lbl)
                 else:
                     for nm in names:
-                        row = QtWidgets.QLabel(f"• {nm}")
+                        row = QtWidgets.QLabel(f"â€¢ {nm}")
                         row.setStyleSheet("color:#e6edf3;")
                         v.addWidget(row)
 
@@ -2680,6 +2680,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         and pname_key == "path"
                         and hasattr(self, "_browse_import_file")
                     )
+                    attach_fbx_import_browse = (
+                        kind in ("fbx_import", "fbx import", "fbximport")
+                        and pname_key in ("rest_geometry", "capture_pose", "animated_pose")
+                        and hasattr(self, "_browse_param_file")
+                    )
+                    attach_file_browse = attach_import_browse or attach_fbx_import_browse
                     lab_holder.addStretch(1)
                     lay.addLayout(lab_holder)
 
@@ -2716,16 +2722,31 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     if attach_import_browse:
                         edit.editingFinished.connect(lambda e=edit: self._commit_import_path_edit(e))
 
-                    if attach_import_browse:
+                    if attach_file_browse:
                         browse_btn = QtWidgets.QToolButton()
                         btn_style = QtWidgets.QApplication.style()
                         if btn_style:
                             browse_btn.setIcon(btn_style.standardIcon(QtWidgets.QStyle.SP_DialogOpenButton))
-                        browse_btn.setToolTip("Choose file…")
+                        browse_btn.setToolTip("Choose file...")
                         browse_btn.setFixedSize(22, 22)
-                        browse_btn.clicked.connect(
-                            lambda _=False: self._browse_import_file(self._param_value("path"))
-                        )
+                        if attach_import_browse:
+                            browse_btn.clicked.connect(
+                                lambda _=False: self._browse_import_file(self._param_value("path"))
+                            )
+                        else:
+                            role_name = str(pname_key)
+                            browse_btn.clicked.connect(
+                                lambda _=False, role=role_name: self._browse_param_file(
+                                    role,
+                                    self._param_value(role),
+                                    file_filter=(
+                                        "FBX Files (*.fbx);;"
+                                        "3D Models (*.fbx *.obj *.gltf *.glb *.ply);;"
+                                        "All Files (*.*)"
+                                    ),
+                                    dialog_title=f"Select {role}",
+                                )
+                            )
                         lay.addWidget(browse_btn, 0)
 
                     # Big editor wiring
@@ -5332,6 +5353,26 @@ class NodeItem(QtWidgets.QGraphicsObject):
         if file_path:
             QtCore.QTimer.singleShot(0, lambda p=file_path: self._set_param_value("path", p))
 
+    def _browse_param_file(
+        self,
+        param_name: str,
+        current: str,
+        file_filter: str = "All Files (*.*)",
+        dialog_title: str = "Select File",
+    ):
+        key = (param_name or "").strip()
+        if not key:
+            return
+        start = current or os.path.expanduser("~")
+        file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            _top_level_parent_for_dialog(),
+            dialog_title,
+            start,
+            file_filter,
+        )
+        if file_path:
+            QtCore.QTimer.singleShot(0, lambda p=file_path, k=key: self._set_param_value(k, p))
+
     def _browse_import_texture(self, current: str):
         start = current or os.path.expanduser("~")
         file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
@@ -5765,7 +5806,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     except Exception:
                         pass
 
-    # (Deliberately NO NodeItem.eventFilter override — avoids accidental second path.)
+    # (Deliberately NO NodeItem.eventFilter override â€” avoids accidental second path.)
 
     def _open_big_param_editor(self, title: str, initial_text: str, apply_to_lineedit: QtWidgets.QLineEdit):
         parent = _top_level_parent_for_dialog()
@@ -5813,7 +5854,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         except Exception:
             pass
         if _qexec(dlg) == QtWidgets.QDialog.Accepted:
-            apply_to_lineedit.setText(dlg.text())         # triggers textChanged → updates model
+            apply_to_lineedit.setText(dlg.text())         # triggers textChanged â†’ updates model
             try:
                 apply_to_lineedit.editingFinished.emit()  # optional: keep downstream listeners consistent
             except Exception:
@@ -6479,5 +6520,6 @@ def _open_in_explorer(path_str: str):
             subprocess.Popen(["xdg-open", str(path.parent if path.is_file() else path)])
     except Exception:
         pass
+
 
 

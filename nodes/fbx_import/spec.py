@@ -17,15 +17,6 @@ from nodes.core import Spec
 from nodes.util_graph import param_change_relevant as _param_change_relevant
 
 ROLE_PORTS: Tuple[str, str, str] = ("rest_geometry", "capture_pose", "animated_pose")
-_INTERNAL_PARAM_NAMES = (
-    "resolved_rest_geometry",
-    "resolved_capture_pose",
-    "resolved_animated_pose",
-    "source_validation_state",
-    "source_validation_messages",
-    "source_validation_warnings",
-    "source_validation_errors",
-)
 
 
 @dataclass
@@ -67,20 +58,6 @@ def _param_value(model, name: str) -> str:
     return ""
 
 
-def _set_param_value(model, name: str, value: str) -> None:
-    if model is None:
-        return
-    params = list(getattr(model, "params", None) or [])
-    key = (name or "").strip().lower()
-    for entry in params:
-        if (entry.get("name") or "").strip().lower() == key:
-            entry["value"] = value
-            model.params = params
-            return
-    params.append({"name": name, "value": value})
-    model.params = params
-
-
 def _ensure_param(node_item, name: str, default: str = "") -> None:
     model = getattr(node_item, "model", None)
     if model is None:
@@ -97,7 +74,7 @@ def _ensure_param(node_item, name: str, default: str = "") -> None:
     model.params = params
 
 
-def _ensure_hidden_params(model, names) -> None:
+def _remove_hidden_params(model, names) -> None:
     if model is None:
         return
     params = list(getattr(model, "params", None) or [])
@@ -108,14 +85,12 @@ def _ensure_hidden_params(model, names) -> None:
             hidden_entry = entry
             break
     if hidden_entry is None:
-        hidden_entry = {"name": store_key, "value": ""}
-        params.append(hidden_entry)
-
+        return
     raw = hidden_entry.get("value", "")
     hidden = {tok.strip().lower() for tok in str(raw).split(",") if tok.strip()}
     for name in names or []:
         if name:
-            hidden.add(str(name).strip().lower())
+            hidden.discard(str(name).strip().lower())
     hidden_entry["value"] = ",".join(sorted(hidden))
     model.params = params
 
@@ -133,12 +108,9 @@ def build_ports(node_item) -> None:
     for role in ROLE_PORTS:
         _ensure_param(node_item, role, "")
         _ensure_input(node_item, role)
-    for internal_name in _INTERNAL_PARAM_NAMES:
-        _ensure_param(node_item, internal_name, "")
-    _ensure_hidden_params(
-        getattr(node_item, "model", None),
-        [*ROLE_PORTS, *_INTERNAL_PARAM_NAMES],
-    )
+    # Stage 2 UX: keep role params visible/editable on the node.
+    # Remove any legacy hidden flags from previous builds.
+    _remove_hidden_params(getattr(node_item, "model", None), ROLE_PORTS)
 
 
 def _ordered_in_edges(scene, item):
@@ -251,7 +223,11 @@ def _source_path_from_item(src_item, role: str) -> Tuple[str, str]:
         return path, ""
 
     if kind in ("fbx_import", "fbx import", "fbximport"):
-        path = _param_value(model, f"resolved_{role}") or _param_value(model, role)
+        path = (
+            str(getattr(model, f"_fbx_resolved_{role}", "") or "").strip()
+            or _param_value(model, f"resolved_{role}")
+            or _param_value(model, role)
+        )
         if not path:
             return "", f"{role}: upstream FBXImport node '{name}' has no resolved source."
         return path, ""
@@ -363,13 +339,16 @@ def resolve_fbx_import_sources(
     )
 
     if persist and model is not None:
-        _set_param_value(model, "resolved_rest_geometry", effective["rest_geometry"])
-        _set_param_value(model, "resolved_capture_pose", effective["capture_pose"])
-        _set_param_value(model, "resolved_animated_pose", effective["animated_pose"])
-        _set_param_value(model, "source_validation_state", status)
-        _set_param_value(model, "source_validation_errors", "\n".join(errors))
-        _set_param_value(model, "source_validation_warnings", "\n".join(warnings))
-        _set_param_value(model, "source_validation_messages", "\n".join(result.message_lines()))
+        try:
+            setattr(model, "_fbx_resolved_rest_geometry", effective["rest_geometry"])
+            setattr(model, "_fbx_resolved_capture_pose", effective["capture_pose"])
+            setattr(model, "_fbx_resolved_animated_pose", effective["animated_pose"])
+            setattr(model, "_fbx_validation_state", status)
+            setattr(model, "_fbx_validation_errors", list(errors))
+            setattr(model, "_fbx_validation_warnings", list(warnings))
+            setattr(model, "_fbx_validation_messages", list(result.message_lines()))
+        except Exception:
+            pass
 
     return result
 
