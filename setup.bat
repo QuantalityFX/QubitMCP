@@ -51,6 +51,8 @@ set "MAIN_REQ=%REPO_DIR%\requirements.txt"
 set "LIB_REQ=%REPO_DIR%\nodes\librarian\requirements.txt"
 set "ROOT_VENV=%APP_HOME%\.venv"
 set "ROOT_PY=%ROOT_VENV%\Scripts\python.exe"
+set "CHECK_FBX_SCRIPT=%REPO_DIR%\check_fbx_sdk.ps1"
+set "INSTALL_FBX_SCRIPT=%REPO_DIR%\install_fbx_sdk.ps1"
 set "LIB_VENV=%APP_HOME%\librarian\.venv"
 set "LIB_PY=%LIB_VENV%\Scripts\python.exe"
 set "VOICE_DEPS=SpeechRecognition pyttsx3 pyaudio gTTS pygame faster-whisper pymongo"
@@ -59,6 +61,11 @@ set "BASE_PY_ARG="
 set "BASE_PY_MM="
 set "PIP_DISABLE_PIP_VERSION_CHECK=1"
 set "SETUP_MODE=%~1"
+set "SETUP_FBX_ARG=%~2"
+
+if defined SETUP_FBX_ARG (
+  set "FBX_SDK_SOURCE=%SETUP_FBX_ARG%"
+)
 
 if not defined SETUP_MODE set "SETUP_MODE=full"
 if /I "%SETUP_MODE%"=="--core" set "SETUP_MODE=core"
@@ -78,6 +85,7 @@ echo [setup] ==== START %DATE% %TIME% ==== > "%LOG%"
 echo [setup] Repo: %REPO_DIR% >> "%LOG%"
 echo [setup] Home: %APP_HOME% >> "%LOG%"
 echo [setup] Mode: %SETUP_MODE% >> "%LOG%"
+if defined FBX_SDK_SOURCE echo [setup] FBX SDK source: %FBX_SDK_SOURCE% >> "%LOG%"
 
 call :try_base_python "%LOCALAPPDATA%\Programs\Python\Python310\python.exe" ""
 call :try_base_python "py" "-3.10"
@@ -113,6 +121,7 @@ call :ensure_venv "%ROOT_VENV%" "root" || goto :fail
 call :install_requirements "%ROOT_PY%" "%MAIN_REQ%" "root requirements" || goto :fail
 call :install_voice_deps "%ROOT_PY%" "root voice dependencies" || goto :fail
 call :check_medigator_runtime
+call :setup_fbx_sdk "%ROOT_PY%"
 
 if /I "%SETUP_MODE%"=="full" (
   call :ensure_venv "%LIB_VENV%" "librarian" || goto :fail
@@ -269,6 +278,95 @@ if "%HAS_CODEX_SCRIPT%"=="1" (
 )
 exit /b 0
 
+:setup_fbx_sdk
+set "PY=%~1"
+
+where powershell >nul 2>&1
+if errorlevel 1 (
+  echo [setup] WARNING: powershell.exe not found; skipping FBX SDK checks.
+  echo [setup] WARNING: powershell.exe not found; skipping FBX SDK checks. >> "%LOG%"
+  exit /b 0
+)
+
+if not exist "%CHECK_FBX_SCRIPT%" (
+  echo [setup] WARNING: FBX SDK check script not found: %CHECK_FBX_SCRIPT%
+  echo [setup] WARNING: FBX SDK check script not found: %CHECK_FBX_SCRIPT% >> "%LOG%"
+  exit /b 0
+)
+
+if defined FBX_SDK_SOURCE call :install_fbx_sdk_from_source "%PY%" "%FBX_SDK_SOURCE%"
+
+call :check_fbx_sdk_runtime "%PY%"
+if not errorlevel 1 (
+  echo [setup] FBX SDK runtime is ready.
+  echo [setup] FBX SDK runtime is ready. >> "%LOG%"
+  exit /b 0
+)
+
+if not defined FBX_SDK_SOURCE (
+  if exist "%INSTALL_FBX_SCRIPT%" (
+    call :prompt_fbx_sdk_source
+    if defined FBX_SDK_SOURCE (
+      call :install_fbx_sdk_from_source "%PY%" "%FBX_SDK_SOURCE%"
+      call :check_fbx_sdk_runtime "%PY%"
+      if not errorlevel 1 (
+        echo [setup] FBX SDK runtime is ready.
+        echo [setup] FBX SDK runtime is ready. >> "%LOG%"
+        exit /b 0
+      )
+    )
+  )
+)
+
+echo [setup] WARNING: FBX SDK runtime not ready; FBX import fallback has limited compatibility.
+echo [setup] WARNING: FBX SDK runtime not ready; FBX import fallback has limited compatibility. >> "%LOG%"
+if exist "%INSTALL_FBX_SCRIPT%" (
+  echo [setup] To install later, run:
+  echo         powershell -NoProfile -ExecutionPolicy Bypass -File "%INSTALL_FBX_SCRIPT%" -SourceDir "C:\path\to\fbx_runtime" -PythonExe "%PY%"
+  echo [setup] Install command shown to user. >> "%LOG%"
+)
+exit /b 0
+
+:check_fbx_sdk_runtime
+set "PY=%~1"
+echo [setup] Checking Autodesk FBX SDK runtime...
+echo [setup] Checking Autodesk FBX SDK runtime... >> "%LOG%"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%CHECK_FBX_SCRIPT%" -PythonExe "%PY%"
+exit /b %ERRORLEVEL%
+
+:install_fbx_sdk_from_source
+set "PY=%~1"
+set "SRC=%~2"
+if not exist "%INSTALL_FBX_SCRIPT%" (
+  echo [setup] WARNING: FBX SDK install script not found: %INSTALL_FBX_SCRIPT%
+  echo [setup] WARNING: FBX SDK install script not found: %INSTALL_FBX_SCRIPT% >> "%LOG%"
+  exit /b 0
+)
+if not defined SRC exit /b 0
+
+echo [setup] FBX SDK source detected. Attempting runtime install...
+echo [setup] FBX SDK source detected: %SRC% >> "%LOG%"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%INSTALL_FBX_SCRIPT%" -SourceDir "%SRC%" -PythonExe "%PY%"
+if errorlevel 1 (
+  echo [setup] WARNING: FBX SDK runtime install attempt failed.
+  echo [setup] WARNING: FBX SDK runtime install attempt failed. >> "%LOG%"
+) else (
+  echo [setup] FBX SDK runtime install completed.
+  echo [setup] FBX SDK runtime install completed. >> "%LOG%"
+)
+exit /b 0
+
+:prompt_fbx_sdk_source
+set "FBX_PROMPT_SOURCE="
+echo [setup] Autodesk FBX SDK is optional but recommended for full FBX compatibility.
+echo [setup] Source folder must contain: fbx.pyd, FbxCommon.py, libfbxsdk.dll
+set /p FBX_PROMPT_SOURCE=[setup] Enter FBX SDK source folder now (or press Enter to skip): 
+if defined FBX_PROMPT_SOURCE (
+  set "FBX_SDK_SOURCE=%FBX_PROMPT_SOURCE:"=%"
+  echo [setup] FBX SDK source entered by user: %FBX_SDK_SOURCE% >> "%LOG%"
+)
+exit /b 0
+
 :create_windows_shortcuts
 set "SHORTCUT_SCRIPT=%CD%\create_qubit_shortcut.ps1"
 
@@ -419,7 +517,9 @@ popd
 exit /b 1
 
 :print_usage
-echo Usage: setup.bat [core^|full]
+echo Usage: setup.bat [core^|full] [fbx_sdk_source_dir]
 echo   core = setup root app env only
 echo   full = setup root + librarian envs (default)
+echo   optional fbx_sdk_source_dir = folder containing fbx.pyd, FbxCommon.py, libfbxsdk.dll
+echo   optional env var: FBX_SDK_SOURCE=C:\path\to\fbx_runtime
 exit /b 0

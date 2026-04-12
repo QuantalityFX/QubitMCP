@@ -29,6 +29,37 @@ Or run the script directly:
 - `.venv` for the main app
 - `nodes/librarian/.venv` for librarian dependencies
 
+## Optional: Autodesk FBX SDK Runtime
+
+For full FBX compatibility (beyond pyassimp fallback), install Autodesk FBX runtime files into the app venv.
+
+Check status:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\check_fbx_sdk.ps1
+```
+
+Install from a local folder that contains `fbx.pyd`, `FbxCommon.py`, and `libfbxsdk.dll`:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install_fbx_sdk.ps1 -SourceDir "C:\path\to\fbx_runtime"
+```
+
+You can also wire this into setup:
+
+```bat
+setup.bat full "C:\path\to\fbx_runtime"
+```
+
+Or (for automation/non-interactive installs):
+
+```bat
+set FBX_SDK_SOURCE=C:\path\to\fbx_runtime
+setup.bat
+```
+
+If you do not pass a path, `setup.bat` will now prompt for the FBX runtime folder when SDK check fails.
+
 ## Manual Run (Without Launcher .bat)
 
 After `setup.bat` completes:
