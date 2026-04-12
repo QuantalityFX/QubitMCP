@@ -3548,6 +3548,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 clean_entry["aspect_height"] = entry.get("aspect_height")
             if "material" in entry and isinstance(entry.get("material"), dict):
                 clean_entry["material"] = dict(entry.get("material") or {})
+            if isinstance(entry.get("fbx_rig_context"), dict):
+                clean_entry["fbx_rig_context"] = dict(entry.get("fbx_rig_context") or {})
             if "debug_log" in entry:
                 clean_entry["debug_log"] = bool(entry.get("debug_log"))
             tex_provider = entry.get("texture_provider")
@@ -3604,6 +3606,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             sig = []
             for entry in clean:
                 xf = entry.get("xform") or {}
+                rig_ctx = entry.get("fbx_rig_context")
                 def _round3(vals, default):
                     try:
                         return tuple(round(float(v), 6) for v in (vals or default))
@@ -3622,6 +3625,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                         repr(dict(entry.get("instance_material") or {})),
                         str(entry.get("instance_texture") or ""),
                         id(entry.get("instance_texture_provider")) if entry.get("instance_texture_provider") is not None else None,
+                        id((rig_ctx or {}).get("skeleton")) if isinstance(rig_ctx, dict) else None,
+                        id((rig_ctx or {}).get("clip")) if isinstance(rig_ctx, dict) else None,
                         repr(dict(entry.get("instance_xform") or {})),
                         repr(list(entry.get("target_owner_aliases") or [])),
                         bool(entry.get("visible", True)),

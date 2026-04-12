@@ -30,6 +30,13 @@ from .fbx_stage5_evaluator import (
     RigEvaluationResult,
     evaluate_rig_at_time,
 )
+from .fbx_stage6_debug import (
+    FBXStage6DebugError,
+    SkeletonDebugSample,
+    evaluate_skeleton_line_points,
+    skeleton_line_points_from_evaluation,
+    skeleton_line_points_from_global_matrices,
+)
 
 __all__ = [
     "SchemaValidationError",
@@ -54,4 +61,9 @@ __all__ = [
     "FBXEvaluatorError",
     "RigEvaluationResult",
     "evaluate_rig_at_time",
+    "FBXStage6DebugError",
+    "SkeletonDebugSample",
+    "skeleton_line_points_from_global_matrices",
+    "skeleton_line_points_from_evaluation",
+    "evaluate_skeleton_line_points",
 ]

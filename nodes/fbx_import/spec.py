@@ -1503,6 +1503,46 @@ def _status_presentable_text(result_status: str, *, bind_validated: bool) -> Tup
     return "UNVALIDATED (paths ok)", "#94a3b8"
 
 
+def _build_preview_asset(model, result: SourceResolutionResult) -> Dict[str, Any] | None:
+    rest_path = str(result.effective_sources.get("rest_geometry", "") or "").strip()
+    if not rest_path:
+        return None
+    owner = str(getattr(model, "name", "") or "").strip()
+    if not owner:
+        try:
+            owner = Path(rest_path).stem
+        except Exception:
+            owner = "fbx_import"
+    asset: Dict[str, Any] = {
+        "path": rest_path,
+        "texture": "",
+        "node": owner,
+        "ext": ".fbx",
+        "visible": True,
+    }
+    bind_result = (
+        getattr(model, "_fbx_bind_capture_result", None)
+        or getattr(model, "_fbx_bind_rest_result", None)
+    )
+    skeleton = getattr(bind_result, "skeleton", None) if bind_result is not None else None
+    if skeleton is None:
+        return asset
+
+    animation_result = (
+        getattr(model, "_fbx_anim_animated_result", None)
+        or getattr(model, "_fbx_anim_rest_result", None)
+    )
+    clip = None
+    try:
+        clips = list(getattr(animation_result, "clips", []) or [])
+    except Exception:
+        clips = []
+    if clips:
+        clip = clips[0]
+    asset["fbx_rig_context"] = {"skeleton": skeleton, "clip": clip, "loop": True}
+    return asset
+
+
 def augment_infocard_footer(card, footer_layout) -> bool:
     if QtWidgets is None or QtGui is None:
         return False
@@ -1532,6 +1572,8 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     button.setToolTip("Resolve rest/capture/animated source roles and validate compatibility.")
     setup_button = QtWidgets.QPushButton("Setup FBX SDK")
     setup_button.setToolTip("Install or configure Autodesk FBX SDK runtime for this app.")
+    view_button = QtWidgets.QPushButton("View")
+    view_button.setToolTip("Open FBXImport output in the 3D viewport.")
 
     container = QtWidgets.QWidget(card)
     if QtWidgets is not None:
@@ -1559,6 +1601,10 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         top_row.addWidget(button, 0, QtCore.Qt.AlignRight)
     else:  # pragma: no cover - defensive
         top_row.addWidget(button)
+    if QtCore is not None:
+        top_row.addWidget(view_button, 0, QtCore.Qt.AlignRight)
+    else:  # pragma: no cover - defensive
+        top_row.addWidget(view_button)
 
     stack.addLayout(top_row)
     stack.addWidget(detail_label)
@@ -1575,7 +1621,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             status_label.setText("Status: no node item")
             status_label.setStyleSheet("color:#f59e0b;")
             detail_label.setText("Connect this node to the graph canvas.")
-            return
+            return None
 
         bind_validated = bool(persist)
         result = resolve_fbx_import_sources(
@@ -1608,6 +1654,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 QtWidgets.QMessageBox.warning(card, "FBXImport Validation", report)
             else:
                 QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), report, card)
+        return result
 
     def _on_validate_clicked():
         _refresh(persist=True, toast=True)
@@ -1616,8 +1663,65 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         _show_fbxsdk_setup_prompt(card)
         _refresh(persist=False, toast=False)
 
+    def _on_view_clicked():
+        item = _node_item()
+        if item is None:
+            QtWidgets.QMessageBox.warning(card, "FBXImport View", "Node item is not available.")
+            return
+        result = _refresh(persist=True, toast=False)
+        if result is None:
+            return
+        if result.status == "error":
+            QtWidgets.QMessageBox.warning(
+                card,
+                "FBXImport View",
+                "\n".join(result.message_lines()),
+            )
+            return
+
+        model = getattr(item, "model", None)
+        asset = _build_preview_asset(model, result)
+        if not isinstance(asset, dict):
+            QtWidgets.QMessageBox.warning(
+                card,
+                "FBXImport View",
+                "rest_geometry is not resolved. Validate sources first.",
+            )
+            return
+
+        win = card.window()
+        opened = False
+        scene_handler = getattr(win, "open_scene_assets", None) if win is not None else None
+        if callable(scene_handler):
+            try:
+                scene_handler([asset], frame=True)
+                opened = True
+            except Exception:
+                opened = False
+        if not opened:
+            model_handler = getattr(win, "open_3d_model", None) if win is not None else None
+            if callable(model_handler):
+                try:
+                    model_handler(str(asset.get("path") or ""), None, frame=True)
+                    opened = True
+                except Exception:
+                    opened = False
+        if not opened:
+            QtWidgets.QMessageBox.warning(card, "FBXImport View", "3D view is not available.")
+            return
+
+        try:
+            glv = getattr(win, "gl_view", None) if win is not None else None
+            if glv is not None:
+                toggle = getattr(glv, "_mgl_wireframe_toggle", None)
+                if toggle is not None and not bool(toggle.isChecked()):
+                    toggle.setChecked(True)
+        except Exception:
+            pass
+
     button.clicked.connect(_on_validate_clicked)
     setup_button.clicked.connect(_on_setup_clicked)
+    view_button.clicked.connect(_on_view_clicked)
 
     def _on_links_changed(*_args):
         _refresh(persist=False, toast=False)

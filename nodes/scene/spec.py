@@ -5,7 +5,7 @@ import math
 import tempfile
 import time
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List
 
 try:
     from PySide6 import QtWidgets, QtCore, QtGui
@@ -20,6 +20,7 @@ import traceback
 SUPPORTED_EXTS = {".fbx", ".obj", ".gltf", ".glb", ".ply", ".stl", ".off", ".om"}
 _MATERIAL_KINDS = {"mnaterial", "material"}
 _TEXTURE_KINDS = {"texture", "texture_pro", "texture_layer"}
+_FBX_KIND_ALIASES = {"fbx_import", "fbx import", "fbximport"}
 
 _EYE_ICON_CACHE = {}
 _FX_LOG_ENABLED = True
@@ -140,6 +141,45 @@ def _param_value(model, name: str) -> str:
         if (entry.get("name") or "").strip().lower() == key:
             return entry.get("value") or ""
     return ""
+
+
+def _fbx_import_resolved_rest_path(model) -> str:
+    if model is None:
+        return ""
+    for raw in (
+        getattr(model, "_fbx_resolved_rest_geometry", None),
+        _param_value(model, "resolved_rest_geometry"),
+        _param_value(model, "rest_geometry"),
+    ):
+        text = str(raw or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _fbx_import_rig_context(model) -> Dict[str, Any] | None:
+    if model is None:
+        return None
+    bind_result = (
+        getattr(model, "_fbx_bind_capture_result", None)
+        or getattr(model, "_fbx_bind_rest_result", None)
+    )
+    skeleton = getattr(bind_result, "skeleton", None) if bind_result is not None else None
+    if skeleton is None:
+        return None
+
+    animation_result = (
+        getattr(model, "_fbx_anim_animated_result", None)
+        or getattr(model, "_fbx_anim_rest_result", None)
+    )
+    clip = None
+    try:
+        clips = list(getattr(animation_result, "clips", []) or [])
+    except Exception:
+        clips = []
+    if clips:
+        clip = clips[0]
+    return {"skeleton": skeleton, "clip": clip, "loop": True}
 
 
 def _set_param_value(model, name: str, value: str) -> None:
@@ -520,6 +560,8 @@ def _resolve_input_item(scene, node_item, port_names=None):
                 if chosen is None:
                     chosen = edges[0]
                 return _trace(getattr(chosen, "src", None), depth + 1, visited)
+        if kind in _FBX_KIND_ALIASES:
+            return item, kind, _fbx_import_resolved_rest_path(m)
         path = _param_value(m, "path")
         if not path:
             path = _param_value(m, "mesh") or _param_value(m, "source")
@@ -1196,6 +1238,10 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             continue
 
         path = _param_value(model, "path")
+        fbx_rig_source_model = model if kind in _FBX_KIND_ALIASES else None
+        fbx_rig_context = _fbx_import_rig_context(model) if kind in _FBX_KIND_ALIASES else None
+        if kind in _FBX_KIND_ALIASES and not path:
+            path = _fbx_import_resolved_rest_path(model)
         if isinstance(material_asset, dict):
             try:
                 material_path = str(material_asset.get("path") or "").strip()
@@ -1376,6 +1422,12 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             upstream_item, upstream_kind, upstream_path = _resolve_input_item(scene, src_item)
             if upstream_path:
                 path = upstream_path
+            if (upstream_kind or "").strip().lower() in _FBX_KIND_ALIASES:
+                fbx_rig_source_model = (
+                    getattr(upstream_item, "model", None) if upstream_item is not None else None
+                )
+                if fbx_rig_context is None:
+                    fbx_rig_context = _fbx_import_rig_context(fbx_rig_source_model)
         elif kind == "wire":
             # Always resolve live source from the current graph so rewiring does not
             # depend on pressing the Wire node "View" button.
@@ -1411,6 +1463,11 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                         _set_param(model, "path", path)
             except Exception:
                 pass
+
+        if fbx_rig_source_model is None and (owner_kind or "").strip().lower() in _FBX_KIND_ALIASES:
+            fbx_rig_source_model = owner_model
+        if fbx_rig_context is None and fbx_rig_source_model is not None:
+            fbx_rig_context = _fbx_import_rig_context(fbx_rig_source_model)
 
         if not path:
             if kind in _MATERIAL_KINDS:
@@ -1601,6 +1658,8 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             entry["material"] = material
         if material_debug_on:
             entry["debug_log"] = True
+        if isinstance(fbx_rig_context, dict):
+            entry["fbx_rig_context"] = fbx_rig_context
         if xform_offset:
             entry["xform_offset"] = True
         if splat_zero_pivot:

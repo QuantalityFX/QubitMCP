@@ -53,6 +53,9 @@ from .gl_scene import MGLSceneItem
 from .gl_shaders import SHADERS
 from .gl_types import SubMeshData
 from echograph.material_debug import material_debug_log as _material_debug_log
+from echograph.rigging.fbx_stage3_ingest import ingest_fbx_bind_data
+from echograph.rigging.fbx_stage4_animation import ingest_fbx_animation_data
+from echograph.rigging.fbx_stage6_debug import evaluate_skeleton_line_points
 
 # OpenGL constants (avoid optional PyOpenGL dependency).
 GL_COLOR_BUFFER_BIT = 0x00004000
@@ -243,6 +246,136 @@ class MGLRendererMixin:
             tag=tag,
         )
         return item
+
+    def _mgl_timeline_frame_index(self) -> int:
+        frame_fn = getattr(self, "_timeline_current_frame", None)
+        if not callable(frame_fn):
+            return 0
+        try:
+            return max(0, int(frame_fn()))
+        except Exception:
+            return 0
+
+    def _mgl_timeline_fps_value(self) -> float:
+        try:
+            fps = float(getattr(self, "_timeline_fps", 24.0) or 24.0)
+        except Exception:
+            fps = 24.0
+        if fps <= 1.0e-6:
+            fps = 24.0
+        return float(fps)
+
+    def _mgl_timeline_time_seconds(self) -> float:
+        return float(self._mgl_timeline_frame_index()) / float(self._mgl_timeline_fps_value())
+
+    def _mgl_fbx_rig_context_for_path(self, path: Path) -> Optional[dict]:
+        try:
+            path_obj = Path(path)
+        except Exception:
+            return None
+        try:
+            cache_key = str(path_obj.resolve())
+        except Exception:
+            cache_key = str(path_obj)
+        try:
+            mtime = float(path_obj.stat().st_mtime)
+        except Exception:
+            mtime = None
+
+        cache = getattr(self, "_mgl_fbx_rig_context_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+        cached = cache.get(cache_key)
+        if isinstance(cached, dict) and cached.get("mtime", None) == mtime:
+            context = cached.get("context", None)
+            return context if isinstance(context, dict) else None
+
+        context = None
+        try:
+            bind_result = ingest_fbx_bind_data(path_obj)
+            skeleton = getattr(bind_result, "skeleton", None)
+            if skeleton is not None:
+                clip = None
+                try:
+                    animation_result = ingest_fbx_animation_data(path_obj, skeleton=skeleton)
+                    clips = list(getattr(animation_result, "clips", []) or [])
+                    if clips:
+                        clip = clips[0]
+                except Exception:
+                    clip = None
+                context = {"skeleton": skeleton, "clip": clip, "loop": True}
+        except Exception:
+            context = None
+
+        cache[cache_key] = {"mtime": mtime, "context": context}
+        self._mgl_fbx_rig_context_cache = cache
+        return context if isinstance(context, dict) else None
+
+    def _mgl_refresh_fbx_rig_wire_item(self, item: MGLSceneItem) -> None:
+        if np is None:
+            return
+        payload = item.payload or {}
+        context = payload.get("fbx_rig_context")
+        if not isinstance(context, dict):
+            return
+
+        frame = self._mgl_timeline_frame_index()
+        if payload.get("_fbx_rig_frame", None) == frame and payload.get("vao") is not None:
+            return
+
+        skeleton = context.get("skeleton")
+        if skeleton is None:
+            return
+        clip = context.get("clip")
+        loop = bool(context.get("loop", True))
+        try:
+            sample = evaluate_skeleton_line_points(
+                skeleton,
+                clip,
+                self._mgl_timeline_time_seconds(),
+                loop=loop,
+            )
+        except Exception:
+            return
+
+        line_points = np.array(sample.line_points or [], dtype="f4").reshape(-1, 3)
+        owner = payload.get("owner")
+        path_key = payload.get("path")
+        color = payload.get("color")
+        line_width = payload.get("line_width")
+
+        old_resources = list(item.resources or [])
+        old_payload = dict(payload)
+        replacement = self._mgl_add_wire_item_from_points(
+            name=item.name,
+            line_points=line_points,
+            visible=item.visible,
+            tag=item.tag or "scene-wire",
+            owner=str(owner or "") if owner is not None else None,
+            path_key=str(path_key or "") if path_key is not None else None,
+        )
+        if replacement is None:
+            item.resources = []
+            old_payload["vao"] = None
+            old_payload["_fbx_rig_frame"] = frame
+            item.payload = old_payload
+        else:
+            new_payload = dict(replacement.payload or {})
+            new_payload["fbx_rig_context"] = context
+            new_payload["_fbx_rig_frame"] = frame
+            if color is not None:
+                new_payload["color"] = color
+            if line_width is not None:
+                new_payload["line_width"] = line_width
+            item.payload = new_payload
+            item.resources = list(replacement.resources or [])
+
+        for res in old_resources:
+            if res is not None and hasattr(res, "release"):
+                try:
+                    res.release()
+                except Exception:
+                    pass
 
     @staticmethod
     def _mgl_edge_vertices_from_mesh(
@@ -592,7 +725,36 @@ class MGLRendererMixin:
         tag: str = "model-wire",
         owner: Optional[str] = None,
         path_key: Optional[str] = None,
+        rig_context: Optional[dict] = None,
     ) -> Optional[MGLSceneItem]:
+        if np is not None:
+            context = rig_context if isinstance(rig_context, dict) else self._mgl_fbx_rig_context_for_path(path)
+            if isinstance(context, dict) and context.get("skeleton") is not None:
+                try:
+                    sample = evaluate_skeleton_line_points(
+                        context.get("skeleton"),
+                        context.get("clip"),
+                        self._mgl_timeline_time_seconds(),
+                        loop=bool(context.get("loop", True)),
+                    )
+                    line_points = np.array(sample.line_points or [], dtype="f4").reshape(-1, 3)
+                except Exception:
+                    line_points = None
+                if line_points is not None and getattr(line_points, "size", 0):
+                    item = self._mgl_add_wire_item_from_points(
+                        name=f"{path.name}-wire",
+                        line_points=line_points,
+                        visible=visible,
+                        tag=tag,
+                        owner=owner,
+                        path_key=path_key,
+                    )
+                    if item is not None:
+                        payload = dict(item.payload or {})
+                        payload["fbx_rig_context"] = context
+                        payload["_fbx_rig_frame"] = self._mgl_timeline_frame_index()
+                        item.payload = payload
+                        return item
         try:
             line_points = load_fbx_edge_vertices(path)
         except Exception:
@@ -3966,6 +4128,9 @@ class MGLRendererMixin:
         if self._mgl_wire_prog is None:
             return
         payload = item.payload or {}
+        if isinstance(payload.get("fbx_rig_context"), dict):
+            self._mgl_refresh_fbx_rig_wire_item(item)
+            payload = item.payload or {}
         vao = payload.get("vao")
         if vao is None:
             return
@@ -8603,6 +8768,7 @@ class MGLRendererMixin:
                             tag="scene-volume" if is_volume else "scene-wire",
                             owner=owner,
                             path_key=path_key,
+                            rig_context=asset.get("fbx_rig_context") if isinstance(asset, dict) else None,
                         )
                     if wire_item is not None:
                         scene.add(wire_item)
@@ -9007,6 +9173,7 @@ class MGLRendererMixin:
                                 tag="scene-wire",
                                 owner=owner,
                                 path_key=path_key,
+                                rig_context=asset.get("fbx_rig_context") if isinstance(asset, dict) else None,
                             )
                     elif wire_points is not None and getattr(wire_points, "size", 0):
                         wire_item = self._mgl_add_wire_item_from_points(
