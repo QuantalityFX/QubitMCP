@@ -25,6 +25,11 @@ from .fbx_stage4_animation import (
     FBXAnimationIngestResult,
     ingest_fbx_animation_data,
 )
+from .fbx_stage5_evaluator import (
+    FBXEvaluatorError,
+    RigEvaluationResult,
+    evaluate_rig_at_time,
+)
 
 __all__ = [
     "SchemaValidationError",
@@ -46,4 +51,7 @@ __all__ = [
     "FBXAnimationIngestError",
     "FBXAnimationIngestResult",
     "ingest_fbx_animation_data",
+    "FBXEvaluatorError",
+    "RigEvaluationResult",
+    "evaluate_rig_at_time",
 ]
