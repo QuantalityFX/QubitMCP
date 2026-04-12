@@ -1,7 +1,14 @@
 from __future__ import annotations
 
+import ctypes
 from dataclasses import dataclass, field
+import importlib.util
+import json
+import os
 from pathlib import Path
+import shutil
+import sys
+import sysconfig
 from typing import Any, Dict, List, Tuple
 
 try:
@@ -23,6 +30,381 @@ from nodes.core import Spec
 from nodes.util_graph import param_change_relevant as _param_change_relevant
 
 ROLE_PORTS: Tuple[str, str, str] = ("rest_geometry", "capture_pose", "animated_pose")
+FBX_KIND_ALIASES: Tuple[str, str, str] = ("fbx_import", "fbx import", "fbximport")
+
+_FBX_SDK_PROMPT_SESSION_SHOWN = False
+_FBX_SDK_PROMPT_SUPPRESS_CACHE: bool | None = None
+
+
+def _app_home_dir() -> Path:
+    raw = (os.environ.get("QUBITMCP_HOME") or "").strip()
+    if raw:
+        try:
+            return Path(raw).expanduser()
+        except Exception:
+            pass
+    local = (os.environ.get("LOCALAPPDATA") or "").strip()
+    if local:
+        try:
+            return Path(local).expanduser() / "QubitMCP"
+        except Exception:
+            pass
+    return Path.home() / ".qubitmcp"
+
+
+def _default_fbx_sdk_source_dir() -> Path:
+    return _app_home_dir() / "third_party" / "fbx_sdk"
+
+
+def _fbx_sdk_prompt_state_path() -> Path:
+    return _app_home_dir() / "fbx_sdk_prompt_state.json"
+
+
+def _load_fbx_sdk_prompt_state() -> Dict[str, Any]:
+    path = _fbx_sdk_prompt_state_path()
+    try:
+        if path.exists():
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                return dict(payload)
+    except Exception:
+        pass
+    return {}
+
+
+def _save_fbx_sdk_prompt_state(state: Dict[str, Any]) -> None:
+    path = _fbx_sdk_prompt_state_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(dict(state or {}), ensure_ascii=True, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _load_fbx_sdk_prompt_suppressed() -> bool:
+    global _FBX_SDK_PROMPT_SUPPRESS_CACHE
+    if _FBX_SDK_PROMPT_SUPPRESS_CACHE is not None:
+        return bool(_FBX_SDK_PROMPT_SUPPRESS_CACHE)
+    payload = _load_fbx_sdk_prompt_state()
+    suppressed = bool(payload.get("suppressed", False))
+    _FBX_SDK_PROMPT_SUPPRESS_CACHE = bool(suppressed)
+    return bool(suppressed)
+
+
+def _save_fbx_sdk_prompt_suppressed(suppressed: bool) -> None:
+    global _FBX_SDK_PROMPT_SUPPRESS_CACHE
+    payload = _load_fbx_sdk_prompt_state()
+    payload["suppressed"] = bool(suppressed)
+    _save_fbx_sdk_prompt_state(payload)
+    _FBX_SDK_PROMPT_SUPPRESS_CACHE = bool(suppressed)
+
+
+def _load_last_fbx_sdk_source_dir() -> str:
+    payload = _load_fbx_sdk_prompt_state()
+    return str(payload.get("last_source_dir", "") or "").strip()
+
+
+def _save_last_fbx_sdk_source_dir(source_dir: str) -> None:
+    raw = str(source_dir or "").strip()
+    if not raw:
+        return
+    payload = _load_fbx_sdk_prompt_state()
+    payload["last_source_dir"] = raw
+    _save_fbx_sdk_prompt_state(payload)
+
+
+def _runtime_fbx_expected_paths() -> Dict[str, Path]:
+    paths = {}
+    try:
+        paths = dict(sysconfig.get_paths() or {})
+    except Exception:
+        paths = {}
+    site_packages_raw = (paths.get("purelib") or paths.get("platlib") or "").strip()
+    if site_packages_raw:
+        site_packages = Path(site_packages_raw)
+    else:
+        site_packages = Path(sys.executable).resolve().parent.parent / "Lib" / "site-packages"
+    scripts_dir = Path(sys.executable).resolve().parent
+    return {
+        "fbx_pyd": site_packages / "fbx.pyd",
+        "fbxcommon_py": site_packages / "FbxCommon.py",
+        "libfbxsdk_dll": scripts_dir / "libfbxsdk.dll",
+    }
+
+
+def _find_file_recursive(root: Path, name: str) -> Path | None:
+    try:
+        direct = root / name
+        if direct.exists() and direct.is_file():
+            return direct
+    except Exception:
+        pass
+    try:
+        for candidate in root.rglob(name):
+            if candidate.exists() and candidate.is_file():
+                return candidate
+    except Exception:
+        return None
+    return None
+
+
+def _probe_fbxsdk_runtime() -> Dict[str, Any]:
+    expected = _runtime_fbx_expected_paths()
+    try:
+        fbx_spec = importlib.util.find_spec("fbx")
+    except Exception:
+        fbx_spec = None
+    try:
+        fbxcommon_spec = importlib.util.find_spec("FbxCommon")
+    except Exception:
+        fbxcommon_spec = None
+
+    dll_loadable = False
+    dll_error = ""
+    dll_candidates = ["libfbxsdk.dll", str(expected.get("libfbxsdk_dll", ""))]
+    for candidate in dll_candidates:
+        if not candidate:
+            continue
+        try:
+            ctypes.CDLL(candidate)
+            dll_loadable = True
+            dll_error = ""
+            break
+        except Exception as exc:
+            dll_error = str(exc)
+
+    return {
+        "ok": bool(fbx_spec is not None and fbxcommon_spec is not None and dll_loadable),
+        "fbx_found": bool(fbx_spec is not None),
+        "fbx_origin": str(getattr(fbx_spec, "origin", "") or "") if fbx_spec is not None else "",
+        "fbxcommon_found": bool(fbxcommon_spec is not None),
+        "fbxcommon_origin": str(getattr(fbxcommon_spec, "origin", "") or "") if fbxcommon_spec is not None else "",
+        "dll_loadable": bool(dll_loadable),
+        "dll_error": str(dll_error or "").strip(),
+        "expected": {
+            "fbx_pyd": str(expected.get("fbx_pyd", "")),
+            "fbxcommon_py": str(expected.get("fbxcommon_py", "")),
+            "libfbxsdk_dll": str(expected.get("libfbxsdk_dll", "")),
+        },
+        "python_executable": str(sys.executable),
+        "python_version": str(sys.version.split()[0]),
+    }
+
+
+def _install_fbxsdk_runtime_from_source(source_dir: Path) -> Tuple[bool, str]:
+    source_dir = Path(source_dir)
+    if not source_dir.exists():
+        return False, f"Source folder does not exist:\n{source_dir}"
+
+    expected = _runtime_fbx_expected_paths()
+    required = {
+        "fbx.pyd": "fbx_pyd",
+        "FbxCommon.py": "fbxcommon_py",
+        "libfbxsdk.dll": "libfbxsdk_dll",
+    }
+    found: Dict[str, Path] = {}
+    missing: List[str] = []
+    for filename in required:
+        src = _find_file_recursive(source_dir, filename)
+        if src is None:
+            missing.append(filename)
+        else:
+            found[filename] = src
+    if missing:
+        return (
+            False,
+            "Missing required files in selected folder:\n- "
+            + "\n- ".join(missing)
+            + f"\n\nSelected folder:\n{source_dir}",
+        )
+
+    try:
+        for filename, expected_key in required.items():
+            dst = Path(expected[expected_key])
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(str(found[filename]), str(dst))
+    except Exception as exc:
+        return False, f"Failed to copy FBX runtime files:\n{exc}"
+
+    try:
+        importlib.invalidate_caches()
+    except Exception:
+        pass
+
+    probe = _probe_fbxsdk_runtime()
+    if not probe.get("ok"):
+        details = [
+            "FBX runtime files were copied, but runtime probe still failed.",
+            "",
+            f"fbx found: {probe.get('fbx_found')}",
+            f"FbxCommon found: {probe.get('fbxcommon_found')}",
+            f"libfbxsdk.dll loadable: {probe.get('dll_loadable')}",
+        ]
+        dll_error = str(probe.get("dll_error") or "").strip()
+        if dll_error:
+            details.append(f"dll error: {dll_error}")
+        return False, "\n".join(details)
+
+    lines = [
+        "Autodesk FBX runtime installed successfully.",
+        "",
+        f"fbx.pyd -> {expected['fbx_pyd']}",
+        f"FbxCommon.py -> {expected['fbxcommon_py']}",
+        f"libfbxsdk.dll -> {expected['libfbxsdk_dll']}",
+    ]
+    return True, "\n".join(lines)
+
+
+def _prompt_fbx_source_dir(parent, initial_dir: Path) -> str:
+    if QtWidgets is None:
+        return ""
+    try:
+        initial = str(initial_dir)
+    except Exception:
+        initial = ""
+    try:
+        return str(
+            QtWidgets.QFileDialog.getExistingDirectory(
+                parent,
+                "Select FBX SDK Runtime Folder",
+                initial,
+            )
+            or ""
+        ).strip()
+    except Exception:
+        return ""
+
+
+def _show_fbxsdk_setup_prompt(parent) -> None:
+    if QtWidgets is None:
+        return
+    probe = _probe_fbxsdk_runtime()
+    if probe.get("ok"):
+        return
+
+    default_source = _default_fbx_sdk_source_dir()
+    source_dir = _load_last_fbx_sdk_source_dir() or str(default_source)
+    try:
+        default_source.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
+    msg = QtWidgets.QMessageBox(parent)
+    msg.setIcon(QtWidgets.QMessageBox.Warning)
+    msg.setWindowTitle("FBX SDK Setup")
+    msg.setText("FBX Import needs Autodesk FBX SDK for full FBX compatibility.")
+    msg.setInformativeText(
+        "Install destination is fixed to this app runtime.\n"
+        "Source folder contains Autodesk files to copy from.\n\n"
+        "Required source files:\n"
+        "- fbx.pyd\n"
+        "- FbxCommon.py\n"
+        "- libfbxsdk.dll"
+    )
+    details = "\n".join(
+        [
+            f"Python: {probe.get('python_version')} ({probe.get('python_executable')})",
+            "",
+            "Current source folder (user-managed):",
+            source_dir,
+            "",
+            "Runtime destinations (app-managed):",
+            str(probe.get("expected", {}).get("fbx_pyd", "")),
+            str(probe.get("expected", {}).get("fbxcommon_py", "")),
+            str(probe.get("expected", {}).get("libfbxsdk_dll", "")),
+            "",
+            "Recommended default source folder:",
+            str(default_source),
+        ]
+    )
+    msg.setDetailedText(details)
+
+    btn_install = msg.addButton("Install Now", QtWidgets.QMessageBox.AcceptRole)
+    btn_choose = msg.addButton("Change Source Folder...", QtWidgets.QMessageBox.ActionRole)
+    btn_later = msg.addButton("Later", QtWidgets.QMessageBox.RejectRole)
+    try:
+        msg.setDefaultButton(btn_install)
+    except Exception:
+        pass
+    suppress_cb = QtWidgets.QCheckBox("Don't ask again", msg)
+    msg.setCheckBox(suppress_cb)
+    msg.exec()
+
+    clicked = msg.clickedButton()
+    suppress = bool(suppress_cb.isChecked())
+    if clicked is None or clicked is btn_later:
+        if suppress:
+            _save_fbx_sdk_prompt_suppressed(True)
+        return
+
+    if clicked is btn_choose:
+        picked = _prompt_fbx_source_dir(parent, Path(source_dir))
+        source_dir = str(picked or "").strip()
+        if source_dir:
+            _save_last_fbx_sdk_source_dir(source_dir)
+        else:
+            if suppress:
+                _save_fbx_sdk_prompt_suppressed(True)
+            return
+
+    if not source_dir:
+        if suppress:
+            _save_fbx_sdk_prompt_suppressed(True)
+        return
+
+    ok, report = _install_fbxsdk_runtime_from_source(Path(source_dir))
+    if not ok:
+        retry = QtWidgets.QMessageBox.question(
+            parent,
+            "FBX SDK Setup",
+            report
+            + "\n\nWould you like to choose a different source folder?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.Yes,
+        )
+        if retry == QtWidgets.QMessageBox.Yes:
+            picked_retry = _prompt_fbx_source_dir(parent, Path(source_dir))
+            source_dir = str(picked_retry or "").strip()
+            if source_dir:
+                ok, report = _install_fbxsdk_runtime_from_source(Path(source_dir))
+
+    if ok:
+        _save_last_fbx_sdk_source_dir(source_dir)
+        _save_fbx_sdk_prompt_suppressed(False)
+        QtWidgets.QMessageBox.information(parent, "FBX SDK Setup", report)
+    else:
+        QtWidgets.QMessageBox.warning(parent, "FBX SDK Setup", report)
+        if suppress:
+            _save_fbx_sdk_prompt_suppressed(True)
+
+
+def _maybe_prompt_fbxsdk_setup(parent) -> None:
+    global _FBX_SDK_PROMPT_SESSION_SHOWN
+    if QtWidgets is None:
+        return
+    if _FBX_SDK_PROMPT_SESSION_SHOWN:
+        return
+    if _load_fbx_sdk_prompt_suppressed():
+        return
+    probe = _probe_fbxsdk_runtime()
+    if probe.get("ok"):
+        return
+
+    _FBX_SDK_PROMPT_SESSION_SHOWN = True
+
+    def _run() -> None:
+        try:
+            _show_fbxsdk_setup_prompt(parent)
+        except Exception:
+            pass
+
+    if QtCore is not None:
+        try:
+            QtCore.QTimer.singleShot(0, _run)
+            return
+        except Exception:
+            pass
+    _run()
 
 
 @dataclass
@@ -230,7 +612,7 @@ def _source_path_from_item(src_item, role: str) -> Tuple[str, str]:
             return "", f"{role}: source node '{name}' has empty path."
         return path, ""
 
-    if kind in ("fbx_import", "fbx import", "fbximport"):
+    if kind in FBX_KIND_ALIASES:
         path = (
             str(getattr(model, f"_fbx_resolved_{role}", "") or "").strip()
             or _param_value(model, f"resolved_{role}")
@@ -529,7 +911,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         return False
 
     kind = (getattr(node, "kind", "") or "").strip().lower()
-    if kind not in ("fbx_import", "fbx import", "fbximport"):
+    if kind not in FBX_KIND_ALIASES:
         return False
 
     def _node_item():
@@ -643,6 +1025,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         pass
 
     _refresh(persist=False, toast=False)
+    _maybe_prompt_fbxsdk_setup(card)
     return True
 
 
