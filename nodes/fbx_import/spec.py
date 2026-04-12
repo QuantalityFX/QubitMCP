@@ -29,6 +29,10 @@ from echograph.rigging.fbx_stage3_ingest import (
     compare_skeleton_layout,
     ingest_fbx_bind_data,
 )
+from echograph.rigging.fbx_stage4_animation import (
+    FBXAnimationIngestError,
+    ingest_fbx_animation_data,
+)
 from nodes.core import Spec
 from nodes.util_graph import param_change_relevant as _param_change_relevant
 
@@ -1164,6 +1168,15 @@ def _format_bind_ingest_failure(role: str, exc: Exception) -> str:
     return f"{role}: bind ingest failed: {message}"
 
 
+def _format_animation_ingest_failure(role: str, exc: Exception) -> str:
+    message = str(exc or "").strip() or exc.__class__.__name__
+    if "null pointer access" in message.lower():
+        message = (
+            f"{message} (pyassimp/assimp parser limitation for this FBX file)."
+        )
+    return f"{role}: animation ingest failed: {message}"
+
+
 def _validate_bind_sources_stage3(
     *,
     effective: Dict[str, str],
@@ -1253,12 +1266,92 @@ def _validate_bind_sources_stage3(
     return state
 
 
+def _validate_animation_sources_stage4(
+    *,
+    effective: Dict[str, str],
+    bind_state: Dict[str, Any],
+    warnings: List[str],
+) -> Dict[str, Any]:
+    state: Dict[str, Any] = {
+        "rest_result": None,
+        "animated_result": None,
+    }
+    rest_path = (effective.get("rest_geometry") or "").strip()
+    if not rest_path:
+        return state
+
+    skeleton = None
+    capture_bind = bind_state.get("capture_result")
+    if capture_bind is not None:
+        skeleton = getattr(capture_bind, "skeleton", None)
+    if skeleton is None:
+        rest_bind = bind_state.get("rest_result")
+        if rest_bind is not None:
+            skeleton = getattr(rest_bind, "skeleton", None)
+
+    def _ingest_animation(path_value: str, role: str):
+        try:
+            result = ingest_fbx_animation_data(path_value, skeleton=skeleton)
+        except FBXAnimationIngestError as exc:
+            if _is_backend_unavailable(exc) or _is_backend_parser_limitation(exc):
+                warnings.append(
+                    "stage4 animation ingest skipped: "
+                    + _format_animation_ingest_failure(role, exc)
+                )
+                if _has_fbxsdk_unavailable(exc):
+                    warnings.append(
+                        "FBX SDK backend is not available in this runtime; "
+                        "pyassimp fallback has limited FBX animation compatibility."
+                    )
+            else:
+                warnings.append(_format_animation_ingest_failure(role, exc))
+            return None
+        except Exception as exc:  # pragma: no cover - defensive
+            warnings.append(_format_animation_ingest_failure(role, exc))
+            return None
+
+        _append_prefixed_messages(warnings, role, getattr(result, "warnings", []))
+        if not list(getattr(result, "clips", []) or []):
+            warnings.append(f"{role}: no animation clips were found.")
+        return result
+
+    rest_result = _ingest_animation(rest_path, "rest_geometry")
+    state["rest_result"] = rest_result
+
+    animated_path = (effective.get("animated_pose") or "").strip()
+    if not animated_path or animated_path == rest_path:
+        if not animated_path:
+            effective["animated_pose"] = rest_path
+        state["animated_result"] = rest_result
+        return state
+
+    animated_result = _ingest_animation(animated_path, "animated_pose")
+    if animated_result is None:
+        if rest_result is not None:
+            warnings.append("animated_pose: using rest_geometry animation clips.")
+            effective["animated_pose"] = rest_path
+            state["animated_result"] = rest_result
+        return state
+
+    if (not list(getattr(animated_result, "clips", []) or [])) and (
+        rest_result is not None and list(getattr(rest_result, "clips", []) or [])
+    ):
+        warnings.append("animated_pose: no clips found; using rest_geometry animation clips.")
+        effective["animated_pose"] = rest_path
+        state["animated_result"] = rest_result
+        return state
+
+    state["animated_result"] = animated_result
+    return state
+
+
 def resolve_fbx_import_sources(
     node_item,
     *,
     base_dir: Path | None = None,
     persist: bool = False,
     validate_bind_data: bool | None = None,
+    validate_animation_data: bool = False,
 ) -> SourceResolutionResult:
     model = getattr(node_item, "model", None)
     scene = None
@@ -1346,6 +1439,15 @@ def resolve_fbx_import_sources(
             warnings=warnings,
         )
 
+    animation_validation_enabled = bool(validate_animation_data)
+    animation_state: Dict[str, Any] = {}
+    if animation_validation_enabled and effective["rest_geometry"]:
+        animation_state = _validate_animation_sources_stage4(
+            effective=effective,
+            bind_state=bind_state,
+            warnings=warnings,
+        )
+
     status = "error" if errors else ("warning" if warnings else "ok")
     result = SourceResolutionResult(
         status=status,
@@ -1368,6 +1470,9 @@ def resolve_fbx_import_sources(
             setattr(model, "_fbx_bind_rest_result", bind_state.get("rest_result"))
             setattr(model, "_fbx_bind_capture_result", bind_state.get("capture_result"))
             setattr(model, "_fbx_bind_capture_report", bind_state.get("capture_report"))
+            setattr(model, "_fbx_anim_validation_enabled", bool(animation_validation_enabled))
+            setattr(model, "_fbx_anim_rest_result", animation_state.get("rest_result"))
+            setattr(model, "_fbx_anim_animated_result", animation_state.get("animated_result"))
         except Exception:
             pass
 
@@ -1477,6 +1582,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             item,
             persist=persist,
             validate_bind_data=bind_validated,
+            validate_animation_data=bind_validated,
         )
         status_text, status_color = _status_presentable_text(
             result.status, bind_validated=bind_validated
@@ -1492,7 +1598,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         detail_label.setText(" | ".join(detail_lines))
         tooltip_lines = []
         if not bind_validated and not result.errors:
-            tooltip_lines.append("Bind ingest not run yet. Click 'Validate FBX Sources'.")
+            tooltip_lines.append("Bind and animation ingest not run yet. Click 'Validate FBX Sources'.")
         tooltip_lines.extend(result.message_lines())
         detail_label.setToolTip("\n".join(tooltip_lines))
 
