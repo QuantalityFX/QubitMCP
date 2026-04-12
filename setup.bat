@@ -60,6 +60,7 @@ set "BASE_PY_EXE="
 set "BASE_PY_ARG="
 set "BASE_PY_MM="
 set "PIP_DISABLE_PIP_VERSION_CHECK=1"
+set "FBX_WIN_INSTALLER_URL=https://damassets.autodesk.net/content/dam/autodesk/www/files/fbx202039_fbxpythonsdk_win.exe"
 set "SETUP_MODE=%~1"
 set "SETUP_FBX_ARG=%~2"
 
@@ -320,9 +321,15 @@ if not defined FBX_SDK_SOURCE (
 
 echo [setup] WARNING: FBX SDK runtime not ready; FBX import fallback has limited compatibility.
 echo [setup] WARNING: FBX SDK runtime not ready; FBX import fallback has limited compatibility. >> "%LOG%"
+echo [setup] Autodesk FBX Python SDK (Windows) download:
+echo         %FBX_WIN_INSTALLER_URL%
+echo [setup] Autodesk FBX Python SDK (Windows): %FBX_WIN_INSTALLER_URL% >> "%LOG%"
 if exist "%INSTALL_FBX_SCRIPT%" (
   echo [setup] To install later, run:
   echo         powershell -NoProfile -ExecutionPolicy Bypass -File "%INSTALL_FBX_SCRIPT%" -SourceDir "C:\path\to\fbx_runtime" -PythonExe "%PY%"
+  echo [setup] Source folder layouts supported:
+  echo         - fbx-*.whl + FbxCommon.py
+  echo         - fbx*.pyd + FbxCommon.py ^(+ optional libfbxsdk.dll^)
   echo [setup] Install command shown to user. >> "%LOG%"
 )
 exit /b 0
@@ -359,7 +366,11 @@ exit /b 0
 :prompt_fbx_sdk_source
 set "FBX_PROMPT_SOURCE="
 echo [setup] Autodesk FBX SDK is optional but recommended for full FBX compatibility.
-echo [setup] Source folder must contain: fbx.pyd, FbxCommon.py, libfbxsdk.dll
+echo [setup] Autodesk FBX Python SDK (Windows) download:
+echo         %FBX_WIN_INSTALLER_URL%
+echo [setup] Source folder layouts supported:
+echo         - fbx-*.whl + FbxCommon.py
+echo         - fbx*.pyd + FbxCommon.py ^(+ optional libfbxsdk.dll^)
 set /p FBX_PROMPT_SOURCE=[setup] Enter FBX SDK source folder now (or press Enter to skip): 
 if defined FBX_PROMPT_SOURCE (
   set "FBX_SDK_SOURCE=%FBX_PROMPT_SOURCE:"=%"
@@ -520,6 +531,8 @@ exit /b 1
 echo Usage: setup.bat [core^|full] [fbx_sdk_source_dir]
 echo   core = setup root app env only
 echo   full = setup root + librarian envs (default)
-echo   optional fbx_sdk_source_dir = folder containing fbx.pyd, FbxCommon.py, libfbxsdk.dll
+echo   optional fbx_sdk_source_dir = folder containing either:
+echo      1^) fbx-*.whl + FbxCommon.py
+echo      2^) fbx*.pyd + FbxCommon.py ^(+ optional libfbxsdk.dll^)
 echo   optional env var: FBX_SDK_SOURCE=C:\path\to\fbx_runtime
 exit /b 0

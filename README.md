@@ -33,13 +33,28 @@ Or run the script directly:
 
 For full FBX compatibility (beyond pyassimp fallback), install Autodesk FBX runtime files into the app venv.
 
+In-app easiest path:
+
+1. Create an `FBX Import` node.
+2. Click `Install FBX Support` in the setup prompt.
+3. The app will download Autodesk's installer, run it, auto-detect SDK files, and install runtime files into the app venv.
+
+Official Windows FBX Python SDK installer:
+
+`https://damassets.autodesk.net/content/dam/autodesk/www/files/fbx202039_fbxpythonsdk_win.exe`
+
 Check status:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\check_fbx_sdk.ps1
 ```
 
-Install from a local folder that contains `fbx.pyd`, `FbxCommon.py`, and `libfbxsdk.dll`:
+Install from a local SDK folder using either layout:
+
+- `fbx-*.whl` + `FbxCommon.py`
+- `fbx*.pyd` + `FbxCommon.py` (optional `libfbxsdk.dll`)
+
+Then run:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install_fbx_sdk.ps1 -SourceDir "C:\path\to\fbx_runtime"

@@ -74,15 +74,50 @@ expected = {
 exists = {k: (os.path.exists(v) if v else False) for k, v in expected.items()}
 
 dll = {"loadable": False, "error": ""}
-try:
-    ctypes.CDLL("libfbxsdk.dll")
-    dll["loadable"] = True
-except Exception as exc:
-    dll["error"] = str(exc)
+for candidate in ("libfbxsdk.dll", expected["libfbxsdk_dll"]):
+    if not candidate:
+        continue
+    try:
+        ctypes.CDLL(candidate)
+        dll["loadable"] = True
+        dll["error"] = ""
+        break
+    except Exception as exc:
+        dll["error"] = str(exc)
 
 module_fbx = mod_info("fbx")
 module_fbxcommon = mod_info("FbxCommon")
-ok = bool(module_fbx["found"] and module_fbxcommon["found"] and dll["loadable"])
+
+fbx_runtime = {"import_ok": False, "manager_ok": False, "error": ""}
+try:
+    import fbx  # type: ignore
+    fbx_runtime["import_ok"] = True
+    if hasattr(fbx, "FbxManager"):
+        mgr = None
+        try:
+            mgr = fbx.FbxManager.Create()
+            fbx_runtime["manager_ok"] = bool(mgr is not None)
+        finally:
+            if mgr is not None:
+                try:
+                    mgr.Destroy()
+                except Exception:
+                    pass
+    else:
+        fbx_runtime["manager_ok"] = True
+except Exception as exc:
+    fbx_runtime["error"] = str(exc)
+
+fbxcommon_import = {"import_ok": False, "error": ""}
+if module_fbxcommon["found"]:
+    try:
+        import FbxCommon  # type: ignore
+        _ = FbxCommon
+        fbxcommon_import["import_ok"] = True
+    except Exception as exc:
+        fbxcommon_import["error"] = str(exc)
+
+ok = bool(fbx_runtime["import_ok"] and fbx_runtime["manager_ok"])
 
 out = {
     "ok": ok,
@@ -95,6 +130,8 @@ out = {
     "exists": exists,
     "module_fbx": module_fbx,
     "module_fbxcommon": module_fbxcommon,
+    "fbx_runtime": fbx_runtime,
+    "fbxcommon_import": fbxcommon_import,
     "dll": dll,
 }
 
@@ -132,32 +169,48 @@ Write-Check "[fbx-check] fbx module found: $($result.module_fbx.found)"
 if ($result.module_fbx.origin) {
     Write-Check "[fbx-check] fbx module origin: $($result.module_fbx.origin)"
 }
+Write-Check "[fbx-check] fbx runtime import: $($result.fbx_runtime.import_ok)"
+Write-Check "[fbx-check] fbx manager create: $($result.fbx_runtime.manager_ok)"
+if ($result.fbx_runtime.error) {
+    Write-Check "[fbx-check] fbx runtime error: $($result.fbx_runtime.error)"
+}
 Write-Check "[fbx-check] FbxCommon module found: $($result.module_fbxcommon.found)"
 if ($result.module_fbxcommon.origin) {
     Write-Check "[fbx-check] FbxCommon origin: $($result.module_fbxcommon.origin)"
+}
+if ($result.module_fbxcommon.found) {
+    Write-Check "[fbx-check] FbxCommon import: $($result.fbxcommon_import.import_ok)"
+    if ($result.fbxcommon_import.error) {
+        Write-Check "[fbx-check] FbxCommon import error: $($result.fbxcommon_import.error)"
+    }
 }
 Write-Check "[fbx-check] libfbxsdk.dll loadable: $($result.dll.loadable)"
 
 if ($result.ok) {
     Write-Check "[fbx-check] PASS: Autodesk FBX SDK runtime is ready."
+    if (-not $result.module_fbxcommon.found) {
+        Write-Check "[fbx-check] NOTE: FbxCommon.py not found. Core FBX runtime is still usable."
+    }
     exit 0
 }
 
 Write-Check "[fbx-check] FAIL: Autodesk FBX SDK runtime is not ready."
 
-if (-not $result.module_fbx.found) {
-    Write-Check "[fbx-check] Missing module: fbx"
+if (-not $result.fbx_runtime.import_ok) {
+    Write-Check "[fbx-check] Missing/invalid runtime: fbx"
 }
 if (-not $result.module_fbxcommon.found) {
-    Write-Check "[fbx-check] Missing module: FbxCommon"
+    Write-Check "[fbx-check] Missing helper module: FbxCommon (optional but recommended)"
 }
 if (-not $result.dll.loadable) {
-    Write-Check "[fbx-check] DLL load error: $($result.dll.error)"
+    Write-Check "[fbx-check] DLL load note: $($result.dll.error)"
 }
 
-Write-Check "[fbx-check] Expected file locations:"
-Write-Check "  - $($result.expected.fbx_pyd)"
-Write-Check "  - $($result.expected.fbxcommon_py)"
-Write-Check "  - $($result.expected.libfbxsdk_dll)"
-Write-Check "[fbx-check] Install helper: .\install_fbx_sdk.ps1 -SourceDir <path_to_fbx_runtime_files> -PythonExe `"$resolvedPython`""
+Write-Check "[fbx-check] Runtime targets:"
+Write-Check "  - Site-packages: $($result.site_packages)"
+Write-Check "  - Scripts dir:   $($result.scripts_dir)"
+Write-Check "[fbx-check] Supported source layouts:"
+Write-Check "  - fbx-*.whl + FbxCommon.py"
+Write-Check "  - fbx*.pyd (+ optional libfbxsdk.dll) + FbxCommon.py"
+Write-Check "[fbx-check] Install helper: .\install_fbx_sdk.ps1 -SourceDir <path_to_fbx_sdk_folder> -PythonExe `"$resolvedPython`""
 exit 1

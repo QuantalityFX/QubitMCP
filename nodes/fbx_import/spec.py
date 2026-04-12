@@ -7,9 +7,12 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import sysconfig
 from typing import Any, Dict, List, Tuple
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 
 try:
     from PySide6 import QtWidgets, QtGui, QtCore
@@ -31,6 +34,12 @@ from nodes.util_graph import param_change_relevant as _param_change_relevant
 
 ROLE_PORTS: Tuple[str, str, str] = ("rest_geometry", "capture_pose", "animated_pose")
 FBX_KIND_ALIASES: Tuple[str, str, str] = ("fbx_import", "fbx import", "fbximport")
+FBX_REQUIRED_RUNTIME_FILES: Tuple[str, str, str] = ("fbx.pyd", "FbxCommon.py", "libfbxsdk.dll")
+FBX_WINDOWS_INSTALLER_URL = (
+    "https://damassets.autodesk.net/content/dam/autodesk/www/files/"
+    "fbx202039_fbxpythonsdk_win.exe"
+)
+FBX_WINDOWS_INSTALLER_FILENAME = "fbx202039_fbxpythonsdk_win.exe"
 
 _FBX_SDK_PROMPT_SESSION_SHOWN = False
 _FBX_SDK_PROMPT_SUPPRESS_CACHE: bool | None = None
@@ -54,6 +63,36 @@ def _app_home_dir() -> Path:
 
 def _default_fbx_sdk_source_dir() -> Path:
     return _app_home_dir() / "third_party" / "fbx_sdk"
+
+
+def _default_fbx_sdk_installer_dir() -> Path:
+    return _app_home_dir() / "third_party" / "fbx_sdk_installer"
+
+
+def _windows_fbx_sdk_install_roots() -> List[Path]:
+    roots: List[Path] = []
+    seen: set[str] = set()
+    for key in ("ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"):
+        raw = (os.environ.get(key) or "").strip()
+        if not raw:
+            continue
+        try:
+            p = Path(raw) / "Autodesk" / "FBX" / "FBX Python SDK"
+        except Exception:
+            continue
+        token = str(p).lower()
+        if token not in seen:
+            roots.append(p)
+            seen.add(token)
+    for fallback in (
+        Path("C:/Program Files/Autodesk/FBX/FBX Python SDK"),
+        Path("C:/Program Files (x86)/Autodesk/FBX/FBX Python SDK"),
+    ):
+        token = str(fallback).lower()
+        if token not in seen:
+            roots.append(fallback)
+            seen.add(token)
+    return roots
 
 
 def _fbx_sdk_prompt_state_path() -> Path:
@@ -113,6 +152,20 @@ def _save_last_fbx_sdk_source_dir(source_dir: str) -> None:
     _save_fbx_sdk_prompt_state(payload)
 
 
+def _load_last_fbx_sdk_installer_path() -> str:
+    payload = _load_fbx_sdk_prompt_state()
+    return str(payload.get("last_installer_path", "") or "").strip()
+
+
+def _save_last_fbx_sdk_installer_path(installer_path: str) -> None:
+    raw = str(installer_path or "").strip()
+    if not raw:
+        return
+    payload = _load_fbx_sdk_prompt_state()
+    payload["last_installer_path"] = raw
+    _save_fbx_sdk_prompt_state(payload)
+
+
 def _runtime_fbx_expected_paths() -> Dict[str, Path]:
     paths = {}
     try:
@@ -132,6 +185,196 @@ def _runtime_fbx_expected_paths() -> Dict[str, Path]:
     }
 
 
+def _scan_fbx_sdk_source_dir(source_dir: Path) -> Dict[str, Any]:
+    root = Path(source_dir)
+    found: Dict[str, str] = {}
+    missing: List[str] = []
+    if not root.exists():
+        return {
+            "exists": False,
+            "found": found,
+            "missing": ["fbx binding (fbx-*.whl or fbx*.pyd)", "FbxCommon.py"],
+        }
+
+    fbx_wheel = _find_pattern_recursive(root, "fbx-*.whl")
+    fbx_pyd = _find_pattern_recursive(root, "fbx*.pyd")
+    fbx_common = _find_file_recursive(root, "FbxCommon.py")
+    libfbxsdk = _find_file_recursive(root, "libfbxsdk.dll")
+
+    if fbx_wheel is None and fbx_pyd is None:
+        missing.append("fbx binding (fbx-*.whl or fbx*.pyd)")
+    elif fbx_wheel is not None:
+        found["fbx wheel"] = str(fbx_wheel)
+    elif fbx_pyd is not None:
+        found["fbx module"] = str(fbx_pyd)
+    if fbx_common is None:
+        missing.append("FbxCommon.py")
+    else:
+        found["FbxCommon.py"] = str(fbx_common)
+    if libfbxsdk is not None:
+        found["libfbxsdk.dll"] = str(libfbxsdk)
+    return {"exists": True, "found": found, "missing": missing}
+
+
+def _candidate_fbx_sdk_source_dirs(source_hint: str = "") -> List[Path]:
+    candidates: List[Path] = []
+    seen: set[str] = set()
+
+    def _add(path_value: str | Path | None) -> None:
+        if not path_value:
+            return
+        try:
+            p = Path(path_value).expanduser()
+        except Exception:
+            return
+        token = str(p).strip().lower()
+        if not token or token in seen:
+            return
+        seen.add(token)
+        candidates.append(p)
+
+    _add(source_hint)
+    _add(_load_last_fbx_sdk_source_dir())
+    _add(_default_fbx_sdk_source_dir())
+    _add(os.environ.get("FBX_SDK_SOURCE", ""))
+    if os.name == "nt":
+        for root in _windows_fbx_sdk_install_roots():
+            _add(root)
+            try:
+                if root.exists():
+                    for child in sorted(root.iterdir(), key=lambda p: p.name, reverse=True):
+                        if child.is_dir():
+                            _add(child)
+            except Exception:
+                pass
+    return candidates
+
+
+def _find_ready_fbx_source_dir(source_hint: str = "") -> str:
+    for candidate in _candidate_fbx_sdk_source_dirs(source_hint):
+        scan = _scan_fbx_sdk_source_dir(candidate)
+        if scan.get("exists") and not list(scan.get("missing") or []):
+            return str(candidate)
+    return ""
+
+
+def _default_windows_fbx_source_hint() -> Path:
+    for root in _windows_fbx_sdk_install_roots():
+        try:
+            if root.exists():
+                return root
+        except Exception:
+            pass
+    return Path("C:/Program Files/Autodesk/FBX/FBX Python SDK")
+
+
+def _default_fbx_windows_installer_path() -> Path:
+    return _default_fbx_sdk_installer_dir() / FBX_WINDOWS_INSTALLER_FILENAME
+
+
+def _download_fbx_windows_installer(installer_path: Path) -> Tuple[bool, str]:
+    target = Path(installer_path)
+    if target.exists():
+        return True, f"Using cached Autodesk installer:\n{target}"
+
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        return False, f"Failed to prepare installer folder:\n{target.parent}\n\n{exc}"
+
+    temp_path = target.with_suffix(target.suffix + ".part")
+    try:
+        req = urllib_request.Request(
+            FBX_WINDOWS_INSTALLER_URL,
+            headers={"User-Agent": "QubitMCP-FBXSetup/1.0"},
+        )
+        with urllib_request.urlopen(req, timeout=600) as response, temp_path.open("wb") as out:
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                out.write(chunk)
+        os.replace(str(temp_path), str(target))
+    except urllib_error.URLError as exc:
+        try:
+            if temp_path.exists():
+                temp_path.unlink()
+        except Exception:
+            pass
+        return (
+            False,
+            "Failed to download Autodesk FBX installer.\n"
+            f"URL: {FBX_WINDOWS_INSTALLER_URL}\n\n{exc}",
+        )
+    except Exception as exc:
+        try:
+            if temp_path.exists():
+                temp_path.unlink()
+        except Exception:
+            pass
+        return False, f"Failed to download Autodesk FBX installer:\n{exc}"
+
+    return True, f"Downloaded Autodesk installer:\n{target}"
+
+
+def _pwsh_quote(value: str) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _run_windows_installer_elevated_and_wait(installer_path: Path) -> Tuple[bool, str]:
+    powershell_exe = shutil.which("powershell.exe") or shutil.which("powershell")
+    if not powershell_exe:
+        return (
+            False,
+            "Installer requires administrator elevation, but PowerShell was not found.\n\n"
+            "Run this installer manually as Administrator:\n"
+            f"{installer_path}",
+        )
+
+    script = (
+        "$ErrorActionPreference='Stop'; "
+        f"$p = Start-Process -FilePath {_pwsh_quote(str(installer_path))} "
+        f"-WorkingDirectory {_pwsh_quote(str(installer_path.parent))} "
+        "-Verb RunAs -Wait -PassThru; "
+        "if ($null -eq $p) { exit 0 } else { exit [int]$p.ExitCode }"
+    )
+    try:
+        proc = subprocess.run(
+            [
+                powershell_exe,
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                script,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except Exception as exc:
+        return False, f"Failed to run installer with elevation:\n{exc}"
+
+    code = int(getattr(proc, "returncode", 1))
+    if code == 0:
+        return True, "Autodesk FBX SDK installer completed."
+
+    detail = (proc.stderr or proc.stdout or "").strip()
+    lower = detail.lower()
+    if "canceled" in lower or "cancelled" in lower:
+        return (
+            False,
+            "Installer elevation was cancelled.\n\n"
+            "Please approve the UAC prompt and run 'Install FBX Support' again.",
+        )
+    return (
+        False,
+        "Autodesk installer did not complete successfully after requesting elevation.\n"
+        f"Exit code: {code}\n\n"
+        + (detail or "No additional installer output."),
+    )
+
+
 def _find_file_recursive(root: Path, name: str) -> Path | None:
     try:
         direct = root / name
@@ -141,6 +384,16 @@ def _find_file_recursive(root: Path, name: str) -> Path | None:
         pass
     try:
         for candidate in root.rglob(name):
+            if candidate.exists() and candidate.is_file():
+                return candidate
+    except Exception:
+        return None
+    return None
+
+
+def _find_pattern_recursive(root: Path, pattern: str) -> Path | None:
+    try:
+        for candidate in root.rglob(pattern):
             if candidate.exists() and candidate.is_file():
                 return candidate
     except Exception:
@@ -159,6 +412,43 @@ def _probe_fbxsdk_runtime() -> Dict[str, Any]:
     except Exception:
         fbxcommon_spec = None
 
+    fbx_runtime_import_ok = False
+    fbx_runtime_manager_ok = False
+    fbx_runtime_error = ""
+    try:
+        import fbx as fbx_mod  # type: ignore
+
+        fbx_runtime_import_ok = True
+        manager_ctor = getattr(fbx_mod, "FbxManager", None)
+        create_fn = getattr(manager_ctor, "Create", None) if manager_ctor is not None else None
+        if callable(create_fn):
+            manager = None
+            try:
+                manager = create_fn()
+                fbx_runtime_manager_ok = bool(manager is not None)
+            finally:
+                if manager is not None:
+                    try:
+                        manager.Destroy()
+                    except Exception:
+                        pass
+        else:
+            # If binding imports but no manager ctor, still treat runtime as usable.
+            fbx_runtime_manager_ok = True
+    except Exception as exc:
+        fbx_runtime_error = str(exc)
+
+    fbxcommon_import_ok = False
+    fbxcommon_import_error = ""
+    if fbxcommon_spec is not None:
+        try:
+            import FbxCommon as _fbx_common  # type: ignore
+
+            _ = _fbx_common
+            fbxcommon_import_ok = True
+        except Exception as exc:
+            fbxcommon_import_error = str(exc)
+
     dll_loadable = False
     dll_error = ""
     dll_candidates = ["libfbxsdk.dll", str(expected.get("libfbxsdk_dll", ""))]
@@ -174,11 +464,16 @@ def _probe_fbxsdk_runtime() -> Dict[str, Any]:
             dll_error = str(exc)
 
     return {
-        "ok": bool(fbx_spec is not None and fbxcommon_spec is not None and dll_loadable),
+        "ok": bool(fbx_runtime_import_ok and fbx_runtime_manager_ok),
         "fbx_found": bool(fbx_spec is not None),
         "fbx_origin": str(getattr(fbx_spec, "origin", "") or "") if fbx_spec is not None else "",
         "fbxcommon_found": bool(fbxcommon_spec is not None),
         "fbxcommon_origin": str(getattr(fbxcommon_spec, "origin", "") or "") if fbxcommon_spec is not None else "",
+        "fbx_runtime_import_ok": bool(fbx_runtime_import_ok),
+        "fbx_runtime_manager_ok": bool(fbx_runtime_manager_ok),
+        "fbx_runtime_error": str(fbx_runtime_error or "").strip(),
+        "fbxcommon_import_ok": bool(fbxcommon_import_ok),
+        "fbxcommon_import_error": str(fbxcommon_import_error or "").strip(),
         "dll_loadable": bool(dll_loadable),
         "dll_error": str(dll_error or "").strip(),
         "expected": {
@@ -197,19 +492,16 @@ def _install_fbxsdk_runtime_from_source(source_dir: Path) -> Tuple[bool, str]:
         return False, f"Source folder does not exist:\n{source_dir}"
 
     expected = _runtime_fbx_expected_paths()
-    required = {
-        "fbx.pyd": "fbx_pyd",
-        "FbxCommon.py": "fbxcommon_py",
-        "libfbxsdk.dll": "libfbxsdk_dll",
-    }
-    found: Dict[str, Path] = {}
+    fbx_wheel = _find_pattern_recursive(source_dir, "fbx-*.whl")
+    fbx_pyd = _find_pattern_recursive(source_dir, "fbx*.pyd")
+    fbx_common = _find_file_recursive(source_dir, "FbxCommon.py")
+    libfbxsdk = _find_file_recursive(source_dir, "libfbxsdk.dll")
+
     missing: List[str] = []
-    for filename in required:
-        src = _find_file_recursive(source_dir, filename)
-        if src is None:
-            missing.append(filename)
-        else:
-            found[filename] = src
+    if fbx_wheel is None and fbx_pyd is None:
+        missing.append("fbx binding (fbx-*.whl or fbx*.pyd)")
+    if fbx_common is None:
+        missing.append("FbxCommon.py")
     if missing:
         return (
             False,
@@ -218,13 +510,40 @@ def _install_fbxsdk_runtime_from_source(source_dir: Path) -> Tuple[bool, str]:
             + f"\n\nSelected folder:\n{source_dir}",
         )
 
+    installed_lines: List[str] = []
     try:
-        for filename, expected_key in required.items():
-            dst = Path(expected[expected_key])
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(str(found[filename]), str(dst))
+        if fbx_wheel is not None:
+            proc = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "--force-reinstall", str(fbx_wheel)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if proc.returncode != 0:
+                detail = (proc.stderr or proc.stdout or "").strip()
+                return False, "Failed to install FBX wheel:\n" + (detail or str(fbx_wheel))
+            installed_lines.append(f"wheel installed: {fbx_wheel}")
+        elif fbx_pyd is not None:
+            dst_mod = Path(expected["fbx_pyd"]).with_name(fbx_pyd.name)
+            dst_mod.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(str(fbx_pyd), str(dst_mod))
+            installed_lines.append(f"module copied: {dst_mod}")
+
+        if fbx_common is not None:
+            dst_common = Path(expected["fbxcommon_py"])
+            dst_common.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(str(fbx_common), str(dst_common))
+            installed_lines.append(f"FbxCommon.py copied: {dst_common}")
+
+        if libfbxsdk is not None:
+            dst_dll = Path(expected["libfbxsdk_dll"])
+            dst_dll.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(str(libfbxsdk), str(dst_dll))
+            installed_lines.append(f"libfbxsdk.dll copied: {dst_dll}")
+        else:
+            installed_lines.append("libfbxsdk.dll not found in source (optional for some wheel builds)")
     except Exception as exc:
-        return False, f"Failed to copy FBX runtime files:\n{exc}"
+        return False, f"Failed to install FBX runtime files:\n{exc}"
 
     try:
         importlib.invalidate_caches()
@@ -238,20 +557,34 @@ def _install_fbxsdk_runtime_from_source(source_dir: Path) -> Tuple[bool, str]:
             "",
             f"fbx found: {probe.get('fbx_found')}",
             f"FbxCommon found: {probe.get('fbxcommon_found')}",
+            f"fbx runtime import: {probe.get('fbx_runtime_import_ok')}",
+            f"fbx manager create: {probe.get('fbx_runtime_manager_ok')}",
             f"libfbxsdk.dll loadable: {probe.get('dll_loadable')}",
         ]
+        runtime_error = str(probe.get("fbx_runtime_error") or "").strip()
+        if runtime_error:
+            details.append(f"fbx runtime error: {runtime_error}")
         dll_error = str(probe.get("dll_error") or "").strip()
         if dll_error:
-            details.append(f"dll error: {dll_error}")
+            details.append(f"dll note: {dll_error}")
         return False, "\n".join(details)
 
     lines = [
         "Autodesk FBX runtime installed successfully.",
         "",
-        f"fbx.pyd -> {expected['fbx_pyd']}",
-        f"FbxCommon.py -> {expected['fbxcommon_py']}",
-        f"libfbxsdk.dll -> {expected['libfbxsdk_dll']}",
     ]
+    lines.extend(installed_lines)
+    if not probe.get("fbxcommon_found"):
+        lines.append("Warning: FbxCommon.py is missing (core FBX runtime may still work).")
+    if not probe.get("dll_loadable"):
+        lines.append("Note: libfbxsdk.dll not separately loadable (common with some wheel builds).")
+    lines.extend(
+        [
+            "",
+            f"Python runtime: {probe.get('python_executable')}",
+            f"FBX module: {probe.get('fbx_origin')}",
+        ]
+    )
     return True, "\n".join(lines)
 
 
@@ -275,6 +608,143 @@ def _prompt_fbx_source_dir(parent, initial_dir: Path) -> str:
         return ""
 
 
+def _run_fbx_sdk_installer_and_wait(installer_path: Path) -> Tuple[bool, str]:
+    installer = Path(installer_path)
+    if not installer.exists():
+        return False, f"Installer was not found:\n{installer}"
+    if installer.suffix.lower() != ".exe":
+        return False, f"Installer must be an .exe file:\n{installer}"
+    try:
+        proc = subprocess.run([str(installer)], cwd=str(installer.parent), check=False)
+    except OSError as exc:
+        if os.name == "nt" and int(getattr(exc, "winerror", 0) or 0) == 740:
+            return _run_windows_installer_elevated_and_wait(installer)
+        return False, f"Failed to run installer:\n{exc}"
+    except Exception as exc:
+        return False, f"Failed to run installer:\n{exc}"
+    code = int(getattr(proc, "returncode", 1))
+    if os.name == "nt" and code == 740:
+        return _run_windows_installer_elevated_and_wait(installer)
+    if code != 0:
+        return (
+            False,
+            "Autodesk installer exited without completing successfully.\n"
+            f"Exit code: {code}\n\n"
+            "If you cancelled the installer, run setup again when ready.",
+        )
+    return (
+        True,
+        "Autodesk FBX SDK installer completed.",
+    )
+
+
+def _guess_fbx_installer_candidate() -> Path:
+    saved = _load_last_fbx_sdk_installer_path()
+    if saved:
+        try:
+            p = Path(saved)
+            if p.exists():
+                return p
+        except Exception:
+            pass
+    default_installer_dir = _default_fbx_sdk_installer_dir()
+    try:
+        if default_installer_dir.exists():
+            for cand in default_installer_dir.glob("*.exe"):
+                if "fbx" in cand.name.lower():
+                    return cand
+    except Exception:
+        pass
+    return _default_fbx_windows_installer_path()
+
+
+def _manual_install_fbxsdk_runtime(parent, source_dir: str) -> Tuple[bool, str, str]:
+    start_dir = Path(source_dir) if source_dir else _default_windows_fbx_source_hint()
+    picked = _prompt_fbx_source_dir(parent, start_dir)
+    source = str(picked or "").strip()
+    if not source:
+        return False, "FBX SDK setup cancelled.", ""
+    ok, report = _install_fbxsdk_runtime_from_source(Path(source))
+    return ok, report, source
+
+
+def _install_fbxsdk_runtime_guided(parent, source_dir_hint: str) -> Tuple[bool, str, str]:
+    detected_source = _find_ready_fbx_source_dir(source_dir_hint)
+    if detected_source:
+        ok, report = _install_fbxsdk_runtime_from_source(Path(detected_source))
+        return ok, report, detected_source
+
+    if os.name != "nt":
+        return (
+            False,
+            "Autodesk FBX runtime source was not found automatically.\n\n"
+            "Please install Autodesk FBX Python SDK for this platform, then use "
+            "'I already installed it...' to choose the folder with:\n"
+            "- fbx-*.whl or fbx*.pyd\n"
+            "- FbxCommon.py",
+            "",
+        )
+
+    if QtWidgets is not None:
+        proceed = QtWidgets.QMessageBox.question(
+            parent,
+            "FBX SDK Setup",
+            "QubitMCP will download Autodesk FBX Python SDK installer from Autodesk,\n"
+            "run it, then configure this app runtime automatically.\n\n"
+            "Continue?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.Yes,
+        )
+        if proceed != QtWidgets.QMessageBox.Yes:
+            return False, "FBX SDK setup cancelled.", ""
+
+    installer_path = _guess_fbx_installer_candidate()
+    download_report = ""
+    if not installer_path.exists():
+        ok_download, download_report = _download_fbx_windows_installer(installer_path)
+        if not ok_download:
+            return False, download_report, ""
+    else:
+        download_report = f"Using cached Autodesk installer:\n{installer_path}"
+    _save_last_fbx_sdk_installer_path(str(installer_path))
+
+    ok_run, run_report = _run_fbx_sdk_installer_and_wait(installer_path)
+    if not ok_run:
+        return False, run_report, ""
+
+    detected_source = _find_ready_fbx_source_dir(source_dir_hint)
+    if not detected_source:
+        ok_manual, manual_report, manual_source = _manual_install_fbxsdk_runtime(parent, source_dir_hint)
+        if ok_manual:
+            return True, manual_report, manual_source
+        return (
+            False,
+            run_report
+            + "\n\nCould not auto-detect Autodesk FBX SDK source folder after installer.\n\n"
+            + manual_report,
+            manual_source,
+        )
+
+    ok_install, install_report = _install_fbxsdk_runtime_from_source(Path(detected_source))
+    if ok_install:
+        return (
+            True,
+            download_report + "\n\n" + run_report + "\n\n" + install_report,
+            detected_source,
+        )
+    return (
+        False,
+        download_report
+        + "\n\n"
+        + run_report
+        + "\n\nDetected source folder:\n"
+        + detected_source
+        + "\n\n"
+        + install_report,
+        detected_source,
+    )
+
+
 def _show_fbxsdk_setup_prompt(parent) -> None:
     if QtWidgets is None:
         return
@@ -284,8 +754,15 @@ def _show_fbxsdk_setup_prompt(parent) -> None:
 
     default_source = _default_fbx_sdk_source_dir()
     source_dir = _load_last_fbx_sdk_source_dir() or str(default_source)
+    auto_detected_source = _find_ready_fbx_source_dir(source_dir)
+    source_scan = _scan_fbx_sdk_source_dir(Path(source_dir))
+    installer_path = _guess_fbx_installer_candidate()
     try:
         default_source.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    try:
+        _default_fbx_sdk_installer_dir().mkdir(parents=True, exist_ok=True)
     except Exception:
         pass
 
@@ -293,13 +770,32 @@ def _show_fbxsdk_setup_prompt(parent) -> None:
     msg.setIcon(QtWidgets.QMessageBox.Warning)
     msg.setWindowTitle("FBX SDK Setup")
     msg.setText("FBX Import needs Autodesk FBX SDK for full FBX compatibility.")
+    source_status = "ready" if not source_scan.get("missing") else ("missing: " + ", ".join(source_scan.get("missing") or []))
+    auto_detect_status = auto_detected_source if auto_detected_source else "<none>"
+    if os.name == "nt":
+        action_help = (
+            "Install FBX Support will:\n"
+            "1. Download Autodesk installer from the official URL\n"
+            "2. Run the installer\n"
+            "3. Auto-detect SDK files\n"
+            "4. Install runtime files into this app venv"
+        )
+    else:
+        action_help = (
+            "Install FBX Support will try to auto-detect SDK files and install them\n"
+            "into this app venv. Installer download is Windows-only."
+        )
     msg.setInformativeText(
+        f"{action_help}\n\n"
         "Install destination is fixed to this app runtime.\n"
         "Source folder contains Autodesk files to copy from.\n\n"
-        "Required source files:\n"
-        "- fbx.pyd\n"
-        "- FbxCommon.py\n"
-        "- libfbxsdk.dll"
+        f"Current source folder status: {source_status}\n"
+        f"Auto-detected source folder: {auto_detect_status}\n\n"
+        "Official Autodesk Windows installer URL:\n"
+        f"{FBX_WINDOWS_INSTALLER_URL}\n\n"
+        "Supported source layouts:\n"
+        "- fbx-*.whl + FbxCommon.py\n"
+        "- fbx*.pyd + FbxCommon.py (+ optional libfbxsdk.dll)"
     )
     details = "\n".join(
         [
@@ -308,6 +804,9 @@ def _show_fbxsdk_setup_prompt(parent) -> None:
             "Current source folder (user-managed):",
             source_dir,
             "",
+            "Auto-detected source folder:",
+            auto_detect_status,
+            "",
             "Runtime destinations (app-managed):",
             str(probe.get("expected", {}).get("fbx_pyd", "")),
             str(probe.get("expected", {}).get("fbxcommon_py", "")),
@@ -315,12 +814,19 @@ def _show_fbxsdk_setup_prompt(parent) -> None:
             "",
             "Recommended default source folder:",
             str(default_source),
+            "",
+            "Installer cache path:",
+            str(installer_path),
+            "",
+            "Official Autodesk Windows installer URL:",
+            FBX_WINDOWS_INSTALLER_URL,
         ]
     )
     msg.setDetailedText(details)
 
-    btn_install = msg.addButton("Install Now", QtWidgets.QMessageBox.AcceptRole)
-    btn_choose = msg.addButton("Change Source Folder...", QtWidgets.QMessageBox.ActionRole)
+    btn_install = msg.addButton("Install FBX Support", QtWidgets.QMessageBox.AcceptRole)
+    btn_manual = msg.addButton("I Already Installed It...", QtWidgets.QMessageBox.ActionRole)
+    btn_copy_link = msg.addButton("Copy Download Link", QtWidgets.QMessageBox.ActionRole)
     btn_later = msg.addButton("Later", QtWidgets.QMessageBox.RejectRole)
     try:
         msg.setDefaultButton(btn_install)
@@ -337,39 +843,30 @@ def _show_fbxsdk_setup_prompt(parent) -> None:
             _save_fbx_sdk_prompt_suppressed(True)
         return
 
-    if clicked is btn_choose:
-        picked = _prompt_fbx_source_dir(parent, Path(source_dir))
-        source_dir = str(picked or "").strip()
-        if source_dir:
-            _save_last_fbx_sdk_source_dir(source_dir)
-        else:
-            if suppress:
-                _save_fbx_sdk_prompt_suppressed(True)
-            return
-
-    if not source_dir:
+    if clicked is btn_copy_link:
+        try:
+            cb = QtWidgets.QApplication.clipboard()
+            if cb is not None:
+                cb.setText(FBX_WINDOWS_INSTALLER_URL)
+        except Exception:
+            pass
+        QtWidgets.QMessageBox.information(
+            parent,
+            "FBX SDK Setup",
+            "Download link copied to clipboard:\n\n" + FBX_WINDOWS_INSTALLER_URL,
+        )
         if suppress:
             _save_fbx_sdk_prompt_suppressed(True)
         return
 
-    ok, report = _install_fbxsdk_runtime_from_source(Path(source_dir))
-    if not ok:
-        retry = QtWidgets.QMessageBox.question(
-            parent,
-            "FBX SDK Setup",
-            report
-            + "\n\nWould you like to choose a different source folder?",
-            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-            QtWidgets.QMessageBox.Yes,
-        )
-        if retry == QtWidgets.QMessageBox.Yes:
-            picked_retry = _prompt_fbx_source_dir(parent, Path(source_dir))
-            source_dir = str(picked_retry or "").strip()
-            if source_dir:
-                ok, report = _install_fbxsdk_runtime_from_source(Path(source_dir))
+    if clicked is btn_manual:
+        ok, report, resolved_source = _manual_install_fbxsdk_runtime(parent, source_dir)
+    else:
+        ok, report, resolved_source = _install_fbxsdk_runtime_guided(parent, source_dir)
 
     if ok:
-        _save_last_fbx_sdk_source_dir(source_dir)
+        if resolved_source:
+            _save_last_fbx_sdk_source_dir(resolved_source)
         _save_fbx_sdk_prompt_suppressed(False)
         QtWidgets.QMessageBox.information(parent, "FBX SDK Setup", report)
     else:
@@ -928,6 +1425,8 @@ def augment_infocard_footer(card, footer_layout) -> bool:
 
     button = QtWidgets.QPushButton("Validate FBX Sources")
     button.setToolTip("Resolve rest/capture/animated source roles and validate compatibility.")
+    setup_button = QtWidgets.QPushButton("Setup FBX SDK")
+    setup_button.setToolTip("Install or configure Autodesk FBX SDK runtime for this app.")
 
     container = QtWidgets.QWidget(card)
     if QtWidgets is not None:
@@ -947,6 +1446,10 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     top_row.setSpacing(8)
     top_row.addWidget(status_label)
     top_row.addStretch(1)
+    if QtCore is not None:
+        top_row.addWidget(setup_button, 0, QtCore.Qt.AlignRight)
+    else:  # pragma: no cover - defensive
+        top_row.addWidget(setup_button)
     if QtCore is not None:
         top_row.addWidget(button, 0, QtCore.Qt.AlignRight)
     else:  # pragma: no cover - defensive
@@ -1003,7 +1506,12 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     def _on_validate_clicked():
         _refresh(persist=True, toast=True)
 
+    def _on_setup_clicked():
+        _show_fbxsdk_setup_prompt(card)
+        _refresh(persist=False, toast=False)
+
     button.clicked.connect(_on_validate_clicked)
+    setup_button.clicked.connect(_on_setup_clicked)
 
     def _on_links_changed(*_args):
         _refresh(persist=False, toast=False)

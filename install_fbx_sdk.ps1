@@ -82,6 +82,19 @@ function Find-SourceFile {
         Select-Object -First 1
 }
 
+function Find-SourcePatternFile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root,
+        [Parameter(Mandatory = $true)]
+        [string]$Pattern
+    )
+
+    return Get-ChildItem -LiteralPath $Root -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like $Pattern } |
+        Select-Object -First 1
+}
+
 try {
     if (-not (Test-Path -LiteralPath $SourceDir)) {
         throw "SourceDir does not exist: $SourceDir"
@@ -98,14 +111,14 @@ try {
     }
 
     $sourceRoot = (Resolve-Path -LiteralPath $SourceDir).Path
-    $fbxPyd = Find-SourceFile -Root $sourceRoot -Name "fbx.pyd"
+    $fbxPyd = Find-SourcePatternFile -Root $sourceRoot -Pattern "fbx*.pyd"
+    $fbxWheel = Find-SourcePatternFile -Root $sourceRoot -Pattern "fbx-*.whl"
     $fbxCommon = Find-SourceFile -Root $sourceRoot -Name "FbxCommon.py"
     $libFbxDll = Find-SourceFile -Root $sourceRoot -Name "libfbxsdk.dll"
 
     $missing = @()
-    if (-not $fbxPyd) { $missing += "fbx.pyd" }
+    if (-not $fbxPyd -and -not $fbxWheel) { $missing += "fbx binding (fbx*.pyd or fbx-*.whl)" }
     if (-not $fbxCommon) { $missing += "FbxCommon.py" }
-    if (-not $libFbxDll) { $missing += "libfbxsdk.dll" }
     if ($missing.Count -gt 0) {
         throw "SourceDir is missing required file(s): $($missing -join ', ')"
     }
@@ -117,15 +130,31 @@ try {
         New-Item -ItemType Directory -Path $layout.scripts_dir -Force | Out-Null
     }
 
-    $destFbxPyd = Join-Path $layout.site_packages "fbx.pyd"
     $destFbxCommon = Join-Path $layout.site_packages "FbxCommon.py"
-    $destDll = Join-Path $layout.scripts_dir "libfbxsdk.dll"
+    $destFbxModule = ""
+    $destDll = ""
 
-    Copy-Item -LiteralPath $fbxPyd.FullName -Destination $destFbxPyd -Force
+    if ($fbxWheel) {
+        & $resolvedPython -m pip install --force-reinstall $fbxWheel.FullName
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to install FBX wheel: $($fbxWheel.FullName)"
+        }
+    } elseif ($fbxPyd) {
+        $destFbxModule = Join-Path $layout.site_packages $fbxPyd.Name
+        Copy-Item -LiteralPath $fbxPyd.FullName -Destination $destFbxModule -Force
+    }
+
     Copy-Item -LiteralPath $fbxCommon.FullName -Destination $destFbxCommon -Force
-    Copy-Item -LiteralPath $libFbxDll.FullName -Destination $destDll -Force
+    if ($libFbxDll) {
+        $destDll = Join-Path $layout.scripts_dir "libfbxsdk.dll"
+        Copy-Item -LiteralPath $libFbxDll.FullName -Destination $destDll -Force
+    }
 
-    foreach ($path in @($destFbxPyd, $destFbxCommon, $destDll)) {
+    $unblockTargets = @()
+    if ($destFbxModule) { $unblockTargets += $destFbxModule }
+    if ($destFbxCommon) { $unblockTargets += $destFbxCommon }
+    if ($destDll) { $unblockTargets += $destDll }
+    foreach ($path in $unblockTargets) {
         try {
             Unblock-File -LiteralPath $path -ErrorAction Stop
         } catch {
@@ -137,9 +166,17 @@ try {
     Write-Output "[fbx-install] Python: $($layout.version) ($($layout.bits)-bit)"
     Write-Output "[fbx-install] Executable: $($layout.executable)"
     Write-Output "[fbx-install] Installed:"
-    Write-Output "  - $destFbxPyd"
+    if ($fbxWheel) {
+        Write-Output "  - wheel installed: $($fbxWheel.FullName)"
+    } elseif ($destFbxModule) {
+        Write-Output "  - $destFbxModule"
+    }
     Write-Output "  - $destFbxCommon"
-    Write-Output "  - $destDll"
+    if ($destDll) {
+        Write-Output "  - $destDll"
+    } else {
+        Write-Output "  - libfbxsdk.dll not found in source (optional for some Autodesk wheel builds)"
+    }
     Write-Output "[fbx-install] Reminder: review Autodesk FBX SDK license terms for redistribution/commercial packaging."
 
     $checkScript = Join-Path (Split-Path -Path $PSCommandPath -Parent) "check_fbx_sdk.ps1"
