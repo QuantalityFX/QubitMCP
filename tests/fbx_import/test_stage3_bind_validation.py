@@ -193,6 +193,67 @@ class FbxImportStage3BindValidationTests(unittest.TestCase):
         self.assertEqual(result.errors, [])
         self.assertTrue(any("stage3 bind ingest skipped" in msg for msg in result.warnings))
 
+    def test_backend_parser_limitation_downgrades_to_warning(self) -> None:
+        rest = Path("V:/virtual/rest.fbx")
+        model = _FakeModel(
+            name="FBXImportStage3E",
+            kind="fbx_import",
+            params=_param_list(rest_geometry=str(rest), capture_pose="", animated_pose=""),
+        )
+        node = _FakeNodeItem(model, _FakeScene())
+
+        with patch(
+            "nodes.fbx_import.spec._resolve_existing_path",
+            side_effect=lambda raw, _base: rest if str(raw) == str(rest) else None,
+        ), patch(
+            "nodes.fbx_import.spec.ingest_fbx_bind_data",
+            side_effect=FBXBindIngestError("Failed to load FBX via pyassimp: NULL pointer access"),
+        ):
+            result = resolve_fbx_import_sources(
+                node,
+                base_dir=Path("V:/virtual"),
+                persist=True,
+                validate_bind_data=True,
+            )
+
+        self.assertEqual(result.status, "warning")
+        self.assertEqual(result.errors, [])
+        self.assertTrue(any("stage3 bind ingest skipped" in msg for msg in result.warnings))
+        self.assertTrue(any("NULL pointer access" in msg for msg in result.warnings))
+
+    def test_parser_limitation_with_missing_fbxsdk_adds_guidance_warning(self) -> None:
+        rest = Path("V:/virtual/rest.fbx")
+        model = _FakeModel(
+            name="FBXImportStage3F",
+            kind="fbx_import",
+            params=_param_list(rest_geometry=str(rest), capture_pose="", animated_pose=""),
+        )
+        node = _FakeNodeItem(model, _FakeScene())
+
+        with patch(
+            "nodes.fbx_import.spec._resolve_existing_path",
+            side_effect=lambda raw, _base: rest if str(raw) == str(rest) else None,
+        ), patch(
+            "nodes.fbx_import.spec.ingest_fbx_bind_data",
+            side_effect=FBXBindIngestError(
+                "Failed to load FBX with available backends: "
+                "fbx sdk: fbx sdk unavailable: No module named 'fbx' | "
+                "pyassimp: Failed to load FBX via pyassimp: NULL pointer access"
+            ),
+        ):
+            result = resolve_fbx_import_sources(
+                node,
+                base_dir=Path("V:/virtual"),
+                persist=True,
+                validate_bind_data=True,
+            )
+
+        self.assertEqual(result.status, "warning")
+        self.assertEqual(result.errors, [])
+        self.assertTrue(
+            any("FBX SDK backend is not available" in msg for msg in result.warnings)
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

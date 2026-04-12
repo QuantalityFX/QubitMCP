@@ -63,6 +63,40 @@ class _NodeRecord:
     node_obj: Any
 
 
+@dataclass
+class _SimpleWeight:
+    vertexid: int
+    weight: float
+
+
+@dataclass
+class _SimpleBone:
+    name: str
+    weights: List[_SimpleWeight] = field(default_factory=list)
+    offsetmatrix: Tuple[float, ...] = _IDENTITY_MATRIX_4X4
+
+
+@dataclass
+class _SimpleMesh:
+    name: str
+    vertices: List[Tuple[float, float, float]] = field(default_factory=list)
+    faces: List[List[int]] = field(default_factory=list)
+    bones: List[_SimpleBone] = field(default_factory=list)
+
+
+@dataclass
+class _SimpleNode:
+    name: str
+    children: List[Any] = field(default_factory=list)
+    transformation: Tuple[float, ...] = _IDENTITY_MATRIX_4X4
+
+
+@dataclass
+class _SimpleScene:
+    rootnode: _SimpleNode
+    meshes: List[_SimpleMesh] = field(default_factory=list)
+
+
 def _safe_text(value: Any, fallback: str) -> str:
     text = str(value or "").strip()
     return text or fallback
@@ -342,6 +376,13 @@ def _select_skeleton_nodes(
     bone_names: Sequence[str],
     warnings: List[str],
 ) -> Tuple[List[int], Dict[str, int]]:
+    if not bone_names:
+        # Joints-only FBX (or meshes with no skin clusters): keep full hierarchy as skeleton.
+        warnings.append(
+            "No mesh bones were found; using node hierarchy as skeleton source."
+        )
+        return [rec.idx for rec in node_records], {}
+
     name_to_indices: Dict[str, List[int]] = {}
     for rec in node_records:
         name_to_indices.setdefault(rec.name, []).append(rec.idx)
@@ -528,8 +569,352 @@ def _build_mesh_assets(
     return out
 
 
+def _vec3_from_obj(value: Any) -> Tuple[float, float, float]:
+    if value is None:
+        return (0.0, 0.0, 0.0)
+    try:
+        return (
+            _to_float(value[0], 0.0),  # type: ignore[index]
+            _to_float(value[1], 0.0),  # type: ignore[index]
+            _to_float(value[2], 0.0),  # type: ignore[index]
+        )
+    except Exception:
+        pass
+    for keys in (("x", "y", "z"), ("mData",)):
+        try:
+            if keys == ("mData",):
+                data = getattr(value, "mData")
+                return (
+                    _to_float(data[0], 0.0),
+                    _to_float(data[1], 0.0),
+                    _to_float(data[2], 0.0),
+                )
+            if all(hasattr(value, k) for k in keys):
+                return (
+                    _to_float(getattr(value, "x"), 0.0),
+                    _to_float(getattr(value, "y"), 0.0),
+                    _to_float(getattr(value, "z"), 0.0),
+                )
+        except Exception:
+            pass
+    return (0.0, 0.0, 0.0)
+
+
+def _matrix4_mul_row_major(a: Tuple[float, ...], b: Tuple[float, ...]) -> Tuple[float, ...]:
+    out = [0.0] * 16
+    for r in range(4):
+        for c in range(4):
+            out[(r * 4) + c] = (
+                (a[(r * 4) + 0] * b[(0 * 4) + c])
+                + (a[(r * 4) + 1] * b[(1 * 4) + c])
+                + (a[(r * 4) + 2] * b[(2 * 4) + c])
+                + (a[(r * 4) + 3] * b[(3 * 4) + c])
+            )
+    return tuple(out)
+
+
+def _fbxsdk_matrix4_tuple(mat_obj: Any) -> Tuple[float, ...]:
+    if mat_obj is None:
+        return _IDENTITY_MATRIX_4X4
+    try:
+        return tuple(_to_float(mat_obj.Get(r, c), 0.0) for r in range(4) for c in range(4))
+    except Exception:
+        pass
+    try:
+        return tuple(_to_float(mat_obj[r][c], 0.0) for r in range(4) for c in range(4))  # type: ignore[index]
+    except Exception:
+        pass
+    return _matrix4_from_obj(mat_obj)
+
+
+def _fbxsdk_node_local_matrix_tuple(node_obj: Any) -> Tuple[float, ...]:
+    if node_obj is None:
+        return _IDENTITY_MATRIX_4X4
+    try:
+        mat = node_obj.EvaluateLocalTransform()
+        return _fbxsdk_matrix4_tuple(mat)
+    except Exception:
+        pass
+    return _IDENTITY_MATRIX_4X4
+
+
+def _fbxsdk_cluster_inverse_bind(fbx_mod: Any, cluster_obj: Any) -> Tuple[float, ...]:
+    if cluster_obj is None:
+        return _IDENTITY_MATRIX_4X4
+    try:
+        transform = fbx_mod.FbxAMatrix()
+        link = fbx_mod.FbxAMatrix()
+        cluster_obj.GetTransformMatrix(transform)
+        cluster_obj.GetTransformLinkMatrix(link)
+    except Exception:
+        return _IDENTITY_MATRIX_4X4
+
+    try:
+        return _fbxsdk_matrix4_tuple(link.Inverse() * transform)
+    except Exception:
+        pass
+
+    try:
+        inv_link = _fbxsdk_matrix4_tuple(link.Inverse())
+        geom = _fbxsdk_matrix4_tuple(transform)
+        return _matrix4_mul_row_major(inv_link, geom)
+    except Exception:
+        return _IDENTITY_MATRIX_4X4
+
+
+def _build_simple_node_from_fbxsdk(node_obj: Any) -> _SimpleNode:
+    name = _safe_text(getattr(node_obj, "GetName", lambda: "")(), "node")
+    out = _SimpleNode(
+        name=name,
+        transformation=_fbxsdk_node_local_matrix_tuple(node_obj),
+    )
+    child_count = _to_int(getattr(node_obj, "GetChildCount", lambda: 0)(), 0)
+    for i in range(max(0, child_count)):
+        try:
+            child = node_obj.GetChild(i)
+        except Exception:
+            child = None
+        if child is None:
+            continue
+        out.children.append(_build_simple_node_from_fbxsdk(child))
+    return out
+
+
+def _build_simple_mesh_from_fbxsdk(
+    fbx_mod: Any,
+    node_obj: Any,
+    mesh_obj: Any,
+    mesh_index: int,
+) -> _SimpleMesh:
+    mesh_name = _safe_text(
+        getattr(mesh_obj, "GetName", lambda: "")(),
+        _safe_text(getattr(node_obj, "GetName", lambda: "")(), f"mesh_{mesh_index}"),
+    )
+    out = _SimpleMesh(name=mesh_name)
+
+    # control points
+    cp_count = _to_int(getattr(mesh_obj, "GetControlPointsCount", lambda: 0)(), 0)
+    cps = None
+    try:
+        cps = mesh_obj.GetControlPoints()
+    except Exception:
+        cps = None
+    if cp_count > 0 and cps is not None:
+        for i in range(cp_count):
+            try:
+                out.vertices.append(_vec3_from_obj(cps[i]))
+            except Exception:
+                out.vertices.append((0.0, 0.0, 0.0))
+
+    # polygons
+    poly_count = _to_int(getattr(mesh_obj, "GetPolygonCount", lambda: 0)(), 0)
+    for pidx in range(max(0, poly_count)):
+        psize = _to_int(getattr(mesh_obj, "GetPolygonSize", lambda _i: 0)(pidx), 0)
+        face: List[int] = []
+        for corner in range(max(0, psize)):
+            vid = _to_int(
+                getattr(mesh_obj, "GetPolygonVertex", lambda _p, _c: -1)(pidx, corner),
+                -1,
+            )
+            if vid >= 0:
+                face.append(vid)
+        if len(face) >= 3:
+            out.faces.append(face)
+
+    # skin clusters
+    bones_by_name: Dict[str, _SimpleBone] = {}
+    skin_type = getattr(getattr(fbx_mod, "FbxDeformer", None), "eSkin", None)
+    skin_count = _to_int(
+        getattr(mesh_obj, "GetDeformerCount", lambda *_args: 0)(skin_type)
+        if skin_type is not None
+        else 0,
+        0,
+    )
+    for skin_index in range(max(0, skin_count)):
+        try:
+            skin = mesh_obj.GetDeformer(skin_index, skin_type)
+        except Exception:
+            skin = None
+        if skin is None:
+            continue
+        cluster_count = _to_int(getattr(skin, "GetClusterCount", lambda: 0)(), 0)
+        for cluster_index in range(max(0, cluster_count)):
+            try:
+                cluster = skin.GetCluster(cluster_index)
+            except Exception:
+                cluster = None
+            if cluster is None:
+                continue
+            link = None
+            try:
+                link = cluster.GetLink()
+            except Exception:
+                link = None
+            bone_name = _safe_text(
+                getattr(link, "GetName", lambda: "")() if link is not None else "",
+                f"bone_{cluster_index}",
+            )
+            indices_count = _to_int(
+                getattr(cluster, "GetControlPointIndicesCount", lambda: 0)(),
+                0,
+            )
+            try:
+                cp_indices = cluster.GetControlPointIndices()
+            except Exception:
+                cp_indices = []
+            try:
+                cp_weights = cluster.GetControlPointWeights()
+            except Exception:
+                cp_weights = []
+
+            weights: List[_SimpleWeight] = []
+            for wi in range(max(0, indices_count)):
+                try:
+                    vid = _to_int(cp_indices[wi], -1)
+                except Exception:
+                    vid = -1
+                try:
+                    wt = _to_float(cp_weights[wi], 0.0)
+                except Exception:
+                    wt = 0.0
+                if vid >= 0 and wt > 0.0:
+                    weights.append(_SimpleWeight(vertexid=vid, weight=wt))
+
+            offset = _fbxsdk_cluster_inverse_bind(fbx_mod, cluster)
+            prev = bones_by_name.get(bone_name)
+            if prev is None:
+                bones_by_name[bone_name] = _SimpleBone(
+                    name=bone_name,
+                    weights=weights,
+                    offsetmatrix=offset,
+                )
+            else:
+                prev.weights.extend(weights)
+
+    out.bones = sorted(bones_by_name.values(), key=lambda b: b.name.lower())
+    return out
+
+
+def _build_simple_scene_from_fbxsdk(fbx_mod: Any, scene_obj: Any) -> _SimpleScene:
+    try:
+        root_native = scene_obj.GetRootNode()
+    except Exception as exc:
+        raise FBXBindIngestError(f"FBX SDK scene has no root node: {exc}") from exc
+    if root_native is None:
+        raise FBXBindIngestError("FBX SDK scene has no root node.")
+
+    root = _build_simple_node_from_fbxsdk(root_native)
+    meshes: List[_SimpleMesh] = []
+
+    def _visit(node_obj: Any) -> None:
+        if node_obj is None:
+            return
+        mesh = None
+        try:
+            mesh = node_obj.GetMesh()
+        except Exception:
+            mesh = None
+        if mesh is not None:
+            meshes.append(
+                _build_simple_mesh_from_fbxsdk(
+                    fbx_mod=fbx_mod,
+                    node_obj=node_obj,
+                    mesh_obj=mesh,
+                    mesh_index=len(meshes),
+                )
+            )
+        child_count = _to_int(getattr(node_obj, "GetChildCount", lambda: 0)(), 0)
+        for i in range(max(0, child_count)):
+            try:
+                _visit(node_obj.GetChild(i))
+            except Exception:
+                continue
+
+    _visit(root_native)
+    return _SimpleScene(rootnode=root, meshes=meshes)
+
+
+def _fbxsdk_status_error_text(status_owner: Any) -> str:
+    try:
+        status = status_owner.GetStatus()
+        text = status.GetErrorString() if status is not None else ""
+        text = str(text or "").strip()
+        if text:
+            return text
+    except Exception:
+        pass
+    return "unknown FBX SDK error"
+
+
+@contextmanager
+def _load_fbxsdk_scene(path_obj: Path) -> Iterator[Any]:
+    try:
+        import fbx  # type: ignore
+    except Exception as exc:
+        raise FBXBindIngestError(f"fbx sdk unavailable: {exc}") from exc
+
+    manager = None
+    importer = None
+    try:
+        manager = fbx.FbxManager.Create()
+        if manager is None:
+            raise FBXBindIngestError("fbx sdk manager creation failed.")
+        ios = fbx.FbxIOSettings.Create(manager, getattr(fbx, "IOSROOT", ""))
+        if ios is not None:
+            manager.SetIOSettings(ios)
+
+        importer = fbx.FbxImporter.Create(manager, "")
+        if importer is None:
+            raise FBXBindIngestError("fbx sdk importer creation failed.")
+        try:
+            ok = importer.Initialize(str(path_obj), -1, manager.GetIOSettings())
+        except Exception:
+            ok = importer.Initialize(str(path_obj), -1)
+        if not ok:
+            raise FBXBindIngestError(
+                f"Failed to initialize FBX SDK importer: {_fbxsdk_status_error_text(importer)}"
+            )
+
+        scene = fbx.FbxScene.Create(manager, path_obj.stem or "scene")
+        if scene is None:
+            raise FBXBindIngestError("fbx sdk scene creation failed.")
+        if not importer.Import(scene):
+            raise FBXBindIngestError(
+                f"Failed to import FBX with FBX SDK: {_fbxsdk_status_error_text(importer)}"
+            )
+
+        yield _build_simple_scene_from_fbxsdk(fbx, scene)
+    except FBXBindIngestError:
+        raise
+    except Exception as exc:  # pragma: no cover - defensive
+        raise FBXBindIngestError(f"Failed to load FBX via fbx sdk: {exc}") from exc
+    finally:
+        try:
+            if importer is not None:
+                importer.Destroy()
+        except Exception:
+            pass
+        try:
+            if manager is not None:
+                manager.Destroy()
+        except Exception:
+            pass
+
+
+def _try_ensure_assimp_runtime() -> None:
+    try:
+        from echograph.ui.gl_loaders import ensure_assimp_dll  # lazy import
+    except Exception:
+        return
+    try:
+        ensure_assimp_dll()
+    except Exception:
+        pass
+
+
 @contextmanager
 def _load_pyassimp_scene(path_obj: Path) -> Iterator[Any]:
+    _try_ensure_assimp_runtime()
     try:
         import pyassimp  # type: ignore
         from pyassimp import postprocess as ai_post  # type: ignore
@@ -546,11 +931,22 @@ def _load_pyassimp_scene(path_obj: Path) -> Iterator[Any]:
     ):
         processing |= int(getattr(ai_post, name, 0) or 0)
 
-    try:
-        with pyassimp.load(str(path_obj), file_type="fbx", processing=processing) as scene:
-            yield scene
-    except Exception as exc:
-        raise FBXBindIngestError(f"Failed to load FBX via pyassimp: {exc}") from exc
+    attempts: List[Tuple[str, Dict[str, Any]]] = [
+        ("fbx+processing", {"file_type": "fbx", "processing": processing}),
+        ("fbx+no_processing", {"file_type": "fbx", "processing": 0}),
+        ("auto+no_processing", {"processing": 0}),
+    ]
+    failures: List[str] = []
+    for label, kwargs in attempts:
+        try:
+            with pyassimp.load(str(path_obj), **kwargs) as scene:
+                yield scene
+                return
+        except Exception as exc:
+            failures.append(f"{label}: {exc}")
+
+    summary = " | ".join(failures[:3])
+    raise FBXBindIngestError(f"Failed to load FBX via pyassimp: {summary}")
 
 
 def _ingest_scene(
@@ -628,13 +1024,25 @@ def ingest_fbx_bind_data(
 
     if not path_obj.exists():
         raise FBXBindIngestError(f"FBX path does not exist: {path_obj}")
-    with _load_pyassimp_scene(path_obj) as scene_obj:
-        return _ingest_scene(
-            scene_obj=scene_obj,
-            path_obj=path_obj,
-            skeleton_name=skeleton_name,
-            max_influences=max_influences,
-        )
+    failures: List[str] = []
+    for backend_name, loader in (
+        ("fbx sdk", _load_fbxsdk_scene),
+        ("pyassimp", _load_pyassimp_scene),
+    ):
+        try:
+            with loader(path_obj) as scene_obj:
+                return _ingest_scene(
+                    scene_obj=scene_obj,
+                    path_obj=path_obj,
+                    skeleton_name=skeleton_name,
+                    max_influences=max_influences,
+                )
+        except FBXBindIngestError as exc:
+            failures.append(f"{backend_name}: {exc}")
+
+    raise FBXBindIngestError(
+        "Failed to load FBX with available backends: " + " | ".join(failures)
+    )
 
 
 def _parent_name_map(skeleton: SkeletonAsset) -> Dict[str, str | None]:

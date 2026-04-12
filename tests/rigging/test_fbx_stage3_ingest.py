@@ -98,6 +98,14 @@ def _make_scene_with_missing_bone_node() -> _Scene:
     return _Scene(rootnode=root, meshes=[mesh])
 
 
+def _make_joints_only_scene() -> _Scene:
+    neck = _Node("neck")
+    spine = _Node("spine", children=[neck])
+    hip = _Node("hip", children=[spine])
+    root = _Node("root", children=[hip])
+    return _Scene(rootnode=root, meshes=[])
+
+
 def _make_base_skeleton() -> SkeletonAsset:
     return SkeletonAsset(
         name="HeroSkeleton",
@@ -144,6 +152,15 @@ class FbxStage3IngestTests(unittest.TestCase):
         self.assertTrue(
             any("synthetic root joint created" in msg.lower() for msg in result.warnings)
         )
+
+    def test_joints_only_scene_uses_hierarchy_skeleton(self) -> None:
+        scene = _make_joints_only_scene()
+        result = ingest_fbx_bind_data("V:/virtual/joints_only.fbx", scene=scene)
+        self.assertEqual([j.name for j in result.skeleton.joints], ["root", "hip", "spine", "neck"])
+        self.assertTrue(
+            any("using node hierarchy as skeleton source" in msg.lower() for msg in result.warnings)
+        )
+        self.assertEqual(result.meshes, [])
 
     def test_compare_skeleton_layout_detects_mismatch(self) -> None:
         base = _make_base_skeleton()

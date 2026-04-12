@@ -5,13 +5,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 try:
-    from PySide6 import QtWidgets, QtGui
+    from PySide6 import QtWidgets, QtGui, QtCore
 except Exception:
     try:
-        from PySide2 import QtWidgets, QtGui  # type: ignore
+        from PySide2 import QtWidgets, QtGui, QtCore  # type: ignore
     except Exception:
         QtWidgets = None  # type: ignore[assignment]
         QtGui = None  # type: ignore[assignment]
+        QtCore = None  # type: ignore[assignment]
 
 from echograph.rigging.fbx_stage3_ingest import (
     FBXBindIngestError,
@@ -40,6 +41,8 @@ class SourceResolutionResult:
             if resolved:
                 if raw and raw != resolved:
                     lines.append(f"{role}: {resolved} (requested: {raw})")
+                elif (not raw) and role in ("capture_pose", "animated_pose"):
+                    lines.append(f"{role}: {resolved} (defaulted from rest_geometry)")
                 else:
                     lines.append(f"{role}: {resolved}")
             elif raw:
@@ -260,7 +263,26 @@ def _append_prefixed_messages(dst: List[str], prefix: str, messages) -> None:
 
 def _is_backend_unavailable(exc: Exception) -> bool:
     text = str(exc or "").strip().lower()
-    return "pyassimp unavailable" in text
+    return ("pyassimp unavailable" in text) or ("fbx sdk unavailable" in text)
+
+
+def _is_backend_parser_limitation(exc: Exception) -> bool:
+    text = str(exc or "").strip().lower()
+    return "null pointer access" in text
+
+
+def _has_fbxsdk_unavailable(exc: Exception) -> bool:
+    text = str(exc or "").strip().lower()
+    return "fbx sdk unavailable" in text
+
+
+def _format_bind_ingest_failure(role: str, exc: Exception) -> str:
+    message = str(exc or "").strip() or exc.__class__.__name__
+    if "null pointer access" in message.lower():
+        message = (
+            f"{message} (pyassimp/assimp parser limitation for this FBX file)."
+        )
+    return f"{role}: bind ingest failed: {message}"
 
 
 def _validate_bind_sources_stage3(
@@ -281,13 +303,21 @@ def _validate_bind_sources_stage3(
     try:
         rest_result = ingest_fbx_bind_data(rest_path)
     except FBXBindIngestError as exc:
-        if _is_backend_unavailable(exc):
-            warnings.append(f"stage3 bind ingest skipped: {exc}")
+        if _is_backend_unavailable(exc) or _is_backend_parser_limitation(exc):
+            warnings.append(
+                "stage3 bind ingest skipped: "
+                + _format_bind_ingest_failure("rest_geometry", exc)
+            )
+            if _has_fbxsdk_unavailable(exc):
+                warnings.append(
+                    "FBX SDK backend is not available in this runtime; "
+                    "pyassimp fallback has limited FBX compatibility."
+                )
         else:
-            errors.append(f"rest_geometry: bind ingest failed: {exc}")
+            errors.append(_format_bind_ingest_failure("rest_geometry", exc))
         return state
     except Exception as exc:  # pragma: no cover - defensive
-        errors.append(f"rest_geometry: bind ingest failed: {exc}")
+        errors.append(_format_bind_ingest_failure("rest_geometry", exc))
         return state
 
     state["rest_result"] = rest_result
@@ -312,13 +342,15 @@ def _validate_bind_sources_stage3(
             )
         else:
             warnings.append(
-                f"capture_pose: bind ingest failed ({exc}); override ignored."
+                f"{_format_bind_ingest_failure('capture_pose', exc)}; override ignored."
             )
         effective["capture_pose"] = rest_path
         state["capture_result"] = rest_result
         return state
     except Exception as exc:  # pragma: no cover - defensive
-        warnings.append(f"capture_pose: bind ingest failed ({exc}); override ignored.")
+        warnings.append(
+            f"{_format_bind_ingest_failure('capture_pose', exc)}; override ignored."
+        )
         effective["capture_pose"] = rest_path
         state["capture_result"] = rest_result
         return state
@@ -474,6 +506,19 @@ def _compact_source_line(role: str, path_value: str) -> str:
     return f"{role}: {name}"
 
 
+def _status_presentable_text(result_status: str, *, bind_validated: bool) -> Tuple[str, str]:
+    status = (result_status or "").strip().lower()
+    if status == "error":
+        return "ERROR", "#ef4444"
+    if status == "warning":
+        if bind_validated:
+            return "WARNING", "#f59e0b"
+        return "WARNING (paths)", "#f59e0b"
+    if bind_validated:
+        return "OK", "#22c55e"
+    return "UNVALIDATED (paths ok)", "#94a3b8"
+
+
 def augment_infocard_footer(card, footer_layout) -> bool:
     if QtWidgets is None or QtGui is None:
         return False
@@ -502,9 +547,37 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     button = QtWidgets.QPushButton("Validate FBX Sources")
     button.setToolTip("Resolve rest/capture/animated source roles and validate compatibility.")
 
-    footer_layout.addWidget(status_label)
-    footer_layout.addWidget(detail_label)
-    footer_layout.addWidget(button)
+    container = QtWidgets.QWidget(card)
+    if QtWidgets is not None:
+        try:
+            container.setSizePolicy(
+                QtWidgets.QSizePolicy.Expanding,
+                QtWidgets.QSizePolicy.Preferred,
+            )
+        except Exception:
+            pass
+    stack = QtWidgets.QVBoxLayout(container)
+    stack.setContentsMargins(0, 0, 0, 0)
+    stack.setSpacing(6)
+
+    top_row = QtWidgets.QHBoxLayout()
+    top_row.setContentsMargins(0, 0, 0, 0)
+    top_row.setSpacing(8)
+    top_row.addWidget(status_label)
+    top_row.addStretch(1)
+    if QtCore is not None:
+        top_row.addWidget(button, 0, QtCore.Qt.AlignRight)
+    else:  # pragma: no cover - defensive
+        top_row.addWidget(button)
+
+    stack.addLayout(top_row)
+    stack.addWidget(detail_label)
+    insert_idx = footer_layout.count()
+    footer_layout.addWidget(container, 100)
+    try:
+        footer_layout.setStretch(insert_idx, 100)
+    except Exception:
+        pass
 
     def _refresh(*_args, persist: bool = False, toast: bool = False):
         item = _node_item()
@@ -514,14 +587,16 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             detail_label.setText("Connect this node to the graph canvas.")
             return
 
-        result = resolve_fbx_import_sources(item, persist=persist)
-        status_text = result.status.upper()
-        if result.status == "ok":
-            status_label.setStyleSheet("color:#22c55e;")
-        elif result.status == "warning":
-            status_label.setStyleSheet("color:#f59e0b;")
-        else:
-            status_label.setStyleSheet("color:#ef4444;")
+        bind_validated = bool(persist)
+        result = resolve_fbx_import_sources(
+            item,
+            persist=persist,
+            validate_bind_data=bind_validated,
+        )
+        status_text, status_color = _status_presentable_text(
+            result.status, bind_validated=bind_validated
+        )
+        status_label.setStyleSheet(f"color:{status_color};")
         status_label.setText(f"Status: {status_text}")
 
         detail_lines = [
@@ -530,11 +605,15 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             _compact_source_line("animated", result.effective_sources.get("animated_pose", "")),
         ]
         detail_label.setText(" | ".join(detail_lines))
-        detail_label.setToolTip("\n".join(result.message_lines()))
+        tooltip_lines = []
+        if not bind_validated and not result.errors:
+            tooltip_lines.append("Bind ingest not run yet. Click 'Validate FBX Sources'.")
+        tooltip_lines.extend(result.message_lines())
+        detail_label.setToolTip("\n".join(tooltip_lines))
 
         if toast:
             report = "\n".join(result.message_lines())
-            if result.status == "error":
+            if result.status in ("error", "warning"):
                 QtWidgets.QMessageBox.warning(card, "FBXImport Validation", report)
             else:
                 QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), report, card)

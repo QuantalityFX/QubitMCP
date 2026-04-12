@@ -1365,6 +1365,13 @@ class GraphScene(QtWidgets.QGraphicsScene):
 
         self._ensure_space(pos)
 
+        # InfoCard footer plugins need scene access during card construction.
+        # Attach the owner scene on the model before any card is built.
+        try:
+            node._graph_scene = self
+        except Exception:
+            pass
+
         item = NodeItem(node)
         item.setPos(pos)
 
@@ -6251,6 +6258,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             pass
 
     def add_info_card(self, node: GraphNode):
+        try:
+            node._graph_scene = self.scene
+        except Exception:
+            pass
         existing = self._card_by_node.get(node.name)
         if existing and isinstance(existing, QtWidgets.QWidget):
             idx = self._cardsLayout.indexOf(existing)
@@ -6307,6 +6318,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         total = len(seq)
         for idx, item in enumerate(seq, start=1):
             node = item.model
+            try:
+                node._graph_scene = self.scene
+            except Exception:
+                pass
             card = InfoCard(node, order_index=idx, order_total=total)
             card.requestJump.connect(self.scene.center_on_name)
             card.closedForNode.connect(self._on_card_closed)
