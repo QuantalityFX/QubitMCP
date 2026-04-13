@@ -156,6 +156,37 @@ class MGLRendererMixin:
             pass
         self._mgl_log(msg)
 
+    def _mgl_fbx_joints_log(self, msg: str) -> None:
+        if not bool(getattr(self, "_mgl_fbx_joints_log_enabled", True)):
+            return
+        try:
+            root = Path(__file__).resolve().parents[2]
+            log_dir = root / "logs"
+            try:
+                log_dir.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                return
+            ts = time.strftime("%Y-%m-%d %H:%M:%S")
+            with (log_dir / "fbx_joints_debug.log").open("a", encoding="utf-8") as f:
+                f.write(f"{ts} {msg}\n")
+        except Exception:
+            pass
+
+    def _mgl_fbx_joints_log_throttled(self, key: str, msg: str, interval: float = 0.5) -> None:
+        try:
+            store = getattr(self, "_mgl_fbx_joints_log_times", None)
+            if not isinstance(store, dict):
+                store = {}
+                setattr(self, "_mgl_fbx_joints_log_times", store)
+            now = float(time.time())
+            last = float(store.get(key, 0.0) or 0.0)
+            if (now - last) < float(interval):
+                return
+            store[key] = now
+        except Exception:
+            pass
+        self._mgl_fbx_joints_log(msg)
+
     def _mgl_fx_log(self, msg: str) -> None:
         if not bool(getattr(self, "_mgl_fx_log_enabled", True)):
             return
@@ -224,11 +255,26 @@ class MGLRendererMixin:
         path_key: Optional[str] = None,
     ) -> Optional[MGLSceneItem]:
         if self._mgl_ctx is None or self._mgl_wire_prog is None or np is None:
+            if tag == "scene-rig-joints":
+                self._mgl_fbx_joints_log(
+                    "wire_from_points skip reason=gl_not_ready "
+                    + f"name={name} visible={bool(visible)}"
+                )
             return None
         if line_points is None or line_points.size == 0:
+            if tag == "scene-rig-joints":
+                self._mgl_fbx_joints_log(
+                    "wire_from_points skip reason=empty_points "
+                    + f"name={name} visible={bool(visible)}"
+                )
             return None
         edge_count = int(line_points.shape[0] // 2)
         if edge_count <= 0:
+            if tag == "scene-rig-joints":
+                self._mgl_fbx_joints_log(
+                    "wire_from_points skip reason=edge_count_zero "
+                    + f"name={name} points={int(line_points.shape[0])}"
+                )
             return None
         verts: List[float] = []
         for i in range(edge_count):
@@ -247,12 +293,22 @@ class MGLRendererMixin:
             verts.extend([bx, by, bz, ax, ay, az, bx, by, bz, 1.0])
             verts.extend([bx, by, bz, ax, ay, az, bx, by, bz, -1.0])
         if not verts:
+            if tag == "scene-rig-joints":
+                self._mgl_fbx_joints_log(
+                    "wire_from_points skip reason=all_degenerate "
+                    + f"name={name} edges={edge_count}"
+                )
             return None
         try:
             vbo = self._mgl_ctx.buffer(np.array(verts, dtype="f4").tobytes())
             vao_content = [(vbo, "3f 3f 3f 1f", "in_pos", "in_start", "in_end", "in_side")]
             vao = self._mgl_ctx.vertex_array(self._mgl_wire_prog, vao_content)
         except Exception:
+            if tag == "scene-rig-joints":
+                self._mgl_fbx_joints_log(
+                    "wire_from_points skip reason=vao_create_failed "
+                    + f"name={name} edges={edge_count}"
+                )
             return None
         payload = {
             "vao": vao,
@@ -272,6 +328,13 @@ class MGLRendererMixin:
             order=15,
             tag=tag,
         )
+        if tag == "scene-rig-joints":
+            self._mgl_fbx_joints_log_throttled(
+                f"_mgl_fbx_wire_item_{name}",
+                "wire_from_points ok "
+                + f"name={name} edges={edge_count} visible={bool(visible)} owner={owner or ''} path={path_key or ''}",
+                interval=0.35,
+            )
         return item
 
     def _mgl_timeline_frame_index(self) -> int:
@@ -322,6 +385,13 @@ class MGLRendererMixin:
         cached = cache.get(cache_key)
         if isinstance(cached, dict) and cached.get("mtime", None) == mtime:
             context = cached.get("context", None)
+            self._mgl_fbx_joints_log_throttled(
+                f"_mgl_fbx_context_cache_{cache_key}",
+                "context cache "
+                + f"path={path_obj} hit=True has_context={bool(isinstance(context, dict))} "
+                + f"has_skeleton={bool(isinstance(context, dict) and context.get('skeleton') is not None)}",
+                interval=1.0,
+            )
             return context if isinstance(context, dict) else None
 
         context = None
@@ -338,12 +408,30 @@ class MGLRendererMixin:
                         clip = clips[0]
                 except Exception:
                     clip = None
-                context = {"skeleton": skeleton, "clip": clip, "meshes": meshes, "loop": True}
-        except Exception:
+                context = {
+                    "skeleton": skeleton,
+                    "clip": clip,
+                    "meshes": meshes,
+                    "loop": True,
+                    "show_capture_joints": False,
+                    "show_animated_joints": False,
+                }
+        except Exception as exc:
             context = None
+            self._mgl_fbx_joints_log(
+                "context ingest failed "
+                + f"path={path_obj} err={exc!r}"
+            )
 
         cache[cache_key] = {"mtime": mtime, "context": context}
         self._mgl_fbx_rig_context_cache = cache
+        self._mgl_fbx_joints_log(
+            "context ingest "
+            + f"path={path_obj} has_context={bool(isinstance(context, dict))} "
+            + f"has_skeleton={bool(isinstance(context, dict) and context.get('skeleton') is not None)} "
+            + f"mesh_count={int(len(list(context.get('meshes') or []))) if isinstance(context, dict) else 0} "
+            + f"has_clip={bool(isinstance(context, dict) and context.get('clip') is not None)}"
+        )
         return context if isinstance(context, dict) else None
 
     def _mgl_scene_owner_fbx_rig_context(self, owner: str) -> Optional[dict]:
@@ -354,7 +442,7 @@ class MGLRendererMixin:
         if not owner_key:
             return None
         owner_key_norm = owner_key.lower()
-        for tag in ("scene-model", "scene-wire", "model"):
+        for tag in ("scene-model", "scene-wire", "scene-rig-joints", "model"):
             try:
                 items = list(scene.iter_by_tag(tag))
             except Exception:
@@ -427,32 +515,48 @@ class MGLRendererMixin:
 
     def _mgl_refresh_fbx_rig_wire_item(self, item: MGLSceneItem) -> None:
         if np is None:
+            self._mgl_fbx_joints_log("refresh skip reason=numpy_unavailable")
             return
         payload = item.payload or {}
         context = payload.get("fbx_rig_context")
         if not isinstance(context, dict):
+            if str(getattr(item, "tag", "") or "") == "scene-rig-joints":
+                self._mgl_fbx_joints_log(
+                    "refresh skip reason=no_context "
+                    + f"item={item.name} id={getattr(item, 'item_id', 0)}"
+                )
             return
 
-        frame = self._mgl_timeline_frame_index()
-        if payload.get("_fbx_rig_frame", None) == frame and payload.get("vao") is not None:
+        pose_mode = str(payload.get("fbx_rig_pose_mode", "animated") or "animated").strip().lower()
+        frame_key = (
+            ("capture", 0)
+            if pose_mode in {"capture", "bind", "rest", "capture_pose"}
+            else ("animated", self._mgl_timeline_frame_index())
+        )
+        if payload.get("_fbx_rig_frame", None) == frame_key and payload.get("vao") is not None:
             return
 
         skeleton = context.get("skeleton")
         if skeleton is None:
-            return
-        clip = context.get("clip")
-        loop = bool(context.get("loop", True))
-        try:
-            sample = evaluate_skeleton_line_points(
-                skeleton,
-                clip,
-                self._mgl_fbx_context_timeline_sample_seconds(context),
-                loop=loop,
+            self._mgl_fbx_joints_log(
+                "refresh skip reason=no_skeleton "
+                + f"item={item.name} id={getattr(item, 'item_id', 0)} mode={pose_mode}"
             )
-        except Exception:
             return
-
-        line_points = np.array(sample.line_points or [], dtype="f4").reshape(-1, 3)
+        if pose_mode in {"capture", "bind", "rest", "capture_pose"}:
+            clip = None
+            sample_time = 0.0
+            loop = True
+        else:
+            clip = context.get("clip")
+            sample_time = self._mgl_fbx_context_timeline_sample_seconds(context)
+            loop = bool(context.get("loop", True))
+        line_points = self._mgl_fbx_joint_line_points(
+            skeleton,
+            clip,
+            sample_time,
+            loop=loop,
+        )
         owner = payload.get("owner")
         path_key = payload.get("path")
         color = payload.get("color")
@@ -471,18 +575,46 @@ class MGLRendererMixin:
         if replacement is None:
             item.resources = []
             old_payload["vao"] = None
-            old_payload["_fbx_rig_frame"] = frame
+            old_payload["_fbx_rig_frame"] = frame_key
             item.payload = old_payload
+            self._mgl_fbx_joints_log(
+                "refresh replacement_missing "
+                + f"item={item.name} id={getattr(item, 'item_id', 0)} mode={pose_mode} "
+                + f"segments={int(line_points.shape[0] // 2)} visible={bool(item.visible)} "
+                + f"owner={owner or ''} path={path_key or ''}"
+            )
         else:
             new_payload = dict(replacement.payload or {})
             new_payload["fbx_rig_context"] = context
-            new_payload["_fbx_rig_frame"] = frame
+            new_payload["_fbx_rig_frame"] = frame_key
+            new_payload["fbx_rig_pose_mode"] = pose_mode
             if color is not None:
                 new_payload["color"] = color
             if line_width is not None:
                 new_payload["line_width"] = line_width
+            if "xray" in payload:
+                new_payload["xray"] = bool(payload.get("xray"))
+            if "xray_back_alpha" in payload:
+                try:
+                    new_payload["xray_back_alpha"] = float(payload.get("xray_back_alpha", 0.25) or 0.25)
+                except Exception:
+                    pass
+            try:
+                new_payload["segment_count"] = int(line_points.shape[0] // 2)
+                new_payload["bounds_min"] = line_points.min(axis=0).astype("f4")
+                new_payload["bounds_max"] = line_points.max(axis=0).astype("f4")
+            except Exception:
+                pass
             item.payload = new_payload
             item.resources = list(replacement.resources or [])
+            self._mgl_fbx_joints_log_throttled(
+                f"_mgl_fbx_refresh_ok_{getattr(item, 'item_id', 0)}",
+                "refresh ok "
+                + f"item={item.name} id={getattr(item, 'item_id', 0)} mode={pose_mode} "
+                + f"segments={int(line_points.shape[0] // 2)} visible={bool(item.visible)} "
+                + f"owner={owner or ''} path={path_key or ''}",
+                interval=0.4,
+            )
 
         for res in old_resources:
             if res is not None and hasattr(res, "release"):
@@ -679,6 +811,367 @@ class MGLRendererMixin:
             return bool(raw)
         except Exception:
             return False
+
+    @staticmethod
+    def _mgl_fbx_capture_joints_debug_enabled(context: dict | None) -> bool:
+        if not isinstance(context, dict):
+            return False
+        raw = context.get("show_capture_joints", context.get("capture_joint_debug", False))
+        if isinstance(raw, str):
+            token = raw.strip().lower()
+            if token in {"1", "true", "yes", "on"}:
+                return True
+            if token in {"0", "false", "no", "off"}:
+                return False
+            return False
+        try:
+            return bool(raw)
+        except Exception:
+            return False
+
+    @staticmethod
+    def _mgl_fbx_animated_joints_debug_enabled(context: dict | None) -> bool:
+        if not isinstance(context, dict):
+            return False
+        raw = context.get("show_animated_joints", context.get("animated_joint_debug", False))
+        if isinstance(raw, str):
+            token = raw.strip().lower()
+            if token in {"1", "true", "yes", "on"}:
+                return True
+            if token in {"0", "false", "no", "off"}:
+                return False
+            return False
+        try:
+            return bool(raw)
+        except Exception:
+            return False
+
+    def _mgl_fbx_bind_joints_only_enabled(self, context: dict | None) -> bool:
+        # "Bind joints" debug mode intentionally hides mesh geometry and leaves only joint overlays.
+        return self._mgl_fbx_capture_joints_debug_enabled(context)
+
+    def _mgl_fbx_joint_line_points(
+        self,
+        skeleton,
+        clip,
+        sample_time: float,
+        *,
+        loop: bool,
+    ) -> NDArray:
+        if np is None or skeleton is None:
+            return np.zeros((0, 3), dtype="f4")
+
+        line_points = np.zeros((0, 3), dtype="f4")
+        line_source = "none"
+        line_from_stage6 = np.zeros((0, 3), dtype="f4")
+
+        def _segments_all_degenerate(points: NDArray, eps: float = 1.0e-7) -> bool:
+            try:
+                arr = np.asarray(points, dtype="f4").reshape(-1, 3)
+            except Exception:
+                return True
+            if arr.size == 0:
+                return True
+            edge_count = int(arr.shape[0] // 2)
+            if edge_count <= 0:
+                return True
+            try:
+                seg = arr[: edge_count * 2].reshape(edge_count, 2, 3)
+                lens = np.linalg.norm(seg[:, 1, :] - seg[:, 0, :], axis=1)
+                return bool(np.count_nonzero(lens > float(eps)) <= 0)
+            except Exception:
+                return True
+
+        def _positions_collapsed(points: NDArray, eps: float = 1.0e-7) -> bool:
+            try:
+                arr = np.asarray(points, dtype="f4").reshape(-1, 3)
+            except Exception:
+                return True
+            if arr.size == 0:
+                return True
+            try:
+                mins = arr.min(axis=0)
+                maxs = arr.max(axis=0)
+                return float(np.linalg.norm(maxs - mins)) <= float(eps)
+            except Exception:
+                return True
+
+        def _positions_diag(points: NDArray) -> float:
+            try:
+                arr = np.asarray(points, dtype="f4").reshape(-1, 3)
+            except Exception:
+                return 0.0
+            if arr.size == 0:
+                return 0.0
+            try:
+                mins = arr.min(axis=0)
+                maxs = arr.max(axis=0)
+                d = float(np.linalg.norm(maxs - mins))
+                if not math.isfinite(d):
+                    return 0.0
+                return max(0.0, d)
+            except Exception:
+                return 0.0
+
+        try:
+            sample = evaluate_skeleton_line_points(
+                skeleton,
+                clip,
+                float(sample_time),
+                loop=bool(loop),
+            )
+            line_from_stage6 = np.array(sample.line_points or [], dtype="f4").reshape(-1, 3)
+            line_points = line_from_stage6
+            if line_points.size and not _segments_all_degenerate(line_points):
+                line_source = "stage6_eval"
+            elif line_points.size:
+                line_points = np.zeros((0, 3), dtype="f4")
+                line_source = "stage6_eval_degenerate"
+        except Exception:
+            line_points = np.zeros((0, 3), dtype="f4")
+
+        joint_positions = np.zeros((0, 3), dtype="f4")
+        try:
+            evaluation = evaluate_rig_at_time(
+                skeleton=skeleton,
+                clip=clip,
+                time_seconds=float(sample_time),
+                loop=bool(loop),
+            )
+            rows_tcol: List[Tuple[float, float, float]] = []
+            rows_trow: List[Tuple[float, float, float]] = []
+            for matrix in list(getattr(evaluation, "global_matrices", []) or []):
+                values = tuple(matrix or ())
+                if len(values) != 16:
+                    continue
+                rows_tcol.append((float(values[3]), float(values[7]), float(values[11])))
+                rows_trow.append((float(values[12]), float(values[13]), float(values[14])))
+            cand_tcol = (
+                np.asarray(rows_tcol, dtype="f4").reshape(-1, 3)
+                if rows_tcol
+                else np.zeros((0, 3), dtype="f4")
+            )
+            cand_trow = (
+                np.asarray(rows_trow, dtype="f4").reshape(-1, 3)
+                if rows_trow
+                else np.zeros((0, 3), dtype="f4")
+            )
+            diag_tcol = _positions_diag(cand_tcol)
+            diag_trow = _positions_diag(cand_trow)
+            if diag_trow > diag_tcol:
+                joint_positions = cand_trow
+                if line_source in {"none", "stage6_eval_degenerate"}:
+                    line_source = "eval_trow_positions"
+            else:
+                joint_positions = cand_tcol
+                if line_source in {"none", "stage6_eval_degenerate"}:
+                    line_source = "eval_tcol_positions"
+        except Exception:
+            joint_positions = np.zeros((0, 3), dtype="f4")
+
+        if joint_positions.size == 0 or _positions_collapsed(joint_positions):
+            joints = list(getattr(skeleton, "joints", []) or [])
+            if joints:
+                inv_rows_tcol: List[Tuple[float, float, float]] = []
+                inv_rows_trow: List[Tuple[float, float, float]] = []
+                for joint in joints:
+                    raw_inv = tuple(getattr(joint, "inverse_bind_matrix", ()) or ())
+                    if len(raw_inv) != 16:
+                        inv_rows_tcol = []
+                        inv_rows_trow = []
+                        break
+                    try:
+                        inv_bind = np.asarray(raw_inv, dtype="f4").reshape(4, 4)
+                        bind_global = np.linalg.inv(inv_bind)
+                        flat = bind_global.reshape(-1)
+                        inv_rows_tcol.append((float(flat[3]), float(flat[7]), float(flat[11])))
+                        inv_rows_trow.append((float(flat[12]), float(flat[13]), float(flat[14])))
+                    except Exception:
+                        inv_rows_tcol = []
+                        inv_rows_trow = []
+                        break
+                if inv_rows_tcol or inv_rows_trow:
+                    try:
+                        inv_tcol = (
+                            np.asarray(inv_rows_tcol, dtype="f4").reshape(-1, 3)
+                            if inv_rows_tcol
+                            else np.zeros((0, 3), dtype="f4")
+                        )
+                        inv_trow = (
+                            np.asarray(inv_rows_trow, dtype="f4").reshape(-1, 3)
+                            if inv_rows_trow
+                            else np.zeros((0, 3), dtype="f4")
+                        )
+                    except Exception:
+                        inv_tcol = np.zeros((0, 3), dtype="f4")
+                        inv_trow = np.zeros((0, 3), dtype="f4")
+                    diag_inv_tcol = _positions_diag(inv_tcol)
+                    diag_inv_trow = _positions_diag(inv_trow)
+                    inv_positions = inv_trow if diag_inv_trow > diag_inv_tcol else inv_tcol
+                    if inv_positions.size and not _positions_collapsed(inv_positions):
+                        joint_positions = np.asarray(inv_positions, dtype="f4").reshape(-1, 3)
+                        if line_source in {"none", "stage6_eval_degenerate"}:
+                            line_source = (
+                                "inverse_bind_trow_positions"
+                                if diag_inv_trow > diag_inv_tcol
+                                else "inverse_bind_tcol_positions"
+                            )
+
+        if joint_positions.size == 0:
+            joints = list(getattr(skeleton, "joints", []) or [])
+            if joints:
+                cached_world: Dict[int, NDArray] = {}
+                resolving: set[int] = set()
+
+                def _joint_local_translation(index: int) -> NDArray:
+                    try:
+                        joint = joints[int(index)]
+                    except Exception:
+                        return np.zeros((3,), dtype="f4")
+                    local_bind = getattr(joint, "local_bind", None)
+                    raw = getattr(local_bind, "translation", (0.0, 0.0, 0.0))
+                    try:
+                        return np.array(
+                            [float(raw[0]), float(raw[1]), float(raw[2])],
+                            dtype="f4",
+                        )
+                    except Exception:
+                        return np.zeros((3,), dtype="f4")
+
+                def _joint_world_translation(index: int) -> NDArray:
+                    idx = int(index)
+                    if idx in cached_world:
+                        return cached_world[idx]
+                    if idx in resolving:
+                        return _joint_local_translation(idx)
+                    resolving.add(idx)
+                    local = _joint_local_translation(idx)
+                    try:
+                        parent_idx = int(getattr(joints[idx], "parent_index", -1) or -1)
+                    except Exception:
+                        parent_idx = -1
+                    if 0 <= parent_idx < len(joints) and parent_idx != idx:
+                        world = (
+                            _joint_world_translation(parent_idx) + local
+                        ).astype("f4", copy=False)
+                    else:
+                        world = local
+                    cached_world[idx] = world
+                    resolving.discard(idx)
+                    return world
+
+                rows: List[Tuple[float, float, float]] = []
+                for idx in range(len(joints)):
+                    w = _joint_world_translation(idx)
+                    rows.append((float(w[0]), float(w[1]), float(w[2])))
+                if rows:
+                    try:
+                        joint_positions = np.asarray(rows, dtype="f4").reshape(-1, 3)
+                    except Exception:
+                        joint_positions = np.zeros((0, 3), dtype="f4")
+
+        if line_points.size == 0:
+            joints = list(getattr(skeleton, "joints", []) or [])
+            if joints and joint_positions.size:
+                segment_rows: List[NDArray] = []
+                count = min(len(joints), int(joint_positions.shape[0]))
+                for idx in range(count):
+                    parent_idx = int(getattr(joints[idx], "parent_index", -1) or -1)
+                    if parent_idx < 0 or parent_idx >= count or parent_idx == idx:
+                        continue
+                    p0 = joint_positions[parent_idx]
+                    p1 = joint_positions[idx]
+                    try:
+                        if float(np.linalg.norm(p1 - p0)) <= 1.0e-7:
+                            continue
+                    except Exception:
+                        pass
+                    segment_rows.append(p0)
+                    segment_rows.append(p1)
+                if segment_rows:
+                    try:
+                        line_points = np.asarray(segment_rows, dtype="f4").reshape(-1, 3)
+                        if line_points.size and not _segments_all_degenerate(line_points):
+                            line_source = "hierarchy_segments"
+                        elif line_points.size:
+                            line_points = np.zeros((0, 3), dtype="f4")
+                    except Exception:
+                        line_points = np.zeros((0, 3), dtype="f4")
+
+        if line_points.size and _segments_all_degenerate(line_points):
+            line_points = np.zeros((0, 3), dtype="f4")
+            if line_source in {"stage6_eval", "hierarchy_segments"}:
+                line_source = f"{line_source}_degenerate"
+
+        if line_points.size == 0 and joint_positions.size:
+            try:
+                mins = joint_positions.min(axis=0)
+                maxs = joint_positions.max(axis=0)
+                diag = float(np.linalg.norm(maxs - mins))
+            except Exception:
+                diag = 0.0
+            marker = max(0.01, float(diag) * 0.01)
+            if not math.isfinite(marker) or marker <= 0.0:
+                marker = 0.05
+            cross_rows: List[Tuple[float, float, float]] = []
+            for pos in joint_positions:
+                px = float(pos[0])
+                py = float(pos[1])
+                pz = float(pos[2])
+                cross_rows.extend(
+                    [
+                        (px - marker, py, pz),
+                        (px + marker, py, pz),
+                        (px, py - marker, pz),
+                        (px, py + marker, pz),
+                        (px, py, pz - marker),
+                        (px, py, pz + marker),
+                    ]
+                )
+            if cross_rows:
+                try:
+                    line_points = np.asarray(cross_rows, dtype="f4").reshape(-1, 3)
+                    if line_points.size and not _segments_all_degenerate(line_points):
+                        line_source = "joint_cross_markers"
+                    elif line_points.size:
+                        line_points = np.zeros((0, 3), dtype="f4")
+                except Exception:
+                    line_points = np.zeros((0, 3), dtype="f4")
+
+        if line_points.size == 0:
+            try:
+                skeleton_name = str(getattr(skeleton, "name", "") or "<unnamed>")
+                joint_count = int(len(list(getattr(skeleton, "joints", []) or [])))
+                clip_name = str(getattr(clip, "name", "") or "<bind>")
+                self._mgl_fbx_joints_log_throttled(
+                    f"_mgl_fbx_joint_line_points_empty_{id(skeleton)}_{clip_name}_{int(bool(loop))}",
+                    "joint-line-points empty "
+                    + f"skeleton={skeleton_name} joints={joint_count} clip={clip_name} "
+                    + f"sample={float(sample_time):.6f} loop={bool(loop)} source={line_source} "
+                    + f"stage6_segments={int(line_from_stage6.shape[0] // 2) if line_from_stage6.size else 0}",
+                    interval=0.5,
+                )
+            except Exception:
+                pass
+            return np.zeros((0, 3), dtype="f4")
+        output = np.asarray(line_points, dtype="f4").reshape(-1, 3)
+        try:
+            skeleton_name = str(getattr(skeleton, "name", "") or "<unnamed>")
+            clip_name = str(getattr(clip, "name", "") or "<bind>")
+            seg_count = int(output.shape[0] // 2)
+            joint_count = int(joint_positions.shape[0]) if joint_positions.size else int(
+                len(list(getattr(skeleton, "joints", []) or []))
+            )
+            self._mgl_fbx_joints_log_throttled(
+                f"_mgl_fbx_joint_line_points_ok_{id(skeleton)}_{clip_name}_{int(bool(loop))}",
+                "joint-line-points ok "
+                + f"skeleton={skeleton_name} joints={joint_count} clip={clip_name} "
+                + f"sample={float(sample_time):.6f} loop={bool(loop)} source={line_source} segments={seg_count}",
+                interval=0.5,
+            )
+        except Exception:
+            pass
+        return output
 
     @staticmethod
     def _mgl_fbx_joint_debug_color(joint_index: int) -> Tuple[float, float, float]:
@@ -1577,7 +2070,8 @@ class MGLRendererMixin:
                     if item is not None:
                         payload = dict(item.payload or {})
                         payload["fbx_rig_context"] = context
-                        payload["_fbx_rig_frame"] = self._mgl_timeline_frame_index()
+                        payload["fbx_rig_pose_mode"] = "animated"
+                        payload["_fbx_rig_frame"] = ("animated", self._mgl_timeline_frame_index())
                         item.payload = payload
                         return item
         try:
@@ -1592,6 +2086,107 @@ class MGLRendererMixin:
             owner=owner,
             path_key=path_key,
         )
+
+    def _mgl_add_fbx_joint_overlay_item(
+        self,
+        path: Path,
+        visible: bool,
+        *,
+        pose_mode: str,
+        owner: Optional[str] = None,
+        path_key: Optional[str] = None,
+        rig_context: Optional[dict] = None,
+    ) -> Optional[MGLSceneItem]:
+        if np is None:
+            self._mgl_fbx_joints_log(
+                "overlay skip reason=numpy_unavailable "
+                + f"mode={pose_mode} owner={owner or ''} path={path_key or path}"
+            )
+            return None
+        context = rig_context if isinstance(rig_context, dict) else self._mgl_fbx_rig_context_for_path(path)
+        if not isinstance(context, dict):
+            self._mgl_fbx_joints_log(
+                "overlay skip reason=no_context "
+                + f"mode={pose_mode} owner={owner or ''} path={path_key or path}"
+            )
+            return None
+        skeleton = context.get("skeleton")
+        if skeleton is None:
+            self._mgl_fbx_joints_log(
+                "overlay skip reason=no_skeleton "
+                + f"mode={pose_mode} owner={owner or ''} path={path_key or path} "
+                + f"capture={bool(context.get('show_capture_joints', False))} "
+                + f"animated={bool(context.get('show_animated_joints', False))}"
+            )
+            return None
+        mode = str(pose_mode or "animated").strip().lower()
+        if mode in {"capture", "bind", "rest", "capture_pose"}:
+            clip = None
+            sample_time = 0.0
+            loop = True
+            default_color = (1.00, 0.12, 0.12, 1.0)
+        else:
+            mode = "animated"
+            clip = context.get("clip")
+            sample_time = self._mgl_fbx_context_timeline_sample_seconds(context)
+            loop = bool(context.get("loop", True))
+            default_color = (1.00, 0.95, 0.15, 1.0)
+        line_points = self._mgl_fbx_joint_line_points(
+            skeleton,
+            clip,
+            sample_time,
+            loop=loop,
+        )
+        if line_points.size == 0:
+            self._mgl_fbx_joints_log(
+                "overlay skip reason=empty_line_points "
+                + f"mode={mode} owner={owner or ''} path={path_key or path}"
+            )
+            return None
+        name_suffix = "capture" if mode == "capture" else "animated"
+        item = self._mgl_add_wire_item_from_points(
+            name=f"{path.name}-joints-{name_suffix}",
+            line_points=line_points,
+            visible=visible,
+            tag="scene-rig-joints",
+            owner=owner,
+            path_key=path_key,
+        )
+        if item is None:
+            self._mgl_fbx_joints_log(
+                "overlay skip reason=wire_item_failed "
+                + f"mode={mode} owner={owner or ''} path={path_key or path} "
+                + f"points={int(line_points.shape[0])}"
+            )
+            return None
+        payload = dict(item.payload or {})
+        payload["color"] = default_color
+        payload["line_width"] = 5.2
+        payload["xray"] = True
+        payload["xray_back_alpha"] = 0.35
+        payload["fbx_rig_context"] = context
+        payload["fbx_rig_pose_mode"] = mode
+        payload["_fbx_rig_frame"] = (
+            ("capture", 0) if mode == "capture" else ("animated", self._mgl_timeline_frame_index())
+        )
+        try:
+            payload["segment_count"] = int(line_points.shape[0] // 2)
+            payload["bounds_min"] = line_points.min(axis=0).astype("f4")
+            payload["bounds_max"] = line_points.max(axis=0).astype("f4")
+        except Exception:
+            pass
+        item.payload = payload
+        try:
+            self._mgl_fbx_joints_log(
+                "overlay add "
+                + f"mode={mode} owner={owner or ''} path={path_key or path} "
+                + f"visible={bool(visible)} segments={int(line_points.shape[0] // 2)} "
+                + f"capture={bool(context.get('show_capture_joints', False))} "
+                + f"animated={bool(context.get('show_animated_joints', False))}"
+            )
+        except Exception:
+            pass
+        return item
 
     @staticmethod
     def _mgl_casefold_get(mapping, key):
@@ -1882,7 +2477,16 @@ class MGLRendererMixin:
         scene = getattr(self, "_mgl_scene", None)
         if scene is None:
             return
-        for tag in ("model", "model-wire", "scene-model", "scene-wire", "scene-volume", "scene-camera", "scene-fx-trail"):
+        for tag in (
+            "model",
+            "model-wire",
+            "scene-model",
+            "scene-wire",
+            "scene-rig-joints",
+            "scene-volume",
+            "scene-camera",
+            "scene-fx-trail",
+        ):
             scene.remove_by_tag(tag)
 
     def _mgl_disable_splats(self) -> None:
@@ -2140,8 +2744,20 @@ class MGLRendererMixin:
             if owner == key or path_key == key or owner_norm == key_norm or path_norm == key_norm or target_norm == key_norm:
                 if item.tag == "scene-wire":
                     item.visible = bool(visible) and bool(getattr(self, "_mgl_wireframe", False))
+                elif item.tag in {"scene-model", "model"} and bool(payload.get("fbx_bind_joints_only", False)):
+                    item.visible = False
+                    self._mgl_fbx_joints_log(
+                        "visibility enforce_hidden "
+                        + f"key={key} tag={item.tag} owner={owner or ''} path={path_key or ''}"
+                    )
                 else:
                     item.visible = visible
+                if item.tag == "scene-rig-joints":
+                    self._mgl_fbx_joints_log(
+                        "visibility set "
+                        + f"key={key} tag={item.tag} owner={owner or ''} path={path_key or ''} "
+                        + f"visible={bool(item.visible)} requested={bool(visible)}"
+                    )
 
     def _mgl_rename_scene_item_owner(self, old_name: str, new_name: str) -> None:
         scene = getattr(self, "_mgl_scene", None)
@@ -3733,7 +4349,7 @@ class MGLRendererMixin:
         # apply to matching scene items (solid + wire)
         if apply_to_scene_models:
             try:
-                for tag in ("scene-model", "scene-wire", "scene-volume", "scene-camera"):
+                for tag in ("scene-model", "scene-wire", "scene-rig-joints", "scene-volume", "scene-camera"):
                     for item in scene.iter_by_tag(tag):
                         payload = getattr(item, "payload", None) or {}
                         item_owner = str(payload.get("owner") or "").strip().lower()
@@ -5026,14 +5642,32 @@ class MGLRendererMixin:
         if self._mgl_wire_prog is None:
             return
         payload = item.payload or {}
+        tag = str(getattr(item, "tag", "") or "")
+        if tag == "scene-rig-joints":
+            self._mgl_fbx_joints_log_throttled(
+                f"_mgl_fbx_draw_begin_{getattr(item, 'item_id', 0)}",
+                "draw begin "
+                + f"item={item.name} id={getattr(item, 'item_id', 0)} visible={bool(getattr(item, 'visible', False))} "
+                + f"has_context={bool(isinstance(payload.get('fbx_rig_context'), dict))} "
+                + f"mode={payload.get('fbx_rig_pose_mode', '')} segments={int(payload.get('segment_count', 0) or 0)} "
+                + f"owner={payload.get('owner', '')} path={payload.get('path', '')}",
+                interval=0.35,
+            )
         if isinstance(payload.get("fbx_rig_context"), dict):
             self._mgl_refresh_fbx_rig_wire_item(item)
             payload = item.payload or {}
         vao = payload.get("vao")
         if vao is None:
+            if tag == "scene-rig-joints":
+                self._mgl_fbx_joints_log(
+                    "draw skip reason=no_vao "
+                    + f"item={item.name} id={getattr(item, 'item_id', 0)} "
+                    + f"mode={payload.get('fbx_rig_pose_mode', '')} "
+                    + f"segments={int(payload.get('segment_count', 0) or 0)}"
+                )
             return
-        tag = getattr(item, "tag", "")
         is_volume = tag == "scene-volume"
+        xray = bool(payload.get("xray", False))
 
         def _as_rgba(col):
             try:
@@ -5049,6 +5683,9 @@ class MGLRendererMixin:
             try:
                 mvp_to_use = mvp
                 model = payload.get("model")
+                if tag == "scene-rig-joints":
+                    # Debug readability: keep rig joints in local asset space and ignore owner xform drift.
+                    model = None
                 if model is not None and Matrix44 is not None:
                     try:
                         if isinstance(model, Matrix44):
@@ -5094,7 +5731,7 @@ class MGLRendererMixin:
         except Exception:
             pass
 
-        if not is_volume:
+        if not is_volume and not xray:
             try:
                 self._mgl_ctx.depth_func = "<="
             except Exception:
@@ -5109,6 +5746,12 @@ class MGLRendererMixin:
                 _render()
             except Exception as exc:
                 self._mgl_error = f"Scene wire draw failed: {exc}"
+                if tag == "scene-rig-joints":
+                    self._mgl_fbx_joints_log(
+                        "draw error "
+                        + f"item={item.name} id={getattr(item, 'item_id', 0)} "
+                        + f"pass=front err={exc!r}"
+                    )
             finally:
                 if prev_depth_mask is not None:
                     try:
@@ -5137,7 +5780,12 @@ class MGLRendererMixin:
 
         base_color = _as_rgba(payload.get("color") or self._mgl_wire_color)
         front_color = base_color
-        back_color = (base_color[0], base_color[1], base_color[2], base_color[3] * 0.25)
+        try:
+            back_alpha_scale = float(payload.get("xray_back_alpha", 0.25) or 0.25)
+        except Exception:
+            back_alpha_scale = 0.25
+        back_alpha_scale = max(0.0, min(1.0, back_alpha_scale))
+        back_color = (base_color[0], base_color[1], base_color[2], base_color[3] * back_alpha_scale)
 
         try:
             try:
@@ -5155,6 +5803,12 @@ class MGLRendererMixin:
             _render()
         except Exception as exc:
             self._mgl_error = f"Scene wire draw failed: {exc}"
+            if tag == "scene-rig-joints":
+                self._mgl_fbx_joints_log(
+                    "draw error "
+                    + f"item={item.name} id={getattr(item, 'item_id', 0)} "
+                    + f"pass=xray err={exc!r}"
+                )
         finally:
             if prev_depth_mask is not None:
                 try:
@@ -9020,6 +9674,13 @@ class MGLRendererMixin:
         if self._mgl_ctx is None:
             self._mgl_error = "ModernGL context not ready"
             return
+        try:
+            self._mgl_fbx_joints_log(
+                "================================ load_mesh ================================= "
+                + f"path={path}"
+            )
+        except Exception:
+            pass
         if self._mgl_texture is not None:
             try:
                 self._mgl_texture.release()
@@ -9039,20 +9700,20 @@ class MGLRendererMixin:
         normals = None
         uvs = None
         mesh_arrays = None
+        fbx_rig_context = None
         if mesh is None:
             if path.suffix.lower() == ".fbx":
+                try:
+                    fbx_rig_context = self._mgl_fbx_rig_context_for_path(path)
+                except Exception:
+                    fbx_rig_context = None
                 try:
                     mesh_arrays = load_fbx_mesh_arrays_pyassimp(path)
                     points = mesh_arrays.points
                     normals = mesh_arrays.normals
                     uvs = mesh_arrays.uvs
                 except Exception as exc:
-                    rig_context = None
-                    try:
-                        rig_context = self._mgl_fbx_rig_context_for_path(path)
-                    except Exception:
-                        rig_context = None
-                    mesh_arrays = self._mgl_fbx_mesh_arrays_from_context(rig_context)
+                    mesh_arrays = self._mgl_fbx_mesh_arrays_from_context(fbx_rig_context)
                     if mesh_arrays is None:
                         self._mgl_error = f"FBX load failed: {exc}"
                         return
@@ -9097,6 +9758,22 @@ class MGLRendererMixin:
                 self._mgl_mesh_vbos = []
                 self._mgl_index_buffer = None
             model_item = None
+            fbx_bind_joints_only = bool(
+                path.suffix.lower() == ".fbx"
+                and self._mgl_fbx_bind_joints_only_enabled(
+                    fbx_rig_context if isinstance(fbx_rig_context, dict) else None
+                )
+            )
+            if path.suffix.lower() == ".fbx":
+                context = fbx_rig_context if isinstance(fbx_rig_context, dict) else {}
+                self._mgl_fbx_joints_log(
+                    "load_mesh begin "
+                    + f"path={path} has_context={bool(isinstance(fbx_rig_context, dict))} "
+                    + f"has_skeleton={bool(context.get('skeleton') is not None)} "
+                    + f"capture={bool(context.get('show_capture_joints', False))} "
+                    + f"animated={bool(context.get('show_animated_joints', False))} "
+                    + f"bind_only={bool(fbx_bind_joints_only)} wireframe={bool(getattr(self, '_mgl_wireframe', False))}"
+                )
             if mesh is not None:
                 mesh.update_normals()
                 points = np.array(mesh.points(), dtype="f4")
@@ -9125,8 +9802,11 @@ class MGLRendererMixin:
                         "texture": None,
                         "color": self._mgl_mesh_color,
                         "path": str(path),
+                        "fbx_rig_context": fbx_rig_context if isinstance(fbx_rig_context, dict) else None,
+                        "fbx_bind_joints_only": bool(fbx_bind_joints_only),
                     },
                     resources=[res for res in resources if res is not None],
+                    visible=not bool(fbx_bind_joints_only),
                     order=10,
                     tag="model",
                 )
@@ -9161,8 +9841,14 @@ class MGLRendererMixin:
                     item = MGLSceneItem(
                         name=path.name,
                         draw_fn=MGLRendererMixin._mgl_draw_scene_mesh,
-                        payload={"submeshes": entries, "path": str(path)},
+                        payload={
+                            "submeshes": entries,
+                            "path": str(path),
+                            "fbx_rig_context": fbx_rig_context if isinstance(fbx_rig_context, dict) else None,
+                            "fbx_bind_joints_only": bool(fbx_bind_joints_only),
+                        },
                         resources=[res for res in resources if res is not None],
+                        visible=not bool(fbx_bind_joints_only),
                         order=10,
                         tag="model",
                     )
@@ -9204,8 +9890,11 @@ class MGLRendererMixin:
                             "texture": None,
                             "color": self._mgl_mesh_color,
                             "path": str(path),
+                            "fbx_rig_context": fbx_rig_context if isinstance(fbx_rig_context, dict) else None,
+                            "fbx_bind_joints_only": bool(fbx_bind_joints_only),
                         },
                         resources=[res for res in resources if res is not None],
+                        visible=not bool(fbx_bind_joints_only),
                         order=10,
                         tag="model",
                     )
@@ -9234,11 +9923,108 @@ class MGLRendererMixin:
                 if ext == ".obj":
                     wire_item = self._mgl_add_obj_wire_item(path, bool(self._mgl_wireframe))
                 elif ext == ".fbx":
-                    wire_item = self._mgl_add_fbx_wire_item(path, bool(self._mgl_wireframe))
+                    wire_item = self._mgl_add_fbx_wire_item(
+                        path,
+                        bool(self._mgl_wireframe) and (not bool(fbx_bind_joints_only)),
+                        rig_context=fbx_rig_context if isinstance(fbx_rig_context, dict) else None,
+                    )
                 if wire_item is not None:
                     scene.add(wire_item)
                     if model_item is not None:
                         model_item.payload["edge_wire"] = True
+                if ext == ".fbx":
+                    self._mgl_fbx_joints_log(
+                        "load_mesh wire "
+                        + f"path={path} added={bool(wire_item is not None)} "
+                        + f"wire_visible={bool(getattr(wire_item, 'visible', False)) if wire_item is not None else False} "
+                        + f"bind_only={bool(fbx_bind_joints_only)}"
+                    )
+                if ext == ".fbx" and isinstance(fbx_rig_context, dict):
+                    joint_overlays: List[MGLSceneItem] = []
+                    if self._mgl_fbx_capture_joints_debug_enabled(fbx_rig_context):
+                        capture_item = self._mgl_add_fbx_joint_overlay_item(
+                            path,
+                            True,
+                            pose_mode="capture",
+                            owner=None,
+                            path_key=str(path),
+                            rig_context=fbx_rig_context,
+                        )
+                        if capture_item is not None:
+                            capture_item.order = 16
+                            joint_overlays.append(capture_item)
+                    if self._mgl_fbx_animated_joints_debug_enabled(fbx_rig_context):
+                        animated_item = self._mgl_add_fbx_joint_overlay_item(
+                            path,
+                            True,
+                            pose_mode="animated",
+                            owner=None,
+                            path_key=str(path),
+                            rig_context=fbx_rig_context,
+                        )
+                        if animated_item is not None:
+                            animated_item.order = 16
+                            joint_overlays.append(animated_item)
+                    joint_bounds_min = None
+                    joint_bounds_max = None
+                    for overlay_item in joint_overlays:
+                        scene.add(overlay_item)
+                        try:
+                            payload = dict(getattr(overlay_item, "payload", None) or {})
+                            bmin = np.asarray(payload.get("bounds_min"), dtype="f4").reshape(-1)
+                            bmax = np.asarray(payload.get("bounds_max"), dtype="f4").reshape(-1)
+                            if bmin.size >= 3 and bmax.size >= 3:
+                                b0 = bmin[:3].astype("f4", copy=False)
+                                b1 = bmax[:3].astype("f4", copy=False)
+                                if joint_bounds_min is None or joint_bounds_max is None:
+                                    joint_bounds_min, joint_bounds_max = b0.copy(), b1.copy()
+                                else:
+                                    joint_bounds_min = np.minimum(joint_bounds_min, b0)
+                                    joint_bounds_max = np.maximum(joint_bounds_max, b1)
+                        except Exception:
+                            pass
+                    if (
+                        bool(fbx_bind_joints_only)
+                        and joint_bounds_min is not None
+                        and joint_bounds_max is not None
+                    ):
+                        try:
+                            self._mgl_init_arcball(
+                                np.array([joint_bounds_min, joint_bounds_max], dtype="f4")
+                            )
+                        except Exception:
+                            pass
+                    self._mgl_fbx_joints_log(
+                        "load_mesh overlays "
+                        + f"path={path} count={int(len(joint_overlays))} "
+                        + f"capture={bool(self._mgl_fbx_capture_joints_debug_enabled(fbx_rig_context))} "
+                        + f"animated={bool(self._mgl_fbx_animated_joints_debug_enabled(fbx_rig_context))} "
+                        + f"bind_only={bool(fbx_bind_joints_only)}"
+                    )
+                elif ext == ".fbx":
+                    self._mgl_fbx_joints_log(
+                        "load_mesh overlays skipped "
+                        + f"path={path} reason=no_context"
+                    )
+                if ext == ".fbx":
+                    try:
+                        rig_count = 0
+                        model_count = 0
+                        wire_count = 0
+                        for it in scene.items():
+                            tag = str(getattr(it, "tag", "") or "")
+                            if tag == "scene-rig-joints":
+                                rig_count += 1
+                            elif tag in {"model", "scene-model"}:
+                                model_count += 1
+                            elif tag in {"model-wire", "scene-wire"}:
+                                wire_count += 1
+                        self._mgl_fbx_joints_log(
+                            "load_mesh done "
+                            + f"path={path} rig_items={rig_count} model_items={model_count} wire_items={wire_count}"
+                        )
+                    except Exception:
+                        pass
             self._mgl_mesh_path = str(path)
         except Exception as exc:
             self._mgl_error = f"Mesh upload failed: {exc}"
@@ -9252,6 +10038,13 @@ class MGLRendererMixin:
         if self._mgl_ctx is None:
             self._mgl_error = "ModernGL context not ready"
             return
+        try:
+            self._mgl_fbx_joints_log(
+                "=============================== scene_load =============================== "
+                + f"asset_count={int(len(list(assets or [])))} frame={bool(frame)}"
+            )
+        except Exception:
+            pass
         scene = getattr(self, "_mgl_scene", None)
         if scene is None:
             self._mgl_error = "Scene assembly not ready"
@@ -9604,6 +10397,25 @@ class MGLRendererMixin:
                         fbx_rig_context = self._mgl_fbx_rig_context_for_path(path)
                     except Exception:
                         fbx_rig_context = None
+                fbx_bind_joints_only = bool(
+                    ext == ".fbx"
+                    and self._mgl_fbx_bind_joints_only_enabled(
+                        fbx_rig_context if isinstance(fbx_rig_context, dict) else None
+                    )
+                )
+                model_visible = bool(visible) and (not bool(fbx_bind_joints_only))
+                contribute_mesh_bounds = not bool(fbx_bind_joints_only)
+                if ext == ".fbx":
+                    context = fbx_rig_context if isinstance(fbx_rig_context, dict) else {}
+                    self._mgl_fbx_joints_log(
+                        "scene_asset begin "
+                        + f"owner={owner} path={path} visible={bool(visible)} "
+                        + f"has_context={bool(isinstance(fbx_rig_context, dict))} "
+                        + f"has_skeleton={bool(context.get('skeleton') is not None)} "
+                        + f"capture={bool(context.get('show_capture_joints', False))} "
+                        + f"animated={bool(context.get('show_animated_joints', False))} "
+                        + f"bind_only={bool(fbx_bind_joints_only)} model_visible={bool(model_visible)}"
+                    )
 
                 if is_camera:
                     # Preferred camera proxy path: an OBJ generated from primitive cube+cone,
@@ -9739,7 +10551,7 @@ class MGLRendererMixin:
                             tag="scene-volume" if is_volume else "scene-wire",
                             owner=owner,
                             path_key=path_key,
-                            rig_context=asset.get("fbx_rig_context") if isinstance(asset, dict) else None,
+                            rig_context=fbx_rig_context if isinstance(fbx_rig_context, dict) else None,
                         )
                     if wire_item is not None:
                         scene.add(wire_item)
@@ -9951,9 +10763,10 @@ class MGLRendererMixin:
                             "owner": owner,
                             "path": path_key,
                             "fbx_rig_context": fbx_rig_context if isinstance(fbx_rig_context, dict) else None,
+                            "fbx_bind_joints_only": bool(fbx_bind_joints_only),
                         },
                         resources=[res for res in resources if res is not None],
-                        visible=visible,
+                        visible=model_visible,
                         order=10,
                         tag="scene-model",
                     )
@@ -10012,9 +10825,10 @@ class MGLRendererMixin:
                                 "owner": owner,
                                 "path": path_key,
                                 "fbx_rig_context": fbx_rig_context if isinstance(fbx_rig_context, dict) else None,
+                                "fbx_bind_joints_only": bool(fbx_bind_joints_only),
                             },
                             resources=resources,
-                            visible=visible,
+                            visible=model_visible,
                             order=10,
                             tag="scene-model",
                         )
@@ -10027,8 +10841,9 @@ class MGLRendererMixin:
                                 self._mgl_scene_mesh_bounds_by_owner[owner] = (mins.astype("f4"), maxs.astype("f4"))
                             except Exception:
                                 pass
-                            bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, mins, maxs)
-                            has_mesh_bounds = True
+                            if contribute_mesh_bounds:
+                                bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, mins, maxs)
+                                has_mesh_bounds = True
                         elif mesh_arrays.submeshes:
                             for sub in mesh_arrays.submeshes:
                                 pts = getattr(sub, "points", None)
@@ -10041,8 +10856,9 @@ class MGLRendererMixin:
                                     self._mgl_scene_mesh_bounds_by_owner[owner] = (mins.astype("f4"), maxs.astype("f4"))
                                 except Exception:
                                     pass
-                                bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, mins, maxs)
-                                has_mesh_bounds = True
+                                if contribute_mesh_bounds:
+                                    bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, mins, maxs)
+                                    has_mesh_bounds = True
                         wire_sets = []
                         for sub in mesh_arrays.submeshes:
                             sub_points = getattr(sub, "points", None)
@@ -10107,9 +10923,10 @@ class MGLRendererMixin:
                                 "owner": owner,
                                 "path": path_key,
                                 "fbx_rig_context": fbx_rig_context if isinstance(fbx_rig_context, dict) else None,
+                                "fbx_bind_joints_only": bool(fbx_bind_joints_only),
                             },
                             resources=[res for res in resources if res is not None],
-                            visible=visible,
+                            visible=model_visible,
                             order=10,
                             tag="scene-model",
                         )
@@ -10143,8 +10960,9 @@ class MGLRendererMixin:
                             self._mgl_scene_mesh_bounds_by_owner[owner] = (mins.astype("f4"), maxs.astype("f4"))
                         except Exception:
                             pass
-                        bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, mins, maxs)
-                        has_mesh_bounds = True
+                        if contribute_mesh_bounds:
+                            bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, mins, maxs)
+                            has_mesh_bounds = True
                     wire_item = None
                     if ext in (".obj", ".fbx"):
                         if ext == ".obj":
@@ -10158,11 +10976,11 @@ class MGLRendererMixin:
                         else:
                             wire_item = self._mgl_add_fbx_wire_item(
                                 path,
-                                bool(self._mgl_wireframe) and visible,
+                                bool(self._mgl_wireframe) and visible and (not bool(fbx_bind_joints_only)),
                                 tag="scene-wire",
                                 owner=owner,
                                 path_key=path_key,
-                                rig_context=asset.get("fbx_rig_context") if isinstance(asset, dict) else None,
+                                rig_context=fbx_rig_context if isinstance(fbx_rig_context, dict) else None,
                             )
                     elif wire_points is not None and getattr(wire_points, "size", 0):
                         wire_item = self._mgl_add_wire_item_from_points(
@@ -10176,6 +10994,82 @@ class MGLRendererMixin:
                     if wire_item is not None:
                         scene.add(wire_item)
                         model_item.payload["edge_wire"] = True
+                    if ext == ".fbx":
+                        self._mgl_fbx_joints_log(
+                            "scene_asset wire "
+                            + f"owner={owner} path={path} added={bool(wire_item is not None)} "
+                            + f"wire_visible={bool(getattr(wire_item, 'visible', False)) if wire_item is not None else False} "
+                            + f"bind_only={bool(fbx_bind_joints_only)}"
+                        )
+                    if ext == ".fbx" and path is not None and isinstance(fbx_rig_context, dict):
+                        joint_overlays: List[MGLSceneItem] = []
+                        if self._mgl_fbx_capture_joints_debug_enabled(fbx_rig_context):
+                            capture_item = self._mgl_add_fbx_joint_overlay_item(
+                                path,
+                                bool(visible),
+                                pose_mode="capture",
+                                owner=owner,
+                                path_key=path_key,
+                                rig_context=fbx_rig_context,
+                            )
+                            if capture_item is not None:
+                                capture_item.order = 16
+                                joint_overlays.append(capture_item)
+                        if self._mgl_fbx_animated_joints_debug_enabled(fbx_rig_context):
+                            animated_item = self._mgl_add_fbx_joint_overlay_item(
+                                path,
+                                bool(visible),
+                                pose_mode="animated",
+                                owner=owner,
+                                path_key=path_key,
+                                rig_context=fbx_rig_context,
+                            )
+                            if animated_item is not None:
+                                animated_item.order = 16
+                                joint_overlays.append(animated_item)
+                        joint_bounds_min = None
+                        joint_bounds_max = None
+                        for overlay_item in joint_overlays:
+                            scene.add(overlay_item)
+                            try:
+                                payload = dict(getattr(overlay_item, "payload", None) or {})
+                                bmin = np.asarray(payload.get("bounds_min"), dtype="f4").reshape(-1)
+                                bmax = np.asarray(payload.get("bounds_max"), dtype="f4").reshape(-1)
+                                if bmin.size >= 3 and bmax.size >= 3:
+                                    b0 = bmin[:3].astype("f4", copy=False)
+                                    b1 = bmax[:3].astype("f4", copy=False)
+                                    if joint_bounds_min is None or joint_bounds_max is None:
+                                        joint_bounds_min, joint_bounds_max = b0.copy(), b1.copy()
+                                    else:
+                                        joint_bounds_min = np.minimum(joint_bounds_min, b0)
+                                        joint_bounds_max = np.maximum(joint_bounds_max, b1)
+                            except Exception:
+                                pass
+                        if (
+                            bool(fbx_bind_joints_only)
+                            and joint_bounds_min is not None
+                            and joint_bounds_max is not None
+                        ):
+                            bounds_min, bounds_max = _merge_bounds(
+                                bounds_min,
+                                bounds_max,
+                                joint_bounds_min,
+                                joint_bounds_max,
+                            )
+                            has_mesh_bounds = True
+                        self._mgl_fbx_joints_log(
+                            "scene_asset overlays "
+                            + f"owner={owner} path={path} count={int(len(joint_overlays))} "
+                            + f"capture={bool(self._mgl_fbx_capture_joints_debug_enabled(fbx_rig_context))} "
+                            + f"animated={bool(self._mgl_fbx_animated_joints_debug_enabled(fbx_rig_context))} "
+                            + f"bind_only={bool(fbx_bind_joints_only)} "
+                            + f"contrib_mesh_bounds={bool(contribute_mesh_bounds)}"
+                        )
+                    elif ext == ".fbx":
+                        self._mgl_fbx_joints_log(
+                            "scene_asset overlays skipped "
+                            + f"owner={owner} path={path} reason=no_context"
+                        )
 
             self._mgl_mesh_vertex_count = int(total_indices)
             if first_mesh_path:
@@ -10244,6 +11138,25 @@ class MGLRendererMixin:
                 except Exception:
                     pass
                 self._mgl_disable_splats()
+            try:
+                rig_count = 0
+                model_count = 0
+                wire_count = 0
+                for it in scene.items():
+                    tag = str(getattr(it, "tag", "") or "")
+                    if tag == "scene-rig-joints":
+                        rig_count += 1
+                    elif tag == "scene-model":
+                        model_count += 1
+                    elif tag == "scene-wire":
+                        wire_count += 1
+                self._mgl_fbx_joints_log(
+                    "scene_load done "
+                    + f"rig_items={rig_count} model_items={model_count} wire_items={wire_count} "
+                    + f"has_mesh_bounds={bool(has_mesh_bounds)}"
+                )
+            except Exception:
+                pass
 
         except Exception as exc:
             self._mgl_error = f"Scene load failed: {exc}"

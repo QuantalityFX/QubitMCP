@@ -1049,7 +1049,19 @@ def build_ports(node_item) -> None:
         _ensure_param(node_item, role, "")
         _ensure_input(node_item, role)
     _ensure_param(node_item, "skin_weight_debug", "0")
-    _ensure_hidden_params(getattr(node_item, "model", None), ["skin_weight_debug", "show_skin_weights"])
+    _ensure_param(node_item, "show_capture_joints", "0")
+    _ensure_param(node_item, "show_animated_joints", "0")
+    _ensure_hidden_params(
+        getattr(node_item, "model", None),
+        [
+            "skin_weight_debug",
+            "show_skin_weights",
+            "show_capture_joints",
+            "capture_joint_debug",
+            "show_animated_joints",
+            "animated_joint_debug",
+        ],
+    )
     # Stage 2 UX: keep role params visible/editable on the node.
     # Remove any legacy hidden flags from previous builds.
     _remove_hidden_params(getattr(node_item, "model", None), ROLE_PORTS)
@@ -1766,6 +1778,16 @@ def _build_preview_asset(model, result: SourceResolutionResult) -> Dict[str, Any
         "skin_weight_debug",
         default=_param_bool(model, "show_skin_weights", default=False),
     )
+    show_capture_joints = _param_bool(
+        model,
+        "show_capture_joints",
+        default=_param_bool(model, "capture_joint_debug", default=False),
+    )
+    show_animated_joints = _param_bool(
+        model,
+        "show_animated_joints",
+        default=_param_bool(model, "animated_joint_debug", default=False),
+    )
     asset["fbx_rig_context"] = {
         "skeleton": skeleton,
         "clip": clip,
@@ -1774,6 +1796,8 @@ def _build_preview_asset(model, result: SourceResolutionResult) -> Dict[str, Any
         # Debug step: keep FBXImport mesh in rest state while skeleton/clip diagnostics continue.
         "mesh_skinning_enabled": False,
         "skin_weight_debug": bool(weight_debug),
+        "show_capture_joints": bool(show_capture_joints),
+        "show_animated_joints": bool(show_animated_joints),
     }
     return asset
 
@@ -1790,7 +1814,17 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     kind = (getattr(node, "kind", "") or "").strip().lower()
     if kind not in FBX_KIND_ALIASES:
         return False
-    _ensure_hidden_params(node, ["skin_weight_debug", "show_skin_weights"])
+    _ensure_hidden_params(
+        node,
+        [
+            "skin_weight_debug",
+            "show_skin_weights",
+            "show_capture_joints",
+            "capture_joint_debug",
+            "show_animated_joints",
+            "animated_joint_debug",
+        ],
+    )
 
     def _node_item():
         try:
@@ -1836,6 +1870,12 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     weight_debug_toggle = QtWidgets.QCheckBox("Skin Weight Colors")
     weight_debug_toggle.setToolTip("Colorize the mesh by per-joint skinning weights.")
     weight_debug_toggle.setStyleSheet("QCheckBox{color:#cbd5e1;}")
+    capture_joints_toggle = QtWidgets.QCheckBox("Show Capture Joints")
+    capture_joints_toggle.setToolTip("Draw capture-pose skeleton joints on top of the mesh.")
+    capture_joints_toggle.setStyleSheet("QCheckBox{color:#cbd5e1;}")
+    animated_joints_toggle = QtWidgets.QCheckBox("Show Animated Joints")
+    animated_joints_toggle.setToolTip("Draw animated skeleton joints on top of the mesh.")
+    animated_joints_toggle.setStyleSheet("QCheckBox{color:#cbd5e1;}")
     try:
         item = _node_item()
         model_obj = getattr(item, "model", None) if item is not None else None
@@ -1844,6 +1884,20 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 model_obj,
                 "skin_weight_debug",
                 default=_param_bool(model_obj, "show_skin_weights", default=False),
+            )
+        )
+        capture_joints_toggle.setChecked(
+            _param_bool(
+                model_obj,
+                "show_capture_joints",
+                default=_param_bool(model_obj, "capture_joint_debug", default=False),
+            )
+        )
+        animated_joints_toggle.setChecked(
+            _param_bool(
+                model_obj,
+                "show_animated_joints",
+                default=_param_bool(model_obj, "animated_joint_debug", default=False),
             )
         )
     except Exception:
@@ -1874,6 +1928,8 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     toggle_row.setContentsMargins(0, 0, 0, 0)
     toggle_row.setSpacing(8)
     toggle_row.addWidget(weight_debug_toggle)
+    toggle_row.addWidget(capture_joints_toggle)
+    toggle_row.addWidget(animated_joints_toggle)
     toggle_row.addStretch(1)
 
     stack.addLayout(button_row)
@@ -1910,6 +1966,36 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         finally:
             try:
                 weight_debug_toggle.blockSignals(False)
+            except Exception:
+                pass
+        try:
+            checked_capture = _param_bool(
+                model_obj,
+                "show_capture_joints",
+                default=_param_bool(model_obj, "capture_joint_debug", default=False),
+            )
+            capture_joints_toggle.blockSignals(True)
+            capture_joints_toggle.setChecked(bool(checked_capture))
+        except Exception:
+            pass
+        finally:
+            try:
+                capture_joints_toggle.blockSignals(False)
+            except Exception:
+                pass
+        try:
+            checked_animated = _param_bool(
+                model_obj,
+                "show_animated_joints",
+                default=_param_bool(model_obj, "animated_joint_debug", default=False),
+            )
+            animated_joints_toggle.blockSignals(True)
+            animated_joints_toggle.setChecked(bool(checked_animated))
+        except Exception:
+            pass
+        finally:
+            try:
+                animated_joints_toggle.blockSignals(False)
             except Exception:
                 pass
 
@@ -2009,6 +2095,30 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             return
 
         win = card.window()
+        try:
+            glv = getattr(win, "gl_view", None) if win is not None else None
+            path_text = str(asset.get("path") or "").strip()
+            context_obj = asset.get("fbx_rig_context")
+            if glv is not None and path_text and isinstance(context_obj, dict):
+                path_obj = Path(path_text)
+                try:
+                    cache_key = str(path_obj.resolve())
+                except Exception:
+                    cache_key = str(path_obj)
+                try:
+                    mtime = float(path_obj.stat().st_mtime)
+                except Exception:
+                    mtime = None
+                cache = getattr(glv, "_mgl_fbx_rig_context_cache", None)
+                if not isinstance(cache, dict):
+                    cache = {}
+                cache_entry = {"mtime": mtime, "context": dict(context_obj)}
+                cache[cache_key] = cache_entry
+                cache[str(path_obj)] = cache_entry
+                setattr(glv, "_mgl_fbx_rig_context_cache", cache)
+        except Exception:
+            pass
+
         opened = False
         scene_handler = getattr(win, "open_scene_assets", None) if win is not None else None
         if callable(scene_handler):
@@ -2072,11 +2182,31 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         _set_node_param("skin_weight_debug", value)
         _set_node_param("show_skin_weights", value)
 
+    def _on_capture_joints_toggled(checked: bool):
+        value = "1" if bool(checked) else "0"
+        _set_node_param("show_capture_joints", value)
+        _set_node_param("capture_joint_debug", value)
+        try:
+            _on_view_clicked()
+        except Exception:
+            pass
+
+    def _on_animated_joints_toggled(checked: bool):
+        value = "1" if bool(checked) else "0"
+        _set_node_param("show_animated_joints", value)
+        _set_node_param("animated_joint_debug", value)
+        try:
+            _on_view_clicked()
+        except Exception:
+            pass
+
     button.clicked.connect(_on_validate_clicked)
     setup_button.clicked.connect(_on_setup_clicked)
     copy_button.clicked.connect(_on_copy_clicked)
     view_button.clicked.connect(_on_view_clicked)
     weight_debug_toggle.toggled.connect(_on_weight_debug_toggled)
+    capture_joints_toggle.toggled.connect(_on_capture_joints_toggled)
+    animated_joints_toggle.toggled.connect(_on_animated_joints_toggled)
 
     def _on_links_changed(*_args):
         _refresh(persist=False, toast=False)

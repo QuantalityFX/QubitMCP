@@ -196,6 +196,16 @@ def _fbx_import_rig_context(model) -> Dict[str, Any] | None:
         "skin_weight_debug",
         default=_param_bool(model, "show_skin_weights", default=False),
     )
+    show_capture_joints = _param_bool(
+        model,
+        "show_capture_joints",
+        default=_param_bool(model, "capture_joint_debug", default=False),
+    )
+    show_animated_joints = _param_bool(
+        model,
+        "show_animated_joints",
+        default=_param_bool(model, "animated_joint_debug", default=False),
+    )
     return {
         "skeleton": skeleton,
         "clip": clip,
@@ -204,6 +214,8 @@ def _fbx_import_rig_context(model) -> Dict[str, Any] | None:
         # Debug step: keep FBXImport mesh in rest state while skeleton/clip diagnostics continue.
         "mesh_skinning_enabled": False,
         "skin_weight_debug": bool(weight_debug),
+        "show_capture_joints": bool(show_capture_joints),
+        "show_animated_joints": bool(show_animated_joints),
     }
 
 
