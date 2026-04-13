@@ -846,9 +846,18 @@ class MGLRendererMixin:
         except Exception:
             return False
 
+    def _mgl_fbx_joint_debug_modes(self, context: dict | None) -> Tuple[bool, bool]:
+        capture_enabled = self._mgl_fbx_capture_joints_debug_enabled(context)
+        animated_enabled = self._mgl_fbx_animated_joints_debug_enabled(context)
+        if capture_enabled and animated_enabled:
+            # Normalize stale contexts from older builds that allowed both toggles at once.
+            animated_enabled = False
+        return bool(capture_enabled), bool(animated_enabled)
+
     def _mgl_fbx_bind_joints_only_enabled(self, context: dict | None) -> bool:
         # "Bind joints" debug mode intentionally hides mesh geometry and leaves only joint overlays.
-        return self._mgl_fbx_capture_joints_debug_enabled(context)
+        capture_enabled, _animated_enabled = self._mgl_fbx_joint_debug_modes(context)
+        return bool(capture_enabled)
 
     def _mgl_fbx_joint_line_points(
         self,
@@ -879,6 +888,27 @@ class MGLRendererMixin:
                 seg = arr[: edge_count * 2].reshape(edge_count, 2, 3)
                 lens = np.linalg.norm(seg[:, 1, :] - seg[:, 0, :], axis=1)
                 return bool(np.count_nonzero(lens > float(eps)) <= 0)
+            except Exception:
+                return True
+
+        def _segments_all_exact_degenerate(points: NDArray) -> bool:
+            try:
+                arr = np.asarray(points, dtype="f4").reshape(-1, 3)
+            except Exception:
+                return True
+            if arr.size == 0:
+                return True
+            edge_count = int(arr.shape[0] // 2)
+            if edge_count <= 0:
+                return True
+            try:
+                seg = arr[: edge_count * 2].reshape(edge_count, 2, 3)
+                exact_equal = (
+                    (seg[:, 0, 0] == seg[:, 1, 0])
+                    & (seg[:, 0, 1] == seg[:, 1, 1])
+                    & (seg[:, 0, 2] == seg[:, 1, 2])
+                )
+                return bool(np.count_nonzero(~exact_equal) <= 0)
             except Exception:
                 return True
 
@@ -922,7 +952,11 @@ class MGLRendererMixin:
             )
             line_from_stage6 = np.array(sample.line_points or [], dtype="f4").reshape(-1, 3)
             line_points = line_from_stage6
-            if line_points.size and not _segments_all_degenerate(line_points):
+            if (
+                line_points.size
+                and (not _segments_all_degenerate(line_points))
+                and (not _segments_all_exact_degenerate(line_points))
+            ):
                 line_source = "stage6_eval"
             elif line_points.size:
                 line_points = np.zeros((0, 3), dtype="f4")
@@ -977,9 +1011,9 @@ class MGLRendererMixin:
                 for joint in joints:
                     raw_inv = tuple(getattr(joint, "inverse_bind_matrix", ()) or ())
                     if len(raw_inv) != 16:
-                        inv_rows_tcol = []
-                        inv_rows_trow = []
-                        break
+                        inv_rows_tcol.append((0.0, 0.0, 0.0))
+                        inv_rows_trow.append((0.0, 0.0, 0.0))
+                        continue
                     try:
                         inv_bind = np.asarray(raw_inv, dtype="f4").reshape(4, 4)
                         bind_global = np.linalg.inv(inv_bind)
@@ -987,9 +1021,9 @@ class MGLRendererMixin:
                         inv_rows_tcol.append((float(flat[3]), float(flat[7]), float(flat[11])))
                         inv_rows_trow.append((float(flat[12]), float(flat[13]), float(flat[14])))
                     except Exception:
-                        inv_rows_tcol = []
-                        inv_rows_trow = []
-                        break
+                        inv_rows_tcol.append((0.0, 0.0, 0.0))
+                        inv_rows_trow.append((0.0, 0.0, 0.0))
+                        continue
                 if inv_rows_tcol or inv_rows_trow:
                     try:
                         inv_tcol = (
@@ -1017,7 +1051,7 @@ class MGLRendererMixin:
                                 else "inverse_bind_tcol_positions"
                             )
 
-        if joint_positions.size == 0:
+        if joint_positions.size == 0 or _positions_collapsed(joint_positions):
             joints = list(getattr(skeleton, "joints", []) or [])
             if joints:
                 cached_world: Dict[int, NDArray] = {}
@@ -1098,12 +1132,19 @@ class MGLRendererMixin:
                     except Exception:
                         line_points = np.zeros((0, 3), dtype="f4")
 
-        if line_points.size and _segments_all_degenerate(line_points):
+        if line_points.size and (
+            _segments_all_degenerate(line_points)
+            or _segments_all_exact_degenerate(line_points)
+        ):
             line_points = np.zeros((0, 3), dtype="f4")
             if line_source in {"stage6_eval", "hierarchy_segments"}:
                 line_source = f"{line_source}_degenerate"
 
-        if line_points.size == 0 and joint_positions.size:
+        if (
+            line_points.size == 0
+            and joint_positions.size
+            and (not _positions_collapsed(joint_positions))
+        ):
             try:
                 mins = joint_positions.min(axis=0)
                 maxs = joint_positions.max(axis=0)
@@ -9941,7 +9982,10 @@ class MGLRendererMixin:
                     )
                 if ext == ".fbx" and isinstance(fbx_rig_context, dict):
                     joint_overlays: List[MGLSceneItem] = []
-                    if self._mgl_fbx_capture_joints_debug_enabled(fbx_rig_context):
+                    capture_debug_enabled, animated_debug_enabled = self._mgl_fbx_joint_debug_modes(
+                        fbx_rig_context
+                    )
+                    if capture_debug_enabled:
                         capture_item = self._mgl_add_fbx_joint_overlay_item(
                             path,
                             True,
@@ -9953,7 +9997,7 @@ class MGLRendererMixin:
                         if capture_item is not None:
                             capture_item.order = 16
                             joint_overlays.append(capture_item)
-                    if self._mgl_fbx_animated_joints_debug_enabled(fbx_rig_context):
+                    if animated_debug_enabled:
                         animated_item = self._mgl_add_fbx_joint_overlay_item(
                             path,
                             True,
@@ -9997,8 +10041,8 @@ class MGLRendererMixin:
                     self._mgl_fbx_joints_log(
                         "load_mesh overlays "
                         + f"path={path} count={int(len(joint_overlays))} "
-                        + f"capture={bool(self._mgl_fbx_capture_joints_debug_enabled(fbx_rig_context))} "
-                        + f"animated={bool(self._mgl_fbx_animated_joints_debug_enabled(fbx_rig_context))} "
+                        + f"capture={bool(capture_debug_enabled)} "
+                        + f"animated={bool(animated_debug_enabled)} "
                         + f"bind_only={bool(fbx_bind_joints_only)}"
                     )
                 elif ext == ".fbx":
@@ -11003,7 +11047,10 @@ class MGLRendererMixin:
                         )
                     if ext == ".fbx" and path is not None and isinstance(fbx_rig_context, dict):
                         joint_overlays: List[MGLSceneItem] = []
-                        if self._mgl_fbx_capture_joints_debug_enabled(fbx_rig_context):
+                        capture_debug_enabled, animated_debug_enabled = self._mgl_fbx_joint_debug_modes(
+                            fbx_rig_context
+                        )
+                        if capture_debug_enabled:
                             capture_item = self._mgl_add_fbx_joint_overlay_item(
                                 path,
                                 bool(visible),
@@ -11015,7 +11062,7 @@ class MGLRendererMixin:
                             if capture_item is not None:
                                 capture_item.order = 16
                                 joint_overlays.append(capture_item)
-                        if self._mgl_fbx_animated_joints_debug_enabled(fbx_rig_context):
+                        if animated_debug_enabled:
                             animated_item = self._mgl_add_fbx_joint_overlay_item(
                                 path,
                                 bool(visible),
@@ -11060,8 +11107,8 @@ class MGLRendererMixin:
                         self._mgl_fbx_joints_log(
                             "scene_asset overlays "
                             + f"owner={owner} path={path} count={int(len(joint_overlays))} "
-                            + f"capture={bool(self._mgl_fbx_capture_joints_debug_enabled(fbx_rig_context))} "
-                            + f"animated={bool(self._mgl_fbx_animated_joints_debug_enabled(fbx_rig_context))} "
+                            + f"capture={bool(capture_debug_enabled)} "
+                            + f"animated={bool(animated_debug_enabled)} "
                             + f"bind_only={bool(fbx_bind_joints_only)} "
                             + f"contrib_mesh_bounds={bool(contribute_mesh_bounds)}"
                         )

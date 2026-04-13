@@ -154,6 +154,17 @@ def _param_bool(model, name: str, default: bool = False) -> bool:
     return bool(default)
 
 
+def _exclusive_joint_debug_flags(
+    show_capture_joints: bool,
+    show_animated_joints: bool,
+) -> tuple[bool, bool]:
+    capture_enabled = bool(show_capture_joints)
+    animated_enabled = bool(show_animated_joints)
+    if capture_enabled and animated_enabled:
+        animated_enabled = False
+    return capture_enabled, animated_enabled
+
+
 def _fbx_import_resolved_rest_path(model) -> str:
     if model is None:
         return ""
@@ -205,6 +216,10 @@ def _fbx_import_rig_context(model) -> Dict[str, Any] | None:
         model,
         "show_animated_joints",
         default=_param_bool(model, "animated_joint_debug", default=False),
+    )
+    show_capture_joints, show_animated_joints = _exclusive_joint_debug_flags(
+        show_capture_joints,
+        show_animated_joints,
     )
     return {
         "skeleton": skeleton,

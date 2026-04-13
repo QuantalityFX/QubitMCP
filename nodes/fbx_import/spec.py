@@ -962,6 +962,18 @@ def _param_bool(model, name: str, default: bool = False) -> bool:
     return bool(default)
 
 
+def _exclusive_joint_debug_flags(
+    show_capture_joints: bool,
+    show_animated_joints: bool,
+) -> Tuple[bool, bool]:
+    capture_enabled = bool(show_capture_joints)
+    animated_enabled = bool(show_animated_joints)
+    if capture_enabled and animated_enabled:
+        # Keep this deterministic when loading older graphs that persisted both toggles on.
+        animated_enabled = False
+    return capture_enabled, animated_enabled
+
+
 def _ensure_param(node_item, name: str, default: str = "") -> None:
     model = getattr(node_item, "model", None)
     if model is None:
@@ -1788,6 +1800,10 @@ def _build_preview_asset(model, result: SourceResolutionResult) -> Dict[str, Any
         "show_animated_joints",
         default=_param_bool(model, "animated_joint_debug", default=False),
     )
+    show_capture_joints, show_animated_joints = _exclusive_joint_debug_flags(
+        show_capture_joints,
+        show_animated_joints,
+    )
     asset["fbx_rig_context"] = {
         "skeleton": skeleton,
         "clip": clip,
@@ -1886,20 +1902,22 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 default=_param_bool(model_obj, "show_skin_weights", default=False),
             )
         )
-        capture_joints_toggle.setChecked(
-            _param_bool(
-                model_obj,
-                "show_capture_joints",
-                default=_param_bool(model_obj, "capture_joint_debug", default=False),
-            )
+        checked_capture = _param_bool(
+            model_obj,
+            "show_capture_joints",
+            default=_param_bool(model_obj, "capture_joint_debug", default=False),
         )
-        animated_joints_toggle.setChecked(
-            _param_bool(
-                model_obj,
-                "show_animated_joints",
-                default=_param_bool(model_obj, "animated_joint_debug", default=False),
-            )
+        checked_animated = _param_bool(
+            model_obj,
+            "show_animated_joints",
+            default=_param_bool(model_obj, "animated_joint_debug", default=False),
         )
+        checked_capture, checked_animated = _exclusive_joint_debug_flags(
+            checked_capture,
+            checked_animated,
+        )
+        capture_joints_toggle.setChecked(bool(checked_capture))
+        animated_joints_toggle.setChecked(bool(checked_animated))
     except Exception:
         pass
 
@@ -1968,12 +1986,29 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 weight_debug_toggle.blockSignals(False)
             except Exception:
                 pass
+        checked_capture = False
+        checked_animated = False
         try:
             checked_capture = _param_bool(
                 model_obj,
                 "show_capture_joints",
                 default=_param_bool(model_obj, "capture_joint_debug", default=False),
             )
+        except Exception:
+            checked_capture = False
+        try:
+            checked_animated = _param_bool(
+                model_obj,
+                "show_animated_joints",
+                default=_param_bool(model_obj, "animated_joint_debug", default=False),
+            )
+        except Exception:
+            checked_animated = False
+        checked_capture, checked_animated = _exclusive_joint_debug_flags(
+            checked_capture,
+            checked_animated,
+        )
+        try:
             capture_joints_toggle.blockSignals(True)
             capture_joints_toggle.setChecked(bool(checked_capture))
         except Exception:
@@ -1984,11 +2019,6 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             except Exception:
                 pass
         try:
-            checked_animated = _param_bool(
-                model_obj,
-                "show_animated_joints",
-                default=_param_bool(model_obj, "animated_joint_debug", default=False),
-            )
             animated_joints_toggle.blockSignals(True)
             animated_joints_toggle.setChecked(bool(checked_animated))
         except Exception:
@@ -2182,19 +2212,51 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         _set_node_param("skin_weight_debug", value)
         _set_node_param("show_skin_weights", value)
 
+    def _set_joint_debug_flags(capture_enabled: bool, animated_enabled: bool) -> None:
+        capture_enabled, animated_enabled = _exclusive_joint_debug_flags(
+            capture_enabled,
+            animated_enabled,
+        )
+        capture_value = "1" if bool(capture_enabled) else "0"
+        animated_value = "1" if bool(animated_enabled) else "0"
+        _set_node_param("show_capture_joints", capture_value)
+        _set_node_param("capture_joint_debug", capture_value)
+        _set_node_param("show_animated_joints", animated_value)
+        _set_node_param("animated_joint_debug", animated_value)
+        try:
+            capture_joints_toggle.blockSignals(True)
+            capture_joints_toggle.setChecked(bool(capture_enabled))
+        except Exception:
+            pass
+        finally:
+            try:
+                capture_joints_toggle.blockSignals(False)
+            except Exception:
+                pass
+        try:
+            animated_joints_toggle.blockSignals(True)
+            animated_joints_toggle.setChecked(bool(animated_enabled))
+        except Exception:
+            pass
+        finally:
+            try:
+                animated_joints_toggle.blockSignals(False)
+            except Exception:
+                pass
+
     def _on_capture_joints_toggled(checked: bool):
-        value = "1" if bool(checked) else "0"
-        _set_node_param("show_capture_joints", value)
-        _set_node_param("capture_joint_debug", value)
+        capture_enabled = bool(checked)
+        animated_enabled = bool(animated_joints_toggle.isChecked()) and (not capture_enabled)
+        _set_joint_debug_flags(capture_enabled, animated_enabled)
         try:
             _on_view_clicked()
         except Exception:
             pass
 
     def _on_animated_joints_toggled(checked: bool):
-        value = "1" if bool(checked) else "0"
-        _set_node_param("show_animated_joints", value)
-        _set_node_param("animated_joint_debug", value)
+        animated_enabled = bool(checked)
+        capture_enabled = bool(capture_joints_toggle.isChecked()) and (not animated_enabled)
+        _set_joint_debug_flags(capture_enabled, animated_enabled)
         try:
             _on_view_clicked()
         except Exception:
