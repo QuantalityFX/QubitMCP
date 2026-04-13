@@ -9,6 +9,7 @@ from echograph.rigging.fbx_stage3_ingest import (
     compare_skeleton_layout,
     ingest_fbx_bind_data,
 )
+from echograph.rigging.fbx_stage5_evaluator import evaluate_rig_at_time
 
 
 _IDENTITY_4X4 = (
@@ -65,6 +66,24 @@ class _Scene:
         self.meshes = list(meshes or [])
 
 
+def _row_translation_matrix(tx: float, ty: float, tz: float):
+    return (
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+        float(tx), float(ty), float(tz), 1.0,
+    )
+
+
+def _col_translation_matrix(tx: float, ty: float, tz: float):
+    return (
+        1.0, 0.0, 0.0, float(tx),
+        0.0, 1.0, 0.0, float(ty),
+        0.0, 0.0, 1.0, float(tz),
+        0.0, 0.0, 0.0, 1.0,
+    )
+
+
 def _make_scene_with_clamped_weights() -> _Scene:
     chest = _Node("chest")
     hip = _Node("hip", children=[chest])
@@ -105,6 +124,70 @@ def _make_joints_only_scene() -> _Scene:
     hip = _Node("hip", children=[spine])
     root = _Node("root", children=[hip])
     return _Scene(rootnode=root, meshes=[])
+
+
+def _make_row_layout_scene() -> _Scene:
+    hip = _Node("hip", transformation=_row_translation_matrix(0.0, 5.0, 0.0))
+    root = _Node(
+        "root",
+        children=[hip],
+        transformation=_row_translation_matrix(10.0, 0.0, 0.0),
+    )
+    mesh = _Mesh(
+        "Body",
+        vertices=[(0, 0, 0), (1, 0, 0), (0, 1, 0)],
+        faces=[[0, 1, 2]],
+        bones=[
+            _Bone(
+                "hip",
+                weights=[_Weight(0, 1.0), _Weight(1, 1.0), _Weight(2, 1.0)],
+                offsetmatrix=_IDENTITY_4X4,
+            ),
+        ],
+    )
+    return _Scene(rootnode=root, meshes=[mesh])
+
+
+def _make_scene_with_non_identity_source_offset() -> _Scene:
+    hip = _Node("hip", transformation=_col_translation_matrix(0.0, 5.0, 0.0))
+    root = _Node(
+        "root",
+        children=[hip],
+        transformation=_col_translation_matrix(10.0, 0.0, 0.0),
+    )
+    mesh = _Mesh(
+        "Body",
+        vertices=[(0, 0, 0), (1, 0, 0), (0, 1, 0)],
+        faces=[[0, 1, 2]],
+        bones=[
+            _Bone(
+                "hip",
+                weights=[_Weight(0, 1.0), _Weight(1, 1.0), _Weight(2, 1.0)],
+                offsetmatrix=_col_translation_matrix(-2.0, 3.0, 4.0),
+            ),
+        ],
+    )
+    return _Scene(rootnode=root, meshes=[mesh])
+
+
+def _make_col_layout_scene_with_row_offset() -> _Scene:
+    root = _Node(
+        "root",
+        transformation=_col_translation_matrix(3.0, 0.0, 0.0),
+    )
+    mesh = _Mesh(
+        "Body",
+        vertices=[(0, 0, 0), (1, 0, 0), (0, 1, 0)],
+        faces=[[0, 1, 2]],
+        bones=[
+            _Bone(
+                "root",
+                weights=[_Weight(0, 1.0), _Weight(1, 1.0), _Weight(2, 1.0)],
+                offsetmatrix=_row_translation_matrix(-2.0, 3.0, 4.0),
+            ),
+        ],
+    )
+    return _Scene(rootnode=root, meshes=[mesh])
 
 
 def _make_base_skeleton() -> SkeletonAsset:
@@ -183,6 +266,46 @@ class FbxStage3IngestTests(unittest.TestCase):
             any("using node hierarchy as skeleton source" in msg.lower() for msg in result.warnings)
         )
         self.assertEqual(result.meshes, [])
+
+    def test_row_layout_is_normalized_and_inverse_bind_rebuilt(self) -> None:
+        scene = _make_row_layout_scene()
+        result = ingest_fbx_bind_data("V:/virtual/row_layout.fbx", scene=scene)
+        self.assertTrue(
+            any("row-vector fbx matrix layout" in msg.lower() for msg in result.warnings)
+        )
+        self.assertEqual([j.name for j in result.skeleton.joints], ["root", "hip"])
+        self.assertAlmostEqual(result.skeleton.joints[0].local_bind.translation[0], 10.0, places=5)
+        self.assertAlmostEqual(result.skeleton.joints[1].local_bind.translation[1], 5.0, places=5)
+        evaluation = evaluate_rig_at_time(result.skeleton, None, time_seconds=0.0, loop=False)
+        self.assertEqual(len(evaluation.skin_matrices), 2)
+        for matrix in evaluation.skin_matrices:
+            for got, expected in zip(tuple(matrix), _IDENTITY_4X4):
+                self.assertAlmostEqual(got, expected, places=5)
+        self.assertEqual(
+            result.skeleton.metadata.get("inverse_bind_source"),
+            "recomputed_from_local_bind",
+        )
+
+    def test_non_identity_source_inverse_bind_is_preserved(self) -> None:
+        scene = _make_scene_with_non_identity_source_offset()
+        result = ingest_fbx_bind_data("V:/virtual/source_offset.fbx", scene=scene)
+        self.assertEqual(
+            result.skeleton.metadata.get("inverse_bind_source"),
+            "source_offsets",
+        )
+        self.assertEqual([j.name for j in result.skeleton.joints], ["root", "hip"])
+        inv = tuple(result.skeleton.joints[1].inverse_bind_matrix)
+        expected = _col_translation_matrix(-2.0, 3.0, 4.0)
+        self.assertEqual(inv, expected)
+
+    def test_row_offset_matrix_does_not_force_layout_transpose(self) -> None:
+        scene = _make_col_layout_scene_with_row_offset()
+        result = ingest_fbx_bind_data("V:/virtual/col_nodes_row_offset.fbx", scene=scene)
+        self.assertFalse(
+            any("row-vector fbx matrix layout" in msg.lower() for msg in result.warnings)
+        )
+        self.assertEqual([j.name for j in result.skeleton.joints], ["root"])
+        self.assertAlmostEqual(result.skeleton.joints[0].local_bind.translation[0], 3.0, places=5)
 
     def test_compare_skeleton_layout_detects_mismatch(self) -> None:
         base = _make_base_skeleton()

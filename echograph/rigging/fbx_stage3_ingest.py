@@ -37,7 +37,8 @@ _IDENTITY_MATRIX_4X4: Tuple[float, ...] = (
 )
 
 _BIND_INGEST_CACHE_MAX = 8
-_BIND_INGEST_CACHE: "OrderedDict[Tuple[str, int, int, str, int], FBXBindIngestResult]" = OrderedDict()
+_BIND_INGEST_CACHE_VERSION = 2
+_BIND_INGEST_CACHE: "OrderedDict[Tuple[str, int, int, str, int, int], FBXBindIngestResult]" = OrderedDict()
 
 
 class FBXBindIngestError(RuntimeError):
@@ -177,6 +178,196 @@ def _matrix4_from_obj(value: Any) -> Tuple[float, ...]:
         pass
 
     return _IDENTITY_MATRIX_4X4
+
+
+def _matrix4_transpose(matrix16: Tuple[float, ...]) -> Tuple[float, ...]:
+    values = tuple(matrix16 or ())
+    if len(values) != 16:
+        return _IDENTITY_MATRIX_4X4
+    out = [0.0] * 16
+    for r in range(4):
+        for c in range(4):
+            out[(r * 4) + c] = _to_float(values[(c * 4) + r], 0.0)
+    return tuple(out)
+
+
+def _matrix4_translation_channels(matrix16: Tuple[float, ...]) -> Tuple[float, float]:
+    values = tuple(matrix16 or ())
+    if len(values) != 16:
+        return 0.0, 0.0
+    col = (
+        abs(_to_float(values[3], 0.0))
+        + abs(_to_float(values[7], 0.0))
+        + abs(_to_float(values[11], 0.0))
+    )
+    row = (
+        abs(_to_float(values[12], 0.0))
+        + abs(_to_float(values[13], 0.0))
+        + abs(_to_float(values[14], 0.0))
+    )
+    return float(col), float(row)
+
+
+def _infer_row_vector_matrix_layout(
+    node_records: Sequence["_NodeRecord"],
+) -> bool:
+    row_votes = 0
+    col_votes = 0
+    for rec in list(node_records or []):
+        col_mag, row_mag = _matrix4_translation_channels(tuple(getattr(rec, "transform", ()) or ()))
+        if row_mag > max(1.0e-5, col_mag * 4.0):
+            row_votes += 1
+        elif col_mag > max(1.0e-5, row_mag * 4.0):
+            col_votes += 1
+    return bool(row_votes > 0 and row_votes > col_votes)
+
+
+def _matrix4_is_identity(matrix16: Tuple[float, ...], eps: float = 1.0e-5) -> bool:
+    values = tuple(matrix16 or ())
+    if len(values) != 16:
+        return False
+    for idx, expected in enumerate(_IDENTITY_MATRIX_4X4):
+        if abs(_to_float(values[idx], 0.0) - float(expected)) > float(eps):
+            return False
+    return True
+
+
+def _quat_normalize(q: Tuple[float, float, float, float]) -> Tuple[float, float, float, float]:
+    x, y, z, w = (float(q[0]), float(q[1]), float(q[2]), float(q[3]))
+    n2 = (x * x) + (y * y) + (z * z) + (w * w)
+    if n2 <= 1e-16:
+        return (0.0, 0.0, 0.0, 1.0)
+    inv = 1.0 / math.sqrt(n2)
+    return (x * inv, y * inv, z * inv, w * inv)
+
+
+def _matrix4_from_joint_transform(xf: JointTransform) -> Tuple[float, ...]:
+    tx, ty, tz = xf.translation
+    x, y, z, w = _quat_normalize(tuple(xf.rotation))
+    sx, sy, sz = xf.scale
+
+    xx = x * x
+    yy = y * y
+    zz = z * z
+    xy = x * y
+    xz = x * z
+    yz = y * z
+    wx = w * x
+    wy = w * y
+    wz = w * z
+
+    r00 = 1.0 - (2.0 * (yy + zz))
+    r01 = 2.0 * (xy - wz)
+    r02 = 2.0 * (xz + wy)
+    r10 = 2.0 * (xy + wz)
+    r11 = 1.0 - (2.0 * (xx + zz))
+    r12 = 2.0 * (yz - wx)
+    r20 = 2.0 * (xz - wy)
+    r21 = 2.0 * (yz + wx)
+    r22 = 1.0 - (2.0 * (xx + yy))
+
+    return (
+        r00 * sx, r01 * sy, r02 * sz, tx,
+        r10 * sx, r11 * sy, r12 * sz, ty,
+        r20 * sx, r21 * sy, r22 * sz, tz,
+        0.0, 0.0, 0.0, 1.0,
+    )
+
+
+def _matrix4_inverse_row_major(matrix16: Tuple[float, ...]) -> Tuple[float, ...] | None:
+    values = tuple(matrix16 or ())
+    if len(values) != 16:
+        return None
+    rows: List[List[float]] = []
+    for r in range(4):
+        left = [_to_float(values[(r * 4) + c], 0.0) for c in range(4)]
+        right = [1.0 if r == c else 0.0 for c in range(4)]
+        rows.append(left + right)
+
+    for col in range(4):
+        pivot_row = col
+        pivot_abs = abs(rows[pivot_row][col])
+        for cand in range(col + 1, 4):
+            val = abs(rows[cand][col])
+            if val > pivot_abs:
+                pivot_abs = val
+                pivot_row = cand
+        if pivot_abs <= 1.0e-12:
+            return None
+        if pivot_row != col:
+            rows[col], rows[pivot_row] = rows[pivot_row], rows[col]
+
+        pivot = rows[col][col]
+        inv_pivot = 1.0 / pivot
+        rows[col] = [value * inv_pivot for value in rows[col]]
+
+        for r in range(4):
+            if r == col:
+                continue
+            factor = rows[r][col]
+            if abs(factor) <= 1.0e-16:
+                continue
+            rows[r] = [
+                rows[r][idx] - (factor * rows[col][idx])
+                for idx in range(8)
+            ]
+
+    out = [rows[r][4 + c] for r in range(4) for c in range(4)]
+    return tuple(float(v) for v in out)
+
+
+def _rebuild_inverse_bind_from_local_bind(
+    skeleton: SkeletonAsset,
+    warnings: List[str],
+) -> None:
+    joints = list(getattr(skeleton, "joints", []) or [])
+    if not joints:
+        return
+
+    local_mats: List[Tuple[float, ...]] = []
+    global_mats: List[Tuple[float, ...]] = []
+    for idx, joint in enumerate(joints):
+        xf = getattr(joint, "local_bind", None)
+        if not isinstance(xf, JointTransform):
+            xf = JointTransform()
+            joint.local_bind = xf
+        try:
+            xf.validate(context=f"Joint[{idx}].local_bind")
+        except Exception:
+            joint.local_bind = JointTransform()
+        local_mats.append(_matrix4_from_joint_transform(joint.local_bind))
+
+    hierarchy_issues = 0
+    for idx, joint in enumerate(joints):
+        local = local_mats[idx]
+        parent_idx = int(getattr(joint, "parent_index", -1))
+        if parent_idx < 0:
+            global_mats.append(local)
+            continue
+        if parent_idx >= idx or parent_idx >= len(joints):
+            hierarchy_issues += 1
+            global_mats.append(local)
+            continue
+        global_mats.append(_matrix4_mul_row_major(global_mats[parent_idx], local))
+
+    inverse_failures = 0
+    for idx, joint in enumerate(joints):
+        inv = _matrix4_inverse_row_major(global_mats[idx])
+        if inv is None:
+            inverse_failures += 1
+            inv = _IDENTITY_MATRIX_4X4
+        joint.inverse_bind_matrix = tuple(float(v) for v in inv)
+
+    if hierarchy_issues > 0:
+        warnings.append(
+            "Skeleton hierarchy had invalid parent links during inverse-bind rebuild; "
+            "falling back to local-only globals for affected joints."
+        )
+    if inverse_failures > 0:
+        warnings.append(
+            f"Failed to invert {inverse_failures} bind matrices while rebuilding inverse binds; "
+            "identity fallback was used."
+        )
 
 
 def _quat_from_rotation_matrix(m00, m01, m02, m10, m11, m12, m20, m21, m22):
@@ -511,6 +702,27 @@ def _build_skeleton_asset(
             "stage": "stage3_bind_ingest",
         },
     )
+    source_offset_mats: List[Tuple[float, ...]] = []
+    for matrix in list((bone_offsets or {}).values()):
+        values = tuple(matrix or ())
+        if len(values) == 16:
+            source_offset_mats.append(values)
+    non_identity_source_offsets = sum(
+        1 for matrix in source_offset_mats if not _matrix4_is_identity(matrix)
+    )
+    if non_identity_source_offsets > 0:
+        skeleton.metadata["inverse_bind_source"] = "source_offsets"
+    else:
+        _rebuild_inverse_bind_from_local_bind(skeleton, warnings)
+        skeleton.metadata["inverse_bind_source"] = "recomputed_from_local_bind"
+        if source_offset_mats:
+            warnings.append(
+                "Source inverse bind matrices were identity-only; rebuilt inverse binds from local bind transforms."
+            )
+        else:
+            warnings.append(
+                "Source inverse bind matrices were missing; rebuilt inverse binds from local bind transforms."
+            )
     skeleton.validate()
     return skeleton, source_name_to_joint_idx
 
@@ -1038,6 +1250,15 @@ def _ingest_scene(
                     f"Bone '{bone_name}' had inconsistent inverse bind matrices; first value kept."
                 )
 
+    if _infer_row_vector_matrix_layout(node_records):
+        for rec in node_records:
+            rec.transform = _matrix4_transpose(rec.transform)
+        for bone_name, matrix in list(bone_offsets.items()):
+            bone_offsets[bone_name] = _matrix4_transpose(matrix)
+        warnings.append(
+            "Detected row-vector FBX matrix layout; converted transforms to canonical convention."
+        )
+
     skeleton_asset_name = _safe_text(
         skeleton_name,
         f"{path_obj.stem}_Skeleton",
@@ -1082,7 +1303,7 @@ def _bind_cache_key(
     *,
     skeleton_name: str | None,
     max_influences: int,
-) -> Tuple[str, int, int, str, int]:
+) -> Tuple[str, int, int, str, int, int]:
     path_token = _path_cache_token(path_obj)
     return (
         path_token[0],
@@ -1090,10 +1311,11 @@ def _bind_cache_key(
         path_token[2],
         str(skeleton_name or "").strip(),
         int(max_influences),
+        int(_BIND_INGEST_CACHE_VERSION),
     )
 
 
-def _bind_cache_get(key: Tuple[str, int, int, str, int]) -> FBXBindIngestResult | None:
+def _bind_cache_get(key: Tuple[str, int, int, str, int, int]) -> FBXBindIngestResult | None:
     cached = _BIND_INGEST_CACHE.get(key)
     if cached is None:
         return None
@@ -1102,7 +1324,7 @@ def _bind_cache_get(key: Tuple[str, int, int, str, int]) -> FBXBindIngestResult 
 
 
 def _bind_cache_put(
-    key: Tuple[str, int, int, str, int],
+    key: Tuple[str, int, int, str, int, int],
     value: FBXBindIngestResult,
 ) -> None:
     _BIND_INGEST_CACHE[key] = value

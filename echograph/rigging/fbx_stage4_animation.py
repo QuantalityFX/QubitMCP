@@ -117,6 +117,41 @@ def _matrix4_from_obj(value: Any) -> Tuple[float, ...]:
     return _IDENTITY_MATRIX_4X4
 
 
+def _matrix4_transpose(matrix16: Tuple[float, ...]) -> Tuple[float, ...]:
+    values = tuple(matrix16 or ())
+    if len(values) != 16:
+        return _IDENTITY_MATRIX_4X4
+    out = [0.0] * 16
+    for r in range(4):
+        for c in range(4):
+            out[(r * 4) + c] = _to_float(values[(c * 4) + r], 0.0)
+    return tuple(out)
+
+
+def _matrix4_translation_channels(matrix16: Tuple[float, ...]) -> Tuple[float, float]:
+    values = tuple(matrix16 or ())
+    if len(values) != 16:
+        return 0.0, 0.0
+    col = (
+        abs(_to_float(values[3], 0.0))
+        + abs(_to_float(values[7], 0.0))
+        + abs(_to_float(values[11], 0.0))
+    )
+    row = (
+        abs(_to_float(values[12], 0.0))
+        + abs(_to_float(values[13], 0.0))
+        + abs(_to_float(values[14], 0.0))
+    )
+    return float(col), float(row)
+
+
+def _matrix4_to_canonical(matrix16: Tuple[float, ...]) -> Tuple[float, ...]:
+    col_mag, row_mag = _matrix4_translation_channels(matrix16)
+    if row_mag > max(1.0e-5, col_mag * 4.0):
+        return _matrix4_transpose(matrix16)
+    return tuple(matrix16 or _IDENTITY_MATRIX_4X4)
+
+
 def _quat_from_rotation_matrix(m00, m01, m02, m10, m11, m12, m20, m21, m22):
     trace = m00 + m11 + m22
     if trace > 0.0:
@@ -236,6 +271,14 @@ def _vec3_from_any(value: Any) -> Tuple[float, float, float]:
             )
         except Exception:
             pass
+    try:
+        return (
+            _to_float(value[0], 0.0),  # type: ignore[index]
+            _to_float(value[1], 0.0),  # type: ignore[index]
+            _to_float(value[2], 0.0),  # type: ignore[index]
+        )
+    except Exception:
+        pass
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
         if len(value) >= 3:
             return (
@@ -264,6 +307,15 @@ def _quat_from_any(value: Any) -> Tuple[float, float, float, float]:
             _to_float(getattr(value, "z"), 0.0),
             _to_float(getattr(value, "w"), 1.0),
         )
+    try:
+        return (
+            _to_float(value[0], 0.0),  # type: ignore[index]
+            _to_float(value[1], 0.0),  # type: ignore[index]
+            _to_float(value[2], 0.0),  # type: ignore[index]
+            _to_float(value[3], 1.0),  # type: ignore[index]
+        )
+    except Exception:
+        pass
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
         if len(value) >= 4:
             return (
@@ -583,10 +635,11 @@ def _fbxsdk_matrix4_tuple(mat_obj: Any) -> Tuple[float, ...]:
     if mat_obj is None:
         return _IDENTITY_MATRIX_4X4
     try:
-        return tuple(_to_float(mat_obj.Get(r, c), 0.0) for r in range(4) for c in range(4))
+        matrix = tuple(_to_float(mat_obj.Get(r, c), 0.0) for r in range(4) for c in range(4))
+        return _matrix4_to_canonical(matrix)
     except Exception:
         pass
-    return _matrix4_from_obj(mat_obj)
+    return _matrix4_to_canonical(_matrix4_from_obj(mat_obj))
 
 
 def _fbxsdk_curve_components(fbx_mod: Any) -> List[str]:
@@ -772,7 +825,10 @@ def _fbxsdk_local_trs_from_matrix(
             t = _vec3_from_any(mat_obj.GetT())
             q = _quat_from_any(mat_obj.GetQ())
             s = _vec3_from_any(mat_obj.GetS())
-            return t, q, s
+            # FBX SDK bindings can expose vector/quaternion wrappers that parse as zeros;
+            # fall back to matrix decomposition when scale is invalid.
+            if (abs(s[0]) + abs(s[1]) + abs(s[2])) > 1.0e-8:
+                return t, q, s
         except Exception:
             pass
     return _decompose_local_trs(_fbxsdk_matrix4_tuple(mat_obj))

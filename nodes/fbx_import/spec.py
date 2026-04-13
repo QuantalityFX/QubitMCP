@@ -1809,8 +1809,7 @@ def _build_preview_asset(model, result: SourceResolutionResult) -> Dict[str, Any
         "clip": clip,
         "meshes": meshes,
         "loop": True,
-        # Debug step: keep FBXImport mesh in rest state while skeleton/clip diagnostics continue.
-        "mesh_skinning_enabled": False,
+        "mesh_skinning_enabled": True,
         "skin_weight_debug": bool(weight_debug),
         "show_capture_joints": bool(show_capture_joints),
         "show_animated_joints": bool(show_animated_joints),

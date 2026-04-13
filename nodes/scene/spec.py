@@ -226,8 +226,7 @@ def _fbx_import_rig_context(model) -> Dict[str, Any] | None:
         "clip": clip,
         "meshes": meshes,
         "loop": True,
-        # Debug step: keep FBXImport mesh in rest state while skeleton/clip diagnostics continue.
-        "mesh_skinning_enabled": False,
+        "mesh_skinning_enabled": True,
         "skin_weight_debug": bool(weight_debug),
         "show_capture_joints": bool(show_capture_joints),
         "show_animated_joints": bool(show_animated_joints),
