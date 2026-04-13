@@ -1,6 +1,7 @@
 # echograph/ui/gl_loaders.py
 from __future__ import annotations
 
+from collections import OrderedDict
 import os
 import ctypes
 import io
@@ -30,6 +31,8 @@ except Exception:
 
 
 _MODEL_LOADERS: Dict[str, Callable[[Path], "ModelData"]] = {}
+_FBX_MESH_CACHE_MAX = 8
+_FBX_MESH_CACHE: "OrderedDict[Tuple[str, int, int], MeshArrays]" = OrderedDict()
 
 _COMPONENT_SIZES = {
     5120: 1,  # BYTE
@@ -69,6 +72,32 @@ def register_model_loader(exts: Iterable[str], loader: Callable[[Path], "ModelDa
         _MODEL_LOADERS[key] = loader
 
 _ASSIMP_DLL_READY = False
+
+
+def _path_cache_token(path: Path) -> Tuple[str, int, int]:
+    try:
+        resolved = str(path.resolve())
+    except Exception:
+        resolved = str(path)
+    if os.name == "nt":
+        resolved = resolved.lower()
+    stat = path.stat()
+    return (resolved, int(stat.st_mtime_ns), int(stat.st_size))
+
+
+def _fbx_mesh_cache_get(key: Tuple[str, int, int]) -> Optional[MeshArrays]:
+    cached = _FBX_MESH_CACHE.get(key)
+    if cached is None:
+        return None
+    _FBX_MESH_CACHE.move_to_end(key)
+    return cached
+
+
+def _fbx_mesh_cache_put(key: Tuple[str, int, int], value: MeshArrays) -> None:
+    _FBX_MESH_CACHE[key] = value
+    _FBX_MESH_CACHE.move_to_end(key)
+    while len(_FBX_MESH_CACHE) > int(_FBX_MESH_CACHE_MAX):
+        _FBX_MESH_CACHE.popitem(last=False)
 
 def ensure_assimp_dll() -> None:
     global _ASSIMP_DLL_READY
@@ -241,6 +270,7 @@ def _load_fbx_ascii_mesh_arrays(path: Path) -> MeshArrays:
     submeshes: List[SubMeshData] = []
 
     for match in geo_pattern.finditer(raw):
+        mesh_label = f"mesh_{len(submeshes)}"
         brace_start = raw.find("{", match.end() - 1)
         if brace_start < 0:
             continue
@@ -358,6 +388,7 @@ def _load_fbx_ascii_mesh_arrays(path: Path) -> MeshArrays:
                 points=tri_vertices.astype("f4"),
                 normals=tri_normals.astype("f4"),
                 uvs=tri_uvs,
+                name=mesh_label,
             )
         )
 
@@ -660,15 +691,33 @@ def load_fbx_mesh_arrays_pyassimp(path: Path) -> MeshArrays:
 
     if np is None:
         raise RuntimeError("numpy unavailable")
-    if _is_ascii_fbx(path):
-        return _load_fbx_ascii_mesh_arrays(path)
+    cache_key = None
+    try:
+        cache_key = _path_cache_token(path)
+    except Exception:
+        cache_key = None
+    if cache_key is not None:
+        cached = _fbx_mesh_cache_get(cache_key)
+        if cached is not None:
+            return cached
+
+    ascii_fbx = _is_ascii_fbx(path)
+    if ascii_fbx:
+        result = _load_fbx_ascii_mesh_arrays(path)
+        if cache_key is not None:
+            _fbx_mesh_cache_put(cache_key, result)
+        return result
+
     ensure_assimp_dll()
     try:
         import pyassimp
         from pyassimp import material as ai_material
     except Exception as exc:
-        if _is_ascii_fbx(path):
-            return _load_fbx_ascii_mesh_arrays(path)
+        if ascii_fbx:
+            result = _load_fbx_ascii_mesh_arrays(path)
+            if cache_key is not None:
+                _fbx_mesh_cache_put(cache_key, result)
+            return result
         raise RuntimeError(f"pyassimp unavailable: {exc}")
     try:
         from pyassimp import postprocess as ai_post
@@ -686,6 +735,7 @@ def load_fbx_mesh_arrays_pyassimp(path: Path) -> MeshArrays:
             texture_image = None
             base_color = None
             for mesh in scene.meshes or []:
+                mesh_name = str(getattr(mesh, "name", "") or "").strip()
                 vertices = np.asarray(getattr(mesh, "vertices", []), dtype="f4")
                 faces = np.asarray(getattr(mesh, "faces", []), dtype=np.int64)
                 if vertices.size == 0 or faces.size == 0:
@@ -799,6 +849,7 @@ def load_fbx_mesh_arrays_pyassimp(path: Path) -> MeshArrays:
                         points=tri_vertices,
                         normals=norm_arr,
                         uvs=tri_uv,
+                        name=mesh_name,
                         texture_path=mesh_texture_path,
                         texture_image=mesh_texture_image,
                         base_color=mesh_color,
@@ -818,7 +869,7 @@ def load_fbx_mesh_arrays_pyassimp(path: Path) -> MeshArrays:
             points = np.concatenate(points_all, axis=0)
             normals = np.concatenate(normals_all, axis=0)
             uvs = np.concatenate(uvs_all, axis=0)
-            return MeshArrays(
+            result = MeshArrays(
                 points=points,
                 normals=normals,
                 uvs=uvs,
@@ -827,9 +878,15 @@ def load_fbx_mesh_arrays_pyassimp(path: Path) -> MeshArrays:
                 base_color=base_color,
                 submeshes=submeshes if submeshes else None,
             )
+            if cache_key is not None:
+                _fbx_mesh_cache_put(cache_key, result)
+            return result
     except Exception as exc:
-        if _is_ascii_fbx(path):
-            return _load_fbx_ascii_mesh_arrays(path)
+        if ascii_fbx:
+            result = _load_fbx_ascii_mesh_arrays(path)
+            if cache_key is not None:
+                _fbx_mesh_cache_put(cache_key, result)
+            return result
         raise RuntimeError(str(exc))
 
 

@@ -3330,6 +3330,25 @@ class GraphGLTimelineModelMixin:
             x = self._timeline_slider_to_tracks_x(local)
             if x is None:
                 continue
+            if isinstance(entry, dict) and bool(entry.get("fbx_clip_key", False)):
+                axis = None
+                for axis_idx in range(6):
+                    if bool(self._timeline_axis_is_visible(int(axis_idx))):
+                        axis = int(axis_idx)
+                        break
+                if axis is None:
+                    continue
+                if axis >= len(row_frames):
+                    continue
+                row_frame = row_frames[axis]
+                if row_frame is None:
+                    continue
+                try:
+                    y = int(row_frame.y() + (row_frame.height() // 2))
+                except Exception:
+                    continue
+                out.append((int(axis), int(frame), int(x), int(y), 0.0))
+                continue
             for axis in self._timeline_axes_for_entry(entry):
                 if not bool(self._timeline_axis_is_visible(int(axis))):
                     continue
@@ -3829,6 +3848,11 @@ class GraphGLTimelineModelMixin:
         except Exception:
             entry = None
         if not isinstance(entry, dict) or not self._timeline_entry_has_any_axis(entry):
+            if bool(force):
+                try:
+                    self.update()
+                except Exception:
+                    pass
             self._timeline_refresh_coord_labels()
             return
         renderer = getattr(self, "_mgl_renderer", None) or self

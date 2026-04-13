@@ -22,6 +22,7 @@ class SubMeshData:
     points: "np.ndarray"
     normals: "np.ndarray"
     uvs: "np.ndarray"
+    name: Optional[str] = None
     texture_path: Optional[Path] = None
     texture_image: Optional[object] = None
     base_color: Optional[Tuple[float, float, float, float]] = None

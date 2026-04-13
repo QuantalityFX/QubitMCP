@@ -402,6 +402,8 @@ class GraphGLTimelineIOMixin:
         for frame, entry in items:
             if not isinstance(entry, dict):
                 continue
+            if bool(entry.get("fbx_clip_key", False)):
+                continue
             row = {"frame": int(frame)}
             xyz = entry.get("xyz", None)
             if isinstance(xyz, (list, tuple)) and len(xyz) >= 3:
@@ -462,6 +464,8 @@ class GraphGLTimelineIOMixin:
                         continue
                 if ch_out:
                     row["curve_handles"] = ch_out
+            if len(row) <= 1:
+                continue
             keys_out.append(row)
         payload = {
             "scene": str(getattr(self, "_timeline_scene_name", "scene") or "scene"),
@@ -640,6 +644,31 @@ class GraphGLTimelineIOMixin:
                     item["curve_handles"] = ch_out
             if item:
                 data[int(frame)] = item
+        if not data:
+            owner = str(getattr(self, "_timeline_owner_name", "") or "").strip()
+            if owner:
+                try:
+                    renderer = getattr(self, "_mgl_renderer", None) or self
+                    map_fn = getattr(renderer, "_mgl_timeline_owner_keys_map", None)
+                    if callable(map_fn):
+                        virtual_map = map_fn(owner)
+                    else:
+                        virtual_map = {}
+                except Exception:
+                    virtual_map = {}
+                if isinstance(virtual_map, dict) and virtual_map:
+                    staged: Dict[int, Dict[str, object]] = {}
+                    for frame_raw, entry in virtual_map.items():
+                        try:
+                            frame = int(frame_raw)
+                        except Exception:
+                            continue
+                        if frame < 0:
+                            continue
+                        if isinstance(entry, dict):
+                            staged[int(frame)] = dict(entry)
+                    if staged:
+                        data = staged
         self._timeline_keys = data
         max_key = 0
         try:

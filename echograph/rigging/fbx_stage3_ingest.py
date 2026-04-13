@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+import os
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Sequence, Tuple
 import math
@@ -33,6 +35,9 @@ _IDENTITY_MATRIX_4X4: Tuple[float, ...] = (
     0.0,
     1.0,
 )
+
+_BIND_INGEST_CACHE_MAX = 8
+_BIND_INGEST_CACHE: "OrderedDict[Tuple[str, int, int, str, int], FBXBindIngestResult]" = OrderedDict()
 
 
 class FBXBindIngestError(RuntimeError):
@@ -326,6 +331,26 @@ def _mesh_vertex_count(mesh_obj: Any) -> int:
     return 0
 
 
+def _mesh_vertices(mesh_obj: Any) -> List[Tuple[float, float, float]]:
+    raw = getattr(mesh_obj, "vertices", None)
+    if raw is None:
+        return []
+    tolist = getattr(raw, "tolist", None)
+    if callable(tolist):
+        try:
+            raw = tolist()
+        except Exception:
+            pass
+    try:
+        seq = list(raw) if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)) else []
+    except Exception:
+        seq = []
+    out: List[Tuple[float, float, float]] = []
+    for value in seq:
+        out.append(_vec3_from_obj(value))
+    return out
+
+
 def _mesh_faces(mesh_obj: Any) -> List[List[int]]:
     raw = getattr(mesh_obj, "faces", None)
     if raw is None:
@@ -514,6 +539,9 @@ def _build_mesh_assets(
         triangle_indices = [idx for idx in triangle_indices if 0 <= idx < vertex_count]
 
         per_vertex: Dict[int, Dict[int, float]] = {}
+        clamp_warning_count = 0
+        clamp_warning_examples: List[str] = []
+        max_warning_examples = 3
         for bone_order, bone in _sorted_bones(mesh):
             bone_name = _safe_text(getattr(bone, "name", ""), f"bone_{bone_order}")
             joint_idx = bone_name_to_joint_idx.get(bone_name)
@@ -539,9 +567,11 @@ def _build_mesh_assets(
             packed = [(j, w) for j, w in inf_map.items() if w > 0.0]
             packed.sort(key=lambda it: (-float(it[1]), int(it[0])))
             if max_influences > 0 and len(packed) > max_influences:
-                warnings.append(
-                    f"Mesh '{mesh_name}' vertex {vid} had {len(packed)} influences; clamped to {max_influences}."
-                )
+                clamp_warning_count += 1
+                if len(clamp_warning_examples) < max_warning_examples:
+                    clamp_warning_examples.append(
+                        f"Mesh '{mesh_name}' vertex {vid} had {len(packed)} influences; clamped to {max_influences}."
+                    )
                 packed = packed[:max_influences]
             total = sum(float(w) for _, w in packed)
             if total <= 0.0:
@@ -552,6 +582,22 @@ def _build_mesh_assets(
             ]
             vertex_skins.append(VertexSkin(vertex_index=int(vid), influences=influences))
 
+        if clamp_warning_examples:
+            warnings.extend(clamp_warning_examples)
+        if clamp_warning_count > len(clamp_warning_examples):
+            warnings.append(
+                f"Mesh '{mesh_name}' had {clamp_warning_count - len(clamp_warning_examples)} additional "
+                f"vertices with >{max_influences} influences (warning list truncated)."
+            )
+
+        bind_positions = _mesh_vertices(mesh)
+        if bind_positions and len(bind_positions) != vertex_count:
+            if len(bind_positions) > vertex_count:
+                bind_positions = bind_positions[:vertex_count]
+            else:
+                pad_count = vertex_count - len(bind_positions)
+                bind_positions.extend([(0.0, 0.0, 0.0)] * int(pad_count))
+
         asset = SkeletalMeshAsset(
             name=mesh_name,
             skeleton_name=skeleton.name,
@@ -561,6 +607,7 @@ def _build_mesh_assets(
             metadata={
                 "source_mesh_index": int(mesh_idx),
                 "source_mesh_name": raw_mesh_name,
+                "bind_positions": [list(v) for v in bind_positions],
             },
         )
         asset.validate(skeleton)
@@ -662,6 +709,19 @@ def _fbxsdk_cluster_inverse_bind(fbx_mod: Any, cluster_obj: Any) -> Tuple[float,
         return _IDENTITY_MATRIX_4X4
 
 
+def _fbxsdk_skin_deformer_type(fbx_mod: Any) -> Any | None:
+    deformer_cls = getattr(fbx_mod, "FbxDeformer", None)
+    if deformer_cls is None:
+        return None
+    direct = getattr(deformer_cls, "eSkin", None)
+    if direct is not None:
+        return direct
+    enum_cls = getattr(deformer_cls, "EDeformerType", None)
+    if enum_cls is None:
+        return None
+    return getattr(enum_cls, "eSkin", None)
+
+
 def _build_simple_node_from_fbxsdk(node_obj: Any) -> _SimpleNode:
     name = _safe_text(getattr(node_obj, "GetName", lambda: "")(), "node")
     out = _SimpleNode(
@@ -723,7 +783,7 @@ def _build_simple_mesh_from_fbxsdk(
 
     # skin clusters
     bones_by_name: Dict[str, _SimpleBone] = {}
-    skin_type = getattr(getattr(fbx_mod, "FbxDeformer", None), "eSkin", None)
+    skin_type = _fbxsdk_skin_deformer_type(fbx_mod)
     skin_count = _to_int(
         getattr(mesh_obj, "GetDeformerCount", lambda *_args: 0)(skin_type)
         if skin_type is not None
@@ -1006,24 +1066,79 @@ def _ingest_scene(
     )
 
 
+def _path_cache_token(path_obj: Path) -> Tuple[str, int, int]:
+    try:
+        resolved = str(path_obj.resolve())
+    except Exception:
+        resolved = str(path_obj)
+    if os.name == "nt":
+        resolved = resolved.lower()
+    stat = path_obj.stat()
+    return (resolved, int(stat.st_mtime_ns), int(stat.st_size))
+
+
+def _bind_cache_key(
+    path_obj: Path,
+    *,
+    skeleton_name: str | None,
+    max_influences: int,
+) -> Tuple[str, int, int, str, int]:
+    path_token = _path_cache_token(path_obj)
+    return (
+        path_token[0],
+        path_token[1],
+        path_token[2],
+        str(skeleton_name or "").strip(),
+        int(max_influences),
+    )
+
+
+def _bind_cache_get(key: Tuple[str, int, int, str, int]) -> FBXBindIngestResult | None:
+    cached = _BIND_INGEST_CACHE.get(key)
+    if cached is None:
+        return None
+    _BIND_INGEST_CACHE.move_to_end(key)
+    return cached
+
+
+def _bind_cache_put(
+    key: Tuple[str, int, int, str, int],
+    value: FBXBindIngestResult,
+) -> None:
+    _BIND_INGEST_CACHE[key] = value
+    _BIND_INGEST_CACHE.move_to_end(key)
+    while len(_BIND_INGEST_CACHE) > int(_BIND_INGEST_CACHE_MAX):
+        _BIND_INGEST_CACHE.popitem(last=False)
+
+
 def ingest_fbx_bind_data(
     path: str | Path,
     *,
     skeleton_name: str | None = None,
-    max_influences: int = 8,
+    max_influences: int = 64,
     scene: Any | None = None,
 ) -> FBXBindIngestResult:
     path_obj = Path(path)
+    influence_limit = max(1, int(max_influences))
     if scene is not None:
         return _ingest_scene(
             scene_obj=scene,
             path_obj=path_obj,
             skeleton_name=skeleton_name,
-            max_influences=max_influences,
+            max_influences=influence_limit,
         )
 
     if not path_obj.exists():
         raise FBXBindIngestError(f"FBX path does not exist: {path_obj}")
+    cache_key = _bind_cache_key(
+        path_obj,
+        skeleton_name=skeleton_name,
+        max_influences=influence_limit,
+    )
+    cached = _bind_cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     failures: List[str] = []
     for backend_name, loader in (
         ("fbx sdk", _load_fbxsdk_scene),
@@ -1031,12 +1146,14 @@ def ingest_fbx_bind_data(
     ):
         try:
             with loader(path_obj) as scene_obj:
-                return _ingest_scene(
+                result = _ingest_scene(
                     scene_obj=scene_obj,
                     path_obj=path_obj,
                     skeleton_name=skeleton_name,
-                    max_influences=max_influences,
+                    max_influences=influence_limit,
                 )
+                _bind_cache_put(cache_key, result)
+                return result
         except FBXBindIngestError as exc:
             failures.append(f"{backend_name}: {exc}")
 

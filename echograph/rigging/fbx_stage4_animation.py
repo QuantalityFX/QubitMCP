@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+import os
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Sequence, Tuple
 import math
@@ -33,6 +35,9 @@ _IDENTITY_MATRIX_4X4: Tuple[float, ...] = (
     0.0,
     1.0,
 )
+
+_ANIMATION_INGEST_CACHE_MAX = 8
+_ANIMATION_INGEST_CACHE: "OrderedDict[Tuple[str, int, int, Tuple[str, ...]], FBXAnimationIngestResult]" = OrderedDict()
 
 
 class FBXAnimationIngestError(RuntimeError):
@@ -603,6 +608,7 @@ def _fbxsdk_curve_components(fbx_mod: Any) -> List[str]:
 
 def _fbxsdk_property_curve_times(prop_obj: Any, layers: Sequence[Any], components: Sequence[str]) -> List[float]:
     out: List[float] = []
+    seen_curves: set[int] = set()
     if prop_obj is None:
         return out
     for layer in list(layers or []):
@@ -614,6 +620,10 @@ def _fbxsdk_property_curve_times(prop_obj: Any, layers: Sequence[Any], component
                 curve = None
             if curve is None:
                 continue
+            curve_id = id(curve)
+            if curve_id in seen_curves:
+                continue
+            seen_curves.add(curve_id)
             count = _to_int(getattr(curve, "KeyGetCount", lambda: 0)(), 0)
             for idx in range(max(0, count)):
                 try:
@@ -751,7 +761,86 @@ def _fbxsdk_eval_local_trs(node_obj: Any, t_seconds: float, fbx_mod: Any) -> Tup
         mat = node_obj.EvaluateLocalTransform(time_obj)
     except Exception:
         mat = None
-    return _decompose_local_trs(_fbxsdk_matrix4_tuple(mat))
+    return _fbxsdk_local_trs_from_matrix(mat)
+
+
+def _fbxsdk_local_trs_from_matrix(
+    mat_obj: Any,
+) -> Tuple[Tuple[float, float, float], Tuple[float, float, float, float], Tuple[float, float, float]]:
+    if mat_obj is not None:
+        try:
+            t = _vec3_from_any(mat_obj.GetT())
+            q = _quat_from_any(mat_obj.GetQ())
+            s = _vec3_from_any(mat_obj.GetS())
+            return t, q, s
+        except Exception:
+            pass
+    return _decompose_local_trs(_fbxsdk_matrix4_tuple(mat_obj))
+
+
+def _fbxsdk_time_bucket(t_seconds: float) -> int:
+    return int(round(float(t_seconds) / float(_TIME_EPSILON)))
+
+
+def _fbxsdk_eval_local_trs_samples(
+    node_obj: Any,
+    sample_times: Sequence[float],
+    fbx_mod: Any,
+) -> Tuple[
+    Dict[float, Tuple[Tuple[float, float, float], Tuple[float, float, float, float], Tuple[float, float, float]]],
+    Dict[int, Tuple[Tuple[float, float, float], Tuple[float, float, float, float], Tuple[float, float, float]]],
+]:
+    exact: Dict[
+        float,
+        Tuple[Tuple[float, float, float], Tuple[float, float, float, float], Tuple[float, float, float]],
+    ] = {}
+    bucketed: Dict[
+        int,
+        Tuple[Tuple[float, float, float], Tuple[float, float, float, float], Tuple[float, float, float]],
+    ] = {}
+    if not sample_times:
+        return exact, bucketed
+
+    time_obj = None
+    for t in sample_times:
+        t_value = float(t)
+        try:
+            if time_obj is None:
+                time_obj = fbx_mod.FbxTime()
+            time_obj.SetSecondDouble(t_value)
+            mat = node_obj.EvaluateLocalTransform(time_obj)
+        except Exception:
+            mat = None
+        sample = _fbxsdk_local_trs_from_matrix(mat)
+        exact[t_value] = sample
+        bucketed.setdefault(_fbxsdk_time_bucket(t_value), sample)
+    return exact, bucketed
+
+
+def _fbxsdk_local_trs_from_sample_cache(
+    node_obj: Any,
+    t_seconds: float,
+    fbx_mod: Any,
+    exact_samples: Dict[
+        float,
+        Tuple[Tuple[float, float, float], Tuple[float, float, float, float], Tuple[float, float, float]],
+    ],
+    bucketed_samples: Dict[
+        int,
+        Tuple[Tuple[float, float, float], Tuple[float, float, float, float], Tuple[float, float, float]],
+    ],
+) -> Tuple[Tuple[float, float, float], Tuple[float, float, float, float], Tuple[float, float, float]]:
+    t_value = float(t_seconds)
+    sample = exact_samples.get(t_value)
+    if sample is not None:
+        return sample
+    sample = bucketed_samples.get(_fbxsdk_time_bucket(t_value))
+    if sample is not None:
+        return sample
+    sample = _fbxsdk_eval_local_trs(node_obj, t_value, fbx_mod)
+    exact_samples[t_value] = sample
+    bucketed_samples.setdefault(_fbxsdk_time_bucket(t_value), sample)
+    return sample
 
 
 def _build_clip_from_fbxsdk_stack(
@@ -795,10 +884,23 @@ def _build_clip_from_fbxsdk_stack(
             filtered_count += 1
             continue
 
+        sample_times = _dedupe_times([*t_times, *r_times, *s_times])
+        exact_samples, bucketed_samples = _fbxsdk_eval_local_trs_samples(
+            node,
+            sample_times,
+            fbx_mod,
+        )
+
         translation_keys = [
             Vec3Keyframe(
                 time=float(t),
-                value=_fbxsdk_eval_local_trs(node, float(t), fbx_mod)[0],
+                value=_fbxsdk_local_trs_from_sample_cache(
+                    node,
+                    float(t),
+                    fbx_mod,
+                    exact_samples,
+                    bucketed_samples,
+                )[0],
                 interpolation="linear",
             )
             for t in t_times
@@ -806,7 +908,13 @@ def _build_clip_from_fbxsdk_stack(
         rotation_keys = [
             QuatKeyframe(
                 time=float(t),
-                value=_fbxsdk_eval_local_trs(node, float(t), fbx_mod)[1],
+                value=_fbxsdk_local_trs_from_sample_cache(
+                    node,
+                    float(t),
+                    fbx_mod,
+                    exact_samples,
+                    bucketed_samples,
+                )[1],
                 interpolation="linear",
             )
             for t in r_times
@@ -814,7 +922,13 @@ def _build_clip_from_fbxsdk_stack(
         scale_keys = [
             Vec3Keyframe(
                 time=float(t),
-                value=_fbxsdk_eval_local_trs(node, float(t), fbx_mod)[2],
+                value=_fbxsdk_local_trs_from_sample_cache(
+                    node,
+                    float(t),
+                    fbx_mod,
+                    exact_samples,
+                    bucketed_samples,
+                )[2],
                 interpolation="linear",
             )
             for t in s_times
@@ -918,6 +1032,63 @@ def _ingest_fbxsdk_scene(
     )
 
 
+def _animation_path_cache_token(path_obj: Path) -> Tuple[str, int, int]:
+    try:
+        resolved = str(path_obj.resolve())
+    except Exception:
+        resolved = str(path_obj)
+    if os.name == "nt":
+        resolved = resolved.lower()
+    stat = path_obj.stat()
+    return (resolved, int(stat.st_mtime_ns), int(stat.st_size))
+
+
+def _skeleton_cache_signature(skeleton: SkeletonAsset | None) -> Tuple[str, ...]:
+    if skeleton is None:
+        return ("<none>",)
+    try:
+        names = tuple(str(name) for name in list(getattr(skeleton, "joint_names", []) or []))
+    except Exception:
+        names = ()
+    if names:
+        return names
+    try:
+        return tuple(
+            str(getattr(joint, "name", "") or "")
+            for joint in list(getattr(skeleton, "joints", []) or [])
+        )
+    except Exception:
+        return ("<unknown>",)
+
+
+def _animation_cache_key(path_obj: Path, skeleton: SkeletonAsset | None) -> Tuple[str, int, int, Tuple[str, ...]]:
+    path_token = _animation_path_cache_token(path_obj)
+    return (
+        path_token[0],
+        path_token[1],
+        path_token[2],
+        _skeleton_cache_signature(skeleton),
+    )
+
+
+def _animation_cache_get(key: Tuple[str, int, int, Tuple[str, ...]]) -> FBXAnimationIngestResult | None:
+    cached = _ANIMATION_INGEST_CACHE.get(key)
+    if cached is None:
+        return None
+    _ANIMATION_INGEST_CACHE.move_to_end(key)
+    return cached
+
+
+def _animation_cache_put(
+    key: Tuple[str, int, int, Tuple[str, ...]],
+    value: FBXAnimationIngestResult,
+) -> None:
+    _ANIMATION_INGEST_CACHE[key] = value
+    _ANIMATION_INGEST_CACHE.move_to_end(key)
+    while len(_ANIMATION_INGEST_CACHE) > int(_ANIMATION_INGEST_CACHE_MAX):
+        _ANIMATION_INGEST_CACHE.popitem(last=False)
+
+
 def ingest_fbx_animation_data(
     path: str | Path,
     *,
@@ -937,26 +1108,34 @@ def ingest_fbx_animation_data(
 
     if not path_obj.exists():
         raise FBXAnimationIngestError(f"FBX path does not exist: {path_obj}")
+    cache_key = _animation_cache_key(path_obj, skeleton)
+    cached = _animation_cache_get(cache_key)
+    if cached is not None:
+        return cached
 
     failures: List[str] = []
     try:
         with _load_fbxsdk_scene(path_obj) as (fbx_mod, scene_obj):
-            return _ingest_fbxsdk_scene(
+            result = _ingest_fbxsdk_scene(
                 path_obj=path_obj,
                 fbx_mod=fbx_mod,
                 scene_obj=scene_obj,
                 skeleton=skeleton,
             )
+            _animation_cache_put(cache_key, result)
+            return result
     except FBXAnimationIngestError as exc:
         failures.append(f"fbx sdk: {exc}")
 
     try:
         with _load_pyassimp_scene(path_obj) as scene_obj:
-            return _ingest_pyassimp_scene(
+            result = _ingest_pyassimp_scene(
                 path_obj=path_obj,
                 scene_obj=scene_obj,
                 skeleton=skeleton,
             )
+            _animation_cache_put(cache_key, result)
+            return result
     except FBXAnimationIngestError as exc:
         failures.append(f"pyassimp: {exc}")
 

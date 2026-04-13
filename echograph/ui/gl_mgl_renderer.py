@@ -51,11 +51,16 @@ from .gl_loaders import load_model
 from .gl_loaders import load_obj_mesh_arrays
 from .gl_scene import MGLSceneItem
 from .gl_shaders import SHADERS
-from .gl_types import SubMeshData
+from .gl_types import MeshArrays, SubMeshData
 from echograph.material_debug import material_debug_log as _material_debug_log
 from echograph.rigging.fbx_stage3_ingest import ingest_fbx_bind_data
 from echograph.rigging.fbx_stage4_animation import ingest_fbx_animation_data
+from echograph.rigging.fbx_stage5_evaluator import evaluate_rig_at_time
 from echograph.rigging.fbx_stage6_debug import evaluate_skeleton_line_points
+from echograph.rigging.fbx_stage7_timeline import (
+    clip_marker_frames,
+    clip_sample_time_from_timeline_seconds,
+)
 
 # OpenGL constants (avoid optional PyOpenGL dependency).
 GL_COLOR_BUFFER_BIT = 0x00004000
@@ -81,6 +86,28 @@ void main() {
     v_world_pos = vec3(0.0, 0.0, 0.0);
 }
 """
+
+
+def _safe_clip_signature(clip) -> tuple:
+    if clip is None:
+        return ("none",)
+    try:
+        name = str(getattr(clip, "name", "") or "")
+    except Exception:
+        name = ""
+    try:
+        start = float(getattr(clip, "start_time", 0.0) or 0.0)
+    except Exception:
+        start = 0.0
+    try:
+        end = float(getattr(clip, "end_time", start) or start)
+    except Exception:
+        end = start
+    try:
+        track_count = int(len(getattr(clip, "tracks", []) or []))
+    except Exception:
+        track_count = 0
+    return (name, round(start, 6), round(end, 6), track_count)
 
 
 def _mgl_grid(size: float, steps: int) -> NDArray:
@@ -268,6 +295,13 @@ class MGLRendererMixin:
     def _mgl_timeline_time_seconds(self) -> float:
         return float(self._mgl_timeline_frame_index()) / float(self._mgl_timeline_fps_value())
 
+    def _mgl_fbx_context_timeline_sample_seconds(self, context: dict | None) -> float:
+        timeline_seconds = self._mgl_timeline_time_seconds()
+        if not isinstance(context, dict):
+            return timeline_seconds
+        clip = context.get("clip")
+        return clip_sample_time_from_timeline_seconds(clip, timeline_seconds)
+
     def _mgl_fbx_rig_context_for_path(self, path: Path) -> Optional[dict]:
         try:
             path_obj = Path(path)
@@ -295,6 +329,7 @@ class MGLRendererMixin:
             bind_result = ingest_fbx_bind_data(path_obj)
             skeleton = getattr(bind_result, "skeleton", None)
             if skeleton is not None:
+                meshes = list(getattr(bind_result, "meshes", []) or [])
                 clip = None
                 try:
                     animation_result = ingest_fbx_animation_data(path_obj, skeleton=skeleton)
@@ -303,13 +338,92 @@ class MGLRendererMixin:
                         clip = clips[0]
                 except Exception:
                     clip = None
-                context = {"skeleton": skeleton, "clip": clip, "loop": True}
+                context = {"skeleton": skeleton, "clip": clip, "meshes": meshes, "loop": True}
         except Exception:
             context = None
 
         cache[cache_key] = {"mtime": mtime, "context": context}
         self._mgl_fbx_rig_context_cache = cache
         return context if isinstance(context, dict) else None
+
+    def _mgl_scene_owner_fbx_rig_context(self, owner: str) -> Optional[dict]:
+        scene = getattr(self, "_mgl_scene", None)
+        if scene is None:
+            return None
+        owner_key = str(owner or "").strip()
+        if not owner_key:
+            return None
+        owner_key_norm = owner_key.lower()
+        for tag in ("scene-model", "scene-wire", "model"):
+            try:
+                items = list(scene.iter_by_tag(tag))
+            except Exception:
+                items = []
+            for item in items:
+                payload = getattr(item, "payload", None) or {}
+                payload_owner = str(payload.get("owner") or "").strip()
+                if payload_owner and payload_owner.lower() != owner_key_norm:
+                    continue
+                context = payload.get("fbx_rig_context")
+                if isinstance(context, dict):
+                    return context
+                path_text = str(payload.get("path") or "").strip()
+                if path_text.lower().endswith(".fbx"):
+                    try:
+                        context = self._mgl_fbx_rig_context_for_path(Path(path_text))
+                    except Exception:
+                        context = None
+                    if isinstance(context, dict):
+                        try:
+                            payload["fbx_rig_context"] = context
+                            item.payload = payload
+                        except Exception:
+                            pass
+                        return context
+        return None
+
+    def _mgl_fbx_clip_marker_keys_map(self, owner: str, context: dict) -> Dict[int, Dict[str, object]]:
+        clip = context.get("clip") if isinstance(context, dict) else None
+        if clip is None:
+            return {}
+
+        owner_key = str(owner or "").strip().lower()
+        fps_value = float(self._mgl_timeline_fps_value())
+        cache = getattr(self, "_mgl_fbx_clip_keys_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+
+        cache_key = (
+            owner_key,
+            id(clip),
+            round(float(fps_value), 6),
+            _safe_clip_signature(clip),
+        )
+        cached = cache.get(cache_key)
+        if isinstance(cached, dict):
+            keys_map = cached.get("keys")
+            if isinstance(keys_map, dict):
+                return keys_map
+
+        frames = clip_marker_frames(clip, fps=fps_value)
+        keys_map: Dict[int, Dict[str, object]] = {}
+        for frame in frames:
+            f = int(frame)
+            if f < 0:
+                continue
+            keys_map[f] = {"fbx_clip_key": True}
+        cache[cache_key] = {"keys": keys_map}
+
+        if len(cache) > 32:
+            # Keep cache bounded; deterministic order is not required here.
+            try:
+                for stale_key in list(cache.keys())[:-32]:
+                    del cache[stale_key]
+            except Exception:
+                pass
+
+        self._mgl_fbx_clip_keys_cache = cache
+        return keys_map
 
     def _mgl_refresh_fbx_rig_wire_item(self, item: MGLSceneItem) -> None:
         if np is None:
@@ -332,7 +446,7 @@ class MGLRendererMixin:
             sample = evaluate_skeleton_line_points(
                 skeleton,
                 clip,
-                self._mgl_timeline_time_seconds(),
+                self._mgl_fbx_context_timeline_sample_seconds(context),
                 loop=loop,
             )
         except Exception:
@@ -376,6 +490,563 @@ class MGLRendererMixin:
                     res.release()
                 except Exception:
                     pass
+
+    def _mgl_fbx_bind_positions_array(self, mesh_obj: Any, vertex_count: int) -> Optional[NDArray]:
+        if np is None:
+            return None
+        count = max(0, int(vertex_count))
+        if count <= 0:
+            return None
+        metadata = getattr(mesh_obj, "metadata", None)
+        bind_positions = []
+        if isinstance(metadata, dict):
+            bind_positions = list(metadata.get("bind_positions") or [])
+        if not bind_positions:
+            return None
+        out = np.zeros((count, 3), dtype="f4")
+        limit = min(count, len(bind_positions))
+        for idx in range(limit):
+            try:
+                row = bind_positions[idx]
+                out[idx, 0] = float(row[0])  # type: ignore[index]
+                out[idx, 1] = float(row[1])  # type: ignore[index]
+                out[idx, 2] = float(row[2])  # type: ignore[index]
+            except Exception:
+                continue
+        return out
+
+    def _mgl_fbx_triangle_normals(self, tri_points: NDArray) -> NDArray:
+        if np is None:
+            raise RuntimeError("numpy unavailable")
+        pts = np.asarray(tri_points, dtype="f4").reshape(-1, 3)
+        tri_count = int(pts.shape[0] // 3)
+        if tri_count <= 0:
+            return np.zeros((0, 3), dtype="f4")
+        tri = pts[: tri_count * 3].reshape(-1, 3, 3)
+        v1 = tri[:, 1] - tri[:, 0]
+        v2 = tri[:, 2] - tri[:, 0]
+        n = np.cross(v1, v2)
+        lengths = np.linalg.norm(n, axis=1)
+        lengths[lengths < 1.0e-8] = 1.0
+        n = (n.T / lengths).T
+        return np.repeat(n[:, None, :], 3, axis=1).reshape(-1, 3).astype("f4", copy=False)
+
+    def _mgl_fbx_skin_specs_from_context(self, context: dict) -> List[Dict[str, Any]]:
+        specs: List[Dict[str, Any]] = []
+        if np is None or not isinstance(context, dict):
+            return specs
+        meshes = list(context.get("meshes") or [])
+        for mesh_obj in meshes:
+            try:
+                vertex_count = int(getattr(mesh_obj, "vertex_count", 0) or 0)
+            except Exception:
+                vertex_count = 0
+            if vertex_count <= 0:
+                continue
+
+            bind_positions = self._mgl_fbx_bind_positions_array(mesh_obj, vertex_count)
+            if bind_positions is None or bind_positions.size == 0:
+                continue
+
+            tri_raw = list(getattr(mesh_obj, "triangle_indices", None) or [])
+            if not tri_raw:
+                continue
+            tri_idx_list: List[int] = []
+            for value in tri_raw:
+                try:
+                    vid = int(value)
+                except Exception:
+                    continue
+                if 0 <= vid < vertex_count:
+                    tri_idx_list.append(vid)
+            tri_count = int((len(tri_idx_list) // 3) * 3)
+            if tri_count <= 0:
+                continue
+            tri_indices = np.asarray(tri_idx_list[:tri_count], dtype=np.int64)
+            tri_points = bind_positions[tri_indices].reshape(-1, 3).astype("f4", copy=False)
+            tri_normals = self._mgl_fbx_triangle_normals(tri_points)
+
+            skins = list(getattr(mesh_obj, "vertex_skins", None) or [])
+            max_influences = 0
+            for skin in skins:
+                max_influences = max(
+                    max_influences,
+                    len(list(getattr(skin, "influences", None) or [])),
+                )
+            max_influences = max(1, int(max_influences))
+            joint_indices = np.full((vertex_count, max_influences), -1, dtype=np.int32)
+            joint_weights = np.zeros((vertex_count, max_influences), dtype=np.float32)
+
+            for skin in skins:
+                try:
+                    vid = int(getattr(skin, "vertex_index", -1))
+                except Exception:
+                    vid = -1
+                if vid < 0 or vid >= vertex_count:
+                    continue
+                influences = list(getattr(skin, "influences", None) or [])
+                for slot, influence in enumerate(influences[:max_influences]):
+                    try:
+                        joint = int(getattr(influence, "joint_index", -1))
+                        weight = float(getattr(influence, "weight", 0.0) or 0.0)
+                    except Exception:
+                        joint = -1
+                        weight = 0.0
+                    if joint < 0 or weight <= 0.0:
+                        continue
+                    joint_indices[vid, slot] = joint
+                    joint_weights[vid, slot] = weight
+
+            totals = joint_weights.sum(axis=1, keepdims=True)
+            valid = totals[:, 0] > 1.0e-8
+            if np.any(valid):
+                joint_weights[valid] = joint_weights[valid] / totals[valid]
+
+            specs.append(
+                {
+                    "name": str(getattr(mesh_obj, "name", "") or ""),
+                    "bind_positions": bind_positions,
+                    "triangle_indices": tri_indices,
+                    "bind_tri_points": tri_points,
+                    "bind_tri_normals": tri_normals,
+                    "joint_indices": joint_indices,
+                    "joint_weights": joint_weights,
+                }
+            )
+        return specs
+
+    def _mgl_fbx_mesh_arrays_from_context(self, context: dict | None) -> Optional[MeshArrays]:
+        if np is None or not isinstance(context, dict):
+            return None
+        specs = self._mgl_fbx_skin_specs_from_context(context)
+        if not specs:
+            return None
+        submeshes: List[SubMeshData] = []
+        points_all: List[NDArray] = []
+        normals_all: List[NDArray] = []
+        uvs_all: List[NDArray] = []
+        for spec in specs:
+            points = np.asarray(spec.get("bind_tri_points"), dtype="f4").reshape(-1, 3)
+            normals = np.asarray(spec.get("bind_tri_normals"), dtype="f4").reshape(-1, 3)
+            if points.size == 0:
+                continue
+            if normals.size != points.size:
+                normals = self._mgl_fbx_triangle_normals(points)
+            uvs = np.zeros((points.shape[0], 2), dtype="f4")
+            submeshes.append(SubMeshData(points=points, normals=normals, uvs=uvs))
+            points_all.append(points)
+            normals_all.append(normals)
+            uvs_all.append(uvs)
+        if not points_all:
+            return None
+        return MeshArrays(
+            points=np.concatenate(points_all, axis=0).astype("f4", copy=False),
+            normals=np.concatenate(normals_all, axis=0).astype("f4", copy=False),
+            uvs=np.concatenate(uvs_all, axis=0).astype("f4", copy=False),
+            submeshes=submeshes,
+        )
+
+    @staticmethod
+    def _mgl_fbx_mesh_skinning_enabled(context: dict | None) -> bool:
+        if not isinstance(context, dict):
+            return True
+        raw = context.get("mesh_skinning_enabled", True)
+        if isinstance(raw, str):
+            token = raw.strip().lower()
+            if token in {"0", "false", "no", "off"}:
+                return False
+            if token in {"1", "true", "yes", "on"}:
+                return True
+            return True
+        try:
+            return bool(raw)
+        except Exception:
+            return True
+
+    @staticmethod
+    def _mgl_fbx_transform_points_row_major(mats: NDArray, points: NDArray) -> NDArray:
+        x = points[:, 0]
+        y = points[:, 1]
+        z = points[:, 2]
+        out = np.empty_like(points, dtype="f4")
+        out[:, 0] = (mats[:, 0, 0] * x) + (mats[:, 0, 1] * y) + (mats[:, 0, 2] * z) + mats[:, 0, 3]
+        out[:, 1] = (mats[:, 1, 0] * x) + (mats[:, 1, 1] * y) + (mats[:, 1, 2] * z) + mats[:, 1, 3]
+        out[:, 2] = (mats[:, 2, 0] * x) + (mats[:, 2, 1] * y) + (mats[:, 2, 2] * z) + mats[:, 2, 3]
+        return out
+
+    @staticmethod
+    def _mgl_fbx_apply_affine_row_major(matrix: NDArray, points: NDArray) -> NDArray:
+        mat = np.asarray(matrix, dtype="f4").reshape(4, 4)
+        pts = np.asarray(points, dtype="f4").reshape(-1, 3)
+        x = pts[:, 0]
+        y = pts[:, 1]
+        z = pts[:, 2]
+        out = np.empty_like(pts, dtype="f4")
+        out[:, 0] = (mat[0, 0] * x) + (mat[0, 1] * y) + (mat[0, 2] * z) + mat[0, 3]
+        out[:, 1] = (mat[1, 0] * x) + (mat[1, 1] * y) + (mat[1, 2] * z) + mat[1, 3]
+        out[:, 2] = (mat[2, 0] * x) + (mat[2, 1] * y) + (mat[2, 2] * z) + mat[2, 3]
+        return out
+
+    @staticmethod
+    def _mgl_fbx_fit_affine_row_major(src_points: NDArray, dst_points: NDArray) -> NDArray:
+        src = np.asarray(src_points, dtype="f4").reshape(-1, 3)
+        dst = np.asarray(dst_points, dtype="f4").reshape(-1, 3)
+        count = int(min(src.shape[0], dst.shape[0]))
+        if count < 4:
+            return np.eye(4, dtype="f4")
+        src = src[:count]
+        dst = dst[:count]
+        ones = np.ones((count, 1), dtype="f4")
+        lhs = np.concatenate((src, ones), axis=1)
+        try:
+            # lhs @ coeff = dst, where coeff shape is (4,3)
+            coeff, _, _, _ = np.linalg.lstsq(lhs, dst, rcond=None)
+        except Exception:
+            return np.eye(4, dtype="f4")
+        mat = np.eye(4, dtype="f4")
+        # Convert row-vector coeff form to the row-major matrix used by shader-side convention.
+        mat[0, 0] = float(coeff[0, 0])
+        mat[0, 1] = float(coeff[1, 0])
+        mat[0, 2] = float(coeff[2, 0])
+        mat[0, 3] = float(coeff[3, 0])
+        mat[1, 0] = float(coeff[0, 1])
+        mat[1, 1] = float(coeff[1, 1])
+        mat[1, 2] = float(coeff[2, 1])
+        mat[1, 3] = float(coeff[3, 1])
+        mat[2, 0] = float(coeff[0, 2])
+        mat[2, 1] = float(coeff[1, 2])
+        mat[2, 2] = float(coeff[2, 2])
+        mat[2, 3] = float(coeff[3, 2])
+        return mat
+
+    def _mgl_prepare_fbx_rig_mesh_item(self, item: MGLSceneItem) -> None:
+        if np is None:
+            return
+        payload = item.payload or {}
+        context = payload.get("fbx_rig_context")
+        if not self._mgl_fbx_mesh_skinning_enabled(context if isinstance(context, dict) else None):
+            runtime = payload.get("_fbx_skin_runtime")
+            if isinstance(runtime, dict):
+                for mesh in list(runtime.get("meshes") or []):
+                    try:
+                        bind_positions = np.asarray(mesh.get("bind_positions"), dtype="f4").reshape(-1, 3)
+                        triangle_indices = np.asarray(mesh.get("triangle_indices"), dtype=np.int64).ravel()
+                        if bind_positions.size == 0 or triangle_indices.size == 0:
+                            continue
+                        tri_points = bind_positions[triangle_indices].reshape(-1, 3).astype("f4", copy=False)
+                        affine = mesh.get("affine")
+                        if affine is not None:
+                            tri_points = self._mgl_fbx_apply_affine_row_major(affine, tri_points)
+                        tri_normals = self._mgl_fbx_triangle_normals(tri_points)
+                        vbo = mesh.get("vbo")
+                        nbo = mesh.get("nbo")
+                        if vbo is not None:
+                            vbo.write(tri_points.tobytes())
+                        if nbo is not None:
+                            nbo.write(tri_normals.tobytes())
+                    except Exception:
+                        continue
+            payload["_fbx_skin_prepare_done"] = True
+            payload.pop("_fbx_skin_runtime", None)
+            payload.pop("_fbx_skin_frame", None)
+            item.payload = payload
+            return
+        if bool(payload.get("_fbx_skin_prepare_done", False)):
+            if isinstance(payload.get("_fbx_skin_runtime"), dict):
+                return
+            context_check = payload.get("fbx_rig_context")
+            if not isinstance(context_check, dict) or not list(context_check.get("meshes") or []):
+                return
+        payload["_fbx_skin_prepare_done"] = True
+
+        skeleton = context.get("skeleton") if isinstance(context, dict) else None
+        if skeleton is None:
+            item.payload = payload
+            return
+        specs = self._mgl_fbx_skin_specs_from_context(context)
+        if not specs:
+            item.payload = payload
+            return
+
+        # Preferred path: keep the original loaded mesh buffers (and UVs/material layout) and
+        # drive only vertex positions/normals from the rig evaluator.
+        existing_submeshes = [sub for sub in list(payload.get("submeshes") or []) if isinstance(sub, dict)]
+        runtime_meshes: List[Dict[str, Any]] = []
+        specs_by_name: Dict[str, Dict[str, Any]] = {}
+        for spec in specs:
+            spec_name = str(spec.get("name", "") or "").strip().lower()
+            if spec_name and spec_name not in specs_by_name:
+                specs_by_name[spec_name] = spec
+        used_spec_keys: set[str] = set()
+        index_fallback: List[Dict[str, Any]] = [spec for spec in specs]
+        fallback_idx = 0
+
+        for entry in existing_submeshes:
+            entry_name_key = str(entry.get("name", "") or "").strip().lower()
+            spec = None
+            if entry_name_key:
+                candidate = specs_by_name.get(entry_name_key)
+                if candidate is not None and entry_name_key not in used_spec_keys:
+                    spec = candidate
+                    used_spec_keys.add(entry_name_key)
+            if spec is None:
+                while fallback_idx < len(index_fallback):
+                    candidate = index_fallback[fallback_idx]
+                    fallback_idx += 1
+                    candidate_key = str(candidate.get("name", "") or "").strip().lower()
+                    if candidate_key and candidate_key in used_spec_keys:
+                        continue
+                    if candidate_key:
+                        used_spec_keys.add(candidate_key)
+                    spec = candidate
+                    break
+            if spec is None:
+                continue
+
+            bind_positions = np.asarray(spec.get("bind_positions"), dtype="f4").reshape(-1, 3)
+            triangle_indices = np.asarray(spec.get("triangle_indices"), dtype=np.int64).ravel()
+            if bind_positions.size == 0 or triangle_indices.size == 0:
+                continue
+            render_points_raw = entry.get("points")
+            if render_points_raw is None:
+                continue
+            render_points = np.asarray(render_points_raw, dtype="f4").reshape(-1, 3)
+            bind_tri_points = np.asarray(spec.get("bind_tri_points"), dtype="f4").reshape(-1, 3)
+            if render_points.shape[0] != bind_tri_points.shape[0]:
+                continue
+            if entry.get("vbo") is None or entry.get("nbo") is None:
+                continue
+            affine = self._mgl_fbx_fit_affine_row_major(bind_tri_points, render_points)
+            try:
+                fit_points = self._mgl_fbx_apply_affine_row_major(affine, bind_tri_points)
+                delta = fit_points - render_points
+                rmse = float(np.sqrt(np.mean(np.sum(delta * delta, axis=1))))
+                bbox_min = render_points.min(axis=0)
+                bbox_max = render_points.max(axis=0)
+                bbox_diag = float(np.linalg.norm(bbox_max - bbox_min))
+                normalized_rmse = rmse / max(1.0e-5, bbox_diag)
+            except Exception:
+                rmse = 0.0
+                normalized_rmse = 0.0
+            # Guard against invalid submesh pairing to avoid catastrophic scrambling.
+            if normalized_rmse > 0.05:
+                continue
+            runtime_meshes.append(
+                {
+                    "bind_positions": bind_positions,
+                    "triangle_indices": triangle_indices,
+                    "joint_indices": np.asarray(spec.get("joint_indices"), dtype=np.int32),
+                    "joint_weights": np.asarray(spec.get("joint_weights"), dtype="f4"),
+                    "vbo": entry.get("vbo"),
+                    "nbo": entry.get("nbo"),
+                    "affine": affine,
+                    "fit_rmse": float(rmse),
+                }
+            )
+        if runtime_meshes:
+            payload["_fbx_skin_runtime"] = {
+                "skeleton": skeleton,
+                "clip": context.get("clip"),
+                "loop": bool(context.get("loop", True)),
+                "meshes": runtime_meshes,
+            }
+            payload["_fbx_skin_frame"] = None
+            item.payload = payload
+            return
+
+        # If source mesh buffers exist but mapping failed, keep original geometry untouched
+        # rather than swapping in a canonical fallback that can alter UV/material layout.
+        if existing_submeshes:
+            item.payload = payload
+            return
+
+        # Fallback path for runtimes where we cannot keep source submesh buffers
+        # (for example, loader could not provide usable render points).
+        old_resources = list(item.resources or [])
+        old_submeshes = existing_submeshes
+        old_texture = payload.get("texture")
+        fallback_texture = old_texture
+        if fallback_texture is None:
+            for sub in old_submeshes:
+                tex = sub.get("texture") if isinstance(sub, dict) else None
+                if tex is not None:
+                    fallback_texture = tex
+                    break
+
+        source_color = payload.get("color")
+        if source_color is None:
+            for sub in old_submeshes:
+                if isinstance(sub, dict) and sub.get("color") is not None:
+                    source_color = sub.get("color")
+                    break
+        if source_color is None:
+            source_color = self._mgl_mesh_color
+
+        entries: List[Dict[str, Any]] = []
+        fallback_runtime_meshes: List[Dict[str, Any]] = []
+        for spec in specs:
+            tri_points = np.asarray(spec["bind_tri_points"], dtype="f4").reshape(-1, 3)
+            tri_normals = np.asarray(spec["bind_tri_normals"], dtype="f4").reshape(-1, 3)
+            tri_uvs = np.zeros((tri_points.shape[0], 2), dtype="f4")
+            entry = self._mgl_build_mesh_entry(tri_points, tri_normals, tri_uvs)
+            if entry is None:
+                continue
+            entry["texture"] = fallback_texture
+            entry["color"] = source_color
+            entries.append(entry)
+            fallback_runtime_meshes.append(
+                {
+                    "bind_positions": np.asarray(spec["bind_positions"], dtype="f4"),
+                    "triangle_indices": np.asarray(spec["triangle_indices"], dtype=np.int64),
+                    "joint_indices": np.asarray(spec["joint_indices"], dtype=np.int32),
+                    "joint_weights": np.asarray(spec["joint_weights"], dtype="f4"),
+                    "vbo": entry.get("vbo"),
+                    "nbo": entry.get("nbo"),
+                    "affine": np.eye(4, dtype="f4"),
+                }
+            )
+        if not entries:
+            item.payload = payload
+            return
+
+        payload.pop("vao", None)
+        payload.pop("texture", None)
+        payload["submeshes"] = entries
+        payload["_fbx_skin_runtime"] = {
+            "skeleton": skeleton,
+            "clip": context.get("clip"),
+            "loop": bool(context.get("loop", True)),
+            "meshes": fallback_runtime_meshes,
+        }
+        payload["_fbx_skin_frame"] = None
+        item.payload = payload
+
+        resources: List[object] = []
+        seen_resource: set[int] = set()
+        for entry in entries:
+            for res in (
+                entry.get("vao"),
+                entry.get("vbo"),
+                entry.get("nbo"),
+                entry.get("tbo"),
+                entry.get("ibo"),
+                entry.get("texture"),
+            ):
+                if res is None:
+                    continue
+                rid = id(res)
+                if rid in seen_resource:
+                    continue
+                seen_resource.add(rid)
+                resources.append(res)
+        item.resources = resources
+
+        reused = {id(res) for res in resources}
+        for res in old_resources:
+            if res is None or id(res) in reused or not hasattr(res, "release"):
+                continue
+            try:
+                res.release()
+            except Exception:
+                pass
+
+        owner = str(payload.get("owner") or "").strip()
+        if owner:
+            try:
+                proc_entry = getattr(self, "_mgl_scene_proc_textures_by_owner", {}).get(owner)
+            except Exception:
+                proc_entry = None
+            if isinstance(proc_entry, dict):
+                proc_entry["subs"] = entries
+
+    def _mgl_refresh_fbx_rig_mesh_item(self, item: MGLSceneItem) -> None:
+        if np is None:
+            return
+        self._mgl_prepare_fbx_rig_mesh_item(item)
+        payload = item.payload or {}
+        runtime = payload.get("_fbx_skin_runtime")
+        if not isinstance(runtime, dict):
+            return
+
+        frame = self._mgl_timeline_frame_index()
+        if payload.get("_fbx_skin_frame", None) == frame:
+            return
+
+        skeleton = runtime.get("skeleton")
+        if skeleton is None:
+            return
+        clip = runtime.get("clip")
+        loop = bool(runtime.get("loop", True))
+        context = payload.get("fbx_rig_context")
+        sample_seconds = self._mgl_fbx_context_timeline_sample_seconds(context if isinstance(context, dict) else None)
+        try:
+            evaluation = evaluate_rig_at_time(
+                skeleton,
+                clip,
+                sample_seconds,
+                loop=loop,
+            )
+        except Exception:
+            return
+
+        try:
+            skin_mats = np.asarray(evaluation.skin_matrices, dtype="f4").reshape(-1, 4, 4)
+        except Exception:
+            return
+        joint_count = int(skin_mats.shape[0])
+        meshes = list(runtime.get("meshes") or [])
+        for mesh in meshes:
+            bind_positions = np.asarray(mesh.get("bind_positions"), dtype="f4").reshape(-1, 3)
+            triangle_indices = np.asarray(mesh.get("triangle_indices"), dtype=np.int64).ravel()
+            joint_indices = np.asarray(mesh.get("joint_indices"), dtype=np.int32)
+            joint_weights = np.asarray(mesh.get("joint_weights"), dtype="f4")
+            if bind_positions.size == 0 or triangle_indices.size == 0:
+                continue
+
+            vertex_count = int(bind_positions.shape[0])
+            deformed = bind_positions.copy()
+            if (
+                joint_indices.ndim == 2
+                and joint_weights.ndim == 2
+                and joint_indices.shape[0] == vertex_count
+                and joint_weights.shape == joint_indices.shape
+                and joint_count > 0
+            ):
+                deformed = np.zeros_like(bind_positions, dtype="f4")
+                weighted_mask = np.zeros((vertex_count,), dtype=bool)
+                slots = int(joint_indices.shape[1])
+                for slot in range(slots):
+                    js = joint_indices[:, slot]
+                    ws = joint_weights[:, slot]
+                    valid = (js >= 0) & (js < joint_count) & (ws > 1.0e-8)
+                    if not np.any(valid):
+                        continue
+                    transformed = self._mgl_fbx_transform_points_row_major(skin_mats[js[valid]], bind_positions[valid])
+                    deformed[valid] += transformed * ws[valid, None]
+                    weighted_mask[valid] = True
+                if np.any(~weighted_mask):
+                    deformed[~weighted_mask] = bind_positions[~weighted_mask]
+
+            tri_points = deformed[triangle_indices].reshape(-1, 3).astype("f4", copy=False)
+            affine = mesh.get("affine")
+            if affine is not None:
+                try:
+                    tri_points = self._mgl_fbx_apply_affine_row_major(affine, tri_points)
+                except Exception:
+                    pass
+            tri_normals = self._mgl_fbx_triangle_normals(tri_points)
+            vbo = mesh.get("vbo")
+            nbo = mesh.get("nbo")
+            try:
+                if vbo is not None:
+                    vbo.write(tri_points.tobytes())
+                if nbo is not None:
+                    nbo.write(tri_normals.tobytes())
+            except Exception:
+                continue
+
+        payload["_fbx_skin_frame"] = frame
+        item.payload = payload
 
     @staticmethod
     def _mgl_edge_vertices_from_mesh(
@@ -734,7 +1405,7 @@ class MGLRendererMixin:
                     sample = evaluate_skeleton_line_points(
                         context.get("skeleton"),
                         context.get("clip"),
-                        self._mgl_timeline_time_seconds(),
+                        self._mgl_fbx_context_timeline_sample_seconds(context),
                         loop=bool(context.get("loop", True)),
                     )
                     line_points = np.array(sample.line_points or [], dtype="f4").reshape(-1, 3)
@@ -1655,46 +2326,57 @@ class MGLRendererMixin:
         current_owner = str(getattr(self, "_timeline_owner_name", "") or "").strip()
         current_norm = norm_fn(current_owner) if callable(norm_fn) else current_owner.lower()
         current_keys = getattr(self, "_timeline_keys", None)
-        if key_norm and current_norm == key_norm and isinstance(current_keys, dict):
+        if (
+            key_norm
+            and current_norm == key_norm
+            and isinstance(current_keys, dict)
+            and bool(current_keys)
+        ):
             return current_keys
 
         owner_paths_fn = getattr(self, "_timeline_owner_file_paths", None)
         reader = getattr(self, "_timeline_read_owner_keys_file", None)
-        if not callable(owner_paths_fn) or not callable(reader):
-            return {}
-        try:
-            file_paths = owner_paths_fn()
-        except Exception:
-            return {}
+        file_paths = []
+        if callable(owner_paths_fn):
+            try:
+                file_paths = owner_paths_fn()
+            except Exception:
+                file_paths = []
         cache = getattr(self, "_timeline_owner_keys_cache", None)
         if not isinstance(cache, dict):
             cache = {}
-        for path in file_paths or []:
-            path_key = str(path)
-            try:
-                mtime = float(path.stat().st_mtime)
-            except Exception:
-                mtime = None
-            entry = cache.get(path_key) if isinstance(cache, dict) else None
-            owner_name = ""
-            keys_map = {}
-            if isinstance(entry, dict) and entry.get("mtime", None) == mtime:
-                owner_name = str(entry.get("owner", "") or "").strip()
-                cached_keys = entry.get("keys", None)
-                if isinstance(cached_keys, dict):
-                    keys_map = cached_keys
-            else:
-                owner_name, keys_map = reader(path)
-                cache[path_key] = {
-                    "mtime": mtime,
-                    "owner": str(owner_name or ""),
-                    "keys": keys_map if isinstance(keys_map, dict) else {},
-                }
-            owner_norm = norm_fn(owner_name) if callable(norm_fn) else str(owner_name or "").strip().lower()
-            if owner_norm and owner_norm == key_norm and isinstance(keys_map, dict):
-                self._timeline_owner_keys_cache = cache
-                return keys_map
+        if callable(reader):
+            for path in file_paths or []:
+                path_key = str(path)
+                try:
+                    mtime = float(path.stat().st_mtime)
+                except Exception:
+                    mtime = None
+                entry = cache.get(path_key) if isinstance(cache, dict) else None
+                owner_name = ""
+                keys_map = {}
+                if isinstance(entry, dict) and entry.get("mtime", None) == mtime:
+                    owner_name = str(entry.get("owner", "") or "").strip()
+                    cached_keys = entry.get("keys", None)
+                    if isinstance(cached_keys, dict):
+                        keys_map = cached_keys
+                else:
+                    owner_name, keys_map = reader(path)
+                    cache[path_key] = {
+                        "mtime": mtime,
+                        "owner": str(owner_name or ""),
+                        "keys": keys_map if isinstance(keys_map, dict) else {},
+                    }
+                owner_norm = norm_fn(owner_name) if callable(norm_fn) else str(owner_name or "").strip().lower()
+                if owner_norm and owner_norm == key_norm and isinstance(keys_map, dict):
+                    self._timeline_owner_keys_cache = cache
+                    return keys_map
         self._timeline_owner_keys_cache = cache
+        context = self._mgl_scene_owner_fbx_rig_context(key)
+        if isinstance(context, dict):
+            keys_map = self._mgl_fbx_clip_marker_keys_map(key, context)
+            if isinstance(keys_map, dict):
+                return keys_map
         return {}
 
     def _mgl_fx_current_owner_pos(self, owner: str):
@@ -3324,6 +4006,9 @@ class MGLRendererMixin:
         if self._mgl_ctx is None or self._mgl_prog is None:
             return
         payload = item.payload or {}
+        if isinstance(payload.get("fbx_rig_context"), dict):
+            self._mgl_refresh_fbx_rig_mesh_item(item)
+            payload = item.payload or {}
         submeshes = payload.get("submeshes")
         vao = payload.get("vao")
         if not submeshes and vao is None:
@@ -4315,6 +5000,8 @@ class MGLRendererMixin:
             "ibo": index_buffer,
             "count": int(indices.size),
             "uvs": uvs,
+            "points": points,
+            "normals": normals,
         }
 
     def _mgl_build_submesh_entries(
@@ -4377,6 +5064,10 @@ class MGLRendererMixin:
                     "texture": texture,
                     "color": color,
                     "count": int(indices.size),
+                    "points": points,
+                    "normals": normals,
+                    "uvs": uvs,
+                    "name": str(getattr(sub, "name", "") or "").strip(),
                 }
             )
             total_indices += int(indices.size)
@@ -7895,6 +8586,12 @@ class MGLRendererMixin:
             ]
             path_key = str(getattr(self, "_mgl_mesh_path", "") or "")
             is_fbx = path_key.strip().lower().endswith(".fbx")
+            fbx_rig_context = None
+            if is_fbx and path_key:
+                try:
+                    fbx_rig_context = self._mgl_fbx_rig_context_for_path(Path(path_key))
+                except Exception:
+                    fbx_rig_context = None
             item = MGLSceneItem(
                 name="mesh",
                 draw_fn=MGLRendererMixin._mgl_draw_scene_mesh,
@@ -7904,6 +8601,7 @@ class MGLRendererMixin:
                     "color": self._mgl_mesh_color,
                     "path": path_key,
                     "edge_wire": bool(is_fbx),
+                    "fbx_rig_context": fbx_rig_context if isinstance(fbx_rig_context, dict) else None,
                 },
                 resources=[res for res in resources if res is not None],
                 order=10,
@@ -7949,6 +8647,12 @@ class MGLRendererMixin:
                 )
             path_key = str(getattr(self, "_mgl_mesh_path", "") or "")
             is_fbx = path_key.strip().lower().endswith(".fbx")
+            fbx_rig_context = None
+            if is_fbx and path_key:
+                try:
+                    fbx_rig_context = self._mgl_fbx_rig_context_for_path(Path(path_key))
+                except Exception:
+                    fbx_rig_context = None
             item = MGLSceneItem(
                 name="mesh",
                 draw_fn=MGLRendererMixin._mgl_draw_scene_mesh,
@@ -7956,6 +8660,7 @@ class MGLRendererMixin:
                     "submeshes": entries,
                     "path": path_key,
                     "edge_wire": bool(is_fbx),
+                    "fbx_rig_context": fbx_rig_context if isinstance(fbx_rig_context, dict) else None,
                 },
                 resources=[res for res in resources if res is not None],
                 order=10,
@@ -8099,8 +8804,18 @@ class MGLRendererMixin:
                     normals = mesh_arrays.normals
                     uvs = mesh_arrays.uvs
                 except Exception as exc:
-                    self._mgl_error = f"FBX load failed: {exc}"
-                    return
+                    rig_context = None
+                    try:
+                        rig_context = self._mgl_fbx_rig_context_for_path(path)
+                    except Exception:
+                        rig_context = None
+                    mesh_arrays = self._mgl_fbx_mesh_arrays_from_context(rig_context)
+                    if mesh_arrays is None:
+                        self._mgl_error = f"FBX load failed: {exc}"
+                        return
+                    points = mesh_arrays.points
+                    normals = mesh_arrays.normals
+                    uvs = mesh_arrays.uvs
             elif path.suffix.lower() == ".obj":
                 try:
                     points, normals, uvs = load_obj_mesh_arrays(path)
@@ -8633,6 +9348,16 @@ class MGLRendererMixin:
                 visible = bool(visibility_map.get(owner, True))
                 wire_only = bool(asset.get("wire_only"))
                 is_volume = bool(asset.get("volume"))
+                fbx_rig_context = asset.get("fbx_rig_context") if isinstance(asset, dict) else None
+                if (
+                    not isinstance(fbx_rig_context, dict)
+                    and ext == ".fbx"
+                    and path is not None
+                ):
+                    try:
+                        fbx_rig_context = self._mgl_fbx_rig_context_for_path(path)
+                    except Exception:
+                        fbx_rig_context = None
 
                 if is_camera:
                     # Preferred camera proxy path: an OBJ generated from primitive cube+cone,
@@ -8903,8 +9628,15 @@ class MGLRendererMixin:
                             normals = mesh_arrays.normals
                             uvs = mesh_arrays.uvs
                         except Exception as exc:
-                            self._mgl_error = f"FBX load failed: {exc}"
-                            continue
+                            mesh_arrays = self._mgl_fbx_mesh_arrays_from_context(
+                                fbx_rig_context if isinstance(fbx_rig_context, dict) else None
+                            )
+                            if mesh_arrays is None:
+                                self._mgl_error = f"FBX load failed: {exc}"
+                                continue
+                            points = mesh_arrays.points
+                            normals = mesh_arrays.normals
+                            uvs = mesh_arrays.uvs
                     elif ext == ".obj":
                         try:
                             points, normals, uvs = load_obj_mesh_arrays(path)
@@ -8971,6 +9703,7 @@ class MGLRendererMixin:
                             "material": material,
                             "owner": owner,
                             "path": path_key,
+                            "fbx_rig_context": fbx_rig_context if isinstance(fbx_rig_context, dict) else None,
                         },
                         resources=[res for res in resources if res is not None],
                         visible=visible,
@@ -9025,7 +9758,13 @@ class MGLRendererMixin:
                         model_item = MGLSceneItem(
                             name=path.name,
                             draw_fn=MGLRendererMixin._mgl_draw_scene_mesh,
-                            payload={"submeshes": entries, "material": material, "owner": owner, "path": path_key},
+                            payload={
+                                "submeshes": entries,
+                                "material": material,
+                                "owner": owner,
+                                "path": path_key,
+                                "fbx_rig_context": fbx_rig_context if isinstance(fbx_rig_context, dict) else None,
+                            },
                             resources=resources,
                             visible=visible,
                             order=10,
@@ -9118,6 +9857,7 @@ class MGLRendererMixin:
                                 "material": material,
                                 "owner": owner,
                                 "path": path_key,
+                                "fbx_rig_context": fbx_rig_context if isinstance(fbx_rig_context, dict) else None,
                             },
                             resources=[res for res in resources if res is not None],
                             visible=visible,

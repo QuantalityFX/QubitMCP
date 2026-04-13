@@ -165,6 +165,7 @@ def _fbx_import_rig_context(model) -> Dict[str, Any] | None:
         or getattr(model, "_fbx_bind_rest_result", None)
     )
     skeleton = getattr(bind_result, "skeleton", None) if bind_result is not None else None
+    meshes = list(getattr(bind_result, "meshes", []) or []) if bind_result is not None else []
     if skeleton is None:
         return None
 
@@ -179,7 +180,14 @@ def _fbx_import_rig_context(model) -> Dict[str, Any] | None:
         clips = []
     if clips:
         clip = clips[0]
-    return {"skeleton": skeleton, "clip": clip, "loop": True}
+    return {
+        "skeleton": skeleton,
+        "clip": clip,
+        "meshes": meshes,
+        "loop": True,
+        # Debug step: keep FBXImport mesh in rest state while skeleton/clip diagnostics continue.
+        "mesh_skinning_enabled": False,
+    }
 
 
 def _set_param_value(model, name: str, value: str) -> None:

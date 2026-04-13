@@ -37,6 +37,10 @@ from .fbx_stage6_debug import (
     skeleton_line_points_from_evaluation,
     skeleton_line_points_from_global_matrices,
 )
+from .fbx_stage7_timeline import (
+    clip_marker_frames,
+    clip_sample_time_from_timeline_seconds,
+)
 
 __all__ = [
     "SchemaValidationError",
@@ -66,4 +70,6 @@ __all__ = [
     "skeleton_line_points_from_global_matrices",
     "skeleton_line_points_from_evaluation",
     "evaluate_skeleton_line_points",
+    "clip_sample_time_from_timeline_seconds",
+    "clip_marker_frames",
 ]

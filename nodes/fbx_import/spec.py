@@ -4,6 +4,7 @@ import ctypes
 from dataclasses import dataclass, field
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -33,6 +34,7 @@ from echograph.rigging.fbx_stage4_animation import (
     FBXAnimationIngestError,
     ingest_fbx_animation_data,
 )
+from echograph.rigging.fbx_stage5_evaluator import evaluate_rig_at_time
 from nodes.core import Spec
 from nodes.util_graph import param_change_relevant as _param_change_relevant
 
@@ -1275,6 +1277,8 @@ def _validate_animation_sources_stage4(
     state: Dict[str, Any] = {
         "rest_result": None,
         "animated_result": None,
+        "alignment_summary": "",
+        "alignment_metrics": None,
     }
     rest_path = (effective.get("rest_geometry") or "").strip()
     if not rest_path:
@@ -1288,6 +1292,23 @@ def _validate_animation_sources_stage4(
         rest_bind = bind_state.get("rest_result")
         if rest_bind is not None:
             skeleton = getattr(rest_bind, "skeleton", None)
+
+    def _append_alignment_warning(metrics_obj) -> None:
+        if not isinstance(metrics_obj, dict):
+            return
+        if float(metrics_obj.get("failed", 0.0) or 0.0) >= 0.5:
+            return
+        mean_r = float(metrics_obj.get("mean_r", 0.0) or 0.0)
+        max_r = float(metrics_obj.get("max_r", 0.0) or 0.0)
+        mean_t = float(metrics_obj.get("mean_t", 0.0) or 0.0)
+        max_t = float(metrics_obj.get("max_t", 0.0) or 0.0)
+        if (mean_r > 25.0) or (max_r > 120.0) or (max_t > 1.0):
+            warnings.append(
+                "animated_pose: frame0 differs strongly from bind pose "
+                f"(mean_t={mean_t:.5f}, max_t={max_t:.5f}, "
+                f"mean_r={mean_r:.3f}deg, max_r={max_r:.3f}deg). "
+                "If mesh explodes, this likely indicates bind/animation basis mismatch."
+            )
 
     def _ingest_animation(path_value: str, role: str):
         try:
@@ -1323,6 +1344,9 @@ def _validate_animation_sources_stage4(
         if not animated_path:
             effective["animated_pose"] = rest_path
         state["animated_result"] = rest_result
+        state["alignment_summary"] = _clip_alignment_summary(skeleton, rest_result)
+        state["alignment_metrics"] = _clip_alignment_metrics(skeleton, rest_result)
+        _append_alignment_warning(state.get("alignment_metrics"))
         return state
 
     animated_result = _ingest_animation(animated_path, "animated_pose")
@@ -1331,6 +1355,9 @@ def _validate_animation_sources_stage4(
             warnings.append("animated_pose: using rest_geometry animation clips.")
             effective["animated_pose"] = rest_path
             state["animated_result"] = rest_result
+            state["alignment_summary"] = _clip_alignment_summary(skeleton, rest_result)
+            state["alignment_metrics"] = _clip_alignment_metrics(skeleton, rest_result)
+            _append_alignment_warning(state.get("alignment_metrics"))
         return state
 
     if (not list(getattr(animated_result, "clips", []) or [])) and (
@@ -1339,9 +1366,15 @@ def _validate_animation_sources_stage4(
         warnings.append("animated_pose: no clips found; using rest_geometry animation clips.")
         effective["animated_pose"] = rest_path
         state["animated_result"] = rest_result
+        state["alignment_summary"] = _clip_alignment_summary(skeleton, rest_result)
+        state["alignment_metrics"] = _clip_alignment_metrics(skeleton, rest_result)
+        _append_alignment_warning(state.get("alignment_metrics"))
         return state
 
     state["animated_result"] = animated_result
+    state["alignment_summary"] = _clip_alignment_summary(skeleton, animated_result)
+    state["alignment_metrics"] = _clip_alignment_metrics(skeleton, animated_result)
+    _append_alignment_warning(state.get("alignment_metrics"))
     return state
 
 
@@ -1473,6 +1506,7 @@ def resolve_fbx_import_sources(
             setattr(model, "_fbx_anim_validation_enabled", bool(animation_validation_enabled))
             setattr(model, "_fbx_anim_rest_result", animation_state.get("rest_result"))
             setattr(model, "_fbx_anim_animated_result", animation_state.get("animated_result"))
+            setattr(model, "_fbx_anim_alignment_summary", str(animation_state.get("alignment_summary") or ""))
         except Exception:
             pass
 
@@ -1488,6 +1522,144 @@ def _compact_source_line(role: str, path_value: str) -> str:
     except Exception:
         name = raw
     return f"{role}: {name}"
+
+
+def _clip_summary_text(animation_result) -> str:
+    if animation_result is None:
+        return "clips: <unavailable>"
+    try:
+        clips = list(getattr(animation_result, "clips", []) or [])
+    except Exception:
+        clips = []
+    if not clips:
+        return "clips: 0"
+    first = clips[0]
+    try:
+        first_name = str(getattr(first, "name", "") or "").strip() or "clip_0"
+    except Exception:
+        first_name = "clip_0"
+    try:
+        start = float(getattr(first, "start_time", 0.0) or 0.0)
+    except Exception:
+        start = 0.0
+    try:
+        end = float(getattr(first, "end_time", start) or start)
+    except Exception:
+        end = start
+    try:
+        track_count = int(len(getattr(first, "tracks", []) or []))
+    except Exception:
+        track_count = 0
+    return (
+        f"clips: {len(clips)}"
+        f" | first: {first_name}"
+        f" [{start:.3f}s-{end:.3f}s]"
+        f" tracks={track_count}"
+    )
+
+
+def _quat_angle_deg(a, b) -> float:
+    try:
+        ax, ay, az, aw = (float(a[0]), float(a[1]), float(a[2]), float(a[3]))
+        bx, by, bz, bw = (float(b[0]), float(b[1]), float(b[2]), float(b[3]))
+    except Exception:
+        return 0.0
+    na = math.sqrt(max(1.0e-16, (ax * ax) + (ay * ay) + (az * az) + (aw * aw)))
+    nb = math.sqrt(max(1.0e-16, (bx * bx) + (by * by) + (bz * bz) + (bw * bw)))
+    ax, ay, az, aw = ax / na, ay / na, az / na, aw / na
+    bx, by, bz, bw = bx / nb, by / nb, bz / nb, bw / nb
+    dot = abs((ax * bx) + (ay * by) + (az * bz) + (aw * bw))
+    dot = max(-1.0, min(1.0, dot))
+    return math.degrees(2.0 * math.acos(dot))
+
+
+def _clip_alignment_metrics(skeleton, animation_result) -> Dict[str, float] | None:
+    if skeleton is None:
+        return None
+    if animation_result is None:
+        return None
+    try:
+        clips = list(getattr(animation_result, "clips", []) or [])
+    except Exception:
+        clips = []
+    if not clips:
+        return None
+    clip = clips[0]
+    try:
+        sample_time = float(getattr(clip, "start_time", 0.0) or 0.0)
+    except Exception:
+        sample_time = 0.0
+    try:
+        evaluation = evaluate_rig_at_time(
+            skeleton,
+            clip,
+            sample_time,
+            loop=False,
+        )
+    except Exception as exc:
+        _ = exc
+        return {"failed": 1.0}
+
+    joints = list(getattr(skeleton, "joints", []) or [])
+    local = list(getattr(evaluation, "local_transforms", []) or [])
+    count = min(len(joints), len(local))
+    if count <= 0:
+        return None
+
+    t_sum = 0.0
+    r_sum = 0.0
+    t_max = 0.0
+    r_max = 0.0
+    for idx in range(count):
+        bind_xf = getattr(joints[idx], "local_bind", None)
+        anim_xf = local[idx]
+        if bind_xf is None or anim_xf is None:
+            continue
+        try:
+            btx, bty, btz = bind_xf.translation
+            atx, aty, atz = anim_xf.translation
+            dt = math.sqrt(
+                (float(atx) - float(btx)) ** 2
+                + (float(aty) - float(bty)) ** 2
+                + (float(atz) - float(btz)) ** 2
+            )
+        except Exception:
+            dt = 0.0
+        dr = _quat_angle_deg(
+            getattr(bind_xf, "rotation", (0.0, 0.0, 0.0, 1.0)),
+            getattr(anim_xf, "rotation", (0.0, 0.0, 0.0, 1.0)),
+        )
+        t_sum += float(dt)
+        r_sum += float(dr)
+        t_max = max(float(t_max), float(dt))
+        r_max = max(float(r_max), float(dr))
+
+    t_mean = t_sum / float(count)
+    r_mean = r_sum / float(count)
+    return {
+        "sample_time": float(sample_time),
+        "joint_count": float(count),
+        "mean_t": float(t_mean),
+        "max_t": float(t_max),
+        "mean_r": float(r_mean),
+        "max_r": float(r_max),
+    }
+
+
+def _clip_alignment_summary(skeleton, animation_result) -> str:
+    metrics = _clip_alignment_metrics(skeleton, animation_result)
+    if not metrics:
+        return "align: <unavailable>"
+    if float(metrics.get("failed", 0.0) or 0.0) > 0.5:
+        return "align: failed"
+    t_mean = float(metrics.get("mean_t", 0.0) or 0.0)
+    t_max = float(metrics.get("max_t", 0.0) or 0.0)
+    r_mean = float(metrics.get("mean_r", 0.0) or 0.0)
+    r_max = float(metrics.get("max_r", 0.0) or 0.0)
+    return (
+        f"align: frame0-vs-bind mean_t={t_mean:.5f} max_t={t_max:.5f} "
+        f"mean_r={r_mean:.3f}deg max_r={r_max:.3f}deg"
+    )
 
 
 def _status_presentable_text(result_status: str, *, bind_validated: bool) -> Tuple[str, str]:
@@ -1525,6 +1697,7 @@ def _build_preview_asset(model, result: SourceResolutionResult) -> Dict[str, Any
         or getattr(model, "_fbx_bind_rest_result", None)
     )
     skeleton = getattr(bind_result, "skeleton", None) if bind_result is not None else None
+    meshes = list(getattr(bind_result, "meshes", []) or []) if bind_result is not None else []
     if skeleton is None:
         return asset
 
@@ -1539,7 +1712,14 @@ def _build_preview_asset(model, result: SourceResolutionResult) -> Dict[str, Any
         clips = []
     if clips:
         clip = clips[0]
-    asset["fbx_rig_context"] = {"skeleton": skeleton, "clip": clip, "loop": True}
+    asset["fbx_rig_context"] = {
+        "skeleton": skeleton,
+        "clip": clip,
+        "meshes": meshes,
+        "loop": True,
+        # Debug step: keep FBXImport mesh in rest state while skeleton/clip diagnostics continue.
+        "mesh_skinning_enabled": False,
+    }
     return asset
 
 
@@ -1564,9 +1744,30 @@ def augment_infocard_footer(card, footer_layout) -> bool:
 
     status_label = QtWidgets.QLabel("Status: unresolved")
     status_label.setStyleSheet("color:#94a3b8;")
-    detail_label = QtWidgets.QLabel("")
-    detail_label.setWordWrap(True)
-    detail_label.setStyleSheet("color:#cbd5e1;")
+    detail_box = QtWidgets.QPlainTextEdit("")
+    detail_box.setReadOnly(True)
+    detail_box.setLineWrapMode(QtWidgets.QPlainTextEdit.WidgetWidth)
+    detail_box.setMinimumHeight(96)
+    try:
+        detail_box.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding,
+            QtWidgets.QSizePolicy.Expanding,
+        )
+    except Exception:
+        pass
+    detail_box.setStyleSheet(
+        "QPlainTextEdit {"
+        "color:#cbd5e1;"
+        "background:#0f172a;"
+        "border:1px solid #1e293b;"
+        "border-radius:4px;"
+        "padding:6px;"
+        "}"
+    )
+    try:
+        detail_box.setPlaceholderText("Validation details will appear here.")
+    except Exception:
+        pass
 
     button = QtWidgets.QPushButton("Validate FBX Sources")
     button.setToolTip("Resolve rest/capture/animated source roles and validate compatibility.")
@@ -1574,6 +1775,8 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     setup_button.setToolTip("Install or configure Autodesk FBX SDK runtime for this app.")
     view_button = QtWidgets.QPushButton("View")
     view_button.setToolTip("Open FBXImport output in the 3D viewport.")
+    copy_button = QtWidgets.QPushButton("Copy Report")
+    copy_button.setToolTip("Copy the full FBX validation report to clipboard.")
 
     container = QtWidgets.QWidget(card)
     if QtWidgets is not None:
@@ -1588,26 +1791,18 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     stack.setContentsMargins(0, 0, 0, 0)
     stack.setSpacing(6)
 
-    top_row = QtWidgets.QHBoxLayout()
-    top_row.setContentsMargins(0, 0, 0, 0)
-    top_row.setSpacing(8)
-    top_row.addWidget(status_label)
-    top_row.addStretch(1)
-    if QtCore is not None:
-        top_row.addWidget(setup_button, 0, QtCore.Qt.AlignRight)
-    else:  # pragma: no cover - defensive
-        top_row.addWidget(setup_button)
-    if QtCore is not None:
-        top_row.addWidget(button, 0, QtCore.Qt.AlignRight)
-    else:  # pragma: no cover - defensive
-        top_row.addWidget(button)
-    if QtCore is not None:
-        top_row.addWidget(view_button, 0, QtCore.Qt.AlignRight)
-    else:  # pragma: no cover - defensive
-        top_row.addWidget(view_button)
+    button_row = QtWidgets.QHBoxLayout()
+    button_row.setContentsMargins(0, 0, 0, 0)
+    button_row.setSpacing(8)
+    button_row.addWidget(setup_button)
+    button_row.addWidget(button)
+    button_row.addWidget(view_button)
+    button_row.addWidget(copy_button)
+    button_row.addStretch(1)
 
-    stack.addLayout(top_row)
-    stack.addWidget(detail_label)
+    stack.addLayout(button_row)
+    stack.addWidget(status_label)
+    stack.addWidget(detail_box, 1)
     insert_idx = footer_layout.count()
     footer_layout.addWidget(container, 100)
     try:
@@ -1615,12 +1810,14 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     except Exception:
         pass
 
+    report_text_holder = {"value": ""}
+
     def _refresh(*_args, persist: bool = False, toast: bool = False):
         item = _node_item()
         if item is None:
             status_label.setText("Status: no node item")
             status_label.setStyleSheet("color:#f59e0b;")
-            detail_label.setText("Connect this node to the graph canvas.")
+            detail_box.setPlainText("Connect this node to the graph canvas.")
             return None
 
         bind_validated = bool(persist)
@@ -1641,15 +1838,27 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             _compact_source_line("capture", result.effective_sources.get("capture_pose", "")),
             _compact_source_line("animated", result.effective_sources.get("animated_pose", "")),
         ]
-        detail_label.setText(" | ".join(detail_lines))
+        if bind_validated:
+            model_obj = getattr(item, "model", None)
+            animation_result = (
+                getattr(model_obj, "_fbx_anim_animated_result", None)
+                or getattr(model_obj, "_fbx_anim_rest_result", None)
+            )
+            detail_lines.append(_clip_summary_text(animation_result))
+            align_text = str(getattr(model_obj, "_fbx_anim_alignment_summary", "") or "").strip()
+            if align_text:
+                detail_lines.append(align_text)
+        detail_box.setPlainText("\n".join(detail_lines))
         tooltip_lines = []
         if not bind_validated and not result.errors:
             tooltip_lines.append("Bind and animation ingest not run yet. Click 'Validate FBX Sources'.")
         tooltip_lines.extend(result.message_lines())
-        detail_label.setToolTip("\n".join(tooltip_lines))
+        report_text = "\n".join(result.message_lines())
+        report_text_holder["value"] = report_text
+        detail_box.setToolTip("\n".join(tooltip_lines))
 
         if toast:
-            report = "\n".join(result.message_lines())
+            report = report_text
             if result.status in ("error", "warning"):
                 QtWidgets.QMessageBox.warning(card, "FBXImport Validation", report)
             else:
@@ -1662,6 +1871,23 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     def _on_setup_clicked():
         _show_fbxsdk_setup_prompt(card)
         _refresh(persist=False, toast=False)
+
+    def _on_copy_clicked():
+        text = str(report_text_holder.get("value") or "").strip()
+        if not text:
+            text = str(detail_box.toPlainText() or "").strip()
+        if not text:
+            return
+        try:
+            clipboard = QtWidgets.QApplication.clipboard()
+            if clipboard is not None:
+                clipboard.setText(text)
+        except Exception:
+            pass
+        try:
+            QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "FBX report copied.", card)
+        except Exception:
+            pass
 
     def _on_view_clicked():
         item = _node_item()
@@ -1721,6 +1947,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
 
     button.clicked.connect(_on_validate_clicked)
     setup_button.clicked.connect(_on_setup_clicked)
+    copy_button.clicked.connect(_on_copy_clicked)
     view_button.clicked.connect(_on_view_clicked)
 
     def _on_links_changed(*_args):

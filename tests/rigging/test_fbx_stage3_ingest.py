@@ -5,6 +5,7 @@ import unittest
 from echograph.rigging.fbx_canonical import Joint, JointTransform, SkeletonAsset
 from echograph.rigging.fbx_stage3_ingest import (
     FBXBindIngestError,
+    _fbxsdk_skin_deformer_type,
     compare_skeleton_layout,
     ingest_fbx_bind_data,
 )
@@ -117,6 +118,27 @@ def _make_base_skeleton() -> SkeletonAsset:
 
 
 class FbxStage3IngestTests(unittest.TestCase):
+    def test_fbxsdk_skin_deformer_type_supports_direct_enum(self) -> None:
+        class _FbxDeformer:
+            eSkin = "direct"
+
+        class _Mod:
+            FbxDeformer = _FbxDeformer
+
+        self.assertEqual(_fbxsdk_skin_deformer_type(_Mod), "direct")
+
+    def test_fbxsdk_skin_deformer_type_supports_nested_enum(self) -> None:
+        class _EType:
+            eSkin = "nested"
+
+        class _FbxDeformer:
+            EDeformerType = _EType
+
+        class _Mod:
+            FbxDeformer = _FbxDeformer
+
+        self.assertEqual(_fbxsdk_skin_deformer_type(_Mod), "nested")
+
     def test_ingest_is_deterministic_and_clamps_weights(self) -> None:
         scene = _make_scene_with_clamped_weights()
         result_a = ingest_fbx_bind_data("V:/virtual/hero.fbx", scene=scene, max_influences=2)

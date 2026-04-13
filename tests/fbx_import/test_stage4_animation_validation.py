@@ -202,6 +202,63 @@ class FbxImportStage4AnimationValidationTests(unittest.TestCase):
             any("limited FBX animation compatibility" in msg for msg in result.warnings)
         )
 
+    def test_large_frame0_bind_mismatch_surfaces_warning(self) -> None:
+        rest = Path("V:/virtual/rest.fbx")
+        model = _FakeModel(
+            name="FBXImportStage4D",
+            kind="fbx_import",
+            params=_param_list(rest_geometry=str(rest), capture_pose="", animated_pose=""),
+        )
+        node = _FakeNodeItem(model, _FakeScene())
+
+        rest_bind = FBXBindIngestResult(source_path=str(rest), skeleton=_skeleton("Rig"))
+        rest_anim = FBXAnimationIngestResult(source_path=str(rest), clips=[_clip("RestClip")])
+
+        eval_obj = type(
+            "_Eval",
+            (),
+            {
+                "local_transforms": [
+                    JointTransform(
+                        translation=(0.0, 0.0, 0.0),
+                        rotation=(0.0, 1.0, 0.0, 0.0),
+                        scale=(1.0, 1.0, 1.0),
+                    ),
+                    JointTransform(
+                        translation=(0.0, 0.0, 0.0),
+                        rotation=(0.0, 1.0, 0.0, 0.0),
+                        scale=(1.0, 1.0, 1.0),
+                    ),
+                ]
+            },
+        )()
+
+        with patch(
+            "nodes.fbx_import.spec._resolve_existing_path",
+            side_effect=lambda raw, _base: rest if str(raw) == str(rest) else None,
+        ), patch(
+            "nodes.fbx_import.spec.ingest_fbx_bind_data",
+            return_value=rest_bind,
+        ), patch(
+            "nodes.fbx_import.spec.ingest_fbx_animation_data",
+            return_value=rest_anim,
+        ), patch(
+            "nodes.fbx_import.spec.evaluate_rig_at_time",
+            return_value=eval_obj,
+        ):
+            result = resolve_fbx_import_sources(
+                node,
+                base_dir=Path("V:/virtual"),
+                persist=True,
+                validate_bind_data=True,
+                validate_animation_data=True,
+            )
+
+        self.assertEqual(result.status, "warning")
+        self.assertTrue(
+            any("frame0 differs strongly from bind pose" in msg for msg in result.warnings)
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
