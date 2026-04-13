@@ -143,6 +143,17 @@ def _param_value(model, name: str) -> str:
     return ""
 
 
+def _param_bool(model, name: str, default: bool = False) -> bool:
+    raw = str(_param_value(model, name) or "").strip().lower()
+    if not raw:
+        return bool(default)
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return bool(default)
+
+
 def _fbx_import_resolved_rest_path(model) -> str:
     if model is None:
         return ""
@@ -180,6 +191,11 @@ def _fbx_import_rig_context(model) -> Dict[str, Any] | None:
         clips = []
     if clips:
         clip = clips[0]
+    weight_debug = _param_bool(
+        model,
+        "skin_weight_debug",
+        default=_param_bool(model, "show_skin_weights", default=False),
+    )
     return {
         "skeleton": skeleton,
         "clip": clip,
@@ -187,6 +203,7 @@ def _fbx_import_rig_context(model) -> Dict[str, Any] | None:
         "loop": True,
         # Debug step: keep FBXImport mesh in rest state while skeleton/clip diagnostics continue.
         "mesh_skinning_enabled": False,
+        "skin_weight_debug": bool(weight_debug),
     }
 
 

@@ -664,6 +664,122 @@ class MGLRendererMixin:
             return True
 
     @staticmethod
+    def _mgl_fbx_skin_weight_debug_enabled(context: dict | None) -> bool:
+        if not isinstance(context, dict):
+            return False
+        raw = context.get("skin_weight_debug", context.get("show_skin_weights", False))
+        if isinstance(raw, str):
+            token = raw.strip().lower()
+            if token in {"1", "true", "yes", "on"}:
+                return True
+            if token in {"0", "false", "no", "off"}:
+                return False
+            return False
+        try:
+            return bool(raw)
+        except Exception:
+            return False
+
+    @staticmethod
+    def _mgl_fbx_joint_debug_color(joint_index: int) -> Tuple[float, float, float]:
+        idx = int(max(0, joint_index)) + 1
+        # Deterministic pseudo-random color per joint index.
+        r = 0.20 + 0.80 * (abs(math.sin(float(idx) * 12.9898 + 78.233)) % 1.0)
+        g = 0.20 + 0.80 * (abs(math.sin(float(idx) * 39.3468 + 11.135)) % 1.0)
+        b = 0.20 + 0.80 * (abs(math.sin(float(idx) * 73.1563 + 47.853)) % 1.0)
+        return (float(r), float(g), float(b))
+
+    def _mgl_fbx_weight_debug_vertex_colors(
+        self,
+        joint_indices: NDArray,
+        joint_weights: NDArray,
+        joint_count: int,
+    ) -> NDArray:
+        if np is None:
+            raise RuntimeError("numpy unavailable")
+        if (
+            joint_indices.ndim != 2
+            or joint_weights.ndim != 2
+            or joint_indices.shape != joint_weights.shape
+        ):
+            return np.zeros((0, 3), dtype="f4")
+        vertex_count = int(joint_indices.shape[0])
+        if vertex_count <= 0:
+            return np.zeros((0, 3), dtype="f4")
+
+        palette_count = max(1, int(joint_count))
+        palette = np.zeros((palette_count, 3), dtype="f4")
+        for joint_idx in range(palette_count):
+            palette[joint_idx] = np.array(self._mgl_fbx_joint_debug_color(joint_idx), dtype="f4")
+
+        colors = np.zeros((vertex_count, 3), dtype="f4")
+        weighted_mask = np.zeros((vertex_count,), dtype=bool)
+        slots = int(joint_indices.shape[1])
+        for slot in range(slots):
+            js = joint_indices[:, slot]
+            ws = joint_weights[:, slot]
+            valid = (js >= 0) & (js < palette_count) & (ws > 1.0e-8)
+            if not np.any(valid):
+                continue
+            colors[valid] += palette[js[valid]] * ws[valid, None]
+            weighted_mask[valid] = True
+        if np.any(~weighted_mask):
+            colors[~weighted_mask] = np.array((0.12, 0.12, 0.12), dtype="f4")
+        return colors.astype("f4", copy=False)
+
+    def _mgl_mesh_entry_reset_vertex_colors(self, entry: Dict[str, Any]) -> None:
+        if np is None:
+            return
+        cbo = entry.get("cbo")
+        points = entry.get("points")
+        if cbo is None or points is None:
+            return
+        try:
+            count = int(np.asarray(points).reshape(-1, 3).shape[0])
+        except Exception:
+            return
+        if count <= 0:
+            return
+        rgba = np.ones((count, 4), dtype="f4")
+        try:
+            cbo.write(rgba.tobytes())
+        except Exception:
+            pass
+
+    def _mgl_fbx_apply_weight_debug_colors(
+        self,
+        entry: Dict[str, Any],
+        spec: Dict[str, Any],
+        joint_count: int,
+    ) -> None:
+        if np is None:
+            return
+        cbo = entry.get("cbo")
+        if cbo is None:
+            return
+        try:
+            triangle_indices = np.asarray(spec.get("triangle_indices"), dtype=np.int64).ravel()
+            joint_indices = np.asarray(spec.get("joint_indices"), dtype=np.int32)
+            joint_weights = np.asarray(spec.get("joint_weights"), dtype="f4")
+        except Exception:
+            return
+        if triangle_indices.size == 0 or joint_indices.size == 0 or joint_weights.size == 0:
+            return
+        vertex_rgb = self._mgl_fbx_weight_debug_vertex_colors(joint_indices, joint_weights, joint_count)
+        if vertex_rgb.size == 0:
+            return
+        try:
+            tri_rgb = vertex_rgb[triangle_indices].reshape(-1, 3).astype("f4", copy=False)
+        except Exception:
+            return
+        tri_rgba = np.ones((tri_rgb.shape[0], 4), dtype="f4")
+        tri_rgba[:, :3] = tri_rgb
+        try:
+            cbo.write(tri_rgba.tobytes())
+        except Exception:
+            pass
+
+    @staticmethod
     def _mgl_fbx_transform_points_row_major(mats: NDArray, points: NDArray) -> NDArray:
         x = points[:, 0]
         y = points[:, 1]
@@ -724,7 +840,19 @@ class MGLRendererMixin:
             return
         payload = item.payload or {}
         context = payload.get("fbx_rig_context")
-        if not self._mgl_fbx_mesh_skinning_enabled(context if isinstance(context, dict) else None):
+        context_dict = context if isinstance(context, dict) else None
+        skinning_enabled = self._mgl_fbx_mesh_skinning_enabled(context_dict)
+        weight_debug = self._mgl_fbx_skin_weight_debug_enabled(context_dict)
+        settings_sig = (1 if skinning_enabled else 0, 1 if weight_debug else 0)
+        if payload.get("_fbx_skin_settings_sig", None) != settings_sig:
+            payload.pop("_fbx_skin_runtime", None)
+            payload.pop("_fbx_skin_frame", None)
+            payload.pop("_fbx_skin_weight_colors_applied", None)
+            payload["_fbx_skin_prepare_done"] = False
+        payload["_fbx_skin_settings_sig"] = settings_sig
+        payload["_fbx_skin_weight_debug"] = bool(weight_debug)
+
+        if not skinning_enabled:
             runtime = payload.get("_fbx_skin_runtime")
             if isinstance(runtime, dict):
                 for mesh in list(runtime.get("meshes") or []):
@@ -746,13 +874,21 @@ class MGLRendererMixin:
                             nbo.write(tri_normals.tobytes())
                     except Exception:
                         continue
-            payload["_fbx_skin_prepare_done"] = True
             payload.pop("_fbx_skin_runtime", None)
             payload.pop("_fbx_skin_frame", None)
-            item.payload = payload
-            return
+            if not weight_debug:
+                for entry in [sub for sub in list(payload.get("submeshes") or []) if isinstance(sub, dict)]:
+                    self._mgl_mesh_entry_reset_vertex_colors(entry)
+                if payload.get("cbo") is not None and payload.get("points") is not None:
+                    self._mgl_mesh_entry_reset_vertex_colors(payload)
+                payload["_fbx_skin_prepare_done"] = True
+                payload["_fbx_skin_weight_colors_applied"] = False
+                item.payload = payload
+                return
         if bool(payload.get("_fbx_skin_prepare_done", False)):
             if isinstance(payload.get("_fbx_skin_runtime"), dict):
+                return
+            if bool(payload.get("_fbx_skin_weight_colors_applied", False)):
                 return
             context_check = payload.get("fbx_rig_context")
             if not isinstance(context_check, dict) or not list(context_check.get("meshes") or []):
@@ -771,7 +907,11 @@ class MGLRendererMixin:
         # Preferred path: keep the original loaded mesh buffers (and UVs/material layout) and
         # drive only vertex positions/normals from the rig evaluator.
         existing_submeshes = [sub for sub in list(payload.get("submeshes") or []) if isinstance(sub, dict)]
+        if not weight_debug:
+            for entry in existing_submeshes:
+                self._mgl_mesh_entry_reset_vertex_colors(entry)
         runtime_meshes: List[Dict[str, Any]] = []
+        joint_count = int(len(list(getattr(skeleton, "joints", []) or [])))
         specs_by_name: Dict[str, Dict[str, Any]] = {}
         for spec in specs:
             spec_name = str(spec.get("name", "") or "").strip().lower()
@@ -831,19 +971,22 @@ class MGLRendererMixin:
             # Guard against invalid submesh pairing to avoid catastrophic scrambling.
             if normalized_rmse > 0.05:
                 continue
-            runtime_meshes.append(
-                {
-                    "bind_positions": bind_positions,
-                    "triangle_indices": triangle_indices,
-                    "joint_indices": np.asarray(spec.get("joint_indices"), dtype=np.int32),
-                    "joint_weights": np.asarray(spec.get("joint_weights"), dtype="f4"),
-                    "vbo": entry.get("vbo"),
-                    "nbo": entry.get("nbo"),
-                    "affine": affine,
-                    "fit_rmse": float(rmse),
-                }
-            )
-        if runtime_meshes:
+            if weight_debug:
+                self._mgl_fbx_apply_weight_debug_colors(entry, spec, joint_count)
+            if skinning_enabled:
+                runtime_meshes.append(
+                    {
+                        "bind_positions": bind_positions,
+                        "triangle_indices": triangle_indices,
+                        "joint_indices": np.asarray(spec.get("joint_indices"), dtype=np.int32),
+                        "joint_weights": np.asarray(spec.get("joint_weights"), dtype="f4"),
+                        "vbo": entry.get("vbo"),
+                        "nbo": entry.get("nbo"),
+                        "affine": affine,
+                        "fit_rmse": float(rmse),
+                    }
+                )
+        if skinning_enabled and runtime_meshes:
             payload["_fbx_skin_runtime"] = {
                 "skeleton": skeleton,
                 "clip": context.get("clip"),
@@ -851,12 +994,14 @@ class MGLRendererMixin:
                 "meshes": runtime_meshes,
             }
             payload["_fbx_skin_frame"] = None
+            payload["_fbx_skin_weight_colors_applied"] = bool(weight_debug)
             item.payload = payload
             return
 
         # If source mesh buffers exist but mapping failed, keep original geometry untouched
         # rather than swapping in a canonical fallback that can alter UV/material layout.
         if existing_submeshes:
+            payload["_fbx_skin_weight_colors_applied"] = bool(weight_debug)
             item.payload = payload
             return
 
@@ -891,20 +1036,23 @@ class MGLRendererMixin:
             entry = self._mgl_build_mesh_entry(tri_points, tri_normals, tri_uvs)
             if entry is None:
                 continue
+            if weight_debug:
+                self._mgl_fbx_apply_weight_debug_colors(entry, spec, joint_count)
             entry["texture"] = fallback_texture
             entry["color"] = source_color
             entries.append(entry)
-            fallback_runtime_meshes.append(
-                {
-                    "bind_positions": np.asarray(spec["bind_positions"], dtype="f4"),
-                    "triangle_indices": np.asarray(spec["triangle_indices"], dtype=np.int64),
-                    "joint_indices": np.asarray(spec["joint_indices"], dtype=np.int32),
-                    "joint_weights": np.asarray(spec["joint_weights"], dtype="f4"),
-                    "vbo": entry.get("vbo"),
-                    "nbo": entry.get("nbo"),
-                    "affine": np.eye(4, dtype="f4"),
-                }
-            )
+            if skinning_enabled:
+                fallback_runtime_meshes.append(
+                    {
+                        "bind_positions": np.asarray(spec["bind_positions"], dtype="f4"),
+                        "triangle_indices": np.asarray(spec["triangle_indices"], dtype=np.int64),
+                        "joint_indices": np.asarray(spec["joint_indices"], dtype=np.int32),
+                        "joint_weights": np.asarray(spec["joint_weights"], dtype="f4"),
+                        "vbo": entry.get("vbo"),
+                        "nbo": entry.get("nbo"),
+                        "affine": np.eye(4, dtype="f4"),
+                    }
+                )
         if not entries:
             item.payload = payload
             return
@@ -912,13 +1060,18 @@ class MGLRendererMixin:
         payload.pop("vao", None)
         payload.pop("texture", None)
         payload["submeshes"] = entries
-        payload["_fbx_skin_runtime"] = {
-            "skeleton": skeleton,
-            "clip": context.get("clip"),
-            "loop": bool(context.get("loop", True)),
-            "meshes": fallback_runtime_meshes,
-        }
-        payload["_fbx_skin_frame"] = None
+        if skinning_enabled:
+            payload["_fbx_skin_runtime"] = {
+                "skeleton": skeleton,
+                "clip": context.get("clip"),
+                "loop": bool(context.get("loop", True)),
+                "meshes": fallback_runtime_meshes,
+            }
+            payload["_fbx_skin_frame"] = None
+        else:
+            payload.pop("_fbx_skin_runtime", None)
+            payload.pop("_fbx_skin_frame", None)
+        payload["_fbx_skin_weight_colors_applied"] = bool(weight_debug)
         item.payload = payload
 
         resources: List[object] = []
@@ -929,6 +1082,7 @@ class MGLRendererMixin:
                 entry.get("vbo"),
                 entry.get("nbo"),
                 entry.get("tbo"),
+                entry.get("cbo"),
                 entry.get("ibo"),
                 entry.get("texture"),
             ):
@@ -2874,7 +3028,7 @@ class MGLRendererMixin:
             bounds_points = points
             normals = np.array(mesh.vertex_normals(), dtype="f4")
             indices = np.array(mesh.face_vertex_indices(), dtype="u4").ravel()
-            entry = self._mgl_build_mesh_entry(points, normals, None, indices)
+            entry = self._mgl_build_mesh_entry(points, normals, None, indices=indices)
             if entry is None:
                 return None
             try:
@@ -2889,6 +3043,7 @@ class MGLRendererMixin:
                 entry.get("vbo"),
                 entry.get("nbo"),
                 entry.get("tbo"),
+                entry.get("cbo"),
                 entry.get("ibo"),
             ]
             return {
@@ -2930,6 +3085,7 @@ class MGLRendererMixin:
                     sub.get("vbo"),
                     sub.get("nbo"),
                     sub.get("tbo"),
+                    sub.get("cbo"),
                     sub.get("ibo"),
                     sub.get("texture"),
                 ):
@@ -2966,6 +3122,7 @@ class MGLRendererMixin:
             entry.get("vbo"),
             entry.get("nbo"),
             entry.get("tbo"),
+            entry.get("cbo"),
             entry.get("ibo"),
         ]
         color = (
@@ -4080,8 +4237,9 @@ class MGLRendererMixin:
                 proc_state = None
         self._mgl_apply_procedural_uniforms(proc_state)
         manual_texture = self._mgl_texture if self._mgl_texture_override else None
+        weight_debug = bool(payload.get("_fbx_skin_weight_debug", False))
         material = self._mgl_normalize_material(payload.get("material"))
-        is_transparent_material = self._mgl_material_is_transparent(material)
+        is_transparent_material = (not weight_debug) and self._mgl_material_is_transparent(material)
         if material is not None:
             owner_key = str(owner or path_key or item.name or "scene-material")
             self._mgl_material_log_throttled(
@@ -4101,6 +4259,16 @@ class MGLRendererMixin:
                 has_vao=bool(vao is not None),
             )
         def _apply_material_uniforms() -> None:
+            if weight_debug:
+                try:
+                    self._mgl_prog["UseMaterial"].value = 0
+                except Exception:
+                    pass
+                try:
+                    self._mgl_prog["UseSceneRefraction"].value = 0
+                except Exception:
+                    pass
+                return
             use_material = 1 if self._mgl_material_has_effect(material) else 0
             transparency = 0.0
             ior = 1.0
@@ -4168,7 +4336,35 @@ class MGLRendererMixin:
             except Exception:
                 pass
 
+        def _apply_weight_debug_uniforms() -> None:
+            if not weight_debug:
+                return
+            try:
+                self._mgl_prog["UseVertexColor"].value = 1
+            except Exception:
+                pass
+            try:
+                self._mgl_prog["UseProcedural"].value = 0
+                self._mgl_prog["UseProceduralLayer"].value = 0
+            except Exception:
+                pass
+            try:
+                self._mgl_prog["UseTexture"].value = 0
+            except Exception:
+                pass
+            try:
+                self._mgl_prog["UseMaterial"].value = 0
+                self._mgl_prog["UseSceneRefraction"].value = 0
+            except Exception:
+                pass
+
         _apply_material_uniforms()
+        _apply_weight_debug_uniforms()
+        if not weight_debug:
+            try:
+                self._mgl_prog["UseVertexColor"].value = 0
+            except Exception:
+                pass
 
         prev_depth_mask_material = None
         if is_transparent_material:
@@ -4243,6 +4439,10 @@ class MGLRendererMixin:
                     self._mgl_prog["UseTexture"].value = 0
                     self._mgl_prog["UseLighting"].value = 0
                     self._mgl_prog["Color"].value = (0.0, 0.0, 0.0, 1.0)
+                    try:
+                        self._mgl_prog["UseVertexColor"].value = 0
+                    except Exception:
+                        pass
                     draw_geometry()
             finally:
                 if color_mask_disabled:
@@ -4275,6 +4475,10 @@ class MGLRendererMixin:
                     pass
                 try:
                     _apply_material_uniforms()
+                except Exception:
+                    pass
+                try:
+                    _apply_weight_debug_uniforms()
                 except Exception:
                     pass
 
@@ -4330,6 +4534,7 @@ class MGLRendererMixin:
             try:
                 self._mgl_prog["Color"].value = self._mgl_wire_color
                 self._mgl_prog["UseMaterial"].value = 0
+                self._mgl_prog["UseVertexColor"].value = 0
             except Exception:
                 pass
             try:
@@ -4372,6 +4577,10 @@ class MGLRendererMixin:
                     _apply_material_uniforms()
                 except Exception:
                     pass
+                try:
+                    _apply_weight_debug_uniforms()
+                except Exception:
+                    pass
 
         if wire_overlay:
             try:
@@ -4393,9 +4602,10 @@ class MGLRendererMixin:
             for sub in submeshes:
                 color = sub.get("color") or self._mgl_mesh_color
                 tex = manual_texture or sub.get("texture")
-                use_texture = tex is not None
+                use_texture = (tex is not None) and (not weight_debug)
                 try:
                     self._mgl_prog["UseTexture"].value = 1 if use_texture else 0
+                    self._mgl_prog["UseVertexColor"].value = 1 if weight_debug else 0
                     self._mgl_prog["UseLighting"].value = 1
                     self._mgl_prog["LightIntensity"].value = float(self._mgl_light_intensity)
                     self._mgl_prog["Color"].value = color
@@ -4428,9 +4638,10 @@ class MGLRendererMixin:
                 _apply_material_uniforms()
             color = payload.get("color") or self._mgl_mesh_color
             tex = manual_texture or payload.get("texture")
-            use_texture = tex is not None
+            use_texture = (tex is not None) and (not weight_debug)
             try:
                 self._mgl_prog["UseTexture"].value = 1 if use_texture else 0
+                self._mgl_prog["UseVertexColor"].value = 1 if weight_debug else 0
                 self._mgl_prog["UseLighting"].value = 1
                 self._mgl_prog["LightIntensity"].value = float(self._mgl_light_intensity)
                 self._mgl_prog["Color"].value = color
@@ -4463,9 +4674,10 @@ class MGLRendererMixin:
                     for sub in submeshes:
                         color = sub.get("color") or self._mgl_mesh_color
                         tex = tex_override
-                        use_texture = tex is not None
+                        use_texture = (tex is not None) and (not weight_debug)
                         try:
                             self._mgl_prog["UseTexture"].value = 1 if use_texture else 0
+                            self._mgl_prog["UseVertexColor"].value = 1 if weight_debug else 0
                             self._mgl_prog["UseLighting"].value = 1
                             self._mgl_prog["LightIntensity"].value = float(self._mgl_light_intensity)
                             self._mgl_prog["Color"].value = color
@@ -4482,9 +4694,10 @@ class MGLRendererMixin:
                 else:
                     color = payload.get("color") or self._mgl_mesh_color
                     tex = tex_override
-                    use_texture = tex is not None
+                    use_texture = (tex is not None) and (not weight_debug)
                     try:
                         self._mgl_prog["UseTexture"].value = 1 if use_texture else 0
+                        self._mgl_prog["UseVertexColor"].value = 1 if weight_debug else 0
                         self._mgl_prog["UseLighting"].value = 1
                         self._mgl_prog["LightIntensity"].value = float(self._mgl_light_intensity)
                         self._mgl_prog["Color"].value = color
@@ -4967,6 +5180,7 @@ class MGLRendererMixin:
         points: NDArray,
         normals: NDArray,
         uvs: Optional[NDArray] = None,
+        colors: Optional[NDArray] = None,
         indices: Optional[NDArray] = None,
     ) -> Optional[Dict[str, object]]:
         if not _HAS_MGL or self._mgl_ctx is None or self._mgl_prog is None:
@@ -4978,6 +5192,22 @@ class MGLRendererMixin:
         if uvs is None or uvs.size == 0:
             uvs = np.zeros((points.shape[0], 2), dtype="f4")
         uvs = uvs.astype("f4").reshape(-1, 2)
+        if colors is None or colors.size == 0:
+            colors = np.ones((points.shape[0], 4), dtype="f4")
+        colors = np.asarray(colors, dtype="f4")
+        if colors.ndim == 1:
+            colors = colors.reshape(-1, 4)
+        if colors.shape[1] == 3:
+            alpha = np.ones((colors.shape[0], 1), dtype="f4")
+            colors = np.concatenate((colors, alpha), axis=1)
+        elif colors.shape[1] > 4:
+            colors = colors[:, :4]
+        if colors.shape[0] != points.shape[0]:
+            if colors.shape[0] > points.shape[0]:
+                colors = colors[: points.shape[0], :]
+            else:
+                pad = np.ones((points.shape[0] - colors.shape[0], 4), dtype="f4")
+                colors = np.concatenate((colors, pad), axis=0)
         if indices is None:
             indices = np.arange(points.shape[0], dtype="u4")
         else:
@@ -4986,10 +5216,12 @@ class MGLRendererMixin:
         pos_buf = self._mgl_ctx.buffer(points.tobytes())
         norm_buf = self._mgl_ctx.buffer(normals.tobytes())
         uv_buf = self._mgl_ctx.buffer(uvs.tobytes())
+        color_buf = self._mgl_ctx.buffer(colors.tobytes())
         vao_content = [
             (pos_buf, "3f", "in_position"),
             (norm_buf, "3f", "in_normal"),
             (uv_buf, "2f", "in_uv"),
+            (color_buf, "4f", "in_color"),
         ]
         vao = self._mgl_ctx.vertex_array(self._mgl_prog, vao_content, index_buffer, 4)
         return {
@@ -4997,9 +5229,11 @@ class MGLRendererMixin:
             "vbo": pos_buf,
             "nbo": norm_buf,
             "tbo": uv_buf,
+            "cbo": color_buf,
             "ibo": index_buffer,
             "count": int(indices.size),
             "uvs": uvs,
+            "colors": colors,
             "points": points,
             "normals": normals,
         }
@@ -5023,10 +5257,13 @@ class MGLRendererMixin:
             vbo = self._mgl_ctx.buffer(points.tobytes())
             nbo = self._mgl_ctx.buffer(normals.tobytes())
             tbo = self._mgl_ctx.buffer(uvs.tobytes())
+            colors = np.ones((points.shape[0], 4), dtype="f4")
+            cbo = self._mgl_ctx.buffer(colors.tobytes())
             vao_content = [
                 (vbo, "3f", "in_position"),
                 (nbo, "3f", "in_normal"),
                 (tbo, "2f", "in_uv"),
+                (cbo, "4f", "in_color"),
             ]
             vao = self._mgl_ctx.vertex_array(self._mgl_prog, vao_content, ibo, 4)
 
@@ -5060,6 +5297,7 @@ class MGLRendererMixin:
                     "vbo": vbo,
                     "nbo": nbo,
                     "tbo": tbo,
+                    "cbo": cbo,
                     "ibo": ibo,
                     "texture": texture,
                     "color": color,
@@ -5067,6 +5305,7 @@ class MGLRendererMixin:
                     "points": points,
                     "normals": normals,
                     "uvs": uvs,
+                    "colors": colors,
                     "name": str(getattr(sub, "name", "") or "").strip(),
                 }
             )
@@ -8064,6 +8303,7 @@ class MGLRendererMixin:
                 self._mgl_prog["Texture"].value = 0
                 self._mgl_prog["SceneColorTex"].value = 5
                 self._mgl_prog["UseTexture"].value = 0
+                self._mgl_prog["UseVertexColor"].value = 0
                 self._mgl_prog["LightIntensity"].value = float(self._mgl_light_intensity)
                 self._mgl_prog["UseLighting"].value = 1
                 self._mgl_prog["UseMaterial"].value = 0
@@ -8497,11 +8737,11 @@ class MGLRendererMixin:
         points = np.array(mesh.points(), dtype="f4")
         normals = np.array(mesh.vertex_normals(), dtype="f4")
         indices = np.array(mesh.face_vertex_indices(), dtype="u4").ravel()
-        entry = self._mgl_build_mesh_entry(points, normals, None, indices)
+        entry = self._mgl_build_mesh_entry(points, normals, None, indices=indices)
         if entry is None:
             return
         self._mgl_vao = entry.get("vao")
-        self._mgl_mesh_vbos = [entry.get("vbo"), entry.get("nbo"), entry.get("tbo")]
+        self._mgl_mesh_vbos = [entry.get("vbo"), entry.get("nbo"), entry.get("tbo"), entry.get("cbo")]
         self._mgl_index_buffer = entry.get("ibo")
         self._mgl_mesh_vertex_count = int(entry.get("count", 0))
         self._mgl_mesh = mesh
@@ -8513,6 +8753,7 @@ class MGLRendererMixin:
                 entry.get("vbo"),
                 entry.get("nbo"),
                 entry.get("tbo"),
+                entry.get("cbo"),
                 entry.get("ibo"),
             ]
             item = MGLSceneItem(
@@ -8535,7 +8776,7 @@ class MGLRendererMixin:
                     tex.release()
                 except Exception:
                     pass
-            for key in ("vbo", "nbo", "tbo", "ibo"):
+            for key in ("vbo", "nbo", "tbo", "cbo", "ibo"):
                 buf = item.get(key)
                 if buf is not None:
                     try:
@@ -8570,7 +8811,7 @@ class MGLRendererMixin:
         if entry is None:
             return
         self._mgl_vao = entry.get("vao")
-        self._mgl_mesh_vbos = [entry.get("vbo"), entry.get("nbo"), entry.get("tbo")]
+        self._mgl_mesh_vbos = [entry.get("vbo"), entry.get("nbo"), entry.get("tbo"), entry.get("cbo")]
         self._mgl_index_buffer = entry.get("ibo")
         self._mgl_mesh_vertex_count = int(entry.get("count", 0))
         self._mgl_mesh = None
@@ -8582,6 +8823,7 @@ class MGLRendererMixin:
                 entry.get("vbo"),
                 entry.get("nbo"),
                 entry.get("tbo"),
+                entry.get("cbo"),
                 entry.get("ibo"),
             ]
             path_key = str(getattr(self, "_mgl_mesh_path", "") or "")
@@ -8641,6 +8883,7 @@ class MGLRendererMixin:
                         sub.get("vbo"),
                         sub.get("nbo"),
                         sub.get("tbo"),
+                        sub.get("cbo"),
                         sub.get("ibo"),
                         sub.get("texture"),
                     ]
@@ -8859,18 +9102,19 @@ class MGLRendererMixin:
                 points = np.array(mesh.points(), dtype="f4")
                 normals = np.array(mesh.vertex_normals(), dtype="f4")
                 indices = np.array(mesh.face_vertex_indices(), dtype="u4").ravel()
-                entry = self._mgl_build_mesh_entry(points, normals, None, indices)
+                entry = self._mgl_build_mesh_entry(points, normals, None, indices=indices)
                 if entry is None:
                     self._mgl_error = "Mesh upload failed"
                     return
                 self._mgl_vao = entry.get("vao")
-                self._mgl_mesh_vbos = [entry.get("vbo"), entry.get("nbo"), entry.get("tbo")]
+                self._mgl_mesh_vbos = [entry.get("vbo"), entry.get("nbo"), entry.get("tbo"), entry.get("cbo")]
                 self._mgl_index_buffer = entry.get("ibo")
                 resources = [
                     entry.get("vao"),
                     entry.get("vbo"),
                     entry.get("nbo"),
                     entry.get("tbo"),
+                    entry.get("cbo"),
                     entry.get("ibo"),
                 ]
                 item = MGLSceneItem(
@@ -8909,6 +9153,7 @@ class MGLRendererMixin:
                                 sub.get("vbo"),
                                 sub.get("nbo"),
                                 sub.get("tbo"),
+                                sub.get("cbo"),
                                 sub.get("ibo"),
                                 sub.get("texture"),
                             ]
@@ -8941,13 +9186,14 @@ class MGLRendererMixin:
                         self._mgl_error = "Mesh upload failed"
                         return
                     self._mgl_vao = entry.get("vao")
-                    self._mgl_mesh_vbos = [entry.get("vbo"), entry.get("nbo"), entry.get("tbo")]
+                    self._mgl_mesh_vbos = [entry.get("vbo"), entry.get("nbo"), entry.get("tbo"), entry.get("cbo")]
                     self._mgl_index_buffer = entry.get("ibo")
                     resources = [
                         entry.get("vao"),
                         entry.get("vbo"),
                         entry.get("nbo"),
                         entry.get("tbo"),
+                        entry.get("cbo"),
                         entry.get("ibo"),
                     ]
                     item = MGLSceneItem(
@@ -9673,7 +9919,7 @@ class MGLRendererMixin:
                     normals = np.array(mesh.vertex_normals(), dtype="f4")
                     indices = np.array(mesh.face_vertex_indices(), dtype="u4").ravel()
                     wire_points = self._mgl_edge_vertices_from_mesh(points, indices)
-                    entry = self._mgl_build_mesh_entry(points, normals, None, indices)
+                    entry = self._mgl_build_mesh_entry(points, normals, None, indices=indices)
                     if entry is None:
                         if material is not None:
                             self._mgl_material_log(
@@ -9689,6 +9935,7 @@ class MGLRendererMixin:
                         entry.get("vbo"),
                         entry.get("nbo"),
                         entry.get("tbo"),
+                        entry.get("cbo"),
                         entry.get("ibo"),
                     ]
                     if texture_override is not None:
@@ -9745,6 +9992,7 @@ class MGLRendererMixin:
                                 sub.get("vbo"),
                                 sub.get("nbo"),
                                 sub.get("tbo"),
+                                sub.get("cbo"),
                                 sub.get("ibo"),
                                 sub.get("texture"),
                             ):
@@ -9836,6 +10084,7 @@ class MGLRendererMixin:
                             entry.get("vbo"),
                             entry.get("nbo"),
                             entry.get("tbo"),
+                            entry.get("cbo"),
                             entry.get("ibo"),
                         ]
                         if texture_override is not None:

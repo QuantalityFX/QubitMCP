@@ -951,6 +951,17 @@ def _param_value(model, name: str) -> str:
     return ""
 
 
+def _param_bool(model, name: str, default: bool = False) -> bool:
+    raw = str(_param_value(model, name) or "").strip().lower()
+    if not raw:
+        return bool(default)
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return bool(default)
+
+
 def _ensure_param(node_item, name: str, default: str = "") -> None:
     model = getattr(node_item, "model", None)
     if model is None:
@@ -988,6 +999,42 @@ def _remove_hidden_params(model, names) -> None:
     model.params = params
 
 
+def _ensure_hidden_params(model, names) -> None:
+    if model is None:
+        return
+    params = list(getattr(model, "params", None) or [])
+    store_key = "__ui_hidden_params"
+    hidden_entry = None
+    for entry in params:
+        if (entry.get("name") or "").strip().lower() == store_key:
+            hidden_entry = entry
+            break
+    if hidden_entry is None:
+        hidden_entry = {"name": store_key, "value": ""}
+        params.append(hidden_entry)
+    raw = hidden_entry.get("value", "")
+    hidden = {tok.strip().lower() for tok in str(raw).split(",") if tok.strip()}
+    for name in names or []:
+        if name:
+            hidden.add(str(name).strip().lower())
+    hidden_entry["value"] = ",".join(sorted(hidden))
+    model.params = params
+
+
+def _set_param_value(model, name: str, value: str) -> None:
+    if model is None:
+        return
+    key = (name or "").strip().lower()
+    params = list(getattr(model, "params", None) or [])
+    for entry in params:
+        if (entry.get("name") or "").strip().lower() == key:
+            entry["value"] = value
+            model.params = params
+            return
+    params.append({"name": name, "value": value})
+    model.params = params
+
+
 def _ensure_input(node_item, name: str) -> None:
     if hasattr(node_item, "ensure_input"):
         node_item.ensure_input(name)
@@ -1001,6 +1048,8 @@ def build_ports(node_item) -> None:
     for role in ROLE_PORTS:
         _ensure_param(node_item, role, "")
         _ensure_input(node_item, role)
+    _ensure_param(node_item, "skin_weight_debug", "0")
+    _ensure_hidden_params(getattr(node_item, "model", None), ["skin_weight_debug", "show_skin_weights"])
     # Stage 2 UX: keep role params visible/editable on the node.
     # Remove any legacy hidden flags from previous builds.
     _remove_hidden_params(getattr(node_item, "model", None), ROLE_PORTS)
@@ -1712,6 +1761,11 @@ def _build_preview_asset(model, result: SourceResolutionResult) -> Dict[str, Any
         clips = []
     if clips:
         clip = clips[0]
+    weight_debug = _param_bool(
+        model,
+        "skin_weight_debug",
+        default=_param_bool(model, "show_skin_weights", default=False),
+    )
     asset["fbx_rig_context"] = {
         "skeleton": skeleton,
         "clip": clip,
@@ -1719,6 +1773,7 @@ def _build_preview_asset(model, result: SourceResolutionResult) -> Dict[str, Any
         "loop": True,
         # Debug step: keep FBXImport mesh in rest state while skeleton/clip diagnostics continue.
         "mesh_skinning_enabled": False,
+        "skin_weight_debug": bool(weight_debug),
     }
     return asset
 
@@ -1735,6 +1790,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     kind = (getattr(node, "kind", "") or "").strip().lower()
     if kind not in FBX_KIND_ALIASES:
         return False
+    _ensure_hidden_params(node, ["skin_weight_debug", "show_skin_weights"])
 
     def _node_item():
         try:
@@ -1777,6 +1833,21 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     view_button.setToolTip("Open FBXImport output in the 3D viewport.")
     copy_button = QtWidgets.QPushButton("Copy Report")
     copy_button.setToolTip("Copy the full FBX validation report to clipboard.")
+    weight_debug_toggle = QtWidgets.QCheckBox("Skin Weight Colors")
+    weight_debug_toggle.setToolTip("Colorize the mesh by per-joint skinning weights.")
+    weight_debug_toggle.setStyleSheet("QCheckBox{color:#cbd5e1;}")
+    try:
+        item = _node_item()
+        model_obj = getattr(item, "model", None) if item is not None else None
+        weight_debug_toggle.setChecked(
+            _param_bool(
+                model_obj,
+                "skin_weight_debug",
+                default=_param_bool(model_obj, "show_skin_weights", default=False),
+            )
+        )
+    except Exception:
+        pass
 
     container = QtWidgets.QWidget(card)
     if QtWidgets is not None:
@@ -1799,10 +1870,16 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     button_row.addWidget(view_button)
     button_row.addWidget(copy_button)
     button_row.addStretch(1)
+    toggle_row = QtWidgets.QHBoxLayout()
+    toggle_row.setContentsMargins(0, 0, 0, 0)
+    toggle_row.setSpacing(8)
+    toggle_row.addWidget(weight_debug_toggle)
+    toggle_row.addStretch(1)
 
     stack.addLayout(button_row)
     stack.addWidget(status_label)
     stack.addWidget(detail_box, 1)
+    stack.addLayout(toggle_row)
     insert_idx = footer_layout.count()
     footer_layout.addWidget(container, 100)
     try:
@@ -1819,6 +1896,22 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             status_label.setStyleSheet("color:#f59e0b;")
             detail_box.setPlainText("Connect this node to the graph canvas.")
             return None
+        model_obj = getattr(item, "model", None)
+        try:
+            checked = _param_bool(
+                model_obj,
+                "skin_weight_debug",
+                default=_param_bool(model_obj, "show_skin_weights", default=False),
+            )
+            weight_debug_toggle.blockSignals(True)
+            weight_debug_toggle.setChecked(bool(checked))
+        except Exception:
+            pass
+        finally:
+            try:
+                weight_debug_toggle.blockSignals(False)
+            except Exception:
+                pass
 
         bind_validated = bool(persist)
         result = resolve_fbx_import_sources(
@@ -1945,10 +2038,45 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         except Exception:
             pass
 
+    def _set_node_param(name: str, value: str) -> None:
+        item = _node_item()
+        if item is None:
+            return
+        model_obj = getattr(item, "model", None)
+        setter = getattr(item, "_set_param_value", None)
+        setter_ok = False
+        if callable(setter):
+            try:
+                setter(name, value, rebuild=False, notify_scene=True)
+                setter_ok = True
+            except TypeError:
+                try:
+                    setter(name, value)
+                    setter_ok = True
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        _set_param_value(model_obj, name, value)
+        try:
+            if model_obj is not None and hasattr(scene, "paramChanged") and not setter_ok:
+                scene.paramChanged.emit(
+                    getattr(model_obj, "name", "") or "",
+                    list(getattr(model_obj, "params", None) or []),
+                )
+        except Exception:
+            pass
+
+    def _on_weight_debug_toggled(checked: bool):
+        value = "1" if bool(checked) else "0"
+        _set_node_param("skin_weight_debug", value)
+        _set_node_param("show_skin_weights", value)
+
     button.clicked.connect(_on_validate_clicked)
     setup_button.clicked.connect(_on_setup_clicked)
     copy_button.clicked.connect(_on_copy_clicked)
     view_button.clicked.connect(_on_view_clicked)
+    weight_debug_toggle.toggled.connect(_on_weight_debug_toggled)
 
     def _on_links_changed(*_args):
         _refresh(persist=False, toast=False)

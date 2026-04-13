@@ -9,11 +9,13 @@ uniform mat4 Model;
 in vec3 in_position;
 in vec3 in_normal;
 in vec2 in_uv;
+in vec4 in_color;
 out vec3 v_norm;
 out vec3 v_vert;
 out vec2 v_uv;
 out vec3 v_world_norm;
 out vec3 v_world_pos;
+out vec4 v_color;
 vec3 safe_normalize(vec3 v) {
     float len2 = dot(v, v);
     if (len2 <= 1e-10) {
@@ -29,6 +31,7 @@ void main() {
     v_uv = in_uv;
     v_world_norm = safe_normalize(mat3(Model) * in_normal);
     v_world_pos = world.xyz;
+    v_color = in_color;
 }
 """,
 
@@ -39,6 +42,7 @@ uniform vec3 Light;
 uniform float LightIntensity;
 uniform sampler2D Texture;
 uniform int UseTexture;
+uniform int UseVertexColor;
 uniform int UseMaterial;
 uniform int UseLighting;
 uniform int UseProcedural;
@@ -94,6 +98,7 @@ in vec3 v_vert;
 in vec2 v_uv;
 in vec3 v_world_norm;
 in vec3 v_world_pos;
+in vec4 v_color;
 out vec4 f_color;
 
 vec3 safe_normalize(vec3 v) {
@@ -360,7 +365,11 @@ void main() {
             base = c0;
         }
     } else {
-        base = (UseTexture == 1) ? texture(Texture, v_uv) : Color;
+        if (UseVertexColor == 1) {
+            base = vec4(clamp(v_color.rgb, 0.0, 1.0), 1.0);
+        } else {
+            base = (UseTexture == 1) ? texture(Texture, v_uv) : Color;
+        }
         float light_mix = clamp(ProcLightMix, 0.0, 1.0);
         vec3 lit_rgb = mix(base.rgb, base.rgb * lum, light_mix);
         base = vec4(clamp(lit_rgb, 0.0, 1.0), base.a);
