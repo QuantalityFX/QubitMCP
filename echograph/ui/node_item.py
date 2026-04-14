@@ -786,6 +786,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
             return "material"
         if kind in ("fx", "fx_trail"):
             return "fx"
+        if kind in ("fbx_import", "fbx import", "fbximport"):
+            return "fbx"
         return None
 
     def _header_debug_enabled(self) -> bool:

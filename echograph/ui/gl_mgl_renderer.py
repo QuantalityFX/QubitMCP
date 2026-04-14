@@ -157,7 +157,7 @@ class MGLRendererMixin:
         self._mgl_log(msg)
 
     def _mgl_fbx_joints_log(self, msg: str) -> None:
-        if not bool(getattr(self, "_mgl_fbx_joints_log_enabled", True)):
+        if not bool(getattr(self, "_mgl_fbx_joints_log_enabled", False)):
             return
         try:
             root = Path(__file__).resolve().parents[2]
@@ -9813,6 +9813,7 @@ class MGLRendererMixin:
         if self._mgl_ctx is None:
             self._mgl_error = "ModernGL context not ready"
             return
+        self._mgl_fbx_joints_log_enabled = False
         try:
             self._mgl_fbx_joints_log(
                 "================================ load_mesh ================================= "
@@ -9846,6 +9847,8 @@ class MGLRendererMixin:
                     fbx_rig_context = self._mgl_fbx_rig_context_for_path(path)
                 except Exception:
                     fbx_rig_context = None
+                if isinstance(fbx_rig_context, dict):
+                    self._mgl_fbx_joints_log_enabled = bool(fbx_rig_context.get("fbx_debug_log", False))
                 try:
                     mesh_arrays = load_fbx_mesh_arrays_pyassimp(path)
                     points = mesh_arrays.points
@@ -10180,6 +10183,16 @@ class MGLRendererMixin:
         if self._mgl_ctx is None:
             self._mgl_error = "ModernGL context not ready"
             return
+        self._mgl_fbx_joints_log_enabled = False
+        try:
+            for entry in assets or []:
+                if not isinstance(entry, dict):
+                    continue
+                if bool(entry.get("fbx_debug_log", False)):
+                    self._mgl_fbx_joints_log_enabled = True
+                    break
+        except Exception:
+            self._mgl_fbx_joints_log_enabled = False
         try:
             self._mgl_fbx_joints_log(
                 "=============================== scene_load =============================== "

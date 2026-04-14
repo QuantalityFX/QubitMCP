@@ -1060,12 +1060,14 @@ def build_ports(node_item) -> None:
     for role in ROLE_PORTS:
         _ensure_param(node_item, role, "")
         _ensure_input(node_item, role)
+    _ensure_param(node_item, "debug_log", "0")
     _ensure_param(node_item, "skin_weight_debug", "0")
     _ensure_param(node_item, "show_capture_joints", "0")
     _ensure_param(node_item, "show_animated_joints", "0")
     _ensure_hidden_params(
         getattr(node_item, "model", None),
         [
+            "debug_log",
             "skin_weight_debug",
             "show_skin_weights",
             "show_capture_joints",
@@ -1804,6 +1806,7 @@ def _build_preview_asset(model, result: SourceResolutionResult) -> Dict[str, Any
         show_capture_joints,
         show_animated_joints,
     )
+    debug_log = _param_bool(model, "debug_log", default=False)
     asset["fbx_rig_context"] = {
         "skeleton": skeleton,
         "clip": clip,
@@ -1813,7 +1816,9 @@ def _build_preview_asset(model, result: SourceResolutionResult) -> Dict[str, Any
         "skin_weight_debug": bool(weight_debug),
         "show_capture_joints": bool(show_capture_joints),
         "show_animated_joints": bool(show_animated_joints),
+        "fbx_debug_log": bool(debug_log),
     }
+    asset["fbx_debug_log"] = bool(debug_log)
     return asset
 
 
@@ -1832,6 +1837,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     _ensure_hidden_params(
         node,
         [
+            "debug_log",
             "skin_weight_debug",
             "show_skin_weights",
             "show_capture_joints",

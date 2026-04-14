@@ -49,6 +49,10 @@ def _material_debug_enabled(model) -> bool:
     return str(_param_value(model, "debug_log") or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _fbx_debug_enabled(model) -> bool:
+    return str(_param_value(model, "debug_log") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _scene_debug_enabled(model) -> bool:
     return str(_param_value(model, "debug_log") or "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -230,6 +234,7 @@ def _fbx_import_rig_context(model) -> Dict[str, Any] | None:
         "skin_weight_debug": bool(weight_debug),
         "show_capture_joints": bool(show_capture_joints),
         "show_animated_joints": bool(show_animated_joints),
+        "fbx_debug_log": bool(_fbx_debug_enabled(model)),
     }
 
 
@@ -1291,6 +1296,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
         path = _param_value(model, "path")
         fbx_rig_source_model = model if kind in _FBX_KIND_ALIASES else None
         fbx_rig_context = _fbx_import_rig_context(model) if kind in _FBX_KIND_ALIASES else None
+        fbx_debug_on = _fbx_debug_enabled(model) if kind in _FBX_KIND_ALIASES else False
         if kind in _FBX_KIND_ALIASES and not path:
             path = _fbx_import_resolved_rest_path(model)
         if isinstance(material_asset, dict):
@@ -1519,6 +1525,8 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             fbx_rig_source_model = owner_model
         if fbx_rig_context is None and fbx_rig_source_model is not None:
             fbx_rig_context = _fbx_import_rig_context(fbx_rig_source_model)
+        if fbx_rig_source_model is not None:
+            fbx_debug_on = _fbx_debug_enabled(fbx_rig_source_model)
 
         if not path:
             if kind in _MATERIAL_KINDS:
@@ -1711,6 +1719,8 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             entry["debug_log"] = True
         if isinstance(fbx_rig_context, dict):
             entry["fbx_rig_context"] = fbx_rig_context
+        if bool(fbx_debug_on) and (isinstance(fbx_rig_context, dict) or ext == ".fbx"):
+            entry["fbx_debug_log"] = True
         if xform_offset:
             entry["xform_offset"] = True
         if splat_zero_pivot:
