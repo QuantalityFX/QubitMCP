@@ -588,6 +588,8 @@ class MGLRendererMixin:
             new_payload["fbx_rig_context"] = context
             new_payload["_fbx_rig_frame"] = frame_key
             new_payload["fbx_rig_pose_mode"] = pose_mode
+            if old_payload.get("model") is not None:
+                new_payload["model"] = old_payload.get("model")
             if color is not None:
                 new_payload["color"] = color
             if line_width is not None:
@@ -5724,8 +5726,7 @@ class MGLRendererMixin:
             try:
                 mvp_to_use = mvp
                 model = payload.get("model")
-                if tag == "scene-rig-joints":
-                    # Debug readability: keep rig joints in local asset space and ignore owner xform drift.
+                if tag == "scene-rig-joints" and bool(payload.get("ignore_owner_model", False)):
                     model = None
                 if model is not None and Matrix44 is not None:
                     try:
