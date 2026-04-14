@@ -11136,47 +11136,62 @@ class MGLRendererMixin:
                 self._mgl_mesh_path = first_mesh_path
 
             preserve_camera = not frame
-            if frame and has_mesh_bounds and bounds_min is not None and bounds_max is not None:
-                try:
-                    pts = np.array([bounds_min, bounds_max], dtype="f4")
-                    self._mgl_init_arcball(pts)
-                    preserve_camera = True
-                except Exception:
-                    pass
 
-            # Apply saved xforms to scene items before any splat rebuild.
+            # Apply scene xforms to currently loaded owners before any splat rebuild.
             try:
                 applied_mesh = 0
                 applied_splat = 0
-                if isinstance(prev_mesh_xforms, dict):
-                    for owner, xf in prev_mesh_xforms.items():
-                        if not isinstance(xf, dict):
-                            continue
+                mesh_xforms = (
+                    getattr(self, "_mgl_scene_xforms_by_owner", None)
+                    if isinstance(getattr(self, "_mgl_scene_xforms_by_owner", None), dict)
+                    else {}
+                )
+                mesh_owners = []
+                if isinstance(mesh_owner_names, set) and mesh_owner_names:
+                    for owner_name in sorted(mesh_owner_names, key=lambda value: str(value).strip().lower()):
+                        owner_text = str(owner_name or "").strip()
+                        if owner_text:
+                            mesh_owners.append(owner_text)
+                elif isinstance(prev_mesh_xforms, dict):
+                    for owner_name in prev_mesh_xforms.keys():
+                        owner_text = str(owner_name or "").strip()
+                        if owner_text:
+                            mesh_owners.append(owner_text)
+                for owner_name in mesh_owners:
+                    xf = self._mgl_casefold_get(mesh_xforms, owner_name)
+                    if not isinstance(xf, dict) and isinstance(prev_mesh_xforms, dict):
+                        xf = self._mgl_casefold_get(prev_mesh_xforms, owner_name)
+                    try:
                         self._mgl_set_scene_asset_xform(
-                            owner,
-                            pos=xf.get("pos"),
-                            rot=xf.get("rot"),
-                            scl=xf.get("scl"),
+                            owner_name,
+                            pos=xf.get("pos") if isinstance(xf, dict) else None,
+                            rot=xf.get("rot") if isinstance(xf, dict) else None,
+                            scl=xf.get("scl") if isinstance(xf, dict) else None,
                             apply_to_scene_models=True,
                             use_splat_xform=False,
                         )
                         applied_mesh += 1
+                    except Exception:
+                        continue
                 if isinstance(prev_splat_xforms, dict):
                     for owner, xf in prev_splat_xforms.items():
                         if not isinstance(xf, dict):
                             continue
-                        self._mgl_set_scene_asset_xform(
-                            owner,
-                            pos=xf.get("pos"),
-                            rot=xf.get("rot"),
-                            scl=xf.get("scl"),
-                            apply_to_scene_models=False,
-                            use_splat_xform=True,
-                        )
-                        applied_splat += 1
+                        try:
+                            self._mgl_set_scene_asset_xform(
+                                owner,
+                                pos=xf.get("pos"),
+                                rot=xf.get("rot"),
+                                scl=xf.get("scl"),
+                                apply_to_scene_models=False,
+                                use_splat_xform=True,
+                            )
+                            applied_splat += 1
+                        except Exception:
+                            continue
                 try:
                     self._mgl_log(
-                        "scene: apply saved xforms mesh="
+                        "scene: apply xforms mesh="
                         + str(applied_mesh)
                         + " splat="
                         + str(applied_splat)
@@ -11185,6 +11200,45 @@ class MGLRendererMixin:
                     pass
             except Exception:
                 pass
+
+            if frame and has_mesh_bounds:
+                try:
+                    frame_min = None
+                    frame_max = None
+                    if isinstance(mesh_owner_names, set) and mesh_owner_names:
+                        for owner_name in mesh_owner_names:
+                            owner_text = str(owner_name or "").strip()
+                            if not owner_text:
+                                continue
+                            owner_bounds = self.get_scene_owner_bounds(owner_text)
+                            if (
+                                not isinstance(owner_bounds, (tuple, list))
+                                or len(owner_bounds) < 2
+                            ):
+                                continue
+                            try:
+                                bmin = np.asarray(owner_bounds[0], dtype="f4").reshape(-1)
+                                bmax = np.asarray(owner_bounds[1], dtype="f4").reshape(-1)
+                            except Exception:
+                                continue
+                            if bmin.size < 3 or bmax.size < 3:
+                                continue
+                            b0 = bmin[:3].astype("f4", copy=False)
+                            b1 = bmax[:3].astype("f4", copy=False)
+                            if frame_min is None or frame_max is None:
+                                frame_min, frame_max = b0.copy(), b1.copy()
+                            else:
+                                frame_min = np.minimum(frame_min, b0)
+                                frame_max = np.maximum(frame_max, b1)
+                    if frame_min is None or frame_max is None:
+                        if bounds_min is not None and bounds_max is not None:
+                            frame_min, frame_max = bounds_min, bounds_max
+                    if frame_min is not None and frame_max is not None:
+                        pts = np.array([frame_min, frame_max], dtype="f4")
+                        self._mgl_init_arcball(pts)
+                        preserve_camera = True
+                except Exception:
+                    pass
 
             if has_splats:
                 try:
