@@ -782,6 +782,51 @@ class MGLRendererMixin:
         )
 
     @staticmethod
+    def _mgl_fbx_runtime_influence_slots(
+        joint_indices: NDArray,
+        joint_weights: NDArray,
+        joint_count: int,
+    ) -> Tuple[List[Dict[str, NDArray]], NDArray]:
+        if np is None:
+            return [], np.zeros((0,), dtype=np.int64)
+        try:
+            ji = np.asarray(joint_indices, dtype=np.int32)
+            jw = np.asarray(joint_weights, dtype="f4")
+        except Exception:
+            return [], np.zeros((0,), dtype=np.int64)
+        if ji.ndim != 2 or jw.ndim != 2 or ji.shape != jw.shape:
+            return [], np.zeros((0,), dtype=np.int64)
+        vertex_count = int(ji.shape[0])
+        if vertex_count <= 0:
+            return [], np.zeros((0,), dtype=np.int64)
+        try:
+            slot_count = int(ji.shape[1])
+        except Exception:
+            slot_count = 0
+        if slot_count <= 0:
+            return [], np.arange(vertex_count, dtype=np.int64)
+        jc = max(0, int(joint_count))
+        weighted_mask = np.zeros((vertex_count,), dtype=bool)
+        slots: List[Dict[str, NDArray]] = []
+        for slot in range(slot_count):
+            js = ji[:, slot]
+            ws = jw[:, slot]
+            valid = (js >= 0) & (js < jc) & (ws > 1.0e-8)
+            if not np.any(valid):
+                continue
+            vids = np.nonzero(valid)[0].astype(np.int64, copy=False)
+            slots.append(
+                {
+                    "vertex_indices": vids,
+                    "joint_indices": js[valid].astype(np.int32, copy=False),
+                    "weights": ws[valid].astype("f4", copy=False),
+                }
+            )
+            weighted_mask[valid] = True
+        unweighted = np.nonzero(~weighted_mask)[0].astype(np.int64, copy=False)
+        return slots, unweighted
+
+    @staticmethod
     def _mgl_fbx_mesh_skinning_enabled(context: dict | None) -> bool:
         if not isinstance(context, dict):
             return True
@@ -1521,12 +1566,21 @@ class MGLRendererMixin:
             if weight_debug:
                 self._mgl_fbx_apply_weight_debug_colors(entry, spec, joint_count)
             if skinning_enabled:
+                spec_joint_indices = np.asarray(spec.get("joint_indices"), dtype=np.int32)
+                spec_joint_weights = np.asarray(spec.get("joint_weights"), dtype="f4")
+                influence_slots, unweighted_indices = self._mgl_fbx_runtime_influence_slots(
+                    spec_joint_indices,
+                    spec_joint_weights,
+                    joint_count,
+                )
                 runtime_meshes.append(
                     {
                         "bind_positions": bind_positions,
                         "triangle_indices": triangle_indices,
-                        "joint_indices": np.asarray(spec.get("joint_indices"), dtype=np.int32),
-                        "joint_weights": np.asarray(spec.get("joint_weights"), dtype="f4"),
+                        "joint_indices": spec_joint_indices,
+                        "joint_weights": spec_joint_weights,
+                        "influence_slots": influence_slots,
+                        "unweighted_indices": unweighted_indices,
                         "vbo": entry.get("vbo"),
                         "nbo": entry.get("nbo"),
                         "affine": affine,
@@ -1589,12 +1643,21 @@ class MGLRendererMixin:
             entry["color"] = source_color
             entries.append(entry)
             if skinning_enabled:
+                spec_joint_indices = np.asarray(spec["joint_indices"], dtype=np.int32)
+                spec_joint_weights = np.asarray(spec["joint_weights"], dtype="f4")
+                influence_slots, unweighted_indices = self._mgl_fbx_runtime_influence_slots(
+                    spec_joint_indices,
+                    spec_joint_weights,
+                    joint_count,
+                )
                 fallback_runtime_meshes.append(
                     {
                         "bind_positions": np.asarray(spec["bind_positions"], dtype="f4"),
                         "triangle_indices": np.asarray(spec["triangle_indices"], dtype=np.int64),
-                        "joint_indices": np.asarray(spec["joint_indices"], dtype=np.int32),
-                        "joint_weights": np.asarray(spec["joint_weights"], dtype="f4"),
+                        "joint_indices": spec_joint_indices,
+                        "joint_weights": spec_joint_weights,
+                        "influence_slots": influence_slots,
+                        "unweighted_indices": unweighted_indices,
                         "vbo": entry.get("vbo"),
                         "nbo": entry.get("nbo"),
                         "affine": np.eye(4, dtype="f4"),
@@ -1686,6 +1749,7 @@ class MGLRendererMixin:
                 clip,
                 sample_seconds,
                 loop=loop,
+                include_debug_data=False,
             )
         except Exception:
             return
@@ -1706,7 +1770,28 @@ class MGLRendererMixin:
 
             vertex_count = int(bind_positions.shape[0])
             deformed = bind_positions.copy()
-            if (
+            influence_slots = list(mesh.get("influence_slots") or [])
+            unweighted_indices = np.asarray(mesh.get("unweighted_indices"), dtype=np.int64).ravel()
+            if influence_slots and joint_count > 0:
+                deformed = np.zeros_like(bind_positions, dtype="f4")
+                for slot in influence_slots:
+                    vids = np.asarray(slot.get("vertex_indices"), dtype=np.int64).ravel()
+                    js = np.asarray(slot.get("joint_indices"), dtype=np.int32).ravel()
+                    ws = np.asarray(slot.get("weights"), dtype="f4").ravel()
+                    if vids.size == 0 or js.size == 0 or ws.size == 0:
+                        continue
+                    valid = (js >= 0) & (js < joint_count) & (ws > 1.0e-8)
+                    if not np.any(valid):
+                        continue
+                    if np.count_nonzero(valid) != vids.size:
+                        vids = vids[valid]
+                        js = js[valid]
+                        ws = ws[valid]
+                    transformed = self._mgl_fbx_transform_points_row_major(skin_mats[js], bind_positions[vids])
+                    deformed[vids] += transformed * ws[:, None]
+                if unweighted_indices.size:
+                    deformed[unweighted_indices] = bind_positions[unweighted_indices]
+            elif (
                 joint_indices.ndim == 2
                 and joint_weights.ndim == 2
                 and joint_indices.shape[0] == vertex_count
