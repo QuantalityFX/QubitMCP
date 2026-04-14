@@ -556,6 +556,7 @@ class MGLRendererMixin:
             clip,
             sample_time,
             loop=loop,
+            prefer_inverse_bind=bool(pose_mode in {"capture", "bind", "rest", "capture_pose"}),
         )
         owner = payload.get("owner")
         path_key = payload.get("path")
@@ -868,6 +869,7 @@ class MGLRendererMixin:
         sample_time: float,
         *,
         loop: bool,
+        prefer_inverse_bind: bool = False,
     ) -> NDArray:
         if np is None or skeleton is None:
             return np.zeros((0, 3), dtype="f4")
@@ -945,6 +947,49 @@ class MGLRendererMixin:
             except Exception:
                 return 0.0
 
+        def _inverse_bind_positions() -> Tuple[NDArray, str]:
+            joints = list(getattr(skeleton, "joints", []) or [])
+            if not joints:
+                return np.zeros((0, 3), dtype="f4"), "inverse_bind_none"
+            inv_rows_tcol: List[Tuple[float, float, float]] = []
+            inv_rows_trow: List[Tuple[float, float, float]] = []
+            for joint in joints:
+                raw_inv = tuple(getattr(joint, "inverse_bind_matrix", ()) or ())
+                if len(raw_inv) != 16:
+                    inv_rows_tcol.append((0.0, 0.0, 0.0))
+                    inv_rows_trow.append((0.0, 0.0, 0.0))
+                    continue
+                try:
+                    inv_bind = np.asarray(raw_inv, dtype="f4").reshape(4, 4)
+                    bind_global = np.linalg.inv(inv_bind)
+                    flat = bind_global.reshape(-1)
+                    inv_rows_tcol.append((float(flat[3]), float(flat[7]), float(flat[11])))
+                    inv_rows_trow.append((float(flat[12]), float(flat[13]), float(flat[14])))
+                except Exception:
+                    inv_rows_tcol.append((0.0, 0.0, 0.0))
+                    inv_rows_trow.append((0.0, 0.0, 0.0))
+                    continue
+            if not (inv_rows_tcol or inv_rows_trow):
+                return np.zeros((0, 3), dtype="f4"), "inverse_bind_empty"
+            try:
+                inv_tcol = (
+                    np.asarray(inv_rows_tcol, dtype="f4").reshape(-1, 3)
+                    if inv_rows_tcol
+                    else np.zeros((0, 3), dtype="f4")
+                )
+                inv_trow = (
+                    np.asarray(inv_rows_trow, dtype="f4").reshape(-1, 3)
+                    if inv_rows_trow
+                    else np.zeros((0, 3), dtype="f4")
+                )
+            except Exception:
+                return np.zeros((0, 3), dtype="f4"), "inverse_bind_parse_error"
+            diag_inv_tcol = _positions_diag(inv_tcol)
+            diag_inv_trow = _positions_diag(inv_trow)
+            if diag_inv_trow > diag_inv_tcol:
+                return np.asarray(inv_trow, dtype="f4").reshape(-1, 3), "inverse_bind_trow_positions"
+            return np.asarray(inv_tcol, dtype="f4").reshape(-1, 3), "inverse_bind_tcol_positions"
+
         try:
             sample = evaluate_skeleton_line_points(
                 skeleton,
@@ -1005,53 +1050,19 @@ class MGLRendererMixin:
         except Exception:
             joint_positions = np.zeros((0, 3), dtype="f4")
 
+        if bool(prefer_inverse_bind):
+            preferred_positions, preferred_source = _inverse_bind_positions()
+            if preferred_positions.size and not _positions_collapsed(preferred_positions):
+                joint_positions = preferred_positions
+                line_points = np.zeros((0, 3), dtype="f4")
+                line_source = f"preferred_{preferred_source}"
+
         if joint_positions.size == 0 or _positions_collapsed(joint_positions):
-            joints = list(getattr(skeleton, "joints", []) or [])
-            if joints:
-                inv_rows_tcol: List[Tuple[float, float, float]] = []
-                inv_rows_trow: List[Tuple[float, float, float]] = []
-                for joint in joints:
-                    raw_inv = tuple(getattr(joint, "inverse_bind_matrix", ()) or ())
-                    if len(raw_inv) != 16:
-                        inv_rows_tcol.append((0.0, 0.0, 0.0))
-                        inv_rows_trow.append((0.0, 0.0, 0.0))
-                        continue
-                    try:
-                        inv_bind = np.asarray(raw_inv, dtype="f4").reshape(4, 4)
-                        bind_global = np.linalg.inv(inv_bind)
-                        flat = bind_global.reshape(-1)
-                        inv_rows_tcol.append((float(flat[3]), float(flat[7]), float(flat[11])))
-                        inv_rows_trow.append((float(flat[12]), float(flat[13]), float(flat[14])))
-                    except Exception:
-                        inv_rows_tcol.append((0.0, 0.0, 0.0))
-                        inv_rows_trow.append((0.0, 0.0, 0.0))
-                        continue
-                if inv_rows_tcol or inv_rows_trow:
-                    try:
-                        inv_tcol = (
-                            np.asarray(inv_rows_tcol, dtype="f4").reshape(-1, 3)
-                            if inv_rows_tcol
-                            else np.zeros((0, 3), dtype="f4")
-                        )
-                        inv_trow = (
-                            np.asarray(inv_rows_trow, dtype="f4").reshape(-1, 3)
-                            if inv_rows_trow
-                            else np.zeros((0, 3), dtype="f4")
-                        )
-                    except Exception:
-                        inv_tcol = np.zeros((0, 3), dtype="f4")
-                        inv_trow = np.zeros((0, 3), dtype="f4")
-                    diag_inv_tcol = _positions_diag(inv_tcol)
-                    diag_inv_trow = _positions_diag(inv_trow)
-                    inv_positions = inv_trow if diag_inv_trow > diag_inv_tcol else inv_tcol
-                    if inv_positions.size and not _positions_collapsed(inv_positions):
-                        joint_positions = np.asarray(inv_positions, dtype="f4").reshape(-1, 3)
-                        if line_source in {"none", "stage6_eval_degenerate"}:
-                            line_source = (
-                                "inverse_bind_trow_positions"
-                                if diag_inv_trow > diag_inv_tcol
-                                else "inverse_bind_tcol_positions"
-                            )
+            inv_positions, inv_source = _inverse_bind_positions()
+            if inv_positions.size and not _positions_collapsed(inv_positions):
+                joint_positions = inv_positions
+                if line_source in {"none", "stage6_eval_degenerate"}:
+                    line_source = inv_source
 
         if joint_positions.size == 0 or _positions_collapsed(joint_positions):
             joints = list(getattr(skeleton, "joints", []) or [])
@@ -2179,6 +2190,7 @@ class MGLRendererMixin:
             clip,
             sample_time,
             loop=loop,
+            prefer_inverse_bind=bool(mode == "capture"),
         )
         if line_points.size == 0:
             self._mgl_fbx_joints_log(
