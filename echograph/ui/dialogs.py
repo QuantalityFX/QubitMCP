@@ -302,6 +302,8 @@ def _kind_icon(kind: str) -> QtGui.QIcon:
         icon_pm = node_icons._transforms_icon() or node_icons._output_icon()
     elif key == "gantt_chart":
         icon_pm = node_icons._gantt_icon() or node_icons._output_icon()
+    elif key in ("keyboard_sequence", "keyboard sequence", "keyboard_scheduler", "keyboard scheduler"):
+        icon_pm = node_icons._keyboard_sequence_icon() or node_icons._output_icon()
     elif key == "export_fbx":
         icon_pm = node_icons._fbx_icon() or node_icons._output_icon()
     elif key == "output":
@@ -340,7 +342,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
         self.kind_edit.setEditable(True)
         self._kinds = [
             "node","camera","import","fbx_import","instance","primitive","uv_unwrap","texture","texture_pro","texture_layer","material","split_volume","transforms","fx","scene","render","video_player","export_fbx","html_preview","python","switch","output","local_server",
-            "gantt_chart",
+            "gantt_chart","keyboard_sequence",
             "llm_prompt","chatbot","voice_actor","medigator_agent","librarian","note","append","image_collection","database"
         ]
         try:

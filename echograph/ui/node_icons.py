@@ -36,6 +36,7 @@ _MATERIAL_NODE_ICON = None
 _UV_UNWRAP_ICON = None
 _TRANSFORMS_ICON = None
 _GANTT_ICON = None
+_KEYBOARD_SEQUENCE_ICON = None
 _FX_NODE_ICON = None
 _CAMERA_NODE_ICON = None
 _VOLUME_SPLIT_ICON = None
@@ -305,6 +306,14 @@ def _gantt_icon():
         return _GANTT_ICON
     _GANTT_ICON = _load_pm("Calendar_Icon.png")
     return _GANTT_ICON
+
+
+def _keyboard_sequence_icon():
+    global _KEYBOARD_SEQUENCE_ICON
+    if _KEYBOARD_SEQUENCE_ICON is not None:
+        return _KEYBOARD_SEQUENCE_ICON
+    _KEYBOARD_SEQUENCE_ICON = _load_pm("keyframe_Icon.png") or _load_pm("CalendarToday_Icon.png")
+    return _KEYBOARD_SEQUENCE_ICON
 
 
 def _fx_node_icon():

@@ -1757,6 +1757,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
         elif kind in ("gantt_chart", "gantt chart", "gant_chart", "gant chart"):
             body_h = 320
             node_w = max(self._BASE_W, 1010)
+        elif kind in ("keyboard_sequence", "keyboard sequence", "keyboard_scheduler", "keyboard scheduler"):
+            body_h = 280
+            node_w = max(self._BASE_W, 980)
         elif kind in ("image_collection", "imagecollection"):
             body_h = self._IMG_CTRL_H + self._IMG_CANVAS_H
             node_w = max(self._BASE_W, self._IMG_CANVAS_W)
@@ -1868,6 +1871,23 @@ class NodeItem(QtWidgets.QGraphicsObject):
             except Exception:
                 pass
             custom_size = getattr(self.model, "_gantt_chart_size", None)
+            if isinstance(custom_size, (list, tuple)) and len(custom_size) >= 2:
+                try:
+                    custom_w = float(custom_size[0])
+                    custom_h = float(custom_size[1])
+                except Exception:
+                    custom_w = custom_h = None
+                if custom_w is not None and custom_w > 0:
+                    new_w = max(new_w, max(self._BASE_W, custom_w))
+                if custom_h is not None and custom_h > 0:
+                    new_h = max(new_h, max(self._BASE_H, custom_h))
+        elif kind in ("keyboard_sequence", "keyboard sequence", "keyboard_scheduler", "keyboard scheduler"):
+            try:
+                self._keyboard_sequence_min_w = float(new_w)
+                self._keyboard_sequence_min_h = float(new_h)
+            except Exception:
+                pass
+            custom_size = getattr(self.model, "_keyboard_sequence_size", None)
             if isinstance(custom_size, (list, tuple)) and len(custom_size) >= 2:
                 try:
                     custom_w = float(custom_size[0])
@@ -5577,6 +5597,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
             "gantt chart",
             "gant_chart",
             "gant chart",
+            "keyboard_sequence",
+            "keyboard sequence",
+            "keyboard_scheduler",
+            "keyboard scheduler",
         ):
             return False
         if self._note_resize_mode:
@@ -5670,6 +5694,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
         elif kind in ("gantt_chart", "gantt chart", "gant_chart", "gant chart"):
             min_w = float(getattr(self, "_gantt_chart_min_w", self._BASE_W))
             min_h = float(getattr(self, "_gantt_chart_min_h", self._BASE_H))
+        elif kind in ("keyboard_sequence", "keyboard sequence", "keyboard_scheduler", "keyboard scheduler"):
+            min_w = float(getattr(self, "_keyboard_sequence_min_w", self._BASE_W))
+            min_h = float(getattr(self, "_keyboard_sequence_min_h", self._BASE_H))
         elif kind in ("video_player", "video player", "videoplayer"):
             min_w = float(getattr(self, "_video_player_min_w", self._BASE_W))
             min_h = float(getattr(self, "_video_player_min_h", self._BASE_H))
@@ -5719,6 +5746,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 self.model._note_size = (float(self.width), float(self.height))
             elif kind in ("gantt_chart", "gantt chart", "gant_chart", "gant chart"):
                 self.model._gantt_chart_size = (float(self.width), float(self.height))
+            elif kind in ("keyboard_sequence", "keyboard sequence", "keyboard_scheduler", "keyboard scheduler"):
+                self.model._keyboard_sequence_size = (float(self.width), float(self.height))
             elif kind in ("chatbot", "chat bot", "chat_bot"):
                 self.model._chatbot_size = (float(self.width), float(self.height))
             elif kind in ("video_player", "video player", "videoplayer"):
@@ -5748,6 +5777,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     self.model._note_size = (float(self.width), float(self.height))
                 elif kind in ("gantt_chart", "gantt chart", "gant_chart", "gant chart"):
                     self.model._gantt_chart_size = (float(self.width), float(self.height))
+                elif kind in ("keyboard_sequence", "keyboard sequence", "keyboard_scheduler", "keyboard scheduler"):
+                    self.model._keyboard_sequence_size = (float(self.width), float(self.height))
                 elif kind in ("chatbot", "chat bot", "chat_bot"):
                     self.model._chatbot_size = (float(self.width), float(self.height))
                 elif kind in ("video_player", "video player", "videoplayer"):
@@ -5929,6 +5960,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "gantt chart",
                 "gant_chart",
                 "gant chart",
+                "keyboard_sequence",
+                "keyboard sequence",
+                "keyboard_scheduler",
+                "keyboard scheduler",
                 "export_fbx",
                 "exportfbx",
                 "export fbx",
@@ -6111,6 +6146,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 icon_pm = node_icons._transforms_icon() or node_icons._output_icon()
             elif kind_lower in ("gantt_chart", "gantt chart", "gant_chart", "gant chart"):
                 icon_pm = node_icons._gantt_icon() or node_icons._output_icon()
+            elif kind_lower in ("keyboard_sequence", "keyboard sequence", "keyboard_scheduler", "keyboard scheduler"):
+                icon_pm = node_icons._keyboard_sequence_icon() or node_icons._output_icon()
             elif kind_lower in ("export_fbx", "exportfbx", "export fbx"):
                 icon_pm = node_icons._fbx_icon() or node_icons._output_icon()
             elif kind_lower == "output":

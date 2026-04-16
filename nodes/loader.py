@@ -75,6 +75,17 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Gantt Chart plugin import failed:", e)
 
+    # 4.6) Keyboard Sequence
+    try:
+        from nodes import keyboard_sequence
+        if hasattr(keyboard_sequence, "register"):
+            keyboard_sequence.register()
+            _safe_probe("keyboard_sequence")
+        else:
+            print("[EchoGraph] Keyboard Sequence module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Keyboard Sequence plugin import failed:", e)
+
     # 5) Output
     try:
         from nodes import output

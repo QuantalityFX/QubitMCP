@@ -94,6 +94,16 @@ def _node_to_dict(node) -> Dict[str, Any]:
                 w = h = None
             if w is not None and h is not None:
                 d["gantt_chart_size"] = [w, h]
+    if k in ("keyboard_sequence", "keyboard sequence", "keyboard_scheduler", "keyboard scheduler"):
+        size = getattr(node, "_keyboard_sequence_size", None)
+        if isinstance(size, (list, tuple)) and len(size) >= 2:
+            try:
+                w = float(size[0])
+                h = float(size[1])
+            except Exception:
+                w = h = None
+            if w is not None and h is not None:
+                d["keyboard_sequence_size"] = [w, h]
 
     if k in ("image_collection", "imagecollection"):
         st = getattr(node, "_image_collection_state", None) or {}
@@ -324,6 +334,13 @@ def deserialize_scene(
                 if isinstance(gsize, (list, tuple)) and len(gsize) >= 2:
                     try:
                         setattr(n, "_gantt_chart_size", (float(gsize[0]), float(gsize[1])))
+                    except Exception:
+                        pass
+            if (n.kind or "").lower() in ("keyboard_sequence", "keyboard sequence", "keyboard_scheduler", "keyboard scheduler"):
+                ksize = nd.get("keyboard_sequence_size")
+                if isinstance(ksize, (list, tuple)) and len(ksize) >= 2:
+                    try:
+                        setattr(n, "_keyboard_sequence_size", (float(ksize[0]), float(ksize[1])))
                     except Exception:
                         pass
             if (n.kind or "").lower() in ("image_collection", "imagecollection"):
