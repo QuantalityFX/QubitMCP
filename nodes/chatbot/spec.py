@@ -217,7 +217,11 @@ def _connected_voice_actor(scene, node_item):
         kind = (getattr(getattr(src, "model", None), "kind", "") or "").strip().lower()
         if kind not in VOICE_ACTOR_NODE_KINDS:
             continue
-        candidates.append((_edge_port_name(edge), src))
+        port = _edge_port_name(edge)
+        # Only accept explicit voice-input links (or unlabeled legacy links).
+        if port and port not in port_names:
+            continue
+        candidates.append((port, src))
     if not candidates:
         return None
 
@@ -373,7 +377,33 @@ class ChatbotWidget(QtWidgets.QWidget):
         self._refresh_history()
         self._sync_voice_baseline()
 
+    def _connected_source_names(self) -> set[str]:
+        scene = self._ensure_scene()
+        if scene is None:
+            return set()
+        out = set()
+        try:
+            in_edges = list(scene._in_edges(self._node_item))
+        except Exception:
+            in_edges = []
+        for edge in in_edges:
+            src = getattr(edge, "src", None)
+            if src is None:
+                continue
+            src_name = str(getattr(getattr(src, "model", None), "name", "") or "").strip().lower()
+            if src_name:
+                out.add(src_name)
+        return out
+
     def _on_scene_param_changed(self, name=None, _params=None):
+        changed_key = str(name or "").strip().lower()
+        if changed_key:
+            allowed = self._connected_source_names()
+            self_name = str(getattr(getattr(self._node_item, "model", None), "name", "") or "").strip().lower()
+            if self_name:
+                allowed.add(self_name)
+            if allowed and changed_key not in allowed:
+                return
         self._refresh_history()
         self._handle_voice_param_change(name)
 

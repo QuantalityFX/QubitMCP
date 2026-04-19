@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import datetime
 import hashlib
+import json
 import os
+import re
 import subprocess
 import threading
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.parse import urljoin
+from urllib.request import Request, urlopen
 
 from nodes.core import Spec
 from echograph.qt_compat import QtWidgets, QtCore
@@ -22,7 +27,11 @@ MEDIGATOR_NODE_KINDS = {MEDIGATOR_NODE_KIND, *MEDIGATOR_NODE_ALIASES}
 MEDIGATOR_BODY_W = 560
 MEDIGATOR_BODY_H = 340
 MEDIGATOR_MEMORY_ROOT = "medigator_agents"
+MEDIGATOR_HIDDEN_PARAM_KEY = "__ui_hidden_params"
+MEDIGATOR_PROMPT_PROFILE_PARAM = "__prompt_profile"
+MEDIGATOR_DEFAULT_PROMPT_PROFILE = "default_mediator"
 MEDIGATOR_DEFAULT_SYSTEM_PROMPT = (
+    # Fallback used only when prompt profile files are missing or empty.
     "You are Medigator, a conversation mediator. "
     "Use the provided history and latest voice input to craft the next assistant reply. "
     "Return only the assistant response text."
@@ -31,10 +40,86 @@ MEDIGATOR_MAX_SYSTEM_CHARS = 4000
 MEDIGATOR_MAX_HISTORY_CHARS = 24000
 MEDIGATOR_MAX_VOICE_CHARS = 8000
 MEDIGATOR_CODEX_MODEL = "gpt-5.3-codex"
+VOICE_ACTOR_KINDS = {"voice_actor", "voice actor", "voiceactor"}
+QDECK_CONTROLLER_KINDS = {
+    "qubit_deck_controller",
+    "qubit deck controller",
+    "qubitdeckcontroller",
+    "qubitdeck controller",
+}
+SYSTEM_PROMPT_KINDS = {"llm_prompt", "gpt_prompt", "prompt", "system_prompt"}
+QDECK_PROMPT_PROFILE = "qubit_deck_controller"
+QDECK_DEFAULT_API_BASE = "http://127.0.0.1:8765"
+QDECK_CONTEXT_MAX_ROWS = 220
 
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
+
+
+def _prompts_dir() -> Path:
+    return Path(__file__).resolve().parent / "prompts"
+
+
+def _normalize_prompt_profile(value: str) -> str:
+    raw = str(value or "").strip().lower().replace(" ", "_")
+    cleaned = []
+    for ch in raw:
+        if ch.isalnum() or ch in ("_", "-"):
+            cleaned.append(ch)
+    token = "".join(cleaned).strip("._-")
+    return token or MEDIGATOR_DEFAULT_PROMPT_PROFILE
+
+
+def _prompt_profile_path(profile: str) -> Path:
+    token = _normalize_prompt_profile(profile)
+    return _prompts_dir() / f"{token}.md"
+
+
+def _available_prompt_profiles() -> list[str]:
+    out: list[str] = []
+    prompts_dir = _prompts_dir()
+    if prompts_dir.exists():
+        try:
+            for path in sorted(prompts_dir.glob("*.md")):
+                token = _normalize_prompt_profile(path.stem)
+                if token and token not in out:
+                    out.append(token)
+        except Exception:
+            pass
+    if MEDIGATOR_DEFAULT_PROMPT_PROFILE not in out:
+        out.insert(0, MEDIGATOR_DEFAULT_PROMPT_PROFILE)
+    elif out and out[0] != MEDIGATOR_DEFAULT_PROMPT_PROFILE:
+        out = [MEDIGATOR_DEFAULT_PROMPT_PROFILE, *[p for p in out if p != MEDIGATOR_DEFAULT_PROMPT_PROFILE]]
+    return out
+
+
+def _resolve_prompt_profile(value: str, known: list[str] | None = None) -> str:
+    token = _normalize_prompt_profile(value)
+    if known:
+        if token in known:
+            return token
+        if MEDIGATOR_DEFAULT_PROMPT_PROFILE in known:
+            return MEDIGATOR_DEFAULT_PROMPT_PROFILE
+        return known[0]
+    return token or MEDIGATOR_DEFAULT_PROMPT_PROFILE
+
+
+def _read_prompt_file(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="ignore").strip()
+    except Exception:
+        return ""
+
+
+def _load_prompt_profile_text(profile: str) -> str:
+    chosen = _read_prompt_file(_prompt_profile_path(profile))
+    if chosen:
+        return chosen
+    fallback = _read_prompt_file(_prompt_profile_path(MEDIGATOR_DEFAULT_PROMPT_PROFILE))
+    if fallback:
+        return fallback
+    return MEDIGATOR_DEFAULT_SYSTEM_PROMPT
 
 
 def _hidden_subprocess_kwargs() -> dict:
@@ -138,23 +223,23 @@ def _input_edges(scene, node_item, port_name: str) -> list:
     for edge in edges:
         if _edge_port_name(edge).strip().lower() == target:
             out.append(edge)
-    if out:
-        return out
-    return edges
+    return out
 
 
-def _text_from_input(scene, node_item, port_name: str) -> str:
-    named_edges = _input_edges(scene, node_item, port_name)
-    if not named_edges:
+def _text_from_edges(scene, edges: list) -> str:
+    if not scene or not edges:
         return ""
 
     parts = []
-    for edge in named_edges:
+    for edge in edges:
         src = getattr(edge, "src", None)
         if src is None:
             continue
-        if _kind_of_item(src) in {"voice_actor", "voice actor", "voiceactor"}:
+        src_kind = _kind_of_item(src)
+        if src_kind in VOICE_ACTOR_KINDS:
             text = _voice_actor_transcript(src)
+        elif src_kind in QDECK_CONTROLLER_KINDS:
+            text = _qdeck_context_text(scene, src)
         else:
             try:
                 text = scene.resolve_text_value(src)
@@ -163,6 +248,246 @@ def _text_from_input(scene, node_item, port_name: str) -> str:
         if text:
             parts.append(text.strip())
     return "\n\n".join(parts).strip()
+
+
+def _param_value_from_item(node_item, name: str, default: str = "") -> str:
+    model = getattr(node_item, "model", None)
+    target = str(name or "").strip().lower()
+    if not target or model is None:
+        return str(default or "")
+    for entry in (getattr(model, "params", None) or []):
+        key = str(entry.get("name", "") or "").strip().lower()
+        if key == target:
+            return str(entry.get("value", "") or "")
+    return str(default or "")
+
+
+def _parse_int(value) -> int | None:
+    try:
+        return int(str(value).strip())
+    except Exception:
+        return None
+
+
+def _qdeck_fetch_buttons(api_base: str) -> list[dict]:
+    base = str(api_base or "").strip() or QDECK_DEFAULT_API_BASE
+    request = Request(
+        url=urljoin((base.rstrip("/") + "/"), "api/buttons"),
+        headers={"Accept": "application/json"},
+        method="GET",
+    )
+    try:
+        with urlopen(request, timeout=2.5) as response:
+            raw = response.read().decode("utf-8", errors="replace").strip()
+    except HTTPError as ex:
+        detail = ex.read().decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"HTTP {ex.code}: {detail or ex.reason}") from ex
+    except URLError as ex:
+        raise RuntimeError(f"Connection failed: {ex.reason}") from ex
+
+    if not raw:
+        return []
+    try:
+        payload = json.loads(raw)
+    except Exception as ex:
+        raise RuntimeError(f"Invalid JSON response: {ex}") from ex
+
+    if isinstance(payload, dict):
+        buttons = payload.get("buttons", [])
+    elif isinstance(payload, list):
+        buttons = payload
+    else:
+        buttons = []
+    out: list[dict] = []
+    for row in buttons:
+        if isinstance(row, dict):
+            out.append(row)
+    return out
+
+
+def _qdeck_button_label(button: dict) -> str:
+    slot_idx = _parse_int(button.get("index"))
+    slot_text = "slot n/a" if slot_idx is None else f"slot {slot_idx + 1}"
+    name = str(button.get("name", "") or "").strip() or "<unnamed>"
+    display_name = str(button.get("displayName", "") or "").strip()
+    if display_name and display_name != name:
+        return f"{slot_text}: {name} ({display_name})"
+    return f"{slot_text}: {name}"
+
+
+def _qdeck_summarize_buttons(buttons: list[dict], *, max_rows: int = QDECK_CONTEXT_MAX_ROWS) -> str:
+    if not buttons:
+        return "Buttons: 0"
+    lines = [f"Buttons: {len(buttons)}"]
+    for idx, button in enumerate(buttons[:max_rows], 1):
+        lines.append(f"{idx}. {_qdeck_button_label(button)}")
+    if len(buttons) > max_rows:
+        lines.append(f"... {len(buttons) - max_rows} more")
+    return "\n".join(lines)
+
+
+def _qdeck_context_text(scene, node_item) -> str:
+    api_base = _param_value_from_item(node_item, "api_base", QDECK_DEFAULT_API_BASE).strip() or QDECK_DEFAULT_API_BASE
+    try:
+        buttons = _qdeck_fetch_buttons(api_base)
+        return _qdeck_summarize_buttons(buttons)
+    except Exception:
+        pass
+
+    model = getattr(node_item, "model", None)
+    info_text = str(getattr(model, "info", "") or "").strip() if model is not None else ""
+    if info_text:
+        return info_text
+
+    try:
+        return str(scene.resolve_text_value(node_item) or "").strip()
+    except Exception:
+        return ""
+
+
+def _text_from_input(scene, node_item, port_name: str, *, allowed_kinds=None) -> str:
+    named_edges = _input_edges(scene, node_item, port_name)
+    if allowed_kinds is not None:
+        allowed = {str(k or "").strip().lower() for k in allowed_kinds if str(k or "").strip()}
+        named_edges = [
+            edge
+            for edge in named_edges
+            if _kind_of_item(getattr(edge, "src", None)) in allowed
+        ]
+    return _text_from_edges(scene, named_edges)
+
+
+def _default_input_role_for_kind(kind: str, *, unknown_role: str | None = "chatbot_history") -> str | None:
+    key = str(kind or "").strip().lower()
+    if key in VOICE_ACTOR_KINDS:
+        return "voice_input"
+    if key in QDECK_CONTROLLER_KINDS:
+        return "chatbot_history"
+    if key in SYSTEM_PROMPT_KINDS:
+        return "system_prompt"
+    return unknown_role
+
+
+def _kind_allowed(kind: str, allowed_kinds) -> bool:
+    if allowed_kinds is None:
+        return True
+    allowed = {str(k or "").strip().lower() for k in allowed_kinds if str(k or "").strip()}
+    return str(kind or "").strip().lower() in allowed
+
+
+def _input_policy_for_profile(profile: str) -> dict:
+    token = _normalize_prompt_profile(profile)
+    if token == QDECK_PROMPT_PROFILE:
+        # Qubit Deck profile should only ingest voice input + deck context + optional prompt nodes.
+        return {
+            "prefer_named": False,
+            "voice_kinds": set(VOICE_ACTOR_KINDS),
+            "history_kinds": set(QDECK_CONTROLLER_KINDS),
+            "system_kinds": set(SYSTEM_PROMPT_KINDS),
+            "unknown_default_role": None,
+        }
+    return {
+        "prefer_named": True,
+        "voice_kinds": None,
+        "history_kinds": None,
+        "system_kinds": None,
+        "unknown_default_role": "chatbot_history",
+    }
+
+
+def _collect_inputs_from_named_ports(scene, node_item, profile: str) -> tuple[str, str, str]:
+    policy = _input_policy_for_profile(profile)
+    system_prompt = _text_from_input(
+        scene, node_item, "system_prompt", allowed_kinds=policy.get("system_kinds")
+    )
+    chatbot_history = _text_from_input(
+        scene, node_item, "chatbot_history", allowed_kinds=policy.get("history_kinds")
+    )
+    voice_input = _text_from_input(
+        scene, node_item, "voice_input", allowed_kinds=policy.get("voice_kinds")
+    )
+    return system_prompt, chatbot_history, voice_input
+
+
+def _collect_inputs_from_default_pin(scene, node_item, profile: str) -> tuple[str, str, str]:
+    policy = _input_policy_for_profile(profile)
+    edges = [e for e in _ordered_in_edges(scene, node_item) if not _edge_port_name(e)]
+    buckets: dict[str, list[str]] = {
+        "system_prompt": [],
+        "chatbot_history": [],
+        "voice_input": [],
+    }
+    for edge in edges:
+        src = getattr(edge, "src", None)
+        if src is None:
+            continue
+        kind = _kind_of_item(src)
+        role = _default_input_role_for_kind(kind, unknown_role=policy.get("unknown_default_role"))
+        if not role:
+            continue
+        if role == "voice_input" and not _kind_allowed(kind, policy.get("voice_kinds")):
+            continue
+        if role == "chatbot_history" and not _kind_allowed(kind, policy.get("history_kinds")):
+            continue
+        if role == "system_prompt" and not _kind_allowed(kind, policy.get("system_kinds")):
+            continue
+        text = _text_from_edges(scene, [edge])
+        if not text:
+            continue
+        buckets[role].append(text.strip())
+    return (
+        "\n\n".join(buckets["system_prompt"]).strip(),
+        "\n\n".join(buckets["chatbot_history"]).strip(),
+        "\n\n".join(buckets["voice_input"]).strip(),
+    )
+
+
+def _has_named_input_edges(scene, node_item) -> bool:
+    for edge in _ordered_in_edges(scene, node_item):
+        if _edge_port_name(edge):
+            return True
+    return False
+
+
+def _collectable_in_edges(scene, node_item, profile: str) -> list:
+    policy = _input_policy_for_profile(profile)
+    edges = _ordered_in_edges(scene, node_item)
+    named_edges = [e for e in edges if _edge_port_name(e)]
+    if bool(policy.get("prefer_named", True)) and named_edges:
+        out = []
+        for edge in named_edges:
+            src = getattr(edge, "src", None)
+            if src is None:
+                continue
+            kind = _kind_of_item(src)
+            port = _edge_port_name(edge).strip().lower()
+            if port == "voice_input" and _kind_allowed(kind, policy.get("voice_kinds")):
+                out.append(edge)
+            elif port == "chatbot_history" and _kind_allowed(kind, policy.get("history_kinds")):
+                out.append(edge)
+            elif port == "system_prompt" and _kind_allowed(kind, policy.get("system_kinds")):
+                out.append(edge)
+        return out
+
+    out = []
+    for edge in edges:
+        if _edge_port_name(edge):
+            continue
+        src = getattr(edge, "src", None)
+        if src is None:
+            continue
+        kind = _kind_of_item(src)
+        role = _default_input_role_for_kind(kind, unknown_role=policy.get("unknown_default_role"))
+        if not role:
+            continue
+        if role == "voice_input" and not _kind_allowed(kind, policy.get("voice_kinds")):
+            continue
+        if role == "chatbot_history" and not _kind_allowed(kind, policy.get("history_kinds")):
+            continue
+        if role == "system_prompt" and not _kind_allowed(kind, policy.get("system_kinds")):
+            continue
+        out.append(edge)
+    return out
 
 
 def _node_name(node_item) -> str:
@@ -208,6 +533,75 @@ def _set_node_info(node_item, text: str) -> None:
         pass
 
 
+def _ensure_hidden_params(model, names) -> None:
+    if model is None:
+        return
+    params = list(getattr(model, "params", None) or [])
+    hidden_entry = None
+    for entry in params:
+        key = str(entry.get("name", "") or "").strip().lower()
+        if key == MEDIGATOR_HIDDEN_PARAM_KEY:
+            hidden_entry = entry
+            break
+    if hidden_entry is None:
+        hidden_entry = {"name": MEDIGATOR_HIDDEN_PARAM_KEY, "value": ""}
+        params.append(hidden_entry)
+    hidden = {
+        part.strip().lower()
+        for part in str(hidden_entry.get("value", "")).split(",")
+        if part.strip()
+    }
+    for name in names or []:
+        token = str(name or "").strip().lower()
+        if token:
+            hidden.add(token)
+    hidden_entry["value"] = ",".join(sorted(hidden))
+    model.params = params
+
+
+def _param_value(model, name: str, default: str = "") -> str:
+    target = str(name or "").strip().lower()
+    if not target:
+        return str(default or "")
+    for entry in (getattr(model, "params", None) or []):
+        key = str(entry.get("name", "") or "").strip().lower()
+        if key == target:
+            return str(entry.get("value", "") or "")
+    return str(default or "")
+
+
+def _set_param_value(node_item, name: str, value: str, *, notify_scene: bool = True) -> None:
+    model = getattr(node_item, "model", None)
+    if model is None:
+        return
+    key = str(name or "").strip().lower()
+    if not key:
+        return
+    params = list(getattr(model, "params", None) or [])
+    updated = False
+    for entry in params:
+        entry_key = str(entry.get("name", "") or "").strip().lower()
+        if entry_key != key:
+            continue
+        if str(entry.get("value", "") or "") == str(value or ""):
+            return
+        entry["value"] = str(value or "")
+        updated = True
+        break
+    if not updated:
+        params.append({"name": name, "value": str(value or "")})
+    model.params = params
+    if not notify_scene:
+        return
+    scene = node_item.scene() if hasattr(node_item, "scene") else None
+    if scene is None:
+        return
+    try:
+        scene.paramChanged.emit(model.name, list(params))
+    except Exception:
+        pass
+
+
 def _trim_text(text: str, limit: int, *, keep_tail: bool = False) -> str:
     clean = str(text or "").strip()
     if limit <= 0 or len(clean) <= limit:
@@ -217,20 +611,41 @@ def _trim_text(text: str, limit: int, *, keep_tail: bool = False) -> str:
     return clean[:limit]
 
 
-def _compose_medigator_prompt(system_prompt: str, chatbot_history: str, voice_input: str) -> tuple[str, str]:
+def _normalize_qdeck_voice_input(text: str) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    out = raw
+    out = re.sub(r"\bo[\s\._-]*b[\s\._-]*s\b", "obs", out, flags=re.IGNORECASE)
+    out = re.sub(r"\bovs\b", "obs", out, flags=re.IGNORECASE)
+    out = re.sub(r"\bobs\s+stand\b", "obs", out, flags=re.IGNORECASE)
+    out = re.sub(r"\bovs\s+stand\b", "obs", out, flags=re.IGNORECASE)
+    out = re.sub(r"\bobs\s+studio\b", "obs", out, flags=re.IGNORECASE)
+    out = re.sub(r"\s+", " ", out).strip()
+    return out or raw
+
+
+def _compose_medigator_prompt(
+    system_prompt: str,
+    chatbot_history: str,
+    voice_input: str,
+    default_system_prompt: str = "",
+) -> tuple[str, str]:
     clean_system = _trim_text(system_prompt, MEDIGATOR_MAX_SYSTEM_CHARS, keep_tail=False)
     clean_history = _trim_text(chatbot_history, MEDIGATOR_MAX_HISTORY_CHARS, keep_tail=True)
     clean_voice = _trim_text(voice_input, MEDIGATOR_MAX_VOICE_CHARS, keep_tail=True)
+    clean_default = _trim_text(default_system_prompt, MEDIGATOR_MAX_SYSTEM_CHARS, keep_tail=False)
+    effective_system = clean_system or clean_default or MEDIGATOR_DEFAULT_SYSTEM_PROMPT
     payload = "\n\n".join(
         [
-            clean_system,
+            effective_system,
             clean_history,
             clean_voice,
         ]
     )
     signature = hashlib.sha1(payload.encode("utf-8")).hexdigest()
     prompt = (
-        f"{clean_system or MEDIGATOR_DEFAULT_SYSTEM_PROMPT}\n\n"
+        f"{effective_system}\n\n"
         "Task:\n"
         "1. Read the conversation history and the latest voice input.\n"
         "2. Produce the best next assistant reply.\n"
@@ -270,6 +685,7 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
         self._pending_prompt = ""
         self._pending_signature = ""
         self._pending_source = ""
+        self._stop_requested = False
 
         self.setMinimumSize(MEDIGATOR_BODY_W, MEDIGATOR_BODY_H)
         try:
@@ -290,7 +706,7 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
 
         codex_script = _repo_root() / "tools" / "codex.ps1"
         if codex_script.exists():
-            self._command_edit.setText(f'& "{codex_script}"')
+            self._command_edit.setText(f'& "{codex_script}" -Sandbox read-only')
 
         self._console = QtWidgets.QPlainTextEdit()
         self._console.setReadOnly(True)
@@ -300,6 +716,44 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
 
         self._status = QtWidgets.QLabel("Ready.")
         self._status.setStyleSheet("QLabel{color:#94a3b8;}")
+
+        self._prompt_profiles = _available_prompt_profiles()
+        self._profile_label = QtWidgets.QLabel("Prompt Profile")
+        self._profile_label.setStyleSheet("QLabel{color:#cbd5e1;}")
+        self._profile_combo = QtWidgets.QComboBox()
+        self._profile_combo.setStyleSheet(
+            "QComboBox{background:#11151c;color:#e6edf3;border:1px solid #334155;border-radius:4px;padding:3px 8px;}"
+            "QComboBox:disabled{background:#1f2937;color:#94a3b8;border-color:#334155;}"
+            "QComboBox QAbstractItemView{background:#0f1216;color:#e6edf3;selection-background-color:#1e3a8a;}"
+        )
+        for profile in self._prompt_profiles:
+            self._profile_combo.addItem(profile, profile)
+        model = getattr(self._node_item, "model", None)
+        saved_profile = _resolve_prompt_profile(
+            _param_value(model, MEDIGATOR_PROMPT_PROFILE_PARAM, MEDIGATOR_DEFAULT_PROMPT_PROFILE),
+            self._prompt_profiles,
+        )
+        self._profile_combo.blockSignals(True)
+        try:
+            profile_idx = int(self._profile_combo.findData(saved_profile))
+        except Exception:
+            profile_idx = -1
+        if profile_idx < 0:
+            try:
+                profile_idx = int(self._profile_combo.findText(saved_profile))
+            except Exception:
+                profile_idx = -1
+        if profile_idx < 0:
+            profile_idx = 0
+        self._profile_combo.setCurrentIndex(profile_idx)
+        self._profile_combo.blockSignals(False)
+        _set_param_value(
+            self._node_item,
+            MEDIGATOR_PROMPT_PROFILE_PARAM,
+            self._selected_prompt_profile(),
+            notify_scene=False,
+        )
+        _ensure_hidden_params(model, [MEDIGATOR_PROMPT_PROFILE_PARAM])
 
         self._run_btn = QtWidgets.QPushButton("Run Cmd")
         self._process_btn = QtWidgets.QPushButton("Process Inputs")
@@ -314,6 +768,7 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
         self._stop_btn.clicked.connect(self._stop_command)
         self._clear_btn.clicked.connect(self._clear_console)
         self._open_btn.clicked.connect(self._open_workspace_folder)
+        self._profile_combo.currentIndexChanged.connect(self._on_prompt_profile_changed)
 
         self._run_btn.setStyleSheet(
             "QPushButton{background:#1d4ed8;color:#e2e8f0;border:1px solid #1e3a8a;border-radius:4px;padding:4px 10px;}"
@@ -340,6 +795,12 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
         )
         self._auto_chk.setStyleSheet("QCheckBox{color:#cbd5e1;}")
 
+        profile_row = QtWidgets.QHBoxLayout()
+        profile_row.setContentsMargins(0, 0, 0, 0)
+        profile_row.setSpacing(6)
+        profile_row.addWidget(self._profile_label, 0)
+        profile_row.addWidget(self._profile_combo, 1)
+
         command_row = QtWidgets.QHBoxLayout()
         command_row.setContentsMargins(0, 0, 0, 0)
         command_row.setSpacing(6)
@@ -355,6 +816,7 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(6)
         layout.addWidget(self._workspace_label, 0)
+        layout.addLayout(profile_row, 0)
         layout.addLayout(command_row, 0)
         layout.addWidget(self._console, 1)
         layout.addWidget(self._status, 0)
@@ -431,6 +893,39 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
         self._stop_btn.setEnabled(self._running)
         self._command_edit.setEnabled(not self._running)
         self._auto_chk.setEnabled(not self._running)
+        self._profile_combo.setEnabled(not self._running)
+
+    def _selected_prompt_profile(self) -> str:
+        known = list(getattr(self, "_prompt_profiles", None) or [])
+        raw = ""
+        try:
+            data = self._profile_combo.currentData()
+        except Exception:
+            data = ""
+        if data is not None:
+            raw = str(data or "").strip()
+        if not raw:
+            try:
+                raw = str(self._profile_combo.currentText() or "").strip()
+            except Exception:
+                raw = ""
+        return _resolve_prompt_profile(raw, known)
+
+    def _selected_profile_prompt(self) -> str:
+        return _load_prompt_profile_text(self._selected_prompt_profile())
+
+    @QtCore.Slot(int)
+    def _on_prompt_profile_changed(self, _index: int) -> None:
+        profile = self._selected_prompt_profile()
+        _ensure_hidden_params(getattr(self._node_item, "model", None), [MEDIGATOR_PROMPT_PROFILE_PARAM])
+        _set_param_value(self._node_item, MEDIGATOR_PROMPT_PROFILE_PARAM, profile, notify_scene=True)
+        self._last_processed_signature = ""
+        if profile == QDECK_PROMPT_PROFILE:
+            self._set_status(
+                "Prompt profile: qubit_deck_controller (reads VoiceActor + QubitDeckController context only)."
+            )
+        else:
+            self._set_status(f"Prompt profile: {profile}")
 
     def _auto_enabled(self) -> bool:
         try:
@@ -481,8 +976,9 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
         scene = self._ensure_scene()
         if scene is None:
             return set()
+        profile = self._selected_prompt_profile()
         names = set()
-        for edge in _ordered_in_edges(scene, self._node_item):
+        for edge in _collectable_in_edges(scene, self._node_item, profile):
             src = getattr(edge, "src", None)
             if src is None:
                 continue
@@ -495,11 +991,13 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
         scene = self._ensure_scene()
         if scene is None:
             return None
-        for edge in _input_edges(scene, self._node_item, "voice_input"):
+        profile = self._selected_prompt_profile()
+        edges = _collectable_in_edges(scene, self._node_item, profile)
+        for edge in edges:
             src = getattr(edge, "src", None)
             if src is None:
                 continue
-            if _kind_of_item(src) in {"voice_actor", "voice actor", "voiceactor"}:
+            if _kind_of_item(src) in VOICE_ACTOR_KINDS:
                 return src
         return None
 
@@ -507,12 +1005,16 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
         scene = self._ensure_scene()
         if scene is None:
             return "", "", ""
-        system_prompt = _text_from_input(scene, self._node_item, "system_prompt")
-        chatbot_history = _text_from_input(scene, self._node_item, "chatbot_history")
-        voice_input = _text_from_input(scene, self._node_item, "voice_input")
-        return system_prompt, chatbot_history, voice_input
+        profile = self._selected_prompt_profile()
+        policy = _input_policy_for_profile(profile)
+        if bool(policy.get("prefer_named", True)) and _has_named_input_edges(scene, self._node_item):
+            return _collect_inputs_from_named_ports(scene, self._node_item, profile)
+        # Single-pin mode: route by upstream node kind policy.
+        return _collect_inputs_from_default_pin(scene, self._node_item, profile)
 
     def _queue_pending(self, prompt: str, signature: str, source: str) -> None:
+        if self._stop_requested:
+            return
         self._pending_prompt = str(prompt or "")
         self._pending_signature = str(signature or "")
         self._pending_source = str(source or "auto")
@@ -525,6 +1027,11 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
         self._pending_signature = ""
         self._pending_source = ""
         return prompt, signature, source
+
+    def _clear_pending(self) -> None:
+        self._pending_prompt = ""
+        self._pending_signature = ""
+        self._pending_source = ""
 
     def _process_inputs_if_available(self) -> None:
         self._maybe_process_inputs(force=False, source="auto")
@@ -562,6 +1069,7 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
             self._last_voice_mode = current_voice_mode
 
         system_prompt, chatbot_history, voice_input = self._collect_inputs()
+        profile = self._selected_prompt_profile()
         clean_voice_input = str(voice_input or "").strip()
         if not clean_voice_input:
             if not force:
@@ -574,7 +1082,16 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
         if not force:
             self._last_auto_voice_input = clean_voice_input
 
-        prompt, signature = _compose_medigator_prompt(system_prompt, chatbot_history, voice_input)
+        prompt_voice_input = clean_voice_input
+        if profile == QDECK_PROMPT_PROFILE:
+            prompt_voice_input = _normalize_qdeck_voice_input(clean_voice_input)
+
+        prompt, signature = _compose_medigator_prompt(
+            system_prompt,
+            chatbot_history,
+            prompt_voice_input,
+            self._selected_profile_prompt(),
+        )
         if not force and signature == self._last_processed_signature:
             return
         if self._running:
@@ -587,6 +1104,7 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
             self._queue_pending(prompt, signature, source)
             return
         mode = "auto" if source == "auto" else "manual"
+        self._stop_requested = False
         self._set_running(True)
         self._set_status(f"Running Codex ({mode})...")
         self._write_history(f"tools\\codex.ps1 -Exec <medigator:{mode}>")
@@ -622,8 +1140,10 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
                 "-Exec",
                 "-Model",
                 MEDIGATOR_CODEX_MODEL,
+                "-Sandbox",
+                "read-only",
                 "-Cd",
-                str(_repo_root()),
+                str(self._workspace_dir),
                 "-OutputLastMessage",
                 str(output_path),
             ]
@@ -683,6 +1203,7 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
             self._set_status("Enter a command first.", error=True)
             return
 
+        self._stop_requested = False
         self._set_running(True)
         self._set_status("Running command...")
         self._write_history(command)
@@ -730,12 +1251,46 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
         proc = None
         with self._process_lock:
             proc = self._process
+        self._stop_requested = True
+        self._clear_pending()
         if proc is None:
             self._set_status("No running command.")
             return
+        pid = 0
         try:
-            proc.terminate()
-            self._console_append.emit("Process termination requested.")
+            pid = int(getattr(proc, "pid", 0) or 0)
+        except Exception:
+            pid = 0
+        stopped = False
+        if os.name == "nt" and pid > 0:
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/T", "/F"],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    **_hidden_subprocess_kwargs(),
+                )
+                stopped = True
+            except Exception:
+                stopped = False
+        try:
+            if not stopped:
+                proc.terminate()
+                stopped = True
+        except Exception:
+            pass
+        try:
+            if not stopped:
+                proc.kill()
+                stopped = True
+        except Exception:
+            pass
+        try:
+            if stopped:
+                self._console_append.emit("Stop requested. Terminating active process...")
+            else:
+                self._console_append.emit("Stop requested but process termination could not be confirmed.")
             self._set_status("Stopping command...")
         except Exception as exc:
             self._set_status(f"Stop failed: {exc}", error=True)
@@ -753,6 +1308,14 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
 
         clean_source = (source or "").strip().lower()
         is_codex_process = clean_source in {"auto", "manual"}
+        if self._stop_requested:
+            self._clear_pending()
+            self._stop_requested = False
+            if is_codex_process:
+                self._set_status("Processing stopped.")
+            else:
+                self._set_status("Command stopped.")
+            return
 
         if error_text:
             self._console_append.emit(error_text)
