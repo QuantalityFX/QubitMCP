@@ -55,6 +55,7 @@ set "CHECK_FBX_SCRIPT=%REPO_DIR%\check_fbx_sdk.ps1"
 set "INSTALL_FBX_SCRIPT=%REPO_DIR%\install_fbx_sdk.ps1"
 set "LIB_VENV=%APP_HOME%\librarian\.venv"
 set "LIB_PY=%LIB_VENV%\Scripts\python.exe"
+set "QDECK_SETUP_SCRIPT=%REPO_DIR%\nodes\qubit_deck_controller\setup_qubit_deck_controller.bat"
 set "VOICE_DEPS=SpeechRecognition pyttsx3 pyaudio gTTS pygame faster-whisper pymongo"
 set "BASE_PY_EXE="
 set "BASE_PY_ARG="
@@ -122,14 +123,18 @@ call :ensure_venv "%ROOT_VENV%" "root" || goto :fail
 call :install_requirements "%ROOT_PY%" "%MAIN_REQ%" "root requirements" || goto :fail
 call :install_voice_deps "%ROOT_PY%" "root voice dependencies" || goto :fail
 call :check_medigator_runtime
+call :check_keyboard_sequence_runtime "%ROOT_PY%"
 call :setup_fbx_sdk "%ROOT_PY%"
 
 if /I "%SETUP_MODE%"=="full" (
   call :ensure_venv "%LIB_VENV%" "librarian" || goto :fail
   call :install_requirements "%LIB_PY%" "%LIB_REQ%" "librarian requirements" || goto :fail
+  call :setup_qubit_deck_controller || goto :fail
 ) else (
   echo [setup] Skipping librarian setup ^(mode=%SETUP_MODE%^).
   echo [setup] Skipping librarian setup ^(mode=%SETUP_MODE%^). >> "%LOG%"
+  echo [setup] Skipping QubitDeckController setup ^(mode=%SETUP_MODE%^).
+  echo [setup] Skipping QubitDeckController setup ^(mode=%SETUP_MODE%^). >> "%LOG%"
 )
 
 call :create_windows_shortcuts
@@ -279,6 +284,29 @@ if "%HAS_CODEX_SCRIPT%"=="1" (
 )
 exit /b 0
 
+:check_keyboard_sequence_runtime
+set "PY=%~1"
+
+if not exist "%PY%" (
+  echo [setup] WARNING: keyboard_sequence check skipped ^(missing Python: %PY%^).
+  echo [setup] WARNING: keyboard_sequence check skipped ^(missing Python: %PY%^). >> "%LOG%"
+  exit /b 0
+)
+
+echo [setup] Checking keyboard_sequence runtime...
+echo [setup] Checking keyboard_sequence runtime with %PY% >> "%LOG%"
+"%PY%" -c "import importlib; from PySide6 import QtCore, QtGui, QtWidgets; importlib.import_module('nodes.keyboard_sequence.spec')"
+if errorlevel 1 (
+  echo [setup] WARNING: keyboard_sequence sanity check failed.
+  echo [setup] WARNING: keyboard_sequence sanity check failed. >> "%LOG%"
+  echo [setup] WARNING: Verify PySide6 and node imports in the root venv.
+  echo [setup] WARNING: Verify PySide6 and node imports in the root venv. >> "%LOG%"
+  exit /b 0
+)
+echo [setup] keyboard_sequence runtime is ready.
+echo [setup] keyboard_sequence runtime is ready. >> "%LOG%"
+exit /b 0
+
 :setup_fbx_sdk
 set "PY=%~1"
 
@@ -376,6 +404,25 @@ if defined FBX_PROMPT_SOURCE (
   set "FBX_SDK_SOURCE=%FBX_PROMPT_SOURCE:"=%"
   echo [setup] FBX SDK source entered by user: %FBX_SDK_SOURCE% >> "%LOG%"
 )
+exit /b 0
+
+:setup_qubit_deck_controller
+if not exist "%QDECK_SETUP_SCRIPT%" (
+  echo [setup] WARNING: QubitDeckController setup script not found: %QDECK_SETUP_SCRIPT%
+  echo [setup] WARNING: QubitDeckController setup script not found: %QDECK_SETUP_SCRIPT% >> "%LOG%"
+  exit /b 0
+)
+
+echo [setup] Running QubitDeckController setup...
+echo [setup] Running QubitDeckController setup script: %QDECK_SETUP_SCRIPT% >> "%LOG%"
+call "%QDECK_SETUP_SCRIPT%"
+if errorlevel 1 (
+  echo [setup] ERROR: QubitDeckController setup failed.
+  echo [setup] ERROR: QubitDeckController setup failed. >> "%LOG%"
+  exit /b 1
+)
+echo [setup] QubitDeckController setup complete.
+echo [setup] QubitDeckController setup complete. >> "%LOG%"
 exit /b 0
 
 :create_windows_shortcuts
@@ -530,7 +577,7 @@ exit /b 1
 :print_usage
 echo Usage: setup.bat [core^|full] [fbx_sdk_source_dir]
 echo   core = setup root app env only
-echo   full = setup root + librarian envs (default)
+echo   full = setup root + librarian + QubitDeckController envs (default)
 echo   optional fbx_sdk_source_dir = folder containing either:
 echo      1^) fbx-*.whl + FbxCommon.py
 echo      2^) fbx*.pyd + FbxCommon.py ^(+ optional libfbxsdk.dll^)

@@ -406,3 +406,14 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Video Player plugin import failed:", e)
 
+    # 16.5) Qubit Deck Controller
+    try:
+        from nodes import qubit_deck_controller
+        if hasattr(qubit_deck_controller, "register"):
+            qubit_deck_controller.register()
+            _safe_probe("qubit_deck_controller")
+        else:
+            print("[EchoGraph] Qubit Deck Controller module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Qubit Deck Controller plugin import failed:", e)
+

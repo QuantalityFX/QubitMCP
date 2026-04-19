@@ -1760,6 +1760,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
         elif kind in ("keyboard_sequence", "keyboard sequence", "keyboard_scheduler", "keyboard scheduler"):
             body_h = 280
             node_w = max(self._BASE_W, 980)
+        elif kind in ("qubit_deck_controller", "qubit deck controller", "qubitdeckcontroller"):
+            # Keep extra lower frame space so deck params do not crowd the bottom border.
+            body_h = 44
+            node_w = max(self._BASE_W, 260)
         elif kind in ("image_collection", "imagecollection"):
             body_h = self._IMG_CTRL_H + self._IMG_CANVAS_H
             node_w = max(self._BASE_W, self._IMG_CANVAS_W)
@@ -5917,6 +5921,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "append",
                 "note",
                 "librarian",
+                "qubit_deck_controller",
                 "import",
                 "fbx_import",
                 "fbx import",
@@ -6102,6 +6107,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 icon_pm = node_icons._note_icon()
             elif kind_lower == "librarian":
                 icon_pm = node_icons._librarian_icon()
+            elif kind_lower in ("qubit_deck_controller", "qubit deck controller", "qubitdeckcontroller"):
+                icon_pm = (
+                    node_icons._qubit_deck_controller_icon()
+                    or node_icons._librarian_icon()
+                    or node_icons._output_icon()
+                )
             elif kind_lower == "import":
                 icon_pm = getattr(self, "_import_icon_pm", None) or node_icons._import_icon()
             elif kind_lower in ("fbx_import", "fbx import", "fbximport"):

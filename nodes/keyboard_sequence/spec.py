@@ -18,13 +18,17 @@ from nodes.util_graph import param_change_relevant as _param_change_relevant
 
 _SEQUENCE_PARAM = "keyboard_sequence_data"
 _LEAD_IN_PARAM = "keyboard_lead_in_ms"
+_KEY_HOLD_PARAM = "keyboard_key_hold_ms"
+_INJECTION_MODE_PARAM = "keyboard_injection_mode"
 _HIDDEN_PARAM = "__ui_hidden_params"
 
 _DEFAULT_DELAY_MS = 250
 _DEFAULT_LEAD_IN_MS = 1200
+_DEFAULT_KEY_HOLD_MS = 40
 _MIN_DELAY_MS = 0
 _MAX_DELAY_MS = 600000
 _MAX_LEAD_IN_MS = 60000
+_MAX_KEY_HOLD_MS = 2000
 _MIN_STEPS = 1
 _MAX_STEPS = 64
 
@@ -32,8 +36,25 @@ KEYBOARD_SEQUENCE_BODY_W = 980
 KEYBOARD_SEQUENCE_BODY_H = 280
 
 _INPUT_KEYBOARD = 1
+_KEYEVENTF_EXTENDEDKEY = 0x0001
 _KEYEVENTF_KEYUP = 0x0002
 _KEYEVENTF_UNICODE = 0x0004
+_KEYEVENTF_SCANCODE = 0x0008
+
+_MAPVK_VK_TO_VSC = 0
+_MAPVK_VK_TO_VSC_EX = 4
+
+_MODE_VK = "vk"
+_MODE_SCANCODE = "scancode"
+_MODE_HYBRID = "hybrid"
+
+_INTER_EVENT_MS = 2
+
+_WM_KEYDOWN = 0x0100
+_WM_KEYUP = 0x0101
+_WM_CHAR = 0x0102
+_WM_SYSKEYDOWN = 0x0104
+_WM_SYSKEYUP = 0x0105
 
 _USER32 = ctypes.WinDLL("user32", use_last_error=True) if os.name == "nt" else None
 
@@ -83,6 +104,12 @@ if os.name == "nt":
         _USER32.SendInput.restype = ctypes.c_uint
         _USER32.VkKeyScanW.argtypes = (ctypes.c_wchar,)
         _USER32.VkKeyScanW.restype = ctypes.c_short
+        _USER32.MapVirtualKeyW.argtypes = (ctypes.c_uint, ctypes.c_uint)
+        _USER32.MapVirtualKeyW.restype = ctypes.c_uint
+        _USER32.GetForegroundWindow.argtypes = ()
+        _USER32.GetForegroundWindow.restype = ctypes.c_void_p
+        _USER32.PostMessageW.argtypes = (ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t, ctypes.c_ssize_t)
+        _USER32.PostMessageW.restype = ctypes.c_int
     except Exception:
         pass
 
@@ -142,6 +169,22 @@ _SPECIAL_KEYS = {
 }
 for _idx in range(1, 25):
     _SPECIAL_KEYS[f"f{_idx}"] = 0x6F + _idx
+
+_SCANCODE_EXTENDED_KEYS = {
+    0x21,  # Page Up
+    0x22,  # Page Down
+    0x23,  # End
+    0x24,  # Home
+    0x25,  # Left
+    0x26,  # Up
+    0x27,  # Right
+    0x28,  # Down
+    0x2D,  # Insert
+    0x2E,  # Delete
+    0x5B,  # LWin
+    0x5C,  # RWin
+    0x5D,  # Apps
+}
 
 
 def _normalize_token(token: str) -> str:
@@ -263,6 +306,19 @@ def _coerce_lead_in_ms(value) -> int:
     return max(0, min(_MAX_LEAD_IN_MS, _coerce_int(value, _DEFAULT_LEAD_IN_MS)))
 
 
+def _coerce_key_hold_ms(value) -> int:
+    return max(0, min(_MAX_KEY_HOLD_MS, _coerce_int(value, _DEFAULT_KEY_HOLD_MS)))
+
+
+def _normalize_injection_mode(raw) -> str:
+    token = _normalize_token(str(raw or ""))
+    if token in {"hybrid", "both", "combo"}:
+        return _MODE_HYBRID
+    if token in {"scancode", "scan", "scanmode", "game"}:
+        return _MODE_SCANCODE
+    return _MODE_VK
+
+
 def _default_sequence() -> list[dict[str, object]]:
     return [{"action": "Action 1", "key": "", "delay_ms": _DEFAULT_DELAY_MS}]
 
@@ -337,6 +393,32 @@ def _write_lead_in_ms(node_item, value: int, *, notify_scene: bool = True) -> in
     return clean
 
 
+def _read_key_hold_ms(node_item) -> int:
+    model = getattr(node_item, "model", None)
+    if model is None:
+        return _DEFAULT_KEY_HOLD_MS
+    return _coerce_key_hold_ms(_param_value(model, _KEY_HOLD_PARAM))
+
+
+def _write_key_hold_ms(node_item, value: int, *, notify_scene: bool = True) -> int:
+    clean = _coerce_key_hold_ms(value)
+    _set_param_value(node_item, _KEY_HOLD_PARAM, str(clean), notify_scene=notify_scene)
+    return clean
+
+
+def _read_injection_mode(node_item) -> str:
+    model = getattr(node_item, "model", None)
+    if model is None:
+        return _MODE_VK
+    return _normalize_injection_mode(_param_value(model, _INJECTION_MODE_PARAM))
+
+
+def _write_injection_mode(node_item, value: str, *, notify_scene: bool = True) -> str:
+    clean = _normalize_injection_mode(value)
+    _set_param_value(node_item, _INJECTION_MODE_PARAM, clean, notify_scene=notify_scene)
+    return clean
+
+
 def _vk_for_named_token(token: str) -> int | None:
     key = _normalize_token(token)
     if not key:
@@ -373,7 +455,36 @@ def _vk_and_modifiers_for_char(ch: str) -> tuple[int | None, list[int]]:
     return int(vk), mods
 
 
-def _build_hotkey_events(key_text: str) -> tuple[list[tuple[int, int, int]] | None, str]:
+def _key_event_for_vk(vk: int, keyup: bool, *, injection_mode: str) -> tuple[int, int, int]:
+    use_scancode = _normalize_injection_mode(injection_mode) == _MODE_SCANCODE
+    if use_scancode and os.name == "nt" and _USER32 is not None:
+        scan_ex = 0
+        scan = 0
+        extended = False
+        try:
+            scan_ex = int(_USER32.MapVirtualKeyW(int(vk), _MAPVK_VK_TO_VSC_EX))
+        except Exception:
+            scan_ex = 0
+        if scan_ex:
+            scan = int(scan_ex & 0xFF)
+            if (scan_ex & 0xFF00) in (0xE000, 0xE100):
+                extended = True
+        if scan <= 0:
+            try:
+                scan = int(_USER32.MapVirtualKeyW(int(vk), _MAPVK_VK_TO_VSC) & 0xFF)
+            except Exception:
+                scan = 0
+        if scan > 0:
+            flags = _KEYEVENTF_SCANCODE
+            if keyup:
+                flags |= _KEYEVENTF_KEYUP
+            if extended or int(vk) in _SCANCODE_EXTENDED_KEYS:
+                flags |= _KEYEVENTF_EXTENDEDKEY
+            return 0, int(scan), int(flags)
+    return int(vk), 0, (_KEYEVENTF_KEYUP if keyup else 0)
+
+
+def _build_hotkey_events(key_text: str, *, injection_mode: str = _MODE_VK) -> tuple[list[tuple[int, int, int]] | None, str]:
     text = str(key_text or "").strip()
     if not text:
         return None, "Key is empty."
@@ -416,15 +527,15 @@ def _build_hotkey_events(key_text: str) -> tuple[list[tuple[int, int, int]] | No
     modifiers = _dedupe_keep_order(all_modifiers)
     events: list[tuple[int, int, int]] = []
     for mod_vk in modifiers:
-        events.append((int(mod_vk), 0, 0))
-    events.append((int(vk), 0, 0))
-    events.append((int(vk), 0, _KEYEVENTF_KEYUP))
+        events.append(_key_event_for_vk(int(mod_vk), False, injection_mode=injection_mode))
+    events.append(_key_event_for_vk(int(vk), False, injection_mode=injection_mode))
+    events.append(_key_event_for_vk(int(vk), True, injection_mode=injection_mode))
     for mod_vk in reversed(modifiers):
-        events.append((int(mod_vk), 0, _KEYEVENTF_KEYUP))
+        events.append(_key_event_for_vk(int(mod_vk), True, injection_mode=injection_mode))
     return events, ""
 
 
-def _build_text_events(text: str) -> tuple[list[tuple[int, int, int]] | None, str]:
+def _build_text_events(text: str, *, injection_mode: str = _MODE_VK) -> tuple[list[tuple[int, int, int]] | None, str]:
     clean = str(text or "")
     if not clean:
         return None, "Text action is empty."
@@ -433,7 +544,8 @@ def _build_text_events(text: str) -> tuple[list[tuple[int, int, int]] | None, st
         if ch == "\r":
             continue
         if ch == "\n":
-            events.extend([(0x0D, 0, 0), (0x0D, 0, _KEYEVENTF_KEYUP)])
+            events.append(_key_event_for_vk(0x0D, False, injection_mode=injection_mode))
+            events.append(_key_event_for_vk(0x0D, True, injection_mode=injection_mode))
             continue
         vk, mods = _vk_and_modifiers_for_char(ch)
         if vk is None:
@@ -443,11 +555,11 @@ def _build_text_events(text: str) -> tuple[list[tuple[int, int, int]] | None, st
             continue
         dedup_mods = _dedupe_keep_order(mods)
         for mod_vk in dedup_mods:
-            events.append((int(mod_vk), 0, 0))
-        events.append((int(vk), 0, 0))
-        events.append((int(vk), 0, _KEYEVENTF_KEYUP))
+            events.append(_key_event_for_vk(int(mod_vk), False, injection_mode=injection_mode))
+        events.append(_key_event_for_vk(int(vk), False, injection_mode=injection_mode))
+        events.append(_key_event_for_vk(int(vk), True, injection_mode=injection_mode))
         for mod_vk in reversed(dedup_mods):
-            events.append((int(mod_vk), 0, _KEYEVENTF_KEYUP))
+            events.append(_key_event_for_vk(int(mod_vk), True, injection_mode=injection_mode))
     return events, ""
 
 
@@ -480,16 +592,162 @@ def _send_input_events(events: list[tuple[int, int, int]]) -> tuple[bool, str]:
     return True, ""
 
 
-def _dispatch_key_action(text: str) -> tuple[bool, str]:
+def _is_matching_keyup_event(
+    down_event: tuple[int, int, int],
+    up_event: tuple[int, int, int],
+) -> bool:
+    down_vk, down_scan, down_flags = int(down_event[0]), int(down_event[1]), int(down_event[2])
+    up_vk, up_scan, up_flags = int(up_event[0]), int(up_event[1]), int(up_event[2])
+    return (
+        down_vk == up_vk
+        and down_scan == up_scan
+        and up_flags == (down_flags | _KEYEVENTF_KEYUP)
+        and not bool(down_flags & _KEYEVENTF_KEYUP)
+    )
+
+
+def _send_input_event_stream(events: list[tuple[int, int, int]], *, key_hold_ms: int) -> tuple[bool, str]:
+    if not events:
+        return False, "No keyboard events to send."
+    hold_ms = _coerce_key_hold_ms(key_hold_ms)
+    inter_seconds = max(0.0, float(_INTER_EVENT_MS) / 1000.0)
+    hold_seconds = max(0.0, float(hold_ms) / 1000.0)
+    for idx, event in enumerate(events):
+        ok, message = _send_input_events([event])
+        if not ok:
+            return ok, message
+        if idx + 1 >= len(events):
+            continue
+        if _is_matching_keyup_event(event, events[idx + 1]) and hold_seconds > 0.0:
+            time.sleep(hold_seconds)
+        elif inter_seconds > 0.0:
+            time.sleep(inter_seconds)
+    return True, ""
+
+
+def _lparam_for_vk(vk: int, keyup: bool) -> int:
+    scan_ex = 0
+    scan = 0
+    extended = False
+    if os.name == "nt" and _USER32 is not None:
+        try:
+            scan_ex = int(_USER32.MapVirtualKeyW(int(vk), _MAPVK_VK_TO_VSC_EX))
+        except Exception:
+            scan_ex = 0
+        if scan_ex:
+            scan = int(scan_ex & 0xFF)
+            if (scan_ex & 0xFF00) in (0xE000, 0xE100):
+                extended = True
+        if scan <= 0:
+            try:
+                scan = int(_USER32.MapVirtualKeyW(int(vk), _MAPVK_VK_TO_VSC) & 0xFF)
+            except Exception:
+                scan = 0
+    lparam = 1 | ((int(scan) & 0xFF) << 16)
+    if extended or int(vk) in _SCANCODE_EXTENDED_KEYS:
+        lparam |= (1 << 24)
+    if keyup:
+        lparam |= (1 << 30) | (1 << 31)
+    return int(lparam)
+
+
+def _window_message_for_vk(vk: int, keyup: bool) -> int:
+    if int(vk) == _MODIFIER_KEYS["alt"]:
+        return _WM_SYSKEYUP if keyup else _WM_SYSKEYDOWN
+    return _WM_KEYUP if keyup else _WM_KEYDOWN
+
+
+def _post_window_event(hwnd, event: tuple[int, int, int]) -> tuple[bool, str]:
+    if os.name != "nt" or _USER32 is None:
+        return False, "Window-message keyboard path requires Windows."
+    vk, scan, flags = int(event[0]), int(event[1]), int(event[2])
+    keyup = bool(flags & _KEYEVENTF_KEYUP)
+    if flags & _KEYEVENTF_UNICODE:
+        if keyup:
+            return True, ""
+        codepoint = int(scan) if int(scan) > 0 else int(vk)
+        if codepoint <= 0:
+            return False, "Unicode event had no codepoint."
+        ctypes.set_last_error(0)
+        ok = int(_USER32.PostMessageW(hwnd, _WM_CHAR, int(codepoint), 1))
+        if ok:
+            return True, ""
+        err = int(ctypes.get_last_error() or 0)
+        if err:
+            return False, f"PostMessage(WM_CHAR) failed, winerr={err}."
+        return False, "PostMessage(WM_CHAR) failed."
+    if vk <= 0:
+        return False, "Window-message event missing VK code."
+    msg = _window_message_for_vk(vk, keyup)
+    lparam = _lparam_for_vk(vk, keyup)
+    ctypes.set_last_error(0)
+    ok = int(_USER32.PostMessageW(hwnd, int(msg), int(vk), int(lparam)))
+    if ok:
+        return True, ""
+    err = int(ctypes.get_last_error() or 0)
+    if err:
+        return False, f"PostMessage failed, winerr={err}."
+    return False, "PostMessage failed."
+
+
+def _post_window_event_stream(events: list[tuple[int, int, int]], *, key_hold_ms: int) -> tuple[bool, str]:
+    if os.name != "nt" or _USER32 is None:
+        return False, "Window-message keyboard path requires Windows."
+    hwnd = _USER32.GetForegroundWindow()
+    if not hwnd:
+        return False, "No foreground window for window-message keyboard path."
+    hold_ms = _coerce_key_hold_ms(key_hold_ms)
+    inter_seconds = max(0.0, float(_INTER_EVENT_MS) / 1000.0)
+    hold_seconds = max(0.0, float(hold_ms) / 1000.0)
+    for idx, event in enumerate(events):
+        ok, message = _post_window_event(hwnd, event)
+        if not ok:
+            return ok, message
+        if idx + 1 >= len(events):
+            continue
+        if _is_matching_keyup_event(event, events[idx + 1]) and hold_seconds > 0.0:
+            time.sleep(hold_seconds)
+        elif inter_seconds > 0.0:
+            time.sleep(inter_seconds)
+    return True, ""
+
+
+def _dispatch_key_action_window_message(text: str, *, key_hold_ms: int = _DEFAULT_KEY_HOLD_MS) -> tuple[bool, str]:
+    clean = str(text or "").strip()
+    if not clean:
+        return False, "Key is empty."
+    events, error = _build_hotkey_events(clean, injection_mode=_MODE_VK)
+    if events is None and "+" not in clean:
+        events, error = _build_text_events(clean, injection_mode=_MODE_VK)
+    if events is None:
+        return False, error or "Invalid key action."
+    return _post_window_event_stream(events, key_hold_ms=key_hold_ms)
+
+
+def _dispatch_key_action(
+    text: str,
+    *,
+    injection_mode: str = _MODE_VK,
+    key_hold_ms: int = _DEFAULT_KEY_HOLD_MS,
+) -> tuple[bool, str]:
     clean = str(text or "").strip()
     if not clean:
         return False, "Key is empty."
 
-    events, error = _build_hotkey_events(clean)
+    mode = _normalize_injection_mode(injection_mode)
+    if mode == _MODE_HYBRID:
+        ok_si, msg_si = _dispatch_key_action(clean, injection_mode=_MODE_SCANCODE, key_hold_ms=key_hold_ms)
+        ok_wm, msg_wm = _dispatch_key_action_window_message(clean, key_hold_ms=key_hold_ms)
+        if ok_si or ok_wm:
+            return True, ""
+        return False, f"Hybrid path failed. SendInput: {msg_si} | WindowMsg: {msg_wm}"
+    events, error = _build_hotkey_events(clean, injection_mode=mode)
     if events is None and "+" not in clean:
-        events, error = _build_text_events(clean)
+        events, error = _build_text_events(clean, injection_mode=mode)
     if events is None:
         return False, error or "Invalid key action."
+    if _coerce_key_hold_ms(key_hold_ms) > 0:
+        return _send_input_event_stream(events, key_hold_ms=key_hold_ms)
     return _send_input_events(events)
 
 
@@ -554,6 +812,8 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
 
         self._steps = _read_sequence(node_item)
         self._lead_in_ms = _read_lead_in_ms(node_item)
+        self._key_hold_ms = _read_key_hold_ms(node_item)
+        self._injection_mode = _read_injection_mode(node_item)
 
         self._running = False
         self._run_thread: threading.Thread | None = None
@@ -570,6 +830,8 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
             "QPushButton:disabled{background:#1f2937;color:#6b7280;}"
             "QTableWidget{background:#0b1016;color:#e2e8f0;gridline-color:#2b3440;border:1px solid #334155;}"
             "QHeaderView::section{background:#111827;color:#cbd5e1;padding:4px;border:1px solid #334155;}"
+            "QComboBox{background:#111827;color:#e2e8f0;border:1px solid #334155;border-radius:4px;padding:2px 6px;}"
+            "QComboBox QAbstractItemView{background:#0f1216;color:#e2e8f0;selection-background-color:#1d4ed8;}"
             "QSpinBox{background:#111827;color:#e2e8f0;border:1px solid #334155;border-radius:4px;padding:2px 6px;}"
         )
 
@@ -603,6 +865,30 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
         self._lead_in_spin.valueChanged.connect(self._on_lead_in_changed)
         button_row.addWidget(self._lead_in_spin, 0)
 
+        self._key_hold_label = QtWidgets.QLabel("Key Hold")
+        self._key_hold_label.setStyleSheet("QLabel{color:#94a3b8;font-weight:600;}")
+        button_row.addWidget(self._key_hold_label, 0)
+
+        self._key_hold_spin = QtWidgets.QSpinBox()
+        self._key_hold_spin.setRange(0, _MAX_KEY_HOLD_MS)
+        self._key_hold_spin.setSingleStep(5)
+        self._key_hold_spin.setSuffix(" ms")
+        self._key_hold_spin.setValue(int(self._key_hold_ms))
+        self._key_hold_spin.valueChanged.connect(self._on_key_hold_changed)
+        button_row.addWidget(self._key_hold_spin, 0)
+
+        self._mode_label = QtWidgets.QLabel("Input Mode")
+        self._mode_label.setStyleSheet("QLabel{color:#94a3b8;font-weight:600;}")
+        button_row.addWidget(self._mode_label, 0)
+
+        self._mode_combo = QtWidgets.QComboBox()
+        self._mode_combo.addItem("Standard", _MODE_VK)
+        self._mode_combo.addItem("Game (Scan Code)", _MODE_SCANCODE)
+        self._mode_combo.addItem("Game (Hybrid)", _MODE_HYBRID)
+        self._mode_combo.currentIndexChanged.connect(self._on_injection_mode_changed)
+        self._mode_combo.setMinimumWidth(150)
+        button_row.addWidget(self._mode_combo, 0)
+
         self._run_btn = QtWidgets.QPushButton("Run Sequence")
         self._run_btn.clicked.connect(self._on_run_clicked)
         button_row.addWidget(self._run_btn, 0)
@@ -632,6 +918,10 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
         self._rebuild_table()
         self._set_status("Click action cells to set keys. Click delay cells to set timing.")
         self._set_running(False)
+        for idx in range(self._mode_combo.count()):
+            if str(self._mode_combo.itemData(idx) or "") == self._injection_mode:
+                self._mode_combo.setCurrentIndex(idx)
+                break
 
         QtCore.QTimer.singleShot(0, self._ensure_scene_connections)
         QtCore.QTimer.singleShot(0, self._sync_from_model)
@@ -678,6 +968,8 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
         try:
             latest_steps = _read_sequence(self._node_item)
             latest_lead = _read_lead_in_ms(self._node_item)
+            latest_key_hold = _read_key_hold_ms(self._node_item)
+            latest_mode = _read_injection_mode(self._node_item)
             if latest_steps != self._steps:
                 self._steps = latest_steps
                 self._rebuild_table()
@@ -686,6 +978,19 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
                 self._lead_in_spin.blockSignals(True)
                 self._lead_in_spin.setValue(int(self._lead_in_ms))
                 self._lead_in_spin.blockSignals(False)
+            if latest_key_hold != self._key_hold_ms:
+                self._key_hold_ms = latest_key_hold
+                self._key_hold_spin.blockSignals(True)
+                self._key_hold_spin.setValue(int(self._key_hold_ms))
+                self._key_hold_spin.blockSignals(False)
+            if latest_mode != self._injection_mode:
+                self._injection_mode = latest_mode
+                self._mode_combo.blockSignals(True)
+                for idx in range(self._mode_combo.count()):
+                    if str(self._mode_combo.itemData(idx) or "") == self._injection_mode:
+                        self._mode_combo.setCurrentIndex(idx)
+                        break
+                self._mode_combo.blockSignals(False)
         finally:
             self._syncing_ui = False
 
@@ -699,6 +1004,8 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
         self._add_btn.setEnabled(not self._running)
         self._remove_btn.setEnabled(not self._running)
         self._lead_in_spin.setEnabled(not self._running)
+        self._key_hold_spin.setEnabled(not self._running)
+        self._mode_combo.setEnabled(not self._running)
         self._table.setEnabled(not self._running)
 
     def _persist_steps(self, notify_scene: bool = True):
@@ -745,6 +1052,17 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
         if self._syncing_ui or self._running:
             return
         self._lead_in_ms = _write_lead_in_ms(self._node_item, int(value), notify_scene=True)
+
+    def _on_key_hold_changed(self, value: int):
+        if self._syncing_ui or self._running:
+            return
+        self._key_hold_ms = _write_key_hold_ms(self._node_item, int(value), notify_scene=True)
+
+    def _on_injection_mode_changed(self, _index: int):
+        if self._syncing_ui or self._running:
+            return
+        mode = str(self._mode_combo.currentData() or _MODE_VK)
+        self._injection_mode = _write_injection_mode(self._node_item, mode, notify_scene=True)
 
     def _rebuild_table(self):
         steps = list(self._steps or [])
@@ -877,10 +1195,12 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
 
         worker_steps = json.loads(json.dumps(runnable))
         lead_in_ms = int(self._lead_in_ms)
+        key_hold_ms = int(self._key_hold_ms)
+        injection_mode = str(self._injection_mode or _MODE_VK)
 
         thread = threading.Thread(
             target=self._playback_worker,
-            args=(worker_steps, lead_in_ms),
+            args=(worker_steps, lead_in_ms, key_hold_ms, injection_mode),
             daemon=True,
         )
         self._run_thread = thread
@@ -910,10 +1230,18 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
             if self._stop_event.wait(wait_time):
                 return False
 
-    def _playback_worker(self, steps: list[dict[str, object]], lead_in_ms: int):
+    def _playback_worker(
+        self,
+        steps: list[dict[str, object]],
+        lead_in_ms: int,
+        key_hold_ms: int,
+        injection_mode: str,
+    ):
         if os.name != "nt":
             self._signals.finished.emit(False, "Keyboard playback is currently available on Windows only.")
             return
+        mode = _normalize_injection_mode(injection_mode)
+        hold_ms = _coerce_key_hold_ms(key_hold_ms)
         if lead_in_ms > 0:
             self._signals.status.emit(
                 f"Lead-in {int(lead_in_ms)} ms. Switch focus to the target app now."
@@ -929,14 +1257,22 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
                 return
             action_name = str(step.get("action") or "").strip() or f"Action {idx + 1}"
             key_text = str(step.get("key") or "").strip()
-            ok, message = _dispatch_key_action(key_text)
+            ok, message = _dispatch_key_action(key_text, injection_mode=mode, key_hold_ms=hold_ms)
             if not ok:
                 self._signals.finished.emit(
                     False,
                     f"Action {idx + 1} '{action_name}' failed: {message}",
                 )
                 return
-            self._signals.status.emit(f"Sent {idx + 1}/{action_count}: {action_name} [{key_text}]")
+            if mode == _MODE_SCANCODE:
+                mode_label = "ScanCode"
+            elif mode == _MODE_HYBRID:
+                mode_label = "Hybrid"
+            else:
+                mode_label = "Standard"
+            self._signals.status.emit(
+                f"Sent {idx + 1}/{action_count}: {action_name} [{key_text}] ({mode_label}, hold={hold_ms}ms)"
+            )
             if idx < action_count - 1:
                 delay_ms = _coerce_delay_ms(step.get("delay_ms", _DEFAULT_DELAY_MS))
                 if delay_ms > 0 and not self._sleep_with_cancel(delay_ms):
@@ -960,9 +1296,11 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
 def build_ports(node_item) -> None:
     _ensure_param(node_item, _SEQUENCE_PARAM, json.dumps(_default_sequence(), separators=(",", ":")))
     _ensure_param(node_item, _LEAD_IN_PARAM, str(_DEFAULT_LEAD_IN_MS))
+    _ensure_param(node_item, _KEY_HOLD_PARAM, str(_DEFAULT_KEY_HOLD_MS))
+    _ensure_param(node_item, _INJECTION_MODE_PARAM, _MODE_VK)
     _ensure_hidden_params(
         getattr(node_item, "model", None),
-        [_SEQUENCE_PARAM, _LEAD_IN_PARAM],
+        [_SEQUENCE_PARAM, _LEAD_IN_PARAM, _KEY_HOLD_PARAM, _INJECTION_MODE_PARAM],
     )
 
 

@@ -37,6 +37,7 @@ _UV_UNWRAP_ICON = None
 _TRANSFORMS_ICON = None
 _GANTT_ICON = None
 _KEYBOARD_SEQUENCE_ICON = None
+_QUBIT_DECK_CONTROLLER_ICON = None
 _FX_NODE_ICON = None
 _CAMERA_NODE_ICON = None
 _VOLUME_SPLIT_ICON = None
@@ -314,6 +315,23 @@ def _keyboard_sequence_icon():
         return _KEYBOARD_SEQUENCE_ICON
     _KEYBOARD_SEQUENCE_ICON = _load_pm("keyframe_Icon.png") or _load_pm("CalendarToday_Icon.png")
     return _KEYBOARD_SEQUENCE_ICON
+
+
+def _qubit_deck_controller_icon():
+    global _QUBIT_DECK_CONTROLLER_ICON
+    if _QUBIT_DECK_CONTROLLER_ICON is not None:
+        return _QUBIT_DECK_CONTROLLER_ICON
+    try:
+        icon_path = Path(__file__).resolve().parents[2] / "nodes" / "qubit_deck_controller" / "QBeam__API_Icon.ico"
+        if icon_path.is_file():
+            pm = QtGui.QPixmap(str(icon_path))
+            if not pm.isNull():
+                _QUBIT_DECK_CONTROLLER_ICON = pm
+                return _QUBIT_DECK_CONTROLLER_ICON
+    except Exception:
+        pass
+    _QUBIT_DECK_CONTROLLER_ICON = _load_pm("debug_002_Icon_s.png") or _load_pm("Server_Icon.png")
+    return _QUBIT_DECK_CONTROLLER_ICON
 
 
 def _fx_node_icon():

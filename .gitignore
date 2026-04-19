@@ -26,6 +26,7 @@ __pycache__/
 /nodes/librarian/launch.log
 /nodes/librarian/librarian_crash.log
 /nodes/librarian/response_text.txt
+/nodes/qubit_deck_controller/qdeck_debugger_child.log
 
 # Script workspace (local/scratch)
 /scripts/

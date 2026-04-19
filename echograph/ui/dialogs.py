@@ -304,6 +304,12 @@ def _kind_icon(kind: str) -> QtGui.QIcon:
         icon_pm = node_icons._gantt_icon() or node_icons._output_icon()
     elif key in ("keyboard_sequence", "keyboard sequence", "keyboard_scheduler", "keyboard scheduler"):
         icon_pm = node_icons._keyboard_sequence_icon() or node_icons._output_icon()
+    elif key in ("qubit_deck_controller", "qubit deck controller", "qubitdeckcontroller"):
+        icon_pm = (
+            node_icons._qubit_deck_controller_icon()
+            or node_icons._librarian_icon()
+            or node_icons._output_icon()
+        )
     elif key == "export_fbx":
         icon_pm = node_icons._fbx_icon() or node_icons._output_icon()
     elif key == "output":
@@ -323,8 +329,8 @@ class CreateNodeDialog(QtWidgets.QDialog):
         super().__init__(parent)
         self.setWindowTitle("Create Node")
         self.setModal(True)
-        self.setMinimumSize(620, 500)
-        self.resize(640, 520)
+        self.setMinimumSize(660, 620)
+        self.resize(700, 630)
         self._existing = set(existing_names or [])
 
         form = QtWidgets.QGridLayout()
@@ -343,6 +349,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
         self._kinds = [
             "node","camera","import","fbx_import","instance","primitive","uv_unwrap","texture","texture_pro","texture_layer","material","split_volume","transforms","fx","scene","render","video_player","export_fbx","html_preview","python","switch","output","local_server",
             "gantt_chart","keyboard_sequence",
+            "qubit_deck_controller",
             "llm_prompt","chatbot","voice_actor","medigator_agent","librarian","note","append","image_collection","database"
         ]
         try:
@@ -350,6 +357,11 @@ class CreateNodeDialog(QtWidgets.QDialog):
         except ValueError:
             pass
         self._kinds.insert(0, "note")
+        try:
+            self._kinds.remove("qubit_deck_controller")
+        except ValueError:
+            pass
+        self._kinds.insert(1, "qubit_deck_controller")
         self.kind_edit.addItems(self._kinds)
         self.kind_edit.setEditText("note")
         kind_label = QtWidgets.QLabel("Node type:")
@@ -382,11 +394,13 @@ class CreateNodeDialog(QtWidgets.QDialog):
 
         nodes_box = QtWidgets.QGroupBox("Existing Nodes (click to create)")
         nodes_box.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Fixed)
-        qv = QtWidgets.QVBoxLayout(nodes_box); qv.setContentsMargins(4,4,4,4); qv.setSpacing(0)
+        qv = QtWidgets.QVBoxLayout(nodes_box)
+        qv.setContentsMargins(6, 6, 6, 10)  # keep a bottom gutter before the Parameters section
+        qv.setSpacing(4)
         quick_grid = QtWidgets.QGridLayout()
         quick_grid.setContentsMargins(0, 0, 0, 0)
         quick_grid.setHorizontalSpacing(3)
-        quick_grid.setVerticalSpacing(3)
+        quick_grid.setVerticalSpacing(4)
         quick_cols = 4
         for idx, kind in enumerate(self._kinds):
             row, col = divmod(idx, quick_cols)
@@ -421,7 +435,13 @@ class CreateNodeDialog(QtWidgets.QDialog):
         for col in range(quick_cols):
             quick_grid.setColumnStretch(col, 1)
         qv.addLayout(quick_grid)
-        nodes_box.setFixedHeight(nodes_box.sizeHint().height())
+        qv.addSpacing(4)
+        quick_rows = max(1, (len(self._kinds) + quick_cols - 1) // quick_cols)
+        button_row_h = 30
+        grid_h = (quick_rows * button_row_h) + ((quick_rows - 1) * quick_grid.verticalSpacing())
+        group_extra_h = 50  # title + frame + internal gutters
+        nodes_box_min_h = grid_h + group_extra_h
+        nodes_box.setFixedHeight(max(nodes_box.sizeHint().height() + 14, nodes_box_min_h))
 
         param_box = QtWidgets.QGroupBox("Parameters (optional)")
         param_box.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Fixed)
@@ -461,13 +481,14 @@ class CreateNodeDialog(QtWidgets.QDialog):
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
-        layout.setSpacing(0)
+        layout.setSpacing(8)
         layout.addLayout(form)
         layout.addWidget(self._llm_row)
-        layout.addSpacing(4)
+        layout.addSpacing(8)
         layout.addWidget(nodes_box)
-        layout.addSpacing(4)
+        layout.addSpacing(12)
         layout.addWidget(param_box)
+        layout.addSpacing(6)
         layout.addWidget(code_box)
         layout.addWidget(bb)
         layout.setAlignment(QtCore.Qt.AlignTop)

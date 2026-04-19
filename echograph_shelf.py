@@ -1311,6 +1311,25 @@ class GraphScene(QtWidgets.QGraphicsScene):
                     node.params.append({"name": pname, "value": default})
                     names.add(pname)
 
+        if (data["kind"] or "").lower() in (
+            "qubit_deck_controller",
+            "qubit deck controller",
+            "qubitdeckcontroller",
+        ):
+            ensure_params = [
+                ("api_base", "http://127.0.0.1:8765"),
+                ("button", ""),
+                ("button_name", ""),
+                ("button_slot", ""),
+                ("action", "invoke"),
+            ]
+            names = {(p.get("name") or "").strip().lower() for p in (node.params or [])}
+            for pname, default in ensure_params:
+                if pname not in names:
+                    node.params = list(node.params or [])
+                    node.params.append({"name": pname, "value": default})
+                    names.add(pname)
+
         if (data["kind"] or "").lower() in ("import", "html_preview"):
             names = {(p.get("name") or "").strip().lower() for p in (node.params or [])}
             if "path" not in names:

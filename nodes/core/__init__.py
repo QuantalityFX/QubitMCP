@@ -88,6 +88,7 @@ def register_defaults() -> None:
     register("database",  stripe_color="#16a34a")
     # librarian plugins can override this later
     register("librarian", stripe_color="#74d603")
+    register("qubit_deck_controller", stripe_color="#0f766e")
 
     # Auto-register optional GPT prompt node so it's available even if loader plugins fail later
     try:
