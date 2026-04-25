@@ -34,12 +34,24 @@ from echograph.rigging.fbx_stage4_animation import (
     FBXAnimationIngestError,
     ingest_fbx_animation_data,
 )
+from echograph.rigging.bvh_ingest import (
+    BVHIngestError,
+    ingest_bvh_animation_data,
+)
 from echograph.rigging.fbx_stage5_evaluator import evaluate_rig_at_time
 from nodes.core import Spec
 from nodes.util_graph import param_change_relevant as _param_change_relevant
 
 ROLE_PORTS: Tuple[str, str, str] = ("rest_geometry", "capture_pose", "animated_pose")
 FBX_KIND_ALIASES: Tuple[str, str, str] = ("fbx_import", "fbx import", "fbximport")
+MOCAP_KIND_ALIASES: Tuple[str, ...] = (
+    "mocap_import",
+    "mocap import",
+    "mocapimport",
+    "bvh_import",
+    "bvh import",
+    "bvhimport",
+)
 FBX_REQUIRED_RUNTIME_FILES: Tuple[str, str, str] = ("fbx.pyd", "FbxCommon.py", "libfbxsdk.dll")
 FBX_WINDOWS_INSTALLER_URL = (
     "https://damassets.autodesk.net/content/dam/autodesk/www/files/"
@@ -1190,6 +1202,16 @@ def _source_path_from_item(src_item, role: str) -> Tuple[str, str]:
             return "", f"{role}: source node '{name}' has empty path."
         return path, ""
 
+    if kind in MOCAP_KIND_ALIASES:
+        path = (
+            str(getattr(model, "_mocap_resolved_path", "") or "").strip()
+            or _param_value(model, "resolved_path")
+            or _param_value(model, "path")
+        )
+        if not path:
+            return "", f"{role}: upstream MocapImport node '{name}' has no resolved source."
+        return path, ""
+
     if kind in FBX_KIND_ALIASES:
         path = (
             str(getattr(model, f"_fbx_resolved_{role}", "") or "").strip()
@@ -1209,8 +1231,10 @@ def _validate_fbx_path(role: str, raw_path: str, base_dir: Path | None) -> Tuple
     path = _resolve_existing_path(raw_path, base_dir)
     if path is None:
         return "", f"{role}: file does not exist: {raw_path}"
-    if path.suffix.lower() != ".fbx":
-        return "", f"{role}: file is not .fbx: {path}"
+    allowed_exts = {".fbx", ".bvh"} if role == "animated_pose" else {".fbx"}
+    if path.suffix.lower() not in allowed_exts:
+        allowed_text = " or ".join(sorted(allowed_exts))
+        return "", f"{role}: file is not {allowed_text}: {path}"
     return str(path), ""
 
 
@@ -1252,6 +1276,13 @@ def _format_animation_ingest_failure(role: str, exc: Exception) -> str:
             f"{message} (pyassimp/assimp parser limitation for this FBX file)."
         )
     return f"{role}: animation ingest failed: {message}"
+
+
+def _ingest_animation_source(path_value: str, *, skeleton):
+    suffix = Path(str(path_value or "")).suffix.lower()
+    if suffix == ".bvh":
+        return ingest_bvh_animation_data(path_value, skeleton=skeleton)
+    return ingest_fbx_animation_data(path_value, skeleton=skeleton)
 
 
 def _validate_bind_sources_stage3(
@@ -1387,8 +1418,8 @@ def _validate_animation_sources_stage4(
 
     def _ingest_animation(path_value: str, role: str):
         try:
-            result = ingest_fbx_animation_data(path_value, skeleton=skeleton)
-        except FBXAnimationIngestError as exc:
+            result = _ingest_animation_source(path_value, skeleton=skeleton)
+        except (FBXAnimationIngestError, BVHIngestError) as exc:
             if _is_backend_unavailable(exc) or _is_backend_parser_limitation(exc):
                 warnings.append(
                     "stage4 animation ingest skipped: "

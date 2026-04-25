@@ -43,6 +43,7 @@ _CAMERA_NODE_ICON = None
 _VOLUME_SPLIT_ICON = None
 _VOICE_ACTOR_ICON = None
 _MEDIGATOR_ICON = None
+_GENX_ICON = None
 
 
 def _load_pm(rel_icon_name: str):
@@ -119,6 +120,14 @@ def _fbx_icon():
         return _FBX_ICON
     _FBX_ICON = _load_pm("FBX_Icon.png")
     return _FBX_ICON
+
+
+def _genx_icon():
+    global _GENX_ICON
+    if _GENX_ICON is not None:
+        return _GENX_ICON
+    _GENX_ICON = _load_pm("Gen-X_Icon_s.png")
+    return _GENX_ICON
 
 
 def _glb_icon():

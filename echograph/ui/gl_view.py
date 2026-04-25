@@ -4386,7 +4386,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             parent,
             "Select Model",
             start_dir,
-            "3D Models (*.obj *.gltf *.glb *.fbx);;All Files (*.*)",
+            "3D Models (*.obj *.gltf *.glb *.fbx *.bvh);;All Files (*.*)",
         )
         if not path:
             return
@@ -4421,7 +4421,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             parent,
             "Select Model",
             start_dir,
-            "3D Models (*.obj *.gltf *.glb *.fbx);;All Files (*.*)",
+            "3D Models (*.obj *.gltf *.glb *.fbx *.bvh);;All Files (*.*)",
         )
         if not path:
             return

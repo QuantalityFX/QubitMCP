@@ -316,6 +316,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     _fbx_import.register()
             except Exception:
                 pass
+        # Ensure Mocap Import spec is registered even if the loader was skipped.
+        if (self.model.kind or "").strip().lower() in ("mocap_import", "mocap import", "mocapimport", "bvh_import", "bvh import", "bvhimport"):
+            try:
+                from nodes import mocap_import as _mocap_import  # type: ignore
+                if hasattr(_mocap_import, "register"):
+                    _mocap_import.register()
+            except Exception:
+                pass
         # Ensure Render spec is registered even if the loader was skipped.
         if (self.model.kind or "").strip().lower() in ("render", "render_sequence", "render node"):
             try:
@@ -2711,7 +2719,16 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         and pname_key in ("rest_geometry", "capture_pose", "animated_pose")
                         and hasattr(self, "_browse_param_file")
                     )
-                    attach_file_browse = attach_import_browse or attach_fbx_import_browse
+                    attach_mocap_import_browse = (
+                        kind in ("mocap_import", "mocap import", "mocapimport", "bvh_import", "bvh import", "bvhimport")
+                        and pname_key == "path"
+                        and hasattr(self, "_browse_param_file")
+                    )
+                    attach_file_browse = (
+                        attach_import_browse
+                        or attach_fbx_import_browse
+                        or attach_mocap_import_browse
+                    )
                     lab_holder.addStretch(1)
                     lay.addLayout(lab_holder)
 
@@ -2759,6 +2776,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
                             browse_btn.clicked.connect(
                                 lambda _=False: self._browse_import_file(self._param_value("path"))
                             )
+                        elif attach_mocap_import_browse:
+                            browse_btn.clicked.connect(
+                                lambda _=False: self._browse_param_file(
+                                    "path",
+                                    self._param_value("path"),
+                                    file_filter="BVH Motion (*.bvh);;All Files (*.*)",
+                                    dialog_title="Select BVH Mocap File",
+                                )
+                            )
                         else:
                             role_name = str(pname_key)
                             browse_btn.clicked.connect(
@@ -2767,7 +2793,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                                     self._param_value(role),
                                     file_filter=(
                                         "FBX Files (*.fbx);;"
-                                        "3D Models (*.fbx *.obj *.gltf *.glb *.ply);;"
+                                        "3D Models (*.fbx *.bvh *.obj *.gltf *.glb *.ply);;"
                                         "All Files (*.*)"
                                     ),
                                     dialog_title=f"Select {role}",
@@ -3050,6 +3076,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
             return node_icons._obj_icon() or node_icons._import_icon()
         if ext == ".fbx":
             return node_icons._fbx_icon() or node_icons._import_icon()
+        if ext == ".bvh":
+            return node_icons._genx_icon() or node_icons._import_icon()
         if ext in (".glb", ".glbf", ".gltf"):
             return node_icons._glb_icon() or node_icons._import_icon()
         if ext == ".ply":
@@ -3068,7 +3096,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         self._import_icon_pm = self._import_icon_for_ext(ext)
 
     def _collect_scene_assets(self) -> list[dict]:
-        supported = {".fbx", ".obj", ".gltf", ".glb", ".ply", ".stl", ".off", ".om"}
+        supported = {".fbx", ".bvh", ".obj", ".gltf", ".glb", ".ply", ".stl", ".off", ".om"}
         def _scene_log(msg: str) -> None:
             enabled = True
             if not enabled:
@@ -5372,7 +5400,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             _top_level_parent_for_dialog(),
             "Select File",
             start,
-            "3D Models (*.fbx *.obj *.gltf *.glb *.ply);;"
+            "3D Models (*.fbx *.bvh *.obj *.gltf *.glb *.ply);;"
             "Documents (*.html *.htm *.txt *.md *.json *.py *.pdf);;"
             "All Files (*.*)",
         )
@@ -5926,6 +5954,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "fbx_import",
                 "fbx import",
                 "fbximport",
+                "mocap_import",
+                "mocap import",
+                "mocapimport",
+                "bvh_import",
+                "bvh import",
+                "bvhimport",
                 "output",
                 "python",
                 "switch",
@@ -6117,6 +6151,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 icon_pm = getattr(self, "_import_icon_pm", None) or node_icons._import_icon()
             elif kind_lower in ("fbx_import", "fbx import", "fbximport"):
                 icon_pm = node_icons._fbx_icon() or node_icons._import_icon()
+            elif kind_lower in ("mocap_import", "mocap import", "mocapimport", "bvh_import", "bvh import", "bvhimport"):
+                icon_pm = node_icons._genx_icon() or node_icons._import_icon()
             elif kind_lower in ("html_preview", "html preview", "htmlpreview"):
                 icon_pm = node_icons._html_preview_icon() or node_icons._output_icon()
             elif kind_lower in ("image_collection", "imagecollection"):

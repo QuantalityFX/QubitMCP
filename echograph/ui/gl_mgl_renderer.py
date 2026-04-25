@@ -55,6 +55,7 @@ from .gl_types import MeshArrays, SubMeshData
 from echograph.material_debug import material_debug_log as _material_debug_log
 from echograph.rigging.fbx_stage3_ingest import ingest_fbx_bind_data
 from echograph.rigging.fbx_stage4_animation import ingest_fbx_animation_data
+from echograph.rigging.bvh_ingest import ingest_bvh_animation_data
 from echograph.rigging.fbx_stage5_evaluator import evaluate_rig_at_time
 from echograph.rigging.fbx_stage6_debug import evaluate_skeleton_line_points
 from echograph.rigging.fbx_stage7_timeline import (
@@ -396,26 +397,41 @@ class MGLRendererMixin:
 
         context = None
         try:
-            bind_result = ingest_fbx_bind_data(path_obj)
-            skeleton = getattr(bind_result, "skeleton", None)
-            if skeleton is not None:
-                meshes = list(getattr(bind_result, "meshes", []) or [])
-                clip = None
-                try:
-                    animation_result = ingest_fbx_animation_data(path_obj, skeleton=skeleton)
-                    clips = list(getattr(animation_result, "clips", []) or [])
-                    if clips:
-                        clip = clips[0]
-                except Exception:
-                    clip = None
+            if path_obj.suffix.lower() == ".bvh":
+                animation_result = ingest_bvh_animation_data(path_obj)
+                skeleton = getattr(animation_result, "skeleton", None)
+                clips = list(getattr(animation_result, "clips", []) or [])
                 context = {
                     "skeleton": skeleton,
-                    "clip": clip,
-                    "meshes": meshes,
+                    "clip": clips[0] if clips else None,
+                    "meshes": [],
                     "loop": True,
+                    "mesh_skinning_enabled": False,
                     "show_capture_joints": False,
-                    "show_animated_joints": False,
+                    "show_animated_joints": True,
+                    "source_format": "bvh",
                 }
+            else:
+                bind_result = ingest_fbx_bind_data(path_obj)
+                skeleton = getattr(bind_result, "skeleton", None)
+                if skeleton is not None:
+                    meshes = list(getattr(bind_result, "meshes", []) or [])
+                    clip = None
+                    try:
+                        animation_result = ingest_fbx_animation_data(path_obj, skeleton=skeleton)
+                        clips = list(getattr(animation_result, "clips", []) or [])
+                        if clips:
+                            clip = clips[0]
+                    except Exception:
+                        clip = None
+                    context = {
+                        "skeleton": skeleton,
+                        "clip": clip,
+                        "meshes": meshes,
+                        "loop": True,
+                        "show_capture_joints": False,
+                        "show_animated_joints": False,
+                    }
         except Exception as exc:
             context = None
             self._mgl_fbx_joints_log(
@@ -456,7 +472,7 @@ class MGLRendererMixin:
                 if isinstance(context, dict):
                     return context
                 path_text = str(payload.get("path") or "").strip()
-                if path_text.lower().endswith(".fbx"):
+                if path_text.lower().endswith((".fbx", ".bvh")):
                     try:
                         context = self._mgl_fbx_rig_context_for_path(Path(path_text))
                     except Exception:
@@ -2533,7 +2549,7 @@ class MGLRendererMixin:
             self,
             "Open Model",
             start_dir,
-            "Mesh files (*.obj *.gltf *.glb *.fbx *.stl *.ply *.off *.om)",
+            "Mesh files (*.obj *.gltf *.glb *.fbx *.bvh *.stl *.ply *.off *.om)",
         )
         if not path:
             return
@@ -9830,6 +9846,83 @@ class MGLRendererMixin:
         self._mgl_texture_path = ""
         self._mgl_texture_paths = []
         self._mgl_texture_override = False
+        if path.suffix.lower() == ".bvh":
+            try:
+                fbx_rig_context = self._mgl_fbx_rig_context_for_path(path)
+            except Exception as exc:
+                self._mgl_error = f"BVH load failed: {exc}"
+                return
+            if not isinstance(fbx_rig_context, dict) or fbx_rig_context.get("skeleton") is None:
+                self._mgl_error = "BVH load failed: skeleton unavailable"
+                return
+            try:
+                self.makeCurrent()
+                self._mgl_error = ""
+                scene = getattr(self, "_mgl_scene", None)
+                if scene is not None:
+                    self._mgl_clear_scene_models()
+                    self._mgl_submeshes = []
+                    self._mgl_vao = None
+                    self._mgl_mesh_vbos = []
+                    self._mgl_index_buffer = None
+
+                    capture_debug_enabled, animated_debug_enabled = self._mgl_fbx_joint_debug_modes(
+                        fbx_rig_context
+                    )
+                    if not capture_debug_enabled and not animated_debug_enabled:
+                        animated_debug_enabled = True
+                    joint_overlays: List[MGLSceneItem] = []
+                    if capture_debug_enabled:
+                        capture_item = self._mgl_add_fbx_joint_overlay_item(
+                            path,
+                            True,
+                            pose_mode="capture",
+                            owner=None,
+                            path_key=str(path),
+                            rig_context=fbx_rig_context,
+                        )
+                        if capture_item is not None:
+                            capture_item.order = 16
+                            joint_overlays.append(capture_item)
+                    if animated_debug_enabled:
+                        animated_item = self._mgl_add_fbx_joint_overlay_item(
+                            path,
+                            True,
+                            pose_mode="animated",
+                            owner=None,
+                            path_key=str(path),
+                            rig_context=fbx_rig_context,
+                        )
+                        if animated_item is not None:
+                            animated_item.order = 16
+                            joint_overlays.append(animated_item)
+
+                    bounds_min = None
+                    bounds_max = None
+                    for overlay_item in joint_overlays:
+                        scene.add(overlay_item)
+                        try:
+                            payload = dict(getattr(overlay_item, "payload", None) or {})
+                            bmin = np.asarray(payload.get("bounds_min"), dtype="f4").reshape(-1)
+                            bmax = np.asarray(payload.get("bounds_max"), dtype="f4").reshape(-1)
+                            if bmin.size >= 3 and bmax.size >= 3:
+                                b0 = bmin[:3].astype("f4", copy=False)
+                                b1 = bmax[:3].astype("f4", copy=False)
+                                if bounds_min is None or bounds_max is None:
+                                    bounds_min, bounds_max = b0.copy(), b1.copy()
+                                else:
+                                    bounds_min = np.minimum(bounds_min, b0)
+                                    bounds_max = np.maximum(bounds_max, b1)
+                        except Exception:
+                            pass
+                    if bounds_min is not None and bounds_max is not None:
+                        self._mgl_init_arcball(np.array([bounds_min, bounds_max], dtype="f4"))
+                self._mgl_mesh_path = str(path)
+                self._mgl_mesh_vertex_count = 0
+                return
+            except Exception as exc:
+                self._mgl_error = f"BVH load failed: {exc}"
+                return
         mesh = None
         if openmesh is not None and path.suffix.lower() != ".fbx":
             try:
@@ -10545,7 +10638,7 @@ class MGLRendererMixin:
                 fbx_rig_context = asset.get("fbx_rig_context") if isinstance(asset, dict) else None
                 if (
                     not isinstance(fbx_rig_context, dict)
-                    and ext == ".fbx"
+                    and ext in {".fbx", ".bvh"}
                     and path is not None
                 ):
                     try:
@@ -10560,7 +10653,7 @@ class MGLRendererMixin:
                 )
                 model_visible = bool(visible) and (not bool(fbx_bind_joints_only))
                 contribute_mesh_bounds = not bool(fbx_bind_joints_only)
-                if ext == ".fbx":
+                if ext in {".fbx", ".bvh"}:
                     context = fbx_rig_context if isinstance(fbx_rig_context, dict) else {}
                     self._mgl_fbx_joints_log(
                         "scene_asset begin "
@@ -10661,6 +10754,84 @@ class MGLRendererMixin:
                             payload["fov"] = asset.get("fov")
                         camera_item.payload = payload
                         scene.add(camera_item)
+                    continue
+
+                if ext == ".bvh":
+                    context = fbx_rig_context if isinstance(fbx_rig_context, dict) else None
+                    if not isinstance(context, dict) or path is None:
+                        continue
+                    capture_debug_enabled, animated_debug_enabled = self._mgl_fbx_joint_debug_modes(context)
+                    if not capture_debug_enabled and not animated_debug_enabled:
+                        animated_debug_enabled = True
+                    joint_overlays: List[MGLSceneItem] = []
+                    if capture_debug_enabled:
+                        capture_item = self._mgl_add_fbx_joint_overlay_item(
+                            path,
+                            bool(visible),
+                            pose_mode="capture",
+                            owner=owner,
+                            path_key=path_key,
+                            rig_context=context,
+                        )
+                        if capture_item is not None:
+                            capture_item.order = 16
+                            joint_overlays.append(capture_item)
+                    if animated_debug_enabled:
+                        animated_item = self._mgl_add_fbx_joint_overlay_item(
+                            path,
+                            bool(visible),
+                            pose_mode="animated",
+                            owner=owner,
+                            path_key=path_key,
+                            rig_context=context,
+                        )
+                        if animated_item is not None:
+                            animated_item.order = 16
+                            joint_overlays.append(animated_item)
+
+                    joint_bounds_min = None
+                    joint_bounds_max = None
+                    for overlay_item in joint_overlays:
+                        scene.add(overlay_item)
+                        try:
+                            payload = dict(getattr(overlay_item, "payload", None) or {})
+                            bmin = np.asarray(payload.get("bounds_min"), dtype="f4").reshape(-1)
+                            bmax = np.asarray(payload.get("bounds_max"), dtype="f4").reshape(-1)
+                            if bmin.size >= 3 and bmax.size >= 3:
+                                b0 = bmin[:3].astype("f4", copy=False)
+                                b1 = bmax[:3].astype("f4", copy=False)
+                                if joint_bounds_min is None or joint_bounds_max is None:
+                                    joint_bounds_min, joint_bounds_max = b0.copy(), b1.copy()
+                                else:
+                                    joint_bounds_min = np.minimum(joint_bounds_min, b0)
+                                    joint_bounds_max = np.maximum(joint_bounds_max, b1)
+                        except Exception:
+                            pass
+                    if joint_bounds_min is not None and joint_bounds_max is not None:
+                        try:
+                            self._mgl_scene_bounds_by_owner[owner] = (
+                                joint_bounds_min.astype("f4"),
+                                joint_bounds_max.astype("f4"),
+                            )
+                            self._mgl_scene_mesh_bounds_by_owner[owner] = (
+                                joint_bounds_min.astype("f4"),
+                                joint_bounds_max.astype("f4"),
+                            )
+                        except Exception:
+                            pass
+                        bounds_min, bounds_max = _merge_bounds(
+                            bounds_min,
+                            bounds_max,
+                            joint_bounds_min,
+                            joint_bounds_max,
+                        )
+                        has_mesh_bounds = True
+                    self._mgl_fbx_joints_log(
+                        "scene_asset bvh_overlays "
+                        + f"owner={owner} path={path} count={int(len(joint_overlays))} "
+                        + f"capture={bool(capture_debug_enabled)} "
+                        + f"animated={bool(animated_debug_enabled)}"
+                    )
                     continue
 
                 if wire_only:

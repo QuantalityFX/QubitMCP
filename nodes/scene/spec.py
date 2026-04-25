@@ -17,10 +17,18 @@ from echograph.ui import actions
 from echograph.material_debug import material_debug_log as _material_debug_log
 import traceback
 
-SUPPORTED_EXTS = {".fbx", ".obj", ".gltf", ".glb", ".ply", ".stl", ".off", ".om"}
+SUPPORTED_EXTS = {".fbx", ".bvh", ".obj", ".gltf", ".glb", ".ply", ".stl", ".off", ".om"}
 _MATERIAL_KINDS = {"mnaterial", "material"}
 _TEXTURE_KINDS = {"texture", "texture_pro", "texture_layer"}
 _FBX_KIND_ALIASES = {"fbx_import", "fbx import", "fbximport"}
+_MOCAP_KIND_ALIASES = {
+    "mocap_import",
+    "mocap import",
+    "mocapimport",
+    "bvh_import",
+    "bvh import",
+    "bvhimport",
+}
 
 _EYE_ICON_CACHE = {}
 _FX_LOG_ENABLED = True
@@ -236,6 +244,95 @@ def _fbx_import_rig_context(model) -> Dict[str, Any] | None:
         "show_animated_joints": bool(show_animated_joints),
         "fbx_debug_log": bool(_fbx_debug_enabled(model)),
     }
+
+
+def _mocap_import_resolved_path(model) -> str:
+    if model is None:
+        return ""
+    for raw in (
+        getattr(model, "_mocap_resolved_path", None),
+        _param_value(model, "resolved_path"),
+        _param_value(model, "path"),
+    ):
+        text = str(raw or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _mocap_import_rig_context(model) -> Dict[str, Any] | None:
+    if model is None:
+        return None
+    path_text = _mocap_import_resolved_path(model)
+    if not path_text:
+        return None
+    try:
+        path_obj = Path(path_text)
+    except Exception:
+        return None
+    if path_obj.suffix.lower() != ".bvh":
+        return None
+    try:
+        stat_token = (str(path_obj.resolve()), int(path_obj.stat().st_mtime_ns), int(path_obj.stat().st_size))
+    except Exception:
+        try:
+            stat_token = (str(path_obj), 0, 0)
+        except Exception:
+            stat_token = ("", 0, 0)
+
+    cached = getattr(model, "_mocap_rig_context_cache", None)
+    if isinstance(cached, dict) and cached.get("token") == stat_token:
+        context = cached.get("context")
+        if isinstance(context, dict):
+            return context
+
+    animation_result = getattr(model, "_mocap_animation_result", None)
+    try:
+        existing_source = str(getattr(animation_result, "source_path", "") or "").strip()
+        if existing_source and os.path.normcase(os.path.normpath(existing_source)) != os.path.normcase(os.path.normpath(str(path_obj))):
+            animation_result = None
+    except Exception:
+        animation_result = None
+    if animation_result is None:
+        try:
+            from echograph.rigging.bvh_ingest import ingest_bvh_animation_data
+
+            animation_result = ingest_bvh_animation_data(path_obj)
+        except Exception:
+            return None
+        try:
+            setattr(model, "_mocap_animation_result", animation_result)
+        except Exception:
+            pass
+
+    skeleton = getattr(animation_result, "skeleton", None)
+    if skeleton is None:
+        return None
+    clip = None
+    try:
+        clips = list(getattr(animation_result, "clips", []) or [])
+    except Exception:
+        clips = []
+    if clips:
+        clip = clips[0]
+
+    context = {
+        "skeleton": skeleton,
+        "clip": clip,
+        "meshes": [],
+        "loop": True,
+        "mesh_skinning_enabled": False,
+        "skin_weight_debug": False,
+        "show_capture_joints": False,
+        "show_animated_joints": True,
+        "fbx_debug_log": bool(_fbx_debug_enabled(model)),
+        "source_format": "bvh",
+    }
+    try:
+        setattr(model, "_mocap_rig_context_cache", {"token": stat_token, "context": context})
+    except Exception:
+        pass
+    return context
 
 
 def _set_param_value(model, name: str, value: str) -> None:
@@ -1295,10 +1392,18 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
 
         path = _param_value(model, "path")
         fbx_rig_source_model = model if kind in _FBX_KIND_ALIASES else None
-        fbx_rig_context = _fbx_import_rig_context(model) if kind in _FBX_KIND_ALIASES else None
-        fbx_debug_on = _fbx_debug_enabled(model) if kind in _FBX_KIND_ALIASES else False
+        mocap_rig_source_model = model if kind in _MOCAP_KIND_ALIASES else None
+        if kind in _FBX_KIND_ALIASES:
+            fbx_rig_context = _fbx_import_rig_context(model)
+        elif kind in _MOCAP_KIND_ALIASES:
+            fbx_rig_context = _mocap_import_rig_context(model)
+        else:
+            fbx_rig_context = None
+        fbx_debug_on = _fbx_debug_enabled(model) if kind in (_FBX_KIND_ALIASES | _MOCAP_KIND_ALIASES) else False
         if kind in _FBX_KIND_ALIASES and not path:
             path = _fbx_import_resolved_rest_path(model)
+        if kind in _MOCAP_KIND_ALIASES and not path:
+            path = _mocap_import_resolved_path(model)
         if isinstance(material_asset, dict):
             try:
                 material_path = str(material_asset.get("path") or "").strip()
@@ -1485,6 +1590,12 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                 )
                 if fbx_rig_context is None:
                     fbx_rig_context = _fbx_import_rig_context(fbx_rig_source_model)
+            if (upstream_kind or "").strip().lower() in _MOCAP_KIND_ALIASES:
+                mocap_rig_source_model = (
+                    getattr(upstream_item, "model", None) if upstream_item is not None else None
+                )
+                if fbx_rig_context is None:
+                    fbx_rig_context = _mocap_import_rig_context(mocap_rig_source_model)
         elif kind == "wire":
             # Always resolve live source from the current graph so rewiring does not
             # depend on pressing the Wire node "View" button.
@@ -1523,10 +1634,16 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
 
         if fbx_rig_source_model is None and (owner_kind or "").strip().lower() in _FBX_KIND_ALIASES:
             fbx_rig_source_model = owner_model
+        if mocap_rig_source_model is None and (owner_kind or "").strip().lower() in _MOCAP_KIND_ALIASES:
+            mocap_rig_source_model = owner_model
         if fbx_rig_context is None and fbx_rig_source_model is not None:
             fbx_rig_context = _fbx_import_rig_context(fbx_rig_source_model)
+        if fbx_rig_context is None and mocap_rig_source_model is not None:
+            fbx_rig_context = _mocap_import_rig_context(mocap_rig_source_model)
         if fbx_rig_source_model is not None:
             fbx_debug_on = _fbx_debug_enabled(fbx_rig_source_model)
+        if mocap_rig_source_model is not None:
+            fbx_debug_on = _fbx_debug_enabled(mocap_rig_source_model)
 
         if not path:
             if kind in _MATERIAL_KINDS:
@@ -1719,7 +1836,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             entry["debug_log"] = True
         if isinstance(fbx_rig_context, dict):
             entry["fbx_rig_context"] = fbx_rig_context
-        if bool(fbx_debug_on) and (isinstance(fbx_rig_context, dict) or ext == ".fbx"):
+        if bool(fbx_debug_on) and (isinstance(fbx_rig_context, dict) or ext in {".fbx", ".bvh"}):
             entry["fbx_debug_log"] = True
         if xform_offset:
             entry["xform_offset"] = True

@@ -362,6 +362,17 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] FBX Import plugin import failed:", e)
 
+    # 13.8) Mocap Import
+    try:
+        from nodes import mocap_import
+        if hasattr(mocap_import, "register"):
+            mocap_import.register()
+            _safe_probe("mocap_import")
+        else:
+            print("[EchoGraph] Mocap Import module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Mocap Import plugin import failed:", e)
+
     # 14) Export FBX
     try:
         from nodes import export_fbx
