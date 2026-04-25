@@ -264,6 +264,8 @@ def _kind_icon(kind: str) -> QtGui.QIcon:
         icon_pm = node_icons._fbx_icon() or node_icons._import_icon()
     elif key in ("mocap_import", "mocap import", "mocapimport", "bvh_import", "bvh import", "bvhimport"):
         icon_pm = node_icons._genx_icon() or node_icons._import_icon()
+    elif key in ("anim_retarget", "anim retarget", "animretarget", "retarget"):
+        icon_pm = node_icons._anim_retarget_icon() or node_icons._transforms_icon() or node_icons._import_icon()
     elif key == "switch":
         icon_pm = node_icons._switch_icon()
     elif key == "chatbot":
@@ -349,7 +351,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
         self.kind_edit = QtWidgets.QComboBox()
         self.kind_edit.setEditable(True)
         self._kinds = [
-            "node","camera","import","fbx_import","mocap_import","instance","primitive","uv_unwrap","texture","texture_pro","texture_layer","material","split_volume","transforms","fx","scene","render","video_player","export_fbx","html_preview","python","switch","output","local_server",
+            "node","camera","import","fbx_import","mocap_import","anim_retarget","instance","primitive","uv_unwrap","texture","texture_pro","texture_layer","material","split_volume","transforms","fx","scene","render","video_player","export_fbx","html_preview","python","switch","output","local_server",
             "gantt_chart","keyboard_sequence",
             "qubit_deck_controller",
             "llm_prompt","chatbot","voice_actor","medigator_agent","librarian","note","append","image_collection","database"

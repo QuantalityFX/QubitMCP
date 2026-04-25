@@ -44,6 +44,7 @@ _VOLUME_SPLIT_ICON = None
 _VOICE_ACTOR_ICON = None
 _MEDIGATOR_ICON = None
 _GENX_ICON = None
+_ANIM_RETARGET_ICON = None
 
 
 def _load_pm(rel_icon_name: str):
@@ -128,6 +129,14 @@ def _genx_icon():
         return _GENX_ICON
     _GENX_ICON = _load_pm("Gen-X_Icon_s.png")
     return _GENX_ICON
+
+
+def _anim_retarget_icon():
+    global _ANIM_RETARGET_ICON
+    if _ANIM_RETARGET_ICON is not None:
+        return _ANIM_RETARGET_ICON
+    _ANIM_RETARGET_ICON = _load_pm("anim_retarget_Icon_s.png")
+    return _ANIM_RETARGET_ICON
 
 
 def _glb_icon():

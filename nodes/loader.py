@@ -373,6 +373,17 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Mocap Import plugin import failed:", e)
 
+    # 13.9) Anim Retarget
+    try:
+        from nodes import anim_retarget
+        if hasattr(anim_retarget, "register"):
+            anim_retarget.register()
+            _safe_probe("anim_retarget")
+        else:
+            print("[EchoGraph] Anim Retarget module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Anim Retarget plugin import failed:", e)
+
     # 14) Export FBX
     try:
         from nodes import export_fbx

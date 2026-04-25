@@ -324,6 +324,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     _mocap_import.register()
             except Exception:
                 pass
+        # Ensure Anim Retarget spec is registered even if the loader was skipped.
+        if (self.model.kind or "").strip().lower() in ("anim_retarget", "anim retarget", "animretarget", "retarget"):
+            try:
+                from nodes import anim_retarget as _anim_retarget  # type: ignore
+                if hasattr(_anim_retarget, "register"):
+                    _anim_retarget.register()
+            except Exception:
+                pass
         # Ensure Render spec is registered even if the loader was skipped.
         if (self.model.kind or "").strip().lower() in ("render", "render_sequence", "render node"):
             try:
@@ -5960,6 +5968,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "bvh_import",
                 "bvh import",
                 "bvhimport",
+                "anim_retarget",
+                "anim retarget",
+                "animretarget",
+                "retarget",
                 "output",
                 "python",
                 "switch",
@@ -6153,6 +6165,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 icon_pm = node_icons._fbx_icon() or node_icons._import_icon()
             elif kind_lower in ("mocap_import", "mocap import", "mocapimport", "bvh_import", "bvh import", "bvhimport"):
                 icon_pm = node_icons._genx_icon() or node_icons._import_icon()
+            elif kind_lower in ("anim_retarget", "anim retarget", "animretarget", "retarget"):
+                icon_pm = node_icons._anim_retarget_icon() or node_icons._transforms_icon() or node_icons._import_icon()
             elif kind_lower in ("html_preview", "html preview", "htmlpreview"):
                 icon_pm = node_icons._html_preview_icon() or node_icons._output_icon()
             elif kind_lower in ("image_collection", "imagecollection"):

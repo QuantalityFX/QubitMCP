@@ -80,6 +80,7 @@ def register_defaults() -> None:
     register("import",    stripe_color="#3b82f6")
     register("fbx_import", stripe_color="#2563eb")
     register("mocap_import", stripe_color="#7c3aed")
+    register("anim_retarget", stripe_color="#ec4899")
     register("html_preview", stripe_color="#f97316")
     register("image_collection", stripe_color="#22c55e")
     register("camera",    stripe_color="#f59e0b")
