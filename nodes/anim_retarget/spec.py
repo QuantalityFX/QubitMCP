@@ -2,17 +2,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import math
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 try:
-    from PySide6 import QtWidgets, QtGui
+    from PySide6 import QtWidgets, QtGui, QtCore
 except Exception:
     try:
-        from PySide2 import QtWidgets, QtGui  # type: ignore
+        from PySide2 import QtWidgets, QtGui, QtCore  # type: ignore
     except Exception:
         QtWidgets = None  # type: ignore[assignment]
         QtGui = None  # type: ignore[assignment]
+        QtCore = None  # type: ignore[assignment]
 
 from nodes.core import Spec
 from nodes.util_graph import param_change_relevant as _param_change_relevant
@@ -45,12 +48,72 @@ TARGET_KIND_ALIASES: Tuple[str, ...] = (
 VISIBLE_PORTS: Tuple[str, str] = ("source", "target")
 HIDDEN_PARAMS: Tuple[str, ...] = (
     "joint_map",
+    "joint_handle_scale",
+    "joint_curve_thickness",
+    "display_params_version",
     "root_source",
     "root_target",
     "scale_mode",
     "rotation_mode",
     "debug_log",
 )
+
+JOINT_HANDLE_SCALE_PARAM = "joint_handle_scale"
+JOINT_CURVE_THICKNESS_PARAM = "joint_curve_thickness"
+DISPLAY_PARAMS_VERSION_PARAM = "display_params_version"
+JOINT_HANDLE_SCALE_DEFAULT = 1.0
+JOINT_CURVE_THICKNESS_DEFAULT = 2.4
+JOINT_HANDLE_SCALE_MIN = 0.05
+JOINT_HANDLE_SCALE_MAX = 25.0
+JOINT_CURVE_THICKNESS_MIN = 0.5
+JOINT_CURVE_THICKNESS_MAX = 10.0
+
+
+def _repo_logs_dir() -> Path:
+    root = Path(__file__).resolve().parents[2]
+    out = root / "logs"
+    out.mkdir(parents=True, exist_ok=True)
+    return out
+
+
+def _retarget_debug_log(event: str, **fields) -> None:
+    try:
+        payload = {"ts": time.strftime("%Y-%m-%d %H:%M:%S"), "event": str(event)}
+        payload.update(fields)
+        with (_repo_logs_dir() / "anim_retarget_debug.log").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, sort_keys=True, default=str) + "\n")
+    except Exception:
+        pass
+
+
+def _points_summary(points, *, limit: int = 5) -> Dict[str, Any]:
+    rows: List[Tuple[float, float, float]] = []
+    for point in list(points or []):
+        try:
+            if len(point) < 3:
+                continue
+            rows.append((float(point[0]), float(point[1]), float(point[2])))
+        except Exception:
+            continue
+    if not rows:
+        return {"count": 0, "bounds_min": None, "bounds_max": None, "diag": 0.0, "first": []}
+    xs = [row[0] for row in rows]
+    ys = [row[1] for row in rows]
+    zs = [row[2] for row in rows]
+    bmin = (min(xs), min(ys), min(zs))
+    bmax = (max(xs), max(ys), max(zs))
+    diag = math.sqrt(
+        ((bmax[0] - bmin[0]) ** 2)
+        + ((bmax[1] - bmin[1]) ** 2)
+        + ((bmax[2] - bmin[2]) ** 2)
+    )
+    return {
+        "count": len(rows),
+        "bounds_min": [round(v, 6) for v in bmin],
+        "bounds_max": [round(v, 6) for v in bmax],
+        "diag": round(float(diag), 6),
+        "first": [[round(v, 6) for v in row] for row in rows[: max(0, int(limit))]],
+    }
 
 
 @dataclass
@@ -104,6 +167,28 @@ def _param_value(model, name: str) -> str:
         if (entry.get("name") or "").strip().lower() == key:
             return str(entry.get("value") or "").strip()
     return ""
+
+
+def _param_float(
+    model,
+    name: str,
+    default: float,
+    *,
+    minimum: float | None = None,
+    maximum: float | None = None,
+) -> float:
+    raw = _param_value(model, name)
+    try:
+        value = float(raw)
+    except Exception:
+        value = float(default)
+    if not math.isfinite(value):
+        value = float(default)
+    if minimum is not None:
+        value = max(float(minimum), value)
+    if maximum is not None:
+        value = min(float(maximum), value)
+    return float(value)
 
 
 def _ensure_param(node_item, name: str, default: str = "") -> None:
@@ -169,6 +254,22 @@ def _ensure_hidden_params(model, names) -> None:
     model.params = params
 
 
+def _ensure_display_params(node_item) -> None:
+    _ensure_param(node_item, JOINT_HANDLE_SCALE_PARAM, f"{JOINT_HANDLE_SCALE_DEFAULT:.2f}")
+    _ensure_param(node_item, JOINT_CURVE_THICKNESS_PARAM, f"{JOINT_CURVE_THICKNESS_DEFAULT:.1f}")
+    _ensure_param(node_item, DISPLAY_PARAMS_VERSION_PARAM, "")
+    model = getattr(node_item, "model", None)
+    if model is None:
+        return
+    version = _param_value(model, DISPLAY_PARAMS_VERSION_PARAM)
+    if version == "2":
+        return
+    raw_scale = _param_value(model, JOINT_HANDLE_SCALE_PARAM)
+    if raw_scale.strip() in {"", "0.45", "0.450", "0.4500"}:
+        _set_param_value(model, JOINT_HANDLE_SCALE_PARAM, f"{JOINT_HANDLE_SCALE_DEFAULT:.2f}")
+    _set_param_value(model, DISPLAY_PARAMS_VERSION_PARAM, "2")
+
+
 def _ensure_input(node_item, name: str) -> None:
     if hasattr(node_item, "ensure_input"):
         node_item.ensure_input(name)
@@ -224,6 +325,67 @@ def _joint_map_count(model) -> int:
     if not isinstance(payload, dict):
         return 0
     return sum(1 for key, value in payload.items() if str(key or "").strip() and str(value or "").strip())
+
+
+def _joint_map_payload(model) -> Dict[str, str]:
+    raw = _param_value(model, "joint_map")
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    clean: Dict[str, str] = {}
+    for key, value in payload.items():
+        source = str(key or "").strip()
+        target = str(value or "").strip()
+        if source and target:
+            clean[source] = target
+    return clean
+
+
+def set_joint_map_link(node_item, source_joint: str, target_joint: str, *, notify_scene: bool = True) -> Dict[str, str]:
+    model = getattr(node_item, "model", None)
+    if model is None:
+        return {}
+    source = str(source_joint or "").strip()
+    target = str(target_joint or "").strip()
+    if not source or not target:
+        return _joint_map_payload(model)
+
+    mapping = _joint_map_payload(model)
+    mapping[source] = target
+    encoded = json.dumps(mapping, sort_keys=True)
+
+    setter = getattr(node_item, "_set_param_value", None)
+    if callable(setter):
+        try:
+            setter("joint_map", encoded, rebuild=False, notify_scene=bool(notify_scene))
+        except TypeError:
+            try:
+                setter("joint_map", encoded)
+            except Exception:
+                _set_param_value(model, "joint_map", encoded)
+    else:
+        _set_param_value(model, "joint_map", encoded)
+        if notify_scene:
+            try:
+                scene = node_item.scene()
+            except Exception:
+                scene = None
+            if scene is not None and hasattr(scene, "paramChanged"):
+                try:
+                    scene.paramChanged.emit(getattr(model, "name", ""), list(getattr(model, "params", []) or []))
+                except Exception:
+                    pass
+
+    try:
+        setattr(model, "_retarget_joint_map", encoded)
+    except Exception:
+        pass
+    return mapping
 
 
 def _list_clips(animation_result) -> List[Any]:
@@ -429,6 +591,7 @@ def build_ports(node_item) -> None:
         _ensure_param(node_item, port, "")
         _ensure_input(node_item, port)
     _ensure_param(node_item, "joint_map", "{}")
+    _ensure_display_params(node_item)
     _ensure_param(node_item, "root_source", "")
     _ensure_param(node_item, "root_target", "")
     _ensure_param(node_item, "scale_mode", "auto")
@@ -568,6 +731,99 @@ def _skeleton_bind_line_points(skeleton) -> List[Tuple[float, float, float]]:
     return points
 
 
+def _skeleton_joint_positions(
+    skeleton,
+    *,
+    clip=None,
+    prefer_inverse_bind: bool = False,
+) -> List[Tuple[float, float, float]]:
+    def _diag(rows: List[Tuple[float, float, float]]) -> float:
+        if not rows:
+            return 0.0
+        try:
+            summary = _points_summary(rows)
+            return float(summary.get("diag", 0.0) or 0.0)
+        except Exception:
+            return 0.0
+
+    def _inverse_bind_positions() -> List[Tuple[float, float, float]]:
+        rows_tcol: List[Tuple[float, float, float]] = []
+        rows_trow: List[Tuple[float, float, float]] = []
+        try:
+            import numpy as _np
+        except Exception:
+            _np = None
+        if _np is None:
+            return []
+        try:
+            joints = list(getattr(skeleton, "joints", []) or [])
+        except Exception:
+            joints = []
+        for joint in joints:
+            raw_inv = tuple(getattr(joint, "inverse_bind_matrix", ()) or ())
+            if len(raw_inv) != 16:
+                continue
+            try:
+                inv_bind = _np.asarray(raw_inv, dtype="f4").reshape(4, 4)
+                bind_global = _np.linalg.inv(inv_bind)
+                flat = bind_global.reshape(-1)
+                rows_tcol.append((float(flat[3]), float(flat[7]), float(flat[11])))
+                rows_trow.append((float(flat[12]), float(flat[13]), float(flat[14])))
+            except Exception:
+                continue
+        if not rows_tcol and not rows_trow:
+            return []
+        return rows_trow if _diag(rows_trow) > _diag(rows_tcol) else rows_tcol
+
+    if bool(prefer_inverse_bind):
+        rows = _inverse_bind_positions()
+        if rows and _diag(rows) > 1.0e-7:
+            return rows
+
+    try:
+        from echograph.rigging.fbx_stage5_evaluator import evaluate_rig_at_time
+
+        evaluation = evaluate_rig_at_time(
+            skeleton=skeleton,
+            clip=clip,
+            time_seconds=0.0,
+            loop=True,
+        )
+        rows: List[Tuple[float, float, float]] = []
+        for matrix in list(getattr(evaluation, "global_matrices", []) or []):
+            values = tuple(matrix or ())
+            if len(values) != 16:
+                continue
+            rows.append((float(values[3]), float(values[7]), float(values[11])))
+        if rows:
+            return rows
+    except Exception:
+        pass
+
+    positions: List[Tuple[float, float, float]] = []
+    try:
+        joints = list(getattr(skeleton, "joints", []) or [])
+    except Exception:
+        joints = []
+    for joint in joints:
+        try:
+            tx, ty, tz = getattr(getattr(joint, "local_bind", None), "translation", (0.0, 0.0, 0.0))
+            local = (float(tx), float(ty), float(tz))
+        except Exception:
+            local = (0.0, 0.0, 0.0)
+        parent_index = int(getattr(joint, "parent_index", -1) or -1)
+        if 0 <= parent_index < len(positions):
+            parent = positions[parent_index]
+            positions.append((parent[0] + local[0], parent[1] + local[1], parent[2] + local[2]))
+        else:
+            positions.append(local)
+    return positions
+
+
+def _preview_skeleton(context: Dict[str, Any], role: str):
+    return context.get("skeleton")
+
+
 def _skeleton_extent(context: Dict[str, Any] | None) -> float:
     skeleton = (context or {}).get("skeleton")
     if skeleton is None:
@@ -589,11 +845,11 @@ def _skeleton_extent(context: Dict[str, Any] | None) -> float:
         return 1.0
 
 
-def _preview_rig_context(context: Dict[str, Any], role: str) -> Dict[str, Any]:
+def _preview_rig_context(context: Dict[str, Any], role: str, *, curve_thickness: float) -> Dict[str, Any]:
     base = context.get("rig_context")
     rig = dict(base or {}) if isinstance(base, dict) else {}
-    is_source = role == "source"
-    rig["skeleton"] = context.get("skeleton")
+    is_source = str(role or "").strip().lower() == "source"
+    rig["skeleton"] = _preview_skeleton(context, role)
     rig["clip"] = context.get("clip") if is_source else None
     rig["meshes"] = []
     rig["loop"] = True
@@ -601,7 +857,15 @@ def _preview_rig_context(context: Dict[str, Any], role: str) -> Dict[str, Any]:
     rig["skin_weight_debug"] = False
     rig["show_capture_joints"] = not is_source
     rig["show_animated_joints"] = bool(is_source)
+    rig.pop("retarget_static_pose", None)
+    rig["joint_line_width"] = float(curve_thickness)
+    rig["joint_xray"] = False
+    rig["retarget_preview_role"] = "source" if is_source else "target"
     rig["source_format"] = str(context.get("source_format") or "")
+    if is_source:
+        rig["joint_color"] = (0.10, 0.75, 1.00, 1.0)
+    else:
+        rig["joint_color"] = (1.00, 0.45, 0.15, 1.0)
     return rig
 
 
@@ -611,6 +875,7 @@ def _preview_asset_for_context(
     owner: str,
     role: str,
     x_offset: float,
+    curve_thickness: float,
 ) -> Dict[str, Any] | None:
     if not isinstance(context, dict):
         return None
@@ -625,7 +890,7 @@ def _preview_asset_for_context(
             return None
     except Exception:
         return None
-    rig_context = _preview_rig_context(context, role)
+    rig_context = _preview_rig_context(context, role, curve_thickness=curve_thickness)
     return {
         "path": path_text,
         "texture": "",
@@ -653,26 +918,126 @@ def build_anim_retarget_preview_assets(
     if not isinstance(source_context, dict) or not isinstance(target_context, dict):
         return []
 
-    spacing = max(2.0, _skeleton_extent(source_context), _skeleton_extent(target_context)) * 1.35
     model = getattr(node_item, "model", None)
+    handle_scale = _param_float(
+        model,
+        JOINT_HANDLE_SCALE_PARAM,
+        JOINT_HANDLE_SCALE_DEFAULT,
+        minimum=JOINT_HANDLE_SCALE_MIN,
+        maximum=JOINT_HANDLE_SCALE_MAX,
+    )
+    curve_thickness = _param_float(
+        model,
+        JOINT_CURVE_THICKNESS_PARAM,
+        JOINT_CURVE_THICKNESS_DEFAULT,
+        minimum=JOINT_CURVE_THICKNESS_MIN,
+        maximum=JOINT_CURVE_THICKNESS_MAX,
+    )
+    def _handle_radius_for_context(context: Dict[str, Any]) -> float:
+        extent = max(1.0, float(_skeleton_extent(context)))
+        base_radius = max(0.05, extent * 0.012)
+        max_radius = max(base_radius, min(120.0, extent * 0.10))
+        return max(0.02, min(max_radius, base_radius * handle_scale))
+
+    source_handle_radius = _handle_radius_for_context(source_context)
+    target_handle_radius = _handle_radius_for_context(target_context)
+    handle_radius = max(source_handle_radius, target_handle_radius)
     base_name = str(getattr(model, "name", "") or "").strip() or "Anim Retarget"
+    source_owner = f"{base_name} Source"
+    target_owner = f"{base_name} Target"
     source_asset = _preview_asset_for_context(
         source_context,
-        owner=f"{base_name} Source",
+        owner=source_owner,
         role="source",
-        x_offset=-spacing * 0.5,
+        x_offset=0.0,
+        curve_thickness=curve_thickness,
     )
     target_asset = _preview_asset_for_context(
         target_context,
-        owner=f"{base_name} Target",
+        owner=target_owner,
         role="target",
-        x_offset=spacing * 0.5,
+        x_offset=0.0,
+        curve_thickness=curve_thickness,
     )
-    return [asset for asset in (source_asset, target_asset) if isinstance(asset, dict)]
+
+    def _handles(context: Dict[str, Any], role: str, radius: float) -> List[Dict[str, Any]]:
+        skeleton = _preview_skeleton(context, role)
+        role_key = str(role or "").strip().lower()
+        positions = _skeleton_joint_positions(
+            skeleton,
+            clip=context.get("clip") if role_key == "source" else None,
+            prefer_inverse_bind=bool(role_key != "source"),
+        )
+        try:
+            joints = list(getattr(skeleton, "joints", []) or [])
+        except Exception:
+            joints = []
+        rows: List[Dict[str, Any]] = []
+        for idx, joint in enumerate(joints):
+            if idx >= len(positions):
+                break
+            name = str(getattr(joint, "name", "") or "").strip()
+            if not name:
+                continue
+            px, py, pz = positions[idx]
+            rows.append(
+                {
+                    "role": role,
+                    "name": name,
+                    "index": int(idx),
+                    "position": [float(px), float(py), float(pz)],
+                    "radius": float(radius),
+                }
+            )
+        return rows
+
+    source_handles = _handles(source_context, "source", source_handle_radius)
+    target_handles = _handles(target_context, "target", target_handle_radius)
+    preview_asset = {
+        "kind": "anim_retarget_preview",
+        "node": f"{base_name} Mapping",
+        "visible": True,
+        "source_owner": source_owner,
+        "target_owner": target_owner,
+        "retarget_node_item": node_item,
+        "retarget_node_model": model,
+        "joint_map": _param_value(model, "joint_map") or "{}",
+        "source_handles": source_handles,
+        "target_handles": target_handles,
+        "handle_radius": handle_radius,
+        "curve_thickness": curve_thickness,
+    }
+    _retarget_debug_log(
+        "build_preview_assets",
+        node=base_name,
+        source_name=result.source_name,
+        source_kind=result.source_kind,
+        target_name=result.target_name,
+        target_kind=result.target_kind,
+        source_joint_count=result.source_joint_count,
+        target_joint_count=result.target_joint_count,
+        source_clip_count=result.source_clip_count,
+        handle_scale=round(handle_scale, 6),
+        handle_radius=round(handle_radius, 6),
+        source_handle_radius=round(source_handle_radius, 6),
+        target_handle_radius=round(target_handle_radius, 6),
+        curve_thickness=round(curve_thickness, 6),
+        source_pose="animated_clip_frame0",
+        target_pose="capture_inverse_bind",
+        source_skeleton=_points_summary(
+            _skeleton_joint_positions(source_context.get("skeleton"), clip=source_context.get("clip"))
+        ),
+        target_skeleton=_points_summary(
+            _skeleton_joint_positions(target_context.get("skeleton"), prefer_inverse_bind=True)
+        ),
+        source_handles=_points_summary([row.get("position") for row in source_handles]),
+        target_handles=_points_summary([row.get("position") for row in target_handles]),
+    )
+    return [asset for asset in (source_asset, target_asset, preview_asset) if isinstance(asset, dict)]
 
 
 def augment_infocard_footer(card, footer_layout) -> bool:
-    if QtWidgets is None or QtGui is None:
+    if QtWidgets is None or QtGui is None or QtCore is None:
         return False
 
     node = getattr(card, "_node_ref", None)
@@ -719,6 +1084,117 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         "padding:6px;"
         "}"
     )
+    map_table = QtWidgets.QTableWidget(0, 2)
+    map_table.setHorizontalHeaderLabels(["Source Joint", "Target Joint"])
+    map_table.setMinimumHeight(120)
+    map_table.setAlternatingRowColors(True)
+    try:
+        try:
+            no_edit = QtWidgets.QAbstractItemView.NoEditTriggers
+        except Exception:
+            no_edit = QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers
+        map_table.setEditTriggers(no_edit)
+        map_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        map_table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        header = map_table.horizontalHeader()
+        header.setStretchLastSection(True)
+        header.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
+    except Exception:
+        pass
+    map_table.setStyleSheet(
+        "QTableWidget {"
+        "color:#cbd5e1;"
+        "background:#0f172a;"
+        "border:1px solid #1e293b;"
+        "border-radius:4px;"
+        "gridline-color:#1e293b;"
+        "}"
+        "QHeaderView::section {"
+        "color:#e2e8f0;"
+        "background:#111827;"
+        "border:0;"
+        "padding:4px;"
+        "}"
+    )
+
+    tab_widget = QtWidgets.QTabWidget()
+    try:
+        tab_widget.setDocumentMode(True)
+        tab_widget.setMinimumHeight(170)
+    except Exception:
+        pass
+    tab_widget.setStyleSheet(
+        "QTabWidget::pane{border:1px solid #1e293b;border-radius:4px;background:#0f172a;}"
+        "QTabBar::tab{color:#cbd5e1;background:#111827;border:1px solid #1e293b;"
+        "padding:5px 10px;margin-right:2px;border-top-left-radius:4px;border-top-right-radius:4px;}"
+        "QTabBar::tab:selected{background:#1f2937;color:#f8fafc;}"
+    )
+
+    mapping_tab = QtWidgets.QWidget(tab_widget)
+    mapping_layout = QtWidgets.QVBoxLayout(mapping_tab)
+    mapping_layout.setContentsMargins(6, 6, 6, 6)
+    mapping_layout.setSpacing(6)
+    mapping_layout.addWidget(map_table, 1)
+
+    settings_tab = QtWidgets.QWidget(tab_widget)
+    settings_layout = QtWidgets.QVBoxLayout(settings_tab)
+    settings_layout.setContentsMargins(8, 8, 8, 8)
+    settings_layout.setSpacing(8)
+
+    def _slider_row(label_text: str, value_text: str, minimum: int, maximum: int, initial: int):
+        row = QtWidgets.QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        label = QtWidgets.QLabel(label_text)
+        label.setMinimumWidth(118)
+        label.setStyleSheet("color:#cbd5e1;")
+        slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        slider.setRange(int(minimum), int(maximum))
+        slider.setValue(max(int(minimum), min(int(maximum), int(initial))))
+        slider.setToolTip(label_text)
+        value_label = QtWidgets.QLabel(value_text)
+        value_label.setMinimumWidth(48)
+        value_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        value_label.setStyleSheet("color:#94a3b8;")
+        row.addWidget(label, 0)
+        row.addWidget(slider, 1)
+        row.addWidget(value_label, 0)
+        settings_layout.addLayout(row, 0)
+        return slider, value_label
+
+    initial_handle_scale = _param_float(
+        node,
+        JOINT_HANDLE_SCALE_PARAM,
+        JOINT_HANDLE_SCALE_DEFAULT,
+        minimum=JOINT_HANDLE_SCALE_MIN,
+        maximum=JOINT_HANDLE_SCALE_MAX,
+    )
+    initial_curve_thickness = _param_float(
+        node,
+        JOINT_CURVE_THICKNESS_PARAM,
+        JOINT_CURVE_THICKNESS_DEFAULT,
+        minimum=JOINT_CURVE_THICKNESS_MIN,
+        maximum=JOINT_CURVE_THICKNESS_MAX,
+    )
+    joint_handle_slider, joint_handle_value = _slider_row(
+        "Joint Points",
+        f"{initial_handle_scale:.2f}x",
+        int(JOINT_HANDLE_SCALE_MIN * 100.0),
+        int(JOINT_HANDLE_SCALE_MAX * 100.0),
+        int(round(initial_handle_scale * 100.0)),
+    )
+    joint_curve_slider, joint_curve_value = _slider_row(
+        "Curve Thickness",
+        f"{initial_curve_thickness:.1f}px",
+        int(JOINT_CURVE_THICKNESS_MIN * 10.0),
+        int(JOINT_CURVE_THICKNESS_MAX * 10.0),
+        int(round(initial_curve_thickness * 10.0)),
+    )
+    settings_layout.addStretch(1)
+
+    tab_widget.addTab(mapping_tab, "Mapping")
+    tab_widget.addTab(settings_tab, "Settings")
 
     validate_button = QtWidgets.QPushButton("Validate")
     validate_button.setToolTip("Check that source and target inputs are connected.")
@@ -738,6 +1214,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     stack.addLayout(button_row)
     stack.addWidget(status_label)
     stack.addWidget(detail_box, 1)
+    stack.addWidget(tab_widget, 1)
 
     insert_idx = footer_layout.count()
     footer_layout.addWidget(container, 100)
@@ -747,12 +1224,112 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         pass
 
     report_holder: Dict[str, str] = {"value": ""}
+    settings_syncing: Dict[str, bool] = {"value": False}
+    view_state: Dict[str, bool] = {"opened": False}
 
     def _node_item():
         try:
             return scene._node_items.get(node.name)
         except Exception:
             return None
+
+    def _set_node_param(name: str, value: str, *, notify_scene: bool = True) -> None:
+        item = _node_item()
+        if item is None:
+            return
+        model_obj = getattr(item, "model", None)
+        setter = getattr(item, "_set_param_value", None)
+        setter_ok = False
+        if callable(setter):
+            try:
+                setter(name, value, rebuild=False, notify_scene=bool(notify_scene))
+                setter_ok = True
+            except TypeError:
+                try:
+                    setter(name, value)
+                    setter_ok = True
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        _set_param_value(model_obj, name, value)
+        try:
+            if bool(notify_scene) and model_obj is not None and hasattr(scene, "paramChanged") and not setter_ok:
+                scene.paramChanged.emit(
+                    getattr(model_obj, "name", "") or "",
+                    list(getattr(model_obj, "params", None) or []),
+                )
+        except Exception:
+            pass
+
+    def _sync_settings_sliders(model_obj) -> None:
+        handle_value = _param_float(
+            model_obj,
+            JOINT_HANDLE_SCALE_PARAM,
+            JOINT_HANDLE_SCALE_DEFAULT,
+            minimum=JOINT_HANDLE_SCALE_MIN,
+            maximum=JOINT_HANDLE_SCALE_MAX,
+        )
+        curve_value = _param_float(
+            model_obj,
+            JOINT_CURVE_THICKNESS_PARAM,
+            JOINT_CURVE_THICKNESS_DEFAULT,
+            minimum=JOINT_CURVE_THICKNESS_MIN,
+            maximum=JOINT_CURVE_THICKNESS_MAX,
+        )
+        settings_syncing["value"] = True
+        try:
+            joint_handle_slider.blockSignals(True)
+            joint_curve_slider.blockSignals(True)
+            joint_handle_slider.setValue(int(round(handle_value * 100.0)))
+            joint_curve_slider.setValue(int(round(curve_value * 10.0)))
+            joint_handle_value.setText(f"{handle_value:.2f}x")
+            joint_curve_value.setText(f"{curve_value:.1f}px")
+        finally:
+            try:
+                joint_handle_slider.blockSignals(False)
+            except Exception:
+                pass
+            try:
+                joint_curve_slider.blockSignals(False)
+            except Exception:
+                pass
+            settings_syncing["value"] = False
+
+    def _refresh_retarget_view_from_settings() -> None:
+        if not bool(view_state.get("opened", False)):
+            return
+        try:
+            _on_view_clicked(frame=False, quiet=True)
+        except Exception:
+            pass
+
+    def _on_joint_handle_changed(raw_value: int) -> None:
+        value = max(JOINT_HANDLE_SCALE_MIN, min(JOINT_HANDLE_SCALE_MAX, float(raw_value) / 100.0))
+        joint_handle_value.setText(f"{value:.2f}x")
+        if bool(settings_syncing.get("value", False)):
+            return
+        _set_node_param(JOINT_HANDLE_SCALE_PARAM, f"{value:.2f}", notify_scene=False)
+
+    def _on_joint_curve_changed(raw_value: int) -> None:
+        value = max(JOINT_CURVE_THICKNESS_MIN, min(JOINT_CURVE_THICKNESS_MAX, float(raw_value) / 10.0))
+        joint_curve_value.setText(f"{value:.1f}px")
+        if bool(settings_syncing.get("value", False)):
+            return
+        _set_node_param(JOINT_CURVE_THICKNESS_PARAM, f"{value:.1f}", notify_scene=False)
+
+    def _on_joint_handle_released() -> None:
+        value = max(JOINT_HANDLE_SCALE_MIN, min(JOINT_HANDLE_SCALE_MAX, float(joint_handle_slider.value()) / 100.0))
+        _set_node_param(JOINT_HANDLE_SCALE_PARAM, f"{value:.2f}", notify_scene=True)
+        _refresh_retarget_view_from_settings()
+
+    def _on_joint_curve_released() -> None:
+        value = max(
+            JOINT_CURVE_THICKNESS_MIN,
+            min(JOINT_CURVE_THICKNESS_MAX, float(joint_curve_slider.value()) / 10.0),
+        )
+        _set_node_param(JOINT_CURVE_THICKNESS_PARAM, f"{value:.1f}", notify_scene=True)
+        _refresh_retarget_view_from_settings()
 
     def _refresh(*_args, persist: bool = False, toast: bool = False):
         item = _node_item()
@@ -761,6 +1338,8 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             status_label.setStyleSheet("color:#f59e0b;")
             detail_box.setPlainText("Connect this node to the graph canvas.")
             return None
+        _ensure_display_params(item)
+        _sync_settings_sliders(getattr(item, "model", None))
         result = resolve_anim_retarget_inputs(item, persist=bool(persist))
         if result.status == "error":
             label, color = "ERROR", "#ef4444"
@@ -782,6 +1361,21 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         if result.warnings:
             lines.append(f"warnings: {len(result.warnings)}")
         detail_box.setPlainText("\n".join(lines))
+        mapping = _joint_map_payload(getattr(item, "model", None))
+        try:
+            map_table.setUpdatesEnabled(False)
+            map_table.setRowCount(len(mapping))
+            for row, source_name in enumerate(sorted(mapping.keys(), key=lambda value: value.lower())):
+                target_name = mapping.get(source_name, "")
+                src_item = QtWidgets.QTableWidgetItem(source_name)
+                dst_item = QtWidgets.QTableWidgetItem(target_name)
+                map_table.setItem(row, 0, src_item)
+                map_table.setItem(row, 1, dst_item)
+        finally:
+            try:
+                map_table.setUpdatesEnabled(True)
+            except Exception:
+                pass
         report = "\n".join(result.message_lines())
         report_holder["value"] = report
         detail_box.setToolTip(report)
@@ -815,15 +1409,19 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     validate_button.clicked.connect(lambda: _refresh(persist=True, toast=True))
     copy_button.clicked.connect(_copy_report)
 
-    def _on_view_clicked() -> None:
+    def _on_view_clicked(*, frame: bool = True, quiet: bool = False) -> None:
         item = _node_item()
         if item is None:
+            if quiet:
+                return
             QtWidgets.QMessageBox.warning(card, "Anim Retarget View", "Node item is not available.")
             return
         result = _refresh(persist=True, toast=False)
         if result is None:
             return
         if result.status == "error":
+            if quiet:
+                return
             QtWidgets.QMessageBox.warning(
                 card,
                 "Anim Retarget View",
@@ -832,6 +1430,8 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             return
         assets = build_anim_retarget_preview_assets(item, result)
         if len(assets) < 2:
+            if quiet:
+                return
             QtWidgets.QMessageBox.warning(
                 card,
                 "Anim Retarget View",
@@ -842,21 +1442,32 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         win = card.window()
         scene_handler = getattr(win, "open_scene_assets", None) if win is not None else None
         if not callable(scene_handler):
+            if quiet:
+                return
             QtWidgets.QMessageBox.warning(card, "Anim Retarget View", "3D view is not available.")
             return
         try:
-            scene_handler(assets, frame=True)
+            scene_handler(assets, frame=bool(frame))
         except TypeError:
             try:
                 scene_handler(assets)
             except Exception as exc:
+                if quiet:
+                    return
                 QtWidgets.QMessageBox.warning(card, "Anim Retarget View", f"3D view failed: {exc}")
                 return
         except Exception as exc:
+            if quiet:
+                return
             QtWidgets.QMessageBox.warning(card, "Anim Retarget View", f"3D view failed: {exc}")
             return
+        view_state["opened"] = True
 
-    view_button.clicked.connect(_on_view_clicked)
+    view_button.clicked.connect(lambda: _on_view_clicked(frame=True, quiet=False))
+    joint_handle_slider.valueChanged.connect(_on_joint_handle_changed)
+    joint_curve_slider.valueChanged.connect(_on_joint_curve_changed)
+    joint_handle_slider.sliderReleased.connect(_on_joint_handle_released)
+    joint_curve_slider.sliderReleased.connect(_on_joint_curve_released)
 
     def _on_links_changed(*_args):
         _refresh(persist=False, toast=False)
@@ -896,6 +1507,7 @@ __all__ = [
     "build_ports",
     "resolve_anim_retarget_inputs",
     "build_anim_retarget_preview_assets",
+    "set_joint_map_link",
     "augment_infocard_footer",
     "ANIM_RETARGET_SPEC",
 ]

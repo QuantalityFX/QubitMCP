@@ -24,6 +24,8 @@ _MOUSE_METHOD_NAMES = [
     '_ray_from_mouse',
     'mousePressEvent',
     '_handle_mouse_press_moderngl',
+    '_handle_mouse_retarget_viewport',
+    '_handle_mouse_press_moderngl_retarget_joint',
     '_handle_mouse_press_moderngl_left_gizmo',
     '_handle_mouse_press_moderngl_left_gizmo_build_context',
     '_handle_mouse_press_moderngl_left_gizmo_build_context_dict',
@@ -139,6 +141,7 @@ _MOUSE_METHOD_NAMES = [
     '_handle_mouse_press_legacy_right',
     'mouseMoveEvent',
     '_handle_mouse_move_moderngl',
+    '_handle_mouse_move_moderngl_retarget_drag',
     '_handle_mouse_move_moderngl_fps_nav',
     '_handle_mouse_move_moderngl_fps_nav_active',
     '_handle_mouse_move_moderngl_fps_nav_fly_look',
@@ -222,6 +225,7 @@ _MOUSE_METHOD_NAMES = [
     '_handle_mouse_release_rot_shared_view',
     '_handle_mouse_release_rot_shared_axis',
     '_handle_mouse_release_moderngl',
+    '_handle_mouse_release_moderngl_retarget_drag',
     '_handle_mouse_release_moderngl_right_button_nav',
     '_handle_mouse_release_moderngl_end_xform_drag',
     '_handle_mouse_release_moderngl_log_splat_drag_end',
@@ -320,6 +324,8 @@ def _handle_mouse_press_moderngl(self, e):
             alt_pressed = bool(e.modifiers() & QtCore.Qt.AltModifier)
         except Exception:
             alt_pressed = False
+        if self._handle_mouse_press_moderngl_retarget_joint(e, alt_pressed):
+            return True
         if self._handle_mouse_press_moderngl_left_gizmo(e):
             return True
         if self._handle_mouse_press_moderngl_left_orbit_start(e, alt_pressed):
@@ -331,6 +337,56 @@ def _handle_mouse_press_moderngl(self, e):
         if self._handle_mouse_press_moderngl_right_start(e, alt_pressed):
             return True
     return False
+
+def _handle_mouse_retarget_viewport(self, e):
+    dpr = 1.0
+    try:
+        dpr = float(self.devicePixelRatioF())
+    except Exception:
+        try:
+            dpr = float(self.devicePixelRatio())
+        except Exception:
+            dpr = 1.0
+    return (
+        int(float(e.x()) * dpr),
+        int(float(e.y()) * dpr),
+        int(float(self.width()) * dpr),
+        int(float(self.height()) * dpr),
+    )
+
+def _handle_mouse_press_moderngl_retarget_joint(self, e, alt_pressed):
+    if e.button() != QtCore.Qt.LeftButton or bool(alt_pressed):
+        return False
+    renderer = getattr(self, "_mgl_renderer", None) or self
+    pick = getattr(renderer, "pick_retarget_joint_at", None)
+    if not callable(pick):
+        return False
+    try:
+        px, py, vw, vh = self._handle_mouse_retarget_viewport(e)
+        handle = pick(px, py, vw, vh, role="source")
+    except Exception:
+        handle = None
+    if not isinstance(handle, dict):
+        return False
+    self._retarget_joint_drag = {
+        "source": dict(handle),
+        "target_hover": None,
+        "press_pos": e.pos(),
+    }
+    try:
+        self._mgl_pick_press_pos = None
+    except Exception:
+        pass
+    try:
+        self.grabMouse()
+    except Exception:
+        pass
+    try:
+        self.setCursor(QtCore.Qt.CrossCursor)
+    except Exception:
+        pass
+    e.accept()
+    return True
 
 def _handle_mouse_press_moderngl_left_gizmo(self, e):
     if e.button() != QtCore.Qt.LeftButton:
@@ -2545,6 +2601,9 @@ def _handle_mouse_move_moderngl(self, e, _rot_dbg):
         if self._handle_mouse_move_moderngl_fps_nav(e):
             return True
 
+        if self._handle_mouse_move_moderngl_retarget_drag(e):
+            return True
+
         self._log_mouse_move_rot_shared_state(_rot_dbg)
         self._update_mouse_move_xform_hover()
 
@@ -2570,6 +2629,29 @@ def _handle_mouse_move_moderngl(self, e, _rot_dbg):
         if self._handle_mouse_move_moderngl_zoom_drag(e):
             return True
     return False
+
+def _handle_mouse_move_moderngl_retarget_drag(self, e):
+    drag = getattr(self, "_retarget_joint_drag", None)
+    if not isinstance(drag, dict):
+        return False
+    renderer = getattr(self, "_mgl_renderer", None) or self
+    pick = getattr(renderer, "pick_retarget_joint_at", None)
+    if callable(pick):
+        try:
+            px, py, vw, vh = self._handle_mouse_retarget_viewport(e)
+            drag["target_hover"] = pick(px, py, vw, vh, role="target")
+        except Exception:
+            drag["target_hover"] = None
+    try:
+        self.setCursor(QtCore.Qt.CrossCursor)
+    except Exception:
+        pass
+    try:
+        self.update()
+    except Exception:
+        pass
+    e.accept()
+    return True
 
 def _handle_mouse_move_moderngl_fps_nav(self, e):
     if not self._handle_mouse_move_moderngl_fps_nav_active(e):
@@ -4112,6 +4194,8 @@ def _handle_mouse_release_moderngl(self, e):
     if self._use_moderngl:
         if e.button() == QtCore.Qt.RightButton:
             self._handle_mouse_release_moderngl_right_button_nav()
+        if self._handle_mouse_release_moderngl_retarget_drag(e):
+            return True
         # --- 1) If we were dragging the gizmo, ALWAYS end that first ---
         if self._handle_mouse_release_moderngl_end_xform_drag(e):
             return True
@@ -4134,6 +4218,54 @@ def _handle_mouse_release_moderngl(self, e):
         return True
 
     return False
+
+def _handle_mouse_release_moderngl_retarget_drag(self, e):
+    drag = getattr(self, "_retarget_joint_drag", None)
+    if not isinstance(drag, dict):
+        return False
+    if e.button() != QtCore.Qt.LeftButton:
+        return False
+    renderer = getattr(self, "_mgl_renderer", None) or self
+    target = None
+    pick = getattr(renderer, "pick_retarget_joint_at", None)
+    if callable(pick):
+        try:
+            px, py, vw, vh = self._handle_mouse_retarget_viewport(e)
+            target = pick(px, py, vw, vh, role="target")
+        except Exception:
+            target = None
+    if not isinstance(target, dict):
+        target = drag.get("target_hover") if isinstance(drag.get("target_hover"), dict) else None
+
+    source = drag.get("source") if isinstance(drag.get("source"), dict) else None
+    if isinstance(source, dict) and isinstance(target, dict):
+        linker = getattr(renderer, "_mgl_retarget_set_joint_link", None)
+        if callable(linker):
+            try:
+                linker(str(source.get("name") or ""), str(target.get("name") or ""))
+            except Exception:
+                pass
+
+    self._retarget_joint_drag = None
+    try:
+        self._mgl_pick_press_pos = None
+    except Exception:
+        pass
+    try:
+        if QtWidgets.QApplication.mouseGrabber() is self:
+            self.releaseMouse()
+    except Exception:
+        pass
+    try:
+        self.setCursor(QtCore.Qt.ArrowCursor)
+    except Exception:
+        pass
+    try:
+        self.update()
+    except Exception:
+        pass
+    e.accept()
+    return True
 
 def _handle_mouse_release_moderngl_right_button_nav(self):
     try:

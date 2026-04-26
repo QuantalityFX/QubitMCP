@@ -3503,12 +3503,13 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             ext_hint = str(entry.get("ext") or "").strip().lower()
             is_camera = (kind == "camera") or (ext_hint == ".camera")
             is_fx_trail = kind == "fx_trail"
+            is_anim_retarget_preview = kind == "anim_retarget_preview"
             target_owner = str(entry.get("target_owner") or "").strip()
             _scene_log(
                 f"raw[{idx}] node={node_name!r} path={path!r} kind={kind!r} "
                 f"ext={entry.get('ext')!r} visible={entry.get('visible')!r}"
             )
-            if not path and not is_camera and not is_fx_trail:
+            if not path and not is_camera and not is_fx_trail and not is_anim_retarget_preview:
                 _scene_log(f"raw[{idx}] drop: missing path node={node_name!r}")
                 continue
             if is_fx_trail and not target_owner:
@@ -3602,6 +3603,16 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 clean_entry["age_scale_min"] = float(entry.get("age_scale_min", 1.0) or 1.0)
                 clean_entry["age_scale_max"] = float(entry.get("age_scale_max", 1.0) or 1.0)
                 clean_entry["age_scale_points"] = list(entry.get("age_scale_points") or [])
+            if is_anim_retarget_preview:
+                clean_entry["source_owner"] = str(entry.get("source_owner") or "").strip()
+                clean_entry["target_owner"] = str(entry.get("target_owner") or "").strip()
+                clean_entry["retarget_node_item"] = entry.get("retarget_node_item")
+                clean_entry["retarget_node_model"] = entry.get("retarget_node_model")
+                clean_entry["joint_map"] = str(entry.get("joint_map") or "{}")
+                clean_entry["source_handles"] = list(entry.get("source_handles") or [])
+                clean_entry["target_handles"] = list(entry.get("target_handles") or [])
+                clean_entry["handle_radius"] = float(entry.get("handle_radius", 0.008) or 0.008)
+                clean_entry["curve_thickness"] = float(entry.get("curve_thickness", 2.4) or 2.4)
             clean.append(clean_entry)
             _scene_log(f"clean[{len(clean)-1}] node={node_name!r} path={path!r} visible={visible}")
             if is_fx_trail and bool(entry.get("debug_log", False)):
@@ -3638,7 +3649,13 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                         str(entry.get("path") or ""),
                         str(entry.get("node") or ""),
                         bool(entry.get("debug_log", False)),
+                        str(entry.get("source_owner") or ""),
                         str(entry.get("target_owner") or ""),
+                        str(entry.get("joint_map") or ""),
+                        len(list(entry.get("source_handles") or [])),
+                        len(list(entry.get("target_handles") or [])),
+                        round(float(entry.get("handle_radius", 0.0) or 0.0), 6),
+                        round(float(entry.get("curve_thickness", 0.0) or 0.0), 6),
                         str(entry.get("instance_path") or ""),
                         str(entry.get("instance_source_name") or ""),
                         repr(dict(entry.get("instance_material") or {})),

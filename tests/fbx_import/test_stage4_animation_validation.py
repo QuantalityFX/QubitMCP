@@ -19,6 +19,7 @@ from echograph.rigging.fbx_stage4_animation import (
     FBXAnimationIngestError,
     FBXAnimationIngestResult,
 )
+from echograph.rigging.bvh_ingest import BVHAnimationIngestResult
 from nodes.fbx_import.spec import resolve_fbx_import_sources
 
 
@@ -258,6 +259,52 @@ class FbxImportStage4AnimationValidationTests(unittest.TestCase):
         self.assertTrue(
             any("frame0 differs strongly from bind pose" in msg for msg in result.warnings)
         )
+
+    def test_bvh_animated_pose_uses_bvh_ingest(self) -> None:
+        rest = Path("V:/virtual/rest.fbx")
+        animated = Path("V:/virtual/walk.bvh")
+        model = _FakeModel(
+            name="FBXImportStage4E",
+            kind="fbx_import",
+            params=_param_list(rest_geometry=str(rest), capture_pose="", animated_pose=str(animated)),
+        )
+        node = _FakeNodeItem(model, _FakeScene())
+
+        skeleton = _skeleton("Rig")
+        rest_bind = FBXBindIngestResult(source_path=str(rest), skeleton=skeleton)
+        rest_anim = FBXAnimationIngestResult(source_path=str(rest), clips=[_clip("RestClip")])
+        bvh_anim = BVHAnimationIngestResult(source_path=str(animated), skeleton=skeleton, clips=[_clip("WalkClip")])
+
+        def _resolve(raw, _base):
+            text = str(raw)
+            if text == str(rest):
+                return rest
+            if text == str(animated):
+                return animated
+            return None
+
+        with patch("nodes.fbx_import.spec._resolve_existing_path", side_effect=_resolve), patch(
+            "nodes.fbx_import.spec.ingest_fbx_bind_data",
+            return_value=rest_bind,
+        ), patch(
+            "nodes.fbx_import.spec.ingest_fbx_animation_data",
+            return_value=rest_anim,
+        ), patch(
+            "nodes.fbx_import.spec.ingest_bvh_animation_data",
+            return_value=bvh_anim,
+        ) as bvh_mock:
+            result = resolve_fbx_import_sources(
+                node,
+                base_dir=Path("V:/virtual"),
+                persist=True,
+                validate_bind_data=True,
+                validate_animation_data=True,
+            )
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.effective_sources["animated_pose"], str(animated))
+        self.assertIs(getattr(model, "_fbx_anim_animated_result", None), bvh_anim)
+        bvh_mock.assert_called_once()
 
 
 if __name__ == "__main__":

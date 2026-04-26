@@ -156,6 +156,35 @@ class FbxImportStage2Tests(unittest.TestCase):
         self.assertEqual(result.effective_sources["capture_pose"], "")
         self.assertEqual(result.effective_sources["animated_pose"], "")
 
+    def test_mocap_import_can_feed_bvh_animated_pose(self) -> None:
+        rest = Path("V:/virtual/rest.fbx")
+        mocap = Path("V:/virtual/walk.bvh")
+        src = _FakeNodeItem(
+            _FakeModel("MocapA", "mocap_import", _param_list(path=str(mocap))),
+            None,
+        )
+        dst = _FakeNodeItem(
+            _FakeModel("FBXImportE", "fbx_import", _param_list(rest_geometry=str(rest), capture_pose="", animated_pose="")),
+            None,
+        )
+        scene = _FakeScene({dst: [_FakeEdge(src=src, dst_port_name="animated_pose")]})
+        dst._scene = scene
+
+        def _resolve(raw, _base):
+            text = str(raw)
+            if text == str(rest):
+                return rest
+            if text == str(mocap):
+                return mocap
+            return None
+
+        with patch("nodes.fbx_import.spec._resolve_existing_path", side_effect=_resolve):
+            result = resolve_fbx_import_sources(dst, base_dir=Path("V:/virtual"))
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.effective_sources["rest_geometry"], str(rest))
+        self.assertEqual(result.effective_sources["animated_pose"], str(mocap))
+
 
 if __name__ == "__main__":
     unittest.main()
