@@ -21,6 +21,7 @@ SUPPORTED_EXTS = {".fbx", ".bvh", ".obj", ".gltf", ".glb", ".ply", ".stl", ".off
 _MATERIAL_KINDS = {"mnaterial", "material"}
 _TEXTURE_KINDS = {"texture", "texture_pro", "texture_layer"}
 _FBX_KIND_ALIASES = {"fbx_import", "fbx import", "fbximport"}
+_ANIM_RETARGET_KIND_ALIASES = {"anim_retarget", "anim retarget", "animretarget", "retarget"}
 _MOCAP_KIND_ALIASES = {
     "mocap_import",
     "mocap import",
@@ -1314,6 +1315,34 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
         src_name = (getattr(model, "name", "") or "").strip()
         kind = (getattr(model, "kind", "") or "").strip().lower()
         material_asset = None
+        if kind in _ANIM_RETARGET_KIND_ALIASES:
+            try:
+                from nodes.anim_retarget import spec as _anim_retarget_spec  # type: ignore
+
+                build_asset = getattr(_anim_retarget_spec, "build_anim_retarget_scene_asset", None)
+                asset = build_asset(src_item) if callable(build_asset) else None
+            except Exception as exc:
+                asset = None
+                if _fbx_debug_enabled(model):
+                    _scene_log(
+                        node_item,
+                        f"anim_retarget asset build failed node={src_name or kind} err={exc!r}",
+                    )
+            if isinstance(asset, dict):
+                asset["visible"] = str(asset.get("node") or src_name or kind) not in hidden
+                assets.append(asset)
+                path_key = str(asset.get("path") or "").strip()
+                if path_key:
+                    seen.add(path_key)
+                if dbg_collect:
+                    _scene_log(
+                        node_item,
+                        "anim_retarget asset "
+                        + f"node={str(asset.get('node') or '')} "
+                        + f"path={str(asset.get('path') or '')} "
+                        + f"tracks={len(getattr((asset.get('fbx_rig_context') or {}).get('clip'), 'tracks', []) or [])}",
+                    )
+            continue
         if kind in _MATERIAL_KINDS:
             try:
                 from nodes import material as _material_node  # type: ignore

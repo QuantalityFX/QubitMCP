@@ -3051,13 +3051,22 @@ class MGLRendererMixin:
         if skeleton is None:
             return []
         role_key = str(role or "").strip().lower()
-        if role_key != "source":
+        target_animated = bool(
+            role_key == "target"
+            and context.get("retarget_preview_target_animated")
+            and context.get("clip") is not None
+        )
+        if role_key != "source" and not target_animated:
             rows = self._mgl_retarget_inverse_bind_positions(skeleton)
             if rows and self._mgl_retarget_positions_diag(rows) > 1.0e-7:
                 return rows
         try:
-            clip = context.get("clip") if role_key == "source" else None
-            sample_time = self._mgl_fbx_context_timeline_sample_seconds(context) if role_key == "source" else 0.0
+            clip = context.get("clip") if (role_key == "source" or target_animated) else None
+            sample_time = (
+                self._mgl_fbx_context_timeline_sample_seconds(context)
+                if (role_key == "source" or target_animated)
+                else 0.0
+            )
             evaluation = evaluate_rig_at_time(
                 skeleton=skeleton,
                 clip=clip,
@@ -3107,8 +3116,14 @@ class MGLRendererMixin:
         if not isinstance(handles, list) or not handles:
             return False
         context = self._mgl_scene_owner_fbx_rig_context(owner_key)
+        target_animated = bool(
+            role_key == "target"
+            and isinstance(context, dict)
+            and context.get("retarget_preview_target_animated")
+            and context.get("clip") is not None
+        )
         frame_key = (role_key, owner_key, 0)
-        if role_key == "source":
+        if role_key == "source" or target_animated:
             frame_key = (
                 role_key,
                 owner_key,
@@ -3182,6 +3197,9 @@ class MGLRendererMixin:
         source_owner = str(owners.get("source") or "").strip()
         if source_owner:
             changed = self._mgl_retarget_update_owner_handles(source_owner, "source") or changed
+        target_owner = str(owners.get("target") or "").strip()
+        if target_owner:
+            changed = self._mgl_retarget_update_owner_handles(target_owner, "target") or changed
         if bool(getattr(self, "_mgl_retarget_selection_dirty", False)) or changed:
             try:
                 self._mgl_retarget_refresh_selection_item()
