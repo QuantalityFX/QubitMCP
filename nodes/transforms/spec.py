@@ -19,6 +19,8 @@ from nodes.util_graph import param_change_relevant as _param_change_relevant
 
 SUPPORTED_MESH_EXTS = {".obj", ".fbx", ".gltf", ".glb", ".stl", ".ply", ".off", ".om", ".bvh"}
 RIG_PASSTHROUGH_EXTS = {".bvh"}
+FBX_KIND_ALIASES = {"fbx_import", "fbx import", "fbximport"}
+MOCAP_KIND_ALIASES = {"mocap_import", "mocap import", "mocapimport", "bvh_import", "bvh import", "bvhimport"}
 
 
 def _sanitize_name(name: str) -> str:
@@ -141,6 +143,186 @@ def _param_bool(model, name: str, default: bool = False) -> bool:
     return raw in ("1", "true", "yes", "on", "y")
 
 
+def _node_kind(item) -> str:
+    model = getattr(item, "model", None)
+    return str(getattr(model, "kind", "") or "").strip().lower()
+
+
+def _edge_dst_name(edge) -> str:
+    return str(
+        getattr(edge, "dst_port_name", None)
+        or getattr(edge, "dst_label", None)
+        or getattr(edge, "dst_name", None)
+        or ""
+    ).strip()
+
+
+def _ordered_in_edges(scene, item) -> list:
+    if scene is None or item is None:
+        return []
+    try:
+        return list(scene._ordered_in_edges(item))
+    except Exception:
+        try:
+            return list(scene._in_edges(item))
+        except Exception:
+            return []
+
+
+def _connected_input_item(node_item):
+    try:
+        sc = node_item.scene()
+    except Exception:
+        sc = None
+    edges = _ordered_in_edges(sc, node_item)
+    chosen = None
+    for edge in edges:
+        if _edge_dst_name(edge).lower() in {"mesh", "path", "source"}:
+            chosen = edge
+            break
+    if chosen is None and edges:
+        chosen = edges[0]
+    return getattr(chosen, "src", None) if chosen is not None else None
+
+
+def _fbx_import_resolved_path(source_item, *, persist: bool = False) -> str:
+    model = getattr(source_item, "model", None)
+    try:
+        from nodes.fbx_import import spec as fbx_spec  # type: ignore
+
+        result = fbx_spec.resolve_fbx_import_sources(
+            source_item,
+            persist=bool(persist),
+            validate_bind_data=False,
+            validate_animation_data=False,
+        )
+        path = str(getattr(result, "effective_sources", {}).get("rest_geometry", "") or "").strip()
+        if path:
+            return path
+    except Exception:
+        pass
+    for raw in (
+        getattr(model, "_fbx_resolved_rest_geometry", None),
+        _param_value(model, "resolved_rest_geometry"),
+        _param_value(model, "rest_geometry"),
+        _param_value(model, "path"),
+    ):
+        text = str(raw or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _mocap_import_resolved_path(source_item, *, persist: bool = False) -> str:
+    model = getattr(source_item, "model", None)
+    try:
+        from nodes.mocap_import import spec as mocap_spec  # type: ignore
+
+        result = mocap_spec.resolve_mocap_import_source(
+            source_item,
+            persist=bool(persist),
+            validate_animation=False,
+        )
+        path = str(getattr(result, "resolved_path", "") or "").strip()
+        if path:
+            return path
+    except Exception:
+        pass
+    for raw in (
+        getattr(model, "_mocap_resolved_path", None),
+        _param_value(model, "resolved_path"),
+        _param_value(model, "path"),
+    ):
+        text = str(raw or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _source_path_from_item(source_item) -> str:
+    kind = _node_kind(source_item)
+    if kind in FBX_KIND_ALIASES:
+        return _fbx_import_resolved_path(source_item)
+    if kind in MOCAP_KIND_ALIASES:
+        return _mocap_import_resolved_path(source_item)
+    model = getattr(source_item, "model", None)
+    return _param_value(model, "path") or _param_value(model, "source") or _param_value(model, "mesh")
+
+
+def _cache_rig_context_for_view(win, asset: dict) -> None:
+    try:
+        glv = getattr(win, "gl_view", None) if win is not None else None
+        path_text = str(asset.get("path") or "").strip()
+        context_obj = asset.get("fbx_rig_context")
+        if glv is None or not path_text or not isinstance(context_obj, dict):
+            return
+        path_obj = Path(path_text)
+        try:
+            cache_key = str(path_obj.resolve())
+        except Exception:
+            cache_key = str(path_obj)
+        try:
+            mtime = float(path_obj.stat().st_mtime)
+        except Exception:
+            mtime = None
+        cache = getattr(glv, "_mgl_fbx_rig_context_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+        cache_entry = {"mtime": mtime, "context": dict(context_obj)}
+        cache[cache_key] = cache_entry
+        cache[str(path_obj)] = cache_entry
+        setattr(glv, "_mgl_fbx_rig_context_cache", cache)
+    except Exception:
+        pass
+
+
+def _rig_preview_asset_from_item(source_item, *, owner: str, xform: dict) -> tuple[Optional[dict], str]:
+    kind = _node_kind(source_item)
+    model = getattr(source_item, "model", None)
+    asset = None
+    if kind in FBX_KIND_ALIASES:
+        try:
+            from nodes.fbx_import import spec as fbx_spec  # type: ignore
+
+            result = fbx_spec.resolve_fbx_import_sources(
+                source_item,
+                persist=True,
+                validate_bind_data=True,
+                validate_animation_data=True,
+            )
+            if getattr(result, "status", "") == "error":
+                return None, "\n".join(result.message_lines())
+            build_preview = getattr(fbx_spec, "_build_preview_asset", None)
+            if callable(build_preview):
+                asset = build_preview(model, result)
+        except Exception as exc:
+            return None, f"FBX preview failed: {exc}"
+    elif kind in MOCAP_KIND_ALIASES:
+        try:
+            from nodes.mocap_import import spec as mocap_spec  # type: ignore
+
+            result = mocap_spec.resolve_mocap_import_source(
+                source_item,
+                persist=True,
+                validate_animation=True,
+            )
+            if getattr(result, "status", "") == "error":
+                return None, "\n".join(result.message_lines())
+            build_preview = getattr(mocap_spec, "_build_preview_asset", None)
+            if callable(build_preview):
+                asset = build_preview(model, result)
+        except Exception as exc:
+            return None, f"Mocap preview failed: {exc}"
+
+    if not isinstance(asset, dict):
+        return None, ""
+    asset = dict(asset)
+    asset["node"] = owner
+    asset["visible"] = True
+    asset["xform"] = xform
+    return asset, ""
+
+
 def _ensure_param(node_item, name: str, default: str = "") -> None:
     model = getattr(node_item, "model", None)
     if model is None:
@@ -212,29 +394,11 @@ def build_ports(node_item) -> None:
 
 def _resolve_input_path(node_item) -> str:
     model = getattr(node_item, "model", None)
-    sc = node_item.scene()
-    if sc is not None:
-        try:
-            in_edges = list(sc._ordered_in_edges(node_item))
-        except Exception:
-            try:
-                in_edges = list(sc._in_edges(node_item))
-            except Exception:
-                in_edges = []
-        chosen = None
-        for edge in in_edges:
-            name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
-            if (name or "").strip().lower() in {"mesh", "path"}:
-                chosen = edge
-                break
-        if chosen is None and in_edges:
-            chosen = in_edges[0]
-        if chosen is not None:
-            src_model = getattr(getattr(chosen, "src", None), "model", None)
-            if src_model is not None:
-                path = _param_value(src_model, "path")
-                if path:
-                    return path
+    source_item = _connected_input_item(node_item)
+    if source_item is not None:
+        path = _source_path_from_item(source_item)
+        if path:
+            return path
     if model is not None:
         return _param_value(model, "source") or _param_value(model, "path")
     return ""
@@ -979,6 +1143,8 @@ class TransformWidget(QtWidgets.QWidget):
         label = _resolve_input_label(self._node_item) or Path(src_path).name
 
         model = getattr(self._node_item, "model", None)
+        source_item = _connected_input_item(self._node_item)
+        source_kind = _node_kind(source_item)
         pos = _param_vec3(model, "pos", (0.0, 0.0, 0.0))
         rot = _param_vec3(model, "rot", (0.0, 0.0, 0.0))
         scl = _param_vec3(model, "scl", (1.0, 1.0, 1.0))
@@ -1008,7 +1174,7 @@ class TransformWidget(QtWidgets.QWidget):
             self._set_param("source", src_path, notify_scene=False)
             self._set_param("path", "", notify_scene=True)
             return
-        if mesh_ext in RIG_PASSTHROUGH_EXTS:
+        if mesh_ext in RIG_PASSTHROUGH_EXTS or source_kind in FBX_KIND_ALIASES or source_kind in MOCAP_KIND_ALIASES:
             self._status.setText(label)
             self._view_btn.setEnabled(True)
             self._set_param("source", src_path, notify_scene=False)
@@ -1100,23 +1266,32 @@ class TransformWidget(QtWidgets.QWidget):
     def _on_view_clicked(self):
         try:
             model = getattr(self._node_item, "model", None)
-            src_path = (_param_value(model, "source") or "").strip()
+            source_item = _connected_input_item(self._node_item)
+            src_path = (_resolve_input_path(self._node_item) or _param_value(model, "source") or "").strip()
             if not src_path:
+                self._status.setText("No mesh input.")
                 return
             owner = (getattr(model, "name", "") or "").strip()
             pos = _param_vec3(model, "pos", (0.0, 0.0, 0.0))
             rot = _param_vec3(model, "rot", (0.0, 0.0, 0.0))
             scl = _param_vec3(model, "scl", (1.0, 1.0, 1.0))
+            xform = {"pos": list(pos), "rot": list(rot), "scl": list(scl)}
             win = _resolve_window(self._node_item)
             handler = getattr(win, "open_scene_assets", None) if win is not None else None
-            assets = [{
-                "path": src_path,
-                "node": owner,
-                "xform": {"pos": list(pos), "rot": list(rot), "scl": list(scl)},
-            }]
+            asset, preview_error = _rig_preview_asset_from_item(source_item, owner=owner, xform=xform)
+            if asset is None:
+                if preview_error:
+                    self._status.setText(preview_error.splitlines()[0][:80])
+                asset = {
+                    "path": src_path,
+                    "node": owner,
+                    "xform": xform,
+                }
+            assets = [asset]
+            _cache_rig_context_for_view(win, asset)
             if callable(handler):
                 try:
-                    handler(assets, frame=False)
+                    handler(assets, frame=True)
                 except TypeError:
                     try:
                         handler(assets)
