@@ -363,22 +363,20 @@ def _handle_mouse_press_moderngl_retarget_joint(self, e, alt_pressed):
         return False
     try:
         px, py, vw, vh = self._handle_mouse_retarget_viewport(e)
-        handle = pick(px, py, vw, vh, role="source")
+        handle = pick(px, py, vw, vh)
     except Exception:
         handle = None
     if not isinstance(handle, dict):
         return False
-    self._retarget_joint_drag = {
-        "source": dict(handle),
-        "target_hover": None,
-        "press_pos": e.pos(),
-    }
+    click = getattr(renderer, "_mgl_retarget_handle_click", None)
+    if callable(click):
+        try:
+            click(dict(handle))
+        except Exception:
+            pass
+    self._retarget_joint_drag = None
     try:
         self._mgl_pick_press_pos = None
-    except Exception:
-        pass
-    try:
-        self.grabMouse()
     except Exception:
         pass
     try:

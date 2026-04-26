@@ -2727,6 +2727,7 @@ class MGLRendererMixin:
             "scene-camera",
             "scene-fx-trail",
             "retarget-handles",
+            "retarget-selection",
             "retarget-links",
             "retarget-drag-link",
         ):
@@ -2794,6 +2795,463 @@ class MGLRendererMixin:
         except Exception:
             return None
 
+    def _mgl_retarget_sphere_arrays(
+        self,
+        markers,
+        *,
+        rings: int = 4,
+        segments: int = 8,
+        default_color=(1.0, 1.0, 1.0, 1.0),
+    ):
+        if np is None:
+            return None, None, None
+        ring_count = max(3, min(8, int(rings)))
+        seg_count = max(6, min(16, int(segments)))
+        points = []
+        normals = []
+        colors = []
+
+        def _normal(theta: float, phi: float):
+            ct = math.cos(theta)
+            return (
+                float(ct * math.cos(phi)),
+                float(math.sin(theta)),
+                float(ct * math.sin(phi)),
+            )
+
+        def _vertex(center, radius: float, normal):
+            return (
+                float(center[0]) + float(normal[0]) * radius,
+                float(center[1]) + float(normal[1]) * radius,
+                float(center[2]) + float(normal[2]) * radius,
+            )
+
+        for marker in markers or []:
+            try:
+                center, radius = marker[0], marker[1]
+                c = (float(center[0]), float(center[1]), float(center[2]))
+                r = max(0.001, float(radius))
+            except Exception:
+                continue
+            try:
+                raw_color = marker[2] if len(marker) >= 3 else default_color
+                marker_color = (
+                    float(raw_color[0]),
+                    float(raw_color[1]),
+                    float(raw_color[2]),
+                    float(raw_color[3]) if len(raw_color) >= 4 else 1.0,
+                )
+            except Exception:
+                marker_color = tuple(default_color)
+            for lat in range(ring_count):
+                theta0 = (-math.pi * 0.5) + (math.pi * float(lat) / float(ring_count))
+                theta1 = (-math.pi * 0.5) + (math.pi * float(lat + 1) / float(ring_count))
+                for lon in range(seg_count):
+                    phi0 = math.tau * float(lon) / float(seg_count)
+                    phi1 = math.tau * float(lon + 1) / float(seg_count)
+                    n00 = _normal(theta0, phi0)
+                    n01 = _normal(theta0, phi1)
+                    n10 = _normal(theta1, phi0)
+                    n11 = _normal(theta1, phi1)
+                    for n in (n00, n10, n11, n00, n11, n01):
+                        points.append(_vertex(c, r, n))
+                        normals.append(n)
+                        colors.append(marker_color)
+        if not points:
+            return None, None, None
+        try:
+            return (
+                np.asarray(points, dtype="f4").reshape(-1, 3),
+                np.asarray(normals, dtype="f4").reshape(-1, 3),
+                np.asarray(colors, dtype="f4").reshape(-1, 4),
+            )
+        except Exception:
+            return None, None, None
+
+    def _mgl_retarget_remove_items_by_tag_owner(self, tag: str, owner: str | None = None) -> None:
+        scene = getattr(self, "_mgl_scene", None)
+        if scene is None:
+            return
+        owner_key = str(owner or "").strip().lower()
+        if not owner_key:
+            try:
+                scene.remove_by_tag(str(tag))
+            except Exception:
+                pass
+            return
+        try:
+            kept = []
+            for item in scene.items():
+                if str(getattr(item, "tag", "") or "") != str(tag):
+                    kept.append(item)
+                    continue
+                payload = getattr(item, "payload", None) or {}
+                item_owner = str(payload.get("owner") or "").strip().lower()
+                if item_owner == owner_key:
+                    try:
+                        item.release()
+                    except Exception:
+                        pass
+                else:
+                    kept.append(item)
+            scene._items = kept
+        except Exception:
+            pass
+
+    def _mgl_retarget_build_sphere_item(
+        self,
+        *,
+        name: str,
+        owner: str,
+        markers,
+        color,
+        tag: str,
+        order: int,
+    ) -> Optional[MGLSceneItem]:
+        if np is None or self._mgl_ctx is None or self._mgl_prog is None:
+            return None
+        points, normals, colors = self._mgl_retarget_sphere_arrays(markers, default_color=color)
+        if points is None or normals is None or colors is None or getattr(points, "size", 0) == 0:
+            return None
+        entry = self._mgl_build_mesh_entry(points, normals, colors=colors)
+        if entry is None:
+            return None
+        resources = [
+            entry.get("vao"),
+            entry.get("vbo"),
+            entry.get("nbo"),
+            entry.get("tbo"),
+            entry.get("cbo"),
+            entry.get("ibo"),
+        ]
+        payload = {
+            "vao": entry.get("vao"),
+            "texture": None,
+            "color": tuple(color),
+            "owner": str(owner or ""),
+            "path": f"{owner}-retarget-spheres",
+            "retarget_handle_mesh": True,
+            "use_vertex_color": True,
+        }
+        return MGLSceneItem(
+            name=name,
+            draw_fn=MGLRendererMixin._mgl_draw_scene_mesh,
+            payload=payload,
+            resources=[res for res in resources if res is not None],
+            visible=True,
+            order=int(order),
+            tag=tag,
+        )
+
+    def _mgl_retarget_rebuild_handle_mesh_for_owner(self, owner: str, handles: list, role: str) -> None:
+        scene = getattr(self, "_mgl_scene", None)
+        if scene is None:
+            return
+        self._mgl_retarget_remove_items_by_tag_owner("retarget-handles", owner)
+        color_by_role = {
+            "source": (0.10, 0.75, 1.00, 1.0),
+            "target": (1.00, 0.45, 0.15, 1.0),
+        }
+        selected = getattr(self, "_mgl_retarget_selected_joint", None)
+        selected_role = str((selected or {}).get("role") or "").strip().lower() if isinstance(selected, dict) else ""
+        selected_name = str((selected or {}).get("name") or "").strip() if isinstance(selected, dict) else ""
+        role_key = str(role or "").strip().lower()
+        base_color = color_by_role.get(role_key, (0.9, 0.9, 0.9, 1.0))
+        selected_color = (1.0, 0.95, 0.18, 1.0)
+        markers = []
+        for handle in list(handles or []):
+            try:
+                pos = handle.get("position", (0.0, 0.0, 0.0))
+                radius = float(handle.get("radius", 0.05) or 0.05)
+                name = str(handle.get("name") or "").strip()
+                color = selected_color if selected_role == role_key and selected_name == name else base_color
+                markers.append((pos, radius, color))
+            except Exception:
+                continue
+        item = self._mgl_retarget_build_sphere_item(
+            name=f"{owner} Joint Handles",
+            owner=owner,
+            markers=markers,
+            color=base_color,
+            tag="retarget-handles",
+            order=17,
+        )
+        if item is not None:
+            scene.add(item)
+            try:
+                xf = self._mgl_get_scene_asset_xform(owner)
+                self._mgl_set_scene_asset_xform(
+                    owner,
+                    pos=xf.get("pos"),
+                    rot=xf.get("rot"),
+                    scl=xf.get("scl"),
+                    apply_to_scene_models=True,
+                    use_splat_xform=False,
+                )
+            except Exception:
+                pass
+
+    def _mgl_retarget_refresh_selection_item(self) -> None:
+        scene = getattr(self, "_mgl_scene", None)
+        if scene is None:
+            return
+        try:
+            scene.remove_by_tag("retarget-selection")
+        except Exception:
+            pass
+        owners = getattr(self, "_mgl_retarget_role_owners", None)
+        handles_by_owner = getattr(self, "_mgl_retarget_joint_handles_by_owner", None)
+        if not isinstance(owners, dict) or not isinstance(handles_by_owner, dict):
+            return
+        for role in ("source", "target"):
+            owner = str(owners.get(role) or "").strip()
+            handles = handles_by_owner.get(owner)
+            if owner and isinstance(handles, list):
+                self._mgl_retarget_rebuild_handle_mesh_for_owner(owner, handles, role)
+
+    def _mgl_retarget_positions_diag(self, points) -> float:
+        if np is None:
+            return 0.0
+        try:
+            arr = np.asarray(points, dtype="f4").reshape(-1, 3)
+            if arr.size == 0:
+                return 0.0
+            return float(np.linalg.norm(arr.max(axis=0) - arr.min(axis=0)))
+        except Exception:
+            return 0.0
+
+    def _mgl_retarget_inverse_bind_positions(self, skeleton):
+        if np is None or skeleton is None:
+            return []
+        rows_tcol = []
+        rows_trow = []
+        for joint in list(getattr(skeleton, "joints", []) or []):
+            raw_inv = tuple(getattr(joint, "inverse_bind_matrix", ()) or ())
+            if len(raw_inv) != 16:
+                rows_tcol.append((0.0, 0.0, 0.0))
+                rows_trow.append((0.0, 0.0, 0.0))
+                continue
+            try:
+                inv_bind = np.asarray(raw_inv, dtype="f4").reshape(4, 4)
+                bind_global = np.linalg.inv(inv_bind)
+                flat = bind_global.reshape(-1)
+                rows_tcol.append((float(flat[3]), float(flat[7]), float(flat[11])))
+                rows_trow.append((float(flat[12]), float(flat[13]), float(flat[14])))
+            except Exception:
+                rows_tcol.append((0.0, 0.0, 0.0))
+                rows_trow.append((0.0, 0.0, 0.0))
+        if self._mgl_retarget_positions_diag(rows_trow) > self._mgl_retarget_positions_diag(rows_tcol):
+            return rows_trow
+        return rows_tcol
+
+    def _mgl_retarget_joint_positions_for_context(self, context: dict | None, role: str):
+        if not isinstance(context, dict):
+            return []
+        skeleton = context.get("skeleton")
+        if skeleton is None:
+            return []
+        role_key = str(role or "").strip().lower()
+        if role_key != "source":
+            rows = self._mgl_retarget_inverse_bind_positions(skeleton)
+            if rows and self._mgl_retarget_positions_diag(rows) > 1.0e-7:
+                return rows
+        try:
+            clip = context.get("clip") if role_key == "source" else None
+            sample_time = self._mgl_fbx_context_timeline_sample_seconds(context) if role_key == "source" else 0.0
+            evaluation = evaluate_rig_at_time(
+                skeleton=skeleton,
+                clip=clip,
+                time_seconds=float(sample_time),
+                loop=bool(context.get("loop", True)),
+            )
+            rows_tcol = []
+            rows_trow = []
+            for matrix in list(getattr(evaluation, "global_matrices", []) or []):
+                values = tuple(matrix or ())
+                if len(values) != 16:
+                    continue
+                rows_tcol.append((float(values[3]), float(values[7]), float(values[11])))
+                rows_trow.append((float(values[12]), float(values[13]), float(values[14])))
+            if rows_tcol or rows_trow:
+                return rows_trow if self._mgl_retarget_positions_diag(rows_trow) > self._mgl_retarget_positions_diag(rows_tcol) else rows_tcol
+        except Exception:
+            pass
+        joints = list(getattr(skeleton, "joints", []) or [])
+        positions = []
+        for joint in joints:
+            try:
+                tx, ty, tz = getattr(getattr(joint, "local_bind", None), "translation", (0.0, 0.0, 0.0))
+                local = (float(tx), float(ty), float(tz))
+            except Exception:
+                local = (0.0, 0.0, 0.0)
+            try:
+                parent_index = int(getattr(joint, "parent_index", -1) or -1)
+            except Exception:
+                parent_index = -1
+            if 0 <= parent_index < len(positions):
+                parent = positions[parent_index]
+                positions.append((parent[0] + local[0], parent[1] + local[1], parent[2] + local[2]))
+            else:
+                positions.append(local)
+        return positions
+
+    def _mgl_retarget_update_owner_handles(self, owner: str, role: str, *, force: bool = False) -> bool:
+        owner_key = str(owner or "").strip()
+        role_key = str(role or "").strip().lower()
+        if not owner_key or role_key not in {"source", "target"}:
+            return False
+        handles_by_owner = getattr(self, "_mgl_retarget_joint_handles_by_owner", None)
+        if not isinstance(handles_by_owner, dict):
+            return False
+        handles = handles_by_owner.get(owner_key)
+        if not isinstance(handles, list) or not handles:
+            return False
+        context = self._mgl_scene_owner_fbx_rig_context(owner_key)
+        frame_key = (role_key, owner_key, 0)
+        if role_key == "source":
+            frame_key = (
+                role_key,
+                owner_key,
+                self._mgl_timeline_frame_index(),
+                _safe_clip_signature(context.get("clip") if isinstance(context, dict) else None),
+            )
+        frame_keys = getattr(self, "_mgl_retarget_handle_frame_keys", None)
+        if not isinstance(frame_keys, dict):
+            frame_keys = {}
+            self._mgl_retarget_handle_frame_keys = frame_keys
+        if not bool(force) and frame_keys.get(owner_key) == frame_key:
+            return False
+        positions = self._mgl_retarget_joint_positions_for_context(context, role_key)
+        if not positions:
+            return False
+        role_positions = {}
+        rows = []
+        for handle in handles:
+            try:
+                idx = int(handle.get("index", -1) or -1)
+            except Exception:
+                idx = -1
+            if idx < 0 or idx >= len(positions):
+                continue
+            pos = positions[idx]
+            try:
+                px, py, pz = float(pos[0]), float(pos[1]), float(pos[2])
+            except Exception:
+                continue
+            handle["position"] = (px, py, pz)
+            name = str(handle.get("name") or "").strip()
+            if name:
+                role_positions[name] = (px, py, pz)
+            try:
+                radius = float(handle.get("radius", 0.05) or 0.05)
+            except Exception:
+                radius = 0.05
+            color = (0.10, 0.75, 1.00) if role_key == "source" else (1.00, 0.45, 0.15)
+            rows.append([px, py, pz, color[0], color[1], color[2], 0.0, max(0.002, min(120.0, radius))])
+        if not rows:
+            return False
+        positions_by_role = getattr(self, "_mgl_retarget_joint_positions", None)
+        if not isinstance(positions_by_role, dict):
+            positions_by_role = {}
+            self._mgl_retarget_joint_positions = positions_by_role
+        positions_by_role[role_key] = role_positions
+        try:
+            arr = np.asarray(rows, dtype="f4").reshape(-1, 8)
+            self._mgl_scene_splats[owner_key] = arr
+            self._mgl_scene_splats_bounds_local[owner_key] = (
+                arr[:, :3].min(axis=0).astype("f4"),
+                arr[:, :3].max(axis=0).astype("f4"),
+            )
+            self._mgl_scene_splat_bounds_by_owner[owner_key] = self._mgl_scene_splats_bounds_local[owner_key]
+            self._mgl_scene_splats_world[owner_key] = arr[:, :3].astype(np.float32, copy=True)
+            self._mgl_splats_need_rebuild = True
+            self._mgl_splats_visibility_dirty = True
+        except Exception:
+            pass
+        self._mgl_retarget_rebuild_handle_mesh_for_owner(owner_key, handles, role_key)
+        frame_keys[owner_key] = frame_key
+        return True
+
+    def _mgl_retarget_refresh_dynamic_handles(self) -> None:
+        if not bool(getattr(self, "_mgl_retarget_preview_active", False)):
+            return
+        owners = getattr(self, "_mgl_retarget_role_owners", None)
+        if not isinstance(owners, dict):
+            return
+        changed = False
+        source_owner = str(owners.get("source") or "").strip()
+        if source_owner:
+            changed = self._mgl_retarget_update_owner_handles(source_owner, "source") or changed
+        if bool(getattr(self, "_mgl_retarget_selection_dirty", False)) or changed:
+            try:
+                self._mgl_retarget_refresh_selection_item()
+            except Exception:
+                pass
+            self._mgl_retarget_selection_dirty = False
+        if bool(getattr(self, "_mgl_retarget_links_dirty", False)) or changed:
+            try:
+                self._mgl_retarget_refresh_link_item()
+            except Exception:
+                pass
+            self._mgl_retarget_links_dirty = False
+
+    def _mgl_retarget_handle_click(self, handle: dict) -> bool:
+        if not isinstance(handle, dict):
+            return False
+        role = str(handle.get("role") or "").strip().lower()
+        name = str(handle.get("name") or "").strip()
+        if role not in {"source", "target"} or not name:
+            return False
+        selected = getattr(self, "_mgl_retarget_selected_joint", None)
+        if isinstance(selected, dict):
+            selected_role = str(selected.get("role") or "").strip().lower()
+            selected_name = str(selected.get("name") or "").strip()
+            if selected_role == role and selected_name == name:
+                self._mgl_retarget_selected_joint = None
+                self._mgl_retarget_selection_dirty = True
+                try:
+                    self.update()
+                except Exception:
+                    pass
+                return True
+            if {selected_role, role} == {"source", "target"}:
+                source = selected if selected_role == "source" else handle
+                target = selected if selected_role == "target" else handle
+                owners = getattr(self, "_mgl_retarget_role_owners", None)
+                if isinstance(owners, dict):
+                    source_owner = str(owners.get("source") or "").strip()
+                    target_owner = str(owners.get("target") or "").strip()
+                    if (
+                        str(source.get("owner") or "").strip() != source_owner
+                        or str(target.get("owner") or "").strip() != target_owner
+                    ):
+                        self._mgl_retarget_selected_joint = dict(handle)
+                        self._mgl_retarget_selection_dirty = True
+                        try:
+                            self.update()
+                        except Exception:
+                            pass
+                        return True
+                self._mgl_retarget_set_joint_link(
+                    str(source.get("name") or ""),
+                    str(target.get("name") or ""),
+                )
+                self._mgl_retarget_selected_joint = None
+                self._mgl_retarget_selection_dirty = True
+                self._mgl_retarget_links_dirty = True
+                try:
+                    self.update()
+                except Exception:
+                    pass
+                return True
+        self._mgl_retarget_selected_joint = dict(handle)
+        self._mgl_retarget_selection_dirty = True
+        try:
+            self.update()
+        except Exception:
+            pass
+        return True
+
     def _mgl_retarget_load_preview_asset(self, asset: dict):
         if np is None or not isinstance(asset, dict):
             return None
@@ -2814,7 +3272,27 @@ class MGLRendererMixin:
             "target": (1.00, 0.45, 0.15, 0.92),
         }
         owner_by_role = {"source": source_owner, "target": target_owner}
+        try:
+            piv = getattr(self, "_mgl_scene_pivot_local_by_owner", None)
+            if not isinstance(piv, dict):
+                piv = {}
+            for owner_name in (source_owner, target_owner):
+                if owner_name:
+                    # Retarget previews must stay in their imported rig space.
+                    # The default owner pivot is the bounds center, which visually
+                    # recenters rigs and can split raw joint positions from handles.
+                    piv[str(owner_name)] = (0.0, 0.0, 0.0)
+            self._mgl_scene_pivot_local_by_owner = piv
+            self._mgl_retarget_log(
+                "renderer_retarget_origin_pivot",
+                source_owner=source_owner,
+                target_owner=target_owner,
+            )
+        except Exception:
+            pass
         scene = getattr(self, "_mgl_scene", None)
+        self._mgl_retarget_role_owners = dict(owner_by_role)
+        self._mgl_retarget_handle_frame_keys = {}
 
         handles_by_owner: Dict[str, list] = {}
         positions_by_role: Dict[str, Dict[str, Tuple[float, float, float]]] = {"source": {}, "target": {}}
@@ -2838,7 +3316,6 @@ class MGLRendererMixin:
             owner = owner_by_role[role]
             rows = []
             metadata = []
-            marker_specs = []
             for raw in list(asset.get(f"{role}_handles") or []):
                 if not isinstance(raw, dict):
                     continue
@@ -2868,7 +3345,6 @@ class MGLRendererMixin:
                 }
                 metadata.append(meta)
                 positions_by_role[role][name] = (px, py, pz)
-                marker_specs.append(((px, py, pz), raw_radius))
             if not rows:
                 continue
             arr = np.asarray(rows, dtype="f4").reshape(-1, 8)
@@ -2884,24 +3360,7 @@ class MGLRendererMixin:
             handles_by_owner[owner] = metadata
             bounds_min, bounds_max = _merge(bounds_min, bounds_max, arr[:, :3])
             if scene is not None:
-                marker_points = self._mgl_retarget_marker_line_points(marker_specs)
-                if marker_points is not None and getattr(marker_points, "size", 0):
-                    marker_item = self._mgl_add_wire_item_from_points(
-                        name=f"{owner} Joint Handles",
-                        line_points=marker_points,
-                        visible=True,
-                        tag="retarget-handles",
-                        owner=owner,
-                        path_key=f"{owner}-retarget-handles",
-                    )
-                    if marker_item is not None:
-                        payload = dict(marker_item.payload or {})
-                        payload["color"] = rgba
-                        payload["line_width"] = max(1.0, min(12.0, curve_thickness))
-                        payload["xray"] = False
-                        marker_item.payload = payload
-                        marker_item.order = 17
-                        scene.add(marker_item)
+                self._mgl_retarget_rebuild_handle_mesh_for_owner(owner, metadata, role)
 
         self._mgl_retarget_preview_active = bool(handles_by_owner)
         self._mgl_retarget_preview_owner = str(asset.get("node") or "Anim Retarget Mapping")
@@ -2912,6 +3371,14 @@ class MGLRendererMixin:
         self._mgl_retarget_joint_map = self._mgl_retarget_parse_joint_map(asset.get("joint_map"))
         self._mgl_retarget_handle_radius = handle_radius
         self._mgl_retarget_curve_thickness = curve_thickness
+        self._mgl_retarget_selected_joint = None
+        self._mgl_retarget_selection_dirty = True
+        self._mgl_retarget_links_dirty = True
+        try:
+            self._mgl_retarget_update_owner_handles(source_owner, "source", force=True)
+            self._mgl_retarget_update_owner_handles(target_owner, "target", force=True)
+        except Exception:
+            pass
         self._mgl_retarget_log(
             "renderer_load_preview_handles",
             preview_owner=self._mgl_retarget_preview_owner,
@@ -2932,28 +3399,66 @@ class MGLRendererMixin:
             return None
         return bounds_min, bounds_max
 
-    def _mgl_retarget_curve_points(self, p0, p1, arc_height: float):
+    def _mgl_retarget_link_points(self, p0, p1, dash_length: float):
         if np is None:
             return []
         a = np.asarray(p0, dtype="f4").reshape(3)
         b = np.asarray(p1, dtype="f4").reshape(3)
         try:
-            distance = float(np.linalg.norm(b - a))
+            delta = b - a
+            distance = float(np.linalg.norm(delta))
         except Exception:
             distance = 0.0
-        mid = (a + b) * 0.5
-        lift = max(0.08, float(arc_height))
-        mid = mid + np.array([0.0, lift, 0.0], dtype="f4")
-        if distance < 1.0e-5:
-            mid = mid + np.array([lift * 0.65, 0.0, 0.0], dtype="f4")
+        if distance < 1.0e-6:
+            return []
+        try:
+            desired_dash = max(0.02, float(dash_length))
+        except Exception:
+            desired_dash = 0.12
+        period = max(desired_dash * 1.7, 1.0e-5)
+        dash_count = max(1, min(96, int(math.ceil(distance / period))))
+        if dash_count <= 1:
+            return [a, b]
+        direction = (delta / distance).astype("f4")
+        period = distance / float(dash_count)
+        visible_len = max(period * 0.58, period * 0.1)
         rows = []
-        prev = a
-        for idx in range(1, 13):
-            t = float(idx) / 12.0
-            cur = ((1.0 - t) * (1.0 - t) * a) + (2.0 * (1.0 - t) * t * mid) + (t * t * b)
-            rows.append(prev)
-            rows.append(cur.astype("f4"))
-            prev = cur.astype("f4")
+        for index in range(dash_count):
+            start_dist = period * float(index)
+            end_dist = distance if index == dash_count - 1 else min(distance, start_dist + visible_len)
+            if end_dist <= start_dist:
+                continue
+            rows.append((a + direction * start_dist).astype("f4"))
+            rows.append((a + direction * end_dist).astype("f4"))
+        return rows
+
+    def _mgl_retarget_visible_position_map(self, role: str) -> Dict[str, Tuple[float, float, float]]:
+        if np is None:
+            return {}
+        role_key = str(role or "").strip().lower()
+        if role_key not in {"source", "target"}:
+            return {}
+        owners = getattr(self, "_mgl_retarget_role_owners", None)
+        handles_by_owner = getattr(self, "_mgl_retarget_joint_handles_by_owner", None)
+        if not isinstance(owners, dict) or not isinstance(handles_by_owner, dict):
+            return {}
+        owner = str(owners.get(role_key) or "").strip()
+        handles = handles_by_owner.get(owner)
+        if not owner or not isinstance(handles, list) or not handles:
+            return {}
+        positions, _radius_scale = self._mgl_retarget_pick_positions_for_owner(owner, handles)
+        rows: Dict[str, Tuple[float, float, float]] = {}
+        for index, handle in enumerate(handles):
+            if index >= int(positions.shape[0]):
+                continue
+            name = str((handle or {}).get("name") or "").strip()
+            if not name:
+                continue
+            try:
+                pos = positions[index]
+                rows[name] = (float(pos[0]), float(pos[1]), float(pos[2]))
+            except Exception:
+                continue
         return rows
 
     def _mgl_retarget_refresh_link_item(self) -> None:
@@ -2967,11 +3472,14 @@ class MGLRendererMixin:
         mapping = getattr(self, "_mgl_retarget_joint_map", None)
         if not isinstance(mapping, dict) or not mapping:
             return
-        positions = getattr(self, "_mgl_retarget_joint_positions", None)
-        if not isinstance(positions, dict):
-            return
-        source_positions = positions.get("source") if isinstance(positions.get("source"), dict) else {}
-        target_positions = positions.get("target") if isinstance(positions.get("target"), dict) else {}
+        source_positions = self._mgl_retarget_visible_position_map("source")
+        target_positions = self._mgl_retarget_visible_position_map("target")
+        if not source_positions or not target_positions:
+            positions = getattr(self, "_mgl_retarget_joint_positions", None)
+            if not isinstance(positions, dict):
+                return
+            source_positions = positions.get("source") if isinstance(positions.get("source"), dict) else {}
+            target_positions = positions.get("target") if isinstance(positions.get("target"), dict) else {}
         if not source_positions or not target_positions:
             return
 
@@ -2985,12 +3493,12 @@ class MGLRendererMixin:
         if all_pos:
             stack = np.asarray(all_pos, dtype="f4").reshape(-1, 3)
             try:
-                arc_height = float(np.linalg.norm(stack.max(axis=0) - stack.min(axis=0))) * 0.10
+                link_diag = float(np.linalg.norm(stack.max(axis=0) - stack.min(axis=0)))
             except Exception:
-                arc_height = 0.15
+                link_diag = 1.0
         else:
-            arc_height = 0.15
-        arc_height = max(0.10, arc_height)
+            link_diag = 1.0
+        dash_length = max(0.04, min(12.0, float(link_diag) * 0.018))
 
         rows = []
         for source_name, target_name in mapping.items():
@@ -2998,7 +3506,7 @@ class MGLRendererMixin:
             p1 = target_positions.get(str(target_name))
             if p0 is None or p1 is None:
                 continue
-            rows.extend(self._mgl_retarget_curve_points(p0, p1, arc_height))
+            rows.extend(self._mgl_retarget_link_points(p0, p1, dash_length))
         if not rows:
             return
         try:
@@ -3027,6 +3535,21 @@ class MGLRendererMixin:
         item.payload = payload
         item.order = 18
         scene.add(item)
+        try:
+            now = float(time.time())
+            last = float(getattr(self, "_mgl_retarget_link_log_ts", 0.0) or 0.0)
+            if (now - last) > 1.0:
+                setattr(self, "_mgl_retarget_link_log_ts", now)
+                self._mgl_retarget_log(
+                    "renderer_link_positions",
+                    link_style="straight_dashed",
+                    dash_length=round(float(dash_length), 6),
+                    mapping_count=int(len(mapping)),
+                    source=self._mgl_retarget_points_summary(source_positions.values()),
+                    target=self._mgl_retarget_points_summary(target_positions.values()),
+                )
+        except Exception:
+            pass
 
     def _mgl_retarget_set_joint_link(self, source_joint: str, target_joint: str) -> bool:
         source = str(source_joint or "").strip()
@@ -3051,6 +3574,7 @@ class MGLRendererMixin:
             mapping = dict(getattr(self, "_mgl_retarget_joint_map", None) or {})
             mapping[source] = target
         self._mgl_retarget_joint_map = mapping
+        self._mgl_retarget_links_dirty = True
         try:
             self._mgl_retarget_refresh_link_item()
         except Exception:
@@ -3091,6 +3615,65 @@ class MGLRendererMixin:
         except Exception:
             return None
 
+    def _mgl_retarget_owner_model_for_pick(self, owner: str):
+        if np is None:
+            return None, 1.0
+        owner_key = str(owner or "").strip().lower()
+        if not owner_key:
+            return None, 1.0
+        scene = getattr(self, "_mgl_scene", None)
+        model = None
+        if scene is not None:
+            try:
+                for item in scene.iter_by_tag("retarget-handles"):
+                    payload = getattr(item, "payload", None) or {}
+                    item_owner = str(payload.get("owner") or "").strip().lower()
+                    if item_owner != owner_key:
+                        continue
+                    raw_model = payload.get("model")
+                    if raw_model is not None:
+                        model = np.asarray(raw_model, dtype=np.float32).reshape(4, 4)
+                    break
+            except Exception:
+                model = None
+        scale = 1.0
+        if model is not None:
+            try:
+                sx = float(np.linalg.norm(model[0, :3]))
+                sy = float(np.linalg.norm(model[1, :3]))
+                sz = float(np.linalg.norm(model[2, :3]))
+                scale = max(1.0e-6, sx, sy, sz)
+            except Exception:
+                scale = 1.0
+        return model, scale
+
+    def _mgl_retarget_pick_positions_for_owner(self, owner: str, handles: list):
+        if np is None:
+            return np.zeros((0, 3), dtype=np.float32), 1.0
+        rows = []
+        for handle in list(handles or []):
+            try:
+                rows.append(handle.get("position", (0.0, 0.0, 0.0)))
+            except Exception:
+                rows.append((0.0, 0.0, 0.0))
+        try:
+            positions = np.asarray(rows, dtype=np.float32).reshape(-1, 3)
+        except Exception:
+            positions = np.zeros((0, 3), dtype=np.float32)
+        model, radius_scale = self._mgl_retarget_owner_model_for_pick(owner)
+        if model is None or positions.size == 0:
+            return positions, radius_scale
+        try:
+            ones = np.ones((positions.shape[0], 1), dtype=np.float32)
+            p4 = np.concatenate([positions, ones], axis=1) @ model
+            w = p4[:, 3:4]
+            safe = np.abs(w) > 1.0e-8
+            out = p4[:, :3].astype(np.float32, copy=True)
+            out[safe[:, 0]] = out[safe[:, 0]] / w[safe[:, 0]]
+            return out, radius_scale
+        except Exception:
+            return positions, radius_scale
+
     def pick_retarget_joint_at(self, px: int, py: int, viewport_w: int, viewport_h: int, role: Optional[str] = None):
         if np is None or not bool(getattr(self, "_mgl_retarget_preview_active", False)):
             return None
@@ -3102,9 +3685,6 @@ class MGLRendererMixin:
         handles_by_owner = getattr(self, "_mgl_retarget_joint_handles_by_owner", None)
         if not isinstance(handles_by_owner, dict) or not handles_by_owner:
             return None
-        splats_world = getattr(self, "_mgl_scene_splats_world", None)
-        if not isinstance(splats_world, dict):
-            splats_world = {}
 
         best = None
         best_dist2 = 1.0e30
@@ -3112,19 +3692,7 @@ class MGLRendererMixin:
         for owner, handles in handles_by_owner.items():
             if not isinstance(handles, list) or not handles:
                 continue
-            world_positions = splats_world.get(owner)
-            try:
-                positions = np.asarray(world_positions, dtype=np.float32).reshape(-1, 3)
-            except Exception:
-                positions = np.zeros((0, 3), dtype=np.float32)
-            if positions.shape[0] < len(handles):
-                rows = []
-                for handle in handles:
-                    rows.append(handle.get("position", (0.0, 0.0, 0.0)))
-                try:
-                    positions = np.asarray(rows, dtype=np.float32).reshape(-1, 3)
-                except Exception:
-                    positions = np.zeros((0, 3), dtype=np.float32)
+            positions, radius_scale = self._mgl_retarget_pick_positions_for_owner(str(owner), handles)
             for index, handle in enumerate(handles):
                 handle_role = str((handle or {}).get("role") or "").strip().lower()
                 if role_filter and handle_role != role_filter:
@@ -3143,6 +3711,7 @@ class MGLRendererMixin:
                     radius = float((handle or {}).get("pick_radius", 0.12) or 0.12)
                 except Exception:
                     radius = 0.12
+                radius *= float(radius_scale)
                 if dist2 > radius * radius:
                     continue
                 if dist2 < best_dist2 or (abs(dist2 - best_dist2) < 1.0e-8 and t < best_t):
@@ -5020,6 +5589,7 @@ class MGLRendererMixin:
                     "scene-volume",
                     "scene-camera",
                     "retarget-handles",
+                    "retarget-selection",
                 ):
                     for item in scene.iter_by_tag(tag):
                         payload = getattr(item, "payload", None) or {}
@@ -5549,6 +6119,7 @@ class MGLRendererMixin:
         self._mgl_apply_procedural_uniforms(proc_state)
         manual_texture = self._mgl_texture if self._mgl_texture_override else None
         weight_debug = bool(payload.get("_fbx_skin_weight_debug", False))
+        use_vertex_color = bool(weight_debug or payload.get("use_vertex_color", False))
         material = self._mgl_normalize_material(payload.get("material"))
         is_transparent_material = (not weight_debug) and self._mgl_material_is_transparent(material)
         if material is not None:
@@ -5671,7 +6242,13 @@ class MGLRendererMixin:
 
         _apply_material_uniforms()
         _apply_weight_debug_uniforms()
-        if not weight_debug:
+        if use_vertex_color:
+            try:
+                self._mgl_prog["UseVertexColor"].value = 1
+                self._mgl_prog["UseTexture"].value = 0
+            except Exception:
+                pass
+        else:
             try:
                 self._mgl_prog["UseVertexColor"].value = 0
             except Exception:
@@ -5913,10 +6490,10 @@ class MGLRendererMixin:
             for sub in submeshes:
                 color = sub.get("color") or self._mgl_mesh_color
                 tex = manual_texture or sub.get("texture")
-                use_texture = (tex is not None) and (not weight_debug)
+                use_texture = (tex is not None) and (not use_vertex_color)
                 try:
                     self._mgl_prog["UseTexture"].value = 1 if use_texture else 0
-                    self._mgl_prog["UseVertexColor"].value = 1 if weight_debug else 0
+                    self._mgl_prog["UseVertexColor"].value = 1 if use_vertex_color else 0
                     self._mgl_prog["UseLighting"].value = 1
                     self._mgl_prog["LightIntensity"].value = float(self._mgl_light_intensity)
                     self._mgl_prog["Color"].value = color
@@ -5949,10 +6526,10 @@ class MGLRendererMixin:
                 _apply_material_uniforms()
             color = payload.get("color") or self._mgl_mesh_color
             tex = manual_texture or payload.get("texture")
-            use_texture = (tex is not None) and (not weight_debug)
+            use_texture = (tex is not None) and (not use_vertex_color)
             try:
                 self._mgl_prog["UseTexture"].value = 1 if use_texture else 0
-                self._mgl_prog["UseVertexColor"].value = 1 if weight_debug else 0
+                self._mgl_prog["UseVertexColor"].value = 1 if use_vertex_color else 0
                 self._mgl_prog["UseLighting"].value = 1
                 self._mgl_prog["LightIntensity"].value = float(self._mgl_light_intensity)
                 self._mgl_prog["Color"].value = color
@@ -5985,10 +6562,10 @@ class MGLRendererMixin:
                     for sub in submeshes:
                         color = sub.get("color") or self._mgl_mesh_color
                         tex = tex_override
-                        use_texture = (tex is not None) and (not weight_debug)
+                        use_texture = (tex is not None) and (not use_vertex_color)
                         try:
                             self._mgl_prog["UseTexture"].value = 1 if use_texture else 0
-                            self._mgl_prog["UseVertexColor"].value = 1 if weight_debug else 0
+                            self._mgl_prog["UseVertexColor"].value = 1 if use_vertex_color else 0
                             self._mgl_prog["UseLighting"].value = 1
                             self._mgl_prog["LightIntensity"].value = float(self._mgl_light_intensity)
                             self._mgl_prog["Color"].value = color
@@ -6005,10 +6582,10 @@ class MGLRendererMixin:
                 else:
                     color = payload.get("color") or self._mgl_mesh_color
                     tex = tex_override
-                    use_texture = (tex is not None) and (not weight_debug)
+                    use_texture = (tex is not None) and (not use_vertex_color)
                     try:
                         self._mgl_prog["UseTexture"].value = 1 if use_texture else 0
-                        self._mgl_prog["UseVertexColor"].value = 1 if weight_debug else 0
+                        self._mgl_prog["UseVertexColor"].value = 1 if use_vertex_color else 0
                         self._mgl_prog["UseLighting"].value = 1
                         self._mgl_prog["LightIntensity"].value = float(self._mgl_light_intensity)
                         self._mgl_prog["Color"].value = color
@@ -8755,6 +9332,11 @@ class MGLRendererMixin:
         except Exception:
             pass
 
+        try:
+            self._mgl_retarget_refresh_dynamic_handles()
+        except Exception:
+            pass
+
         # If splat visibility changed, rebuild in GL context.
         try:
             if bool(getattr(self, "_mgl_splats_visibility_dirty", False)):
@@ -10896,6 +11478,11 @@ class MGLRendererMixin:
         self._mgl_retarget_joint_map = {}
         self._mgl_retarget_handle_radius = 0.008
         self._mgl_retarget_curve_thickness = 2.4
+        self._mgl_retarget_role_owners = {}
+        self._mgl_retarget_handle_frame_keys = {}
+        self._mgl_retarget_selected_joint = None
+        self._mgl_retarget_selection_dirty = False
+        self._mgl_retarget_links_dirty = False
         try:
             for entry in assets or []:
                 if not isinstance(entry, dict):
