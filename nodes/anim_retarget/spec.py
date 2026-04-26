@@ -1855,6 +1855,7 @@ def _build_global_rotation_key_sets(
     source_index: Dict[str, int],
     target_index: Dict[str, int],
     source_basis: Tuple[float, float, float, float] | None = None,
+    target_basis: Tuple[float, float, float, float] | None = None,
 ) -> Dict[str, List[Any]]:
     try:
         from echograph.rigging.fbx_canonical import QuatKeyframe
@@ -1867,8 +1868,19 @@ def _build_global_rotation_key_sets(
 
     source_bind_global = _global_bind_rotations(source_skeleton)
     target_bind_global = _global_bind_rotations(target_skeleton)
-    basis = _quat_normalize(source_basis or (0.0, 0.0, 0.0, 1.0))
-    basis_inv = _quat_inverse(basis)
+    try:
+        source_reference_time = float(getattr(source_clip, "start_time", 0.0) or 0.0)
+    except Exception:
+        source_reference_time = 0.0
+    source_reference_global = _global_sample_rotations(
+        source_skeleton,
+        source_tracks,
+        source_reference_time,
+    )
+    source_basis_q = _quat_normalize(source_basis or (0.0, 0.0, 0.0, 1.0))
+    target_basis_q = _quat_normalize(target_basis or (0.0, 0.0, 0.0, 1.0))
+    source_basis_inv = _quat_inverse(source_basis_q)
+    target_basis_inv = _quat_inverse(target_basis_q)
     target_to_source: Dict[str, str] = {}
     for source_name, target_name in mapping.items():
         s_name = str(source_name or "").strip()
@@ -1905,8 +1917,16 @@ def _build_global_rotation_key_sets(
             if source_name:
                 si = source_index.get(source_name)
                 if si is not None and 0 <= int(si) < len(source_global) and int(si) < len(source_bind_global):
-                    source_delta = _quat_mul(_quat_inverse(source_bind_global[int(si)]), source_global[int(si)])
-                    source_delta = _quat_mul(basis, _quat_mul(source_delta, basis_inv))
+                    reference_global = (
+                        source_reference_global[int(si)]
+                        if int(si) < len(source_reference_global)
+                        else source_bind_global[int(si)]
+                    )
+                    source_delta = _quat_mul(_quat_inverse(reference_global), source_global[int(si)])
+                    source_delta = _quat_mul(
+                        target_basis_inv,
+                        _quat_mul(source_basis_q, _quat_mul(source_delta, _quat_mul(source_basis_inv, target_basis_q))),
+                    )
                     desired_global = _quat_mul(target_bind_global[idx], source_delta)
                     local = _quat_mul(_quat_inverse(parent_global), desired_global)
                     target_local_current[name] = local
@@ -2020,12 +2040,19 @@ def _copy_translation_keys(
     target_bind,
     scale: float,
     source_basis: Tuple[float, float, float, float] | None = None,
+    target_basis: Tuple[float, float, float, float] | None = None,
 ):
     try:
         from echograph.rigging.fbx_canonical import Vec3Keyframe
     except Exception:
         return []
     source_t = getattr(source_bind, "translation", (0.0, 0.0, 0.0))
+    source_keys = list(getattr(source_track, "translation_keys", []) or [])
+    if source_keys:
+        try:
+            source_t = tuple(getattr(source_keys[0], "value", source_t))
+        except Exception:
+            pass
     target_t = getattr(target_bind, "translation", (0.0, 0.0, 0.0))
     try:
         sx, sy, sz = (float(source_t[0]), float(source_t[1]), float(source_t[2]))
@@ -2036,9 +2063,11 @@ def _copy_translation_keys(
     except Exception:
         tx, ty, tz = (0.0, 0.0, 0.0)
     s = float(scale) if math.isfinite(float(scale)) else 1.0
-    basis = _quat_normalize(source_basis or (0.0, 0.0, 0.0, 1.0))
+    source_basis_q = _quat_normalize(source_basis or (0.0, 0.0, 0.0, 1.0))
+    target_basis_q = _quat_normalize(target_basis or (0.0, 0.0, 0.0, 1.0))
+    basis = _quat_mul(_quat_inverse(target_basis_q), source_basis_q)
     out = []
-    for key in list(getattr(source_track, "translation_keys", []) or []):
+    for key in source_keys:
         try:
             vx, vy, vz = getattr(key, "value", (sx, sy, sz))
             dx, dy, dz = _quat_rotate_vec3(
@@ -2119,6 +2148,7 @@ def build_anim_retarget_clip(
     target_eval_context["skeleton"] = target_skeleton
     translation_scale = _retarget_translation_scale(model, source_context, target_eval_context)
     source_basis = _rotation_basis_from_xform(source_context.get("transform_xform"))
+    target_basis = _rotation_basis_from_xform(target_context.get("transform_xform"))
     rotation_key_sets = _build_global_rotation_key_sets(
         source_skeleton,
         target_skeleton,
@@ -2128,6 +2158,7 @@ def build_anim_retarget_clip(
         source_index,
         target_index,
         source_basis,
+        target_basis,
     )
     tracks = []
     used_targets = set()
@@ -2170,6 +2201,7 @@ def build_anim_retarget_clip(
                     target_bind,
                     translation_scale,
                     source_basis,
+                    target_basis,
                 )
             else:
                 skipped.append(f"{source_name}->{target_name}: translation keys ignored to preserve target bone lengths")
@@ -2191,9 +2223,10 @@ def build_anim_retarget_clip(
         return None
 
     clip_name = str(getattr(source_clip, "name", "") or "source").strip() or "source"
+    source_reference_time = float(getattr(source_clip, "start_time", 0.0) or 0.0)
     retarget_clip = AnimationClip(
         name=f"{clip_name}_retarget",
-        start_time=float(getattr(source_clip, "start_time", 0.0) or 0.0),
+        start_time=source_reference_time,
         end_time=float(getattr(source_clip, "end_time", 0.0) or 0.0),
         sample_rate_hz=float(getattr(source_clip, "sample_rate_hz", 30.0) or 30.0),
         tracks=tracks,
@@ -2203,7 +2236,8 @@ def build_anim_retarget_clip(
             "joint_map_count": int(len(mapping)),
             "retarget_track_count": int(len(tracks)),
             "translation_scale": float(translation_scale),
-            "rotation_space": "global_bind_delta",
+            "rotation_space": "clip_start_delta_relative_transform",
+            "source_reference_time": float(source_reference_time),
         },
     )
     try:
@@ -2226,7 +2260,12 @@ def build_anim_retarget_clip(
         skipped=skipped,
         translation_scale=round(float(translation_scale), 6),
         translation_policy="root_motion_only",
-        rotation_space="global_bind_delta",
+        rotation_space="clip_start_delta_relative_transform",
+        source_reference_time=round(float(source_reference_time), 6),
+        source_transform=dict(source_context.get("transform_xform") or {}),
+        target_transform=dict(target_context.get("transform_xform") or {}),
+        source_basis=_round_quat(source_basis),
+        target_basis=_round_quat(target_basis),
     )
     return retarget_clip
 
@@ -2388,6 +2427,7 @@ def _clip_debug_summary(clip) -> Dict[str, Any]:
         "end_time": _round_float(getattr(clip, "end_time", 0.0) if clip is not None else 0.0),
         "sample_rate_hz": _round_float(getattr(clip, "sample_rate_hz", 0.0) if clip is not None else 0.0),
         "track_count": int(len(tracks)),
+        "metadata": dict(getattr(clip, "metadata", {}) or {}) if clip is not None else {},
         "tracks": [
             {
                 "joint": str(getattr(track, "joint_name", "") or ""),
