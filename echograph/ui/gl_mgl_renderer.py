@@ -3461,6 +3461,42 @@ class MGLRendererMixin:
                 continue
         return rows
 
+    def _mgl_retarget_grid_min_render_size(self) -> float:
+        if np is None or not bool(getattr(self, "_mgl_retarget_preview_active", False)):
+            return 0.0
+        handles_by_owner = getattr(self, "_mgl_retarget_joint_handles_by_owner", None)
+        if not isinstance(handles_by_owner, dict) or not handles_by_owner:
+            return 0.0
+        chunks = []
+        for owner, handles in handles_by_owner.items():
+            if not isinstance(handles, list) or not handles:
+                continue
+            try:
+                positions, _radius_scale = self._mgl_retarget_pick_positions_for_owner(str(owner), handles)
+                if positions is not None and getattr(positions, "size", 0):
+                    chunks.append(np.asarray(positions, dtype="f4").reshape(-1, 3))
+            except Exception:
+                continue
+        if not chunks:
+            return 0.0
+        try:
+            points = np.concatenate(chunks, axis=0).astype("f4", copy=False)
+            if points.size == 0:
+                return 0.0
+            x_vals = points[:, 0]
+            z_vals = points[:, 2]
+            max_abs = max(
+                float(np.max(np.abs(x_vals))),
+                float(np.max(np.abs(z_vals))),
+            )
+            span = max(
+                float(np.max(x_vals) - np.min(x_vals)),
+                float(np.max(z_vals) - np.min(z_vals)),
+            )
+            return max(0.0, max_abs, span * 0.55) * 1.35
+        except Exception:
+            return 0.0
+
     def _mgl_retarget_refresh_link_item(self) -> None:
         scene = getattr(self, "_mgl_scene", None)
         if scene is None or np is None:
@@ -3530,8 +3566,7 @@ class MGLRendererMixin:
             line_width = 2.4
         payload["color"] = (0.25, 1.00, 0.45, 1.0)
         payload["line_width"] = max(0.5, min(20.0, line_width))
-        payload["xray"] = True
-        payload["xray_back_alpha"] = 0.35
+        payload["xray"] = False
         item.payload = payload
         item.order = 18
         scene.add(item)
@@ -7001,6 +7036,10 @@ class MGLRendererMixin:
             self._mgl_ctx.enable(moderngl.DEPTH_TEST)
         except Exception:
             pass
+        try:
+            self._mgl_ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
+        except Exception:
+            pass
 
         if not is_volume and not xray:
             try:
@@ -8418,6 +8457,23 @@ class MGLRendererMixin:
         return False
 
     def _paint_mgl_draw_grid_pass(self, *, mvp) -> None:
+        retarget_grid_size = 0.0
+        try:
+            retarget_grid_size = float(self._mgl_retarget_grid_min_render_size())
+        except Exception:
+            retarget_grid_size = 0.0
+        try:
+            current_grid_size = float(getattr(self, "_mgl_grid_render_size", 0.0) or 0.0)
+        except Exception:
+            current_grid_size = 0.0
+        if bool(getattr(self, "_mgl_grid_visible", False)) and (
+            self._mgl_grid_vao is None or not bool(getattr(self, "_mgl_grid_vertex_count", 0))
+            or (retarget_grid_size > 0.0 and current_grid_size < retarget_grid_size * 0.95)
+        ):
+            try:
+                self._mgl_update_grid()
+            except Exception:
+                pass
         try:
             if bool(getattr(self, "_mgl_grid_visible", False)):
                 if self._mgl_grid_vao is None:
@@ -8474,6 +8530,10 @@ class MGLRendererMixin:
                     pass
                 try:
                     self._mgl_ctx.enable(moderngl.BLEND)
+                except Exception:
+                    pass
+                try:
+                    self._mgl_ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
                 except Exception:
                     pass
 
@@ -9145,6 +9205,10 @@ class MGLRendererMixin:
 
         self._mgl_ctx.wireframe = False
         try:
+            self._mgl_ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
+        except Exception:
+            pass
+        try:
             # Ensure depth writes are on before drawing the scene.
             self._mgl_ctx.depth_mask = True
         except Exception:
@@ -9522,15 +9586,13 @@ class MGLRendererMixin:
         proj, lookat, transform, mvp = self._paint_mgl_build_matrices(dbg=dbg)
         self._paint_mgl_apply_scene_visibility_and_upload(mvp=mvp)
 
-        self._paint_mgl_draw_grid_pass(mvp=mvp)
-
-
         self._paint_mgl_draw_splats_pass(
             proj=proj,
             lookat=lookat,
             transform=transform,
         )
         self._paint_mgl_draw_splat_wireframe_pass(mvp=mvp)
+        self._paint_mgl_draw_grid_pass(mvp=mvp)
         self._paint_mgl_draw_transparent_scene_pass(mvp=mvp)
 
 
@@ -10626,6 +10688,12 @@ class MGLRendererMixin:
             extend = 1.0
         render_size = base_size * extend
         render_steps = max(3, int(round(base_cells * extend)))
+        try:
+            retarget_grid_size = float(self._mgl_retarget_grid_min_render_size())
+        except Exception:
+            retarget_grid_size = 0.0
+        if retarget_grid_size > render_size:
+            render_size = retarget_grid_size
         if (render_steps % 2) == 0:
             render_steps += 1
         try:
