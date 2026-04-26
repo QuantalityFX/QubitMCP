@@ -45,6 +45,13 @@ TARGET_KIND_ALIASES: Tuple[str, ...] = (
     "fbximport",
 )
 
+TRANSFORM_KIND_ALIASES: Tuple[str, ...] = (
+    "transforms",
+    "transform",
+    "transform_node",
+    "transform node",
+)
+
 VISIBLE_PORTS: Tuple[str, str] = ("source", "target")
 HIDDEN_PARAMS: Tuple[str, ...] = (
     "joint_map",
@@ -191,6 +198,75 @@ def _param_float(
     return float(value)
 
 
+def _param_vec3(model, name: str, default: Tuple[float, float, float]) -> Tuple[float, float, float]:
+    raw = _param_value(model, name)
+    try:
+        parts = [part.strip() for part in str(raw or "").split(",")]
+        if len(parts) >= 3:
+            return (float(parts[0]), float(parts[1]), float(parts[2]))
+    except Exception:
+        pass
+    return (float(default[0]), float(default[1]), float(default[2]))
+
+
+def _clean_xform(raw: Any | None = None) -> Dict[str, Tuple[float, float, float]]:
+    data = raw if isinstance(raw, dict) else {}
+
+    def _vec(name: str, default: Tuple[float, float, float]) -> Tuple[float, float, float]:
+        value = data.get(name, default) if isinstance(data, dict) else default
+        try:
+            if isinstance(value, str):
+                parts = [part.strip() for part in value.split(",")]
+                if len(parts) >= 3:
+                    return (float(parts[0]), float(parts[1]), float(parts[2]))
+                return (float(default[0]), float(default[1]), float(default[2]))
+            if len(value) >= 3:
+                return (float(value[0]), float(value[1]), float(value[2]))
+        except Exception:
+            pass
+        return (float(default[0]), float(default[1]), float(default[2]))
+
+    return {
+        "pos": _vec("pos", (0.0, 0.0, 0.0)),
+        "rot": _vec("rot", (0.0, 0.0, 0.0)),
+        "scl": _vec("scl", (1.0, 1.0, 1.0)),
+    }
+
+
+def _xform_from_transform_node(node_item) -> Dict[str, Tuple[float, float, float]]:
+    model = getattr(node_item, "model", None)
+    return {
+        "pos": _param_vec3(model, "pos", (0.0, 0.0, 0.0)),
+        "rot": _param_vec3(model, "rot", (0.0, 0.0, 0.0)),
+        "scl": _param_vec3(model, "scl", (1.0, 1.0, 1.0)),
+    }
+
+
+def _combine_xforms(
+    base: Dict[str, Any] | None,
+    extra: Dict[str, Any] | None,
+) -> Dict[str, Tuple[float, float, float]]:
+    a = _clean_xform(base)
+    b = _clean_xform(extra)
+    return {
+        "pos": (
+            float(a["pos"][0]) + float(b["pos"][0]),
+            float(a["pos"][1]) + float(b["pos"][1]),
+            float(a["pos"][2]) + float(b["pos"][2]),
+        ),
+        "rot": (
+            float(a["rot"][0]) + float(b["rot"][0]),
+            float(a["rot"][1]) + float(b["rot"][1]),
+            float(a["rot"][2]) + float(b["rot"][2]),
+        ),
+        "scl": (
+            float(a["scl"][0]) * float(b["scl"][0]),
+            float(a["scl"][1]) * float(b["scl"][1]),
+            float(a["scl"][2]) * float(b["scl"][2]),
+        ),
+    }
+
+
 def _ensure_param(node_item, name: str, default: str = "") -> None:
     model = getattr(node_item, "model", None)
     if model is None:
@@ -311,6 +387,26 @@ def _connected_item_for_port(scene, node_item, port_name: str):
     issue = ""
     if len(matches) > 1:
         issue = f"{port_name}: multiple inputs connected; using first edge."
+    return getattr(matches[0], "src", None), issue
+
+
+def _connected_item_for_ports(scene, node_item, port_names) -> tuple[Any | None, str]:
+    if scene is None or node_item is None:
+        return None, ""
+    wanted = {str(name or "").strip().lower() for name in (port_names or []) if str(name or "").strip()}
+    edges = _ordered_in_edges(scene, node_item)
+    matches = []
+    for edge in edges:
+        dst = _edge_dst_name(edge).lower()
+        if dst in wanted:
+            matches.append(edge)
+    if not matches and edges:
+        matches = [edges[0]]
+    if not matches:
+        return None, ""
+    issue = ""
+    if len(matches) > 1:
+        issue = "transform: multiple inputs connected; using first edge."
     return getattr(matches[0], "src", None), issue
 
 
@@ -565,7 +661,92 @@ def _fbx_context_from_item(
     }
 
 
-def _context_for_source_item(node_item, kind: str, errors: List[str], warnings: List[str]) -> Dict[str, Any] | None:
+def _transform_context_from_item(
+    node_item,
+    role: str,
+    errors: List[str],
+    warnings: List[str],
+    *,
+    target: bool,
+    _depth: int = 0,
+    _visited: set[int] | None = None,
+) -> Dict[str, Any] | None:
+    if _visited is None:
+        _visited = set()
+    node_id = id(node_item)
+    if node_id in _visited or _depth > 8:
+        errors.append(f"{role}: transform input chain contains a cycle.")
+        return None
+    _visited.add(node_id)
+
+    scene = None
+    try:
+        scene = node_item.scene()
+    except Exception:
+        scene = None
+    source_item, issue = _connected_item_for_ports(scene, node_item, ("mesh", "path", "source"))
+    if issue:
+        warnings.append(f"{role}: {issue}")
+    if source_item is None:
+        errors.append(f"{role}: Transform node must be connected to an FBX Import or Mocap Import node.")
+        return None
+
+    source_model = getattr(source_item, "model", None)
+    source_kind = str(getattr(source_model, "kind", "") or "").strip().lower()
+    if target:
+        context = _context_for_target_item(
+            source_item,
+            source_kind,
+            errors,
+            warnings,
+            _depth=_depth + 1,
+            _visited=_visited,
+        )
+    else:
+        context = _context_for_source_item(
+            source_item,
+            source_kind,
+            errors,
+            warnings,
+            _depth=_depth + 1,
+            _visited=_visited,
+        )
+    if not isinstance(context, dict):
+        if source_model is not None:
+            expected = "FBX Import" if target else "Mocap Import or FBX Import"
+            errors.append(
+                f"{role}: Transform input is connected to unsupported node kind "
+                f"'{source_kind or '<none>'}'; expected {expected}."
+            )
+        return None
+
+    transform_xform = _xform_from_transform_node(node_item)
+    out = dict(context)
+    out["transform_xform"] = _combine_xforms(out.get("transform_xform"), transform_xform)
+    chain = list(out.get("transform_chain") or [])
+    model = getattr(node_item, "model", None)
+    chain.append(
+        {
+            "name": str(getattr(model, "name", "") or "").strip(),
+            "kind": str(getattr(model, "kind", "") or "").strip().lower(),
+            "xform": transform_xform,
+        }
+    )
+    out["transform_chain"] = chain
+    out["transform_node_item"] = node_item
+    out["transform_node_model"] = model
+    return out
+
+
+def _context_for_source_item(
+    node_item,
+    kind: str,
+    errors: List[str],
+    warnings: List[str],
+    *,
+    _depth: int = 0,
+    _visited: set[int] | None = None,
+) -> Dict[str, Any] | None:
     if kind in (
         "mocap_import",
         "mocap import",
@@ -577,12 +758,40 @@ def _context_for_source_item(node_item, kind: str, errors: List[str], warnings: 
         return _mocap_context_from_item(node_item, "source", errors, warnings)
     if kind in TARGET_KIND_ALIASES:
         return _fbx_context_from_item(node_item, "source", errors, warnings, require_clip=True)
+    if kind in TRANSFORM_KIND_ALIASES:
+        return _transform_context_from_item(
+            node_item,
+            "source",
+            errors,
+            warnings,
+            target=False,
+            _depth=_depth,
+            _visited=_visited,
+        )
     return None
 
 
-def _context_for_target_item(node_item, kind: str, errors: List[str], warnings: List[str]) -> Dict[str, Any] | None:
+def _context_for_target_item(
+    node_item,
+    kind: str,
+    errors: List[str],
+    warnings: List[str],
+    *,
+    _depth: int = 0,
+    _visited: set[int] | None = None,
+) -> Dict[str, Any] | None:
     if kind in TARGET_KIND_ALIASES:
         return _fbx_context_from_item(node_item, "target", errors, warnings, require_clip=False)
+    if kind in TRANSFORM_KIND_ALIASES:
+        return _transform_context_from_item(
+            node_item,
+            "target",
+            errors,
+            warnings,
+            target=True,
+            _depth=_depth,
+            _visited=_visited,
+        )
     return None
 
 
@@ -627,14 +836,14 @@ def resolve_anim_retarget_inputs(node_item, *, persist: bool = False) -> Retarge
     target_kind = str(getattr(target_model, "kind", "") or "").strip().lower()
 
     if source_model is None:
-        errors.append("source: connect a Mocap Import or FBX Import node.")
-    elif source_kind not in SOURCE_KIND_ALIASES:
+        errors.append("source: connect a Mocap Import, FBX Import, or Transform node.")
+    elif source_kind not in SOURCE_KIND_ALIASES and source_kind not in TRANSFORM_KIND_ALIASES:
         errors.append(f"source: unsupported node kind '{source_kind or '<none>'}'.")
 
     if target_model is None:
-        errors.append("target: connect an FBX Import node.")
-    elif target_kind not in TARGET_KIND_ALIASES:
-        errors.append(f"target: unsupported node kind '{target_kind or '<none>'}'; expected FBX Import.")
+        errors.append("target: connect an FBX Import or Transform node.")
+    elif target_kind not in TARGET_KIND_ALIASES and target_kind not in TRANSFORM_KIND_ALIASES:
+        errors.append(f"target: unsupported node kind '{target_kind or '<none>'}'; expected FBX Import or Transform.")
 
     source_context = None
     target_context = None
@@ -647,9 +856,15 @@ def resolve_anim_retarget_inputs(node_item, *, persist: bool = False) -> Retarge
             target_context = cached_target
 
     if persist:
-        if source_model is not None and source_kind in SOURCE_KIND_ALIASES:
+        if (
+            source_model is not None
+            and (source_kind in SOURCE_KIND_ALIASES or source_kind in TRANSFORM_KIND_ALIASES)
+        ):
             source_context = _context_for_source_item(source_item, source_kind, errors, warnings)
-        if target_model is not None and target_kind in TARGET_KIND_ALIASES:
+        if (
+            target_model is not None
+            and (target_kind in TARGET_KIND_ALIASES or target_kind in TRANSFORM_KIND_ALIASES)
+        ):
             target_context = _context_for_target_item(target_item, target_kind, errors, warnings)
 
     source_joint_count = int((source_context or {}).get("joint_count", 0) or 0)
@@ -891,6 +1106,12 @@ def _preview_asset_for_context(
     except Exception:
         return None
     rig_context = _preview_rig_context(context, role, curve_thickness=curve_thickness)
+    xform = _clean_xform(context.get("transform_xform") if isinstance(context, dict) else None)
+    pos = (
+        float(xform["pos"][0]) + float(x_offset),
+        float(xform["pos"][1]),
+        float(xform["pos"][2]),
+    )
     return {
         "path": path_text,
         "texture": "",
@@ -898,9 +1119,9 @@ def _preview_asset_for_context(
         "ext": ".bvh",
         "visible": True,
         "xform": {
-            "pos": [float(x_offset), 0.0, 0.0],
-            "rot": [0.0, 0.0, 0.0],
-            "scl": [1.0, 1.0, 1.0],
+            "pos": [float(pos[0]), float(pos[1]), float(pos[2])],
+            "rot": [float(v) for v in xform["rot"]],
+            "scl": [float(v) for v in xform["scl"]],
         },
         "fbx_rig_context": rig_context,
         "fbx_debug_log": bool(rig_context.get("fbx_debug_log", False)),
@@ -1024,6 +1245,8 @@ def build_anim_retarget_preview_assets(
         curve_thickness=round(curve_thickness, 6),
         source_pose="animated_clip_frame0",
         target_pose="capture_inverse_bind",
+        source_transform=dict(source_context.get("transform_xform") or {}),
+        target_transform=dict(target_context.get("transform_xform") or {}),
         source_skeleton=_points_summary(
             _skeleton_joint_positions(source_context.get("skeleton"), clip=source_context.get("clip"))
         ),

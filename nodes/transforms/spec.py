@@ -17,7 +17,8 @@ except Exception:
 from nodes.core import Spec
 from nodes.util_graph import param_change_relevant as _param_change_relevant
 
-SUPPORTED_MESH_EXTS = {".obj", ".fbx", ".gltf", ".glb", ".stl", ".ply", ".off", ".om"}
+SUPPORTED_MESH_EXTS = {".obj", ".fbx", ".gltf", ".glb", ".stl", ".ply", ".off", ".om", ".bvh"}
+RIG_PASSTHROUGH_EXTS = {".bvh"}
 
 
 def _sanitize_name(name: str) -> str:
@@ -1006,6 +1007,12 @@ class TransformWidget(QtWidgets.QWidget):
             self._view_btn.setEnabled(False)
             self._set_param("source", src_path, notify_scene=False)
             self._set_param("path", "", notify_scene=True)
+            return
+        if mesh_ext in RIG_PASSTHROUGH_EXTS:
+            self._status.setText(label)
+            self._view_btn.setEnabled(True)
+            self._set_param("source", src_path, notify_scene=False)
+            self._set_param("path", src_path, notify_scene=True)
             return
         if (not force) and (not self._should_auto_bake()):
             self._status.setText(label)
