@@ -477,7 +477,6 @@ void main() {
     if (FadeEnd > FadeStart) {
         fade = 1.0 - smoothstep(FadeStart, FadeEnd, dist);
     }
-    rgb *= fade;
     f_color = vec4(rgb, alpha * fade);
 }
 """,

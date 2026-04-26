@@ -8615,17 +8615,17 @@ class MGLRendererMixin:
                 except Exception:
                     cam_height = None
                 if render_size > 0.0:
-                    fade_start = render_size * max(0.0, min(1.0, fade_start_frac))
-                    fade_end = render_size * max(0.0, min(1.0, fade_end_frac))
                     max_fade = render_size * 0.98
+                    retarget_grid = bool(getattr(self, "_mgl_retarget_preview_active", False))
                     if not grid_fx:
-                        if max_fade > 0.0:
-                            ratio = 0.0
-                            if fade_end_frac > 1e-6:
-                                ratio = max(0.0, fade_start_frac / fade_end_frac)
-                            fade_end = max_fade
-                            fade_start = max(0.0, fade_end * ratio)
+                        fade_start = 0.0
+                        fade_end = 0.0
+                    elif retarget_grid:
+                        fade_start = render_size * 0.64
+                        fade_end = max_fade
                     else:
+                        fade_start = render_size * max(0.0, min(1.0, fade_start_frac))
+                        fade_end = render_size * max(0.0, min(1.0, fade_end_frac))
                         try:
                             cam_dist = float(getattr(self, "_mgl_camera_zoom", 0.0))
                         except Exception:
@@ -8656,7 +8656,7 @@ class MGLRendererMixin:
                                 height_scale = 1.0 + (height_boost * math.exp(-cam_height / height_ref))
                                 fade_start *= height_scale
                                 fade_end *= height_scale
-                    if fade_end > max_fade:
+                    if grid_fx and fade_end > max_fade:
                         if fade_end > 1e-6:
                             scale = max_fade / fade_end
                             fade_start *= scale
