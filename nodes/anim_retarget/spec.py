@@ -1750,6 +1750,12 @@ def _quat_normalize(q) -> Tuple[float, float, float, float]:
     return (x * inv, y * inv, z * inv, w * inv)
 
 
+def _quat_dot(a, b) -> float:
+    ax, ay, az, aw = _quat_normalize(a)
+    bx, by, bz, bw = _quat_normalize(b)
+    return (ax * bx) + (ay * by) + (az * bz) + (aw * bw)
+
+
 def _quat_mul(a, b) -> Tuple[float, float, float, float]:
     ax, ay, az, aw = _quat_normalize(a)
     bx, by, bz, bw = _quat_normalize(b)
@@ -2538,12 +2544,15 @@ def _build_global_rotation_key_sets(
                         if int(si) < len(source_reference_global)
                         else source_bind_global[int(si)]
                     )
-                    source_delta = _quat_mul(_quat_inverse(reference_global), source_global[int(si)])
+                    # Apply source motion as a world-space delta. BVH hips often carry a
+                    # first-frame basis rotation; post-multiplying that local delta can
+                    # turn target pelvis children upward even when the source leg stays down.
+                    source_delta = _quat_mul(source_global[int(si)], _quat_inverse(reference_global))
                     source_delta = _quat_mul(
                         target_basis_inv,
                         _quat_mul(source_basis_q, _quat_mul(source_delta, _quat_mul(source_basis_inv, target_basis_q))),
                     )
-                    desired_global = _quat_mul(target_bind_global[idx], source_delta)
+                    desired_global = _quat_mul(source_delta, target_bind_global[idx])
                     local = _quat_mul(_quat_inverse(parent_global), desired_global)
                     target_local_current[name] = local
             target_global_current.append(_quat_mul(parent_global, local))
@@ -2566,6 +2575,12 @@ def _build_global_rotation_key_sets(
             local = _target_locals_at(t).get(t_name)
             if local is None:
                 continue
+            local = _quat_normalize(local)
+            if (
+                keyframes
+                and _quat_dot(getattr(keyframes[-1], "value", (0.0, 0.0, 0.0, 1.0)), local) < 0.0
+            ):
+                local = (-local[0], -local[1], -local[2], -local[3])
             keyframes.append(
                 QuatKeyframe(
                     time=t,
@@ -2639,7 +2654,15 @@ def _copy_rotation_keys(source_track, source_bind, target_bind):
     source_bind_inv = _quat_inverse(source_bind_q)
     out = []
     for key in list(getattr(source_track, "rotation_keys", []) or []):
-        value = _quat_mul(target_bind_q, _quat_mul(source_bind_inv, getattr(key, "value", (0.0, 0.0, 0.0, 1.0))))
+        value = _quat_mul(
+            target_bind_q,
+            _quat_mul(source_bind_inv, getattr(key, "value", (0.0, 0.0, 0.0, 1.0))),
+        )
+        if (
+            out
+            and _quat_dot(getattr(out[-1], "value", (0.0, 0.0, 0.0, 1.0)), value) < 0.0
+        ):
+            value = (-value[0], -value[1], -value[2], -value[3])
         out.append(
             QuatKeyframe(
                 time=float(getattr(key, "time", 0.0) or 0.0),
@@ -2951,7 +2974,7 @@ def build_anim_retarget_clip(
             "joint_map_count": int(len(mapping)),
             "retarget_track_count": int(len(tracks)),
             "translation_scale": float(translation_scale),
-            "rotation_space": "clip_start_delta_relative_transform",
+            "rotation_space": "clip_start_world_delta",
             "source_reference_time": float(source_reference_time),
             "pelvis_constraint": dict(pelvis_constraint),
         },
@@ -2976,7 +2999,7 @@ def build_anim_retarget_clip(
         skipped=skipped,
         translation_scale=round(float(translation_scale), 6),
         translation_policy="root_motion_only",
-        rotation_space="clip_start_delta_relative_transform",
+        rotation_space="clip_start_world_delta",
         source_reference_time=round(float(source_reference_time), 6),
         source_transform=dict(source_context.get("transform_xform") or {}),
         target_transform=dict(target_context.get("transform_xform") or {}),
