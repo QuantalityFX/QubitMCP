@@ -581,10 +581,25 @@ class MGLRendererMixin:
             return
 
         pose_mode = str(payload.get("fbx_rig_pose_mode", "animated") or "animated").strip().lower()
+        owner_for_pose = str(payload.get("owner") or "").strip()
+        target_pose_edit_static = False
+        try:
+            target_pose_edit_static = (
+                self._mgl_retarget_pick_mode() == "target_pose"
+                and owner_for_pose
+                and owner_for_pose.lower() == self._mgl_retarget_target_owner().lower()
+            )
+        except Exception:
+            target_pose_edit_static = False
+        static_frame = bool(context.get("retarget_static_pose", False)) or target_pose_edit_static
         frame_key = (
             ("capture", 0)
             if pose_mode in {"capture", "bind", "rest", "capture_pose"}
-            else ("animated", 0 if bool(context.get("retarget_static_pose", False)) else self._mgl_timeline_frame_index())
+            else (
+                "animated",
+                0 if static_frame else self._mgl_timeline_frame_index(),
+                "static" if static_frame else "clip",
+            )
         )
         if payload.get("_fbx_rig_frame", None) == frame_key and payload.get("vao") is not None:
             return
@@ -601,7 +616,7 @@ class MGLRendererMixin:
             sample_time = 0.0
             loop = True
         else:
-            if bool(context.get("retarget_static_pose", False)):
+            if static_frame:
                 clip = None
                 sample_time = 0.0
             else:
@@ -631,9 +646,7 @@ class MGLRendererMixin:
             path_key=str(path_key or "") if path_key is not None else None,
         )
         if replacement is None:
-            item.resources = []
-            old_payload["vao"] = None
-            old_payload["_fbx_rig_frame"] = frame_key
+            old_payload["_fbx_rig_refresh_failed_frame"] = frame_key
             item.payload = old_payload
             self._mgl_fbx_joints_log(
                 "refresh replacement_missing "
@@ -641,6 +654,7 @@ class MGLRendererMixin:
                 + f"segments={int(line_points.shape[0] // 2)} visible={bool(item.visible)} "
                 + f"owner={owner or ''} path={path_key or ''}"
             )
+            return
         else:
             new_payload = dict(replacement.payload or {})
             new_payload["fbx_rig_context"] = context
@@ -1196,7 +1210,8 @@ class MGLRendererMixin:
                     resolving.add(idx)
                     local = _joint_local_translation(idx)
                     try:
-                        parent_idx = int(getattr(joints[idx], "parent_index", -1) or -1)
+                        raw_parent = getattr(joints[idx], "parent_index", -1)
+                        parent_idx = int(raw_parent) if raw_parent is not None else -1
                     except Exception:
                         parent_idx = -1
                     if 0 <= parent_idx < len(joints) and parent_idx != idx:
@@ -1225,7 +1240,11 @@ class MGLRendererMixin:
                 segment_rows: List[NDArray] = []
                 count = min(len(joints), int(joint_positions.shape[0]))
                 for idx in range(count):
-                    parent_idx = int(getattr(joints[idx], "parent_index", -1) or -1)
+                    try:
+                        raw_parent = getattr(joints[idx], "parent_index", -1)
+                        parent_idx = int(raw_parent) if raw_parent is not None else -1
+                    except Exception:
+                        parent_idx = -1
                     if parent_idx < 0 or parent_idx >= count or parent_idx == idx:
                         continue
                     p0 = joint_positions[parent_idx]
@@ -3058,10 +3077,12 @@ class MGLRendererMixin:
                     skeleton = posed
             except Exception:
                 pass
+        target_pose_edit_static = bool(role_key == "target" and self._mgl_retarget_pick_mode() == "target_pose")
         target_animated = bool(
             role_key == "target"
             and context.get("retarget_preview_target_animated")
             and context.get("clip") is not None
+            and not target_pose_edit_static
         )
         if role_key != "source" and not target_animated:
             rows = self._mgl_retarget_inverse_bind_positions(skeleton)
@@ -3101,7 +3122,8 @@ class MGLRendererMixin:
             except Exception:
                 local = (0.0, 0.0, 0.0)
             try:
-                parent_index = int(getattr(joint, "parent_index", -1) or -1)
+                raw_parent = getattr(joint, "parent_index", -1)
+                parent_index = int(raw_parent) if raw_parent is not None else -1
             except Exception:
                 parent_index = -1
             if 0 <= parent_index < len(positions):

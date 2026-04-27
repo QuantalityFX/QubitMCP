@@ -811,6 +811,16 @@ def _joint_count(skeleton) -> int:
         return 0
 
 
+def _joint_parent_index(joint) -> int:
+    try:
+        value = getattr(joint, "parent_index", -1)
+        if value is None:
+            return -1
+        return int(value)
+    except Exception:
+        return -1
+
+
 def _mesh_count(meshes) -> int:
     try:
         return int(len(list(meshes or [])))
@@ -1249,7 +1259,7 @@ def _skeleton_bind_line_points(skeleton) -> List[Tuple[float, float, float]]:
             local = (float(tx), float(ty), float(tz))
         except Exception:
             local = (0.0, 0.0, 0.0)
-        parent_index = int(getattr(joint, "parent_index", -1) or -1)
+        parent_index = _joint_parent_index(joint)
         if 0 <= parent_index < len(positions):
             parent = positions[parent_index]
             pos = (parent[0] + local[0], parent[1] + local[1], parent[2] + local[2])
@@ -1342,7 +1352,7 @@ def _skeleton_joint_positions(
             local = (float(tx), float(ty), float(tz))
         except Exception:
             local = (0.0, 0.0, 0.0)
-        parent_index = int(getattr(joint, "parent_index", -1) or -1)
+        parent_index = _joint_parent_index(joint)
         if 0 <= parent_index < len(positions):
             parent = positions[parent_index]
             positions.append((parent[0] + local[0], parent[1] + local[1], parent[2] + local[2]))
@@ -2008,7 +2018,11 @@ def target_pose_skeleton_for_model(model, skeleton):
         cache_key = json.dumps(payload, sort_keys=True)
         cached_key = getattr(skeleton, "_anim_retarget_target_pose_cache_key", None)
         cached = getattr(skeleton, "_anim_retarget_target_pose_cache", None)
-        if cached_key == cache_key and cached is not None:
+        if (
+            cached_key == cache_key
+            and cached is not None
+            and getattr(cached, "_anim_retarget_target_pose_version", 0) == 2
+        ):
             return cached
     except Exception:
         cache_key = ""
@@ -2021,7 +2035,7 @@ def target_pose_skeleton_for_model(model, skeleton):
         joints = []
         for idx, joint in enumerate(source_joints):
             name = str(getattr(joint, "name", "") or f"joint_{idx}")
-            parent_index = int(getattr(joint, "parent_index", -1) or -1)
+            parent_index = _joint_parent_index(joint)
             local_bind = _clone_joint_transform(getattr(joint, "local_bind", None))
             row = payload.get(name) or {}
             if "rotation" in row:
@@ -2041,7 +2055,7 @@ def target_pose_skeleton_for_model(model, skeleton):
 
         global_mats: List[Tuple[float, ...]] = []
         for idx, joint in enumerate(joints):
-            parent_index = int(getattr(joint, "parent_index", -1) or -1)
+            parent_index = _joint_parent_index(joint)
             local_matrix = _matrix4_from_joint_transform(getattr(joint, "local_bind", None))
             if 0 <= parent_index < idx:
                 global_mats.append(_matrix4_mul_row_major(global_mats[parent_index], local_matrix))
@@ -2084,6 +2098,7 @@ def target_pose_skeleton_for_model(model, skeleton):
         out.validate()
         try:
             setattr(out, "_anim_retarget_target_pose_source_skeleton", skeleton)
+            setattr(out, "_anim_retarget_target_pose_version", 2)
         except Exception:
             pass
         try:
@@ -2234,7 +2249,7 @@ def _retarget_eval_target_skeleton(skeleton):
     if skeleton is None:
         return None
     cached = getattr(skeleton, "_anim_retarget_inverse_bind_eval_skeleton", None)
-    if cached is not None:
+    if cached is not None and getattr(cached, "_anim_retarget_inverse_bind_eval_version", 0) == 2:
         return cached
     try:
         from echograph.rigging.fbx_canonical import Joint, SkeletonAsset
@@ -2257,7 +2272,7 @@ def _retarget_eval_target_skeleton(skeleton):
 
         new_joints = []
         for idx, joint in enumerate(joints):
-            parent_index = int(getattr(joint, "parent_index", -1) or -1)
+            parent_index = _joint_parent_index(joint)
             bind_global = bind_globals[idx] if idx < len(bind_globals) else None
             local_bind = None
             if bind_global is not None:
@@ -2290,6 +2305,10 @@ def _retarget_eval_target_skeleton(skeleton):
             metadata=metadata,
         )
         out.validate()
+        try:
+            setattr(out, "_anim_retarget_inverse_bind_eval_version", 2)
+        except Exception:
+            pass
         setattr(skeleton, "_anim_retarget_inverse_bind_eval_skeleton", out)
         _retarget_debug_log(
             "target_eval_skeleton_from_inverse_bind",
@@ -3216,7 +3235,7 @@ def _named_positions(skeleton, rows: List[Tuple[float, float, float]]) -> List[D
             {
                 "index": int(idx),
                 "name": str(getattr(joint, "name", "") or ""),
-                "parent": int(getattr(joint, "parent_index", -1) or -1),
+                "parent": _joint_parent_index(joint),
                 "position": _round_vec3(rows[idx]),
             }
         )
@@ -3329,8 +3348,8 @@ def write_anim_retarget_joint_debug_snapshot(
             "target": target_name,
             "source_index": int(si) if isinstance(si, int) else -1,
             "target_index": int(ti) if isinstance(ti, int) else -1,
-            "source_parent": int(getattr(source_joint, "parent_index", -1) or -1) if source_joint is not None else -1,
-            "target_parent": int(getattr(target_joint, "parent_index", -1) or -1) if target_joint is not None else -1,
+            "source_parent": _joint_parent_index(source_joint) if source_joint is not None else -1,
+            "target_parent": _joint_parent_index(target_joint) if target_joint is not None else -1,
             "source_local_bind_translation": _round_vec3(
                 getattr(getattr(source_joint, "local_bind", None), "translation", (0.0, 0.0, 0.0))
                 if source_joint is not None
