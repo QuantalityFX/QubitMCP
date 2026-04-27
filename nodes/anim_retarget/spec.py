@@ -2008,7 +2008,7 @@ def _clone_joint_transform(xf):
         return JointTransform()
 
 
-def target_pose_skeleton_for_model(model, skeleton):
+def target_pose_skeleton_for_model(model, skeleton, *, rebind_inverse_bind: bool = True):
     if skeleton is None:
         return skeleton
     try:
@@ -2020,14 +2020,21 @@ def target_pose_skeleton_for_model(model, skeleton):
     payload = _target_pose_offsets_payload(model)
     if not payload:
         return skeleton
+    rebind_inverse = bool(rebind_inverse_bind)
     try:
-        cache_key = json.dumps(payload, sort_keys=True)
+        cache_key = json.dumps(
+            {
+                "offsets": payload,
+                "rebind_inverse_bind": bool(rebind_inverse),
+            },
+            sort_keys=True,
+        )
         cached_key = getattr(skeleton, "_anim_retarget_target_pose_cache_key", None)
         cached = getattr(skeleton, "_anim_retarget_target_pose_cache", None)
         if (
             cached_key == cache_key
             and cached is not None
-            and getattr(cached, "_anim_retarget_target_pose_version", 0) == 2
+            and getattr(cached, "_anim_retarget_target_pose_version", 0) == 3
         ):
             return cached
     except Exception:
@@ -2089,13 +2096,15 @@ def target_pose_skeleton_for_model(model, skeleton):
             else:
                 global_mats[idx] = _matrix4_from_joint_transform(local_bind)
 
-        for idx, global_matrix in enumerate(global_mats):
-            inverse_bind = _matrix4_inverse_row_major(global_matrix)
-            if inverse_bind is not None and idx < len(joints):
-                joints[idx].inverse_bind_matrix = tuple(float(v) for v in inverse_bind)
+        if rebind_inverse:
+            for idx, global_matrix in enumerate(global_mats):
+                inverse_bind = _matrix4_inverse_row_major(global_matrix)
+                if inverse_bind is not None and idx < len(joints):
+                    joints[idx].inverse_bind_matrix = tuple(float(v) for v in inverse_bind)
 
         metadata = dict(getattr(skeleton, "metadata", None) or {})
         metadata["retarget_target_pose_offsets"] = int(len(payload))
+        metadata["retarget_target_pose_rebind_inverse_bind"] = bool(rebind_inverse)
         out = SkeletonAsset(
             name=f"{str(getattr(skeleton, 'name', '') or 'TargetSkeleton')}_retarget_pose",
             joints=joints,
@@ -2104,7 +2113,8 @@ def target_pose_skeleton_for_model(model, skeleton):
         out.validate()
         try:
             setattr(out, "_anim_retarget_target_pose_source_skeleton", skeleton)
-            setattr(out, "_anim_retarget_target_pose_version", 2)
+            setattr(out, "_anim_retarget_target_pose_version", 3)
+            setattr(out, "_anim_retarget_target_pose_rebind_inverse_bind", bool(rebind_inverse))
         except Exception:
             pass
         try:
@@ -2118,6 +2128,7 @@ def target_pose_skeleton_for_model(model, skeleton):
             skeleton=str(getattr(skeleton, "name", "") or ""),
             joint_count=int(len(joints)),
             offset_count=int(len(payload)),
+            rebind_inverse_bind=bool(rebind_inverse),
             pose=_points_summary(_skeleton_joint_positions(out, clip=None)),
         )
         return out
@@ -3038,6 +3049,7 @@ def build_anim_retarget_scene_asset(
     target_skeleton = target_pose_skeleton_for_model(
         model,
         _retarget_eval_target_skeleton(target_context.get("skeleton")),
+        rebind_inverse_bind=False,
     )
     original_clip = rig_context.get("clip")
     rig_context["skeleton"] = target_skeleton
@@ -3055,6 +3067,8 @@ def build_anim_retarget_scene_asset(
     rig_context["retarget_clip_name"] = str(getattr(retarget_clip, "name", "") or "")
     rig_context["retarget_track_count"] = int(len(getattr(retarget_clip, "tracks", []) or []))
     rig_context["retarget_original_clip_name"] = str(getattr(original_clip, "name", "") or "")
+    rig_context["retarget_target_pose_rebind_inverse_bind"] = False
+    rig_context["retarget_target_pose_offset_count"] = int(len(_target_pose_offsets_payload(model)))
 
     asset.update(
         {
@@ -3085,6 +3099,8 @@ def build_anim_retarget_scene_asset(
         tracks=int(len(getattr(retarget_clip, "tracks", []) or [])),
         clip=str(getattr(retarget_clip, "name", "") or ""),
         original_clip=str(getattr(original_clip, "name", "") or ""),
+        target_pose_offset_count=int(len(_target_pose_offsets_payload(model))),
+        rebind_inverse_bind=False,
         source_transform=dict(source_context.get("transform_xform") or {}),
         target_transform=dict(target_context.get("transform_xform") or {}),
     )

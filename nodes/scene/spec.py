@@ -1329,7 +1329,13 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                         f"anim_retarget asset build failed node={src_name or kind} err={exc!r}",
                     )
             if isinstance(asset, dict):
-                asset["visible"] = str(asset.get("node") or src_name or kind) not in hidden
+                asset_owner = str(asset.get("node") or src_name or kind).strip()
+                saved_xform = _lookup_xform(xforms, asset_owner)
+                if not isinstance(saved_xform, dict) and asset_owner != src_name:
+                    saved_xform = _lookup_xform(xforms, src_name)
+                if isinstance(saved_xform, dict):
+                    asset["xform"] = dict(saved_xform)
+                asset["visible"] = asset_owner not in hidden
                 assets.append(asset)
                 path_key = str(asset.get("path") or "").strip()
                 if path_key:
@@ -1340,6 +1346,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                         "anim_retarget asset "
                         + f"node={str(asset.get('node') or '')} "
                         + f"path={str(asset.get('path') or '')} "
+                        + f"saved_xform={bool(isinstance(saved_xform, dict))} "
                         + f"tracks={len(getattr((asset.get('fbx_rig_context') or {}).get('clip'), 'tracks', []) or [])}",
                     )
             continue

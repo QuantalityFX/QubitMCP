@@ -1518,6 +1518,30 @@ class MGLRendererMixin:
             payload.pop("_fbx_skin_weight_colors_applied", None)
             payload["_fbx_skin_prepare_done"] = False
         payload["_fbx_skin_settings_sig"] = settings_sig
+        context_sig = None
+        if isinstance(context_dict, dict):
+            meshes_obj = context_dict.get("meshes")
+            try:
+                mesh_count = len(list(meshes_obj or []))
+            except Exception:
+                mesh_count = 0
+            context_sig = (
+                id(context_dict.get("skeleton")),
+                id(context_dict.get("clip")),
+                id(meshes_obj),
+                int(mesh_count),
+                bool(context_dict.get("retarget_result", False)),
+                str(context_dict.get("retarget_clip_name") or ""),
+                int(context_dict.get("retarget_track_count") or 0),
+                int(context_dict.get("retarget_target_pose_offset_count") or 0),
+                bool(context_dict.get("retarget_target_pose_rebind_inverse_bind", True)),
+            )
+        if payload.get("_fbx_skin_context_sig", None) != context_sig:
+            payload.pop("_fbx_skin_runtime", None)
+            payload.pop("_fbx_skin_frame", None)
+            payload.pop("_fbx_skin_weight_colors_applied", None)
+            payload["_fbx_skin_prepare_done"] = False
+        payload["_fbx_skin_context_sig"] = context_sig
         payload["_fbx_skin_weight_debug"] = bool(weight_debug)
 
         if not skinning_enabled:
