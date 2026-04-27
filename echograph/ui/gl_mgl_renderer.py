@@ -3213,9 +3213,21 @@ class MGLRendererMixin:
                 pass
             self._mgl_retarget_links_dirty = False
 
-    def _mgl_retarget_handle_click(self, handle: dict) -> bool:
-        if not isinstance(handle, dict):
-            return False
+    def _mgl_retarget_pick_mode(self) -> str:
+        model = getattr(self, "_mgl_retarget_node_model", None)
+        if model is None:
+            node_item = getattr(self, "_mgl_retarget_node_item", None)
+            model = getattr(node_item, "model", None) if node_item is not None else None
+        mode = str(getattr(model, "_retarget_pick_mode", "") or "").strip().lower()
+        mode = "pelvis_constraint" if mode == "pelvis_constraint" else ""
+        previous = str(getattr(self, "_mgl_retarget_last_pick_mode", "") or "")
+        if previous != mode:
+            self._mgl_retarget_last_pick_mode = mode
+            self._mgl_retarget_selected_joint = None
+            self._mgl_retarget_selection_dirty = True
+        return mode
+
+    def _mgl_retarget_handle_constraint_click(self, handle: dict) -> bool:
         role = str(handle.get("role") or "").strip().lower()
         name = str(handle.get("name") or "").strip()
         if role not in {"source", "target"} or not name:
@@ -3224,6 +3236,84 @@ class MGLRendererMixin:
         if isinstance(selected, dict):
             selected_role = str(selected.get("role") or "").strip().lower()
             selected_name = str(selected.get("name") or "").strip()
+            if selected_role == role and selected_name == name:
+                self._mgl_retarget_selected_joint = None
+                self._mgl_retarget_selection_dirty = True
+                try:
+                    self.update()
+                except Exception:
+                    pass
+                return True
+            if {selected_role, role} == {"source", "target"}:
+                source = selected if selected_role == "source" else handle
+                target = selected if selected_role == "target" else handle
+                owners = getattr(self, "_mgl_retarget_role_owners", None)
+                if isinstance(owners, dict):
+                    source_owner = str(owners.get("source") or "").strip()
+                    target_owner = str(owners.get("target") or "").strip()
+                    if (
+                        str(source.get("owner") or "").strip() != source_owner
+                        or str(target.get("owner") or "").strip() != target_owner
+                    ):
+                        self._mgl_retarget_selected_joint = dict(handle)
+                        self._mgl_retarget_selection_dirty = True
+                        try:
+                            self.update()
+                        except Exception:
+                            pass
+                        return True
+                source_name = str(source.get("name") or "").strip()
+                target_name = str(target.get("name") or "").strip()
+                if not self._mgl_retarget_set_pelvis_constraint_link(source_name, target_name):
+                    return False
+                self._mgl_retarget_selected_joint = None
+                self._mgl_retarget_selection_dirty = True
+                self._mgl_retarget_links_dirty = True
+                try:
+                    self.update()
+                except Exception:
+                    pass
+                return True
+        self._mgl_retarget_selected_joint = dict(handle)
+        self._mgl_retarget_selection_dirty = True
+        try:
+            self.update()
+        except Exception:
+            pass
+        return True
+
+    def _mgl_retarget_handle_click(self, handle: dict, *, unlink: bool = False) -> bool:
+        if not isinstance(handle, dict):
+            return False
+        role = str(handle.get("role") or "").strip().lower()
+        name = str(handle.get("name") or "").strip()
+        if role not in {"source", "target"} or not name:
+            return False
+        pick_mode = self._mgl_retarget_pick_mode()
+        if not bool(unlink) and pick_mode == "pelvis_constraint":
+            return self._mgl_retarget_handle_constraint_click(handle)
+        selected = getattr(self, "_mgl_retarget_selected_joint", None)
+        if isinstance(selected, dict):
+            selected_role = str(selected.get("role") or "").strip().lower()
+            selected_name = str(selected.get("name") or "").strip()
+            if bool(unlink) and {selected_role, role} == {"source", "target"}:
+                source = selected if selected_role == "source" else handle
+                target = selected if selected_role == "target" else handle
+                source_name = str(source.get("name") or "").strip()
+                target_name = str(target.get("name") or "").strip()
+                mapping = getattr(self, "_mgl_retarget_joint_map", None)
+                if isinstance(mapping, dict) and str(mapping.get(source_name) or "").strip() == target_name:
+                    if not self._mgl_retarget_remove_joint_link(source_name, target_name):
+                        return False
+                    self._mgl_retarget_selected_joint = None
+                    self._mgl_retarget_selection_dirty = True
+                    self._mgl_retarget_links_dirty = True
+                    try:
+                        self.update()
+                    except Exception:
+                        pass
+                    return True
+                return False
             if selected_role == role and selected_name == name:
                 self._mgl_retarget_selected_joint = None
                 self._mgl_retarget_selection_dirty = True
@@ -3262,6 +3352,8 @@ class MGLRendererMixin:
                 except Exception:
                     pass
                 return True
+        if bool(unlink):
+            return False
         self._mgl_retarget_selected_joint = dict(handle)
         self._mgl_retarget_selection_dirty = True
         try:
@@ -3390,6 +3482,7 @@ class MGLRendererMixin:
         self._mgl_retarget_handle_radius = handle_radius
         self._mgl_retarget_curve_thickness = curve_thickness
         self._mgl_retarget_selected_joint = None
+        self._mgl_retarget_last_pick_mode = ""
         self._mgl_retarget_selection_dirty = True
         self._mgl_retarget_links_dirty = True
         try:
@@ -3619,7 +3712,7 @@ class MGLRendererMixin:
                     node_item,
                     source,
                     target,
-                    notify_scene=True,
+                    notify_scene=False,
                 )
             except Exception:
                 mapping = None
@@ -3632,6 +3725,112 @@ class MGLRendererMixin:
             self._mgl_retarget_refresh_link_item()
         except Exception:
             pass
+        self._mgl_retarget_notify_mapping_changed()
+        try:
+            self.update()
+        except Exception:
+            pass
+        return True
+
+    def _mgl_retarget_notify_mapping_changed(self) -> None:
+        model = getattr(self, "_mgl_retarget_node_model", None)
+        if model is None:
+            node_item = getattr(self, "_mgl_retarget_node_item", None)
+            model = getattr(node_item, "model", None) if node_item is not None else None
+        callback = getattr(model, "_retarget_mapping_table_refresh", None) if model is not None else None
+        if callable(callback):
+            try:
+                callback()
+            except Exception:
+                pass
+
+    def _mgl_retarget_set_pelvis_constraint_link(self, source_joint: str, target_joint: str) -> bool:
+        source = str(source_joint or "").strip()
+        target = str(target_joint or "").strip()
+        if not source or not target:
+            return False
+        node_item = getattr(self, "_mgl_retarget_node_item", None)
+        mapping = None
+        payload = None
+        if node_item is not None:
+            try:
+                from nodes.anim_retarget import spec as anim_retarget_spec  # type: ignore
+
+                set_link = getattr(anim_retarget_spec, "set_joint_map_link", None)
+                if callable(set_link):
+                    mapping = set_link(
+                        node_item,
+                        source,
+                        target,
+                        notify_scene=False,
+                    )
+                set_constraint = getattr(anim_retarget_spec, "set_pelvis_constraint_link", None)
+                if callable(set_constraint):
+                    payload = set_constraint(
+                        node_item,
+                        source,
+                        target,
+                        notify_scene=True,
+                    )
+            except Exception:
+                payload = None
+        if not isinstance(payload, dict):
+            return False
+        if not isinstance(mapping, dict):
+            mapping = dict(getattr(self, "_mgl_retarget_joint_map", None) or {})
+            mapping[source] = target
+        self._mgl_retarget_joint_map = mapping
+        self._mgl_retarget_links_dirty = True
+        try:
+            self._mgl_retarget_refresh_link_item()
+        except Exception:
+            pass
+        self._mgl_retarget_notify_mapping_changed()
+        try:
+            self._mgl_retarget_log(
+                "renderer_set_pelvis_constraint_link",
+                source=source,
+                target=target,
+                mode=str(payload.get("mode") or ""),
+            )
+        except Exception:
+            pass
+        return True
+
+    def _mgl_retarget_remove_joint_link(self, source_joint: str, target_joint: str = "") -> bool:
+        source = str(source_joint or "").strip()
+        target = str(target_joint or "").strip()
+        if not source:
+            return False
+        node_item = getattr(self, "_mgl_retarget_node_item", None)
+        mapping = None
+        if node_item is not None:
+            try:
+                from nodes.anim_retarget import spec as anim_retarget_spec  # type: ignore
+
+                remove_link = getattr(anim_retarget_spec, "remove_joint_map_link", None)
+                if callable(remove_link):
+                    mapping = remove_link(
+                        node_item,
+                        source,
+                        target,
+                        notify_scene=False,
+                    )
+            except Exception:
+                mapping = None
+        if not isinstance(mapping, dict):
+            mapping = dict(getattr(self, "_mgl_retarget_joint_map", None) or {})
+            current_target = str(mapping.get(source) or "").strip()
+            if source not in mapping or (target and current_target != target):
+                return False
+            mapping.pop(source, None)
+        self._mgl_retarget_joint_map = mapping
+        self._mgl_retarget_links_dirty = True
+        try:
+            self._mgl_retarget_refresh_link_item()
+        except Exception:
+            pass
+        self._mgl_retarget_notify_mapping_changed()
         try:
             self.update()
         except Exception:
@@ -11567,6 +11766,7 @@ class MGLRendererMixin:
         self._mgl_retarget_role_owners = {}
         self._mgl_retarget_handle_frame_keys = {}
         self._mgl_retarget_selected_joint = None
+        self._mgl_retarget_last_pick_mode = ""
         self._mgl_retarget_selection_dirty = False
         self._mgl_retarget_links_dirty = False
         try:

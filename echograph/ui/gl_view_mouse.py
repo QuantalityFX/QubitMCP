@@ -355,8 +355,9 @@ def _handle_mouse_retarget_viewport(self, e):
     )
 
 def _handle_mouse_press_moderngl_retarget_joint(self, e, alt_pressed):
-    if e.button() != QtCore.Qt.LeftButton or bool(alt_pressed):
+    if e.button() not in (QtCore.Qt.LeftButton, QtCore.Qt.RightButton) or bool(alt_pressed):
         return False
+    is_unlink_click = bool(e.button() == QtCore.Qt.RightButton)
     renderer = getattr(self, "_mgl_renderer", None) or self
     pick = getattr(renderer, "pick_retarget_joint_at", None)
     if not callable(pick):
@@ -369,11 +370,17 @@ def _handle_mouse_press_moderngl_retarget_joint(self, e, alt_pressed):
     if not isinstance(handle, dict):
         return False
     click = getattr(renderer, "_mgl_retarget_handle_click", None)
+    handled = False
     if callable(click):
         try:
-            click(dict(handle))
+            if is_unlink_click:
+                handled = bool(click(dict(handle), unlink=True))
+            else:
+                handled = bool(click(dict(handle)))
         except Exception:
             pass
+    if is_unlink_click and not handled:
+        return False
     self._retarget_joint_drag = None
     try:
         self._mgl_pick_press_pos = None

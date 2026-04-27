@@ -59,6 +59,10 @@ HIDDEN_PARAMS: Tuple[str, ...] = (
     "joint_curve_thickness",
     "display_params_version",
     "preview_target_mesh",
+    "source_zero_rotations",
+    "pelvis_constraint_source",
+    "pelvis_constraint_target",
+    "pelvis_constraint_mode",
     "root_source",
     "root_target",
     "scale_mode",
@@ -70,6 +74,10 @@ JOINT_HANDLE_SCALE_PARAM = "joint_handle_scale"
 JOINT_CURVE_THICKNESS_PARAM = "joint_curve_thickness"
 DISPLAY_PARAMS_VERSION_PARAM = "display_params_version"
 PREVIEW_TARGET_MESH_PARAM = "preview_target_mesh"
+SOURCE_REST_POSE_PARAM = "source_zero_rotations"
+PELVIS_CONSTRAINT_SOURCE_PARAM = "pelvis_constraint_source"
+PELVIS_CONSTRAINT_TARGET_PARAM = "pelvis_constraint_target"
+PELVIS_CONSTRAINT_MODE_PARAM = "pelvis_constraint_mode"
 JOINT_HANDLE_SCALE_DEFAULT = 1.0
 JOINT_CURVE_THICKNESS_DEFAULT = 2.4
 JOINT_HANDLE_SCALE_MIN = 0.05
@@ -352,6 +360,10 @@ def _ensure_display_params(node_item) -> None:
     _ensure_param(node_item, JOINT_HANDLE_SCALE_PARAM, f"{JOINT_HANDLE_SCALE_DEFAULT:.2f}")
     _ensure_param(node_item, JOINT_CURVE_THICKNESS_PARAM, f"{JOINT_CURVE_THICKNESS_DEFAULT:.1f}")
     _ensure_param(node_item, PREVIEW_TARGET_MESH_PARAM, "0")
+    _ensure_param(node_item, SOURCE_REST_POSE_PARAM, "0")
+    _ensure_param(node_item, PELVIS_CONSTRAINT_SOURCE_PARAM, "")
+    _ensure_param(node_item, PELVIS_CONSTRAINT_TARGET_PARAM, "")
+    _ensure_param(node_item, PELVIS_CONSTRAINT_MODE_PARAM, "none")
     _ensure_param(node_item, DISPLAY_PARAMS_VERSION_PARAM, "")
     model = getattr(node_item, "model", None)
     if model is None:
@@ -501,6 +513,121 @@ def set_joint_map_link(node_item, source_joint: str, target_joint: str, *, notif
     except Exception:
         pass
     return mapping
+
+
+def remove_joint_map_link(node_item, source_joint: str, target_joint: str = "", *, notify_scene: bool = True) -> Dict[str, str]:
+    model = getattr(node_item, "model", None)
+    if model is None:
+        return {}
+    source = str(source_joint or "").strip()
+    target = str(target_joint or "").strip()
+    if not source:
+        return _joint_map_payload(model)
+
+    mapping = _joint_map_payload(model)
+    current_target = str(mapping.get(source) or "").strip()
+    if source not in mapping or (target and current_target != target):
+        return mapping
+    removed_target = mapping.pop(source, "")
+    encoded = json.dumps(mapping, sort_keys=True)
+    try:
+        if (
+            _param_value(model, PELVIS_CONSTRAINT_SOURCE_PARAM).strip() == source
+            and _param_value(model, PELVIS_CONSTRAINT_TARGET_PARAM).strip() == str(removed_target or "").strip()
+        ):
+            _set_param_value(model, PELVIS_CONSTRAINT_SOURCE_PARAM, "")
+            _set_param_value(model, PELVIS_CONSTRAINT_TARGET_PARAM, "")
+            _set_param_value(model, PELVIS_CONSTRAINT_MODE_PARAM, "none")
+    except Exception:
+        pass
+
+    setter = getattr(node_item, "_set_param_value", None)
+    if callable(setter):
+        try:
+            setter("joint_map", encoded, rebuild=False, notify_scene=bool(notify_scene))
+        except TypeError:
+            try:
+                setter("joint_map", encoded)
+            except Exception:
+                _set_param_value(model, "joint_map", encoded)
+    else:
+        _set_param_value(model, "joint_map", encoded)
+        if notify_scene:
+            try:
+                scene = node_item.scene()
+            except Exception:
+                scene = None
+            if scene is not None and hasattr(scene, "paramChanged"):
+                try:
+                    scene.paramChanged.emit(getattr(model, "name", ""), list(getattr(model, "params", []) or []))
+                except Exception:
+                    pass
+
+    try:
+        setattr(model, "_retarget_joint_map", encoded)
+    except Exception:
+        pass
+    return mapping
+
+
+def set_pelvis_constraint_link(
+    node_item,
+    source_joint: str,
+    target_joint: str,
+    *,
+    mode: str | None = None,
+    notify_scene: bool = True,
+) -> Dict[str, str]:
+    model = getattr(node_item, "model", None)
+    if model is None:
+        return {"source": "", "target": "", "mode": "none"}
+    source = str(source_joint or "").strip()
+    target = str(target_joint or "").strip()
+    if not source or not target:
+        return _pelvis_constraint_payload(model)
+
+    current_mode = _normalize_pelvis_constraint_mode(_param_value(model, PELVIS_CONSTRAINT_MODE_PARAM))
+    next_mode = _normalize_pelvis_constraint_mode(mode if mode is not None else current_mode)
+    if next_mode == "none":
+        next_mode = "position_offset"
+
+    values = (
+        (PELVIS_CONSTRAINT_SOURCE_PARAM, source),
+        (PELVIS_CONSTRAINT_TARGET_PARAM, target),
+        (PELVIS_CONSTRAINT_MODE_PARAM, next_mode),
+    )
+    setter = getattr(node_item, "_set_param_value", None)
+    notified = False
+    if callable(setter):
+        for idx, (name, value) in enumerate(values):
+            should_notify = bool(notify_scene and idx == len(values) - 1)
+            try:
+                setter(name, value, rebuild=False, notify_scene=should_notify)
+                notified = notified or should_notify
+            except TypeError:
+                try:
+                    setter(name, value)
+                    notified = notified or should_notify
+                except Exception:
+                    _set_param_value(model, name, value)
+            except Exception:
+                _set_param_value(model, name, value)
+    else:
+        for name, value in values:
+            _set_param_value(model, name, value)
+
+    if notify_scene and not notified:
+        try:
+            scene = node_item.scene()
+        except Exception:
+            scene = None
+        if scene is not None and hasattr(scene, "paramChanged"):
+            try:
+                scene.paramChanged.emit(getattr(model, "name", ""), list(getattr(model, "params", []) or []))
+            except Exception:
+                pass
+
+    return {"source": source, "target": target, "mode": next_mode}
 
 
 def _list_clips(animation_result) -> List[Any]:
@@ -825,6 +952,10 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, "scale_mode", "auto")
     _ensure_param(node_item, "rotation_mode", "copy_global_delta")
     _ensure_param(node_item, PREVIEW_TARGET_MESH_PARAM, "0")
+    _ensure_param(node_item, SOURCE_REST_POSE_PARAM, "0")
+    _ensure_param(node_item, PELVIS_CONSTRAINT_SOURCE_PARAM, "")
+    _ensure_param(node_item, PELVIS_CONSTRAINT_TARGET_PARAM, "")
+    _ensure_param(node_item, PELVIS_CONSTRAINT_MODE_PARAM, "none")
     _ensure_param(node_item, "debug_log", "0")
     _ensure_hidden_params(getattr(node_item, "model", None), HIDDEN_PARAMS)
 
@@ -1084,15 +1215,23 @@ def _preview_rig_context(context: Dict[str, Any], role: str, *, curve_thickness:
     base = context.get("rig_context")
     rig = dict(base or {}) if isinstance(base, dict) else {}
     is_source = str(role or "").strip().lower() == "source"
+    source_rest_pose = bool(is_source and context.get("retarget_source_rest_pose"))
     rig["skeleton"] = _preview_skeleton(context, role)
-    rig["clip"] = context.get("clip") if is_source else None
+    rig["clip"] = None if source_rest_pose else (context.get("clip") if is_source else None)
+    if source_rest_pose:
+        rig["clips"] = []
     rig["meshes"] = []
     rig["loop"] = True
     rig["mesh_skinning_enabled"] = False
     rig["skin_weight_debug"] = False
     rig["show_capture_joints"] = not is_source
     rig["show_animated_joints"] = bool(is_source)
-    rig.pop("retarget_static_pose", None)
+    if source_rest_pose:
+        rig["retarget_static_pose"] = True
+        rig["retarget_source_rest_pose"] = True
+    else:
+        rig.pop("retarget_static_pose", None)
+        rig.pop("retarget_source_rest_pose", None)
     rig["joint_line_width"] = float(curve_thickness)
     rig["joint_xray"] = False
     rig["retarget_preview_role"] = "source" if is_source else "target"
@@ -1272,10 +1411,15 @@ def build_anim_retarget_preview_assets(
     base_name = str(getattr(model, "name", "") or "").strip() or "Anim Retarget"
     source_owner = f"{base_name} Source"
     target_owner = f"{base_name} Target"
+    source_rest_pose = _param_bool(model, SOURCE_REST_POSE_PARAM, False)
     preview_target_animation = _param_bool(model, PREVIEW_TARGET_MESH_PARAM, False)
     retarget_preview_clip = build_anim_retarget_clip(node_item, result) if preview_target_animation else None
-    source_asset = _preview_asset_for_context(
+    source_preview_context = _source_preview_context(
         source_context,
+        rest_pose=bool(source_rest_pose),
+    )
+    source_asset = _preview_asset_for_context(
+        source_preview_context,
         owner=source_owner,
         role="source",
         x_offset=0.0,
@@ -1343,7 +1487,7 @@ def build_anim_retarget_preview_assets(
             )
         return rows
 
-    source_handles = _handles(source_context, "source", source_handle_radius)
+    source_handles = _handles(source_preview_context, "source", source_handle_radius)
     target_handle_context = target_context
     if retarget_preview_clip is not None:
         target_handle_context = dict(target_context)
@@ -1385,13 +1529,22 @@ def build_anim_retarget_preview_assets(
         source_handle_radius=round(source_handle_radius, 6),
         target_handle_radius=round(target_handle_radius, 6),
         curve_thickness=round(curve_thickness, 6),
-        source_pose="animated_clip_frame0",
+        source_pose=(
+            str(source_preview_context.get("retarget_source_reference_pose_kind") or "rest_bind")
+            if source_rest_pose
+            else "animated_clip"
+        ),
         target_pose="retarget_animation" if preview_target_animation else "capture_inverse_bind",
+        source_rest_pose=bool(source_rest_pose),
+        pelvis_constraint=_pelvis_constraint_payload(model),
         preview_target_animation=bool(preview_target_animation),
         source_transform=dict(source_context.get("transform_xform") or {}),
         target_transform=dict(target_context.get("transform_xform") or {}),
         source_skeleton=_points_summary(
-            _skeleton_joint_positions(source_context.get("skeleton"), clip=source_context.get("clip"))
+            _skeleton_joint_positions(
+                source_preview_context.get("skeleton"),
+                clip=source_preview_context.get("clip"),
+            )
         ),
         target_skeleton=_points_summary(
             _skeleton_joint_positions(
@@ -1631,6 +1784,127 @@ def _clone_joint_transform(xf):
         return out
     except Exception:
         return JointTransform()
+
+
+def _source_reference_pose_skeleton(skeleton, clip):
+    if skeleton is None or clip is None:
+        return skeleton
+    try:
+        start_time = float(getattr(clip, "start_time", 0.0) or 0.0)
+    except Exception:
+        start_time = 0.0
+    try:
+        cache = getattr(skeleton, "_anim_retarget_source_reference_pose_cache", None)
+        cache_key = (id(clip), round(float(start_time), 8))
+        if isinstance(cache, dict):
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return cached
+    except Exception:
+        cache = None
+        cache_key = None
+    try:
+        from echograph.rigging.fbx_canonical import Joint, SkeletonAsset
+        from echograph.rigging.fbx_stage5_evaluator import evaluate_rig_at_time
+
+        joints = list(getattr(skeleton, "joints", []) or [])
+        if not joints:
+            return skeleton
+        evaluation = evaluate_rig_at_time(
+            skeleton=skeleton,
+            clip=clip,
+            time_seconds=float(start_time),
+            loop=False,
+        )
+        local_transforms = list(getattr(evaluation, "local_transforms", []) or [])
+        if len(local_transforms) != len(joints):
+            return skeleton
+
+        new_joints = []
+        for idx, joint in enumerate(joints):
+            try:
+                parent_index = int(getattr(joint, "parent_index", -1))
+            except Exception:
+                parent_index = -1
+            raw_inv = tuple(getattr(joint, "inverse_bind_matrix", ()) or ())
+            if len(raw_inv) != 16:
+                raw_inv = _IDENTITY_MATRIX_4X4
+            new_joints.append(
+                Joint(
+                    name=str(getattr(joint, "name", "") or f"joint_{idx}"),
+                    parent_index=int(parent_index),
+                    local_bind=_clone_joint_transform(local_transforms[idx]),
+                    inverse_bind_matrix=tuple(float(v) for v in raw_inv),
+                )
+            )
+
+        metadata = dict(getattr(skeleton, "metadata", None) or {})
+        metadata["retarget_source_reference_pose"] = "clip_start"
+        metadata["retarget_source_reference_time"] = float(start_time)
+        out = SkeletonAsset(
+            name=f"{str(getattr(skeleton, 'name', '') or 'SourceSkeleton')}_reference_pose",
+            joints=new_joints,
+            metadata=metadata,
+        )
+        out.validate()
+        try:
+            if not isinstance(cache, dict):
+                cache = {}
+            if cache_key is not None:
+                cache[cache_key] = out
+            setattr(skeleton, "_anim_retarget_source_reference_pose_cache", cache)
+        except Exception:
+            pass
+        _retarget_debug_log(
+            "source_reference_pose_skeleton",
+            skeleton=str(getattr(skeleton, "name", "") or ""),
+            clip=str(getattr(clip, "name", "") or ""),
+            reference_time=round(float(start_time), 6),
+            reference_pose=_points_summary(_skeleton_joint_positions(out, clip=None)),
+        )
+        return out
+    except Exception as exc:
+        _retarget_debug_log(
+            "source_reference_pose_skeleton_failed",
+            skeleton=str(getattr(skeleton, "name", "") or ""),
+            clip=str(getattr(clip, "name", "") or ""),
+            error=repr(exc),
+        )
+        return skeleton
+
+
+def _source_preview_context(context: Dict[str, Any], *, rest_pose: bool) -> Dict[str, Any]:
+    if not bool(rest_pose):
+        return context
+    source_format = str(context.get("source_format") or "").strip().lower()
+    if source_format == "bvh" and context.get("clip") is not None:
+        reference_skeleton = _source_reference_pose_skeleton(context.get("skeleton"), context.get("clip"))
+        pose_kind = "reference_clip_start"
+    else:
+        reference_skeleton = context.get("skeleton")
+        pose_kind = "rest_bind"
+    out = dict(context)
+    out["skeleton"] = reference_skeleton
+    out["clip"] = None
+    out["clips"] = []
+    out["retarget_source_rest_pose"] = True
+    out["retarget_source_reference_pose_kind"] = pose_kind
+    rig_context = dict(out.get("rig_context") or {})
+    rig_context["skeleton"] = reference_skeleton
+    rig_context["clip"] = None
+    rig_context["clips"] = []
+    rig_context["retarget_static_pose"] = True
+    rig_context["retarget_source_rest_pose"] = True
+    rig_context["retarget_source_reference_pose_kind"] = pose_kind
+    out["rig_context"] = rig_context
+    _retarget_debug_log(
+        "source_reference_pose_preview",
+        skeleton=str(getattr(reference_skeleton, "name", "") or ""),
+        source_format=source_format,
+        pose_kind=pose_kind,
+        reference_pose=_points_summary(_skeleton_joint_positions(reference_skeleton, clip=None)),
+    )
+    return out
 
 
 def _retarget_eval_target_skeleton(skeleton):
@@ -2095,6 +2369,83 @@ def _copy_translation_keys(
     return out
 
 
+def _snap_translation_keys(
+    source_track,
+    scale: float,
+    source_basis: Tuple[float, float, float, float] | None = None,
+    target_basis: Tuple[float, float, float, float] | None = None,
+):
+    try:
+        from echograph.rigging.fbx_canonical import Vec3Keyframe
+    except Exception:
+        return []
+    source_keys = list(getattr(source_track, "translation_keys", []) or [])
+    if not source_keys:
+        return []
+    try:
+        s = float(scale)
+    except Exception:
+        s = 1.0
+    if not math.isfinite(s):
+        s = 1.0
+    source_basis_q = _quat_normalize(source_basis or (0.0, 0.0, 0.0, 1.0))
+    target_basis_q = _quat_normalize(target_basis or (0.0, 0.0, 0.0, 1.0))
+    basis = _quat_mul(_quat_inverse(target_basis_q), source_basis_q)
+    out = []
+    for key in source_keys:
+        try:
+            vx, vy, vz = getattr(key, "value", (0.0, 0.0, 0.0))
+            value = _quat_rotate_vec3(
+                basis,
+                (float(vx) * s, float(vy) * s, float(vz) * s),
+            )
+        except Exception:
+            value = (0.0, 0.0, 0.0)
+        out.append(
+            Vec3Keyframe(
+                time=float(getattr(key, "time", 0.0) or 0.0),
+                value=value,
+                interpolation=str(getattr(key, "interpolation", "linear") or "linear"),
+            )
+        )
+    return out
+
+
+def _normalize_pelvis_constraint_mode(raw: str) -> str:
+    token = str(raw or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if token in {"snap", "match", "match_source"}:
+        return "snap"
+    if token in {"position_offset", "offset", "keep_offset", "position"}:
+        return "position_offset"
+    return "none"
+
+
+def _pelvis_constraint_payload(model) -> Dict[str, str]:
+    mode = _normalize_pelvis_constraint_mode(_param_value(model, PELVIS_CONSTRAINT_MODE_PARAM))
+    source = (_param_value(model, PELVIS_CONSTRAINT_SOURCE_PARAM) or "").strip()
+    target = (_param_value(model, PELVIS_CONSTRAINT_TARGET_PARAM) or "").strip()
+    if not source or not target:
+        mode = "none"
+    return {"mode": mode, "source": source, "target": target}
+
+
+def _is_pelvis_constraint_mapping(
+    constraint: Dict[str, str],
+    source_name: str,
+    target_name: str,
+) -> bool:
+    if _normalize_pelvis_constraint_mode(constraint.get("mode", "none")) == "none":
+        return False
+    source = str(constraint.get("source") or "").strip().lower()
+    target = str(constraint.get("target") or "").strip().lower()
+    return bool(
+        source
+        and target
+        and source_name.strip().lower() == source
+        and target_name.strip().lower() == target
+    )
+
+
 def _is_root_motion_mapping(
     model,
     source_name: str,
@@ -2160,6 +2511,7 @@ def build_anim_retarget_clip(
         source_basis,
         target_basis,
     )
+    pelvis_constraint = _pelvis_constraint_payload(model)
     tracks = []
     used_targets = set()
     skipped: List[str] = []
@@ -2194,7 +2546,25 @@ def build_anim_retarget_clip(
         translation_keys = []
         source_translation_keys = list(getattr(source_track, "translation_keys", []) or [])
         if source_translation_keys:
-            if _is_root_motion_mapping(model, source_name, target_name, target_joint_obj):
+            if _is_pelvis_constraint_mapping(pelvis_constraint, source_name, target_name):
+                pelvis_mode = _normalize_pelvis_constraint_mode(pelvis_constraint.get("mode", "none"))
+                if pelvis_mode == "snap":
+                    translation_keys = _snap_translation_keys(
+                        source_track,
+                        translation_scale,
+                        source_basis,
+                        target_basis,
+                    )
+                elif pelvis_mode == "position_offset":
+                    translation_keys = _copy_translation_keys(
+                        source_track,
+                        source_bind,
+                        target_bind,
+                        translation_scale,
+                        source_basis,
+                        target_basis,
+                    )
+            elif _is_root_motion_mapping(model, source_name, target_name, target_joint_obj):
                 translation_keys = _copy_translation_keys(
                     source_track,
                     source_bind,
@@ -2238,6 +2608,7 @@ def build_anim_retarget_clip(
             "translation_scale": float(translation_scale),
             "rotation_space": "clip_start_delta_relative_transform",
             "source_reference_time": float(source_reference_time),
+            "pelvis_constraint": dict(pelvis_constraint),
         },
     )
     try:
@@ -2266,6 +2637,7 @@ def build_anim_retarget_clip(
         target_transform=dict(target_context.get("transform_xform") or {}),
         source_basis=_round_quat(source_basis),
         target_basis=_round_quat(target_basis),
+        pelvis_constraint=dict(pelvis_constraint),
     )
     return retarget_clip
 
@@ -2771,6 +3143,10 @@ def _maybe_write_anim_retarget_joint_debug_snapshot(
                 "target": str(getattr(result, "target_name", "") or ""),
                 "map": _param_value(model, "joint_map"),
                 "preview_target": _param_value(model, PREVIEW_TARGET_MESH_PARAM),
+                "source_reference_pose": _param_value(model, SOURCE_REST_POSE_PARAM),
+                "pelvis_constraint_source": _param_value(model, PELVIS_CONSTRAINT_SOURCE_PARAM),
+                "pelvis_constraint_target": _param_value(model, PELVIS_CONSTRAINT_TARGET_PARAM),
+                "pelvis_constraint_mode": _param_value(model, PELVIS_CONSTRAINT_MODE_PARAM),
                 "source_transform": dict((getattr(result, "source_context", None) or {}).get("transform_xform") or {}),
                 "target_transform": dict((getattr(result, "target_context", None) or {}).get("transform_xform") or {}),
             },
@@ -2920,6 +3296,71 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     settings_layout.setContentsMargins(8, 8, 8, 8)
     settings_layout.setSpacing(8)
 
+    constraints_tab = QtWidgets.QWidget(tab_widget)
+    constraints_layout = QtWidgets.QVBoxLayout(constraints_tab)
+    constraints_layout.setContentsMargins(8, 8, 8, 8)
+    constraints_layout.setSpacing(8)
+
+    pelvis_link_label = QtWidgets.QLabel("Selected Pelvis Link")
+    pelvis_link_label.setStyleSheet("color:#cbd5e1;")
+    pelvis_link_label.setWordWrap(True)
+    pelvis_link_table = QtWidgets.QTableWidget(0, 3)
+    pelvis_link_table.setHorizontalHeaderLabels(["Source Pelvis", "Target Pelvis", "Constraint"])
+    pelvis_link_table.setMinimumHeight(76)
+    try:
+        try:
+            no_edit = QtWidgets.QAbstractItemView.NoEditTriggers
+        except Exception:
+            no_edit = QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers
+        pelvis_link_table.setEditTriggers(no_edit)
+        pelvis_link_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        pelvis_link_table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        header = pelvis_link_table.horizontalHeader()
+        header.setStretchLastSection(True)
+        header.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
+        header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
+    except Exception:
+        pass
+    pelvis_link_table.setStyleSheet(
+        "QTableWidget {"
+        "color:#cbd5e1;"
+        "background:#0f172a;"
+        "border:1px solid #1e293b;"
+        "border-radius:4px;"
+        "gridline-color:#1e293b;"
+        "}"
+        "QHeaderView::section {"
+        "color:#e2e8f0;"
+        "background:#111827;"
+        "border:0;"
+        "padding:4px;"
+        "}"
+    )
+    pelvis_select_button = QtWidgets.QPushButton("Use Mapping Row")
+    pelvis_select_button.setToolTip("Set the pelvis constraint from the selected Mapping tab row.")
+    pelvis_mode_combo = QtWidgets.QComboBox()
+    pelvis_mode_combo.addItem("None", "none")
+    pelvis_mode_combo.addItem("Position Offset", "position_offset")
+    pelvis_mode_combo.addItem("Snap", "snap")
+    pelvis_mode_combo.setToolTip("Choose how the target pelvis translation follows the source pelvis.")
+    try:
+        pelvis_mode_combo.setMinimumWidth(150)
+    except Exception:
+        pass
+    pelvis_mode_label = QtWidgets.QLabel("Motion")
+    pelvis_mode_label.setStyleSheet("color:#cbd5e1;")
+    pelvis_mode_row = QtWidgets.QHBoxLayout()
+    pelvis_mode_row.setContentsMargins(0, 0, 0, 0)
+    pelvis_mode_row.setSpacing(8)
+    pelvis_mode_row.addWidget(pelvis_mode_label, 0)
+    pelvis_mode_row.addWidget(pelvis_mode_combo, 1)
+    constraints_layout.addWidget(pelvis_link_label, 0)
+    constraints_layout.addWidget(pelvis_link_table, 0)
+    constraints_layout.addWidget(pelvis_select_button, 0)
+    constraints_layout.addLayout(pelvis_mode_row, 0)
+    constraints_layout.addStretch(1)
+
     def _slider_row(label_text: str, value_text: str, minimum: int, maximum: int, initial: int):
         row = QtWidgets.QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
@@ -2955,6 +3396,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         minimum=JOINT_CURVE_THICKNESS_MIN,
         maximum=JOINT_CURVE_THICKNESS_MAX,
     )
+    initial_source_rest_pose = _param_bool(node, SOURCE_REST_POSE_PARAM, False)
     initial_preview_target_animation = _param_bool(node, PREVIEW_TARGET_MESH_PARAM, False)
     joint_handle_slider, joint_handle_value = _slider_row(
         "Joint Points",
@@ -2970,6 +3412,13 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         int(JOINT_CURVE_THICKNESS_MAX * 10.0),
         int(round(initial_curve_thickness * 10.0)),
     )
+    source_rest_pose_checkbox = QtWidgets.QCheckBox("Source Reference Pose")
+    source_rest_pose_checkbox.setChecked(bool(initial_source_rest_pose))
+    source_rest_pose_checkbox.setToolTip(
+        "Use the source clip start pose as a static reference pose for the mapping preview."
+    )
+    source_rest_pose_checkbox.setStyleSheet("color:#cbd5e1;")
+    settings_layout.addWidget(source_rest_pose_checkbox, 0)
     preview_target_animation_checkbox = QtWidgets.QCheckBox("Animate Target Skeleton")
     preview_target_animation_checkbox.setChecked(bool(initial_preview_target_animation))
     preview_target_animation_checkbox.setToolTip("Use the generated retarget clip on the target skeleton in this preview.")
@@ -2978,6 +3427,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     settings_layout.addStretch(1)
 
     tab_widget.addTab(mapping_tab, "Mapping")
+    tab_widget.addTab(constraints_tab, "Constraints")
     tab_widget.addTab(settings_tab, "Settings")
 
     validate_button = QtWidgets.QPushButton("Validate")
@@ -3017,6 +3467,24 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         except Exception:
             return None
 
+    def _set_retarget_pick_mode(mode: str = "") -> None:
+        normalized = "pelvis_constraint" if str(mode or "").strip().lower() == "pelvis_constraint" else ""
+        item = _node_item()
+        model_obj = getattr(item, "model", None) if item is not None else node
+        if model_obj is None:
+            return
+        try:
+            setattr(model_obj, "_retarget_pick_mode", normalized)
+        except Exception:
+            pass
+
+    def _on_retarget_tab_changed(index: int) -> None:
+        try:
+            active_widget = tab_widget.widget(int(index))
+        except Exception:
+            active_widget = None
+        _set_retarget_pick_mode("pelvis_constraint" if active_widget is constraints_tab else "")
+
     def _set_node_param(name: str, value: str, *, notify_scene: bool = True) -> None:
         item = _node_item()
         if item is None:
@@ -3046,6 +3514,95 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         except Exception:
             pass
 
+    def _set_pelvis_mode_combo(mode: str) -> None:
+        normalized = _normalize_pelvis_constraint_mode(mode)
+        index = 0
+        try:
+            for row in range(pelvis_mode_combo.count()):
+                data = pelvis_mode_combo.itemData(row)
+                if _normalize_pelvis_constraint_mode(str(data or "")) == normalized:
+                    index = row
+                    break
+        except Exception:
+            index = 0
+        pelvis_mode_combo.setCurrentIndex(index)
+
+    def _pelvis_mode_combo_value() -> str:
+        try:
+            return _normalize_pelvis_constraint_mode(str(pelvis_mode_combo.currentData() or "none"))
+        except Exception:
+            return "none"
+
+    def _display_pelvis_mode(mode: str) -> str:
+        normalized = _normalize_pelvis_constraint_mode(mode)
+        if normalized == "snap":
+            return "Snap"
+        if normalized == "position_offset":
+            return "Position Offset"
+        return "None"
+
+    def _set_pelvis_link_label(source_name: str, target_name: str, mode: str | None = None) -> None:
+        source_text = str(source_name or "").strip()
+        target_text = str(target_name or "").strip()
+        mode_text = _display_pelvis_mode(mode if mode is not None else _pelvis_mode_combo_value())
+        if source_text and target_text:
+            pelvis_link_label.setText("Selected Pelvis Link")
+            try:
+                pelvis_link_table.setRowCount(1)
+                pelvis_link_table.setItem(0, 0, QtWidgets.QTableWidgetItem(source_text))
+                pelvis_link_table.setItem(0, 1, QtWidgets.QTableWidgetItem(target_text))
+                pelvis_link_table.setItem(0, 2, QtWidgets.QTableWidgetItem(mode_text))
+            except Exception:
+                pass
+        else:
+            pelvis_link_label.setText("Selected Pelvis Link")
+            try:
+                pelvis_link_table.setRowCount(0)
+            except Exception:
+                pass
+
+    def _refresh_mapping_table_only(model_obj=None) -> None:
+        if model_obj is None:
+            item = _node_item()
+            model_obj = getattr(item, "model", None) if item is not None else node
+        mapping = _joint_map_payload(model_obj)
+        try:
+            map_table.setUpdatesEnabled(False)
+            map_table.setRowCount(len(mapping))
+            for row, source_name in enumerate(sorted(mapping.keys(), key=lambda value: value.lower())):
+                target_name = mapping.get(source_name, "")
+                map_table.setItem(row, 0, QtWidgets.QTableWidgetItem(source_name))
+                map_table.setItem(row, 1, QtWidgets.QTableWidgetItem(target_name))
+        finally:
+            try:
+                map_table.setUpdatesEnabled(True)
+            except Exception:
+                pass
+
+    def _register_mapping_refresh_callback() -> None:
+        item = _node_item()
+        model_obj = getattr(item, "model", None) if item is not None else node
+        if model_obj is None:
+            return
+        try:
+            setattr(model_obj, "_retarget_mapping_table_refresh", _refresh_mapping_table_only)
+        except Exception:
+            pass
+
+    def _clear_mapping_refresh_callback() -> None:
+        item = _node_item()
+        model_obj = getattr(item, "model", None) if item is not None else node
+        callback = getattr(model_obj, "_retarget_mapping_table_refresh", None) if model_obj is not None else None
+        if callback is not _refresh_mapping_table_only:
+            return
+        try:
+            delattr(model_obj, "_retarget_mapping_table_refresh")
+        except Exception:
+            try:
+                setattr(model_obj, "_retarget_mapping_table_refresh", None)
+            except Exception:
+                pass
+
     def _sync_settings_sliders(model_obj) -> None:
         handle_value = _param_float(
             model_obj,
@@ -3061,15 +3618,24 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             minimum=JOINT_CURVE_THICKNESS_MIN,
             maximum=JOINT_CURVE_THICKNESS_MAX,
         )
+        source_rest_pose = _param_bool(model_obj, SOURCE_REST_POSE_PARAM, False)
         preview_target_animation = _param_bool(model_obj, PREVIEW_TARGET_MESH_PARAM, False)
+        pelvis_source = _param_value(model_obj, PELVIS_CONSTRAINT_SOURCE_PARAM)
+        pelvis_target = _param_value(model_obj, PELVIS_CONSTRAINT_TARGET_PARAM)
+        pelvis_mode = _param_value(model_obj, PELVIS_CONSTRAINT_MODE_PARAM) or "none"
         settings_syncing["value"] = True
         try:
             joint_handle_slider.blockSignals(True)
             joint_curve_slider.blockSignals(True)
+            source_rest_pose_checkbox.blockSignals(True)
             preview_target_animation_checkbox.blockSignals(True)
+            pelvis_mode_combo.blockSignals(True)
             joint_handle_slider.setValue(int(round(handle_value * 100.0)))
             joint_curve_slider.setValue(int(round(curve_value * 10.0)))
+            source_rest_pose_checkbox.setChecked(bool(source_rest_pose))
             preview_target_animation_checkbox.setChecked(bool(preview_target_animation))
+            _set_pelvis_mode_combo(pelvis_mode)
+            _set_pelvis_link_label(pelvis_source, pelvis_target, pelvis_mode)
             joint_handle_value.setText(f"{handle_value:.2f}x")
             joint_curve_value.setText(f"{curve_value:.1f}px")
         finally:
@@ -3082,7 +3648,15 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             except Exception:
                 pass
             try:
+                source_rest_pose_checkbox.blockSignals(False)
+            except Exception:
+                pass
+            try:
                 preview_target_animation_checkbox.blockSignals(False)
+            except Exception:
+                pass
+            try:
+                pelvis_mode_combo.blockSignals(False)
             except Exception:
                 pass
             settings_syncing["value"] = False
@@ -3133,6 +3707,90 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         _set_node_param(PREVIEW_TARGET_MESH_PARAM, "1" if checked else "0", notify_scene=True)
         _refresh_retarget_view_from_settings()
 
+    def _on_source_rest_pose_changed(raw_state: int) -> None:
+        if bool(settings_syncing.get("value", False)):
+            return
+        checked = bool(raw_state)
+        try:
+            checked = bool(source_rest_pose_checkbox.isChecked())
+        except Exception:
+            pass
+        _set_node_param(SOURCE_REST_POSE_PARAM, "1" if checked else "0", notify_scene=True)
+        _refresh_retarget_view_from_settings()
+
+    def _selected_mapping_link() -> Tuple[str, str]:
+        row = -1
+        try:
+            row = int(map_table.currentRow())
+        except Exception:
+            row = -1
+        if row < 0:
+            try:
+                indexes = list(map_table.selectedIndexes() or [])
+                if indexes:
+                    row = int(indexes[0].row())
+            except Exception:
+                row = -1
+        if row < 0:
+            return "", ""
+        try:
+            source_item = map_table.item(row, 0)
+            target_item = map_table.item(row, 1)
+            source_name = str(source_item.text() if source_item is not None else "").strip()
+            target_name = str(target_item.text() if target_item is not None else "").strip()
+            return source_name, target_name
+        except Exception:
+            return "", ""
+
+    def _on_pelvis_select_clicked() -> None:
+        source_name, target_name = _selected_mapping_link()
+        if not source_name or not target_name:
+            try:
+                QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Select a mapping row first.", card)
+            except Exception:
+                pass
+            return
+        item = _node_item()
+        if item is None:
+            return
+        payload = set_pelvis_constraint_link(
+            item,
+            source_name,
+            target_name,
+            mode=_pelvis_mode_combo_value(),
+            notify_scene=True,
+        )
+        settings_syncing["value"] = True
+        try:
+            pelvis_mode_combo.blockSignals(True)
+            _set_pelvis_mode_combo(str(payload.get("mode") or "none"))
+        finally:
+            try:
+                pelvis_mode_combo.blockSignals(False)
+            except Exception:
+                pass
+            settings_syncing["value"] = False
+        _set_pelvis_link_label(
+            str(payload.get("source") or source_name),
+            str(payload.get("target") or target_name),
+            str(payload.get("mode") or _pelvis_mode_combo_value()),
+        )
+        _refresh_retarget_view_from_settings()
+
+    def _on_pelvis_mode_changed(*_args) -> None:
+        if bool(settings_syncing.get("value", False)):
+            return
+        mode = _pelvis_mode_combo_value()
+        _set_node_param(PELVIS_CONSTRAINT_MODE_PARAM, mode, notify_scene=True)
+        item = _node_item()
+        model_obj = getattr(item, "model", None) if item is not None else None
+        _set_pelvis_link_label(
+            _param_value(model_obj, PELVIS_CONSTRAINT_SOURCE_PARAM),
+            _param_value(model_obj, PELVIS_CONSTRAINT_TARGET_PARAM),
+            mode,
+        )
+        _refresh_retarget_view_from_settings()
+
     def _refresh(*_args, persist: bool = False, toast: bool = False):
         item = _node_item()
         if item is None:
@@ -3163,21 +3821,8 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         if result.warnings:
             lines.append(f"warnings: {len(result.warnings)}")
         detail_box.setPlainText("\n".join(lines))
-        mapping = _joint_map_payload(getattr(item, "model", None))
-        try:
-            map_table.setUpdatesEnabled(False)
-            map_table.setRowCount(len(mapping))
-            for row, source_name in enumerate(sorted(mapping.keys(), key=lambda value: value.lower())):
-                target_name = mapping.get(source_name, "")
-                src_item = QtWidgets.QTableWidgetItem(source_name)
-                dst_item = QtWidgets.QTableWidgetItem(target_name)
-                map_table.setItem(row, 0, src_item)
-                map_table.setItem(row, 1, dst_item)
-        finally:
-            try:
-                map_table.setUpdatesEnabled(True)
-            except Exception:
-                pass
+        _register_mapping_refresh_callback()
+        _refresh_mapping_table_only(getattr(item, "model", None))
         report = "\n".join(result.message_lines())
         report_holder["value"] = report
         detail_box.setToolTip(report)
@@ -3270,7 +3915,20 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     joint_curve_slider.valueChanged.connect(_on_joint_curve_changed)
     joint_handle_slider.sliderReleased.connect(_on_joint_handle_released)
     joint_curve_slider.sliderReleased.connect(_on_joint_curve_released)
+    source_rest_pose_checkbox.stateChanged.connect(_on_source_rest_pose_changed)
     preview_target_animation_checkbox.stateChanged.connect(_on_preview_target_animation_changed)
+    pelvis_select_button.clicked.connect(_on_pelvis_select_clicked)
+    pelvis_mode_combo.currentIndexChanged.connect(_on_pelvis_mode_changed)
+    tab_widget.currentChanged.connect(_on_retarget_tab_changed)
+    try:
+        container.destroyed.connect(
+            lambda *_args: (
+                _set_retarget_pick_mode(""),
+                _clear_mapping_refresh_callback(),
+            )
+        )
+    except Exception:
+        pass
 
     def _on_links_changed(*_args):
         _refresh(persist=False, toast=False)
@@ -3291,6 +3949,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     except Exception:
         pass
 
+    _on_retarget_tab_changed(tab_widget.currentIndex())
     _refresh(persist=False, toast=False)
     return True
 
@@ -3314,6 +3973,8 @@ __all__ = [
     "build_anim_retarget_scene_asset",
     "write_anim_retarget_joint_debug_snapshot",
     "set_joint_map_link",
+    "remove_joint_map_link",
+    "set_pelvis_constraint_link",
     "augment_infocard_footer",
     "ANIM_RETARGET_SPEC",
 ]
