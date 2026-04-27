@@ -228,6 +228,7 @@ _MOUSE_METHOD_NAMES = [
     '_handle_mouse_release_moderngl_retarget_drag',
     '_handle_mouse_release_moderngl_right_button_nav',
     '_handle_mouse_release_moderngl_end_xform_drag',
+    '_handle_mouse_release_moderngl_commit_retarget_pose_if_needed',
     '_handle_mouse_release_moderngl_log_splat_drag_end',
     '_handle_mouse_release_moderngl_reset_xform_drag_state',
     '_handle_mouse_release_moderngl_release_mouse_grab',
@@ -1647,7 +1648,15 @@ def _handle_mouse_press_moderngl_left_gizmo_scale_begin_drag(self, *, owner, g, 
     self._xform_drag_mode = "scale"
     self._xform_drag_axis = pick_axis
     self._xform_drag_owner = owner
-    self._xform_drag_kind = "splat" if is_splat else "mesh"
+    drag_kind = "splat" if is_splat else "mesh"
+    try:
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        is_pose_joint = getattr(renderer, "_mgl_retarget_owner_is_target_pose_joint", None)
+        if callable(is_pose_joint) and bool(is_pose_joint(owner)):
+            drag_kind = "retarget_target_joint"
+    except Exception:
+        pass
+    self._xform_drag_kind = drag_kind
     self._xform_drag_start_pos = g.copy()
     self._xform_gizmo_pos_locked = True
     self._xform_drag_s0 = None
@@ -2239,7 +2248,15 @@ def _handle_mouse_press_moderngl_left_gizmo_translate_begin_drag(self, *, owner,
     self._xform_drag_mode = "translate"
     self._xform_drag_axis = axis
     self._xform_drag_owner = owner
-    self._xform_drag_kind = "splat" if is_splat else "mesh"
+    drag_kind = "splat" if is_splat else "mesh"
+    try:
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        is_pose_joint = getattr(renderer, "_mgl_retarget_owner_is_target_pose_joint", None)
+        if callable(is_pose_joint) and bool(is_pose_joint(owner)):
+            drag_kind = "retarget_target_joint"
+    except Exception:
+        pass
+    self._xform_drag_kind = drag_kind
     self._xform_drag_start_pos = g.copy()
     self._xform_gizmo_pos_locked = True
     self._xform_drag_s0 = None
@@ -3491,6 +3508,15 @@ def _handle_mouse_move_moderngl_xform_translate_axis_param(self, *, axis_world, 
 def _handle_mouse_move_moderngl_xform_translate_apply_owner(self, new_pos, owner, renderer):
     self._xform_gizmo_pos = (float(new_pos[0]), float(new_pos[1]), float(new_pos[2]))
 
+    try:
+        is_pose_joint = getattr(renderer, "_mgl_retarget_owner_is_target_pose_joint", None)
+        apply_pose_pos = getattr(renderer, "_mgl_retarget_apply_target_pose_joint_position", None)
+        if callable(is_pose_joint) and callable(apply_pose_pos) and bool(is_pose_joint(owner)):
+            apply_pose_pos(owner, self._xform_gizmo_pos, notify_scene=False)
+            return
+    except Exception:
+        return
+
     is_splat = self._handle_mouse_press_moderngl_left_gizmo_owner_is_splat(
         renderer=renderer,
         owner=owner,
@@ -3739,6 +3765,15 @@ def _handle_mouse_move_moderngl_xform_scale_axis_factor(self, axis_world, g0, px
     return max(0.01, float(factor))
 
 def _handle_mouse_move_moderngl_xform_scale_apply_owner(self, e, owner, new_scl, is_splat):
+    try:
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        is_pose_joint = getattr(renderer, "_mgl_retarget_owner_is_target_pose_joint", None)
+        if callable(is_pose_joint) and bool(is_pose_joint(owner)):
+            self.update()
+            e.accept()
+            return
+    except Exception:
+        pass
     self._mgl_set_scene_asset_xform(
         owner,
         scl=new_scl,
@@ -4150,7 +4185,9 @@ def _handle_mouse_move_legacy_dolly(self, e):
 
 def _handle_mouse_release_rot_shared_arc(self, e):
     if e.button() == QtCore.Qt.LeftButton and bool(getattr(self, "_rot_shared_arc_active", False)):
+        owner = getattr(self, "_rot_shared_owner", None)
         self._rot_shared_arc_active = False
+        self._handle_mouse_release_moderngl_commit_retarget_pose_if_needed(owner=owner)
         self._commit_xform_history()
         self.update()
         e.accept()
@@ -4164,10 +4201,12 @@ def _handle_mouse_release_rot_shared_view(self, e, rot_shared):
         and rot_shared is not None
         and bool(getattr(rot_shared, "drag_view", False))
     ):
+        owner = getattr(self, "_rot_shared_owner", None)
         try:
             rot_shared.end_view_ring_drag()
         except Exception:
             pass
+        self._handle_mouse_release_moderngl_commit_retarget_pose_if_needed(owner=owner)
         self._commit_xform_history()
         self.update()
         e.accept()
@@ -4181,6 +4220,7 @@ def _handle_mouse_release_rot_shared_axis(self, e, rot_shared):
         and rot_shared is not None
         and bool(getattr(getattr(rot_shared, "drag_axis", None), "active", False))
     ):
+        owner = getattr(self, "_rot_shared_owner", None)
         try:
             rot_shared.end_axis_drag()
         except Exception:
@@ -4189,6 +4229,7 @@ def _handle_mouse_release_rot_shared_axis(self, e, rot_shared):
         self._rot_shared_axis = None
         self._rot_shared_axis_start_euler_deg = None
         self._rot_shared_axis_last_ang_deg = 0.0
+        self._handle_mouse_release_moderngl_commit_retarget_pose_if_needed(owner=owner)
         self._commit_xform_history()
         self.update()
         e.accept()
@@ -4307,6 +4348,9 @@ def _handle_mouse_release_moderngl_end_xform_drag(self, e):
     if not getattr(self, "_xform_dragging", False):
         return False
 
+    self._handle_mouse_release_moderngl_commit_retarget_pose_if_needed(
+        owner=getattr(self, "_xform_drag_owner", None)
+    )
     self._commit_xform_history()
     self._handle_mouse_release_moderngl_log_splat_drag_end()
     self._handle_mouse_release_moderngl_reset_xform_drag_state()
@@ -4320,6 +4364,21 @@ def _handle_mouse_release_moderngl_end_xform_drag(self, e):
     self.setCursor(QtCore.Qt.ArrowCursor)
     e.accept()
     return True
+
+def _handle_mouse_release_moderngl_commit_retarget_pose_if_needed(self, owner=None):
+    try:
+        owner = owner or getattr(self, "_xform_drag_owner", None) or getattr(self, "_rot_shared_owner", None)
+        if not owner:
+            owner = getattr(self, "_xform_gizmo_owner", None)
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        is_pose_joint = getattr(renderer, "_mgl_retarget_owner_is_target_pose_joint", None)
+        commit_pose = getattr(renderer, "_mgl_retarget_commit_target_pose_edit", None)
+        if callable(is_pose_joint) and callable(commit_pose) and bool(is_pose_joint(owner)):
+            commit_pose(notify_scene=True)
+            return True
+    except Exception:
+        pass
+    return False
 
 def _handle_mouse_release_moderngl_log_splat_drag_end(self):
     # Log splat drag end with gizmo + xform state.

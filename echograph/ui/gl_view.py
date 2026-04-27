@@ -5119,9 +5119,12 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 except Exception:
                     is_splat = False
 
-                get_xf = getattr(renderer, "_mgl_get_scene_splat_xform", None) if is_splat else getattr(renderer, "_mgl_get_scene_asset_xform", None)
-                xf = get_xf(owner) if callable(get_xf) else {}
-                rot = tuple((xf or {}).get("rot", (0.0, 0.0, 0.0)))
+                try:
+                    rot, _rot_is_splat = self._get_owner_rot_deg(owner)
+                except Exception:
+                    get_xf = getattr(renderer, "_mgl_get_scene_splat_xform", None) if is_splat else getattr(renderer, "_mgl_get_scene_asset_xform", None)
+                    xf = get_xf(owner) if callable(get_xf) else {}
+                    rot = tuple((xf or {}).get("rot", (0.0, 0.0, 0.0)))
 
                 rx, ry, rz = float(rot[0]), float(rot[1]), float(rot[2])
                 cx, sx = math.cos(math.radians(rx)), math.sin(math.radians(rx))
@@ -5386,6 +5389,14 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
 
     def _get_owner_rot_deg(self, owner: str):
         renderer = getattr(self, "_mgl_renderer", None) or self
+        try:
+            is_pose_joint = getattr(renderer, "_mgl_retarget_owner_is_target_pose_joint", None)
+            get_pose_rot = getattr(renderer, "_mgl_retarget_get_target_pose_joint_rotation", None)
+            if callable(is_pose_joint) and callable(get_pose_rot) and bool(is_pose_joint(owner)):
+                rot = get_pose_rot(owner)
+                return (float(rot[0]), float(rot[1]), float(rot[2])), False
+        except Exception:
+            pass
         # detect splat
         is_splat = False
         try:
@@ -5442,6 +5453,18 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         # Use the existing API that gl_view already uses for transforms.
         try:
             renderer = getattr(self, "_mgl_renderer", None) or self
+            try:
+                is_pose_joint = getattr(renderer, "_mgl_retarget_owner_is_target_pose_joint", None)
+                set_pose_rot = getattr(renderer, "_mgl_retarget_set_target_pose_joint_rotation", None)
+                if callable(is_pose_joint) and callable(set_pose_rot) and bool(is_pose_joint(owner)):
+                    set_pose_rot(
+                        owner,
+                        (float(rot_deg[0]), float(rot_deg[1]), float(rot_deg[2])),
+                        notify_scene=False,
+                    )
+                    return
+            except Exception:
+                pass
             fn = getattr(renderer, "_mgl_set_scene_asset_xform", None)
             if callable(fn):
                 fn(

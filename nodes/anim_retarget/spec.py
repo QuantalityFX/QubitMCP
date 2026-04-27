@@ -63,6 +63,8 @@ HIDDEN_PARAMS: Tuple[str, ...] = (
     "pelvis_constraint_source",
     "pelvis_constraint_target",
     "pelvis_constraint_mode",
+    "target_pose_offsets",
+    "target_pose_selected_joint",
     "root_source",
     "root_target",
     "scale_mode",
@@ -78,6 +80,8 @@ SOURCE_REST_POSE_PARAM = "source_zero_rotations"
 PELVIS_CONSTRAINT_SOURCE_PARAM = "pelvis_constraint_source"
 PELVIS_CONSTRAINT_TARGET_PARAM = "pelvis_constraint_target"
 PELVIS_CONSTRAINT_MODE_PARAM = "pelvis_constraint_mode"
+TARGET_POSE_OFFSETS_PARAM = "target_pose_offsets"
+TARGET_POSE_SELECTED_JOINT_PARAM = "target_pose_selected_joint"
 JOINT_HANDLE_SCALE_DEFAULT = 1.0
 JOINT_CURVE_THICKNESS_DEFAULT = 2.4
 JOINT_HANDLE_SCALE_MIN = 0.05
@@ -364,6 +368,8 @@ def _ensure_display_params(node_item) -> None:
     _ensure_param(node_item, PELVIS_CONSTRAINT_SOURCE_PARAM, "")
     _ensure_param(node_item, PELVIS_CONSTRAINT_TARGET_PARAM, "")
     _ensure_param(node_item, PELVIS_CONSTRAINT_MODE_PARAM, "none")
+    _ensure_param(node_item, TARGET_POSE_OFFSETS_PARAM, "{}")
+    _ensure_param(node_item, TARGET_POSE_SELECTED_JOINT_PARAM, "")
     _ensure_param(node_item, DISPLAY_PARAMS_VERSION_PARAM, "")
     model = getattr(node_item, "model", None)
     if model is None:
@@ -628,6 +634,163 @@ def set_pelvis_constraint_link(
                 pass
 
     return {"source": source, "target": target, "mode": next_mode}
+
+
+def _clean_vec3(raw, default=(0.0, 0.0, 0.0)) -> Tuple[float, float, float]:
+    try:
+        if raw is None or len(raw) < 3:
+            return (float(default[0]), float(default[1]), float(default[2]))
+        return (float(raw[0]), float(raw[1]), float(raw[2]))
+    except Exception:
+        return (float(default[0]), float(default[1]), float(default[2]))
+
+
+def _target_pose_offsets_payload(model) -> Dict[str, Dict[str, List[float]]]:
+    raw = _param_value(model, TARGET_POSE_OFFSETS_PARAM)
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    clean: Dict[str, Dict[str, List[float]]] = {}
+    for key, value in payload.items():
+        name = str(key or "").strip()
+        if not name or not isinstance(value, dict):
+            continue
+        row: Dict[str, List[float]] = {}
+        if "position" in value:
+            px, py, pz = _clean_vec3(value.get("position"))
+            row["position"] = [float(px), float(py), float(pz)]
+        if "rotation" in value:
+            rx, ry, rz = _clean_vec3(value.get("rotation"))
+            row["rotation"] = [float(rx), float(ry), float(rz)]
+        if row:
+            clean[name] = row
+    return clean
+
+
+def _set_target_pose_payload(node_item, payload: Dict[str, Dict[str, List[float]]], *, notify_scene: bool = True) -> None:
+    model = getattr(node_item, "model", None)
+    if model is None:
+        return
+    encoded = json.dumps(payload if isinstance(payload, dict) else {}, sort_keys=True)
+    setter = getattr(node_item, "_set_param_value", None)
+    notified = False
+    if callable(setter):
+        try:
+            setter(TARGET_POSE_OFFSETS_PARAM, encoded, rebuild=False, notify_scene=bool(notify_scene))
+            notified = bool(notify_scene)
+        except TypeError:
+            try:
+                setter(TARGET_POSE_OFFSETS_PARAM, encoded)
+                notified = bool(notify_scene)
+            except Exception:
+                _set_param_value(model, TARGET_POSE_OFFSETS_PARAM, encoded)
+        except Exception:
+            _set_param_value(model, TARGET_POSE_OFFSETS_PARAM, encoded)
+    else:
+        _set_param_value(model, TARGET_POSE_OFFSETS_PARAM, encoded)
+    try:
+        setattr(model, "_retarget_target_pose_offsets", encoded)
+    except Exception:
+        pass
+    if bool(notify_scene) and not notified:
+        try:
+            scene = node_item.scene()
+        except Exception:
+            scene = None
+        if scene is not None and hasattr(scene, "paramChanged"):
+            try:
+                scene.paramChanged.emit(getattr(model, "name", ""), list(getattr(model, "params", []) or []))
+            except Exception:
+                pass
+
+
+def set_target_pose_selected_joint(node_item, joint_name: str, *, notify_scene: bool = False) -> str:
+    model = getattr(node_item, "model", None)
+    if model is None:
+        return ""
+    name = str(joint_name or "").strip()
+    setter = getattr(node_item, "_set_param_value", None)
+    if callable(setter):
+        try:
+            setter(TARGET_POSE_SELECTED_JOINT_PARAM, name, rebuild=False, notify_scene=bool(notify_scene))
+        except TypeError:
+            try:
+                setter(TARGET_POSE_SELECTED_JOINT_PARAM, name)
+            except Exception:
+                _set_param_value(model, TARGET_POSE_SELECTED_JOINT_PARAM, name)
+        except Exception:
+            _set_param_value(model, TARGET_POSE_SELECTED_JOINT_PARAM, name)
+    else:
+        _set_param_value(model, TARGET_POSE_SELECTED_JOINT_PARAM, name)
+    return name
+
+
+def set_target_pose_joint_position(
+    node_item,
+    joint_name: str,
+    position,
+    *,
+    notify_scene: bool = True,
+) -> Dict[str, List[float]]:
+    model = getattr(node_item, "model", None)
+    if model is None:
+        return {}
+    name = str(joint_name or "").strip()
+    if not name:
+        return {}
+    px, py, pz = _clean_vec3(position)
+    payload = _target_pose_offsets_payload(model)
+    row = dict(payload.get(name) or {})
+    row["position"] = [float(px), float(py), float(pz)]
+    payload[name] = row
+    set_target_pose_selected_joint(node_item, name, notify_scene=False)
+    _set_target_pose_payload(node_item, payload, notify_scene=bool(notify_scene))
+    return row
+
+
+def set_target_pose_joint_rotation(
+    node_item,
+    joint_name: str,
+    rotation_degrees,
+    *,
+    notify_scene: bool = True,
+) -> Dict[str, List[float]]:
+    model = getattr(node_item, "model", None)
+    if model is None:
+        return {}
+    name = str(joint_name or "").strip()
+    if not name:
+        return {}
+    rx, ry, rz = _clean_vec3(rotation_degrees)
+    payload = _target_pose_offsets_payload(model)
+    row = dict(payload.get(name) or {})
+    row["rotation"] = [float(rx), float(ry), float(rz)]
+    payload[name] = row
+    set_target_pose_selected_joint(node_item, name, notify_scene=False)
+    _set_target_pose_payload(node_item, payload, notify_scene=bool(notify_scene))
+    return row
+
+
+def reset_target_pose_joint(node_item, joint_name: str, *, notify_scene: bool = True) -> Dict[str, Dict[str, List[float]]]:
+    model = getattr(node_item, "model", None)
+    if model is None:
+        return {}
+    name = str(joint_name or "").strip()
+    payload = _target_pose_offsets_payload(model)
+    if name:
+        payload.pop(name, None)
+    _set_target_pose_payload(node_item, payload, notify_scene=bool(notify_scene))
+    return payload
+
+
+def reset_target_pose_all(node_item, *, notify_scene: bool = True) -> Dict[str, Dict[str, List[float]]]:
+    _set_target_pose_payload(node_item, {}, notify_scene=bool(notify_scene))
+    return {}
 
 
 def _list_clips(animation_result) -> List[Any]:
@@ -956,6 +1119,8 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, PELVIS_CONSTRAINT_SOURCE_PARAM, "")
     _ensure_param(node_item, PELVIS_CONSTRAINT_TARGET_PARAM, "")
     _ensure_param(node_item, PELVIS_CONSTRAINT_MODE_PARAM, "none")
+    _ensure_param(node_item, TARGET_POSE_OFFSETS_PARAM, "{}")
+    _ensure_param(node_item, TARGET_POSE_SELECTED_JOINT_PARAM, "")
     _ensure_param(node_item, "debug_log", "0")
     _ensure_hidden_params(getattr(node_item, "model", None), HIDDEN_PARAMS)
 
@@ -1318,7 +1483,10 @@ def _preview_target_animation_asset(
     xform = _clean_xform(target_context.get("transform_xform"))
     rig_context = dict(target_context.get("rig_context") or {})
     original_clip = rig_context.get("clip")
-    target_skeleton = _retarget_eval_target_skeleton(target_context.get("skeleton"))
+    target_skeleton = target_pose_skeleton_for_model(
+        model,
+        _retarget_eval_target_skeleton(target_context.get("skeleton")),
+    )
     rig_context["skeleton"] = target_skeleton
     rig_context["clip"] = retarget_clip
     rig_context["clips"] = [retarget_clip]
@@ -1405,8 +1573,13 @@ def build_anim_retarget_preview_assets(
         max_radius = max(base_radius, min(120.0, extent * 0.10))
         return max(0.02, min(max_radius, base_radius * handle_scale))
 
+    target_pose_context = dict(target_context)
+    target_pose_context["skeleton"] = target_pose_skeleton_for_model(
+        model,
+        _retarget_eval_target_skeleton(target_context.get("skeleton")),
+    )
     source_handle_radius = _handle_radius_for_context(source_context)
-    target_handle_radius = _handle_radius_for_context(target_context)
+    target_handle_radius = _handle_radius_for_context(target_pose_context)
     handle_radius = max(source_handle_radius, target_handle_radius)
     base_name = str(getattr(model, "name", "") or "").strip() or "Anim Retarget"
     source_owner = f"{base_name} Source"
@@ -1435,7 +1608,7 @@ def build_anim_retarget_preview_assets(
         )
         if target_asset is None:
             target_asset = _preview_asset_for_context(
-                target_context,
+                target_pose_context,
                 owner=target_owner,
                 role="target",
                 x_offset=0.0,
@@ -1443,7 +1616,7 @@ def build_anim_retarget_preview_assets(
             )
     else:
         target_asset = _preview_asset_for_context(
-            target_context,
+            target_pose_context,
             owner=target_owner,
             role="target",
             x_offset=0.0,
@@ -1488,10 +1661,9 @@ def build_anim_retarget_preview_assets(
         return rows
 
     source_handles = _handles(source_preview_context, "source", source_handle_radius)
-    target_handle_context = target_context
+    target_handle_context = target_pose_context
     if retarget_preview_clip is not None:
-        target_handle_context = dict(target_context)
-        target_handle_context["skeleton"] = _retarget_eval_target_skeleton(target_context.get("skeleton"))
+        target_handle_context = dict(target_pose_context)
         target_handle_context["clip"] = retarget_preview_clip
         target_handle_context["retarget_preview_target_animated"] = True
     target_handles = _handles(target_handle_context, "target", target_handle_radius)
@@ -1509,11 +1681,7 @@ def build_anim_retarget_preview_assets(
         "handle_radius": handle_radius,
         "curve_thickness": curve_thickness,
     }
-    target_log_skeleton = (
-        _retarget_eval_target_skeleton(target_context.get("skeleton"))
-        if preview_target_animation
-        else target_context.get("skeleton")
-    )
+    target_log_skeleton = target_pose_context.get("skeleton")
     _retarget_debug_log(
         "build_preview_assets",
         node=base_name,
@@ -1690,6 +1858,44 @@ def _matrix4_inverse_row_major(matrix: Tuple[float, ...]) -> Tuple[float, ...] |
     return tuple(float(rows[r][4 + c]) for r in range(4) for c in range(4))
 
 
+def _matrix4_from_joint_transform(xf) -> Tuple[float, ...]:
+    try:
+        tx, ty, tz = _clean_vec3(getattr(xf, "translation", (0.0, 0.0, 0.0)))
+        x, y, z, w = _quat_normalize(getattr(xf, "rotation", (0.0, 0.0, 0.0, 1.0)))
+        sx, sy, sz = _clean_vec3(getattr(xf, "scale", (1.0, 1.0, 1.0)), default=(1.0, 1.0, 1.0))
+    except Exception:
+        tx = ty = tz = 0.0
+        x = y = z = 0.0
+        w = 1.0
+        sx = sy = sz = 1.0
+
+    xx = x * x
+    yy = y * y
+    zz = z * z
+    xy = x * y
+    xz = x * z
+    yz = y * z
+    wx = w * x
+    wy = w * y
+    wz = w * z
+
+    r00 = 1.0 - (2.0 * (yy + zz))
+    r01 = 2.0 * (xy - wz)
+    r02 = 2.0 * (xz + wy)
+    r10 = 2.0 * (xy + wz)
+    r11 = 1.0 - (2.0 * (xx + zz))
+    r12 = 2.0 * (yz - wx)
+    r20 = 2.0 * (xz - wy)
+    r21 = 2.0 * (yz + wx)
+    r22 = 1.0 - (2.0 * (xx + yy))
+    return (
+        r00 * sx, r01 * sy, r02 * sz, tx,
+        r10 * sx, r11 * sy, r12 * sz, ty,
+        r20 * sx, r21 * sy, r22 * sz, tz,
+        0.0, 0.0, 0.0, 1.0,
+    )
+
+
 def _quat_from_rotation_matrix(
     m00: float,
     m01: float,
@@ -1784,6 +1990,123 @@ def _clone_joint_transform(xf):
         return out
     except Exception:
         return JointTransform()
+
+
+def target_pose_skeleton_for_model(model, skeleton):
+    if skeleton is None:
+        return skeleton
+    try:
+        base_skeleton = getattr(skeleton, "_anim_retarget_target_pose_source_skeleton", None)
+        if base_skeleton is not None:
+            skeleton = base_skeleton
+    except Exception:
+        pass
+    payload = _target_pose_offsets_payload(model)
+    if not payload:
+        return skeleton
+    try:
+        cache_key = json.dumps(payload, sort_keys=True)
+        cached_key = getattr(skeleton, "_anim_retarget_target_pose_cache_key", None)
+        cached = getattr(skeleton, "_anim_retarget_target_pose_cache", None)
+        if cached_key == cache_key and cached is not None:
+            return cached
+    except Exception:
+        cache_key = ""
+    try:
+        from echograph.rigging.fbx_canonical import Joint, SkeletonAsset
+
+        source_joints = list(getattr(skeleton, "joints", []) or [])
+        if not source_joints:
+            return skeleton
+        joints = []
+        for idx, joint in enumerate(source_joints):
+            name = str(getattr(joint, "name", "") or f"joint_{idx}")
+            parent_index = int(getattr(joint, "parent_index", -1) or -1)
+            local_bind = _clone_joint_transform(getattr(joint, "local_bind", None))
+            row = payload.get(name) or {}
+            if "rotation" in row:
+                rot_offset = _quat_from_euler_degrees(tuple(row.get("rotation") or (0.0, 0.0, 0.0)))
+                local_bind.rotation = _quat_mul(local_bind.rotation, rot_offset)
+            raw_inv = tuple(getattr(joint, "inverse_bind_matrix", ()) or ())
+            if len(raw_inv) != 16:
+                raw_inv = _IDENTITY_MATRIX_4X4
+            joints.append(
+                Joint(
+                    name=name,
+                    parent_index=int(parent_index),
+                    local_bind=local_bind,
+                    inverse_bind_matrix=tuple(float(v) for v in raw_inv),
+                )
+            )
+
+        global_mats: List[Tuple[float, ...]] = []
+        for idx, joint in enumerate(joints):
+            parent_index = int(getattr(joint, "parent_index", -1) or -1)
+            local_matrix = _matrix4_from_joint_transform(getattr(joint, "local_bind", None))
+            if 0 <= parent_index < idx:
+                global_mats.append(_matrix4_mul_row_major(global_mats[parent_index], local_matrix))
+            else:
+                global_mats.append(local_matrix)
+
+            row = payload.get(str(getattr(joint, "name", "") or "")) or {}
+            if "position" not in row:
+                continue
+            px, py, pz = _clean_vec3(row.get("position"))
+            current_global = list(global_mats[idx])
+            current_global[3] = float(px)
+            current_global[7] = float(py)
+            current_global[11] = float(pz)
+            desired_global = tuple(float(v) for v in current_global)
+            local_matrix = desired_global
+            if 0 <= parent_index < idx:
+                parent_inv = _matrix4_inverse_row_major(global_mats[parent_index])
+                if parent_inv is not None:
+                    local_matrix = _matrix4_mul_row_major(parent_inv, desired_global)
+            local_bind = _joint_transform_from_matrix4(local_matrix)
+            joint.local_bind = local_bind
+            if 0 <= parent_index < idx:
+                global_mats[idx] = _matrix4_mul_row_major(global_mats[parent_index], _matrix4_from_joint_transform(local_bind))
+            else:
+                global_mats[idx] = _matrix4_from_joint_transform(local_bind)
+
+        for idx, global_matrix in enumerate(global_mats):
+            inverse_bind = _matrix4_inverse_row_major(global_matrix)
+            if inverse_bind is not None and idx < len(joints):
+                joints[idx].inverse_bind_matrix = tuple(float(v) for v in inverse_bind)
+
+        metadata = dict(getattr(skeleton, "metadata", None) or {})
+        metadata["retarget_target_pose_offsets"] = int(len(payload))
+        out = SkeletonAsset(
+            name=f"{str(getattr(skeleton, 'name', '') or 'TargetSkeleton')}_retarget_pose",
+            joints=joints,
+            metadata=metadata,
+        )
+        out.validate()
+        try:
+            setattr(out, "_anim_retarget_target_pose_source_skeleton", skeleton)
+        except Exception:
+            pass
+        try:
+            if cache_key:
+                setattr(skeleton, "_anim_retarget_target_pose_cache_key", cache_key)
+                setattr(skeleton, "_anim_retarget_target_pose_cache", out)
+        except Exception:
+            pass
+        _retarget_debug_log(
+            "target_pose_skeleton",
+            skeleton=str(getattr(skeleton, "name", "") or ""),
+            joint_count=int(len(joints)),
+            offset_count=int(len(payload)),
+            pose=_points_summary(_skeleton_joint_positions(out, clip=None)),
+        )
+        return out
+    except Exception as exc:
+        _retarget_debug_log(
+            "target_pose_skeleton_failed",
+            skeleton=str(getattr(skeleton, "name", "") or ""),
+            error=repr(exc),
+        )
+        return skeleton
 
 
 def _source_reference_pose_skeleton(skeleton, clip):
@@ -2476,7 +2799,10 @@ def build_anim_retarget_clip(
     if not isinstance(source_context, dict) or not isinstance(target_context, dict):
         return None
     source_skeleton = source_context.get("skeleton")
-    target_skeleton = _retarget_eval_target_skeleton(target_context.get("skeleton"))
+    target_skeleton = target_pose_skeleton_for_model(
+        model,
+        _retarget_eval_target_skeleton(target_context.get("skeleton")),
+    )
     source_clip = source_context.get("clip")
     if source_skeleton is None or target_skeleton is None or source_clip is None:
         return None
@@ -2667,7 +2993,10 @@ def build_anim_retarget_scene_asset(
     base_name = str(getattr(model, "name", "") or "").strip() or "Anim Retarget"
     xform = _clean_xform(target_context.get("transform_xform"))
     rig_context = dict(target_context.get("rig_context") or {})
-    target_skeleton = _retarget_eval_target_skeleton(target_context.get("skeleton"))
+    target_skeleton = target_pose_skeleton_for_model(
+        model,
+        _retarget_eval_target_skeleton(target_context.get("skeleton")),
+    )
     original_clip = rig_context.get("clip")
     rig_context["skeleton"] = target_skeleton
     rig_context["clip"] = retarget_clip
@@ -2953,7 +3282,10 @@ def write_anim_retarget_joint_debug_snapshot(
         raise RuntimeError("Anim Retarget source or target context is unavailable.")
     source_skeleton = source_context.get("skeleton")
     target_skeleton_original = target_context.get("skeleton")
-    target_skeleton = _retarget_eval_target_skeleton(target_skeleton_original)
+    target_skeleton = target_pose_skeleton_for_model(
+        model,
+        _retarget_eval_target_skeleton(target_skeleton_original),
+    )
     source_clip = source_context.get("clip")
     if source_skeleton is None or target_skeleton is None or source_clip is None:
         raise RuntimeError("Anim Retarget source skeleton, target skeleton, or source clip is unavailable.")
@@ -3065,6 +3397,7 @@ def write_anim_retarget_joint_debug_snapshot(
             "transform": dict(target_context.get("transform_xform") or {}),
             "joint_count": int(result.target_joint_count),
             "mesh_count": int(result.target_mesh_count),
+            "target_pose_offsets": _target_pose_offsets_payload(model),
             "eval_bind_source": str(
                 (getattr(target_skeleton, "metadata", None) or {}).get("retarget_eval_bind_source", "local_bind")
             ),
@@ -3147,6 +3480,7 @@ def _maybe_write_anim_retarget_joint_debug_snapshot(
                 "pelvis_constraint_source": _param_value(model, PELVIS_CONSTRAINT_SOURCE_PARAM),
                 "pelvis_constraint_target": _param_value(model, PELVIS_CONSTRAINT_TARGET_PARAM),
                 "pelvis_constraint_mode": _param_value(model, PELVIS_CONSTRAINT_MODE_PARAM),
+                "target_pose_offsets": _target_pose_offsets_payload(model),
                 "source_transform": dict((getattr(result, "source_context", None) or {}).get("transform_xform") or {}),
                 "target_transform": dict((getattr(result, "target_context", None) or {}).get("transform_xform") or {}),
             },
@@ -3361,6 +3695,59 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     constraints_layout.addLayout(pelvis_mode_row, 0)
     constraints_layout.addStretch(1)
 
+    target_pose_tab = QtWidgets.QWidget(tab_widget)
+    target_pose_layout = QtWidgets.QVBoxLayout(target_pose_tab)
+    target_pose_layout.setContentsMargins(8, 8, 8, 8)
+    target_pose_layout.setSpacing(8)
+    target_pose_label = QtWidgets.QLabel("Selected Target Joint")
+    target_pose_label.setStyleSheet("color:#cbd5e1;")
+    target_pose_label.setWordWrap(True)
+    target_pose_table = QtWidgets.QTableWidget(0, 3)
+    target_pose_table.setHorizontalHeaderLabels(["Joint", "Position", "Rotation"])
+    target_pose_table.setMinimumHeight(76)
+    try:
+        try:
+            no_edit = QtWidgets.QAbstractItemView.NoEditTriggers
+        except Exception:
+            no_edit = QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers
+        target_pose_table.setEditTriggers(no_edit)
+        target_pose_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        target_pose_table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        header = target_pose_table.horizontalHeader()
+        header.setStretchLastSection(True)
+        header.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
+        header.setSectionResizeMode(2, QtWidgets.QHeaderView.Stretch)
+    except Exception:
+        pass
+    target_pose_table.setStyleSheet(
+        "QTableWidget {"
+        "color:#cbd5e1;"
+        "background:#0f172a;"
+        "border:1px solid #1e293b;"
+        "border-radius:4px;"
+        "gridline-color:#1e293b;"
+        "}"
+        "QHeaderView::section {"
+        "color:#e2e8f0;"
+        "background:#111827;"
+        "border:0;"
+        "padding:4px;"
+        "}"
+    )
+    target_pose_reset_button = QtWidgets.QPushButton("Reset Joint")
+    target_pose_reset_all_button = QtWidgets.QPushButton("Reset All")
+    target_pose_button_row = QtWidgets.QHBoxLayout()
+    target_pose_button_row.setContentsMargins(0, 0, 0, 0)
+    target_pose_button_row.setSpacing(8)
+    target_pose_button_row.addWidget(target_pose_reset_button, 0)
+    target_pose_button_row.addWidget(target_pose_reset_all_button, 0)
+    target_pose_button_row.addStretch(1)
+    target_pose_layout.addWidget(target_pose_label, 0)
+    target_pose_layout.addWidget(target_pose_table, 0)
+    target_pose_layout.addLayout(target_pose_button_row, 0)
+    target_pose_layout.addStretch(1)
+
     def _slider_row(label_text: str, value_text: str, minimum: int, maximum: int, initial: int):
         row = QtWidgets.QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
@@ -3428,6 +3815,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
 
     tab_widget.addTab(mapping_tab, "Mapping")
     tab_widget.addTab(constraints_tab, "Constraints")
+    tab_widget.addTab(target_pose_tab, "Target Pose")
     tab_widget.addTab(settings_tab, "Settings")
 
     validate_button = QtWidgets.QPushButton("Validate")
@@ -3468,7 +3856,8 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             return None
 
     def _set_retarget_pick_mode(mode: str = "") -> None:
-        normalized = "pelvis_constraint" if str(mode or "").strip().lower() == "pelvis_constraint" else ""
+        token = str(mode or "").strip().lower()
+        normalized = token if token in {"pelvis_constraint", "target_pose"} else ""
         item = _node_item()
         model_obj = getattr(item, "model", None) if item is not None else node
         if model_obj is None:
@@ -3483,7 +3872,12 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             active_widget = tab_widget.widget(int(index))
         except Exception:
             active_widget = None
-        _set_retarget_pick_mode("pelvis_constraint" if active_widget is constraints_tab else "")
+        if active_widget is constraints_tab:
+            _set_retarget_pick_mode("pelvis_constraint")
+        elif active_widget is target_pose_tab:
+            _set_retarget_pick_mode("target_pose")
+        else:
+            _set_retarget_pick_mode("")
 
     def _set_node_param(name: str, value: str, *, notify_scene: bool = True) -> None:
         item = _node_item()
@@ -3603,6 +3997,78 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             except Exception:
                 pass
 
+    def _format_target_pose_vec(values, *, default=(0.0, 0.0, 0.0)) -> str:
+        x, y, z = _clean_vec3(values, default=default)
+        return f"{x:.3f}, {y:.3f}, {z:.3f}"
+
+    def _refresh_target_pose_table_only(model_obj=None) -> None:
+        if model_obj is None:
+            item = _node_item()
+            model_obj = getattr(item, "model", None) if item is not None else node
+        selected_name = _param_value(model_obj, TARGET_POSE_SELECTED_JOINT_PARAM)
+        payload = _target_pose_offsets_payload(model_obj)
+        selected_name = str(selected_name or "").strip()
+        try:
+            target_pose_table.setUpdatesEnabled(False)
+            if selected_name:
+                row = dict(payload.get(selected_name) or {})
+                target_pose_table.setRowCount(1)
+                target_pose_table.setItem(0, 0, QtWidgets.QTableWidgetItem(selected_name))
+                target_pose_table.setItem(
+                    0,
+                    1,
+                    QtWidgets.QTableWidgetItem(
+                        _format_target_pose_vec(row.get("position"))
+                        if "position" in row
+                        else "bind"
+                    ),
+                )
+                target_pose_table.setItem(
+                    0,
+                    2,
+                    QtWidgets.QTableWidgetItem(
+                        _format_target_pose_vec(row.get("rotation"))
+                        if "rotation" in row
+                        else "0.000, 0.000, 0.000"
+                    ),
+                )
+            else:
+                target_pose_table.setRowCount(0)
+        finally:
+            try:
+                target_pose_table.setUpdatesEnabled(True)
+            except Exception:
+                pass
+        try:
+            target_pose_reset_button.setEnabled(bool(selected_name and selected_name in payload))
+            target_pose_reset_all_button.setEnabled(bool(payload))
+        except Exception:
+            pass
+
+    def _register_target_pose_refresh_callback() -> None:
+        item = _node_item()
+        model_obj = getattr(item, "model", None) if item is not None else node
+        if model_obj is None:
+            return
+        try:
+            setattr(model_obj, "_retarget_target_pose_table_refresh", _refresh_target_pose_table_only)
+        except Exception:
+            pass
+
+    def _clear_target_pose_refresh_callback() -> None:
+        item = _node_item()
+        model_obj = getattr(item, "model", None) if item is not None else node
+        callback = getattr(model_obj, "_retarget_target_pose_table_refresh", None) if model_obj is not None else None
+        if callback is not _refresh_target_pose_table_only:
+            return
+        try:
+            delattr(model_obj, "_retarget_target_pose_table_refresh")
+        except Exception:
+            try:
+                setattr(model_obj, "_retarget_target_pose_table_refresh", None)
+            except Exception:
+                pass
+
     def _sync_settings_sliders(model_obj) -> None:
         handle_value = _param_float(
             model_obj,
@@ -3660,6 +4126,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             except Exception:
                 pass
             settings_syncing["value"] = False
+        _refresh_target_pose_table_only(model_obj)
 
     def _refresh_retarget_view_from_settings() -> None:
         if not bool(view_state.get("opened", False)):
@@ -3791,6 +4258,31 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         )
         _refresh_retarget_view_from_settings()
 
+    def _on_target_pose_reset_joint_clicked() -> None:
+        item = _node_item()
+        if item is None:
+            return
+        model_obj = getattr(item, "model", None)
+        selected_name = _param_value(model_obj, TARGET_POSE_SELECTED_JOINT_PARAM)
+        selected_name = str(selected_name or "").strip()
+        if not selected_name:
+            try:
+                QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), "Select a target joint first.", card)
+            except Exception:
+                pass
+            return
+        reset_target_pose_joint(item, selected_name, notify_scene=True)
+        _refresh_target_pose_table_only(model_obj)
+        _refresh_retarget_view_from_settings()
+
+    def _on_target_pose_reset_all_clicked() -> None:
+        item = _node_item()
+        if item is None:
+            return
+        reset_target_pose_all(item, notify_scene=True)
+        _refresh_target_pose_table_only(getattr(item, "model", None))
+        _refresh_retarget_view_from_settings()
+
     def _refresh(*_args, persist: bool = False, toast: bool = False):
         item = _node_item()
         if item is None:
@@ -3822,7 +4314,9 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             lines.append(f"warnings: {len(result.warnings)}")
         detail_box.setPlainText("\n".join(lines))
         _register_mapping_refresh_callback()
+        _register_target_pose_refresh_callback()
         _refresh_mapping_table_only(getattr(item, "model", None))
+        _refresh_target_pose_table_only(getattr(item, "model", None))
         report = "\n".join(result.message_lines())
         report_holder["value"] = report
         detail_box.setToolTip(report)
@@ -3919,12 +4413,15 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     preview_target_animation_checkbox.stateChanged.connect(_on_preview_target_animation_changed)
     pelvis_select_button.clicked.connect(_on_pelvis_select_clicked)
     pelvis_mode_combo.currentIndexChanged.connect(_on_pelvis_mode_changed)
+    target_pose_reset_button.clicked.connect(_on_target_pose_reset_joint_clicked)
+    target_pose_reset_all_button.clicked.connect(_on_target_pose_reset_all_clicked)
     tab_widget.currentChanged.connect(_on_retarget_tab_changed)
     try:
         container.destroyed.connect(
             lambda *_args: (
                 _set_retarget_pick_mode(""),
                 _clear_mapping_refresh_callback(),
+                _clear_target_pose_refresh_callback(),
             )
         )
     except Exception:
@@ -3975,6 +4472,12 @@ __all__ = [
     "set_joint_map_link",
     "remove_joint_map_link",
     "set_pelvis_constraint_link",
+    "target_pose_skeleton_for_model",
+    "set_target_pose_selected_joint",
+    "set_target_pose_joint_position",
+    "set_target_pose_joint_rotation",
+    "reset_target_pose_joint",
+    "reset_target_pose_all",
     "augment_infocard_footer",
     "ANIM_RETARGET_SPEC",
 ]

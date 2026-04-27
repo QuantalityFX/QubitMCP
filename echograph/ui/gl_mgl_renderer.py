@@ -3051,6 +3051,13 @@ class MGLRendererMixin:
         if skeleton is None:
             return []
         role_key = str(role or "").strip().lower()
+        if role_key == "target":
+            try:
+                posed = self._mgl_retarget_target_pose_skeleton_for_context(context)
+                if posed is not None:
+                    skeleton = posed
+            except Exception:
+                pass
         target_animated = bool(
             role_key == "target"
             and context.get("retarget_preview_target_animated")
@@ -3219,7 +3226,7 @@ class MGLRendererMixin:
             node_item = getattr(self, "_mgl_retarget_node_item", None)
             model = getattr(node_item, "model", None) if node_item is not None else None
         mode = str(getattr(model, "_retarget_pick_mode", "") or "").strip().lower()
-        mode = "pelvis_constraint" if mode == "pelvis_constraint" else ""
+        mode = mode if mode in {"pelvis_constraint", "target_pose"} else ""
         previous = str(getattr(self, "_mgl_retarget_last_pick_mode", "") or "")
         if previous != mode:
             self._mgl_retarget_last_pick_mode = mode
@@ -3292,6 +3299,8 @@ class MGLRendererMixin:
         pick_mode = self._mgl_retarget_pick_mode()
         if not bool(unlink) and pick_mode == "pelvis_constraint":
             return self._mgl_retarget_handle_constraint_click(handle)
+        if not bool(unlink) and pick_mode == "target_pose":
+            return self._mgl_retarget_handle_target_pose_click(handle)
         selected = getattr(self, "_mgl_retarget_selected_joint", None)
         if isinstance(selected, dict):
             selected_role = str(selected.get("role") or "").strip().lower()
@@ -3741,6 +3750,304 @@ class MGLRendererMixin:
         if callable(callback):
             try:
                 callback()
+            except Exception:
+                pass
+
+    def _mgl_retarget_notify_target_pose_changed(self) -> None:
+        model = getattr(self, "_mgl_retarget_node_model", None)
+        if model is None:
+            node_item = getattr(self, "_mgl_retarget_node_item", None)
+            model = getattr(node_item, "model", None) if node_item is not None else None
+        callback = getattr(model, "_retarget_target_pose_table_refresh", None) if model is not None else None
+        if callable(callback):
+            try:
+                callback()
+            except Exception:
+                pass
+
+    def _mgl_retarget_node_model_for_pose(self):
+        model = getattr(self, "_mgl_retarget_node_model", None)
+        if model is None:
+            node_item = getattr(self, "_mgl_retarget_node_item", None)
+            model = getattr(node_item, "model", None) if node_item is not None else None
+        return model
+
+    def _mgl_retarget_target_pose_skeleton_for_context(self, context: dict | None):
+        if not isinstance(context, dict):
+            return None
+        skeleton = context.get("skeleton")
+        if skeleton is None:
+            return None
+        try:
+            from nodes.anim_retarget import spec as anim_retarget_spec  # type: ignore
+
+            pose_fn = getattr(anim_retarget_spec, "target_pose_skeleton_for_model", None)
+            if callable(pose_fn):
+                return pose_fn(self._mgl_retarget_node_model_for_pose(), skeleton)
+        except Exception:
+            return skeleton
+        return skeleton
+
+    def _mgl_retarget_target_owner(self) -> str:
+        owners = getattr(self, "_mgl_retarget_role_owners", None)
+        if not isinstance(owners, dict):
+            return ""
+        return str(owners.get("target") or "").strip()
+
+    def _mgl_retarget_target_pose_gizmo_owner(self, joint_name: str) -> str:
+        name = str(joint_name or "").strip()
+        return f"retarget-target-pose::{name}" if name else ""
+
+    def _mgl_retarget_target_pose_joint_from_owner(self, owner: str) -> str:
+        text = str(owner or "").strip()
+        prefix = "retarget-target-pose::"
+        if not text.startswith(prefix):
+            return ""
+        return text[len(prefix):].strip()
+
+    def _mgl_retarget_owner_is_target_pose_joint(self, owner: str) -> bool:
+        return bool(self._mgl_retarget_target_pose_joint_from_owner(owner))
+
+    def _mgl_retarget_target_pose_world_to_local(self, world_pos) -> Tuple[float, float, float]:
+        try:
+            wx, wy, wz = float(world_pos[0]), float(world_pos[1]), float(world_pos[2])
+        except Exception:
+            return (0.0, 0.0, 0.0)
+        if np is None:
+            return (wx, wy, wz)
+        target_owner = self._mgl_retarget_target_owner()
+        model, _scale = self._mgl_retarget_owner_model_for_pick(target_owner)
+        if model is None:
+            return (wx, wy, wz)
+        try:
+            inv_model = np.linalg.inv(np.asarray(model, dtype=np.float32).reshape(4, 4))
+            p4 = np.array([wx, wy, wz, 1.0], dtype=np.float32) @ inv_model
+            w = float(p4[3])
+            if abs(w) > 1.0e-8:
+                p4 = p4 / w
+            return (float(p4[0]), float(p4[1]), float(p4[2]))
+        except Exception:
+            return (wx, wy, wz)
+
+    def _mgl_retarget_target_pose_joint_world_position(self, joint_name: str):
+        if np is None:
+            return None
+        name = str(joint_name or "").strip()
+        if not name:
+            return None
+        target_owner = self._mgl_retarget_target_owner()
+        handles_by_owner = getattr(self, "_mgl_retarget_joint_handles_by_owner", None)
+        if not target_owner or not isinstance(handles_by_owner, dict):
+            return None
+        handles = handles_by_owner.get(target_owner)
+        if not isinstance(handles, list) or not handles:
+            return None
+        positions, _radius_scale = self._mgl_retarget_pick_positions_for_owner(target_owner, handles)
+        for index, handle in enumerate(handles):
+            if str((handle or {}).get("name") or "").strip() != name:
+                continue
+            if index >= int(positions.shape[0]):
+                return None
+            pos = positions[index]
+            return (float(pos[0]), float(pos[1]), float(pos[2]))
+        return None
+
+    def _mgl_retarget_refresh_target_pose_contexts(self) -> None:
+        target_owner = self._mgl_retarget_target_owner()
+        if not target_owner:
+            return
+        context = self._mgl_scene_owner_fbx_rig_context(target_owner)
+        if isinstance(context, dict):
+            posed = self._mgl_retarget_target_pose_skeleton_for_context(context)
+            if posed is not None:
+                try:
+                    context["skeleton"] = posed
+                except Exception:
+                    pass
+
+        scene = getattr(self, "_mgl_scene", None)
+        if scene is None:
+            return
+        owner_key = target_owner.lower()
+        for tag in ("scene-model", "scene-wire", "scene-rig-joints", "model"):
+            try:
+                items = list(scene.iter_by_tag(tag))
+            except Exception:
+                items = []
+            for item in items:
+                payload = dict(getattr(item, "payload", None) or {})
+                payload_owner = str(payload.get("owner") or "").strip()
+                if not payload_owner or payload_owner.lower() != owner_key:
+                    continue
+                item_context = payload.get("fbx_rig_context")
+                if isinstance(context, dict):
+                    payload["fbx_rig_context"] = context
+                elif isinstance(item_context, dict):
+                    posed = self._mgl_retarget_target_pose_skeleton_for_context(item_context)
+                    if posed is not None:
+                        item_context["skeleton"] = posed
+                if str(getattr(item, "tag", "") or "") == "scene-rig-joints":
+                    payload.pop("_fbx_rig_frame", None)
+                try:
+                    item.payload = payload
+                except Exception:
+                    pass
+
+    def _mgl_retarget_refresh_target_pose_handles(self) -> None:
+        target_owner = self._mgl_retarget_target_owner()
+        if not target_owner:
+            return
+        self._mgl_retarget_refresh_target_pose_contexts()
+        try:
+            self._mgl_retarget_update_owner_handles(target_owner, "target", force=True)
+        except Exception:
+            pass
+        self._mgl_retarget_selection_dirty = True
+        self._mgl_retarget_links_dirty = True
+        try:
+            self._mgl_retarget_refresh_selection_item()
+        except Exception:
+            pass
+        try:
+            self._mgl_retarget_refresh_link_item()
+        except Exception:
+            pass
+
+    def _mgl_retarget_handle_target_pose_click(self, handle: dict) -> bool:
+        role = str(handle.get("role") or "").strip().lower()
+        name = str(handle.get("name") or "").strip()
+        if role != "target" or not name:
+            return False
+        self._mgl_retarget_selected_joint = dict(handle)
+        self._mgl_retarget_selection_dirty = True
+        node_item = getattr(self, "_mgl_retarget_node_item", None)
+        if node_item is not None:
+            try:
+                from nodes.anim_retarget import spec as anim_retarget_spec  # type: ignore
+
+                set_selected = getattr(anim_retarget_spec, "set_target_pose_selected_joint", None)
+                if callable(set_selected):
+                    set_selected(node_item, name, notify_scene=False)
+            except Exception:
+                pass
+        owner = self._mgl_retarget_target_pose_gizmo_owner(name)
+        if owner:
+            self._xform_gizmo_owner = owner
+            self._xform_gizmo_owner_kind = "retarget_target_joint"
+            pos = handle.get("position") or self._mgl_retarget_target_pose_joint_world_position(name) or (0.0, 0.0, 0.0)
+            try:
+                self._xform_gizmo_pos = (float(pos[0]), float(pos[1]), float(pos[2]))
+            except Exception:
+                self._xform_gizmo_pos = (0.0, 0.0, 0.0)
+            self._xform_gizmo_pos_locked = True
+            try:
+                rot_cache = getattr(self, "_rot_owner_quat", None)
+                if isinstance(rot_cache, dict):
+                    rot_cache.pop(owner, None)
+            except Exception:
+                pass
+        self._mgl_retarget_notify_target_pose_changed()
+        try:
+            self.update()
+        except Exception:
+            pass
+        return True
+
+    def _mgl_retarget_apply_target_pose_joint_position(self, owner: str, world_pos, *, notify_scene: bool = False) -> bool:
+        joint_name = self._mgl_retarget_target_pose_joint_from_owner(owner)
+        if not joint_name:
+            return False
+        node_item = getattr(self, "_mgl_retarget_node_item", None)
+        if node_item is None:
+            return False
+        local_pos = self._mgl_retarget_target_pose_world_to_local(world_pos)
+        try:
+            from nodes.anim_retarget import spec as anim_retarget_spec  # type: ignore
+
+            set_pos = getattr(anim_retarget_spec, "set_target_pose_joint_position", None)
+            if callable(set_pos):
+                set_pos(node_item, joint_name, local_pos, notify_scene=False)
+        except Exception:
+            return False
+        self._mgl_retarget_refresh_target_pose_handles()
+        new_world = self._mgl_retarget_target_pose_joint_world_position(joint_name)
+        if new_world is None:
+            new_world = world_pos
+        try:
+            self._xform_gizmo_pos = (float(new_world[0]), float(new_world[1]), float(new_world[2]))
+        except Exception:
+            pass
+        self._mgl_retarget_notify_target_pose_changed()
+        if bool(notify_scene):
+            self._mgl_retarget_commit_target_pose_edit(notify_scene=True)
+        try:
+            self.update()
+        except Exception:
+            pass
+        return True
+
+    def _mgl_retarget_set_target_pose_joint_rotation(self, owner: str, rot_deg, *, notify_scene: bool = False) -> bool:
+        joint_name = self._mgl_retarget_target_pose_joint_from_owner(owner)
+        if not joint_name:
+            return False
+        node_item = getattr(self, "_mgl_retarget_node_item", None)
+        if node_item is None:
+            return False
+        try:
+            from nodes.anim_retarget import spec as anim_retarget_spec  # type: ignore
+
+            set_rot = getattr(anim_retarget_spec, "set_target_pose_joint_rotation", None)
+            if callable(set_rot):
+                set_rot(node_item, joint_name, rot_deg, notify_scene=False)
+        except Exception:
+            return False
+        self._mgl_retarget_refresh_target_pose_handles()
+        new_world = self._mgl_retarget_target_pose_joint_world_position(joint_name)
+        if new_world is not None:
+            try:
+                self._xform_gizmo_pos = (float(new_world[0]), float(new_world[1]), float(new_world[2]))
+            except Exception:
+                pass
+        self._mgl_retarget_notify_target_pose_changed()
+        if bool(notify_scene):
+            self._mgl_retarget_commit_target_pose_edit(notify_scene=True)
+        try:
+            self.update()
+        except Exception:
+            pass
+        return True
+
+    def _mgl_retarget_get_target_pose_joint_rotation(self, owner: str) -> Tuple[float, float, float]:
+        joint_name = self._mgl_retarget_target_pose_joint_from_owner(owner)
+        if not joint_name:
+            return (0.0, 0.0, 0.0)
+        try:
+            from nodes.anim_retarget import spec as anim_retarget_spec  # type: ignore
+
+            payload_fn = getattr(anim_retarget_spec, "_target_pose_offsets_payload", None)
+            payload = payload_fn(self._mgl_retarget_node_model_for_pose()) if callable(payload_fn) else {}
+            row = payload.get(joint_name) if isinstance(payload, dict) else None
+            raw = row.get("rotation") if isinstance(row, dict) else None
+            if isinstance(raw, (list, tuple)) and len(raw) >= 3:
+                return (float(raw[0]), float(raw[1]), float(raw[2]))
+        except Exception:
+            pass
+        return (0.0, 0.0, 0.0)
+
+    def _mgl_retarget_commit_target_pose_edit(self, *, notify_scene: bool = True) -> None:
+        self._mgl_retarget_refresh_target_pose_contexts()
+        self._mgl_retarget_notify_target_pose_changed()
+        if not bool(notify_scene):
+            return
+        node_item = getattr(self, "_mgl_retarget_node_item", None)
+        model = getattr(node_item, "model", None) if node_item is not None else self._mgl_retarget_node_model_for_pose()
+        try:
+            scene = node_item.scene() if node_item is not None else None
+        except Exception:
+            scene = None
+        if scene is not None and hasattr(scene, "paramChanged"):
+            try:
+                scene.paramChanged.emit(getattr(model, "name", "") or "", list(getattr(model, "params", []) or []))
             except Exception:
                 pass
 
