@@ -394,6 +394,36 @@ def _resolve_sequence(node_item, raw: str) -> SequenceInfo:
     return info
 
 
+def _connected_sequence_source(node_item, *, apply_postprocess: bool = False):
+    try:
+        from nodes.post_process.spec import find_sequence_source  # type: ignore
+
+        return find_sequence_source(
+            node_item,
+            apply_postprocess=apply_postprocess,
+            require_connection=True,
+        )
+    except Exception:
+        return None
+
+
+def _source_input_connected(node_item) -> bool:
+    try:
+        from nodes.post_process.spec import source_input_connected  # type: ignore
+
+        return bool(source_input_connected(node_item))
+    except Exception:
+        return _connected_sequence_source(node_item, apply_postprocess=False) is not None
+
+
+def _effective_sequence_info(node_item, fallback_source: str, *, apply_postprocess: bool = False) -> tuple[SequenceInfo, str, bool]:
+    source = _connected_sequence_source(node_item, apply_postprocess=apply_postprocess)
+    if source is not None and (source.text or "").strip():
+        info = _resolve_sequence(source.owner_item, source.text)
+        return info, str(source.label or "connected source"), True
+    return _resolve_sequence(node_item, fallback_source), "", False
+
+
 def _normalize_codec(raw: str) -> str:
     key = (raw or "").strip().lower().replace(".", "").replace("-", "")
     if key in {"h265", "hevc", "libx265"}:
@@ -489,6 +519,10 @@ def build_ports(node_item) -> None:
         getattr(node_item, "model", None),
         ["source", "output", "codec", "fps", "bitrate"],
     )
+    try:
+        node_item.ensure_input("source")
+    except Exception:
+        pass
 
 
 class SequenceToMP4Widget(QtWidgets.QWidget):
@@ -600,6 +634,7 @@ class SequenceToMP4Widget(QtWidgets.QWidget):
         edit.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Fixed)
         edit.setStyleSheet(
             "QLineEdit{background:#0f1216;color:#e6edf3;border:1px solid #3c4450;border-radius:4px;padding:2px 6px;}"
+            "QLineEdit:disabled{background:#111827;color:#64748b;border-color:#334155;}"
         )
         return edit
 
@@ -646,13 +681,19 @@ class SequenceToMP4Widget(QtWidgets.QWidget):
         codec = _normalize_codec(_param_value(model, "codec"))
         fps = _parse_fps(_param_value(model, "fps"))
         bitrate = (_param_value(model, "bitrate") or "").strip()
+        connected_source = _connected_sequence_source(self._node_item, apply_postprocess=False)
         if output and _is_temp_video_path(output) and _workflow_dir_for_node(self._node_item) is not None:
             output = ""
             _set_param_value(self._node_item, "output", "", notify_scene=False)
 
         try:
             self._source_edit.blockSignals(True)
-            self._source_edit.setText(source)
+            self._source_edit.setText(
+                f"Connected: {connected_source.label}" if connected_source is not None else source
+            )
+            self._source_edit.setEnabled(connected_source is None)
+            self._source_file_btn.setEnabled(connected_source is None)
+            self._source_dir_btn.setEnabled(connected_source is None)
         finally:
             self._source_edit.blockSignals(False)
         try:
@@ -683,7 +724,7 @@ class SequenceToMP4Widget(QtWidgets.QWidget):
     def _commit_controls(self):
         model = getattr(self._node_item, "model", None)
         old_source = (_param_value(model, "source") or "").strip() if model is not None else ""
-        source = (self._source_edit.text() or "").strip()
+        source = old_source if _source_input_connected(self._node_item) else (self._source_edit.text() or "").strip()
         codec = str(self._codec_combo.currentData() or "h264")
         fps = f"{float(self._fps_spin.value()):g}"
         output = (self._output_edit.text() or "").strip()
@@ -704,20 +745,23 @@ class SequenceToMP4Widget(QtWidgets.QWidget):
             self._refresh_status()
 
     def _refresh_status(self):
+        connected_source = _connected_sequence_source(self._node_item, apply_postprocess=False)
         source = (self._source_edit.text() or "").strip()
-        self._last_status_source = source
-        if not source:
+        status_key = f"connected:{connected_source.label}" if connected_source is not None else source
+        self._last_status_source = status_key
+        if connected_source is None and not source:
             self._status.setText("Choose a numbered image sequence.")
             return
         try:
-            info = _resolve_sequence(self._node_item, source)
-            self._status.setText(
-                f"{info.frame_count} frame(s), start {info.start_number}, pattern {info.input_pattern.name}"
-            )
+            info, label, connected = _effective_sequence_info(self._node_item, source, apply_postprocess=False)
+            prefix = f"Connected from {label}: " if connected else ""
+            self._status.setText(f"{prefix}{info.frame_count} frame(s), start {info.start_number}, pattern {info.input_pattern.name}")
         except Exception as exc:
             self._status.setText(str(exc))
 
     def _on_source_file(self):
+        if _source_input_connected(self._node_item):
+            return
         parent = _dialog_parent(self._node_item) or self
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             parent,
@@ -731,6 +775,8 @@ class SequenceToMP4Widget(QtWidgets.QWidget):
         self._commit_controls()
 
     def _on_source_dir(self):
+        if _source_input_connected(self._node_item):
+            return
         parent = _dialog_parent(self._node_item) or self
         path = QtWidgets.QFileDialog.getExistingDirectory(parent, "Select Sequence Folder", "")
         if not path:
@@ -797,7 +843,11 @@ class SequenceToMP4Widget(QtWidgets.QWidget):
         fps = float(self._fps_spin.value())
         try:
             bitrate = _normalize_bitrate((self._bitrate_edit.text() or "").strip())
-            info = _resolve_sequence(self._node_item, source)
+            info, _label, _connected = _effective_sequence_info(
+                self._node_item,
+                source,
+                apply_postprocess=True,
+            )
             output = _output_path(self._node_item, (self._output_edit.text() or "").strip())
         except Exception as exc:
             self._show_popup(QtWidgets.QMessageBox.Warning, str(exc))

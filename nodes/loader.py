@@ -428,7 +428,18 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Video Player plugin import failed:", e)
 
-    # 16.1) Sequence to MP4
+    # 16.1) Post Process
+    try:
+        from nodes import post_process
+        if hasattr(post_process, "register"):
+            post_process.register()
+            _safe_probe("post_process")
+        else:
+            print("[EchoGraph] Post Process module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Post Process plugin import failed:", e)
+
+    # 16.2) Sequence to MP4
     try:
         from nodes import sequence_to_mp4
         if hasattr(sequence_to_mp4, "register"):

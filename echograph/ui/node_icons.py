@@ -26,6 +26,7 @@ _PYTHON_ICON = None
 _SCREENGRAB_ICON = None
 _RENDER_NODE_ICON = None
 _VIDEO_PLAYER_ICON = None
+_POST_PROCESS_ICON = None
 _SEQUENCE_TO_MP4_ICON = None
 _INSTANCE_ICON = None
 _PRIMITIVE_ICON = None
@@ -226,6 +227,19 @@ def _video_player_icon():
         return _VIDEO_PLAYER_ICON
     _VIDEO_PLAYER_ICON = _load_pm("ReelVideo_Icon.png") or _load_pm("PlayButton_icon.png")
     return _VIDEO_PLAYER_ICON
+
+
+def _post_process_icon():
+    global _POST_PROCESS_ICON
+    if _POST_PROCESS_ICON is not None:
+        return _POST_PROCESS_ICON
+    _POST_PROCESS_ICON = (
+        _load_pm("PostProcess_Icon.png")
+        or _load_pm("Dither_Icon.png")
+        or _fx_node_icon()
+        or _video_player_icon()
+    )
+    return _POST_PROCESS_ICON
 
 
 def _sequence_to_mp4_icon():

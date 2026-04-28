@@ -282,6 +282,8 @@ def _kind_icon(kind: str) -> QtGui.QIcon:
         icon_pm = node_icons._render_node_icon() or node_icons._output_icon()
     elif key == "video_player":
         icon_pm = node_icons._video_player_icon() or node_icons._output_icon()
+    elif key in ("post_process", "postprocess", "post_processing", "post_process_effect"):
+        icon_pm = node_icons._post_process_icon() or node_icons._fx_node_icon() or node_icons._output_icon()
     elif key in ("sequence_to_mp4", "sequence mp4", "sequence_to_video", "image_sequence_to_mp4"):
         icon_pm = node_icons._sequence_to_mp4_icon() or node_icons._video_player_icon() or node_icons._output_icon()
     elif key == "instance":
@@ -353,7 +355,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
         self.kind_edit = QtWidgets.QComboBox()
         self.kind_edit.setEditable(True)
         self._kinds = [
-            "node","camera","import","fbx_import","mocap_import","anim_retarget","instance","primitive","uv_unwrap","texture","texture_pro","texture_layer","material","split_volume","transforms","fx","scene","render","video_player","sequence_to_mp4","export_fbx","html_preview","python","switch","output","local_server",
+            "node","camera","import","fbx_import","mocap_import","anim_retarget","instance","primitive","uv_unwrap","texture","texture_pro","texture_layer","material","split_volume","transforms","fx","scene","render","video_player","post_process","sequence_to_mp4","export_fbx","html_preview","python","switch","output","local_server",
             "gantt_chart","keyboard_sequence",
             "qubit_deck_controller",
             "llm_prompt","chatbot","voice_actor","medigator_agent","librarian","note","append","image_collection","database"

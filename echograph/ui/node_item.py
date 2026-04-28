@@ -348,6 +348,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     _video_player.register()
             except Exception:
                 pass
+        # Ensure Post Process spec is registered even if the loader was skipped.
+        if (self.model.kind or "").strip().lower() in ("post_process", "postprocess", "post_processing", "post_process_effect"):
+            try:
+                from nodes import post_process as _post_process  # type: ignore
+                if hasattr(_post_process, "register"):
+                    _post_process.register()
+            except Exception:
+                pass
         # Ensure Sequence to MP4 spec is registered even if the loader was skipped.
         if (self.model.kind or "").strip().lower() in ("sequence_to_mp4", "sequence mp4", "sequence_to_video", "image_sequence_to_mp4"):
             try:
@@ -1025,6 +1033,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
             hidden.update({"output", "camera", "frame_rate", "format", "start_frame", "end_frame"})
         elif kind in ("video_player", "video player", "videoplayer"):
             hidden.update({"path"})
+        elif kind in ("post_process", "postprocess", "post_processing", "post_process_effect"):
+            hidden.update({"source", "output_dir", "output_pattern", "effect", "levels", "matrix", "strength", "grayscale", "frame_count"})
         elif kind in ("sequence_to_mp4", "sequence mp4", "sequence_to_video", "image_sequence_to_mp4"):
             hidden.update({"source", "output", "codec", "fps", "bitrate"})
         elif kind == "primitive":
@@ -1779,6 +1789,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
         elif kind in ("video_player", "video player", "videoplayer"):
             # Keep extra bottom frame space for the Video Player preview controls.
             body_h = 188
+            node_w = self._BASE_W
+        elif kind in ("post_process", "postprocess", "post_processing", "post_process_effect"):
+            body_h = 184
             node_w = self._BASE_W
         elif kind in ("sequence_to_mp4", "sequence mp4", "sequence_to_video", "image_sequence_to_mp4"):
             body_h = 184
@@ -6200,6 +6213,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 icon_pm = node_icons._render_node_icon() or node_icons._output_icon()
             elif kind_lower in ("video_player", "video player", "videoplayer"):
                 icon_pm = node_icons._video_player_icon() or node_icons._render_node_icon() or node_icons._output_icon()
+            elif kind_lower in ("post_process", "postprocess", "post_processing", "post_process_effect"):
+                icon_pm = node_icons._post_process_icon() or node_icons._fx_node_icon() or node_icons._output_icon()
             elif kind_lower in ("sequence_to_mp4", "sequence mp4", "sequence_to_video", "image_sequence_to_mp4"):
                 icon_pm = node_icons._sequence_to_mp4_icon() or node_icons._video_player_icon() or node_icons._output_icon()
             elif kind_lower == "instance":
