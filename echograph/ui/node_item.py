@@ -1791,10 +1791,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
             body_h = 188
             node_w = self._BASE_W
         elif kind in ("post_process", "postprocess", "post_processing", "post_process_effect"):
-            body_h = 184
+            body_h = 176
             node_w = self._BASE_W
         elif kind in ("sequence_to_mp4", "sequence mp4", "sequence_to_video", "image_sequence_to_mp4"):
-            body_h = 184
+            body_h = 176
             node_w = self._BASE_W
         elif kind in ("gantt_chart", "gantt chart", "gant_chart", "gant chart"):
             body_h = 320
@@ -6044,6 +6044,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "export_fbx",
                 "exportfbx",
                 "export fbx",
+                "post_process",
+                "postprocess",
+                "post_processing",
+                "post_process_effect",
+                "sequence_to_mp4",
+                "sequence mp4",
+                "sequence_to_video",
+                "image_sequence_to_mp4",
             ):
                 # Allow space for floating icon above the bar
                 extra_top = 80.0
@@ -6261,6 +6269,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     # 10% smaller than the previous video-player icon size.
                     size = int(size * 1.55)
                     size = int(min(320, max(80, size)))
+                if kind_lower in ("post_process", "postprocess", "post_processing", "post_process_effect"):
+                    size = int(max(34, size * 0.86))
+                if kind_lower in ("sequence_to_mp4", "sequence mp4", "sequence_to_video", "image_sequence_to_mp4"):
+                    size = int(max(70, size * 1.65))
                 if kind_lower in ("uv_unwrap", "uv unwrap"):
                     size = int(max(34, size * 0.792))
                 if kind_lower in ("texture", "texture_pro", "texture pro"):
@@ -6283,6 +6295,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 y = -pm_scaled.height() * 0.6
                 if kind_lower in ("video_player", "video player", "videoplayer"):
                     y = -pm_scaled.height() * 0.5
+                if kind_lower in ("post_process", "postprocess", "post_processing", "post_process_effect", "sequence_to_mp4", "sequence mp4", "sequence_to_video", "image_sequence_to_mp4"):
+                    y = -pm_scaled.height() * 0.45
                 if kind_lower in ("chatbot", "chat bot", "chat_bot"):
                     y = -pm_scaled.height() * 0.7
                 if kind_lower in ("medigator_agent", "mediator_agent", "medigator", "mediator"):

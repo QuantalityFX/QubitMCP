@@ -895,7 +895,7 @@ class SequenceToMP4Widget(QtWidgets.QWidget):
 def _ensure_body_space(node_item, body_h: int) -> None:
     try:
         old_h = float(getattr(node_item, "height", 0.0) or 0.0)
-        min_h = float(body_h) + 44.0
+        min_h = float(body_h) + 10.0
         if old_h < min_h:
             try:
                 node_item.prepareGeometryChange()

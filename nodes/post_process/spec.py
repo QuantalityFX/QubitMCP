@@ -499,13 +499,14 @@ class PostProcessWidget(QtWidgets.QWidget):
         controls.setContentsMargins(0, 0, 0, 0)
         controls.setSpacing(4)
 
+        controls.addWidget(self._label("Levels"), 0)
         self._levels_spin = QtWidgets.QSpinBox()
         self._levels_spin.setRange(2, 16)
-        self._levels_spin.setPrefix("Levels ")
         self._levels_spin.setMinimumHeight(24)
         self._levels_spin.setStyleSheet(self._input_style("QSpinBox"))
         controls.addWidget(self._levels_spin, 1)
 
+        controls.addWidget(self._label("Matrix"), 0)
         self._matrix_combo = QtWidgets.QComboBox()
         self._matrix_combo.addItem("2x2", 2)
         self._matrix_combo.addItem("4x4", 4)
@@ -518,11 +519,11 @@ class PostProcessWidget(QtWidgets.QWidget):
         controls2 = QtWidgets.QHBoxLayout()
         controls2.setContentsMargins(0, 0, 0, 0)
         controls2.setSpacing(4)
+        controls2.addWidget(self._label("Strength"), 0)
         self._strength_spin = QtWidgets.QSpinBox()
         self._strength_spin.setRange(0, 200)
-        self._strength_spin.setSuffix("%")
-        self._strength_spin.setPrefix("Strength ")
         self._strength_spin.setMinimumHeight(24)
+        self._strength_spin.setToolTip("100 is normal strength")
         self._strength_spin.setStyleSheet(self._input_style("QSpinBox"))
         controls2.addWidget(self._strength_spin, 1)
 
@@ -570,6 +571,12 @@ class PostProcessWidget(QtWidgets.QWidget):
         edit.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Fixed)
         edit.setStyleSheet(self._input_style("QLineEdit"))
         return edit
+
+    def _label(self, text: str) -> QtWidgets.QLabel:
+        label = QtWidgets.QLabel(str(text or ""))
+        label.setMinimumHeight(24)
+        label.setStyleSheet("QLabel{color:#94a3b8;font-size:10px;}")
+        return label
 
     def _button(self, text: str, width: int) -> QtWidgets.QPushButton:
         btn = QtWidgets.QPushButton(text)
@@ -739,7 +746,7 @@ class PostProcessWidget(QtWidgets.QWidget):
 def _ensure_body_space(node_item, body_h: int) -> None:
     try:
         old_h = float(getattr(node_item, "height", 0.0) or 0.0)
-        min_h = float(body_h) + 44.0
+        min_h = float(body_h) + 10.0
         if old_h < min_h:
             try:
                 node_item.prepareGeometryChange()
