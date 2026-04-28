@@ -9,6 +9,7 @@ __pycache__/
 
 # workstation tools
 /tools/
+AGENTS.md
 
 # Local app state
 /hotkeys.json
@@ -47,3 +48,5 @@ __pycache__/
 # tanya voice
 /tanya/
 /tests/
+
+/Unreal/Plugins/KeyboardActionRunner/

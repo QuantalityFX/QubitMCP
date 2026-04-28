@@ -121,6 +121,7 @@ echo [setup] Base Python version: %BASE_PY_MM% >> "%LOG%"
 
 call :ensure_venv "%ROOT_VENV%" "root" || goto :fail
 call :install_requirements "%ROOT_PY%" "%MAIN_REQ%" "root requirements" || goto :fail
+call :check_ffmpeg_runtime "%ROOT_PY%"
 call :install_voice_deps "%ROOT_PY%" "root voice dependencies" || goto :fail
 call :check_medigator_runtime
 call :check_keyboard_sequence_runtime "%ROOT_PY%"
@@ -195,7 +196,7 @@ if errorlevel 1 (
 
 echo [setup] Upgrading pip tooling in %LABEL% venv...
 echo [setup] Upgrading pip tooling in %LABEL% venv... >> "%LOG%"
-"%PY%" -m pip install --upgrade --progress-bar on pip setuptools wheel
+"%PY%" -m pip install --upgrade --progress-bar on pip "setuptools<82" wheel
 if errorlevel 1 (
   echo [setup] ERROR: Failed to upgrade tooling in %LABEL% venv. >> "%LOG%"
   exit /b 1
@@ -242,6 +243,27 @@ if errorlevel 1 (
 )
 echo [setup] Completed %LABEL%.
 echo [setup] Completed %LABEL%. >> "%LOG%"
+exit /b 0
+
+:check_ffmpeg_runtime
+set "PY=%~1"
+
+if not exist "%PY%" (
+  echo [setup] WARNING: ffmpeg check skipped ^(missing Python: %PY%^).
+  echo [setup] WARNING: ffmpeg check skipped ^(missing Python: %PY%^). >> "%LOG%"
+  exit /b 0
+)
+
+echo [setup] Checking bundled ffmpeg runtime...
+echo [setup] Checking bundled ffmpeg runtime with %PY% >> "%LOG%"
+"%PY%" -c "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())"
+if errorlevel 1 (
+  echo [setup] WARNING: bundled ffmpeg check failed; Sequence to MP4 may require ffmpeg on PATH.
+  echo [setup] WARNING: bundled ffmpeg check failed; Sequence to MP4 may require ffmpeg on PATH. >> "%LOG%"
+  exit /b 0
+)
+echo [setup] Bundled ffmpeg runtime is ready.
+echo [setup] Bundled ffmpeg runtime is ready. >> "%LOG%"
 exit /b 0
 
 :check_medigator_runtime

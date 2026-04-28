@@ -348,6 +348,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     _video_player.register()
             except Exception:
                 pass
+        # Ensure Sequence to MP4 spec is registered even if the loader was skipped.
+        if (self.model.kind or "").strip().lower() in ("sequence_to_mp4", "sequence mp4", "sequence_to_video", "image_sequence_to_mp4"):
+            try:
+                from nodes import sequence_to_mp4 as _sequence_to_mp4  # type: ignore
+                if hasattr(_sequence_to_mp4, "register"):
+                    _sequence_to_mp4.register()
+            except Exception:
+                pass
         # Ensure Primitive spec is registered even if the loader was skipped.
         if (self.model.kind or "").strip().lower() == "primitive":
             try:
@@ -1017,6 +1025,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
             hidden.update({"output", "camera", "frame_rate", "format", "start_frame", "end_frame"})
         elif kind in ("video_player", "video player", "videoplayer"):
             hidden.update({"path"})
+        elif kind in ("sequence_to_mp4", "sequence mp4", "sequence_to_video", "image_sequence_to_mp4"):
+            hidden.update({"source", "output", "codec", "fps", "bitrate"})
         elif kind == "primitive":
             hidden.update({"primitive", "path"})
         elif kind == "uv_unwrap":
@@ -1769,6 +1779,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
         elif kind in ("video_player", "video player", "videoplayer"):
             # Keep extra bottom frame space for the Video Player preview controls.
             body_h = 188
+            node_w = self._BASE_W
+        elif kind in ("sequence_to_mp4", "sequence mp4", "sequence_to_video", "image_sequence_to_mp4"):
+            body_h = 184
             node_w = self._BASE_W
         elif kind in ("gantt_chart", "gantt chart", "gant_chart", "gant chart"):
             body_h = 320
@@ -6187,6 +6200,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 icon_pm = node_icons._render_node_icon() or node_icons._output_icon()
             elif kind_lower in ("video_player", "video player", "videoplayer"):
                 icon_pm = node_icons._video_player_icon() or node_icons._render_node_icon() or node_icons._output_icon()
+            elif kind_lower in ("sequence_to_mp4", "sequence mp4", "sequence_to_video", "image_sequence_to_mp4"):
+                icon_pm = node_icons._sequence_to_mp4_icon() or node_icons._video_player_icon() or node_icons._output_icon()
             elif kind_lower == "instance":
                 icon_pm = node_icons._instance_icon() or node_icons._output_icon()
             elif kind_lower == "primitive":

@@ -428,6 +428,17 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Video Player plugin import failed:", e)
 
+    # 16.1) Sequence to MP4
+    try:
+        from nodes import sequence_to_mp4
+        if hasattr(sequence_to_mp4, "register"):
+            sequence_to_mp4.register()
+            _safe_probe("sequence_to_mp4")
+        else:
+            print("[EchoGraph] Sequence to MP4 module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Sequence to MP4 plugin import failed:", e)
+
     # 16.5) Qubit Deck Controller
     try:
         from nodes import qubit_deck_controller

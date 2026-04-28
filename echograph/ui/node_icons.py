@@ -26,6 +26,7 @@ _PYTHON_ICON = None
 _SCREENGRAB_ICON = None
 _RENDER_NODE_ICON = None
 _VIDEO_PLAYER_ICON = None
+_SEQUENCE_TO_MP4_ICON = None
 _INSTANCE_ICON = None
 _PRIMITIVE_ICON = None
 _HTML_PREVIEW_ICON = None
@@ -225,6 +226,19 @@ def _video_player_icon():
         return _VIDEO_PLAYER_ICON
     _VIDEO_PLAYER_ICON = _load_pm("ReelVideo_Icon.png") or _load_pm("PlayButton_icon.png")
     return _VIDEO_PLAYER_ICON
+
+
+def _sequence_to_mp4_icon():
+    global _SEQUENCE_TO_MP4_ICON
+    if _SEQUENCE_TO_MP4_ICON is not None:
+        return _SEQUENCE_TO_MP4_ICON
+    _SEQUENCE_TO_MP4_ICON = (
+        _load_pm("SequenceToVideo_Icon2_s.png")
+        or _load_pm("SequenceToVideo_Icon_s.png")
+        or _video_player_icon()
+        or _render_node_icon()
+    )
+    return _SEQUENCE_TO_MP4_ICON
 
 
 def _instance_icon():
