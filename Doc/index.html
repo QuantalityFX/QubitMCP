@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>QubitMCP 1.1.0 Manual</title>
+    <title>QubitMCP 1.2.5 Manual</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
@@ -11,7 +11,7 @@
       <aside class="sidebar">
         <div class="brand">
           <img class="brand-logo" src="../icons/QubitMCP_Icon_s.png" alt="QubitMCP icon" />
-          <div class="brand-title">QubitMCP 1.1.0</div>
+          <div class="brand-title">QubitMCP 1.2.5</div>
           <div class="brand-sub">User + Developer Manual</div>
         </div>
         <nav class="nav">
@@ -57,8 +57,9 @@
           <ul class="bullet">
             <li>Node graph editor with links, grouping, and per node info cards.</li>
             <li>3D viewport with camera controls, grid, wireframe, and gizmos.</li>
-            <li>AI stack with Local Server, LLM Prompt, Chatbot, Database, and Librarian.</li>
-            <li>3D stack with import, primitive, texturing, split volume, transforms, scene, and FBX export.</li>
+            <li>AI stack with Local Server, LLM Prompt, Chatbot, Voice Actor, Mediator, Database, Librarian, and Qubit Deck control.</li>
+            <li>3D stack with import, FBX ingest, mocap ingest, retargeting, primitive, texturing, split volume, transforms, scene, render, post-process, and export nodes.</li>
+            <li>Automation stack with Keyboard Sequence actions and voice-driven Qubit Deck commands.</li>
             <li>Configurable hotkeys saved in <code>hotkeys.json</code>.</li>
           </ul>
         </section>
@@ -66,6 +67,57 @@
         <section id="latest-updates" class="section">
           <h2>Latest Updates</h2>
           <div class="grid two">
+            <div class="card feature-card">
+              <h3><img class="inline-icon" src="../icons/TanyaAI_Icon.png" alt="Voice Actor icon" /> Voice Actor Send Modes</h3>
+              <ul class="bullet">
+                <li><code>voice_actor</code> now supports <strong>Auto Respond</strong>, <strong>Ask First</strong>, and <strong>Manual</strong> response modes per node.</li>
+                <li><strong>Auto Respond</strong> sends after speech pauses, <strong>Ask First</strong> confirms before sending, and <strong>Manual</strong> sends only when Stop is pressed.</li>
+                <li>Voice Actor can read chatbot output or Mediator output, including Mediator output passed through a Python cleanup node.</li>
+              </ul>
+            </div>
+            <div class="card feature-card">
+              <h3><img class="inline-icon" src="../icons/Mediator_Icon_1_s.png" alt="Mediator icon" /> Mediator Agent Integration</h3>
+              <ul class="bullet">
+                <li><code>mediator_agent</code> replaces the older legacy node kind while preserving aliases for existing workflows.</li>
+                <li>Mediator only processes on fresh Voice Actor send events, avoiding accidental reruns when a node is selected, moved, loaded, or reconnected.</li>
+                <li>The Qubit Deck controller profile can append <code>&lt;user_feedback&gt;...&lt;/user_feedback&gt;</code> text for spoken status updates.</li>
+                <li>A Python-node helper can extract only the feedback tag when the full Mediator JSON should not be spoken aloud.</li>
+                <li>Mediator prompt logs are capped and console logs are kept to a managed tail so log files do not grow without limit.</li>
+              </ul>
+            </div>
+            <div class="card feature-card">
+              <h3><img class="inline-icon" src="../nodes/qubit_deck_controller/QBeam__API_Icon.ico" alt="Qubit Deck icon" /> Qubit Deck Controller</h3>
+              <ul class="bullet">
+                <li><code>qubit_deck_controller</code> can list deck context or execute button actions from structured Mediator JSON.</li>
+                <li>Executor mode supports invoke, highlight on/off, list buttons, health ping, and debugger launch actions.</li>
+                <li>The new visible input is <code>mediator_input</code>; older <code>medigator_input</code> workflows still load.</li>
+              </ul>
+            </div>
+            <div class="card feature-card">
+              <h3><img class="inline-icon" src="../icons/anim_retarget_Icon_s.png" alt="Retarget icon" /> Mocap Retargeting System</h3>
+              <ul class="bullet">
+                <li><code>fbx_import</code>, <code>mocap_import</code>, and <code>anim_retarget</code> support a source/target retargeting workflow.</li>
+                <li>FBX import validates rest geometry, capture pose, and animated pose roles.</li>
+                <li>Mocap import validates BVH sources and reports skeleton/clip summaries.</li>
+                <li>Anim Retarget connects a mocap or FBX animation source to a target FBX rig with joint mapping and preview controls.</li>
+              </ul>
+            </div>
+            <div class="card feature-card">
+              <h3><img class="inline-icon" src="../icons/SequenceToVideo_Icon2_s.png" alt="Sequence to MP4 icon" /> Render, Post Process, and MP4 Export</h3>
+              <ul class="bullet">
+                <li><code>post_process</code> applies image-sequence effects such as ordered dithering to render or video frame sequences.</li>
+                <li><code>sequence_to_mp4</code> converts image sequences to MP4 through ffmpeg with codec, FPS, and bitrate controls.</li>
+                <li><code>video_player</code> and <code>render</code> can be used with these nodes for review and delivery pipelines.</li>
+              </ul>
+            </div>
+            <div class="card feature-card">
+              <h3><img class="inline-icon" src="../icons/TabIcon.png" alt="Keyboard sequence icon" /> Keyboard Auto Runner</h3>
+              <ul class="bullet">
+                <li><code>keyboard_sequence</code> builds timed keyboard action sequences from the graph.</li>
+                <li>Actions include configurable lead-in, per-key hold time, action delay, and injection mode.</li>
+                <li>Use it for repeatable app-control steps after QubitMCP brings the target app into focus.</li>
+              </ul>
+            </div>
             <div class="card feature-card">
               <h3><img class="inline-icon" src="../icons/Calendar_Icon.png" alt="Calendar icon" /> Gantt Multi-Note Groups</h3>
               <ul class="bullet">
@@ -76,20 +128,12 @@
               </ul>
             </div>
             <div class="card feature-card">
-              <h3><img class="inline-icon" src="../icons/Copy_Icon.png" alt="Copy icon" /> Copy/Paste Scheduling Between Gantt Nodes</h3>
+              <h3><img class="inline-icon" src="../icons/Copy_Icon.png" alt="Copy icon" /> Gantt Copy/Paste Scheduling</h3>
               <ul class="bullet">
                 <li>Copy captures task names, completion percentages, and assigned day ranges.</li>
                 <li>Copy writes a CSV transfer log in <code>gantt_chart/transfer_logs</code>.</li>
                 <li>Paste maps by task name and applies schedule/progress to matching tasks on another Gantt node.</li>
                 <li>Transfer works even when the destination chart has additional note groups connected.</li>
-              </ul>
-            </div>
-            <div class="card feature-card">
-              <h3><img class="inline-icon" src="../icons/Paste_Icon.png" alt="Paste icon" /> Gantt UI Interaction Polish</h3>
-              <ul class="bullet">
-                <li>Corner action buttons now include hover border feedback.</li>
-                <li>Pressed state uses a black background for clearer click confirmation.</li>
-                <li>Copy and paste buttons use dedicated icon assets for quick recognition.</li>
               </ul>
             </div>
           </div>
@@ -117,7 +161,16 @@
             <li>Creates or repairs <code>nodes\librarian\.venv</code> for librarian service dependencies.</li>
             <li>Installs <code>requirements.txt</code> and <code>nodes\librarian\requirements.txt</code>.</li>
             <li>Upgrades packaging tools in each venv (<code>pip</code>, <code>setuptools</code>, <code>wheel</code>).</li>
+            <li>Checks bundled ffmpeg support used by <code>sequence_to_mp4</code>.</li>
+            <li>Installs voice dependencies used by <code>voice_actor</code>, including local Whisper and TTS support when available.</li>
+            <li>Runs a <code>keyboard_sequence</code> sanity check so Keyboard Auto Runner can load its runtime.</li>
+            <li>Checks Mediator runtime support for <code>tools\codex.ps1</code>, Node.js, and <code>npx</code>.</li>
+            <li>Checks or prompts for Autodesk FBX SDK runtime files used by full FBX import and retargeting workflows.</li>
           </ul>
+
+          <h3>Optional FBX SDK setup</h3>
+          <pre><code>setup.bat full "C:\path\to\fbx_runtime"</code></pre>
+          <p>FBX runtime source folders can contain either <code>fbx-*.whl</code> plus <code>FbxCommon.py</code>, or <code>fbx*.pyd</code> plus <code>FbxCommon.py</code> and optional <code>libfbxsdk.dll</code>.</p>
 
           <h3>Launch app</h3>
           <pre><code>run_QubitMCP.bat</code></pre>
@@ -245,6 +298,7 @@
             <li>If you enable timeline while in 2D mode, QubitMCP auto-switches to <strong>Split</strong> view.</li>
             <li>Keyframing channels include <code>Px</code>, <code>Py</code>, <code>Pz</code>, <code>Rx</code>, <code>Ry</code>, and <code>Rz</code>.</li>
             <li>Use <code>ply_sequence</code> for frame-by-frame PLY playback workflows that sync well with timeline scrubbing.</li>
+            <li>Use <code>mocap_import</code>, <code>fbx_import</code>, and <code>anim_retarget</code> for skeleton/animation retargeting workflows before scene preview or render.</li>
             <li>Timeline sessions are context-aware and load per active scene (and selected scene owner when applicable).</li>
             <li>Use <strong>[</strong> and <strong>]</strong> controls for start/end range and the loop control for playback looping.</li>
           </ul>
@@ -373,9 +427,22 @@
             </div>
 
             <div class="card">
+              <h3>Automation, Voice, and Control</h3>
+              <ul class="node-list">
+                <li><img class="node-inline-icon" src="../icons/TanyaAI_Icon.png" alt="Voice Actor icon" /><span><strong>voice_actor</strong>: speech-to-text and text-to-speech node with Auto Respond, Ask First, and Manual send modes.</span></li>
+                <li><img class="node-inline-icon" src="../icons/Mediator_Icon_1_s.png" alt="Mediator icon" /><span><strong>mediator_agent</strong>: Codex-backed mediator that processes voice input, prompt profiles, and Qubit Deck controller commands.</span></li>
+                <li><img class="node-inline-icon" src="../nodes/qubit_deck_controller/QBeam__API_Icon.ico" alt="Qubit Deck icon" /><span><strong>qubit_deck_controller</strong>: list or execute Qubit Deck actions from manual fields or Mediator JSON on <code>mediator_input</code>.</span></li>
+                <li><img class="node-inline-icon" src="../icons/TabIcon.png" alt="Keyboard sequence icon" /><span><strong>keyboard_sequence</strong>: Keyboard Auto Runner for timed key/action sequences with lead-in, hold time, delays, and injection mode.</span></li>
+              </ul>
+            </div>
+
+            <div class="card">
               <h3>3D and Scene Processing</h3>
               <ul class="node-list">
                 <li><img class="node-inline-icon" src="../icons/Import_File_Icon.png" alt="Import icon" /><span><strong>import</strong>: load mesh or splat assets.</span></li>
+                <li><img class="node-inline-icon" src="../icons/FBX_Icon.png" alt="FBX import icon" /><span><strong>fbx_import</strong>: ingest and validate FBX rest geometry, capture pose, and animated pose roles for rigging workflows.</span></li>
+                <li><img class="node-inline-icon" src="../icons/Gen-X_Icon_s.png" alt="Mocap icon" /><span><strong>mocap_import</strong>: import and validate BVH mocap clips with skeleton, frame, and clip summaries.</span></li>
+                <li><img class="node-inline-icon" src="../icons/anim_retarget_Icon_s.png" alt="Retarget icon" /><span><strong>anim_retarget</strong>: connect a mocap/FBX source to a target FBX rig with joint mapping, root controls, pose offsets, and preview options.</span></li>
                 <li><img class="node-inline-icon" src="../icons/Camera_icon.png" alt="Camera icon" /><span><strong>camera</strong>: scene camera placement/control node.</span></li>
                 <li><img class="node-inline-icon" src="../icons/instance_icon.png" alt="Instance icon" /><span><strong>instance</strong>: create repeated scene instances.</span></li>
                 <li><img class="node-inline-icon" src="../icons/Primitive_Icon.png" alt="Primitive icon" /><span><strong>primitive</strong>: generate procedural primitive geometry.</span></li>
@@ -402,10 +469,12 @@
                 <li><img class="node-inline-icon" src="../icons/PhotoCollection.png" alt="Image collection icon" /><span><strong>image_collection</strong>: assemble and preview image sets.</span></li>
                 <li><img class="node-inline-icon" src="../icons/ReelVideo_Icon.png" alt="Video icon" /><span><strong>video_player</strong>: timeline playback and clip inspection.</span></li>
                 <li><img class="node-inline-icon" src="../icons/RenderNode_Icon.png" alt="Render icon" /><span><strong>render</strong>: render sequence/export pipeline stage.</span></li>
+                <li><img class="node-inline-icon" src="../icons/FX_node_icon.png" alt="Post process icon" /><span><strong>post_process</strong>: apply image-sequence effects such as ordered dithering and produce an output frame pattern.</span></li>
+                <li><img class="node-inline-icon" src="../icons/SequenceToVideo_Icon2_s.png" alt="Sequence to MP4 icon" /><span><strong>sequence_to_mp4</strong>: encode image sequences to MP4 with FPS, codec, and bitrate settings.</span></li>
               </ul>
             </div>
           </div>
-          <p class="muted">Aliases also exist for some node kinds (for example <code>scene_assembly</code>, <code>scene_outliner</code>, <code>exportfbx</code>, and <code>video player</code>).</p>
+          <p class="muted">Aliases also exist for some node kinds (for example <code>scene_assembly</code>, <code>scene_outliner</code>, <code>exportfbx</code>, <code>video player</code>, <code>bvh_import</code>, <code>retarget</code>, and legacy <code>medigator_agent</code>).</p>
         </section>
 
         <section id="pipelines" class="section">
@@ -414,8 +483,8 @@
             <div class="card">
               <h3>Scene Assembly and Export</h3>
               <ol class="steps">
-                <li>Create <code>import</code> or <code>primitive</code> nodes.</li>
-                <li>Optional processing: <code>uv_unwrap</code>, <code>texture</code>/<code>texture_pro</code>/<code>texture_layer</code>, <code>split_volume</code>, <code>transforms</code>.</li>
+                <li>Create <code>import</code>, <code>fbx_import</code>, or <code>primitive</code> nodes.</li>
+                <li>Optional processing: <code>uv_unwrap</code>, <code>texture</code>/<code>texture_pro</code>/<code>texture_layer</code>, <code>split_volume</code>, <code>transforms</code>, or <code>anim_retarget</code>.</li>
                 <li>Use <code>instance</code> when you need repeated assets.</li>
                 <li>Connect into <code>scene</code> and review in 3D viewport.</li>
                 <li>Finish with <code>export_fbx</code> or <code>export_obj</code> for DCC handoff.</li>
@@ -440,6 +509,45 @@
                 <li>Use copy/paste buttons to transfer schedule + progress into another Gantt chart instance.</li>
               </ol>
             </div>
+            <div class="card">
+              <h3>Voice-Controlled Qubit Deck</h3>
+              <ol class="steps">
+                <li>Create <code>voice_actor</code>, set its response mode, and connect its output to <code>mediator_agent</code> <code>voice_input</code>.</li>
+                <li>Set Mediator prompt profile to <code>qubit_deck_controller</code>.</li>
+                <li>Connect Mediator output to <code>qubit_deck_controller</code> <code>mediator_input</code>.</li>
+                <li>Optional: place a <code>python</code> node between Mediator and Voice Actor to extract only <code>&lt;user_feedback&gt;</code> text for speech.</li>
+                <li>Use <code>qubit_deck_controller</code> in Context mode to list buttons, then Executor mode to invoke or highlight actions.</li>
+              </ol>
+            </div>
+            <div class="card">
+              <h3>FBX + Mocap Retargeting</h3>
+              <ol class="steps">
+                <li>Create <code>fbx_import</code> and assign rest geometry, capture pose, and optional animated pose FBX sources.</li>
+                <li>Create <code>mocap_import</code> and browse to a BVH file, then validate the clip.</li>
+                <li>Connect mocap or animated FBX into <code>anim_retarget</code> <code>source</code>.</li>
+                <li>Connect the target rig <code>fbx_import</code> into <code>anim_retarget</code> <code>target</code>.</li>
+                <li>Validate mapping, adjust root/scale/rotation settings, preview, then continue to scene/render/export stages.</li>
+              </ol>
+            </div>
+            <div class="card">
+              <h3>Render Review and Video Output</h3>
+              <ol class="steps">
+                <li>Build a <code>scene</code> from import, retarget, transform, material, or texture nodes.</li>
+                <li>Use <code>render</code> to produce an image sequence.</li>
+                <li>Optional: connect the sequence to <code>post_process</code> for dither/grayscale style processing.</li>
+                <li>Preview frames or clips with <code>video_player</code>.</li>
+                <li>Finish with <code>sequence_to_mp4</code> for MP4 delivery.</li>
+              </ol>
+            </div>
+            <div class="card">
+              <h3>Keyboard Auto Runner</h3>
+              <ol class="steps">
+                <li>Create <code>keyboard_sequence</code> and add key/action rows.</li>
+                <li>Set lead-in delay so you have time to focus the target application.</li>
+                <li>Choose injection mode and per-key hold timing for the target app.</li>
+                <li>Run the sequence, or stop it if the target app state changes.</li>
+              </ol>
+            </div>
           </div>
         </section>
 
@@ -452,6 +560,12 @@
             <li>Wireframe default is <code>H</code>; if not, verify <code>gl_wireframe_toggle</code> in <code>hotkeys.json</code>.</li>
             <li>Gantt copy/paste debugging: inspect CSV transfer logs under <code>gantt_chart\transfer_logs</code>.</li>
             <li>If Gantt group order is stale after append reorder, press <strong>Apply Order</strong> on the append node so downstream charts refresh.</li>
+            <li>FBX import or retarget validation issues: run <code>check_fbx_sdk.ps1</code>, or rerun <code>setup.bat full "C:\path\to\fbx_runtime"</code> with the Autodesk FBX runtime folder.</li>
+            <li>Sequence to MP4 issues: confirm setup reported bundled ffmpeg as ready, or install ffmpeg on <code>PATH</code>.</li>
+            <li>Voice Actor speech issues: rerun <code>setup.bat</code> so voice dependencies are installed; Local Whisper requires <code>faster-whisper</code>, and Tanya/Google voice uses <code>gTTS</code> plus <code>pygame</code>.</li>
+            <li>Mediator issues: confirm Node.js, <code>npx</code>, and <code>tools\codex.ps1</code> are available; Mediator logs are under <code>logs\mediator_agents</code>.</li>
+            <li>Qubit Deck control issues: use <code>qubit_deck_controller</code> Context mode first to confirm button names before sending Executor JSON from Mediator.</li>
+            <li>Keyboard Auto Runner issues: make sure the intended target app has focus before the lead-in delay ends, and increase key hold time for apps that miss fast input.</li>
           </ul>
         </section>
 
@@ -463,6 +577,10 @@
             <li>Hotkey defaults are in <code>echograph/ui/hotkeys_config.py</code> and merge with root <code>hotkeys.json</code>.</li>
             <li>Workflow files persist graph structure and node parameters as JSON.</li>
             <li>Librarian service runs out of <code>nodes/librarian/.venv</code> as a separate process.</li>
+            <li>Voice Actor uses hidden event tokens so downstream automation only reacts to fresh send events.</li>
+            <li>Mediator prompt profiles live under <code>nodes\mediator_agent\prompts</code>; the Qubit Deck profile emits command JSON plus optional <code>&lt;user_feedback&gt;</code> text.</li>
+            <li>Python helper scripts in <code>scripts\</code> can be pasted into Python nodes for output cleanup, including user feedback extraction for voice playback.</li>
+            <li>Rigging and retargeting helpers live under <code>echograph\rigging</code> and are surfaced through <code>fbx_import</code>, <code>mocap_import</code>, and <code>anim_retarget</code>.</li>
           </ul>
         </section>
       </main>

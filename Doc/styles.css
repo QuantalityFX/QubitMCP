@@ -147,8 +147,17 @@ code {
 
 .feature-card h3 {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
+  line-height: 1.25;
+  text-align: center;
+}
+
+.feature-card h3 .inline-icon {
+  width: 52px;
+  height: 52px;
+  object-fit: contain;
 }
 
 .bullet {

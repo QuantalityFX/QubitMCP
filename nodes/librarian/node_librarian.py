@@ -179,7 +179,7 @@ class LibrarianNode(QtWidgets.QFrame):
 NODE_META = {
     "type_name": "Librarian",
     "category": "AI / Tools",
-    "version": "1.1.0",
+    "version": "1.2.5",
     "create_widget": LibrarianNode,   # Or use LibrarianNodeWidget directly if your graph prefers
     # Optional icon: place a 24x24 png in nodes/librarian/icons/librarian.png
     "icon_path": str(LIBRARIAN_DIR / "icons" / "librarian.png"),
