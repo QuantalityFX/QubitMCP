@@ -30,6 +30,7 @@ MEDIGATOR_NODE_KINDS = {
     "medigator",
     "mediator",
 }
+MEDIGATOR_OUTPUT_TOKEN_PARAM = "__medigator_output_token"
 
 _PARAM_DEFAULTS = {
     "api_base": DEFAULT_API_BASE,
@@ -325,6 +326,15 @@ def _param_value_from_model(model, name: str, default: str = "") -> str:
     return str(default or "")
 
 
+def _source_event_token(src_item) -> str:
+    model = getattr(src_item, "model", None)
+    if model is None:
+        return ""
+    if _kind_of_item(src_item) in MEDIGATOR_NODE_KINDS:
+        return _param_value_from_model(model, MEDIGATOR_OUTPUT_TOKEN_PARAM, "").strip()
+    return ""
+
+
 def _ordered_in_edges(scene, node_item) -> list:
     if not scene or not node_item:
         return []
@@ -493,6 +503,25 @@ def _connected_source_names(scene, node_item) -> set[str]:
     return out
 
 
+def _master_source_event_key(scene, node_item) -> str:
+    parts: list[str] = []
+    seen: set[str] = set()
+    for edge in _ordered_in_edges(scene, node_item):
+        src = getattr(edge, "src", None)
+        if src is None:
+            continue
+        token = _source_event_token(src)
+        if not token:
+            continue
+        name = str(getattr(getattr(src, "model", None), "name", "") or "").strip().lower()
+        part = f"{name}:{token}" if name else token
+        if part in seen:
+            continue
+        seen.add(part)
+        parts.append(part)
+    return "|".join(sorted(parts))
+
+
 def _set_param_in_list(params: list[dict], name: str, value: str) -> list[dict]:
     key = (name or "").strip().lower()
     text = str(value or "")
@@ -504,12 +533,12 @@ def _set_param_in_list(params: list[dict], name: str, value: str) -> list[dict]:
     return params
 
 
-def _command_signature(mode: str, command: dict[str, str]) -> str:
+def _command_signature(mode: str, command: dict[str, str], event_key: str = "") -> str:
     try:
         body = json.dumps(command or {}, sort_keys=True, separators=(",", ":"))
     except Exception:
         body = str(command or "")
-    payload = f"{str(mode or '').strip().lower()}\n{body}"
+    payload = f"{str(mode or '').strip().lower()}\n{body}\n{str(event_key or '').strip()}"
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()
 
 
@@ -622,7 +651,7 @@ def _maybe_auto_execute_on_scene(node_item, *, changed_name: str = "", force: bo
                 pass
         return
 
-    signature = _command_signature(mode, command)
+    signature = _command_signature(mode, command, _master_source_event_key(scene, node_item))
     last_signature = str(getattr(node_item, "_qdeck_last_auto_signature", "") or "")
     if not force and signature and signature == last_signature:
         return
@@ -636,6 +665,20 @@ def _maybe_auto_execute_on_scene(node_item, *, changed_name: str = "", force: bo
             setattr(node_item, "_qdeck_last_auto_signature", "")
     finally:
         setattr(node_item, "_qdeck_auto_running", False)
+
+
+def _current_auto_signature_on_scene(node_item) -> str:
+    scene = node_item.scene() if hasattr(node_item, "scene") else None
+    model = getattr(node_item, "model", None)
+    if scene is None or model is None:
+        return ""
+    mode = _normalize_mode(_param_value_from_model(model, _MODE_PARAM), _MODE_EXECUTOR)
+    if mode != _MODE_EXECUTOR:
+        return ""
+    command, _parse_err = _parse_master_from_candidates(_master_candidates_from_scene(scene, node_item))
+    if not command:
+        return ""
+    return _command_signature(mode, command, _master_source_event_key(scene, node_item))
 
 
 def _install_scene_auto_executor(node_item) -> None:
@@ -653,8 +696,7 @@ def _install_scene_auto_executor(node_item) -> None:
             return True
 
         def _on_links_changed(*_args):
-            setattr(node_item, "_qdeck_last_auto_signature", "")
-            _maybe_auto_execute_on_scene(node_item, force=True)
+            setattr(node_item, "_qdeck_last_auto_signature", _current_auto_signature_on_scene(node_item))
 
         def _on_param_changed(name=None, _params=None):
             _maybe_auto_execute_on_scene(node_item, changed_name=str(name or ""), force=False)
@@ -677,7 +719,9 @@ def _install_scene_auto_executor(node_item) -> None:
 
     def _deferred_bootstrap():
         if _connect_once():
-            _maybe_auto_execute_on_scene(node_item, force=True)
+            current = _current_auto_signature_on_scene(node_item)
+            if current:
+                setattr(node_item, "_qdeck_last_auto_signature", current)
 
     for delay in (0, 120, 400, 900):
         try:
@@ -1233,13 +1277,22 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             except Exception:
                 pass
 
-    def _auto_master_signature(mode: str, command: dict[str, str]) -> str:
+    def _auto_master_signature(mode: str, command: dict[str, str], event_key: str = "") -> str:
         try:
             body = json.dumps(command or {}, sort_keys=True, separators=(",", ":"))
         except Exception:
             body = str(command or "")
-        payload = f"{str(mode or '').strip().lower()}\n{body}"
+        payload = f"{str(mode or '').strip().lower()}\n{body}\n{str(event_key or '').strip()}"
         return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+    def _current_master_signature() -> str:
+        mode = _normalize_mode(_param_value(_MODE_PARAM), _MODE_EXECUTOR)
+        if mode != _MODE_EXECUTOR or node_item is None:
+            return ""
+        parsed_cmd, _parse_err = _parse_master_from_candidates(_master_input_candidates())
+        if not parsed_cmd:
+            return ""
+        return _auto_master_signature(mode, parsed_cmd, _master_source_event_key(scene, node_item))
 
     def _maybe_auto_execute(changed_name=None, *, force: bool = False) -> None:
         nonlocal _last_master_signature
@@ -1264,7 +1317,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             _set_status(f"Master input parse failed: {parse_err}", error=True)
         if not parsed_cmd:
             return
-        signature = _auto_master_signature(mode, parsed_cmd)
+        signature = _auto_master_signature(mode, parsed_cmd, _master_source_event_key(scene, node_item))
         if not force and signature == _last_master_signature:
             return
 
@@ -1275,17 +1328,13 @@ def augment_infocard_footer(card, footer_layout) -> bool:
 
     def _on_scene_links_changed(*_args) -> None:
         nonlocal _last_master_signature
-        _last_master_signature = ""
-        try:
-            QtCore.QTimer.singleShot(0, lambda: _maybe_auto_execute(force=True))
-        except Exception:
-            _maybe_auto_execute(force=True)
+        _last_master_signature = _current_master_signature()
 
     def _on_scene_param_changed(name=None, _params=None) -> None:
         _maybe_auto_execute(changed_name=name, force=False)
 
     def _ensure_scene_connections() -> None:
-        nonlocal scene, node_item, _auto_scene_connected
+        nonlocal scene, node_item, _auto_scene_connected, _last_master_signature
         if scene is None:
             try:
                 scene = getattr(card, "_graph_scene", None)
@@ -1316,6 +1365,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             except Exception:
                 pass
         _auto_scene_connected = True
+        _last_master_signature = _current_master_signature()
 
     api_edit.editingFinished.connect(_persist_manual_fields)
     button_name_edit.editingFinished.connect(_persist_manual_fields)

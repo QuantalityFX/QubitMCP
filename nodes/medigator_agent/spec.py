@@ -29,6 +29,7 @@ MEDIGATOR_BODY_H = 340
 MEDIGATOR_MEMORY_ROOT = "medigator_agents"
 MEDIGATOR_HIDDEN_PARAM_KEY = "__ui_hidden_params"
 MEDIGATOR_PROMPT_PROFILE_PARAM = "__prompt_profile"
+MEDIGATOR_OUTPUT_TOKEN_PARAM = "__medigator_output_token"
 MEDIGATOR_DEFAULT_PROMPT_PROFILE = "default_mediator"
 MEDIGATOR_DEFAULT_SYSTEM_PROMPT = (
     # Fallback used only when prompt profile files are missing or empty.
@@ -41,6 +42,7 @@ MEDIGATOR_MAX_HISTORY_CHARS = 24000
 MEDIGATOR_MAX_VOICE_CHARS = 8000
 MEDIGATOR_CODEX_MODEL = "gpt-5.3-codex"
 VOICE_ACTOR_KINDS = {"voice_actor", "voice actor", "voiceactor"}
+VOICE_ACTOR_SEND_TOKEN_PARAM = "__voice_actor_send_token"
 QDECK_CONTROLLER_KINDS = {
     "qubit_deck_controller",
     "qubit deck controller",
@@ -516,14 +518,37 @@ def _voice_actor_mode_from_item(node_item) -> str:
     return "voice_to_text"
 
 
+def _voice_actor_send_token(node_item) -> str:
+    model = getattr(node_item, "model", None)
+    return _param_value(model, VOICE_ACTOR_SEND_TOKEN_PARAM, "").strip()
+
+
 def _set_node_info(node_item, text: str) -> None:
     model = getattr(node_item, "model", None)
     if model is None:
         return
     value = text or ""
-    if (getattr(model, "info", "") or "") == value:
-        return
+    changed = (getattr(model, "info", "") or "") != value
     model.info = value
+    params = list(getattr(model, "params", None) or [])
+    token_key = MEDIGATOR_OUTPUT_TOKEN_PARAM.strip().lower()
+    stamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S%f")
+    token_value = f"{stamp}-{hashlib.sha1(value.encode('utf-8', errors='ignore')).hexdigest()[:12]}"
+    token_found = False
+    for entry in params:
+        if str(entry.get("name", "") or "").strip().lower() == token_key:
+            if str(entry.get("value", "") or "") != token_value:
+                entry["value"] = token_value
+                changed = True
+            token_found = True
+            break
+    if not token_found:
+        params.append({"name": MEDIGATOR_OUTPUT_TOKEN_PARAM, "value": token_value})
+        changed = True
+    model.params = params
+    _ensure_hidden_params(model, [MEDIGATOR_OUTPUT_TOKEN_PARAM])
+    if not changed:
+        return
     scene = node_item.scene() if hasattr(node_item, "scene") else None
     if scene is None:
         return
@@ -681,6 +706,7 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
         self._last_processed_signature = ""
         self._last_voice_mode = ""
         self._last_auto_voice_input = ""
+        self._last_auto_voice_token = ""
         self._auto_baseline_ready = False
         self._pending_prompt = ""
         self._pending_signature = ""
@@ -968,8 +994,10 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
         voice_item = self._connected_voice_actor_item()
         if voice_item is None:
             self._last_voice_mode = ""
+            self._last_auto_voice_token = ""
         else:
             self._last_voice_mode = _voice_actor_mode_from_item(voice_item)
+            self._last_auto_voice_token = _voice_actor_send_token(voice_item)
         self._auto_baseline_ready = True
 
     def _connected_source_names(self) -> set[str]:
@@ -1054,10 +1082,15 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
                 return
 
         voice_item = self._connected_voice_actor_item()
+        current_voice_token = ""
         if voice_item is None:
             self._last_voice_mode = ""
+            if not force:
+                self._last_auto_voice_token = ""
+                return
         else:
             current_voice_mode = _voice_actor_mode_from_item(voice_item)
+            current_voice_token = _voice_actor_send_token(voice_item)
             if (
                 not force
                 and bool(self._last_voice_mode)
@@ -1065,8 +1098,15 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
             ):
                 # Mode toggles are control events and should not dispatch downstream calls.
                 self._last_voice_mode = current_voice_mode
+                self._last_auto_voice_token = current_voice_token
                 return
             self._last_voice_mode = current_voice_mode
+            if not force:
+                if not current_voice_token:
+                    self._last_auto_voice_input = ""
+                    return
+                if current_voice_token == self._last_auto_voice_token:
+                    return
 
         system_prompt, chatbot_history, voice_input = self._collect_inputs()
         profile = self._selected_prompt_profile()
@@ -1074,13 +1114,13 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
         if not clean_voice_input:
             if not force:
                 self._last_auto_voice_input = ""
+                self._last_auto_voice_token = current_voice_token
             if force:
                 self._set_status("No voice_input text available.", error=True)
             return
-        if not force and clean_voice_input == self._last_auto_voice_input:
-            return
         if not force:
             self._last_auto_voice_input = clean_voice_input
+            self._last_auto_voice_token = current_voice_token
 
         prompt_voice_input = clean_voice_input
         if profile == QDECK_PROMPT_PROFILE:
@@ -1092,6 +1132,8 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
             prompt_voice_input,
             self._selected_profile_prompt(),
         )
+        if not force and current_voice_token:
+            signature = hashlib.sha1(f"{signature}\nvoice:{current_voice_token}".encode("utf-8")).hexdigest()
         if not force and signature == self._last_processed_signature:
             return
         if self._running:

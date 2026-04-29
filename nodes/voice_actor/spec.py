@@ -50,16 +50,21 @@ VOICE_ACTOR_NODE_ALIASES = [
 VOICE_ACTOR_NODE_KINDS = {VOICE_ACTOR_NODE_KIND, *VOICE_ACTOR_NODE_ALIASES}
 
 VOICE_ACTOR_BODY_W = 460
-VOICE_ACTOR_BODY_H = 300
+VOICE_ACTOR_BODY_H = 330
 VOICE_ACTOR_ICON_BTN_SIDE = 56
 VOICE_ACTOR_SELECTED_PARAM_KEY = "__voice_actor_selected_param"
 VOICE_ACTOR_MODE_KEY = "__voice_actor_mode"
 VOICE_ACTOR_VOICE_KEY = "__voice_actor_voice"
 VOICE_ACTOR_STT_METHOD_KEY = "__voice_actor_stt_method"
+VOICE_ACTOR_SEND_MODE_KEY = "__voice_actor_send_mode"
+VOICE_ACTOR_SEND_TOKEN_KEY = "__voice_actor_send_token"
 VOICE_TANYA_GOOGLE = "__google_tanya__"
 VOICE_AUTO_FEMALE = "__auto_female__"
 STT_METHOD_LOCAL_WHISPER = "local_whisper"
 STT_METHOD_GOOGLE = "google"
+STT_SEND_MODE_AUTO_RESPOND = "auto_respond"
+STT_SEND_MODE_ASK_FIRST = "ask_first"
+STT_SEND_MODE_MANUAL = "manual"
 LOCAL_WHISPER_MODEL_NAME = "base"
 LOCAL_WHISPER_LANGUAGE = "en"
 STT_IDLE_CONFIRM_SECONDS = 2.2
@@ -218,6 +223,34 @@ def _set_node_info(node_item, text: str) -> None:
     if (getattr(model, "info", "") or "") == value:
         return
     model.info = value
+    scene = node_item.scene() if hasattr(node_item, "scene") else None
+    if scene is None:
+        return
+    try:
+        scene.paramChanged.emit(model.name, list(getattr(model, "params", None) or []))
+    except Exception:
+        pass
+
+
+def _publish_voice_command(node_item, text: str) -> None:
+    model = getattr(node_item, "model", None)
+    if model is None:
+        return
+    value = text or ""
+    model.info = value
+    params = list(getattr(model, "params", None) or [])
+    token_value = f"{int(time.time() * 1000)}-{uuid.uuid4().hex}"
+    token_key = VOICE_ACTOR_SEND_TOKEN_KEY.strip().lower()
+    found = False
+    for entry in params:
+        if (entry.get("name") or "").strip().lower() == token_key:
+            entry["value"] = token_value
+            found = True
+            break
+    if not found:
+        params.append({"name": VOICE_ACTOR_SEND_TOKEN_KEY, "value": token_value})
+    model.params = params
+    _ensure_hidden_params(model, [VOICE_ACTOR_SEND_TOKEN_KEY])
     scene = node_item.scene() if hasattr(node_item, "scene") else None
     if scene is None:
         return
@@ -584,6 +617,15 @@ def _normalize_stt_method(value: str) -> str:
     return STT_METHOD_LOCAL_WHISPER
 
 
+def _normalize_stt_send_mode(value: str) -> str:
+    key = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if key in {"ask", "ask_first", "ask_for_approval", "approval"}:
+        return STT_SEND_MODE_ASK_FIRST
+    if key in {"manual", "push_to_talk", "push_to_send", "stop_to_send"}:
+        return STT_SEND_MODE_MANUAL
+    return STT_SEND_MODE_AUTO_RESPOND
+
+
 def _normalize_voice_audio_mode(value: str) -> str:
     key = str(value or "").strip().lower()
     if key in {"turn_taking", "turn-taking", "turntaking", "single", "single_talk"}:
@@ -821,6 +863,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._tts_voice_options = []
         self._syncing_voice_combo = False
         self._syncing_stt_combo = False
+        self._syncing_send_mode_combo = False
         self._stt_state_lock = threading.Lock()
         self._stt_listening = False
         self._stt_paused = False
@@ -850,6 +893,8 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._selected_voice_key = saved_voice_key or VOICE_TANYA_GOOGLE
         saved_stt_method = _param_value(model, VOICE_ACTOR_STT_METHOD_KEY, "").strip()
         self._selected_stt_method = _normalize_stt_method(saved_stt_method or STT_METHOD_LOCAL_WHISPER)
+        saved_send_mode = _param_value(model, VOICE_ACTOR_SEND_MODE_KEY, "").strip()
+        self._selected_send_mode = _normalize_stt_send_mode(saved_send_mode or STT_SEND_MODE_AUTO_RESPOND)
         self._had_note_input = False
         if self._selected_param_key:
             _ensure_hidden_params(model, [VOICE_ACTOR_SELECTED_PARAM_KEY])
@@ -859,6 +904,8 @@ class VoiceActorWidget(QtWidgets.QWidget):
             _ensure_hidden_params(model, [VOICE_ACTOR_VOICE_KEY])
         if saved_stt_method:
             _ensure_hidden_params(model, [VOICE_ACTOR_STT_METHOD_KEY])
+        if saved_send_mode:
+            _ensure_hidden_params(model, [VOICE_ACTOR_SEND_MODE_KEY])
 
         self.setMinimumSize(VOICE_ACTOR_BODY_W, VOICE_ACTOR_BODY_H)
         try:
@@ -959,6 +1006,17 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._stt_combo.setToolTip("Select speech-to-text engine for Listen mode.")
         self._stt_combo.currentIndexChanged.connect(self._on_stt_method_changed)
 
+        self._send_mode_label = QtWidgets.QLabel("Response:")
+        self._send_mode_label.setStyleSheet("QLabel{color:#94a3b8;}")
+        self._send_mode_combo = QtWidgets.QComboBox()
+        self._send_mode_combo.setStyleSheet(
+            "QComboBox{background:#11151c;color:#e6edf3;border:1px solid #334155;border-radius:4px;padding:3px 8px;}"
+            "QComboBox:disabled{background:#1f2937;color:#94a3b8;border-color:#334155;}"
+            "QComboBox QAbstractItemView{background:#0f1216;color:#e6edf3;selection-background-color:#1e3a8a;}"
+        )
+        self._send_mode_combo.setToolTip("Choose how Voice -> Text sends the finished command.")
+        self._send_mode_combo.currentIndexChanged.connect(self._on_send_mode_changed)
+
         top = QtWidgets.QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
         top.setSpacing(6)
@@ -979,11 +1037,18 @@ class VoiceActorWidget(QtWidgets.QWidget):
         selector.addWidget(self._stt_label, 0)
         selector.addWidget(self._stt_combo, 1)
 
+        response_row = QtWidgets.QHBoxLayout()
+        response_row.setContentsMargins(0, 0, 0, 0)
+        response_row.setSpacing(6)
+        response_row.addWidget(self._send_mode_label, 0)
+        response_row.addWidget(self._send_mode_combo, 1)
+
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(6)
         layout.addLayout(top, 0)
         layout.addLayout(selector, 0)
+        layout.addLayout(response_row, 0)
         layout.addWidget(self._transcript, 1)
         layout.addWidget(self._status, 0)
 
@@ -1000,6 +1065,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._ensure_scene_connections()
         self._refresh_voice_options()
         self._refresh_stt_method_options()
+        self._refresh_send_mode_options()
         self._refresh_source_param_options()
         self._queue_deferred_scene_bootstrap()
 
@@ -1048,7 +1114,10 @@ class VoiceActorWidget(QtWidgets.QWidget):
             self._action_btn.setStyleSheet(_tool_button_style("#7f1d1d", "#b91c1c", "#991b1b", text="#f8fafc"))
             if not self._stop_icon.isNull():
                 self._action_btn.setIcon(self._stop_icon)
-            self._action_btn.setToolTip("Stop speech or listening immediately.")
+            if listening_active and _normalize_stt_send_mode(self._selected_send_mode) == STT_SEND_MODE_MANUAL:
+                self._action_btn.setToolTip("Stop listening and send the transcript.")
+            else:
+                self._action_btn.setToolTip("Stop speech or listening immediately.")
         else:
             self._action_role = "action"
             if self._chatbot_connected:
@@ -1180,6 +1249,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._param_combo.setEnabled(bool(self._source_param_options) and not self._busy and not self._chatbot_connected)
         self._voice_combo.setEnabled(bool(self._tts_voice_options) and not self._busy)
         self._stt_combo.setEnabled(not self._busy)
+        self._send_mode_combo.setEnabled(not self._busy)
 
     def _set_mode(self, mode: str, *, persist: bool = True) -> None:
         normalized = "text_to_voice" if str(mode or "").strip().lower() == "text_to_voice" else "voice_to_text"
@@ -1454,6 +1524,45 @@ class VoiceActorWidget(QtWidgets.QWidget):
             self._stt_combo.setEnabled(True)
             self._stt_combo.setToolTip("Local Whisper is the default transcription method.")
 
+    def _refresh_send_mode_options(self) -> None:
+        options = [
+            {"id": STT_SEND_MODE_AUTO_RESPOND, "name": "Auto Respond"},
+            {"id": STT_SEND_MODE_ASK_FIRST, "name": "Ask First"},
+            {"id": STT_SEND_MODE_MANUAL, "name": "Manual"},
+        ]
+        selected_key = _normalize_stt_send_mode(self._selected_send_mode)
+        if selected_key not in {STT_SEND_MODE_AUTO_RESPOND, STT_SEND_MODE_ASK_FIRST, STT_SEND_MODE_MANUAL}:
+            selected_key = STT_SEND_MODE_AUTO_RESPOND
+            self._selected_send_mode = selected_key
+            _set_node_param(self._node_item, VOICE_ACTOR_SEND_MODE_KEY, selected_key)
+
+        self._syncing_send_mode_combo = True
+        try:
+            self._send_mode_combo.blockSignals(True)
+            self._send_mode_combo.clear()
+            selected_index = 0
+            for idx, option in enumerate(options):
+                label = str(option.get("name", "") or "")
+                value = str(option.get("id", "") or "")
+                self._send_mode_combo.addItem(label, value)
+                if value == selected_key:
+                    selected_index = idx
+            self._send_mode_combo.setCurrentIndex(selected_index)
+        finally:
+            self._send_mode_combo.blockSignals(False)
+            self._syncing_send_mode_combo = False
+
+        if self._busy:
+            self._send_mode_combo.setEnabled(False)
+        else:
+            self._send_mode_combo.setEnabled(True)
+        if selected_key == STT_SEND_MODE_MANUAL:
+            self._send_mode_combo.setToolTip("Manual sends only when Stop is pressed.")
+        elif selected_key == STT_SEND_MODE_ASK_FIRST:
+            self._send_mode_combo.setToolTip("Ask First confirms before sending.")
+        else:
+            self._send_mode_combo.setToolTip("Auto Respond sends after speech pauses.")
+
     def _on_param_selection_changed(self, _index: int) -> None:
         if self._syncing_param_combo:
             return
@@ -1480,6 +1589,17 @@ class VoiceActorWidget(QtWidgets.QWidget):
             return
         self._selected_stt_method = selected_key
         _set_node_param(self._node_item, VOICE_ACTOR_STT_METHOD_KEY, selected_key)
+
+    def _on_send_mode_changed(self, _index: int) -> None:
+        if self._syncing_send_mode_combo:
+            return
+        selected_key = _normalize_stt_send_mode(self._send_mode_combo.currentData() or "")
+        if selected_key == str(self._selected_send_mode or "").strip():
+            return
+        self._selected_send_mode = selected_key
+        _set_node_param(self._node_item, VOICE_ACTOR_SEND_MODE_KEY, selected_key)
+        self._refresh_send_mode_options()
+        self._update_control_states()
 
     def _selected_source_param_value(self) -> tuple[str, str]:
         selected_key = str(self._selected_param_key or "").strip()
@@ -1651,7 +1771,10 @@ class VoiceActorWidget(QtWidgets.QWidget):
             self._pause_flash_state = False
             self._update_pause_button_ui()
             self._update_control_states()
-            self._set_status("Stopping listening...")
+            if _normalize_stt_send_mode(self._selected_send_mode) == STT_SEND_MODE_MANUAL and self._stt_session_has_new_text:
+                self._set_status("Stopping listening and sending...")
+            else:
+                self._set_status("Stopping listening...")
             return
         if not self._tts_playing:
             self._set_status("Nothing is playing.")
@@ -1706,6 +1829,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
                 error=True,
             )
             return
+        send_mode = _normalize_stt_send_mode(self._selected_send_mode)
         self._stop_stt_send_confirmation_prompt()
         # Start each listen session as a fresh message transcription.
         self._set_transcript("", publish=True)
@@ -1717,11 +1841,17 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._pause_flash_state = False
         self._update_pause_button_ui()
         self._set_busy(True, "listening")
-        if stt_method == STT_METHOD_LOCAL_WHISPER:
-            self._set_status("Listening... (Local Whisper). Use Pause and Stop to control capture.")
+        if send_mode == STT_SEND_MODE_MANUAL:
+            send_hint = "Press Stop to send."
+        elif send_mode == STT_SEND_MODE_ASK_FIRST:
+            send_hint = "Ask First confirms before sending."
         else:
-            self._set_status("Listening... (Google). Use Pause and Stop to control capture.")
-        threading.Thread(target=self._stt_worker, args=(stt_method,), daemon=True).start()
+            send_hint = "Auto Respond sends after a pause."
+        if stt_method == STT_METHOD_LOCAL_WHISPER:
+            self._set_status(f"Listening... (Local Whisper). {send_hint}")
+        else:
+            self._set_status(f"Listening... (Google). {send_hint}")
+        threading.Thread(target=self._stt_worker, args=(stt_method, send_mode), daemon=True).start()
 
     @QtCore.Slot(str)
     def _on_stt_status(self, message: str) -> None:
@@ -2160,10 +2290,11 @@ class VoiceActorWidget(QtWidgets.QWidget):
                 except Exception:
                     pass
 
-    def _stt_worker(self, stt_method: str) -> None:
+    def _stt_worker(self, stt_method: str, send_mode: str) -> None:
         transcript_parts = []
         error = ""
         selected_method = _normalize_stt_method(stt_method)
+        selected_send_mode = _normalize_stt_send_mode(send_mode)
         wait_timeout = getattr(sr, "WaitTimeoutError", None) if sr is not None else None
         unknown_value = getattr(sr, "UnknownValueError", None) if sr is not None else None
         request_error = getattr(sr, "RequestError", None) if sr is not None else None
@@ -2173,19 +2304,28 @@ class VoiceActorWidget(QtWidgets.QWidget):
         last_voice_activity = time.monotonic()
         send_confirmed = False
 
-        def _maybe_prompt_send_confirmation(now: float) -> bool:
+        def _maybe_handle_idle_send(now: float) -> bool:
             nonlocal awaiting_send_confirmation
             nonlocal awaiting_started_at
             nonlocal prompt_response_until
             nonlocal last_voice_activity
+            nonlocal send_confirmed
 
-            should_prompt = (
+            should_send = (
                 bool(transcript_parts)
                 and not awaiting_send_confirmation
                 and (now - last_voice_activity) >= STT_IDLE_CONFIRM_SECONDS
             )
-            if not should_prompt:
+            if not should_send:
                 return False
+            if selected_send_mode == STT_SEND_MODE_MANUAL:
+                return False
+            if selected_send_mode == STT_SEND_MODE_AUTO_RESPOND:
+                send_confirmed = True
+                last_voice_activity = now
+                self._stt_status.emit("Sending message...")
+                self._set_stt_state(stop_requested=True, paused=False)
+                return True
             awaiting_send_confirmation = True
             self._stt_status.emit("Are you ready to send? Say yes, done, or send.")
             self._start_stt_send_confirmation_prompt()
@@ -2231,7 +2371,8 @@ class VoiceActorWidget(QtWidgets.QWidget):
                             audio = recognizer.listen(source, timeout=1.2, phrase_time_limit=20)
                         except Exception as exc:
                             if wait_timeout and isinstance(exc, wait_timeout):
-                                _maybe_prompt_send_confirmation(time.monotonic())
+                                if _maybe_handle_idle_send(time.monotonic()):
+                                    break
                                 continue
                             error = _format_stt_error(exc)
                             break
@@ -2241,7 +2382,8 @@ class VoiceActorWidget(QtWidgets.QWidget):
                             chunk, chunk_error = _transcribe_local_whisper(wav_data)
                             if chunk_error:
                                 if chunk_error == "Speech detected but transcript was empty.":
-                                    _maybe_prompt_send_confirmation(time.monotonic())
+                                    if _maybe_handle_idle_send(time.monotonic()):
+                                        break
                                     continue
                                 error = chunk_error
                                 break
@@ -2250,7 +2392,8 @@ class VoiceActorWidget(QtWidgets.QWidget):
                                 chunk = (recognizer.recognize_google(audio) or "").strip()
                             except Exception as exc:
                                 if unknown_value and isinstance(exc, unknown_value):
-                                    _maybe_prompt_send_confirmation(time.monotonic())
+                                    if _maybe_handle_idle_send(time.monotonic()):
+                                        break
                                     continue
                                 if request_error and isinstance(exc, request_error):
                                     error = f"Speech recognition service failed: {exc}"
@@ -2259,7 +2402,8 @@ class VoiceActorWidget(QtWidgets.QWidget):
                                 break
                         clean_chunk = str(chunk or "").strip()
                         if not clean_chunk:
-                            _maybe_prompt_send_confirmation(time.monotonic())
+                            if _maybe_handle_idle_send(time.monotonic()):
+                                break
                             continue
                         if self._is_stop_speaking_command(clean_chunk):
                             awaiting_send_confirmation = False
@@ -2312,7 +2456,12 @@ class VoiceActorWidget(QtWidgets.QWidget):
         self._stop_stt_send_confirmation_prompt()
         _listening, _paused, stop_requested = self._stt_state()
         if stop_requested and not error:
-            error = "__sent__" if send_confirmed else "__stopped__"
+            if send_confirmed:
+                error = "__sent__"
+            elif selected_send_mode == STT_SEND_MODE_MANUAL and transcript_parts:
+                error = "__manual_sent__"
+            else:
+                error = "__stopped__"
         transcript = " ".join(transcript_parts).strip()
         self._stt_done.emit(transcript, error)
 
@@ -2338,17 +2487,29 @@ class VoiceActorWidget(QtWidgets.QWidget):
         if transcript and not had_new_text:
             self._append_transcript(transcript, publish=False)
             had_new_text = True
+        clean_error = str(error or "").strip()
+        send_completed = clean_error in {"__sent__", "__manual_sent__"}
         if had_new_text:
-            _set_node_info(self._node_item, self._transcript.toPlainText() or "")
+            text = self._transcript.toPlainText() or ""
+            if send_completed:
+                _publish_voice_command(self._node_item, text)
+            else:
+                _set_node_info(self._node_item, text)
         if error:
-            if str(error).strip() == "__sent__":
+            if clean_error == "__sent__":
                 if had_new_text:
                     self._set_status("Message sent. Listening for commands...")
                 else:
                     self._set_status("Listening for commands...")
                 QtCore.QTimer.singleShot(120, self._resume_stt_after_send)
                 return
-            if str(error).strip() == "__stopped__":
+            if clean_error == "__manual_sent__":
+                if had_new_text:
+                    self._set_status("Message sent.")
+                else:
+                    self._set_status("Listening stopped.")
+                return
+            if clean_error == "__stopped__":
                 if had_new_text:
                     self._set_status("Listening stopped. Transcript updated.")
                 else:
