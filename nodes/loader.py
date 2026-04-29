@@ -307,16 +307,16 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Voice Actor plugin import failed:", e)
 
-    # 11.6) Medigator Agent
+    # 11.6) Mediator Agent
     try:
-        from nodes import medigator_agent
-        if hasattr(medigator_agent, "register"):
-            medigator_agent.register()
-            _safe_probe("medigator_agent")
+        from nodes import mediator_agent
+        if hasattr(mediator_agent, "register"):
+            mediator_agent.register()
+            _safe_probe("mediator_agent")
         else:
-            print("[EchoGraph] Medigator Agent module has no 'register' function.")
+            print("[EchoGraph] Mediator Agent module has no 'register' function.")
     except Exception as e:
-        print("[EchoGraph] Medigator Agent plugin import failed:", e)
+        print("[EchoGraph] Mediator Agent plugin import failed:", e)
 
     # 12) Image Collection
     try:

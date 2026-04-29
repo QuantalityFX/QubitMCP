@@ -27,10 +27,14 @@ QUBIT_DECK_CONTROLLER_KINDS = {
 MEDIGATOR_NODE_KINDS = {
     "medigator_agent",
     "mediator_agent",
+    "medigator agent",
+    "mediator agent",
     "medigator",
     "mediator",
 }
 MEDIGATOR_OUTPUT_TOKEN_PARAM = "__medigator_output_token"
+MEDIATOR_INPUT_PORT = "mediator_input"
+LEGACY_MEDIATOR_INPUT_PORTS = ("medigator_input",)
 
 _PARAM_DEFAULTS = {
     "api_base": DEFAULT_API_BASE,
@@ -38,7 +42,7 @@ _PARAM_DEFAULTS = {
     "button_name": "",
     "button_slot": "",
     "action": "invoke",
-    "medigator_input": "",
+    MEDIATOR_INPUT_PORT: "",
 }
 _HIDDEN_PARAM = "__ui_hidden_params"
 _MODE_PARAM = "__qdeck_mode"
@@ -112,6 +116,43 @@ def _ensure_param(node_item, name: str, default: str = "") -> None:
     model.params = params
 
 
+def _migrate_mediator_input_param(node_item) -> None:
+    model = getattr(node_item, "model", None)
+    if model is None:
+        return
+    params = list(getattr(model, "params", None) or [])
+    legacy_keys = {name.strip().lower() for name in LEGACY_MEDIATOR_INPUT_PORTS}
+    new_key = MEDIATOR_INPUT_PORT.strip().lower()
+    legacy_value = ""
+    for entry in params:
+        key = (entry.get("name") or "").strip().lower()
+        if key in legacy_keys:
+            legacy_value = str(entry.get("value", "") or "")
+            if legacy_value:
+                break
+    has_new = False
+    out = []
+    for entry in params:
+        key = (entry.get("name") or "").strip().lower()
+        if key in legacy_keys:
+            continue
+        if key == new_key:
+            has_new = True
+            if not str(entry.get("value", "") or "").strip() and legacy_value:
+                entry["value"] = legacy_value
+        out.append(entry)
+    if not has_new:
+        out.append({"name": MEDIATOR_INPUT_PORT, "value": legacy_value})
+    model.params = out
+    try:
+        names = [str(name) for name in getattr(model, "_named_inputs", []) if str(name).strip()]
+        model._named_inputs = [
+            name for name in names if name.strip().lower() not in legacy_keys
+        ]
+    except Exception:
+        pass
+
+
 def _ensure_hidden_params(model, names) -> None:
     if model is None:
         return
@@ -141,7 +182,7 @@ def _source_text(scene, src_item) -> str:
     model = getattr(src_item, "model", None)
     kind = _kind_of_item(src_item)
     info_text = str(getattr(model, "info", "") or "").strip() if model is not None else ""
-    # Medigator publishes command JSON on node info; prefer it over parameter text.
+    # Mediator publishes command JSON on node info; prefer it over parameter text.
     if kind in MEDIGATOR_NODE_KINDS and info_text:
         return info_text
 
@@ -402,8 +443,9 @@ def _master_candidates_from_scene(scene, node_item) -> list[str]:
         seen.add(value)
         out.append(value)
 
-    for text in _input_texts_from_scene(scene, node_item, port_name="medigator_input"):
-        _add(text)
+    for port_name in (MEDIATOR_INPUT_PORT, *LEGACY_MEDIATOR_INPUT_PORTS):
+        for text in _input_texts_from_scene(scene, node_item, port_name=port_name):
+            _add(text)
     for text in _input_texts_from_scene(scene, node_item, default_only=True):
         _add(text)
     for text in _input_texts_from_scene(scene, node_item):
@@ -411,7 +453,9 @@ def _master_candidates_from_scene(scene, node_item) -> list[str]:
 
     model = getattr(node_item, "model", None)
     if model is not None:
-        _add(_param_value_from_model(model, "medigator_input"))
+        _add(_param_value_from_model(model, MEDIATOR_INPUT_PORT))
+        for port_name in LEGACY_MEDIATOR_INPUT_PORTS:
+            _add(_param_value_from_model(model, port_name))
     return out
 
 
@@ -929,11 +973,12 @@ def _run_deck_action(
 
 
 def build_ports(node_item) -> None:
+    _migrate_mediator_input_param(node_item)
     for name, default in _PARAM_DEFAULTS.items():
         _ensure_param(node_item, name, default)
     _ensure_param(node_item, _MODE_PARAM, _MODE_EXECUTOR)
     _ensure_hidden_params(getattr(node_item, "model", None), ["button", _MODE_PARAM])
-    for port in ("api_base", "button", "button_name", "button_slot", "action", "medigator_input"):
+    for port in ("api_base", "button", "button_name", "button_slot", "action", MEDIATOR_INPUT_PORT):
         _ensure_input(node_item, port)
     # Keep a visible primary/default socket in addition to named parameter sockets.
     try:
@@ -959,9 +1004,10 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             node_item = None
     if node_item is not None:
         try:
-            _ensure_param(node_item, "medigator_input", "")
+            _migrate_mediator_input_param(node_item)
+            _ensure_param(node_item, MEDIATOR_INPUT_PORT, "")
             _ensure_param(node_item, _MODE_PARAM, _MODE_EXECUTOR)
-            _ensure_input(node_item, "medigator_input")
+            _ensure_input(node_item, MEDIATOR_INPUT_PORT)
             setattr(node_item, "_show_default_input_with_named", True)
             node_item.update()
         except Exception:
@@ -1009,11 +1055,15 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             seen.add(value)
             out.append(value)
 
-        _add(_text_from_input(card, node_item, "medigator_input"))
+        _add(_text_from_input(card, node_item, MEDIATOR_INPUT_PORT))
+        for port_name in LEGACY_MEDIATOR_INPUT_PORTS:
+            _add(_text_from_input(card, node_item, port_name))
         _add(_text_from_default_input(card, node_item))
         for text in _all_input_texts(card, node_item):
             _add(text)
-        _add(_param_value("medigator_input"))
+        _add(_param_value(MEDIATOR_INPUT_PORT))
+        for port_name in LEGACY_MEDIATOR_INPUT_PORTS:
+            _add(_param_value(port_name))
         return out
 
     def _parse_master_from_candidates(candidates: list[str]) -> tuple[dict[str, str], str]:
@@ -1380,7 +1430,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
     _apply_mode_ui()
     footer_layout.addWidget(container)
     _set_status(
-        "QubitDeckController ready. Mode=Context lists deck buttons. Mode=Executor accepts Medigator JSON on 'medigator_input' or master pin.",
+        "QubitDeckController ready. Mode=Context lists deck buttons. Mode=Executor accepts Mediator JSON on 'mediator_input' or master pin.",
         error=False,
     )
     return True

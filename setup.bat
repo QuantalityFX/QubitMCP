@@ -123,7 +123,7 @@ call :ensure_venv "%ROOT_VENV%" "root" || goto :fail
 call :install_requirements "%ROOT_PY%" "%MAIN_REQ%" "root requirements" || goto :fail
 call :check_ffmpeg_runtime "%ROOT_PY%"
 call :install_voice_deps "%ROOT_PY%" "root voice dependencies" || goto :fail
-call :check_medigator_runtime
+call :check_mediator_runtime
 call :check_keyboard_sequence_runtime "%ROOT_PY%"
 call :setup_fbx_sdk "%ROOT_PY%"
 
@@ -266,7 +266,7 @@ echo [setup] Bundled ffmpeg runtime is ready.
 echo [setup] Bundled ffmpeg runtime is ready. >> "%LOG%"
 exit /b 0
 
-:check_medigator_runtime
+:check_mediator_runtime
 set "HAS_NODE=1"
 set "HAS_NPX=1"
 set "HAS_CODEX_SCRIPT=0"
@@ -280,11 +280,11 @@ if errorlevel 1 set "HAS_NPX=0"
 if exist "%CD%\tools\codex.ps1" set "HAS_CODEX_SCRIPT=1"
 
 if "%HAS_NODE%%HAS_NPX%"=="11" (
-  echo [setup] Medigator runtime tools ready ^(node, npx^).
-  echo [setup] Medigator runtime tools ready ^(node, npx^). >> "%LOG%"
+  echo [setup] Mediator runtime tools ready ^(node, npx^).
+  echo [setup] Mediator runtime tools ready ^(node, npx^). >> "%LOG%"
 ) else (
-  echo [setup] WARNING: Medigator runtime is incomplete.
-  echo [setup] WARNING: Medigator runtime is incomplete. >> "%LOG%"
+  echo [setup] WARNING: Mediator runtime is incomplete.
+  echo [setup] WARNING: Mediator runtime is incomplete. >> "%LOG%"
   if "%HAS_NODE%"=="0" (
     echo [setup] WARNING: Missing tool: node
     echo [setup] WARNING: Missing tool: node >> "%LOG%"
@@ -293,16 +293,16 @@ if "%HAS_NODE%%HAS_NPX%"=="11" (
     echo [setup] WARNING: Missing tool: npx
     echo [setup] WARNING: Missing tool: npx >> "%LOG%"
   )
-  echo [setup] WARNING: Install Node.js to run Medigator via tools\codex.ps1.
-  echo [setup] WARNING: Install Node.js to run Medigator via tools\codex.ps1. >> "%LOG%"
+  echo [setup] WARNING: Install Node.js to run Mediator via tools\codex.ps1.
+  echo [setup] WARNING: Install Node.js to run Mediator via tools\codex.ps1. >> "%LOG%"
 )
 
 if "%HAS_CODEX_SCRIPT%"=="1" (
-  echo [setup] Medigator launch script found: tools\codex.ps1
-  echo [setup] Medigator launch script found: tools\codex.ps1 >> "%LOG%"
+  echo [setup] Mediator launch script found: tools\codex.ps1
+  echo [setup] Mediator launch script found: tools\codex.ps1 >> "%LOG%"
 ) else (
-  echo [setup] WARNING: Medigator launch script not found: tools\codex.ps1
-  echo [setup] WARNING: Medigator launch script not found: tools\codex.ps1 >> "%LOG%"
+  echo [setup] WARNING: Mediator launch script not found: tools\codex.ps1
+  echo [setup] WARNING: Mediator launch script not found: tools\codex.ps1 >> "%LOG%"
 )
 exit /b 0
 

@@ -396,9 +396,13 @@ def _voice_actor_icon():
     return _VOICE_ACTOR_ICON
 
 
-def _medigator_icon():
+def _mediator_icon():
     global _MEDIGATOR_ICON
     if _MEDIGATOR_ICON is not None:
         return _MEDIGATOR_ICON
-    _MEDIGATOR_ICON = _load_pm("Python_Icon.png") or _load_pm("Server_Icon.png")
+    _MEDIGATOR_ICON = _load_pm("Mediator_Icon_1_s.png") or _load_pm("Python_Icon.png") or _load_pm("Server_Icon.png")
     return _MEDIGATOR_ICON
+
+
+def _medigator_icon():
+    return _mediator_icon()

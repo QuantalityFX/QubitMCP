@@ -16,30 +16,34 @@ from nodes.core import Spec
 from echograph.qt_compat import QtWidgets, QtCore
 
 
-MEDIGATOR_NODE_KIND = "medigator_agent"
+MEDIGATOR_NODE_KIND = "mediator_agent"
 MEDIGATOR_NODE_ALIASES = [
-    "mediator_agent",
+    "medigator_agent",
     "medigator",
+    "medigator agent",
     "mediator",
+    "mediator agent",
 ]
 MEDIGATOR_NODE_KINDS = {MEDIGATOR_NODE_KIND, *MEDIGATOR_NODE_ALIASES}
 
 MEDIGATOR_BODY_W = 560
 MEDIGATOR_BODY_H = 340
-MEDIGATOR_MEMORY_ROOT = "medigator_agents"
+MEDIGATOR_MEMORY_ROOT = "mediator_agents"
 MEDIGATOR_HIDDEN_PARAM_KEY = "__ui_hidden_params"
 MEDIGATOR_PROMPT_PROFILE_PARAM = "__prompt_profile"
 MEDIGATOR_OUTPUT_TOKEN_PARAM = "__medigator_output_token"
 MEDIGATOR_DEFAULT_PROMPT_PROFILE = "default_mediator"
 MEDIGATOR_DEFAULT_SYSTEM_PROMPT = (
     # Fallback used only when prompt profile files are missing or empty.
-    "You are Medigator, a conversation mediator. "
+    "You are Mediator, a conversation mediator. "
     "Use the provided history and latest voice input to craft the next assistant reply. "
     "Return only the assistant response text."
 )
 MEDIGATOR_MAX_SYSTEM_CHARS = 4000
 MEDIGATOR_MAX_HISTORY_CHARS = 24000
 MEDIGATOR_MAX_VOICE_CHARS = 8000
+MEDIGATOR_MAX_PROMPT_LOG_FILES = 15
+MEDIGATOR_MAX_CONSOLE_LOG_LINES = 5000
 MEDIGATOR_CODEX_MODEL = "gpt-5.3-codex"
 VOICE_ACTOR_KINDS = {"voice_actor", "voice actor", "voiceactor"}
 VOICE_ACTOR_SEND_TOKEN_PARAM = "__voice_actor_send_token"
@@ -154,7 +158,8 @@ def _hidden_subprocess_kwargs() -> dict:
 def _sanitize_folder_name(value: str) -> str:
     text = (value or "").strip().lower()
     if not text:
-        text = "medigator"
+        text = "mediator"
+    text = text.replace("medigator", "mediator")
     out = []
     for ch in text:
         if ch.isalnum() or ch in ("-", "_"):
@@ -164,7 +169,7 @@ def _sanitize_folder_name(value: str) -> str:
     cleaned = "".join(out).strip("_")
     while "__" in cleaned:
         cleaned = cleaned.replace("__", "_")
-    return cleaned or "medigator"
+    return cleaned or "mediator"
 
 
 def _workspace_dir_for_node(node_item) -> Path:
@@ -176,12 +181,66 @@ def _workspace_dir_for_node(node_item) -> Path:
     memory_file = workspace / "memory.md"
     if not memory_file.exists():
         memory_file.write_text(
-            "# Medigator Memory\n\n"
+            "# Mediator Memory\n\n"
             "This folder is dedicated to this node.\n"
             "Store notes, summaries, and agent context here.\n",
             encoding="utf-8",
         )
     return workspace
+
+
+def _prune_mediator_prompt_logs(workspace: Path, *, keep: int = MEDIGATOR_MAX_PROMPT_LOG_FILES) -> None:
+    try:
+        root = Path(workspace).resolve()
+    except Exception:
+        return
+    if not root.exists() or not root.is_dir():
+        return
+    try:
+        files = [
+            path
+            for pattern in ("mediator_prompt_*.md", "medigator_prompt_*.md")
+            for path in root.glob(pattern)
+            if path.is_file()
+        ]
+    except Exception:
+        return
+    if len(files) <= max(0, int(keep)):
+        return
+
+    def _sort_key(path: Path) -> tuple[float, str]:
+        try:
+            stamp = float(path.stat().st_mtime)
+        except Exception:
+            stamp = 0.0
+        return stamp, path.name
+
+    for path in sorted(files, key=_sort_key, reverse=True)[max(0, int(keep)):]:
+        try:
+            if path.resolve().parent != root:
+                continue
+            path.unlink()
+        except Exception:
+            pass
+
+
+def _prune_text_log_tail(path: Path, *, keep_lines: int) -> None:
+    limit = max(0, int(keep_lines))
+    if limit <= 0:
+        return
+    try:
+        log_path = Path(path)
+        if not log_path.exists() or not log_path.is_file():
+            return
+        lines = log_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except Exception:
+        return
+    if len(lines) <= limit:
+        return
+    try:
+        log_path.write_text("\n".join(lines[-limit:]) + "\n", encoding="utf-8")
+    except Exception:
+        pass
 
 
 def _format_ts() -> str:
@@ -650,7 +709,7 @@ def _normalize_qdeck_voice_input(text: str) -> str:
     return out or raw
 
 
-def _compose_medigator_prompt(
+def _compose_mediator_prompt(
     system_prompt: str,
     chatbot_history: str,
     voice_input: str,
@@ -690,7 +749,7 @@ def build_ports(node_item) -> None:
         node_item.ensure_input(port_name)
 
 
-class MedigatorConsoleWidget(QtWidgets.QWidget):
+class MediatorConsoleWidget(QtWidgets.QWidget):
     _console_append = QtCore.Signal(str)
     _command_done = QtCore.Signal(int, str, str, str, str)
 
@@ -739,6 +798,10 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
         self._console.setStyleSheet(
             "QPlainTextEdit{background:#0b1220;color:#e5e7eb;border:1px solid #334155;border-radius:6px;padding:6px;}"
         )
+        try:
+            self._console.setMaximumBlockCount(MEDIGATOR_MAX_CONSOLE_LOG_LINES)
+        except Exception:
+            pass
 
         self._status = QtWidgets.QLabel("Ready.")
         self._status.setStyleSheet("QLabel{color:#94a3b8;}")
@@ -871,9 +934,11 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
 
     def _write_console_log(self, line: str) -> None:
         payload = f"[{_format_ts()}] {line.rstrip()}\n"
+        path = self._console_log_path()
         try:
-            with self._console_log_path().open("a", encoding="utf-8") as handle:
+            with path.open("a", encoding="utf-8") as handle:
                 handle.write(payload)
+            _prune_text_log_tail(path, keep_lines=MEDIGATOR_MAX_CONSOLE_LOG_LINES)
         except Exception:
             pass
 
@@ -909,7 +974,7 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
         self._running = bool(running)
         self._update_controls()
         try:
-            self._node_item.setBusyState(self._running, "medigator-running" if self._running else "")
+            self._node_item.setBusyState(self._running, "mediator-running" if self._running else "")
         except Exception:
             pass
 
@@ -1126,7 +1191,7 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
         if profile == QDECK_PROMPT_PROFILE:
             prompt_voice_input = _normalize_qdeck_voice_input(clean_voice_input)
 
-        prompt, signature = _compose_medigator_prompt(
+        prompt, signature = _compose_mediator_prompt(
             system_prompt,
             chatbot_history,
             prompt_voice_input,
@@ -1149,7 +1214,7 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
         self._stop_requested = False
         self._set_running(True)
         self._set_status(f"Running Codex ({mode})...")
-        self._write_history(f"tools\\codex.ps1 -Exec <medigator:{mode}>")
+        self._write_history(f"tools\\codex.ps1 -Exec <mediator:{mode}>")
         threading.Thread(
             target=self._codex_worker,
             args=(prompt, signature, source),
@@ -1168,9 +1233,10 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
                 raise RuntimeError(f"Missing Codex launcher: {codex_script}")
 
             stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-            prompt_path = self._workspace_dir / f"medigator_prompt_{stamp}.md"
-            output_path = self._workspace_dir / f"medigator_response_{stamp}.txt"
+            prompt_path = self._workspace_dir / f"mediator_prompt_{stamp}.md"
+            output_path = self._workspace_dir / f"mediator_response_{stamp}.txt"
             prompt_path.write_text(prompt or "", encoding="utf-8")
+            _prune_mediator_prompt_logs(self._workspace_dir)
 
             cmd = [
                 "powershell",
@@ -1366,7 +1432,7 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
             output = str(response_text or "").strip()
             if output:
                 _set_node_info(self._node_item, output)
-                self._console_append.emit("[medigator] Response published to node output.")
+                self._console_append.emit("[mediator] Response published to node output.")
                 self._last_processed_signature = str(signature or self._last_processed_signature)
                 if clean_source == "auto":
                     self._set_status("Auto-processing complete.")
@@ -1405,9 +1471,9 @@ class MedigatorConsoleWidget(QtWidgets.QWidget):
 
 def render_node_body(node_item, y_cursor: int) -> int:
     try:
-        body = MedigatorConsoleWidget(node_item, None)
+        body = MediatorConsoleWidget(node_item, None)
     except Exception as exc:
-        print("[EchoGraph] Medigator UI init failed:", exc)
+        print("[EchoGraph] Mediator UI init failed:", exc)
         body = QtWidgets.QFrame()
         body.setStyleSheet(
             "QFrame{background:#0f1216;color:#e5e7eb;border:1px solid #334;border-radius:6px;}"
@@ -1415,7 +1481,7 @@ def render_node_body(node_item, y_cursor: int) -> int:
         lay = QtWidgets.QVBoxLayout(body)
         lay.setContentsMargins(10, 8, 10, 8)
         lay.setSpacing(6)
-        msg = QtWidgets.QLabel("Medigator UI failed to load. Check console output for details.")
+        msg = QtWidgets.QLabel("Mediator UI failed to load. Check console output for details.")
         msg.setWordWrap(True)
         msg.setStyleSheet("QLabel{color:#e5e7eb;}")
         lay.addWidget(msg, 1)

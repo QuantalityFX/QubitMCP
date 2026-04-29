@@ -848,6 +848,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
         key = kind.lower()
         if key in ("llm", "local_server", "local server", "localserver"):
             return "LOCAL_SERVER"
+        if key in ("mediator_agent", "mediator agent", "medigator_agent", "medigator agent", "medigator", "mediator"):
+            return "MEDIATOR_AGENT"
         return kind.upper()
 
     def _header_badge_width(self) -> float:
@@ -1822,13 +1824,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 node_w = max(node_w, int(getattr(_voice_actor_spec, "VOICE_ACTOR_BODY_W", node_w)))
             except Exception:
                 pass
-        elif kind in ("medigator_agent", "mediator_agent", "medigator", "mediator"):
+        elif kind in ("mediator_agent", "mediator agent", "medigator_agent", "medigator agent", "medigator", "mediator"):
             body_h = self._MEDIGATOR_BODY_H
             node_w = max(self._BASE_W, self._MEDIGATOR_BODY_W)
             try:
-                from nodes.medigator_agent import spec as _medigator_spec  # type: ignore
-                body_h = max(body_h, int(getattr(_medigator_spec, "MEDIGATOR_BODY_H", body_h)))
-                node_w = max(node_w, int(getattr(_medigator_spec, "MEDIGATOR_BODY_W", node_w)))
+                from nodes.mediator_agent import spec as _mediator_spec  # type: ignore
+                body_h = max(body_h, int(getattr(_mediator_spec, "MEDIGATOR_BODY_H", body_h)))
+                node_w = max(node_w, int(getattr(_mediator_spec, "MEDIGATOR_BODY_W", node_w)))
             except Exception:
                 pass
         elif kind == "output":
@@ -5973,8 +5975,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
             elif kind_lower in ("voice_actor", "voice actor", "voiceactor"):
                 # Voice icon sits larger and higher than default.
                 extra_top = 120.0
-            elif kind_lower in ("medigator_agent", "mediator_agent", "medigator", "mediator"):
-                # Medigator console icon also floats above the node body.
+            elif kind_lower in ("mediator_agent", "mediator agent", "medigator_agent", "medigator agent", "medigator", "mediator"):
+                # Mediator console icon also floats above the node body.
                 extra_top = 120.0
             elif kind_lower in (
                 "database",
@@ -6211,8 +6213,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 icon_pm = node_icons._chatbot_icon()
             elif kind_lower in ("voice_actor", "voice actor", "voiceactor"):
                 icon_pm = node_icons._voice_actor_icon() or node_icons._output_icon()
-            elif kind_lower in ("medigator_agent", "mediator_agent", "medigator", "mediator"):
-                icon_pm = node_icons._medigator_icon() or node_icons._python_icon() or node_icons._output_icon()
+            elif kind_lower in ("mediator_agent", "mediator agent", "medigator_agent", "medigator agent", "medigator", "mediator"):
+                icon_pm = node_icons._mediator_icon() or node_icons._python_icon() or node_icons._output_icon()
             elif kind_lower in ("scene", "scene_assembly", "scene_outliner"):
                 icon_pm = node_icons._scene_icon()
             elif kind_lower in ("camera", "scene_camera"):
@@ -6286,9 +6288,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 if kind_lower in ("voice_actor", "voice actor", "voiceactor"):
                     size = int(size * 1.28)
                     size = int(min(170, max(58, size)))
-                if kind_lower in ("medigator_agent", "mediator_agent", "medigator", "mediator"):
-                    size = int(size * 1.18)
-                    size = int(min(170, max(54, size)))
+                if kind_lower in ("mediator_agent", "mediator agent", "medigator_agent", "medigator agent", "medigator", "mediator"):
+                    size = int(size * 1.35)
+                    size = int(min(190, max(64, size)))
                 pm_scaled = icon_pm.scaled(size, size, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
                 x = (self.width - pm_scaled.width()) / 2.0
                 # float above the top bar
@@ -6299,7 +6301,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     y = -pm_scaled.height() * 0.45
                 if kind_lower in ("chatbot", "chat bot", "chat_bot"):
                     y = -pm_scaled.height() * 0.7
-                if kind_lower in ("medigator_agent", "mediator_agent", "medigator", "mediator"):
+                if kind_lower in ("mediator_agent", "mediator agent", "medigator_agent", "medigator agent", "medigator", "mediator"):
                     y = -pm_scaled.height() * 0.65
                 p.drawPixmap(QtCore.QPointF(x, y), pm_scaled)
         except Exception:

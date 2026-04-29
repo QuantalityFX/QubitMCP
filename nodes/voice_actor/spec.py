@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
+import re
 import threading
 import tempfile
 import time
@@ -78,10 +80,19 @@ STT_STOP_SPEAKING_PHRASES = (
     "stop playback",
 )
 CHATBOT_NODE_KINDS = {"chatbot", "chat bot", "chat_bot"}
-# Only treat narrow relay/proxy nodes as chatbot-auto sources.
+# Only treat narrow relay/proxy nodes as auto speech sources.
 # This keeps auto speech working through common pass-through nodes
-# without matching unrelated agent chains (for example Medigator).
+# without matching unrelated agent chains.
 CHATBOT_PROXY_NODE_KINDS = {"python", "output", "wire", "switch"}
+MEDIGATOR_NODE_KINDS = {
+    "medigator_agent",
+    "mediator_agent",
+    "medigator agent",
+    "mediator agent",
+    "medigator",
+    "mediator",
+}
+MEDIGATOR_OUTPUT_TOKEN_KEY = "__medigator_output_token"
 DATABASE_NODE_KINDS = {"database"}
 CHATBOT_DB_NAME = "my_database"
 CHATBOT_DEFAULT_COLLECTION = "EchoGragh"
@@ -116,6 +127,12 @@ MALE_VOICE_HINTS = (
 _WHISPER_MODEL = None
 _WHISPER_MODEL_LOCK = threading.Lock()
 _TTS_PLAYBACK_LOCK = threading.Lock()
+_USER_FEEDBACK_TAG_RE = re.compile(
+    r"<\s*(?:user[\s_-]*feedback|user[\s_-]*feed[\s_-]*back|feedback)\s*>"
+    r"(.*?)"
+    r"<\s*/\s*(?:user[\s_-]*feedback|user[\s_-]*feed[\s_-]*back|feedback)\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _new_gtts(text: str):
@@ -343,10 +360,28 @@ def _node_name(node_item) -> str:
     return str(getattr(model, "name", "") or "").strip().lower()
 
 
-def _find_upstream_chatbot(scene, node_item, max_depth: int = 6, _visited=None):
+def _auto_speech_source_kind(node_item) -> str:
+    kind = _kind_of_item(node_item)
+    if kind in CHATBOT_NODE_KINDS:
+        return "chatbot"
+    if kind in MEDIGATOR_NODE_KINDS:
+        return "mediator"
+    return ""
+
+
+def _auto_speech_source_label(node_item) -> str:
+    kind = _auto_speech_source_kind(node_item)
+    if kind == "mediator":
+        return "Mediator"
+    if kind == "chatbot":
+        return "Chatbot"
+    return "Auto source"
+
+
+def _find_upstream_auto_speech_source(scene, node_item, max_depth: int = 6, _visited=None):
     if not scene or node_item is None:
         return None
-    if _kind_of_item(node_item) in CHATBOT_NODE_KINDS:
+    if _auto_speech_source_kind(node_item):
         return node_item
     if max_depth <= 0:
         return None
@@ -360,7 +395,7 @@ def _find_upstream_chatbot(scene, node_item, max_depth: int = 6, _visited=None):
         src = getattr(edge, "src", None)
         if src is None:
             continue
-        found = _find_upstream_chatbot(scene, src, max_depth=max_depth - 1, _visited=_visited)
+        found = _find_upstream_auto_speech_source(scene, src, max_depth=max_depth - 1, _visited=_visited)
         if found is not None:
             return found
     return None
@@ -548,6 +583,51 @@ def _latest_chatbot_response(scene, chatbot_item) -> tuple[str, str, str]:
                 client.close()
             except Exception:
                 pass
+
+
+def _latest_mediator_response(_scene, mediator_item) -> tuple[str, str, str]:
+    if mediator_item is None:
+        return "", "", "Mediator input is unavailable."
+    model = getattr(mediator_item, "model", None)
+    if model is None:
+        return "", "", "Mediator input is unavailable."
+    text = str(getattr(model, "info", "") or "").strip()
+    token = _param_value(model, MEDIGATOR_OUTPUT_TOKEN_KEY, "").strip()
+    if not token and text:
+        token = f"info:{hashlib.sha1(text.encode('utf-8', errors='ignore')).hexdigest()}"
+    if not text:
+        return "", token, "No Mediator output available yet."
+    return text, token, ""
+
+
+def _latest_auto_speech_response(scene, source_item) -> tuple[str, str, str]:
+    kind = _auto_speech_source_kind(source_item)
+    if kind == "mediator":
+        return _latest_mediator_response(scene, source_item)
+    return _latest_chatbot_response(scene, source_item)
+
+
+def _extract_user_feedback_text(text: str) -> str:
+    matches = []
+    for match in _USER_FEEDBACK_TAG_RE.finditer(str(text or "")):
+        clean = str(match.group(1) or "").strip()
+        if clean:
+            matches.append(clean)
+    return matches[-1] if matches else ""
+
+
+def _proxy_auto_speech_text(source_item, text: str, *, fallback_text: str = "") -> str:
+    clean = str(text or "").strip()
+    if _auto_speech_source_kind(source_item) != "mediator":
+        return clean
+    feedback = _extract_user_feedback_text(clean)
+    if feedback:
+        return feedback
+    if not clean:
+        fallback_feedback = _extract_user_feedback_text(fallback_text)
+        if fallback_feedback:
+            return fallback_feedback
+    return clean
 
 
 def _pick_female_voice_id(engine) -> str:
@@ -1124,7 +1204,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
                 self._action_btn.setText("Auto")
                 self._action_btn.setStyleSheet(_auto_button_style())
                 self._action_btn.setIcon(self._chatbot_icon)
-                self._action_btn.setToolTip("Replay the latest chatbot response.")
+                self._action_btn.setToolTip("Replay the latest auto response.")
             elif self._mode == "voice_to_text":
                 self._action_btn.setText("Listen")
                 self._action_btn.setStyleSheet(_button_style("#6b1f1f", "#8b2b2b", "#7a2323"))
@@ -1162,11 +1242,11 @@ class VoiceActorWidget(QtWidgets.QWidget):
         if self._chatbot_connected:
             self._mode_btn.setText("Text --> Voice")
             self._mode_btn.setStyleSheet(_button_style("#1e3a8a", "#3b5bb0", "#23459f"))
-            self._mode_btn.setToolTip("Chatbot input forces Text -> Voice auto mode.")
+            self._mode_btn.setToolTip("Connected auto input forces Text -> Voice mode.")
             self._action_btn.setText("Auto")
             self._action_btn.setStyleSheet(_auto_button_style())
             self._action_btn.setIcon(self._chatbot_icon)
-            self._action_btn.setToolTip("Replay the latest chatbot response.")
+            self._action_btn.setToolTip("Replay the latest auto response.")
             self._replay_btn.setToolTip("Replay the last spoken output.")
             self._pause_btn.setToolTip("Pause is available in Voice -> Text listen mode.")
             self._stop_btn.setToolTip("Stop speech immediately.")
@@ -1322,12 +1402,12 @@ class VoiceActorWidget(QtWidgets.QWidget):
             kind = str(getattr(src_model, "kind", "") or "").strip().lower()
             if kind == "note":
                 note_input_connected = True
-            if kind in CHATBOT_NODE_KINDS:
+            if kind in CHATBOT_NODE_KINDS or kind in MEDIGATOR_NODE_KINDS:
                 if chatbot_input_item is None:
                     chatbot_input_item = src_item
                 continue
             if kind in CHATBOT_PROXY_NODE_KINDS:
-                upstream_chatbot = _find_upstream_chatbot(scene, src_item, max_depth=6)
+                upstream_chatbot = _find_upstream_auto_speech_source(scene, src_item, max_depth=6)
                 if upstream_chatbot is not None:
                     if chatbot_input_item is None:
                         chatbot_input_item = upstream_chatbot
@@ -1371,7 +1451,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
             self._set_mode("text_to_voice")
         self._had_note_input = note_connected
         if chatbot_connected and not self._chatbot_connected:
-            _text, token, _err = _latest_chatbot_response(self._scene, chatbot_item)
+            _text, token, _err = _latest_auto_speech_response(self._scene, chatbot_item)
             self._last_chatbot_token = token
         if not chatbot_connected:
             self._last_chatbot_token = ""
@@ -1392,10 +1472,11 @@ class VoiceActorWidget(QtWidgets.QWidget):
             self._param_combo.blockSignals(True)
             self._param_combo.clear()
             if self._chatbot_connected:
+                source_label = _auto_speech_source_label(self._chatbot_input_item)
                 if self._chatbot_via_proxy:
-                    self._param_combo.addItem("Chatbot -> Python output (Auto)", "")
+                    self._param_combo.addItem(f"{source_label} -> Python output (Auto)", "")
                 else:
-                    self._param_combo.addItem("Chatbot latest response (Auto)", "")
+                    self._param_combo.addItem(f"{source_label} output (Auto)", "")
                 self._param_combo.setCurrentIndex(0)
             else:
                 self._param_combo.addItem("Auto (wired text / transcript)", "")
@@ -1415,10 +1496,11 @@ class VoiceActorWidget(QtWidgets.QWidget):
 
         if self._chatbot_connected:
             self._param_combo.setEnabled(False)
+            source_label = _auto_speech_source_label(self._chatbot_input_item)
             if self._chatbot_via_proxy:
-                self._param_combo.setToolTip("Chatbot input through Python uses automatic speech.")
+                self._param_combo.setToolTip(f"{source_label} input through Python uses automatic speech.")
             else:
-                self._param_combo.setToolTip("Chatbot input uses automatic latest-response speech.")
+                self._param_combo.setToolTip(f"{source_label} input uses automatic speech.")
         elif options:
             self._param_combo.setEnabled(not self._busy)
             self._param_combo.setToolTip("Pick which connected parameter to speak in Text -> Voice mode.")
@@ -1658,7 +1740,7 @@ class VoiceActorWidget(QtWidgets.QWidget):
         if self._busy:
             return
         if self._chatbot_connected:
-            self._set_status("Auto mode enabled by connected chatbot input.")
+            self._set_status("Auto mode enabled by connected input.")
             return
         if self._mode == "voice_to_text":
             self._set_mode("text_to_voice")
@@ -2552,24 +2634,25 @@ class VoiceActorWidget(QtWidgets.QWidget):
 
             text = ""
             token = ""
-            db_text = ""
+            source_text = ""
             py_error = ""
             if self._chatbot_via_proxy:
-                db_text, token, _err = _latest_chatbot_response(self._scene, source_item)
+                source_text, token, _err = _latest_auto_speech_response(self._scene, source_item)
                 proxy_item = self._chatbot_proxy_item
                 if proxy_item is not None and _kind_of_item(proxy_item) == "python":
                     text, py_error = _run_python_transform(self._scene, proxy_item)
                     if py_error and py_error != "Python transform produced empty output.":
-                        self._set_status(f"{py_error} Falling back to chatbot response.", error=True)
+                        self._set_status(f"{py_error} Falling back to auto response.", error=True)
                 if not text:
                     text = _text_from_input(self._scene, self._node_item, "text").strip()
                 if not text:
-                    text = str(db_text or "").strip()
+                    text = str(source_text or "").strip()
+                text = _proxy_auto_speech_text(source_item, text, fallback_text=source_text)
                 if not text:
-                    self._set_status("Waiting for Python output from chatbot response...")
+                    self._set_status("Waiting for Python output from auto response...")
                     return
             else:
-                text, token, _err = _latest_chatbot_response(self._scene, source_item)
+                text, token, _err = _latest_auto_speech_response(self._scene, source_item)
                 if not text:
                     return
                 text = text.strip()
@@ -2614,14 +2697,14 @@ class VoiceActorWidget(QtWidgets.QWidget):
                     error=True,
                 )
             elif source in ("chatbot_auto", "chatbot_latest"):
-                self._set_status("No chatbot response available to speak yet.", error=True)
+                self._set_status("No auto response available to speak yet.", error=True)
             else:
                 self._set_status("No text to speak. Connect input 'text' or type transcript.", error=True)
             return False
         if source == "selected_param":
             self._set_status("Speaking selected parameter value...")
         elif source in ("chatbot_auto", "chatbot_latest"):
-            self._set_status("Auto-speaking latest chatbot response...")
+            self._set_status("Auto-speaking latest response...")
         elif source == "replay":
             self._set_status("Replaying last output...")
         elif source == "input":
@@ -2646,25 +2729,40 @@ class VoiceActorWidget(QtWidgets.QWidget):
         if self._chatbot_connected and self._chatbot_input_item is not None:
             if self._chatbot_via_proxy:
                 scene = self._node_item.scene()
-                db_text, token, _err = _latest_chatbot_response(self._scene, self._chatbot_input_item)
+                source_text, token, _err = _latest_auto_speech_response(self._scene, self._chatbot_input_item)
                 if token:
                     self._last_chatbot_token = token
                 proxy_item = self._chatbot_proxy_item
                 if proxy_item is not None and _kind_of_item(proxy_item) == "python":
                     text, _py_error = _run_python_transform(scene, proxy_item)
-                    if text.strip():
-                        return text.strip(), "chatbot_latest"
+                    spoken = _proxy_auto_speech_text(
+                        self._chatbot_input_item,
+                        text,
+                        fallback_text=source_text,
+                    )
+                    if spoken:
+                        return spoken, "chatbot_latest"
                 wired = _text_from_input(scene, self._node_item, "text")
-                if wired.strip():
-                    return wired.strip(), "chatbot_latest"
-                if db_text.strip():
-                    return db_text.strip(), "chatbot_latest"
+                spoken = _proxy_auto_speech_text(
+                    self._chatbot_input_item,
+                    wired,
+                    fallback_text=source_text,
+                )
+                if spoken:
+                    return spoken, "chatbot_latest"
+                spoken = _proxy_auto_speech_text(
+                    self._chatbot_input_item,
+                    source_text,
+                    fallback_text=source_text,
+                )
+                if spoken:
+                    return spoken, "chatbot_latest"
                 local = (self._transcript.toPlainText() or "").strip()
                 if local:
                     return local, "chatbot_latest"
                 return "", "chatbot_latest"
 
-            text, token, _err = _latest_chatbot_response(self._scene, self._chatbot_input_item)
+            text, token, _err = _latest_auto_speech_response(self._scene, self._chatbot_input_item)
             if text.strip():
                 if token:
                     self._last_chatbot_token = token

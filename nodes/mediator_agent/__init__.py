@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from .spec import MEDIGATOR_SPEC, MEDIGATOR_NODE_KIND, MEDIGATOR_NODE_ALIASES
 
-_PATCH_KEY = "_medigator_agent_create_dialog_patch_v1"
+_PATCH_KEY = "_mediator_agent_create_dialog_patch_v1"
 
 
 def _patch_create_node_dialog() -> None:
@@ -51,4 +51,3 @@ def register(core=None):
             build_ports=MEDIGATOR_SPEC.build_ports,
         )
     _patch_create_node_dialog()
-
