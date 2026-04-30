@@ -2,15 +2,15 @@
 
 QubitMCP is a desktop Python app (Qt/PySide6) with supporting node and librarian components.
 
-## Links
+## Connect
 
-- Website: [quantality.com](https://quantality.com)
-- Documentation: [Open the docs](Doc/index.html)
-- Email: [quantalityfx@gmail.com](mailto:quantalityfx@gmail.com)
-- Discord: [Join the community](https://discord.com/invite/zJSKYZYZ)
-- LinkedIn: [Ernesto Marrero](https://www.linkedin.com/in/ernesto-marrero-7760092a/)
-- Instagram: [@vimpassion](https://www.instagram.com/vimpassion/)
-- YouTube: [@vimpassion](https://www.youtube.com/@vimpassion)
+[![Website](https://img.shields.io/badge/Website-quantality.com-111111?style=for-the-badge)](https://quantality.com)
+[![Documentation](https://img.shields.io/badge/Docs-Open-2E7D32?style=for-the-badge)](Doc/index.html)
+[![Email](https://img.shields.io/badge/Email-quantalityfx%40gmail.com-D14836?style=for-the-badge)](mailto:quantalityfx@gmail.com)
+[![Discord](https://img.shields.io/badge/Discord-Join-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.com/invite/zJSKYZYZ)
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-Ernesto%20Marrero-0A66C2?style=for-the-badge&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/ernesto-marrero-7760092a/)
+[![Instagram](https://img.shields.io/badge/Instagram-%40vimpassion-E4405F?style=for-the-badge&logo=instagram&logoColor=white)](https://www.instagram.com/vimpassion/)
+[![YouTube](https://img.shields.io/badge/YouTube-%40vimpassion-FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://www.youtube.com/@vimpassion)
 
 ## UI Examples
 
