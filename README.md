@@ -1,6 +1,6 @@
 # QubitMCP
 
-QubitMCP is a desktop Python app (Qt/PySide6) with supporting node and librarian components.
+QubitMCP is a node-based desktop workspace for building AI-assisted creative, technical, and production workflows. It combines visual node graphs, asset management, documentation tools, and Unreal Engine integration in a Windows Python/PySide6 application.
 
 ## Connect
 
