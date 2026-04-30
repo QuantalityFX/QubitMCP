@@ -1461,7 +1461,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 pass
         if button is not None:
             try:
-                button.setText("âœ“" if completed else "")
+                button.setText("\u2713" if completed else "")
                 button.setStyleSheet(self._note_complete_button_style(checked=completed))
             except Exception:
                 pass

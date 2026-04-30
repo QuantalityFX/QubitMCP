@@ -2,6 +2,22 @@
 
 QubitMCP is a desktop Python app (Qt/PySide6) with supporting node and librarian components.
 
+## Links
+
+- Website: [quantality.com](https://quantality.com)
+- Documentation: [Open the docs](Doc/index.html)
+- Email: [quantalityfx@gmail.com](mailto:quantalityfx@gmail.com)
+- Discord: [Join the community](https://discord.com/invite/zJSKYZYZ)
+- LinkedIn: [Ernesto Marrero](https://www.linkedin.com/in/ernesto-marrero-7760092a/)
+- Instagram: [@vimpassion](https://www.instagram.com/vimpassion/)
+- YouTube: [@vimpassion](https://www.youtube.com/@vimpassion)
+
+## UI Examples
+
+| AI Workflow | Animation Workflow |
+| --- | --- |
+| ![AI workflow UI snapshot](Doc/UISnapshot/AiWorkflow.png) | ![Animation workflow UI snapshot](Doc/UISnapshot/AnimationWorkflow.png) |
+
 ## Requirements
 
 1. Windows 10/11

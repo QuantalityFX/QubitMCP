@@ -1,0 +1,142 @@
+Qubit MCP SOURCE-AVAILABLE LICENSE
+Version 1.0
+
+Copyright (c) 2026 Quantality Effects INC. All rights reserved.
+
+This software and associated documentation files (the "Software") are made
+available under the terms of this license.
+
+By using, copying, modifying, distributing, or otherwise accessing the Software,
+you agree to the terms of this license.
+
+1. PERMITTED USE
+
+You may use the Software for the following purposes:
+
+a. Personal use.
+b. Educational and research use.
+c. Internal use within an individual, studio, company, or organization.
+d. Commercial production use, including using the Software to create assets,
+   data, content, tools, workflows, or project outputs for commercial projects.
+e. Modification of the Software for private or internal use.
+
+For clarity, you may use outputs, files, assets, data, or results produced with
+the Software in personal or commercial projects.
+
+2. RESTRICTIONS
+
+You may not, without prior written permission from Quantality Effects INC.
+
+a. Sell, rent, lease, sublicense, or otherwise commercialize the Software.
+
+b. Repackage, redistribute, or resell the Software, in whole or in part, as a
+   standalone product.
+
+c. Offer the Software, or substantially similar functionality based on the
+   Software, as a paid hosted service, paid MCP server, paid API, paid web
+   service, subscription service, or usage-based commercial service.
+
+d. Include, bundle, embed, or integrate the Software into a commercial software
+   product, marketplace product, plugin, SaaS product, hosted platform, or
+   competing product.
+
+e. Remove or alter copyright notices, license notices, attribution notices, or
+   other ownership notices included with the Software.
+
+f. Misrepresent the origin of the Software or claim that you created the
+   original Software.
+
+g. Use the name, logo, branding, or trademarks of Qubit MCP or
+   Quantality Effects INC. in a way that suggests endorsement, sponsorship,
+   or official affiliation without written permission.
+
+3. REDISTRIBUTION
+
+You may share unmodified copies of the Software only if:
+
+a. The Software is provided free of charge.
+b. This license file is included.
+c. All copyright, attribution, and license notices are preserved.
+d. The Software is not bundled with, packaged inside, or used to promote a
+   paid product or paid service.
+
+Modified versions, forks, ports, or derivative versions may not be publicly
+redistributed without prior written permission from Quantality Effects INC.
+unless a separate written permission or contributor agreement allows it.
+
+4. CONTRIBUTIONS
+
+By submitting code, documentation, examples, issues, pull requests, or other
+contributions to the project, you agree that:
+
+a. You have the right to submit the contribution.
+b. Your contribution may be used, modified, distributed, and sublicensed by
+   Quantality Effects INC.
+c. Your contribution is provided without expectation of payment, royalties,
+   ownership interest, or compensation unless agreed separately in writing.
+
+5. COMMERCIAL LICENSING
+
+If you want to:
+
+a. Sell the Software.
+b. Repackage or redistribute the Software commercially.
+c. Use the Software as part of a paid product.
+d. Offer the Software as a hosted service, paid MCP server, paid API, or
+   subscription service.
+e. Integrate the Software into a commercial tool, plugin, platform, or service.
+
+You must obtain a separate written commercial license from:
+
+QuantalityFX@gmail.com
+
+6. OUTPUTS
+
+You own the outputs that you create using the Software, subject to any rights
+held by third parties or any separate licenses that may apply to input files,
+models, assets, plugins, libraries, or data used with the Software.
+
+This license does not claim ownership over your project files, generated files,
+assets, data, or other outputs created through normal use of the Software.
+
+7. THIRD-PARTY COMPONENTS
+
+The Software may include or depend on third-party libraries, tools, models,
+packages, or assets. Those third-party components are licensed under their own
+separate license terms.
+
+This license only applies to the Software owned by Quantality Effects INC.
+
+8. NO WARRANTY
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND NON-INFRINGEMENT.
+
+YOU USE THE SOFTWARE AT YOUR OWN RISK.
+
+9. LIMITATION OF LIABILITY
+
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, Quantality Effects INC. SHALL NOT BE
+LIABLE FOR ANY CLAIM, DAMAGES, LOST PROFITS, LOST DATA, BUSINESS INTERRUPTION,
+OR OTHER LIABILITY ARISING FROM THE USE OF, INABILITY TO USE, OR RELIANCE ON
+THE SOFTWARE.
+
+10. TERMINATION
+
+If you violate this license, your rights under this license terminate
+automatically.
+
+Upon termination, you must stop using, copying, modifying, distributing, or
+commercializing the Software, and you must delete any copies of the Software
+in your possession, except where retention is required by law.
+
+11. RESERVATION OF RIGHTS
+
+All rights not expressly granted by this license are reserved by
+Quantality Effects INC.
+
+This license does not grant any trademark rights, ownership rights, patent
+rights, or rights to use the Software outside the permissions stated above.
+
+END OF LICENSE
