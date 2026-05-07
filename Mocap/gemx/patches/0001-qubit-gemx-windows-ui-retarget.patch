@@ -1,13 +1,13 @@
 diff --git a/.gitignore b/.gitignore
-index 963c161..ad6416b 100644
+index 963c161..ed4bf38 100644
 --- a/.gitignore
 +++ b/.gitignore
-@@ -16,3 +16,4 @@ wandb/
+@@ -16,3 +16,5 @@ wandb/
  scripts/train_slurm.py
  scripts/slurm_init.local.sh
  examples/
 +tools_codex
-\ No newline at end of file
++.tmp/
 diff --git a/.gitmodules b/.gitmodules
 index af91132..6a73298 100644
 --- a/.gitmodules
@@ -79,7 +79,7 @@ index 2c8979f..d0027f6 100644
  import numpy as np
  import torch
 diff --git a/scripts/demo/demo_soma.py b/scripts/demo/demo_soma.py
-index fec4834..87f154d 100644
+index fec4834..e557d26 100644
 --- a/scripts/demo/demo_soma.py
 +++ b/scripts/demo/demo_soma.py
 @@ -3,12 +3,19 @@
@@ -129,7 +129,15 @@ index fec4834..87f154d 100644
  def _open_cv2_writer(path, width, height, fps):
      Path(path).parent.mkdir(parents=True, exist_ok=True)
      fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-@@ -428,11 +452,12 @@ def main():
+@@ -79,6 +103,7 @@ def _parse_args():
+     parser.add_argument("--ckpt", type=str, default=None)
+     parser.add_argument("--exp", type=str, default="gem_soma_regression")
+     parser.add_argument("--retarget", action="store_true", help="Retarget SOMA motion to G1 robot")
++    parser.add_argument("--export_bvh", action="store_true", help="Export SOMA motion as BVH")
+     return parser.parse_args()
+ 
+ 
+@@ -428,11 +453,12 @@ def main():
      _copy_video_if_needed(cfg)
      run_preprocess(cfg)
      fps = int(cv2.VideoCapture(cfg.video_path).get(cv2.CAP_PROP_FPS) + 0.5) or 30
@@ -143,12 +151,33 @@ index fec4834..87f154d 100644
          fps=fps,
      )
      data = load_data_dict(cfg)
-@@ -445,28 +470,57 @@ def main():
+@@ -445,28 +471,78 @@ def main():
          pred = model.predict(data, static_cam=cfg.static_cam, postproc=True)
          torch.save(detach_to_cpu(pred), cfg.paths.hpe_results)
  
 -    render_incam(cfg, fps=fps)
 -    render_global_o3d(cfg, fps=fps)
++    if args.export_bvh:
++        try:
++            from scripts.demo.retarget_utils import export_soma_bvh_from_body_params
++        except ModuleNotFoundError as exc:
++            if exc.name == "soma_retargeter":
++                raise RuntimeError(
++                    "BVH export requires the local `soma_retargeter` source.\n"
++                    "Fix steps (from repo root):\n"
++                    "  1) git submodule update --init --recursive third_party/soma-retargeter\n"
++                    "  2) .\\.venv\\Scripts\\python.exe -c \"import sys; "
++                    "sys.path.insert(0, 'third_party/soma-retargeter'); import soma_retargeter; "
++                    "print(soma_retargeter.__file__)\""
++                ) from exc
++            raise
++
++        pred = torch.load(cfg.paths.hpe_results)
++        body_params_global = _get_body_params(pred, "body_params_global")
++        bvh_path = str(Path(cfg.output_dir) / f"{cfg.video_name}_soma.bvh")
++        export_soma_bvh_from_body_params(body_params_global, fps, bvh_path)
++        Log.info(f"[BVH] Exported SOMA BVH to {bvh_path}")
++
 +    can_render_o3d = _supports_open3d_offscreen()
 +    if can_render_o3d:
 +        render_incam(cfg, fps=fps)
@@ -215,7 +244,7 @@ index fec4834..87f154d 100644
 -    os.environ.setdefault("PYOPENGL_PLATFORM", "osmesa")
      main()
 diff --git a/scripts/demo/demo_soma_onnx.py b/scripts/demo/demo_soma_onnx.py
-index c6ff300..38a7a36 100644
+index c6ff300..efccd5c 100644
 --- a/scripts/demo/demo_soma_onnx.py
 +++ b/scripts/demo/demo_soma_onnx.py
 @@ -40,8 +40,14 @@ from pathlib import Path
@@ -235,7 +264,42 @@ index c6ff300..38a7a36 100644
  
  # Preload cuDNN 9 from pip nvidia-cudnn package so ONNX Runtime CUDA EP works.
  try:
-@@ -1291,7 +1297,21 @@ def main():
+@@ -755,6 +761,7 @@ def _parse_args():
+         help="Force PyTorch inference even if ONNX/TRT available",
+     )
+     parser.add_argument("--retarget", action="store_true")
++    parser.add_argument("--export_bvh", action="store_true", help="Export SOMA motion as BVH")
+     parser.add_argument(
+         "--no-imgfeat",
+         action="store_true",
+@@ -1275,6 +1282,26 @@ def main():
+         Log.info(f"[Timing] GEM inference: {_timings['GEM denoiser']:.1f}s")
+         torch.save(pred, cfg.paths.hpe_results)
+ 
++    if args.export_bvh:
++        try:
++            from scripts.demo.retarget_utils import export_soma_bvh_from_body_params
++        except ModuleNotFoundError as exc:
++            if exc.name == "soma_retargeter":
++                raise RuntimeError(
++                    "BVH export requires the local `soma_retargeter` source.\n"
++                    "Fix steps (from repo root):\n"
++                    "  1) git submodule update --init --recursive third_party/soma-retargeter\n"
++                    "  2) .\\.venv\\Scripts\\python.exe -c \"import sys; "
++                    "sys.path.insert(0, 'third_party/soma-retargeter'); import soma_retargeter; "
++                    "print(soma_retargeter.__file__)\""
++                ) from exc
++            raise
++
++        pred = torch.load(cfg.paths.hpe_results)
++        bvh_path = str(Path(cfg.output_dir) / f"{cfg.video_name}_soma.bvh")
++        export_soma_bvh_from_body_params(pred["body_params_global"], fps, bvh_path)
++        Log.info(f"[BVH] Exported SOMA BVH to {bvh_path}")
++
+     # Render
+     t0 = time.time()
+     render_incam(cfg, fps=fps)
+@@ -1291,7 +1318,21 @@ def main():
      # Retarget + merge videos
      if args.retarget:
          from gem.utils.kp2d_utils import render_2d_keypoints
@@ -259,10 +323,18 @@ index c6ff300..38a7a36 100644
          t0 = time.time()
          kp2d_video = str(Path(cfg.output_dir) / "0_kp2d77_overlay.mp4")
 diff --git a/scripts/demo/retarget_utils.py b/scripts/demo/retarget_utils.py
-index a7e37aa..829846f 100644
+index a7e37aa..d967f61 100644
 --- a/scripts/demo/retarget_utils.py
 +++ b/scripts/demo/retarget_utils.py
-@@ -150,16 +150,51 @@ def build_soma_skeleton_from_model(identity_coeffs, scale_params) -> Skeleton:
+@@ -24,7 +24,6 @@ from soma_retargeter.animation.animation_buffer import AnimationBuffer
+ from soma_retargeter.animation.skeleton import Skeleton
+ from soma_retargeter.assets.bvh import BVHImporter
+ from soma_retargeter.assets.csv import save_csv
+-from soma_retargeter.pipelines.newton_pipeline import NewtonPipeline
+ from soma_retargeter.robotics.csv_animation_buffer import CSVAnimationBuffer
+ from soma_retargeter.utils import io_utils as retargeter_io
+ from soma_retargeter.utils.space_conversion_utils import FacingDirectionType, SpaceConverter
+@@ -150,16 +149,51 @@ def build_soma_skeleton_from_model(identity_coeffs, scale_params) -> Skeleton:
  # ---------------------------------------------------------------------------
  
  
@@ -316,7 +388,7 @@ index a7e37aa..829846f 100644
      num_joints = skeleton.num_joints  # 78
      bvh_scale = 100.0  # meters to centimeters
  
-@@ -171,12 +206,12 @@ def export_soma_bvh(body_params_global: dict, skeleton: Skeleton, fps: float, ou
+@@ -171,12 +205,12 @@ def export_soma_bvh(body_params_global: dict, skeleton: Skeleton, fps: float, ou
      parent_indices = skeleton.parent_indices
  
      # Convert quaternions to ZYX Euler degrees
@@ -331,7 +403,34 @@ index a7e37aa..829846f 100644
  
      # Build children list
      children = [[] for _ in range(num_joints)]
-@@ -321,6 +356,7 @@ def run_retarget(
+@@ -231,6 +265,26 @@ def export_soma_bvh(body_params_global: dict, skeleton: Skeleton, fps: float, ou
+     print(f"[INFO] Exported SOMA BVH to {output_bvh_path}")
+ 
+ 
++def export_soma_bvh_from_body_params(
++    body_params_global: dict,
++    fps: float,
++    output_bvh_path: str,
++    prepend_rest_pose_frame: bool = True,
++) -> str:
++    """Export GEM SOMA body params directly to a SOMA skeleton BVH file."""
++    identity_coeffs = body_params_global["identity_coeffs"]
++    scale_params = body_params_global["scale_params"]
++    skeleton = build_soma_skeleton_from_model(identity_coeffs, scale_params)
++    export_soma_bvh(
++        body_params_global,
++        skeleton,
++        fps,
++        output_bvh_path,
++        prepend_rest_pose_frame=prepend_rest_pose_frame,
++    )
++    return str(output_bvh_path)
++
++
+ # ---------------------------------------------------------------------------
+ # Step 1c: Convert GEM body params to AnimationBuffer
+ # ---------------------------------------------------------------------------
+@@ -321,6 +375,7 @@ def run_retarget(
      body_params_global: dict,
      fps: float,
      output_csv_path: str,
@@ -339,7 +438,7 @@ index a7e37aa..829846f 100644
  ) -> CSVAnimationBuffer:
      """Retarget GEM SOMA body params to the Unitree G1 robot.
  
-@@ -328,6 +364,8 @@ def run_retarget(
+@@ -328,10 +383,14 @@ def run_retarget(
          body_params_global: dict with ``global_orient``, ``body_pose``, ``transl``.
          fps: source video fps.
          output_csv_path: where to write the CSV with G1 joint angles.
@@ -348,7 +447,13 @@ index a7e37aa..829846f 100644
  
      Returns:
          ``CSVAnimationBuffer`` for the G1 robot.
-@@ -350,7 +388,13 @@ def run_retarget(
+     """
++    from soma_retargeter.pipelines.newton_pipeline import NewtonPipeline
++
+     identity_coeffs = body_params_global["identity_coeffs"]
+     scale_params = body_params_global["scale_params"]
+     skeleton = build_soma_skeleton_from_model(identity_coeffs, scale_params)
+@@ -350,7 +409,13 @@ def run_retarget(
      print(f"[INFO] Saved G1 retarget CSV to {output_csv_path}")
  
      # Also run BVH-based retarget for comparison (exports BVH as a side effect)
@@ -363,7 +468,7 @@ index a7e37aa..829846f 100644
  
      return csv_buffers[0]
  
-@@ -360,6 +404,7 @@ def run_retarget_from_bvh(
+@@ -360,9 +425,11 @@ def run_retarget_from_bvh(
      fps: float,
      output_csv_path: str,
      skeleton: Skeleton = None,
@@ -371,7 +476,11 @@ index a7e37aa..829846f 100644
  ) -> CSVAnimationBuffer:
      """Retarget via BVH round-trip: export SOMA BVH, load it, retarget to G1."""
      from soma_retargeter.assets.bvh import load_bvh
-@@ -371,10 +416,26 @@ def run_retarget_from_bvh(
++    from soma_retargeter.pipelines.newton_pipeline import NewtonPipeline
+ 
+     if skeleton is None:
+         identity_coeffs = body_params_global["identity_coeffs"]
+@@ -371,10 +438,26 @@ def run_retarget_from_bvh(
  
      # 1. Export BVH (reuses the already-fixed export_soma_bvh)
      bvh_path = str(Path(output_csv_path).with_suffix(".bvh"))

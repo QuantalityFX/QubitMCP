@@ -42,6 +42,7 @@ MODE_ONNX = "Accelerated (ONNX/TensorRT)"
 MODE_2D = "2D Keypoints Only"
 
 RIG_NONE = "None"
+RIG_BVH = "SOMA BVH (.bvh)"
 RIG_G1 = "Unitree G1 (.csv + .bvh)"
 
 SETTINGS_ORG = "QubitMCP"
@@ -104,7 +105,7 @@ class GemQtLauncher(QWidget):
 
         form_layout.addWidget(QLabel("Rig Export"), row, 0)
         self.rig_combo = QComboBox()
-        self.rig_combo.addItems([RIG_NONE, RIG_G1])
+        self.rig_combo.addItems([RIG_NONE, RIG_BVH, RIG_G1])
         form_layout.addWidget(self.rig_combo, row, 1, 1, 2)
 
         root_layout.addLayout(form_layout)
@@ -311,6 +312,8 @@ class GemQtLauncher(QWidget):
                 args.append("--verbose")
             if self.render_mhr_cb.isChecked():
                 args.append("--render_mhr")
+            if rig_mode == RIG_BVH:
+                args.append("--export_bvh")
             if rig_mode == RIG_G1:
                 args.append("--retarget")
             expected_output = output_path / video_path.stem
@@ -337,6 +340,8 @@ class GemQtLauncher(QWidget):
                 args.append("--no-imgfeat")
             if self.ddim_cb.isChecked():
                 args.append("--ddim")
+            if rig_mode == RIG_BVH:
+                args.append("--export_bvh")
             if rig_mode == RIG_G1:
                 args.append("--retarget")
             expected_output = output_path / video_path.stem
@@ -367,16 +372,73 @@ class GemQtLauncher(QWidget):
     def _retarget_requested(self) -> bool:
         return self.mode_combo.currentText() != MODE_2D and self.rig_combo.currentText() == RIG_G1
 
+    def _bvh_export_requested(self) -> bool:
+        return self.mode_combo.currentText() != MODE_2D and self.rig_combo.currentText() == RIG_BVH
+
+    def _probe_env(self) -> dict[str, str]:
+        env = os.environ.copy()
+        submodule_dir = self.project_root / "third_party" / "soma-retargeter"
+        python_path = str(submodule_dir)
+        existing = env.get("PYTHONPATH", "")
+        if existing:
+            python_path = python_path + os.pathsep + existing
+        env["PYTHONPATH"] = python_path
+        return env
+
+    def _ensure_bvh_export_ready(self, python_exe: str) -> bool:
+        if not self._bvh_export_requested():
+            return True
+
+        submodule_dir = self.project_root / "third_party" / "soma-retargeter"
+        check_code = (
+            "from soma_retargeter.animation.skeleton import Skeleton; "
+            "from soma_retargeter.assets.bvh import BVHImporter; "
+            "print('soma_retargeter BVH support OK')"
+        )
+        probe = subprocess.run(
+            [python_exe, "-c", check_code],
+            cwd=str(self.project_root),
+            capture_output=True,
+            text=True,
+            env=self._probe_env(),
+        )
+        if probe.returncode == 0:
+            self._append_log(f"[Launcher] BVH export dependency check passed: {probe.stdout.strip()}")
+            return True
+
+        lines = [
+            "BVH export requires the local `soma_retargeter` source.",
+            f"Expected source folder: {submodule_dir}",
+            "",
+            "Fix from GEM-X repo root:",
+            "1) git submodule update --init --recursive third_party/soma-retargeter",
+            "2) .\\.venv\\Scripts\\python.exe -c \"import sys; sys.path.insert(0, 'third_party/soma-retargeter'); import soma_retargeter; print(soma_retargeter.__file__)\"",
+        ]
+        stderr = (probe.stderr or "").strip()
+        if stderr:
+            lines.extend(["", "Import probe stderr:", stderr])
+        message = "\n".join(lines)
+        self._append_log("[Launcher] BVH export dependency check failed.")
+        self._append_log(message)
+        QMessageBox.warning(self, "Missing BVH Dependency", message)
+        return False
+
     def _ensure_retarget_ready(self, python_exe: str) -> bool:
         if not self._retarget_requested():
             return True
 
-        check_cmd = [python_exe, "-c", "import soma_retargeter; print(soma_retargeter.__file__)"]
+        check_cmd = [
+            python_exe,
+            "-c",
+            "import soma_retargeter; import newton; "
+            "print(soma_retargeter.__file__); print(newton.__file__)",
+        ]
         probe = subprocess.run(
             check_cmd,
             cwd=str(self.project_root),
             capture_output=True,
             text=True,
+            env=self._probe_env(),
         )
         if probe.returncode == 0:
             resolved = probe.stdout.strip() or "soma_retargeter import OK"
@@ -387,12 +449,16 @@ class GemQtLauncher(QWidget):
         has_submodule_files = submodule_dir.exists() and any(submodule_dir.iterdir())
 
         lines = [
-            "Rig export requires `soma_retargeter`, but it is not importable.",
+            "Unitree G1 rig export requires `soma_retargeter` and `newton`, but they are not importable.",
             "",
-            "Fix from repo root:",
+            "Fix from GEM-X repo root:",
+            "1) .\\install_retargeter.bat",
+            "2) .\\.venv\\Scripts\\python.exe -c \"import soma_retargeter, newton; print(soma_retargeter.__file__); print(newton.__file__)\"",
+            "",
+            "Manual install steps:",
             "1) git submodule update --init --recursive third_party/soma-retargeter",
             "2) .\\.venv\\Scripts\\python.exe -m pip install -e third_party/soma-retargeter",
-            "3) .\\.venv\\Scripts\\python.exe -c \"import soma_retargeter; print(soma_retargeter.__file__)\"",
+            "3) .\\.venv\\Scripts\\python.exe -c \"import soma_retargeter, newton; print(soma_retargeter.__file__); print(newton.__file__)\"",
             "",
             "If submodule clone fails due SSH access, switch to HTTPS:",
             "git config submodule.third_party/soma-retargeter.url https://github.com/NVIDIA/soma-retargeter.git",
@@ -450,6 +516,8 @@ class GemQtLauncher(QWidget):
             program, args, expected_output = self._build_command(strict=True)
         except ValueError as exc:
             QMessageBox.warning(self, "Invalid Input", str(exc))
+            return
+        if not self._ensure_bvh_export_ready(program):
             return
         if not self._ensure_retarget_ready(program):
             return
