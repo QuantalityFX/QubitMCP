@@ -29,3 +29,11 @@ Mocap\setup.bat --cuda cu130 --skip-smoke-test
 Generated environments, checkpoints, caches, and outputs should stay out of QubitMCP source control.
 
 If `Mocap/GEM-X` is cloned by the setup fallback instead of initialized as a registered submodule, it is ignored by `Mocap/.gitignore` so QubitMCP stays clean after setup.
+
+Launch the UI with no console window by double-clicking:
+
+```text
+Mocap/GEM-X/run_qt_ui.vbs
+```
+
+Use `Mocap/GEM-X/run_qt_ui_debug.bat` only when you need a console for startup troubleshooting.

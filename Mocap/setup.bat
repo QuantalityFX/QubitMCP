@@ -167,7 +167,8 @@ echo.
 echo QubitMCP GEM-X setup complete.
 echo.
 echo Useful commands:
-echo   Mocap\GEM-X\run_qt_ui.bat
+echo   Mocap\GEM-X\run_qt_ui.vbs
+echo   Mocap\GEM-X\run_qt_ui_debug.bat
 echo   Mocap\GEM-X\open_env.bat
 echo.
 echo Retargeting support is installed by default. Use --skip-retarget only for a lighter install.

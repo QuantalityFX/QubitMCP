@@ -4,7 +4,7 @@ setlocal EnableExtensions
 set "REPO_DIR=%~dp0"
 cd /d "%REPO_DIR%"
 
-if not exist ".venv\Scripts\python.exe" (
+if not exist ".venv\Scripts\pythonw.exe" (
     echo [ERROR] .venv was not found. Run setup.bat first.
     pause
     exit /b 1
@@ -19,21 +19,5 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [INFO ] Launching GEM-X Qt UI...
-echo [INFO ] Console output is preserved for runtime errors.
-echo.
-
-".venv\Scripts\python.exe" scripts\ui\gem_qt_launcher.py %*
-set "RC=%ERRORLEVEL%"
-
-echo.
-if not "%RC%"=="0" (
-    echo [ERROR] Qt UI exited with code %RC%.
-) else (
-    echo [INFO ] Qt UI exited cleanly.
-)
-
-echo.
-echo Press any key to close this console window.
-pause >nul
-exit /b %RC%
+start "GEM-X Qt UI" ".venv\Scripts\pythonw.exe" scripts\ui\gem_qt_launcher.py %*
+exit /b 0
