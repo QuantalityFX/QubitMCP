@@ -324,6 +324,23 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     _mocap_import.register()
             except Exception:
                 pass
+        # Ensure GEN-X Video Mocap spec is registered even if the loader was skipped.
+        if (self.model.kind or "").strip().lower() in (
+            "gen-x-videomocap",
+            "gen-x video mocap",
+            "genx_video_mocap",
+            "genx video mocap",
+            "genx_videomocap",
+            "genx videomocap",
+            "gemx_video_mocap",
+            "gemx video mocap",
+        ):
+            try:
+                from nodes import genx_video_mocap as _genx_video_mocap  # type: ignore
+                if hasattr(_genx_video_mocap, "register"):
+                    _genx_video_mocap.register()
+            except Exception:
+                pass
         # Ensure Anim Retarget spec is registered even if the loader was skipped.
         if (self.model.kind or "").strip().lower() in ("anim_retarget", "anim retarget", "animretarget", "retarget"):
             try:
@@ -1035,6 +1052,17 @@ class NodeItem(QtWidgets.QGraphicsObject):
             hidden.update({"output", "camera", "frame_rate", "format", "start_frame", "end_frame"})
         elif kind in ("video_player", "video player", "videoplayer"):
             hidden.update({"path"})
+        elif kind in (
+            "gen-x-videomocap",
+            "gen-x video mocap",
+            "genx_video_mocap",
+            "genx video mocap",
+            "genx_videomocap",
+            "genx videomocap",
+            "gemx_video_mocap",
+            "gemx video mocap",
+        ):
+            hidden.update({"source_video", "output_root", "rig_export", "last_bvh", "last_status"})
         elif kind in ("post_process", "postprocess", "post_processing", "post_process_effect"):
             hidden.update({"source", "output_dir", "output_pattern", "effect", "levels", "matrix", "strength", "grayscale", "frame_count"})
         elif kind in ("sequence_to_mp4", "sequence mp4", "sequence_to_video", "image_sequence_to_mp4"):
@@ -3113,7 +3141,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         if ext == ".fbx":
             return node_icons._fbx_icon() or node_icons._import_icon()
         if ext == ".bvh":
-            return node_icons._genx_icon() or node_icons._import_icon()
+            return node_icons._mocap_import_icon() or node_icons._import_icon()
         if ext in (".glb", ".glbf", ".gltf"):
             return node_icons._glb_icon() or node_icons._import_icon()
         if ext == ".ply":
@@ -5996,6 +6024,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "bvh_import",
                 "bvh import",
                 "bvhimport",
+                "gen-x-videomocap",
+                "gen-x video mocap",
+                "genx_video_mocap",
+                "genx video mocap",
+                "genx_videomocap",
+                "genx videomocap",
+                "gemx_video_mocap",
+                "gemx video mocap",
                 "anim_retarget",
                 "anim retarget",
                 "animretarget",
@@ -6200,7 +6236,18 @@ class NodeItem(QtWidgets.QGraphicsObject):
             elif kind_lower in ("fbx_import", "fbx import", "fbximport"):
                 icon_pm = node_icons._fbx_icon() or node_icons._import_icon()
             elif kind_lower in ("mocap_import", "mocap import", "mocapimport", "bvh_import", "bvh import", "bvhimport"):
-                icon_pm = node_icons._genx_icon() or node_icons._import_icon()
+                icon_pm = node_icons._mocap_import_icon() or node_icons._import_icon()
+            elif kind_lower in (
+                "gen-x-videomocap",
+                "gen-x video mocap",
+                "genx_video_mocap",
+                "genx video mocap",
+                "genx_videomocap",
+                "genx videomocap",
+                "gemx_video_mocap",
+                "gemx video mocap",
+            ):
+                icon_pm = node_icons._genx_icon() or node_icons._mocap_import_icon() or node_icons._import_icon()
             elif kind_lower in ("anim_retarget", "anim retarget", "animretarget", "retarget"):
                 icon_pm = node_icons._anim_retarget_icon() or node_icons._transforms_icon() or node_icons._import_icon()
             elif kind_lower in ("html_preview", "html preview", "htmlpreview"):

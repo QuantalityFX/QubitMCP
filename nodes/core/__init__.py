@@ -80,6 +80,8 @@ def register_defaults() -> None:
     register("import",    stripe_color="#3b82f6")
     register("fbx_import", stripe_color="#2563eb")
     register("mocap_import", stripe_color="#7c3aed")
+    register("genx_video_mocap", stripe_color="#14b8a6")
+    register("GEN-X-VideoMocap", stripe_color="#14b8a6")
     register("anim_retarget", stripe_color="#ec4899")
     register("html_preview", stripe_color="#f97316")
     register("image_collection", stripe_color="#22c55e")

@@ -373,6 +373,17 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Mocap Import plugin import failed:", e)
 
+    # 13.85) GEN-X Video Mocap
+    try:
+        from nodes import genx_video_mocap
+        if hasattr(genx_video_mocap, "register"):
+            genx_video_mocap.register()
+            _safe_probe("GEN-X-VideoMocap")
+        else:
+            print("[EchoGraph] GEN-X Video Mocap module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] GEN-X Video Mocap plugin import failed:", e)
+
     # 13.9) Anim Retarget
     try:
         from nodes import anim_retarget

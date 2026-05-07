@@ -46,6 +46,7 @@ _VOLUME_SPLIT_ICON = None
 _VOICE_ACTOR_ICON = None
 _MEDIGATOR_ICON = None
 _GENX_ICON = None
+_MOCAP_IMPORT_ICON = None
 _ANIM_RETARGET_ICON = None
 
 
@@ -131,6 +132,14 @@ def _genx_icon():
         return _GENX_ICON
     _GENX_ICON = _load_pm("Gen-X_Icon_s.png")
     return _GENX_ICON
+
+
+def _mocap_import_icon():
+    global _MOCAP_IMPORT_ICON
+    if _MOCAP_IMPORT_ICON is not None:
+        return _MOCAP_IMPORT_ICON
+    _MOCAP_IMPORT_ICON = _load_pm("BVH_Mocap_Icon_s.png")
+    return _MOCAP_IMPORT_ICON
 
 
 def _anim_retarget_icon():
