@@ -673,6 +673,8 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._mgl_grid_extend = 12.0
         self._mgl_grid_major_step = 10.0
         self._mgl_grid_major_boost = 1.15
+        self._mgl_grid_center_line_width = 3.0
+        self._mgl_grid_center_color = (0.48, 0.48, 0.48, 0.90)
         self._mgl_grid_fade_start = 0.55
         self._mgl_grid_fade_end = 0.95
         self._mgl_grid_fade_height = 10.0

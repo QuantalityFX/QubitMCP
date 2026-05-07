@@ -9340,11 +9340,18 @@ class MGLRendererMixin:
                     except Exception:
                         _center_prev_lw = 1.0
                     try:
-                        self._mgl_ctx.line_width = 2.0
+                        center_line_width = float(getattr(self, "_mgl_grid_center_line_width", 3.0) or 3.0)
+                        self._mgl_ctx.line_width = max(2.0, center_line_width)
                     except Exception:
                         pass
                     try:
-                        self._mgl_grid_prog["Color"].value = (0.24, 0.24, 0.24, 0.12)
+                        center_color = getattr(self, "_mgl_grid_center_color", (1.0, 1.0, 1.0, 0.95))
+                        self._mgl_grid_prog["Color"].value = (
+                            float(center_color[0]),
+                            float(center_color[1]),
+                            float(center_color[2]),
+                            float(center_color[3]),
+                        )
                     except Exception:
                         pass
                     try:
