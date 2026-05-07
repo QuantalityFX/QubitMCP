@@ -303,9 +303,16 @@ if "%SKIP_DETECTRON2%"=="1" (
 if "%INSTALL_RETARGET%"=="1" (
     echo.
     echo [9/10] Installing soma-retargeter...
-    "%VENV_PY%" -m uv pip install -e third_party/soma-retargeter
+    "%VENV_PY%" -m pip install --upgrade -e third_party/soma-retargeter
     if errorlevel 1 (
         echo [ERROR] Failed to install third_party/soma-retargeter.
+        exit /b 1
+    )
+
+    "%VENV_PY%" -c "import soma_retargeter, newton; print('soma_retargeter:', soma_retargeter.__file__); print('newton:', newton.__file__)"
+    if errorlevel 1 (
+        echo [ERROR] Retarget install verification failed.
+        echo         Unitree G1 export requires both soma_retargeter and newton.
         exit /b 1
     )
 ) else (

@@ -47,7 +47,7 @@ if errorlevel 1 (
 
 echo.
 echo [3/4] Installing soma-retargeter into .venv...
-".venv\Scripts\python.exe" -m pip install -e third_party/soma-retargeter
+".venv\Scripts\python.exe" -m pip install --upgrade -e third_party/soma-retargeter
 if errorlevel 1 (
     echo [ERROR] Failed to install third_party/soma-retargeter.
     exit /b 1
@@ -55,9 +55,9 @@ if errorlevel 1 (
 
 echo.
 echo [4/4] Verifying import...
-".venv\Scripts\python.exe" -c "import soma_retargeter; print(soma_retargeter.__file__)"
+".venv\Scripts\python.exe" -c "import soma_retargeter, newton; print('soma_retargeter:', soma_retargeter.__file__); print('newton:', newton.__file__)"
 if errorlevel 1 (
-    echo [ERROR] Install verification failed: import soma_retargeter
+    echo [ERROR] Install verification failed: import soma_retargeter, newton
     exit /b 1
 )
 
