@@ -1,0 +1,421 @@
+diff --git a/.gitignore b/.gitignore
+index 963c161..ad6416b 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -16,3 +16,4 @@ wandb/
+ scripts/train_slurm.py
+ scripts/slurm_init.local.sh
+ examples/
++tools_codex
+\ No newline at end of file
+diff --git a/.gitmodules b/.gitmodules
+index af91132..6a73298 100644
+--- a/.gitmodules
++++ b/.gitmodules
+@@ -6,4 +6,4 @@
+ 	url = https://github.com/NVlabs/SOMA-X.git
+ [submodule "third_party/soma-retargeter"]
+ 	path = third_party/soma-retargeter
+-	url = git@github.com:NVIDIA/soma-retargeter.git
++	url = https://github.com/NVIDIA/soma-retargeter.git
+diff --git a/docs/INSTALL.md b/docs/INSTALL.md
+index d601155..e7af201 100644
+--- a/docs/INSTALL.md
++++ b/docs/INSTALL.md
+@@ -63,9 +63,10 @@ To enable `--retarget` mode (retarget recovered motion to the Unitree G1 robot):
+ uv pip install -e third_party/soma-retargeter
+ ```
+ 
+-> **Note:** The soma-retargeter submodule requires SSH access. If `third_party/soma-retargeter` is empty, run:
++> **Note:** If `third_party/soma-retargeter` is empty, run:
+ > ```bash
+-> git submodule update --init third_party/soma-retargeter
++> git submodule sync -- third_party/soma-retargeter
++> git submodule update --init --recursive third_party/soma-retargeter
+ > ```
+ 
+ ## Step 7 — Third-party model assets
+diff --git a/requirements.txt b/requirements.txt
+index f960e3c..092534a 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -29,3 +29,10 @@ trimesh==4.11.3
+ # ML
+ transformers==5.3.0
+ wandb==0.25.1
++
++# UI
++PySide6>=6.7,<7
++
++# Inference runtime (YOLOX ONNX detector)
++onnxruntime-gpu; platform_system != "Darwin"
++onnxruntime; platform_system == "Darwin"
+diff --git a/scripts/demo/demo_2d_keypoints.py b/scripts/demo/demo_2d_keypoints.py
+index 2c8979f..d0027f6 100644
+--- a/scripts/demo/demo_2d_keypoints.py
++++ b/scripts/demo/demo_2d_keypoints.py
+@@ -9,13 +9,19 @@ No GEM model, no 3D rendering, no SAM3D, no Hydra.
+ """
+ import argparse
+ import os
++import sys
++from pathlib import Path
+ 
+-os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
+-os.environ.setdefault("EGL_PLATFORM", "surfaceless")
++if sys.platform.startswith("linux"):
++    os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
++    os.environ.setdefault("EGL_PLATFORM", "surfaceless")
++else:
++    # Avoid forcing EGL on platforms where it is not supported.
++    os.environ.pop("EGL_PLATFORM", None)
++    if os.environ.get("PYOPENGL_PLATFORM", "").lower() == "egl":
++        os.environ.pop("PYOPENGL_PLATFORM", None)
+ 
+-import sys
+ import functools
+-from pathlib import Path
+ 
+ import numpy as np
+ import torch
+diff --git a/scripts/demo/demo_soma.py b/scripts/demo/demo_soma.py
+index fec4834..87f154d 100644
+--- a/scripts/demo/demo_soma.py
++++ b/scripts/demo/demo_soma.py
+@@ -3,12 +3,19 @@
+ # ruff: noqa: E402, I001
+ import argparse
+ import os
+-
+-os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
+-os.environ.setdefault("EGL_PLATFORM", "surfaceless")
++import shutil
+ import sys
+ from pathlib import Path
+ 
++if sys.platform.startswith("linux"):
++    os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
++    os.environ.setdefault("EGL_PLATFORM", "surfaceless")
++else:
++    # Open3D OffscreenRenderer does not support EGL headless on Windows/macOS.
++    os.environ.pop("EGL_PLATFORM", None)
++    if os.environ.get("PYOPENGL_PLATFORM", "").lower() == "egl":
++        os.environ.pop("PYOPENGL_PLATFORM", None)
++
+ import cv2
+ import hydra
+ import functools
+@@ -60,6 +67,23 @@ from gem.utils.kp2d_utils import smooth_bbx_xyxy, render_2d_keypoints
+ CRF = 23  # 17 is lossless, +6 halves output size
+ 
+ 
++def _is_open3d_egl_headless_error(exc: Exception) -> bool:
++    return "EGL Headless is not supported on this platform" in str(exc)
++
++
++def _supports_open3d_offscreen() -> bool:
++    import open3d as o3d
++
++    try:
++        renderer = o3d.visualization.rendering.OffscreenRenderer(16, 16)
++        del renderer
++        return True
++    except RuntimeError as exc:
++        if _is_open3d_egl_headless_error(exc):
++            return False
++        raise
++
++
+ def _open_cv2_writer(path, width, height, fps):
+     Path(path).parent.mkdir(parents=True, exist_ok=True)
+     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+@@ -428,11 +452,12 @@ def main():
+     _copy_video_if_needed(cfg)
+     run_preprocess(cfg)
+     fps = int(cv2.VideoCapture(cfg.video_path).get(cv2.CAP_PROP_FPS) + 0.5) or 30
++    kp2d_video = str(Path(cfg.output_dir) / "0_kp2d77_overlay.mp4")
+     render_2d_keypoints(
+         video_path=cfg.video_path,
+         vitpose_path=cfg.paths.vitpose,
+         bbx_path=cfg.paths.bbx,
+-        output_path=str(Path(cfg.output_dir) / "0_kp2d77_overlay.mp4"),
++        output_path=kp2d_video,
+         fps=fps,
+     )
+     data = load_data_dict(cfg)
+@@ -445,28 +470,57 @@ def main():
+         pred = model.predict(data, static_cam=cfg.static_cam, postproc=True)
+         torch.save(detach_to_cpu(pred), cfg.paths.hpe_results)
+ 
+-    render_incam(cfg, fps=fps)
+-    render_global_o3d(cfg, fps=fps)
++    can_render_o3d = _supports_open3d_offscreen()
++    if can_render_o3d:
++        render_incam(cfg, fps=fps)
++        render_global_o3d(cfg, fps=fps)
++    else:
++        Log.warning(
++            "[Render] Open3D OffscreenRenderer is not supported on this platform. "
++            "Skipping 3D video rendering."
++        )
+ 
+     if args.retarget:
+-        from scripts.demo.retarget_utils import render_g1_robot, run_retarget
++        try:
++            from scripts.demo.retarget_utils import render_g1_robot, run_retarget
++        except ModuleNotFoundError as exc:
++            if exc.name == "soma_retargeter":
++                raise RuntimeError(
++                    "Retargeting requires `soma_retargeter`, but it is not importable.\n"
++                    "Fix steps (from repo root):\n"
++                    "  1) git submodule update --init --recursive third_party/soma-retargeter\n"
++                    "  2) .\\.venv\\Scripts\\python.exe -m pip install -e third_party/soma-retargeter\n"
++                    "  3) .\\.venv\\Scripts\\python.exe -c \"import soma_retargeter; print(soma_retargeter.__file__)\"\n"
++                    "If submodule clone fails due SSH URL access, use HTTPS:\n"
++                    "  git config submodule.third_party/soma-retargeter.url https://github.com/NVIDIA/soma-retargeter.git\n"
++                    "  git submodule sync -- third_party/soma-retargeter"
++                ) from exc
++            raise
+ 
+         pred = torch.load(cfg.paths.hpe_results)
+         body_params_global = _get_body_params(pred, "body_params_global")
+         csv_buffer = run_retarget(body_params_global, fps, cfg.paths.retarget_csv)
+-        render_g1_robot(cfg, csv_buffer, fps=fps)
+-        kp2d_video = str(Path(cfg.output_dir) / "0_kp2d77_overlay.mp4")
+-        merge_videos_grid_2x2(
+-            [kp2d_video, cfg.paths.incam_video, cfg.paths.global_video, cfg.paths.retarget_video],
+-            cfg.paths.incam_global_horiz_video,
+-        )
++        if can_render_o3d:
++            render_g1_robot(cfg, csv_buffer, fps=fps)
++            merge_videos_grid_2x2(
++                [kp2d_video, cfg.paths.incam_video, cfg.paths.global_video, cfg.paths.retarget_video],
++                cfg.paths.incam_global_horiz_video,
++            )
++        else:
++            Log.warning(
++                "[Render] Retarget CSV was generated, but retarget video rendering was skipped "
++                "because Open3D offscreen rendering is unavailable."
++            )
++            shutil.copyfile(kp2d_video, cfg.paths.incam_global_horiz_video)
+     else:
+-        merge_videos_horizontal(
+-            [cfg.paths.incam_video, cfg.paths.global_video], cfg.paths.incam_global_horiz_video
+-        )
++        if can_render_o3d:
++            merge_videos_horizontal(
++                [cfg.paths.incam_video, cfg.paths.global_video], cfg.paths.incam_global_horiz_video
++            )
++        else:
++            shutil.copyfile(kp2d_video, cfg.paths.incam_global_horiz_video)
+     Log.info(f"[Done] Outputs in {cfg.output_dir}")
+ 
+ 
+ if __name__ == "__main__":
+-    os.environ.setdefault("PYOPENGL_PLATFORM", "osmesa")
+     main()
+diff --git a/scripts/demo/demo_soma_onnx.py b/scripts/demo/demo_soma_onnx.py
+index c6ff300..38a7a36 100644
+--- a/scripts/demo/demo_soma_onnx.py
++++ b/scripts/demo/demo_soma_onnx.py
+@@ -40,8 +40,14 @@ from pathlib import Path
+ 
+ _timings: dict[str, float] = {}
+ 
+-os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
+-os.environ.setdefault("EGL_PLATFORM", "surfaceless")
++if sys.platform.startswith("linux"):
++    os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
++    os.environ.setdefault("EGL_PLATFORM", "surfaceless")
++else:
++    # Open3D OffscreenRenderer does not support EGL headless on Windows/macOS.
++    os.environ.pop("EGL_PLATFORM", None)
++    if os.environ.get("PYOPENGL_PLATFORM", "").lower() == "egl":
++        os.environ.pop("PYOPENGL_PLATFORM", None)
+ 
+ # Preload cuDNN 9 from pip nvidia-cudnn package so ONNX Runtime CUDA EP works.
+ try:
+@@ -1291,7 +1297,21 @@ def main():
+     # Retarget + merge videos
+     if args.retarget:
+         from gem.utils.kp2d_utils import render_2d_keypoints
+-        from scripts.demo.retarget_utils import render_g1_robot, run_retarget
++        try:
++            from scripts.demo.retarget_utils import render_g1_robot, run_retarget
++        except ModuleNotFoundError as exc:
++            if exc.name == "soma_retargeter":
++                raise RuntimeError(
++                    "Retargeting requires `soma_retargeter`, but it is not importable.\n"
++                    "Fix steps (from repo root):\n"
++                    "  1) git submodule update --init --recursive third_party/soma-retargeter\n"
++                    "  2) .\\.venv\\Scripts\\python.exe -m pip install -e third_party/soma-retargeter\n"
++                    "  3) .\\.venv\\Scripts\\python.exe -c \"import soma_retargeter; print(soma_retargeter.__file__)\"\n"
++                    "If submodule clone fails due SSH URL access, use HTTPS:\n"
++                    "  git config submodule.third_party/soma-retargeter.url https://github.com/NVIDIA/soma-retargeter.git\n"
++                    "  git submodule sync -- third_party/soma-retargeter"
++                ) from exc
++            raise
+ 
+         t0 = time.time()
+         kp2d_video = str(Path(cfg.output_dir) / "0_kp2d77_overlay.mp4")
+diff --git a/scripts/demo/retarget_utils.py b/scripts/demo/retarget_utils.py
+index a7e37aa..829846f 100644
+--- a/scripts/demo/retarget_utils.py
++++ b/scripts/demo/retarget_utils.py
+@@ -150,16 +150,51 @@ def build_soma_skeleton_from_model(identity_coeffs, scale_params) -> Skeleton:
+ # ---------------------------------------------------------------------------
+ 
+ 
+-def export_soma_bvh(body_params_global: dict, skeleton: Skeleton, fps: float, output_bvh_path: str):
++def export_soma_bvh(
++    body_params_global: dict,
++    skeleton: Skeleton,
++    fps: float,
++    output_bvh_path: str,
++    prepend_rest_pose_frame: bool = True,
++):
+     """Export SOMA body params as a BVH file for inspection.
+ 
+     Uses ``soma_params_to_animation_buffer()`` to get correctly composed
+     BVH-convention quaternions, then converts to ZYX Euler for the BVH file.
++
++    Args:
++        body_params_global: GEM SOMA motion dict.
++        skeleton: SOMA skeleton.
++        fps: Output frame rate.
++        output_bvh_path: Path to save BVH.
++        prepend_rest_pose_frame: If True, prepend frame 0 as the skeleton
++            reference pose (T-pose/rest-pose) before motion starts.
+     """
+     # Get correct BVH-convention animation buffer
+     anim_buffer = soma_params_to_animation_buffer(body_params_global, skeleton, fps)
++    local_transforms = anim_buffer.local_transforms.copy()
++
++    if prepend_rest_pose_frame:
++        rest_pose = np.asarray(skeleton.reference_local_transforms, dtype=np.float32).copy()
++        if local_transforms.shape[0] > 0:
++            hips_idx = skeleton.joint_index("Hips")
++            if hips_idx < 0:
++                hips_idx = 1 if skeleton.num_joints > 1 else 0
+ 
+-    L = anim_buffer.num_frames
++            # Start T-pose from the same root location as the first motion frame.
++            rest_pose[hips_idx, :3] = local_transforms[0, hips_idx, :3]
++
++            # Match floor contact height to frame 1 to avoid a vertical pop.
++            rest_global = np.asarray(skeleton.compute_global_transforms(rest_pose))
++            first_global = np.asarray(skeleton.compute_global_transforms(local_transforms[0]))
++            rest_min_y = float(np.min(rest_global[:, 1]))
++            first_min_y = float(np.min(first_global[:, 1]))
++            rest_pose[hips_idx, 1] += first_min_y - rest_min_y
++
++        rest_pose = rest_pose[None, :, :]
++        local_transforms = np.concatenate([rest_pose, local_transforms], axis=0)
++
++    L = local_transforms.shape[0]
+     num_joints = skeleton.num_joints  # 78
+     bvh_scale = 100.0  # meters to centimeters
+ 
+@@ -171,12 +206,12 @@ def export_soma_bvh(body_params_global: dict, skeleton: Skeleton, fps: float, ou
+     parent_indices = skeleton.parent_indices
+ 
+     # Convert quaternions to ZYX Euler degrees
+-    quats = anim_buffer.local_transforms[:, :, 3:7].copy()  # (L, 78, 4) xyzw
++    quats = local_transforms[:, :, 3:7].copy()  # (L, 78, 4) xyzw
+     euler_deg = Rotation.from_quat(quats.reshape(-1, 4)).as_euler("ZYX", degrees=True)
+     euler_deg = euler_deg.reshape(L, num_joints, 3).astype(np.float32)
+ 
+     # Extract positions from animation buffer (meters), scale to cm
+-    positions_cm = anim_buffer.local_transforms[:, :, :3].copy() * bvh_scale  # (L, 78, 3)
++    positions_cm = local_transforms[:, :, :3].copy() * bvh_scale  # (L, 78, 3)
+ 
+     # Build children list
+     children = [[] for _ in range(num_joints)]
+@@ -321,6 +356,7 @@ def run_retarget(
+     body_params_global: dict,
+     fps: float,
+     output_csv_path: str,
++    prepend_rest_pose_frame: bool = True,
+ ) -> CSVAnimationBuffer:
+     """Retarget GEM SOMA body params to the Unitree G1 robot.
+ 
+@@ -328,6 +364,8 @@ def run_retarget(
+         body_params_global: dict with ``global_orient``, ``body_pose``, ``transl``.
+         fps: source video fps.
+         output_csv_path: where to write the CSV with G1 joint angles.
++        prepend_rest_pose_frame: If True, exported BVH side output starts
++            with a rest/T-pose frame.
+ 
+     Returns:
+         ``CSVAnimationBuffer`` for the G1 robot.
+@@ -350,7 +388,13 @@ def run_retarget(
+     print(f"[INFO] Saved G1 retarget CSV to {output_csv_path}")
+ 
+     # Also run BVH-based retarget for comparison (exports BVH as a side effect)
+-    run_retarget_from_bvh(body_params_global, fps, output_csv_path, skeleton=skeleton)
++    run_retarget_from_bvh(
++        body_params_global,
++        fps,
++        output_csv_path,
++        skeleton=skeleton,
++        prepend_rest_pose_frame=prepend_rest_pose_frame,
++    )
+ 
+     return csv_buffers[0]
+ 
+@@ -360,6 +404,7 @@ def run_retarget_from_bvh(
+     fps: float,
+     output_csv_path: str,
+     skeleton: Skeleton = None,
++    prepend_rest_pose_frame: bool = True,
+ ) -> CSVAnimationBuffer:
+     """Retarget via BVH round-trip: export SOMA BVH, load it, retarget to G1."""
+     from soma_retargeter.assets.bvh import load_bvh
+@@ -371,10 +416,26 @@ def run_retarget_from_bvh(
+ 
+     # 1. Export BVH (reuses the already-fixed export_soma_bvh)
+     bvh_path = str(Path(output_csv_path).with_suffix(".bvh"))
+-    export_soma_bvh(body_params_global, skeleton, fps, bvh_path)
++    export_soma_bvh(
++        body_params_global,
++        skeleton,
++        fps,
++        bvh_path,
++        prepend_rest_pose_frame=prepend_rest_pose_frame,
++    )
+ 
+     # 2. Load BVH back using retargeter's BVH importer
+     bvh_skeleton, anim_buffer = load_bvh(bvh_path)
++    if prepend_rest_pose_frame and anim_buffer.num_frames > 1:
++        # Keep frame 0 in the exported BVH for downstream retarget tools, but
++        # remove it for this internal BVH->CSV comparison path to preserve
++        # original motion-frame alignment.
++        anim_buffer = AnimationBuffer(
++            bvh_skeleton,
++            anim_buffer.num_frames - 1,
++            anim_buffer.sample_rate,
++            local_transforms=anim_buffer.local_transforms[1:].copy(),
++        )
+ 
+     # 3. Retarget to G1
+     space_converter = SpaceConverter(FacingDirectionType.MUJOCO)
+diff --git a/setup.cfg b/setup.cfg
+index 19d5e0b..c4e3510 100644
+--- a/setup.cfg
++++ b/setup.cfg
+@@ -30,11 +30,15 @@ install_requires =
+     open3d
+     wandb
+     huggingface_hub
++    onnxruntime-gpu; platform_system != "Darwin"
++    onnxruntime; platform_system == "Darwin"
+ 
+ [options.extras_require]
+ train =
+     tensorboardX
+     trimesh
++ui =
++    PySide6>=6.7,<7
+ dev =
+     pytest
+     ruff
