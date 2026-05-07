@@ -14,6 +14,11 @@ rem   setup.bat --python "C:\Path\To\python.exe"
 set "REPO_DIR=%~dp0"
 cd /d "%REPO_DIR%"
 
+rem Keep uv state local to this managed GEM-X checkout. This avoids Windows
+rem cache permission issues and suppresses hardlink warnings on mixed drives.
+set "UV_CACHE_DIR=%REPO_DIR%.uv-cache"
+set "UV_LINK_MODE=copy"
+
 if not exist "setup.py" (
     echo [ERROR] setup.py not found. Run this script from the GEM-X repository root.
     exit /b 1
@@ -267,7 +272,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-"%VENV_PY%" -m uv pip install cloudpickle fvcore iopath pycocotools braceexpand roma termcolor setuptools^<75
+"%VENV_PY%" -m uv pip install cloudpickle fvcore iopath pycocotools braceexpand roma termcolor portalocker yacs tabulate setuptools^<75
 if errorlevel 1 (
     echo [ERROR] Failed installing SAM-3D-Body runtime dependencies.
     exit /b 1
@@ -311,7 +316,7 @@ if "%INSTALL_RETARGET%"=="1" (
 echo.
 echo [10/10] Running smoke test...
 if "%RUN_SMOKE_TEST%"=="1" (
-    "%VENV_PY%" -c "import torch, hydra, lightning, cv2, PySide6; import gem; print('Core imports OK')"
+    "%VENV_PY%" -c "import torch, hydra, lightning, cv2, PySide6; import gem; import braceexpand, cloudpickle, fvcore, iopath, pycocotools, roma, termcolor, portalocker, yacs, tabulate; print('Core imports OK')"
     if errorlevel 1 (
         echo [ERROR] Smoke test failed.
         exit /b 1
