@@ -18,6 +18,7 @@ rem Keep uv state local to this managed GEM-X checkout. This avoids Windows
 rem cache permission issues and suppresses hardlink warnings on mixed drives.
 set "UV_CACHE_DIR=%REPO_DIR%.uv-cache"
 set "UV_LINK_MODE=copy"
+set "PIP_TMP_DIR=%REPO_DIR%.tmp\pip"
 
 if not exist "setup.py" (
     echo [ERROR] setup.py not found. Run this script from the GEM-X repository root.
@@ -160,11 +161,24 @@ if "%INSTALL_RETARGET%"=="1" (
     git submodule sync -- third_party/soma-retargeter >nul 2>&1
     git submodule update --init --recursive third_party/soma-retargeter
     if errorlevel 1 (
-        echo [ERROR] Failed to initialize third_party/soma-retargeter.
-        echo         Run:
-        echo           git submodule sync -- third_party/soma-retargeter
-        echo           git submodule update --init --recursive third_party/soma-retargeter
-        exit /b 1
+        if exist "third_party\soma-retargeter\pyproject.toml" (
+            if exist "third_party\soma-retargeter\soma_retargeter\__init__.py" (
+                echo [WARN ] Submodule update failed, but existing soma-retargeter source is present.
+                echo [WARN ] Continuing with the local third_party\soma-retargeter checkout.
+            ) else (
+                echo [ERROR] Failed to initialize third_party/soma-retargeter.
+                echo         Run:
+                echo           git submodule sync -- third_party/soma-retargeter
+                echo           git submodule update --init --recursive third_party/soma-retargeter
+                exit /b 1
+            )
+        ) else (
+            echo [ERROR] Failed to initialize third_party/soma-retargeter.
+            echo         Run:
+            echo           git submodule sync -- third_party/soma-retargeter
+            echo           git submodule update --init --recursive third_party/soma-retargeter
+            exit /b 1
+        )
     )
 ) else (
     echo.
@@ -188,6 +202,9 @@ if not exist "%VENV_PY%" (
     echo [ERROR] Virtual environment python not found: %VENV_PY%
     exit /b 1
 )
+if not exist "%PIP_TMP_DIR%\" mkdir "%PIP_TMP_DIR%"
+set "TMP=%PIP_TMP_DIR%"
+set "TEMP=%PIP_TMP_DIR%"
 
 echo.
 echo [5/10] Installing uv in the virtual environment...
@@ -303,10 +320,14 @@ if "%SKIP_DETECTRON2%"=="1" (
 if "%INSTALL_RETARGET%"=="1" (
     echo.
     echo [9/10] Installing soma-retargeter...
-    "%VENV_PY%" -m pip install --upgrade -e third_party/soma-retargeter
+    "%VENV_PY%" -m uv pip install -e third_party/soma-retargeter
     if errorlevel 1 (
-        echo [ERROR] Failed to install third_party/soma-retargeter.
-        exit /b 1
+        echo [WARN ] uv failed to install third_party/soma-retargeter. Trying pip fallback...
+        "%VENV_PY%" -m pip install --upgrade -e third_party/soma-retargeter
+        if errorlevel 1 (
+            echo [ERROR] Failed to install third_party/soma-retargeter.
+            exit /b 1
+        )
     )
 
     "%VENV_PY%" -c "import soma_retargeter, newton; print('soma_retargeter:', soma_retargeter.__file__); print('newton:', newton.__file__)"
