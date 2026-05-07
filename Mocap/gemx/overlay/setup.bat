@@ -254,7 +254,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-"%VENV_PY%" -m uv pip install cloudpickle fvcore iopath pycocotools braceexpand roma setuptools^<75
+"%VENV_PY%" -m uv pip install cloudpickle fvcore iopath pycocotools braceexpand roma termcolor setuptools^<75
 if errorlevel 1 (
     echo [ERROR] Failed installing SAM-3D-Body runtime dependencies.
     exit /b 1

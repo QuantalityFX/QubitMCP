@@ -44,6 +44,9 @@ MODE_2D = "2D Keypoints Only"
 RIG_NONE = "None"
 RIG_G1 = "Unitree G1 (.csv + .bvh)"
 
+SETTINGS_ORG = "QubitMCP"
+SETTINGS_APP = "GEMXLauncher"
+
 
 class GemQtLauncher(QWidget):
     """Desktop launcher for GEM-X demo scripts."""
@@ -53,7 +56,7 @@ class GemQtLauncher(QWidget):
         self.project_root = Path(__file__).resolve().parents[2]
         self.process: QProcess | None = None
         self.last_output_path = self.project_root / "outputs"
-        self.settings = QSettings("GEM-X", "QtLauncher")
+        self.settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
 
         self._build_ui()
         self._load_settings()
@@ -567,7 +570,15 @@ class GemQtLauncher(QWidget):
         self.output_edit.setText(
             self.settings.value("output", str(self._default_output_for_mode(self.mode_combo.currentText())))
         )
-        self.ckpt_edit.setText(self.settings.value("ckpt", str(self._default_ckpt())))
+        saved_ckpt = self.settings.value("ckpt", None)
+        default_ckpt = self._default_ckpt()
+        if saved_ckpt is None:
+            ckpt_text = str(default_ckpt) if default_ckpt.exists() else ""
+        else:
+            ckpt_text = str(saved_ckpt).strip()
+            if ckpt_text == str(default_ckpt) and not default_ckpt.exists():
+                ckpt_text = ""
+        self.ckpt_edit.setText(ckpt_text)
         self.rig_combo.setCurrentText(self.settings.value("rig", RIG_NONE))
 
         self.static_cam_cb.setChecked(self._setting_bool("static_cam", False))
@@ -614,8 +625,8 @@ class GemQtLauncher(QWidget):
 
 def main() -> int:
     app = QApplication(sys.argv)
-    app.setApplicationName("GEM-X Launcher")
-    app.setOrganizationName("GEM-X")
+    app.setApplicationName(SETTINGS_APP)
+    app.setOrganizationName(SETTINGS_ORG)
     window = GemQtLauncher()
     window.show()
     return app.exec()
