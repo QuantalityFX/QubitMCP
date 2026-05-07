@@ -296,6 +296,7 @@ class GemQtLauncher(QWidget):
         if mode == MODE_FULL:
             script = self.project_root / "scripts" / "demo" / "demo_soma.py"
             args = [
+                "-u",
                 str(script),
                 "--video",
                 str(video_path),
@@ -317,6 +318,7 @@ class GemQtLauncher(QWidget):
         elif mode == MODE_ONNX:
             script = self.project_root / "scripts" / "demo" / "demo_soma_onnx.py"
             args = [
+                "-u",
                 str(script),
                 "--video",
                 str(video_path),
@@ -342,6 +344,7 @@ class GemQtLauncher(QWidget):
         else:
             script = self.project_root / "scripts" / "demo" / "demo_2d_keypoints.py"
             args = [
+                "-u",
                 str(script),
                 "--video",
                 str(video_path),

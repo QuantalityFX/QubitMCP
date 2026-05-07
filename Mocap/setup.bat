@@ -109,6 +109,12 @@ if errorlevel 1 (
     exit /b 1
 )
 
+git -C "%GEMX_DIR%" reset --hard "%BASELINE_COMMIT%"
+if errorlevel 1 (
+    echo [ERROR] Failed to reset GEM-X managed source files to the baseline commit.
+    exit /b 1
+)
+
 echo.
 echo [3/6] Applying QubitMCP GEM-X patch...
 git -C "%GEMX_DIR%" apply --check "%PATCH_FILE%" >nul 2>&1
@@ -164,8 +170,7 @@ echo Useful commands:
 echo   Mocap\GEM-X\run_qt_ui.bat
 echo   Mocap\GEM-X\open_env.bat
 echo.
-echo To install retargeting support during setup, rerun:
-echo   Mocap\setup.bat --with-retarget
+echo Retargeting support is installed by default. Use --skip-retarget only for a lighter install.
 echo.
 exit /b 0
 
@@ -177,7 +182,8 @@ echo Usage:
 echo   Mocap\setup.bat [GEM-X setup options]
 echo.
 echo Common options passed to GEM-X setup:
-echo   --with-retarget         Install soma-retargeter support
+echo   --skip-retarget         Skip soma-retargeter support
+echo   --with-retarget         Install soma-retargeter support, enabled by default
 echo   --cuda ^<tag^>          CUDA tag for PyTorch index, for example cu126 or cu130
 echo   --python ^<exe^>        Python executable or full path
 echo   --skip-detectron2       Skip detectron2 installation

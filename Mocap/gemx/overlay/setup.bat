@@ -5,7 +5,7 @@ rem GEM-X one-step Windows setup script.
 rem Usage:
 rem   setup.bat
 rem   setup.bat --cuda cu130
-rem   setup.bat --with-retarget
+rem   setup.bat --skip-retarget
 rem   setup.bat --skip-detectron2
 rem   setup.bat --strict-detectron2
 rem   setup.bat --skip-smoke-test
@@ -21,10 +21,11 @@ if not exist "setup.py" (
 
 set "PYTHON_EXE=python"
 set "CUDA_TAG=cu126"
-set "INSTALL_RETARGET=0"
+set "INSTALL_RETARGET=1"
 set "SKIP_DETECTRON2=0"
 set "STRICT_DETECTRON2=0"
 set "RUN_SMOKE_TEST=1"
+set "USAGE_EXIT_CODE=1"
 
 :parse_args
 if "%~1"=="" goto args_done
@@ -57,6 +58,12 @@ if /I "%~1"=="--with-retarget" (
     goto parse_args
 )
 
+if /I "%~1"=="--skip-retarget" (
+    set "INSTALL_RETARGET=0"
+    shift
+    goto parse_args
+)
+
 if /I "%~1"=="--skip-detectron2" (
     set "SKIP_DETECTRON2=1"
     shift
@@ -75,8 +82,14 @@ if /I "%~1"=="--skip-smoke-test" (
     goto parse_args
 )
 
-if /I "%~1"=="--help" goto usage
-if /I "%~1"=="-h" goto usage
+if /I "%~1"=="--help" (
+    set "USAGE_EXIT_CODE=0"
+    goto usage
+)
+if /I "%~1"=="-h" (
+    set "USAGE_EXIT_CODE=0"
+    goto usage
+)
 
 echo [ERROR] Unknown argument: %~1
 goto usage
@@ -334,10 +347,11 @@ echo.
 echo Options:
 echo   --cuda ^<tag^>          CUDA tag for PyTorch index (default: cu126)
 echo   --python ^<exe^>        Python executable or command (default: python)
-echo   --with-retarget         Install soma-retargeter too
+echo   --with-retarget         Install soma-retargeter too ^(default^)
+echo   --skip-retarget         Skip soma-retargeter installation
 echo   --skip-detectron2       Skip detectron2 installation
 echo   --strict-detectron2     Fail setup if detectron2 install fails
 echo   --skip-smoke-test       Do not run import smoke test
 echo   --help, -h              Show this help
 echo.
-exit /b 1
+exit /b %USAGE_EXIT_CODE%
