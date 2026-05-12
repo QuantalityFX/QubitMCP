@@ -3768,6 +3768,16 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 except Exception:
                     return ""
 
+            def _owner_is_splat_asset(entry: dict) -> bool:
+                ext = _owner_ext(entry)
+                if ext == ".ply":
+                    return True
+                proxy = entry.get("render_proxy") if isinstance(entry, dict) else None
+                if not isinstance(proxy, dict):
+                    return False
+                proxy_type = str(proxy.get("type") or "").strip().lower()
+                return proxy_type in {"skinned_splat", "skinned_gaussian_splat"}
+
             def _dict_lookup_casefold(d, key: str):
                 if not isinstance(d, dict):
                     return None
@@ -3869,7 +3879,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                     if not name:
                         continue
                     ext = _owner_ext(entry)
-                    owner_kind_map[name] = (ext == ".ply")
+                    owner_kind_map[name] = bool(_owner_is_splat_asset(entry))
                     if ext == ".ply":
                         splat_zero_pivot_map[name] = bool(entry.get("splat_zero_pivot", False))
                     if not entry.get("xform_offset"):

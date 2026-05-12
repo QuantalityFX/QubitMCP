@@ -3552,6 +3552,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 "visible": visible,
                 "xform": entry.get("xform"),
             }
+            if isinstance(entry.get("render_proxy"), dict):
+                clean_entry["render_proxy"] = dict(entry.get("render_proxy") or {})
             if "xform_offset" in entry:
                 clean_entry["xform_offset"] = bool(entry.get("xform_offset"))
             if "splat_zero_pivot" in entry:
@@ -3686,6 +3688,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                         round(float(entry.get("age_scale_min", 1.0) or 1.0), 6),
                         round(float(entry.get("age_scale_max", 1.0) or 1.0), 6),
                         repr(list(entry.get("age_scale_points") or [])),
+                        repr(dict(entry.get("render_proxy") or {})),
                     )
                 )
             sig = tuple(sorted(sig))

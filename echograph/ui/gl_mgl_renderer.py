@@ -1934,6 +1934,310 @@ class MGLRendererMixin:
         payload["_fbx_skin_frame"] = frame
         item.payload = payload
 
+    def _mgl_load_skinned_splat_proxy(
+        self,
+        owner: str,
+        render_proxy: dict,
+        fbx_rig_context: dict | None,
+    ) -> Optional[Tuple[NDArray, NDArray]]:
+        if np is None or not isinstance(render_proxy, dict):
+            return None
+        proxy_type = str(render_proxy.get("type") or "").strip().lower()
+        if proxy_type not in {"skinned_splat", "skinned_gaussian_splat"}:
+            return None
+
+        owner_key = str(owner or "").strip()
+        if not owner_key:
+            return None
+
+        manifest_data = {}
+        manifest_path = None
+        manifest_raw = str(render_proxy.get("manifest") or "").strip()
+        if manifest_raw:
+            try:
+                manifest_path = Path(manifest_raw)
+                if manifest_path.exists():
+                    with manifest_path.open("r", encoding="utf-8") as handle:
+                        loaded = json.load(handle)
+                    if isinstance(loaded, dict):
+                        manifest_data = loaded
+            except Exception as exc:
+                try:
+                    self._mgl_log("skinned_splat_proxy: manifest read failed owner=" + owner_key + " err=" + repr(exc))
+                except Exception:
+                    pass
+                manifest_data = {}
+
+        manifest_dir = manifest_path.parent if manifest_path is not None else None
+
+        def _resolve_path(*keys: str) -> Optional[Path]:
+            raw = ""
+            for key in keys:
+                raw = str(render_proxy.get(key) or "").strip()
+                if raw:
+                    break
+                raw = str(manifest_data.get(key) or "").strip()
+                if raw:
+                    break
+            if not raw:
+                return None
+            try:
+                path = Path(raw)
+                if not path.is_absolute() and manifest_dir is not None:
+                    path = manifest_dir / path
+                return path
+            except Exception:
+                return None
+
+        ply_path = _resolve_path("splat_ply", "ply")
+        skin_path = _resolve_path("skin_npz", "proxy_skin", "skin")
+        if ply_path is None or skin_path is None:
+            return None
+        if not ply_path.exists() or not skin_path.exists():
+            try:
+                self._mgl_log(
+                    "skinned_splat_proxy: files missing owner="
+                    + owner_key
+                    + " ply="
+                    + str(ply_path)
+                    + " skin="
+                    + str(skin_path)
+                )
+            except Exception:
+                pass
+            return None
+
+        try:
+            from echograph.util.splats_io import load_splats_ply
+
+            try:
+                sample_limit = int(render_proxy.get("sample_count") or manifest_data.get("sample_count") or 200_000)
+            except Exception:
+                sample_limit = 200_000
+            sample_limit = max(1, int(sample_limit))
+            splats = np.asarray(load_splats_ply(str(ply_path), n=sample_limit), dtype=np.float32)
+            if splats.ndim != 2 or int(splats.shape[1]) != 15 or int(splats.shape[0]) <= 0:
+                raise RuntimeError(f"expected skinned proxy splat array shape (N,15), got {splats.shape}")
+
+            with np.load(str(skin_path), allow_pickle=False) as skin:
+                bind_positions = np.asarray(skin["bind_positions"], dtype=np.float32).reshape(-1, 3)
+                joint_indices = np.asarray(skin["joint_indices"], dtype=np.int64)
+                joint_weights = np.asarray(skin["joint_weights"], dtype=np.float32)
+                try:
+                    bind_quats = np.asarray(skin["bind_quats"], dtype=np.float32).reshape(-1, 4)
+                except Exception:
+                    bind_quats = splats[:, 11:15].astype(np.float32, copy=True)
+                try:
+                    bind_radius_scale = np.asarray(skin["bind_radius_scale"], dtype=np.float32).reshape(-1, 4)
+                except Exception:
+                    bind_radius_scale = splats[:, 7:11].astype(np.float32, copy=True)
+
+            count = min(
+                int(splats.shape[0]),
+                int(bind_positions.shape[0]),
+                int(joint_indices.shape[0]) if joint_indices.ndim == 2 else 0,
+                int(joint_weights.shape[0]) if joint_weights.ndim == 2 else 0,
+            )
+            if count <= 0:
+                raise RuntimeError("skinned proxy contains no usable splats")
+            if count != int(splats.shape[0]):
+                splats = splats[:count].astype(np.float32, copy=False)
+            bind_positions = bind_positions[:count].astype(np.float32, copy=False)
+            joint_indices = joint_indices[:count].astype(np.int64, copy=False)
+            joint_weights = joint_weights[:count].astype(np.float32, copy=False)
+            bind_quats = bind_quats[:count].astype(np.float32, copy=False)
+            bind_radius_scale = bind_radius_scale[:count].astype(np.float32, copy=False)
+            if joint_indices.ndim != 2 or joint_weights.ndim != 2 or joint_indices.shape != joint_weights.shape:
+                raise RuntimeError("skinned proxy joint index/weight arrays must be matching 2D arrays")
+
+            current = splats.astype(np.float32, copy=True)
+            current[:, 0:3] = bind_positions
+            current[:, 7:11] = bind_radius_scale
+            current[:, 11:15] = bind_quats
+            bind_mins = bind_positions.min(axis=0).astype("f4")
+            bind_maxs = bind_positions.max(axis=0).astype("f4")
+
+            proxies = getattr(self, "_mgl_scene_skinned_splat_proxies_by_owner", None)
+            if not isinstance(proxies, dict):
+                proxies = {}
+                self._mgl_scene_skinned_splat_proxies_by_owner = proxies
+            proxies[owner_key] = {
+                "owner": owner_key,
+                "splat_ply": str(ply_path),
+                "skin_npz": str(skin_path),
+                "fbx_rig_context": fbx_rig_context if isinstance(fbx_rig_context, dict) else None,
+                "base_splats": current.astype(np.float32, copy=True),
+                "current_splats": current,
+                "bind_positions": bind_positions,
+                "bind_quats": bind_quats,
+                "bind_radius_scale": bind_radius_scale,
+                "bind_bounds": (bind_mins, bind_maxs),
+                "joint_indices": joint_indices,
+                "joint_weights": joint_weights,
+                "last_signature": None,
+            }
+
+            try:
+                self._mgl_scene_splats[owner_key] = current
+            except Exception:
+                pass
+            try:
+                self._mgl_scene_splats_bounds_local[owner_key] = (bind_mins, bind_maxs)
+                self._mgl_scene_splat_bounds_by_owner[owner_key] = (bind_mins, bind_maxs)
+                self._mgl_scene_bounds_by_owner[owner_key] = (bind_mins, bind_maxs)
+            except Exception:
+                pass
+            try:
+                self._mgl_log(
+                    "skinned_splat_proxy: loaded owner="
+                    + owner_key
+                    + " count="
+                    + str(int(current.shape[0]))
+                    + " ply="
+                    + str(ply_path)
+                )
+            except Exception:
+                pass
+            self._mgl_render_splats = True
+            self._mgl_splats_need_rebuild = True
+            return bind_mins, bind_maxs
+        except Exception as exc:
+            try:
+                self._mgl_log("skinned_splat_proxy: load failed owner=" + owner_key + " err=" + repr(exc))
+            except Exception:
+                pass
+            return None
+
+    @staticmethod
+    def _mgl_skin_splat_positions_row_major(
+        skin_mats: NDArray,
+        bind_positions: NDArray,
+        joint_indices: NDArray,
+        joint_weights: NDArray,
+    ) -> NDArray:
+        if np is None:
+            raise RuntimeError("numpy unavailable")
+        mats = np.asarray(skin_mats, dtype="f4").reshape(-1, 4, 4)
+        bind = np.asarray(bind_positions, dtype="f4").reshape(-1, 3)
+        ji = np.asarray(joint_indices, dtype=np.int64)
+        jw = np.asarray(joint_weights, dtype="f4")
+        if ji.ndim != 2 or jw.ndim != 2 or ji.shape != jw.shape or ji.shape[0] != bind.shape[0]:
+            return bind.astype("f4", copy=True)
+        joint_count = int(mats.shape[0])
+        count = int(bind.shape[0])
+        out = np.zeros((count, 3), dtype="f4")
+        weight_sum = np.zeros((count,), dtype="f4")
+        for slot in range(int(ji.shape[1])):
+            js = ji[:, slot]
+            ws = jw[:, slot]
+            valid = (js >= 0) & (js < joint_count) & (ws > 1.0e-8)
+            if not np.any(valid):
+                continue
+            transformed = MGLRendererMixin._mgl_fbx_transform_points_row_major(mats[js[valid]], bind[valid])
+            out[valid] += transformed * ws[valid, None]
+            weight_sum[valid] += ws[valid]
+        weighted = weight_sum > 1.0e-8
+        if np.any(weighted):
+            out[weighted] = out[weighted] / np.maximum(weight_sum[weighted, None], np.float32(1.0e-8))
+        if np.any(~weighted):
+            out[~weighted] = bind[~weighted]
+        return out.astype("f4", copy=False)
+
+    def _mgl_update_skinned_splat_proxies(self, *, force: bool = False) -> bool:
+        if np is None:
+            return False
+        proxies = getattr(self, "_mgl_scene_skinned_splat_proxies_by_owner", None)
+        if not isinstance(proxies, dict) or not proxies:
+            return False
+
+        frame = self._mgl_timeline_frame_index()
+        visibility = getattr(self, "_mgl_scene_visibility", {}) or {}
+        changed = False
+        for owner, proxy in list(proxies.items()):
+            owner_key = str(owner or "").strip()
+            if not owner_key:
+                continue
+            if isinstance(visibility, dict) and not bool(visibility.get(owner_key, True)):
+                continue
+            context = proxy.get("fbx_rig_context") if isinstance(proxy, dict) else None
+            if not isinstance(context, dict):
+                continue
+            skeleton = context.get("skeleton")
+            if skeleton is None:
+                continue
+            clip = context.get("clip")
+            loop = bool(context.get("loop", True))
+            sample_seconds = self._mgl_fbx_context_timeline_sample_seconds(context)
+            signature = (
+                int(frame),
+                round(float(sample_seconds), 6),
+                _safe_clip_signature(clip),
+                id(skeleton),
+            )
+            if not force and proxy.get("last_signature") == signature:
+                continue
+            try:
+                evaluation = evaluate_rig_at_time(
+                    skeleton,
+                    clip,
+                    float(sample_seconds),
+                    loop=loop,
+                    include_debug_data=False,
+                )
+                skin_mats = np.asarray(evaluation.skin_matrices, dtype="f4").reshape(-1, 4, 4)
+                bind_positions = np.asarray(proxy.get("bind_positions"), dtype="f4").reshape(-1, 3)
+                joint_indices = np.asarray(proxy.get("joint_indices"), dtype=np.int64)
+                joint_weights = np.asarray(proxy.get("joint_weights"), dtype="f4")
+                deformed = self._mgl_skin_splat_positions_row_major(
+                    skin_mats,
+                    bind_positions,
+                    joint_indices,
+                    joint_weights,
+                )
+                base = np.asarray(proxy.get("base_splats"), dtype="f4")
+                if base.ndim != 2 or int(base.shape[1]) != 15 or int(base.shape[0]) != int(deformed.shape[0]):
+                    continue
+                current = base.astype(np.float32, copy=True)
+                current[:, 0:3] = deformed
+                proxy["current_splats"] = current
+                proxy["last_signature"] = signature
+                self._mgl_scene_splats[owner_key] = current
+                mins = current[:, :3].min(axis=0).astype("f4")
+                maxs = current[:, :3].max(axis=0).astype("f4")
+                try:
+                    bind_bounds = proxy.get("bind_bounds")
+                    if isinstance(bind_bounds, (list, tuple)) and len(bind_bounds) >= 2:
+                        bind_mins = np.asarray(bind_bounds[0], dtype="f4").reshape(-1)[:3].copy()
+                        bind_maxs = np.asarray(bind_bounds[1], dtype="f4").reshape(-1)[:3].copy()
+                    else:
+                        bind_mins = bind_positions.min(axis=0).astype("f4")
+                        bind_maxs = bind_positions.max(axis=0).astype("f4")
+                        proxy["bind_bounds"] = (bind_mins, bind_maxs)
+                    self._mgl_scene_splats_bounds_local[owner_key] = (bind_mins, bind_maxs)
+                    self._mgl_scene_splat_bounds_by_owner[owner_key] = (mins, maxs)
+                    self._mgl_scene_bounds_by_owner[owner_key] = (mins, maxs)
+                except Exception:
+                    pass
+                changed = True
+            except Exception as exc:
+                try:
+                    self._mgl_log_throttled(
+                        "_mgl_skinned_splat_proxy_update_error_" + owner_key,
+                        "skinned_splat_proxy: update failed owner=" + owner_key + " err=" + repr(exc),
+                        1.0,
+                    )
+                except Exception:
+                    pass
+                continue
+
+        if changed:
+            try:
+                self._mgl_render_splats = True
+                self._mgl_splats_need_rebuild = True
+            except Exception:
+                pass
+        return bool(changed)
+
     @staticmethod
     def _mgl_edge_vertices_from_mesh(
         points: NDArray,
@@ -6051,7 +6355,27 @@ class MGLRendererMixin:
             return
         owner_norm = str(owner).strip().lower()
 
-        x = self._mgl_get_scene_splat_xform(owner) if use_splat_xform else self._mgl_get_scene_asset_xform(owner)
+        if use_splat_xform:
+            splat_xforms = getattr(self, "_mgl_scene_splat_xforms_by_owner", None)
+            if not isinstance(splat_xforms, dict):
+                splat_xforms = {}
+                setattr(self, "_mgl_scene_splat_xforms_by_owner", splat_xforms)
+            _, existing_splat_xf = self._mgl_lookup_owner_entry(splat_xforms, owner)
+            if isinstance(existing_splat_xf, dict):
+                x = existing_splat_xf
+            else:
+                mesh_xf = self._mgl_get_scene_asset_xform(owner)
+                if isinstance(mesh_xf, dict):
+                    x = {
+                        "pos": tuple(mesh_xf.get("pos", (0.0, 0.0, 0.0))),
+                        "rot": tuple(mesh_xf.get("rot", (0.0, 0.0, 0.0))),
+                        "scl": tuple(mesh_xf.get("scl", (1.0, 1.0, 1.0))),
+                    }
+                else:
+                    x = {"pos": (0.0, 0.0, 0.0), "rot": (0.0, 0.0, 0.0), "scl": (1.0, 1.0, 1.0)}
+                splat_xforms[str(owner).strip()] = x
+        else:
+            x = self._mgl_get_scene_asset_xform(owner)
         if pos is not None:
             x["pos"] = tuple(float(v) for v in pos)
         if rot is not None:
@@ -6473,9 +6797,9 @@ class MGLRendererMixin:
                 out[:, :3] = p + pivot[None, :] + np.array([px, py, pz], dtype=np.float32)[None, :]
 
                 # scale the splat ellipsoid itself (scale3)
-                out[:, 8] *= sx
-                out[:, 9] *= sy
-                out[:, 10] *= sz
+                out[:, 8] *= abs(sx)
+                out[:, 9] *= abs(sy)
+                out[:, 10] *= abs(sz)
 
                 a15 = out
 
@@ -9978,6 +10302,24 @@ class MGLRendererMixin:
         except Exception:
             pass
 
+        try:
+            if self._mgl_update_skinned_splat_proxies():
+                if bool(getattr(self, "_mgl_render_splats", False)):
+                    self._mgl_splats_visibility_dirty = False
+                    self._mgl_splats_rebuild_ts = time.time()
+                    try:
+                        self._mgl_rebuild_scene_splats(preserve_camera=True)
+                    except Exception as exc:
+                        self._mgl_splats_visibility_dirty = True
+                        try:
+                            self._mgl_log("skinned_splat_proxy: animated rebuild failed err=" + repr(exc))
+                        except Exception:
+                            pass
+                else:
+                    self._mgl_splats_visibility_dirty = True
+        except Exception:
+            pass
+
         # If splat visibility changed, rebuild in GL context.
         try:
             if bool(getattr(self, "_mgl_splats_visibility_dirty", False)):
@@ -12104,6 +12446,7 @@ class MGLRendererMixin:
         self._mgl_scene_proc_textures_by_owner = {}
         self._mgl_scene_volume_overrides_by_owner = {}
         self._mgl_scene_render_proxy_by_owner = {}
+        self._mgl_scene_skinned_splat_proxies_by_owner = {}
         self._mgl_material_log_enabled = False
         self._mgl_material_debug_owners = set()
         self._mgl_fx_log_enabled = False
@@ -12194,6 +12537,7 @@ class MGLRendererMixin:
             self._mgl_scene_splat_bounds_by_owner = {}
             self._mgl_scene_mesh_bounds_by_owner = {}
             self._mgl_scene_pivot_local_by_owner = {}
+            self._mgl_scene_skinned_splat_proxies_by_owner = {}
             # Preserve xforms loaded from workflow
             self._mgl_scene_xforms_by_owner = prev_mesh_xforms
             self._mgl_scene_splat_xforms_by_owner = prev_splat_xforms
@@ -12444,14 +12788,35 @@ class MGLRendererMixin:
                         fbx_rig_context = self._mgl_fbx_rig_context_for_path(path)
                     except Exception:
                         fbx_rig_context = None
+                skinned_proxy_loaded = False
+                if isinstance(render_proxy, dict):
+                    proxy_bounds = self._mgl_load_skinned_splat_proxy(
+                        owner,
+                        render_proxy,
+                        fbx_rig_context if isinstance(fbx_rig_context, dict) else None,
+                    )
+                    if proxy_bounds is not None:
+                        skinned_proxy_loaded = True
+                        has_splats = True
+                        try:
+                            pmin, pmax = proxy_bounds
+                            bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, pmin, pmax)
+                            has_mesh_bounds = True
+                        except Exception:
+                            pass
+                hide_source_for_proxy = bool(
+                    skinned_proxy_loaded
+                    and ext == ".fbx"
+                    and bool(render_proxy.get("hide_source_mesh", True) if isinstance(render_proxy, dict) else True)
+                )
                 fbx_bind_joints_only = bool(
                     ext == ".fbx"
                     and self._mgl_fbx_bind_joints_only_enabled(
                         fbx_rig_context if isinstance(fbx_rig_context, dict) else None
                     )
                 )
-                model_visible = bool(visible) and (not bool(fbx_bind_joints_only))
-                contribute_mesh_bounds = not bool(fbx_bind_joints_only)
+                model_visible = bool(visible) and (not bool(fbx_bind_joints_only)) and (not bool(hide_source_for_proxy))
+                contribute_mesh_bounds = (not bool(fbx_bind_joints_only)) and (not bool(hide_source_for_proxy))
                 if ext in {".fbx", ".bvh"}:
                     context = fbx_rig_context if isinstance(fbx_rig_context, dict) else {}
                     self._mgl_fbx_joints_log(
@@ -12461,8 +12826,13 @@ class MGLRendererMixin:
                         + f"has_skeleton={bool(context.get('skeleton') is not None)} "
                         + f"capture={bool(context.get('show_capture_joints', False))} "
                         + f"animated={bool(context.get('show_animated_joints', False))} "
-                        + f"bind_only={bool(fbx_bind_joints_only)} model_visible={bool(model_visible)}"
+                        + f"bind_only={bool(fbx_bind_joints_only)} model_visible={bool(model_visible)} "
+                        + f"skinned_proxy={bool(skinned_proxy_loaded)} hide_source={bool(hide_source_for_proxy)}"
                     )
+                if hide_source_for_proxy:
+                    if not first_mesh_path and path is not None:
+                        first_mesh_path = str(path)
+                    continue
 
                 if is_camera:
                     # Preferred camera proxy path: an OBJ generated from primitive cube+cone,
@@ -13293,6 +13663,12 @@ class MGLRendererMixin:
                     )
                 except Exception:
                     pass
+            except Exception:
+                pass
+
+            try:
+                if self._mgl_update_skinned_splat_proxies(force=True):
+                    has_splats = True
             except Exception:
                 pass
 

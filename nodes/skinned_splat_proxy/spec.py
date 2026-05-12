@@ -705,22 +705,32 @@ class SkinnedSplatProxyWidget(QtWidgets.QWidget):
 
     def _on_view_clicked(self):
         model = getattr(self._node_item, "model", None)
+        outcome = build_skinned_splat_proxy_scene_asset(self._node_item, generate=False)
+        node_name = str(getattr(model, "name", "") or "skinned_splat_proxy").strip()
+        asset = dict(outcome.asset or {}) if isinstance(outcome.asset, dict) else {}
+        render_proxy = asset.get("render_proxy") if isinstance(asset.get("render_proxy"), dict) else None
+        if isinstance(render_proxy, dict) and render_proxy.get("splat_ply"):
+            asset["node"] = f"{node_name}_proxy"
+            asset["visible"] = True
+            asset["render_proxy"] = dict(render_proxy)
+        else:
+            asset = {}
         ply = _param_value(model, "proxy_ply").strip()
-        if not ply or not Path(ply).exists():
+        if not asset and (not ply or not Path(ply).exists()):
             self._refresh_status()
             return
         win = _resolve_window(self._node_item)
         handler = getattr(win, "open_scene_assets", None) if win is not None else None
         if not callable(handler):
             return
-        node_name = str(getattr(model, "name", "") or "skinned_splat_proxy").strip()
-        asset = {
-            "path": ply,
-            "texture": "",
-            "node": f"{node_name}_proxy",
-            "ext": ".ply",
-            "visible": True,
-        }
+        if not asset:
+            asset = {
+                "path": ply,
+                "texture": "",
+                "node": f"{node_name}_proxy",
+                "ext": ".ply",
+                "visible": True,
+            }
         try:
             handler([asset], frame=True)
         except TypeError:
