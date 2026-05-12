@@ -10,7 +10,8 @@ import sys
 from pathlib import Path
 
 try:
-    from PySide6.QtCore import QProcess, QSettings, QTimer
+    from PySide6.QtCore import QProcess, QSettings, QSize, QTimer
+    from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import (
         QApplication,
         QCheckBox,
@@ -47,6 +48,30 @@ RIG_G1 = "Unitree G1 (.csv + .bvh)"
 
 SETTINGS_ORG = "QubitMCP"
 SETTINGS_APP = "GEMXLauncher"
+WINDOW_ICON_NAME = "Gen-X_Icon_s.png"
+
+
+def _load_window_icon() -> QIcon:
+    for parent in Path(__file__).resolve().parents:
+        icon_path = parent / "icons" / WINDOW_ICON_NAME
+        if icon_path.is_file():
+            icon = QIcon()
+            icon_file = str(icon_path)
+            for size in (16, 20, 24, 32, 40, 48, 64, 128, 256):
+                icon.addFile(icon_file, QSize(size, size))
+            if not icon.isNull():
+                return icon
+    return QIcon()
+
+
+def _set_windows_app_id() -> None:
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("QubitMCP.GEMXLauncher")
+    except Exception:
+        pass
 
 
 class GemQtLauncher(QWidget):
@@ -66,6 +91,9 @@ class GemQtLauncher(QWidget):
 
     def _build_ui(self) -> None:
         self.setWindowTitle("GEM-X Launcher")
+        icon = _load_window_icon()
+        if not icon.isNull():
+            self.setWindowIcon(icon)
         self.resize(1080, 760)
 
         root_layout = QVBoxLayout(self)
@@ -695,9 +723,13 @@ class GemQtLauncher(QWidget):
 
 
 def main() -> int:
+    _set_windows_app_id()
     app = QApplication(sys.argv)
     app.setApplicationName(SETTINGS_APP)
     app.setOrganizationName(SETTINGS_ORG)
+    icon = _load_window_icon()
+    if not icon.isNull():
+        app.setWindowIcon(icon)
     window = GemQtLauncher()
     window.show()
     return app.exec()
