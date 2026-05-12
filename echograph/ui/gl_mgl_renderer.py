@@ -2234,6 +2234,7 @@ class MGLRendererMixin:
             try:
                 self._mgl_render_splats = True
                 self._mgl_splats_need_rebuild = True
+                self._mgl_splat_force_sort = True
             except Exception:
                 pass
         return bool(changed)
@@ -9850,9 +9851,13 @@ class MGLRendererMixin:
                 self._mgl_splatq_prog["SplatWorldScale"].value = float(self._mgl_splat_world_scale)
                 # tick + gate sorting
                 self._mgl_splat_sort_tick = (self._mgl_splat_sort_tick + 1) % 1000000
-                do_sort = (self._mgl_splat_sort_tick % 10) == 0  # sort every 10th frame
+                force_sort = bool(getattr(self, "_mgl_splat_force_sort", False))
+                sort_every_frame = bool(getattr(self, "_mgl_splat_sort_every_frame", False))
+                do_sort = bool(force_sort or sort_every_frame or ((self._mgl_splat_sort_tick % 10) == 0))
 
-                # SORT (only sometimes)
+                # SORT. Static splats use a cadence; animated skinned splats force this
+                # on frames where their positions changed so transparency does not lag.
+                did_sort = False
                 try:
                     if do_sort and np is not None:
                         cpu = getattr(self, "_mgl_splats15_cpu", None)
@@ -9882,9 +9887,15 @@ class MGLRendererMixin:
                                 )
 
                             self._mgl_splatq_vbo.write(cpu[order].tobytes())
+                            did_sort = True
                 except Exception as exc:
                     if dbg:
                         print("[SPLATQ] sort error:", exc, flush=True)
+                if force_sort and did_sort:
+                    try:
+                        self._mgl_splat_force_sort = False
+                    except Exception:
+                        pass
 
                 # draw
                 inst = int(self._mgl_splat_count)

@@ -997,6 +997,7 @@ class RenderNodeWidget(QtWidgets.QWidget):
         old_viewport_bg = getattr(glv, "_viewport_bg", None)
         old_mgl_bg_color = getattr(glv, "_mgl_bg_color", None)
         old_gizmo_visible = bool(getattr(glv, "_mgl_gizmo_visible", True))
+        old_splat_sort_every_frame = bool(getattr(glv, "_mgl_splat_sort_every_frame", False))
         set_gizmo_visible = getattr(glv, "set_gizmo_visible", None)
         try:
             render_fps = max(1.0, float(self._fps_spin.value()))
@@ -1102,6 +1103,10 @@ class RenderNodeWidget(QtWidgets.QWidget):
                 glv._mgl_bg_color = (0.0, 0.0, 0.0, 1.0)
             except Exception:
                 pass
+            try:
+                glv._mgl_splat_sort_every_frame = True
+            except Exception:
+                pass
             timeline_end = self._timeline_max_frame(glv, scene_name, project_path)
             render_start, render_end = self._resolved_frame_range(timeline_end)
             total_frames = max(1, int(render_end) - int(render_start) + 1)
@@ -1118,6 +1123,7 @@ class RenderNodeWidget(QtWidgets.QWidget):
                     sync_view = getattr(glv, "_sync_selected_scene_camera_view", None)
                     if callable(sync_view):
                         sync_view(owner)
+                    glv._mgl_splat_force_sort = True
                 except Exception:
                     pass
                 image = None
@@ -1207,6 +1213,10 @@ class RenderNodeWidget(QtWidgets.QWidget):
             try:
                 if old_mgl_bg_color is not None:
                     glv._mgl_bg_color = old_mgl_bg_color
+            except Exception:
+                pass
+            try:
+                glv._mgl_splat_sort_every_frame = bool(old_splat_sort_every_frame)
             except Exception:
                 pass
             try:
