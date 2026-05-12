@@ -83,6 +83,7 @@ def register_defaults() -> None:
     register("genx_video_mocap", stripe_color="#14b8a6")
     register("GEN-X-VideoMocap", stripe_color="#14b8a6")
     register("anim_retarget", stripe_color="#ec4899")
+    register("skinned_splat_proxy", stripe_color="#38bdf8")
     register("html_preview", stripe_color="#f97316")
     register("image_collection", stripe_color="#22c55e")
     register("camera",    stripe_color="#f59e0b")

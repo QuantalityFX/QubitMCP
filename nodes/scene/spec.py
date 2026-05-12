@@ -22,6 +22,13 @@ _MATERIAL_KINDS = {"mnaterial", "material"}
 _TEXTURE_KINDS = {"texture", "texture_pro", "texture_layer"}
 _FBX_KIND_ALIASES = {"fbx_import", "fbx import", "fbximport"}
 _ANIM_RETARGET_KIND_ALIASES = {"anim_retarget", "anim retarget", "animretarget", "retarget"}
+_SKINNED_SPLAT_PROXY_KIND_ALIASES = {
+    "skinned_splat_proxy",
+    "skinned splat proxy",
+    "skinnedsplatproxy",
+    "fbx_to_skinned_splat_proxy",
+    "fbx skinned splat proxy",
+}
 _MOCAP_KIND_ALIASES = {
     "mocap_import",
     "mocap import",
@@ -1348,6 +1355,43 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                         + f"path={str(asset.get('path') or '')} "
                         + f"saved_xform={bool(isinstance(saved_xform, dict))} "
                         + f"tracks={len(getattr((asset.get('fbx_rig_context') or {}).get('clip'), 'tracks', []) or [])}",
+                    )
+            continue
+        if kind in _SKINNED_SPLAT_PROXY_KIND_ALIASES:
+            try:
+                from nodes.skinned_splat_proxy import spec as _proxy_spec  # type: ignore
+
+                build_asset = getattr(_proxy_spec, "build_skinned_splat_proxy_scene_asset", None)
+                outcome = build_asset(src_item, generate=False) if callable(build_asset) else None
+                asset = getattr(outcome, "asset", None)
+            except Exception as exc:
+                asset = None
+                if _scene_debug_enabled(model):
+                    _scene_log(
+                        node_item,
+                        f"skinned_splat_proxy asset build failed node={src_name or kind} err={exc!r}",
+                    )
+            if isinstance(asset, dict):
+                asset_owner = str(asset.get("node") or src_name or kind).strip()
+                saved_xform = _lookup_xform(xforms, asset_owner)
+                if not isinstance(saved_xform, dict) and asset_owner != src_name:
+                    saved_xform = _lookup_xform(xforms, src_name)
+                if isinstance(saved_xform, dict):
+                    asset["xform"] = dict(saved_xform)
+                asset["visible"] = asset_owner not in hidden
+                assets.append(asset)
+                path_key = str(asset.get("path") or "").strip()
+                if path_key:
+                    seen.add(path_key)
+                if dbg_collect:
+                    proxy = asset.get("render_proxy") if isinstance(asset.get("render_proxy"), dict) else {}
+                    _scene_log(
+                        node_item,
+                        "skinned_splat_proxy asset "
+                        + f"node={str(asset.get('node') or '')} "
+                        + f"path={str(asset.get('path') or '')} "
+                        + f"proxy={str(proxy.get('manifest') or proxy.get('status') or '')} "
+                        + f"hide_source={bool(proxy.get('hide_source_mesh', False))}",
                     )
             continue
         if kind in _MATERIAL_KINDS:

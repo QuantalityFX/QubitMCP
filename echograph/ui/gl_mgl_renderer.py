@@ -12103,6 +12103,7 @@ class MGLRendererMixin:
         self._mgl_scene_tex_by_owner = {}
         self._mgl_scene_proc_textures_by_owner = {}
         self._mgl_scene_volume_overrides_by_owner = {}
+        self._mgl_scene_render_proxy_by_owner = {}
         self._mgl_material_log_enabled = False
         self._mgl_material_debug_owners = set()
         self._mgl_fx_log_enabled = False
@@ -12427,6 +12428,12 @@ class MGLRendererMixin:
                 visible = bool(visibility_map.get(owner, True))
                 wire_only = bool(asset.get("wire_only"))
                 is_volume = bool(asset.get("volume"))
+                render_proxy = asset.get("render_proxy") if isinstance(asset.get("render_proxy"), dict) else None
+                if isinstance(render_proxy, dict):
+                    try:
+                        self._mgl_scene_render_proxy_by_owner[owner] = dict(render_proxy)
+                    except Exception:
+                        pass
                 fbx_rig_context = asset.get("fbx_rig_context") if isinstance(asset, dict) else None
                 if (
                     not isinstance(fbx_rig_context, dict)

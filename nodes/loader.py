@@ -395,6 +395,17 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Anim Retarget plugin import failed:", e)
 
+    # 13.95) Skinned Splat Proxy
+    try:
+        from nodes import skinned_splat_proxy
+        if hasattr(skinned_splat_proxy, "register"):
+            skinned_splat_proxy.register()
+            _safe_probe("skinned_splat_proxy")
+        else:
+            print("[EchoGraph] Skinned Splat Proxy module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Skinned Splat Proxy plugin import failed:", e)
+
     # 14) Export FBX
     try:
         from nodes import export_fbx
