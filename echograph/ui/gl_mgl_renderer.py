@@ -79,6 +79,8 @@ out vec3 v_vert;
 out vec2 v_uv;
 out vec3 v_world_norm;
 out vec3 v_world_pos;
+out vec4 v_color;
+out vec4 v_shadow_pos;
 void main() {
     gl_Position = vec4(in_pos.xy, 0.0, 1.0);
     v_uv = in_uv;
@@ -86,6 +88,8 @@ void main() {
     v_vert = vec3(0.0, 0.0, 0.0);
     v_world_norm = vec3(0.0, 0.0, 1.0);
     v_world_pos = vec3(0.0, 0.0, 0.0);
+    v_color = vec4(1.0);
+    v_shadow_pos = vec4(0.0, 0.0, 0.0, 1.0);
 }
 """
 
@@ -3274,6 +3278,7 @@ class MGLRendererMixin:
         ]
         payload = {
             "vao": entry.get("vao"),
+            "mesh_entry": entry,
             "texture": None,
             "color": tuple(color),
             "owner": str(owner or ""),
@@ -4641,6 +4646,8 @@ class MGLRendererMixin:
         self._mgl_render_splats = False
         self._mgl_splat_count = 0
         self._mgl_splats15_cpu = None
+        self._mgl_splats_all_lit = False
+        self._mgl_splats_has_lit = False
         try:
             # keep dicts stable so picking/xforms don't fall back to mesh state
             if not isinstance(getattr(self, "_mgl_scene_splats_world", None), dict):
@@ -5807,6 +5814,7 @@ class MGLRendererMixin:
             ]
             return {
                 "vao": entry.get("vao"),
+                "mesh_entry": entry,
                 "color": self._mgl_mesh_color,
                 "path": str(mesh_path),
                 "pivot_center": pivot_center,
@@ -5891,6 +5899,7 @@ class MGLRendererMixin:
         )
         return {
             "vao": entry.get("vao"),
+            "mesh_entry": entry,
             "texture": None,
             "color": color,
             "path": str(mesh_path),
@@ -6695,6 +6704,15 @@ class MGLRendererMixin:
             return np.concatenate([a[:, 0:8], scale3, quat], axis=1)
 
         arrays15 = []
+        lit_splat_owners = set()
+        unlit_splat_owners = set()
+        skinned_proxy_owners = set()
+        try:
+            proxies = getattr(self, "_mgl_scene_skinned_splat_proxies_by_owner", None)
+            if isinstance(proxies, dict):
+                skinned_proxy_owners = {str(k).strip().lower() for k in proxies.keys()}
+        except Exception:
+            skinned_proxy_owners = set()
         splats_world = {}
         for owner, arr in splat_map.items():
             if not visibility.get(owner, True):
@@ -6817,6 +6835,14 @@ class MGLRendererMixin:
 
             arrays15.append(a15)
             try:
+                owner_norm = str(owner or "").strip().lower()
+                if owner_norm and owner_norm in skinned_proxy_owners:
+                    lit_splat_owners.add(owner_norm)
+                else:
+                    unlit_splat_owners.add(owner_norm)
+            except Exception:
+                unlit_splat_owners.add(str(owner or "").strip().lower())
+            try:
                 splats_world[owner] = a15[:, :3].astype(np.float32, copy=True)
             except Exception:
                 pass
@@ -6856,6 +6882,13 @@ class MGLRendererMixin:
                 pass
             self._mgl_disable_splats()
             return
+
+        try:
+            self._mgl_splats_has_lit = bool(lit_splat_owners)
+            self._mgl_splats_all_lit = bool(lit_splat_owners) and not bool(unlit_splat_owners)
+        except Exception:
+            self._mgl_splats_has_lit = False
+            self._mgl_splats_all_lit = False
 
         try:
             self._mgl_scene_splats_world = splats_world
@@ -7023,6 +7056,10 @@ class MGLRendererMixin:
                     pass
             try:
                 self._mgl_prog["UseVolumeMask"].value = 0
+            except Exception:
+                pass
+            try:
+                self._mgl_apply_shadow_uniforms(self._mgl_prog)
             except Exception:
                 pass
 
@@ -7791,12 +7828,20 @@ class MGLRendererMixin:
             color = (0.8, 0.8, 0.8, float(self._mgl_grid_alpha))
         else:
             try:
-                self._mgl_grid_prog["Color"].value = (0.55, 0.55, 0.55, float(getattr(self, "_mgl_grid_alpha", 0.10)))
-
+                color = (
+                    float(base_color[0]),
+                    float(base_color[1]),
+                    float(base_color[2]),
+                    float(getattr(self, "_mgl_grid_alpha", 0.10)),
+                )
             except Exception:
                 color = (0.8, 0.8, 0.8, float(self._mgl_grid_alpha))
         try:
             self._mgl_grid_prog["Mvp"].write(mvp.astype("f4").tobytes())
+            try:
+                self._mgl_apply_shadow_uniforms(self._mgl_grid_prog)
+            except Exception:
+                pass
             self._mgl_grid_prog["Color"].value = color
             try:
                 self._mgl_grid_prog["GridOffset"].value = (0.0, 0.0)
@@ -8514,9 +8559,16 @@ class MGLRendererMixin:
         try:
             prog = self._mgl_ctx.program(vertex_shader=_THUMB_VERT, fragment_shader=SHADERS["mesh_fragment"])
             prog["Texture"].value = 0
+            prog["ShadowMap"].value = 7
             prog["SceneColorTex"].value = 5
             prog["UseTexture"].value = 0
             prog["UseLighting"].value = 0
+            prog["UseShadows"].value = 0
+            prog["LightDir"].value = self._mgl_light_direction_tuple()
+            prog["ShadowBias"].value = float(getattr(self, "_mgl_shadow_bias", 0.0025) or 0.0025)
+            prog["ShadowDarkness"].value = float(getattr(self, "_mgl_shadow_darkness", 0.45) or 0.45)
+            size_f = float(getattr(self, "_mgl_shadow_map_size", 2048) or 2048)
+            prog["ShadowMapSize"].value = (size_f, size_f)
             prog["UseProcedural"].value = 1
             prog["UseProceduralLayer"].value = 0
             prog["UseVolumeMask"].value = 0
@@ -8539,6 +8591,7 @@ class MGLRendererMixin:
                 ident = np.eye(4, dtype="f4")
                 try:
                     prog["Model"].write(ident.tobytes())
+                    prog["LightMvp"].write(ident.tobytes())
                     prog["VolumeInv"].write(ident.tobytes())
                 except Exception:
                     pass
@@ -8656,9 +8709,14 @@ class MGLRendererMixin:
                 prog["UseTexture"].value = 0
                 prog["UseMaterial"].value = 0
                 prog["UseLighting"].value = 0
+                prog["UseShadows"].value = 0
                 prog["UseVolumeMask"].value = 0
                 prog["UseSceneRefraction"].value = 0
-                prog["Light"].value = (1.0, 1.0, 1.0)
+                try:
+                    prog["Light"].value = (1.0, 1.0, 1.0)
+                except Exception:
+                    pass
+                prog["LightDir"].value = self._mgl_light_direction_tuple()
                 prog["LightIntensity"].value = float(getattr(self, "_mgl_light_intensity", 1.0) or 1.0)
                 prog["MaterialTransparency"].value = 0.0
                 prog["MaterialIor"].value = 1.0
@@ -8671,6 +8729,7 @@ class MGLRendererMixin:
                     ident = np.eye(4, dtype="f4")
                     try:
                         prog["Model"].write(ident.tobytes())
+                        prog["LightMvp"].write(ident.tobytes())
                         prog["VolumeInv"].write(ident.tobytes())
                     except Exception:
                         pass
@@ -9042,6 +9101,450 @@ class MGLRendererMixin:
             return max(2, int(self.width())), max(2, int(self.height()))
         except Exception:
             return 2, 2
+
+    def _mgl_light_direction_tuple(self) -> Tuple[float, float, float]:
+        if np is None:
+            return (0.35, 0.85, 0.45)
+        try:
+            raw = getattr(self, "_mgl_shadow_light_dir", (0.35, 0.85, 0.45))
+            arr = np.asarray(raw, dtype=np.float32).reshape(-1)
+            if int(arr.shape[0]) < 3:
+                arr = np.array([0.35, 0.85, 0.45], dtype=np.float32)
+            else:
+                arr = arr[:3].astype(np.float32, copy=True)
+            if not np.all(np.isfinite(arr)):
+                arr = np.array([0.35, 0.85, 0.45], dtype=np.float32)
+            length = float(np.linalg.norm(arr))
+            if length <= 1.0e-6:
+                arr = np.array([0.35, 0.85, 0.45], dtype=np.float32)
+                length = float(np.linalg.norm(arr))
+            arr = arr / max(length, 1.0e-6)
+            return (float(arr[0]), float(arr[1]), float(arr[2]))
+        except Exception:
+            return (0.35, 0.85, 0.45)
+
+    def _mgl_shadow_map_size_value(self) -> int:
+        try:
+            size = int(getattr(self, "_mgl_shadow_map_size", 2048) or 2048)
+        except Exception:
+            size = 2048
+        return max(256, min(4096, int(size)))
+
+    def _mgl_ensure_shadow_resources(self) -> bool:
+        if self._mgl_ctx is None or getattr(self, "_mgl_shadow_prog", None) is None:
+            return False
+        size = self._mgl_shadow_map_size_value()
+        if (
+            getattr(self, "_mgl_shadow_fbo", None) is not None
+            and getattr(self, "_mgl_shadow_depth_tex", None) is not None
+            and int(getattr(self, "_mgl_shadow_size_current", 0) or 0) == int(size)
+        ):
+            return True
+        try:
+            fbo = getattr(self, "_mgl_shadow_fbo", None)
+            if fbo is not None and hasattr(fbo, "release"):
+                fbo.release()
+        except Exception:
+            pass
+        try:
+            tex = getattr(self, "_mgl_shadow_depth_tex", None)
+            if tex is not None and hasattr(tex, "release"):
+                tex.release()
+        except Exception:
+            pass
+        try:
+            depth = self._mgl_ctx.depth_texture((size, size))
+            try:
+                depth.repeat_x = False
+                depth.repeat_y = False
+            except Exception:
+                pass
+            try:
+                depth.filter = (moderngl.LINEAR, moderngl.LINEAR)
+            except Exception:
+                pass
+            try:
+                depth.compare_func = ""
+            except Exception:
+                pass
+            fbo = self._mgl_ctx.framebuffer(depth_attachment=depth)
+        except Exception as exc:
+            try:
+                self._mgl_log_throttled(
+                    "_mgl_shadow_resource_error_ts",
+                    "shadows: resource creation failed err=" + repr(exc),
+                    2.0,
+                )
+            except Exception:
+                pass
+            self._mgl_shadow_fbo = None
+            self._mgl_shadow_depth_tex = None
+            self._mgl_shadow_size_current = 0
+            return False
+        self._mgl_shadow_fbo = fbo
+        self._mgl_shadow_depth_tex = depth
+        self._mgl_shadow_size_current = int(size)
+        return True
+
+    def _mgl_shadow_scene_bounds(self):
+        if np is None:
+            return None
+        mins_list = []
+        maxs_list = []
+        visibility = getattr(self, "_mgl_scene_visibility", {}) or {}
+
+        def _add_bounds(owner: str, bounds) -> None:
+            if bounds is None:
+                return
+            try:
+                bmin, bmax = bounds
+                bmin = np.asarray(bmin, dtype=np.float32).reshape(-1)[:3]
+                bmax = np.asarray(bmax, dtype=np.float32).reshape(-1)[:3]
+                if bmin.shape[0] < 3 or bmax.shape[0] < 3:
+                    return
+                if not np.all(np.isfinite(bmin)) or not np.all(np.isfinite(bmax)):
+                    return
+                mins_list.append(bmin.astype(np.float32, copy=True))
+                maxs_list.append(bmax.astype(np.float32, copy=True))
+            except Exception:
+                return
+
+        scene = getattr(self, "_mgl_scene", None)
+        if scene is not None:
+            try:
+                for item in scene.items():
+                    if not bool(getattr(item, "visible", False)):
+                        continue
+                    payload = getattr(item, "payload", None) or {}
+                    owner = str(payload.get("owner") or payload.get("node") or "").strip()
+                    if owner and not bool(visibility.get(owner, True)):
+                        continue
+                    if owner:
+                        try:
+                            _add_bounds(owner, self.get_scene_owner_bounds(owner))
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+        try:
+            splat_bounds = getattr(self, "_mgl_scene_splat_bounds_by_owner", None)
+            if isinstance(splat_bounds, dict):
+                for owner, bounds in splat_bounds.items():
+                    owner_key = str(owner or "").strip()
+                    if owner_key and not bool(visibility.get(owner_key, True)):
+                        continue
+                    _add_bounds(owner_key, bounds)
+        except Exception:
+            pass
+
+        if not mins_list or not maxs_list:
+            try:
+                center = np.asarray(getattr(self, "_mgl_center", None), dtype=np.float32).reshape(-1)[:3]
+                if center.shape[0] < 3 or not np.all(np.isfinite(center)):
+                    raise ValueError("invalid center")
+            except Exception:
+                center = np.zeros(3, dtype=np.float32)
+            try:
+                radius = max(1.0, float(getattr(self, "_mgl_camera_zoom", 1.0) or 1.0))
+            except Exception:
+                radius = 1.0
+            return center.astype(np.float32), float(radius)
+
+        bmin = np.min(np.stack(mins_list, axis=0), axis=0)
+        bmax = np.max(np.stack(maxs_list, axis=0), axis=0)
+        center = ((bmin + bmax) * 0.5).astype(np.float32)
+        diag = bmax - bmin
+        radius = max(0.5, float(np.linalg.norm(diag) * 0.5), float(np.max(np.abs(diag))) * 0.5)
+        return center, float(radius)
+
+    def _mgl_shadow_light_matrices(self):
+        if np is None or Matrix44 is None:
+            return None
+        bounds = self._mgl_shadow_scene_bounds()
+        if bounds is None:
+            return None
+        center, radius = bounds
+        light_dir = np.asarray(self._mgl_light_direction_tuple(), dtype=np.float32)
+        extent = max(1.0, float(radius) * 1.35)
+        distance = extent * 3.0
+        eye = center + light_dir * distance
+        up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+        if abs(float(np.dot(up, light_dir))) > 0.92:
+            up = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        try:
+            view = Matrix44.look_at(
+                (float(eye[0]), float(eye[1]), float(eye[2])),
+                (float(center[0]), float(center[1]), float(center[2])),
+                (float(up[0]), float(up[1]), float(up[2])),
+                dtype="f4",
+            )
+            proj = Matrix44.orthogonal_projection(
+                -extent,
+                extent,
+                extent,
+                -extent,
+                0.01,
+                max(2.0, extent * 8.0),
+                dtype="f4",
+            )
+            return proj, view, (proj * view).astype("f4")
+        except Exception:
+            return None
+
+    def _mgl_apply_shadow_uniforms(self, prog) -> None:
+        if prog is None or np is None:
+            return
+        light_dir = self._mgl_light_direction_tuple()
+        try:
+            prog["LightDir"].value = light_dir
+        except Exception:
+            pass
+        try:
+            prog["LightIntensity"].value = float(getattr(self, "_mgl_light_intensity", 1.0) or 1.0)
+        except Exception:
+            pass
+        light_mvp = getattr(self, "_mgl_shadow_light_mvp", None)
+        if light_mvp is None:
+            light_mvp = np.eye(4, dtype="f4")
+        try:
+            prog["LightMvp"].write(np.asarray(light_mvp, dtype="f4").tobytes())
+        except Exception:
+            pass
+        use_shadows = bool(
+            getattr(self, "_mgl_shadows_enabled", True)
+            and getattr(self, "_mgl_shadow_valid", False)
+            and getattr(self, "_mgl_shadow_depth_tex", None) is not None
+        )
+        try:
+            prog["UseShadows"].value = 1 if use_shadows else 0
+        except Exception:
+            pass
+        try:
+            prog["ShadowBias"].value = float(getattr(self, "_mgl_shadow_bias", 0.0025) or 0.0025)
+        except Exception:
+            pass
+        try:
+            prog["ShadowDarkness"].value = float(getattr(self, "_mgl_shadow_darkness", 0.45) or 0.45)
+        except Exception:
+            pass
+        size = float(self._mgl_shadow_map_size_value())
+        try:
+            prog["ShadowMapSize"].value = (size, size)
+        except Exception:
+            pass
+        if use_shadows:
+            try:
+                prog["ShadowMap"].value = 7
+            except Exception:
+                pass
+            try:
+                tex = getattr(self, "_mgl_shadow_depth_tex", None)
+                if tex is not None:
+                    tex.use(location=7)
+            except Exception:
+                pass
+
+    def _mgl_shadow_vao_for_entry(self, item: MGLSceneItem, entry: dict):
+        if self._mgl_ctx is None or getattr(self, "_mgl_shadow_prog", None) is None or not isinstance(entry, dict):
+            return None
+        vao = entry.get("_shadow_vao")
+        if vao is not None:
+            return vao
+        vbo = entry.get("vbo")
+        ibo = entry.get("ibo")
+        if vbo is None:
+            return None
+        try:
+            vao = self._mgl_ctx.vertex_array(
+                self._mgl_shadow_prog,
+                [(vbo, "3f", "in_position")],
+                ibo,
+                4,
+            )
+        except Exception:
+            return None
+        entry["_shadow_vao"] = vao
+        try:
+            resources = getattr(item, "resources", None)
+            if isinstance(resources, list):
+                resources.append(vao)
+        except Exception:
+            pass
+        return vao
+
+    def _mgl_draw_scene_mesh_shadow(self, item: MGLSceneItem, light_mvp) -> None:
+        if self._mgl_ctx is None or getattr(self, "_mgl_shadow_prog", None) is None or item is None:
+            return
+        payload = getattr(item, "payload", None) or {}
+        if bool(payload.get("edge_wire", False)):
+            return
+        if self._mgl_scene_item_is_transparent(item):
+            return
+        if isinstance(payload.get("fbx_rig_context"), dict):
+            self._mgl_refresh_fbx_rig_mesh_item(item)
+            payload = getattr(item, "payload", None) or {}
+        submeshes = [sub for sub in list(payload.get("submeshes") or []) if isinstance(sub, dict)]
+        entry = payload.get("mesh_entry") if isinstance(payload.get("mesh_entry"), dict) else None
+        if entry is None and payload.get("vao") is not None:
+            # Older scene items did not keep a named mesh entry in payload.
+            # New loads do, so this path only skips legacy items safely.
+            entry = None
+        if not submeshes and entry is None:
+            return
+        model_np = np.eye(4, dtype="f4")
+        try:
+            model = payload.get("model")
+            if model is not None:
+                model_np = np.asarray(model, dtype="f4")
+                if getattr(model_np, "shape", None) != (4, 4):
+                    model_np = np.eye(4, dtype="f4")
+        except Exception:
+            model_np = np.eye(4, dtype="f4")
+        try:
+            self._mgl_shadow_prog["LightMvp"].write(np.asarray(light_mvp, dtype="f4").tobytes())
+            self._mgl_shadow_prog["Model"].write(model_np.astype("f4", copy=False).tobytes())
+        except Exception:
+            pass
+        if submeshes:
+            for sub in submeshes:
+                vao = self._mgl_shadow_vao_for_entry(item, sub)
+                if vao is not None:
+                    try:
+                        vao.render()
+                    except Exception:
+                        pass
+        elif entry is not None:
+            vao = self._mgl_shadow_vao_for_entry(item, entry)
+            if vao is not None:
+                try:
+                    vao.render()
+                except Exception:
+                    pass
+
+    def _mgl_render_shadow_map(self) -> None:
+        try:
+            self._mgl_shadow_valid = False
+        except Exception:
+            pass
+        if not bool(getattr(self, "_mgl_shadows_enabled", True)):
+            return
+        if self._mgl_ctx is None or not self._mgl_ensure_shadow_resources():
+            return
+        matrices = self._mgl_shadow_light_matrices()
+        if matrices is None:
+            return
+        _light_proj, _light_view, light_mvp = matrices
+        fbo = getattr(self, "_mgl_shadow_fbo", None)
+        if fbo is None:
+            return
+        old_viewport = None
+        old_depth_mask = None
+        old_depth_func = None
+        old_wireframe = None
+        try:
+            old_viewport = self._mgl_ctx.viewport
+        except Exception:
+            old_viewport = None
+        try:
+            old_depth_mask = getattr(self._mgl_ctx, "depth_mask", None)
+        except Exception:
+            old_depth_mask = None
+        try:
+            old_depth_func = getattr(self._mgl_ctx, "depth_func", None)
+        except Exception:
+            old_depth_func = None
+        try:
+            old_wireframe = bool(getattr(self._mgl_ctx, "wireframe", False))
+        except Exception:
+            old_wireframe = None
+        try:
+            size = self._mgl_shadow_map_size_value()
+            fbo.use()
+            self._mgl_ctx.viewport = (0, 0, size, size)
+            try:
+                self._mgl_ctx.clear(depth=1.0)
+            except Exception:
+                try:
+                    fbo.clear(depth=1.0)
+                except Exception:
+                    pass
+            try:
+                self._mgl_ctx.enable(moderngl.DEPTH_TEST)
+                self._mgl_ctx.disable(moderngl.BLEND)
+                self._mgl_ctx.disable(moderngl.CULL_FACE)
+            except Exception:
+                pass
+            try:
+                self._mgl_ctx.depth_mask = True
+                self._mgl_ctx.depth_func = "<="
+                self._mgl_ctx.wireframe = False
+            except Exception:
+                pass
+            scene = getattr(self, "_mgl_scene", None)
+            if scene is not None:
+                try:
+                    items = [
+                        item
+                        for item in sorted(scene.items(), key=lambda it: it.order)
+                        if bool(getattr(item, "visible", False))
+                    ]
+                except Exception:
+                    items = []
+                for item in items:
+                    self._mgl_draw_scene_mesh_shadow(item, light_mvp)
+            self._mgl_shadow_light_mvp = np.asarray(light_mvp, dtype="f4")
+            self._mgl_shadow_valid = True
+        except Exception as exc:
+            try:
+                self._mgl_log_throttled(
+                    "_mgl_shadow_render_error_ts",
+                    "shadows: render failed err=" + repr(exc),
+                    2.0,
+                )
+            except Exception:
+                pass
+        finally:
+            try:
+                if old_wireframe is not None:
+                    self._mgl_ctx.wireframe = old_wireframe
+            except Exception:
+                pass
+            try:
+                if old_depth_mask is not None:
+                    self._mgl_ctx.depth_mask = old_depth_mask
+            except Exception:
+                pass
+            try:
+                if old_depth_func is not None:
+                    self._mgl_ctx.depth_func = old_depth_func
+            except Exception:
+                pass
+            try:
+                self._mgl_ctx.enable(moderngl.BLEND | moderngl.DEPTH_TEST)
+                if bool(getattr(self, "_mgl_cull_enabled", False)):
+                    self._mgl_ctx.enable(moderngl.CULL_FACE)
+                else:
+                    self._mgl_ctx.disable(moderngl.CULL_FACE)
+            except Exception:
+                pass
+            try:
+                self._mgl_bind_default_fbo()
+            except Exception:
+                pass
+            try:
+                if int(self._mgl_target_framebuffer_id()) <= 0 and hasattr(self._mgl_ctx, "screen"):
+                    self._mgl_ctx.screen.use()
+            except Exception:
+                pass
+            try:
+                if old_viewport is not None:
+                    self._mgl_ctx.viewport = old_viewport
+                else:
+                    w, h = self._mgl_render_size()
+                    self._mgl_ctx.viewport = (0, 0, int(w), int(h))
+            except Exception:
+                pass
 
     def _mgl_render_to_image(self, width: int, height: int) -> Optional[QtGui.QImage]:
         if (not _HAS_MGL) or getattr(self, "_mgl_ctx", None) is None:
@@ -9582,6 +10085,10 @@ class MGLRendererMixin:
                     grid_offset_z = math.floor(grid_offset_z / spacing) * spacing
 
                 self._mgl_grid_prog["Mvp"].write(mvp.astype("f4").tobytes())
+                try:
+                    self._mgl_apply_shadow_uniforms(self._mgl_grid_prog)
+                except Exception:
+                    pass
                 self._mgl_grid_prog["Color"].value = (grid_rgb[0], grid_rgb[1], grid_rgb[2], grid_alpha)
                 try:
                     self._mgl_grid_prog["GridSpacing"].value = float(spacing)
@@ -9836,6 +10343,13 @@ class MGLRendererMixin:
                     self._mgl_splatq_prog["Proj"].write(np.asarray(proj, dtype="f4").tobytes())
                     self._mgl_splatq_prog["View"].write(np.asarray(lookat, dtype="f4").tobytes())
                     self._mgl_splatq_prog["Model"].write(np.asarray(model, dtype="f4").tobytes())
+                except Exception:
+                    pass
+                try:
+                    self._mgl_apply_shadow_uniforms(self._mgl_splatq_prog)
+                    self._mgl_splatq_prog["UseSplatLighting"].value = (
+                        1 if bool(getattr(self, "_mgl_splats_all_lit", False)) else 0
+                    )
                 except Exception:
                     pass
 
@@ -10357,6 +10871,14 @@ class MGLRendererMixin:
             pass
 
         self._mgl_upload_pending_splats()
+
+        try:
+            self._mgl_render_shadow_map()
+        except Exception:
+            try:
+                self._mgl_shadow_valid = False
+            except Exception:
+                pass
 
         scene = getattr(self, "_mgl_scene", None)
         try:
@@ -11215,19 +11737,32 @@ class MGLRendererMixin:
             grid_fragment = SHADERS["grid_fragment"]
             wire_vertex = SHADERS["wire_vertex"]
             wire_fragment = SHADERS["wire_fragment"]
+            shadow_vertex = SHADERS["shadow_vertex"]
+            shadow_fragment = SHADERS["shadow_fragment"]
 
             self._mgl_prog = self._mgl_ctx.program(vertex_shader=mesh_vertex, fragment_shader=mesh_fragment)
             self._mgl_grid_prog = self._mgl_ctx.program(vertex_shader=grid_vertex, fragment_shader=grid_fragment)
             self._mgl_wire_prog = self._mgl_ctx.program(vertex_shader=wire_vertex, fragment_shader=wire_fragment)
-            self._mgl_prog["Light"].value = (1.0, 1.0, 1.0)
+            self._mgl_shadow_prog = self._mgl_ctx.program(vertex_shader=shadow_vertex, fragment_shader=shadow_fragment)
+            try:
+                self._mgl_prog["Light"].value = (1.0, 1.0, 1.0)
+            except Exception:
+                pass
             self._mgl_prog["Color"].value = self._mgl_mesh_color
             try:
                 self._mgl_prog["Texture"].value = 0
+                self._mgl_prog["ShadowMap"].value = 7
                 self._mgl_prog["SceneColorTex"].value = 5
                 self._mgl_prog["UseTexture"].value = 0
                 self._mgl_prog["UseVertexColor"].value = 0
+                self._mgl_prog["LightDir"].value = self._mgl_light_direction_tuple()
                 self._mgl_prog["LightIntensity"].value = float(self._mgl_light_intensity)
                 self._mgl_prog["UseLighting"].value = 1
+                self._mgl_prog["UseShadows"].value = 0
+                self._mgl_prog["ShadowBias"].value = float(getattr(self, "_mgl_shadow_bias", 0.0025) or 0.0025)
+                self._mgl_prog["ShadowDarkness"].value = float(getattr(self, "_mgl_shadow_darkness", 0.45) or 0.45)
+                size = float(getattr(self, "_mgl_shadow_map_size", 2048) or 2048)
+                self._mgl_prog["ShadowMapSize"].value = (size, size)
                 self._mgl_prog["UseMaterial"].value = 0
                 self._mgl_prog["MaterialTransparency"].value = 0.0
                 self._mgl_prog["MaterialIor"].value = 1.0
@@ -11276,12 +11811,25 @@ class MGLRendererMixin:
                     ident = np.eye(4, dtype="f4")
                     try:
                         self._mgl_prog["Model"].write(ident.tobytes())
+                        self._mgl_prog["LightMvp"].write(ident.tobytes())
                         self._mgl_prog["VolumeInv"].write(ident.tobytes())
                     except Exception:
                         pass
             except Exception:
                 pass
             self._mgl_grid_prog["Color"].value = (0.8, 0.8, 0.8, self._mgl_grid_alpha)
+            try:
+                self._mgl_grid_prog["ShadowMap"].value = 7
+                self._mgl_grid_prog["UseShadows"].value = 0
+                self._mgl_grid_prog["ShadowBias"].value = float(getattr(self, "_mgl_shadow_bias", 0.0025) or 0.0025)
+                self._mgl_grid_prog["ShadowDarkness"].value = float(getattr(self, "_mgl_shadow_darkness", 0.45) or 0.45)
+                size = float(getattr(self, "_mgl_shadow_map_size", 2048) or 2048)
+                self._mgl_grid_prog["ShadowMapSize"].value = (size, size)
+                if np is not None:
+                    ident = np.eye(4, dtype="f4")
+                    self._mgl_grid_prog["LightMvp"].write(ident.tobytes())
+            except Exception:
+                pass
             try:
                 self._mgl_wire_prog["Color"].value = self._mgl_wire_color
                 self._mgl_wire_prog["LineWidth"].value = float(
@@ -11304,6 +11852,21 @@ class MGLRendererMixin:
 
             self._mgl_splat_prog = self._mgl_ctx.program(vertex_shader=splat_vertex, fragment_shader=splat_fragment)
             self._mgl_splatq_prog = self._mgl_ctx.program(vertex_shader=splatq_vertex, fragment_shader=splatq_fragment)
+            try:
+                self._mgl_splatq_prog["ShadowMap"].value = 7
+                self._mgl_splatq_prog["LightDir"].value = self._mgl_light_direction_tuple()
+                self._mgl_splatq_prog["LightIntensity"].value = float(self._mgl_light_intensity)
+                self._mgl_splatq_prog["UseSplatLighting"].value = 0
+                self._mgl_splatq_prog["UseShadows"].value = 0
+                self._mgl_splatq_prog["ShadowBias"].value = float(getattr(self, "_mgl_shadow_bias", 0.0025) or 0.0025)
+                self._mgl_splatq_prog["ShadowDarkness"].value = float(getattr(self, "_mgl_shadow_darkness", 0.45) or 0.45)
+                size = float(getattr(self, "_mgl_shadow_map_size", 2048) or 2048)
+                self._mgl_splatq_prog["ShadowMapSize"].value = (size, size)
+                if np is not None:
+                    ident = np.eye(4, dtype="f4")
+                    self._mgl_splatq_prog["LightMvp"].write(ident.tobytes())
+            except Exception:
+                pass
 
             # Static quad corners (TRIANGLE_STRIP, 4 verts)
             quad = np.array(
@@ -11687,7 +12250,12 @@ class MGLRendererMixin:
             item = MGLSceneItem(
                 name="mesh",
                 draw_fn=MGLRendererMixin._mgl_draw_scene_mesh,
-                payload={"vao": entry.get("vao"), "texture": None, "color": self._mgl_mesh_color},
+                payload={
+                    "vao": entry.get("vao"),
+                    "mesh_entry": entry,
+                    "texture": None,
+                    "color": self._mgl_mesh_color,
+                },
                 resources=[res for res in resources if res is not None],
                 order=10,
                 tag="model",
@@ -11767,6 +12335,7 @@ class MGLRendererMixin:
                 draw_fn=MGLRendererMixin._mgl_draw_scene_mesh,
                 payload={
                     "vao": entry.get("vao"),
+                    "mesh_entry": entry,
                     "texture": None,
                     "color": self._mgl_mesh_color,
                     "path": path_key,
@@ -12153,6 +12722,7 @@ class MGLRendererMixin:
                     draw_fn=MGLRendererMixin._mgl_draw_scene_mesh,
                     payload={
                         "vao": entry.get("vao"),
+                        "mesh_entry": entry,
                         "texture": None,
                         "color": self._mgl_mesh_color,
                         "path": str(path),
@@ -12241,6 +12811,7 @@ class MGLRendererMixin:
                         draw_fn=MGLRendererMixin._mgl_draw_scene_mesh,
                         payload={
                             "vao": entry.get("vao"),
+                            "mesh_entry": entry,
                             "texture": None,
                             "color": self._mgl_mesh_color,
                             "path": str(path),
@@ -13263,6 +13834,7 @@ class MGLRendererMixin:
                         draw_fn=MGLRendererMixin._mgl_draw_scene_mesh,
                         payload={
                             "vao": entry.get("vao"),
+                            "mesh_entry": entry,
                             "texture": texture_override,
                             "color": self._mgl_mesh_color,
                             "material": material,
@@ -13423,6 +13995,7 @@ class MGLRendererMixin:
                             draw_fn=MGLRendererMixin._mgl_draw_scene_mesh,
                             payload={
                                 "vao": entry.get("vao"),
+                                "mesh_entry": entry,
                                 "texture": texture_override,
                                 "color": color,
                                 "material": material,

@@ -6,6 +6,7 @@ SHADERS = {
 #version 330
 uniform mat4 Mvp;
 uniform mat4 Model;
+uniform mat4 LightMvp;
 in vec3 in_position;
 in vec3 in_normal;
 in vec2 in_uv;
@@ -16,6 +17,7 @@ out vec2 v_uv;
 out vec3 v_world_norm;
 out vec3 v_world_pos;
 out vec4 v_color;
+out vec4 v_shadow_pos;
 vec3 safe_normalize(vec3 v) {
     float len2 = dot(v, v);
     if (len2 <= 1e-10) {
@@ -32,6 +34,7 @@ void main() {
     v_world_norm = safe_normalize(mat3(Model) * in_normal);
     v_world_pos = world.xyz;
     v_color = in_color;
+    v_shadow_pos = LightMvp * world;
 }
 """,
 
@@ -39,17 +42,23 @@ void main() {
 #version 330
 uniform vec4 Color;
 uniform vec3 Light;
+uniform vec3 LightDir;
 uniform float LightIntensity;
 uniform sampler2D Texture;
+uniform sampler2D ShadowMap;
 uniform int UseTexture;
 uniform int UseVertexColor;
 uniform int UseMaterial;
 uniform int UseLighting;
+uniform int UseShadows;
 uniform int UseProcedural;
 uniform int UseProceduralLayer;
 uniform int UseVolumeMask;
 uniform mat4 VolumeInv;
 uniform mat4 Model;
+uniform float ShadowBias;
+uniform float ShadowDarkness;
+uniform vec2 ShadowMapSize;
 uniform float MaterialTransparency;
 uniform float MaterialIor;
 uniform vec3 MaterialTint;
@@ -99,6 +108,7 @@ in vec2 v_uv;
 in vec3 v_world_norm;
 in vec3 v_world_pos;
 in vec4 v_color;
+in vec4 v_shadow_pos;
 out vec4 f_color;
 
 vec3 safe_normalize(vec3 v) {
@@ -292,6 +302,35 @@ vec3 apply_lighting(vec3 rgb, float lum, float light_mix, float emissive) {
     return lit;
 }
 
+float sample_shadow_factor(vec4 shadow_pos, vec3 normal) {
+    if (UseShadows == 0) {
+        return 1.0;
+    }
+    float w = shadow_pos.w;
+    if (abs(w) <= 1e-6) {
+        return 1.0;
+    }
+    vec3 proj = shadow_pos.xyz / w;
+    vec3 uvw = proj * 0.5 + 0.5;
+    if (uvw.x < 0.0 || uvw.x > 1.0 || uvw.y < 0.0 || uvw.y > 1.0 || uvw.z < 0.0 || uvw.z > 1.0) {
+        return 1.0;
+    }
+    vec3 n = safe_normalize(normal);
+    vec3 l = safe_normalize(LightDir);
+    float ndotl = clamp(dot(n, l), 0.0, 1.0);
+    float bias = max(ShadowBias * (1.0 - ndotl), ShadowBias * 0.35);
+    vec2 texel = 1.0 / max(ShadowMapSize, vec2(1.0));
+    float visible = 0.0;
+    for (int x = -1; x <= 1; x++) {
+        for (int y = -1; y <= 1; y++) {
+            float closest = texture(ShadowMap, uvw.xy + vec2(float(x), float(y)) * texel).r;
+            visible += ((uvw.z - bias) <= closest) ? 1.0 : 0.0;
+        }
+    }
+    visible /= 9.0;
+    return mix(1.0 - clamp(ShadowDarkness, 0.0, 1.0), 1.0, visible);
+}
+
 vec4 composite_over(vec4 base, vec4 over) {
     float oa = clamp(over.a, 0.0, 1.0);
     float ba = clamp(base.a, 0.0, 1.0);
@@ -310,14 +349,10 @@ void main() {
     vec4 base = Color;
     float lum = 1.0;
     if (UseLighting == 1) {
-        lum = -dot(normalize(v_norm), normalize(v_vert + Light));
-        lum = acos(lum) / 3.14159265;
-        lum = clamp(lum, 0.0, 1.0);
-        lum = lum * lum;
-        lum = smoothstep(0.0, 1.0, lum);
-        lum *= smoothstep(0.0, 80.0, v_vert.z) * 0.3 + 0.7;
-        lum = lum * 0.8 + 0.2;
-        lum = 0.2 + lum * max(LightIntensity, 0.0);
+        vec3 n = safe_normalize(v_world_norm);
+        vec3 l = safe_normalize(LightDir);
+        float diffuse = max(dot(n, l), 0.0);
+        lum = 0.22 + diffuse * 0.86 * max(LightIntensity, 0.0);
         lum = clamp(lum, 0.0, 10.0);
     }
     if (UseProcedural == 1) {
@@ -426,6 +461,9 @@ void main() {
         }
         base.a *= alpha_out;
     }
+    if (UseLighting == 1) {
+        base.rgb *= sample_shadow_factor(v_shadow_pos, v_world_norm);
+    }
     if (base.a <= 0.001) {
         discard;
     }
@@ -433,15 +471,34 @@ void main() {
 }
 """,
 
+    "shadow_vertex": """
+#version 330
+uniform mat4 LightMvp;
+uniform mat4 Model;
+in vec3 in_position;
+void main() {
+    gl_Position = LightMvp * Model * vec4(in_position, 1.0);
+}
+""",
+
+    "shadow_fragment": """
+#version 330
+void main() {
+}
+""",
+
     "grid_vertex": """
 #version 330
 uniform mat4 Mvp;
+uniform mat4 LightMvp;
 uniform vec2 GridOffset;
 in vec3 in_position;
 out vec3 v_pos;
+out vec4 v_shadow_pos;
 void main() {
     vec3 pos = in_position + vec3(GridOffset.x, 0.0, GridOffset.y);
     v_pos = pos;
+    v_shadow_pos = LightMvp * vec4(pos, 1.0);
     gl_Position = Mvp * vec4(pos, 1.0);
 }
 """,
@@ -455,8 +512,40 @@ uniform float MajorBoost;
 uniform float FadeStart;
 uniform float FadeEnd;
 uniform vec2 FadeOrigin;
+uniform sampler2D ShadowMap;
+uniform int UseShadows;
+uniform float ShadowBias;
+uniform float ShadowDarkness;
+uniform vec2 ShadowMapSize;
 in vec3 v_pos;
+in vec4 v_shadow_pos;
 out vec4 f_color;
+
+float sample_shadow_factor(vec4 shadow_pos) {
+    if (UseShadows == 0) {
+        return 1.0;
+    }
+    float w = shadow_pos.w;
+    if (abs(w) <= 1e-6) {
+        return 1.0;
+    }
+    vec3 proj = shadow_pos.xyz / w;
+    vec3 uvw = proj * 0.5 + 0.5;
+    if (uvw.x < 0.0 || uvw.x > 1.0 || uvw.y < 0.0 || uvw.y > 1.0 || uvw.z < 0.0 || uvw.z > 1.0) {
+        return 1.0;
+    }
+    vec2 texel = 1.0 / max(ShadowMapSize, vec2(1.0));
+    float visible = 0.0;
+    for (int x = -1; x <= 1; x++) {
+        for (int y = -1; y <= 1; y++) {
+            float closest = texture(ShadowMap, uvw.xy + vec2(float(x), float(y)) * texel).r;
+            visible += ((uvw.z - ShadowBias) <= closest) ? 1.0 : 0.0;
+        }
+    }
+    visible /= 9.0;
+    return mix(1.0 - clamp(ShadowDarkness, 0.0, 1.0), 1.0, visible);
+}
+
 void main() {
     vec3 base = Color.rgb;
     float alpha = Color.a;
@@ -471,6 +560,7 @@ void main() {
     float is_major = (modv < 0.5) ? 1.0 : 0.0;
     vec3 major = clamp(base * MajorBoost, 0.0, 1.0);
     vec3 rgb = mix(base, major, is_major);
+    rgb *= sample_shadow_factor(v_shadow_pos);
     vec2 rel = v_pos.xz - FadeOrigin;
     float dist = length(rel);
     float fade = 1.0;
@@ -584,6 +674,7 @@ void main() {
 uniform mat4 Proj;
 uniform mat4 View;
 uniform mat4 Model;
+uniform mat4 LightMvp;
 uniform float SplatWorldScale;
 
 in vec2 in_corner;
@@ -595,6 +686,8 @@ in vec4 in_rot;
 
 out vec2 v_uv;
 out vec4 v_col;
+out vec3 v_world_norm;
+out vec4 v_shadow_pos;
 
 vec3 quat_rotate(vec3 v, vec4 q) {
     vec3 t = 2.0 * cross(q.xyz, v);
@@ -602,7 +695,8 @@ vec3 quat_rotate(vec3 v, vec4 q) {
 }
 
 void main() {
-    vec4 view_p = View * Model * vec4(in_pos, 1.0);
+    vec4 world_p = Model * vec4(in_pos, 1.0);
+    vec4 view_p = View * world_p;
 
     float s = in_rad * SplatWorldScale;
     mat3 VM = mat3(View * Model);
@@ -639,6 +733,8 @@ void main() {
 
     v_uv = in_corner;
     v_col = in_col;
+    v_world_norm = normalize(quat_rotate(vec3(0.0, 0.0, 1.0), in_rot));
+    v_shadow_pos = LightMvp * vec4(in_pos, 1.0);
 
     gl_Position = Proj * view_p;
 }
@@ -646,9 +742,56 @@ void main() {
 
     "splatq_fragment": """
 #version 330
+uniform vec3 LightDir;
+uniform float LightIntensity;
+uniform sampler2D ShadowMap;
+uniform int UseSplatLighting;
+uniform int UseShadows;
+uniform float ShadowBias;
+uniform float ShadowDarkness;
+uniform vec2 ShadowMapSize;
 in vec2 v_uv;
 in vec4 v_col;
+in vec3 v_world_norm;
+in vec4 v_shadow_pos;
 out vec4 f_color;
+
+vec3 safe_normalize(vec3 v) {
+    float len2 = dot(v, v);
+    if (len2 <= 1e-10) {
+        return vec3(0.0, 0.0, 1.0);
+    }
+    return v * inversesqrt(len2);
+}
+
+float sample_shadow_factor(vec4 shadow_pos, vec3 normal) {
+    if (UseShadows == 0) {
+        return 1.0;
+    }
+    float w = shadow_pos.w;
+    if (abs(w) <= 1e-6) {
+        return 1.0;
+    }
+    vec3 proj = shadow_pos.xyz / w;
+    vec3 uvw = proj * 0.5 + 0.5;
+    if (uvw.x < 0.0 || uvw.x > 1.0 || uvw.y < 0.0 || uvw.y > 1.0 || uvw.z < 0.0 || uvw.z > 1.0) {
+        return 1.0;
+    }
+    vec3 n = safe_normalize(normal);
+    vec3 l = safe_normalize(LightDir);
+    float ndotl = clamp(abs(dot(n, l)), 0.0, 1.0);
+    float bias = max(ShadowBias * (1.0 - ndotl), ShadowBias * 0.35);
+    vec2 texel = 1.0 / max(ShadowMapSize, vec2(1.0));
+    float visible = 0.0;
+    for (int x = -1; x <= 1; x++) {
+        for (int y = -1; y <= 1; y++) {
+            float closest = texture(ShadowMap, uvw.xy + vec2(float(x), float(y)) * texel).r;
+            visible += ((uvw.z - bias) <= closest) ? 1.0 : 0.0;
+        }
+    }
+    visible /= 9.0;
+    return mix(1.0 - clamp(ShadowDarkness, 0.0, 1.0), 1.0, visible);
+}
 
 void main() {
     float r2 = dot(v_uv, v_uv);
@@ -659,7 +802,17 @@ void main() {
 
     if (a < 1e-4) discard;
 
-    f_color = vec4(v_col.rgb * a, a);
+    vec3 rgb = v_col.rgb;
+    if (UseSplatLighting == 1) {
+        vec3 n = safe_normalize(v_world_norm);
+        vec3 l = safe_normalize(LightDir);
+        float diffuse = clamp(abs(dot(n, l)), 0.0, 1.0);
+        float lum = 0.32 + diffuse * 0.72 * max(LightIntensity, 0.0);
+        rgb *= clamp(lum, 0.0, 3.0);
+        rgb *= sample_shadow_factor(v_shadow_pos, n);
+    }
+
+    f_color = vec4(rgb * a, a);
 }
 """,
 
