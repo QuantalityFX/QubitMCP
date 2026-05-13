@@ -1938,6 +1938,302 @@ class MGLRendererMixin:
         payload["_fbx_skin_frame"] = frame
         item.payload = payload
 
+    def _mgl_normalize_splat_physics_config(self, raw) -> Optional[Dict[str, Any]]:
+        if not isinstance(raw, dict):
+            return None
+
+        def _bool(name: str, default: bool) -> bool:
+            value = raw.get(name, default)
+            if isinstance(value, str):
+                text = value.strip().lower()
+                if text in {"1", "true", "yes", "on", "y"}:
+                    return True
+                if text in {"0", "false", "no", "off", "n"}:
+                    return False
+            return bool(value)
+
+        def _float(name: str, default: float, minimum: float, maximum: float) -> float:
+            try:
+                value = float(raw.get(name, default))
+            except Exception:
+                value = float(default)
+            return max(float(minimum), min(float(maximum), float(value)))
+
+        def _int(name: str, default: int, minimum: int, maximum: int) -> int:
+            try:
+                value = int(round(float(raw.get(name, default))))
+            except Exception:
+                value = int(default)
+            return max(int(minimum), min(int(maximum), int(value)))
+
+        gravity_raw = raw.get("gravity")
+        if isinstance(gravity_raw, (list, tuple)) and len(gravity_raw) >= 3:
+            try:
+                gravity = (
+                    max(-50.0, min(50.0, float(gravity_raw[0]))),
+                    max(-50.0, min(50.0, float(gravity_raw[1]))),
+                    max(-50.0, min(50.0, float(gravity_raw[2]))),
+                )
+            except Exception:
+                gravity = (0.0, -0.25, 0.0)
+        else:
+            gravity = (
+                _float("gravity_x", 0.0, -50.0, 50.0),
+                _float("gravity_y", -0.25, -50.0, 50.0),
+                _float("gravity_z", 0.0, -50.0, 50.0),
+            )
+
+        return {
+            "enabled": _bool("enabled", True),
+            "debug_log": _bool("debug_log", False),
+            "follow_strength": _float("follow_strength", 12.0, 0.0, 100.0),
+            "drag": _float("drag", 0.35, 0.0, 100.0),
+            "velocity_scale": _float("velocity_scale", 0.15, 0.0, 4.0),
+            "noise_mode": str(raw.get("noise_mode") or "none").strip().lower(),
+            "noise_strength": _float("noise_strength", 0.0, 0.0, 20.0),
+            "noise_scale": _float("noise_scale", 1.5, 0.01, 100.0),
+            "noise_speed": _float("noise_speed", 0.75, 0.0, 20.0),
+            "gravity": gravity,
+            "substeps": _int("substeps", 2, 1, 32),
+            "max_lag": _float("max_lag", 2.5, 0.0, 1000.0),
+            "reset_on_jump": _bool("reset_on_jump", True),
+            "reset_frame_jump": _int("reset_frame_jump", 12, 1, 240),
+        }
+
+    def _mgl_splat_physics_signature(self, config: dict | None):
+        if not isinstance(config, dict):
+            return None
+        def _num(name: str, default: float) -> float:
+            try:
+                return float(config.get(name, default))
+            except Exception:
+                return float(default)
+
+        gravity = config.get("gravity") or (0.0, 0.0, 0.0)
+        try:
+            gravity_sig = tuple(round(float(v), 5) for v in list(gravity)[:3])
+        except Exception:
+            gravity_sig = (0.0, 0.0, 0.0)
+        return (
+            bool(config.get("enabled", True)),
+            round(_num("follow_strength", 12.0), 5),
+            round(_num("drag", 0.35), 5),
+            round(_num("velocity_scale", 0.15), 5),
+            str(config.get("noise_mode") or "none"),
+            round(_num("noise_strength", 0.0), 5),
+            round(_num("noise_scale", 1.5), 5),
+            round(_num("noise_speed", 0.75), 5),
+            gravity_sig,
+            int(config.get("substeps", 2) or 2),
+            round(_num("max_lag", 2.5), 5),
+            bool(config.get("reset_on_jump", True)),
+            int(config.get("reset_frame_jump", 12) or 12),
+        )
+
+    def _mgl_splat_noise_vectors(self, positions: NDArray, frame: int, config: dict) -> Tuple[NDArray, NDArray]:
+        pts = np.asarray(positions, dtype="f4").reshape(-1, 3)
+        if pts.size == 0:
+            return pts.astype("f4", copy=True), np.zeros((0,), dtype="f4")
+        try:
+            noise_scale = max(0.01, float(config.get("noise_scale", 1.5)))
+        except Exception:
+            noise_scale = 1.5
+        try:
+            noise_speed = max(0.0, float(config.get("noise_speed", 0.75)))
+        except Exception:
+            noise_speed = 0.75
+        phase = (float(frame) / max(1.0, float(self._mgl_timeline_fps_value()))) * float(noise_speed)
+        p = pts * np.float32(noise_scale)
+        x = p[:, 0]
+        y = p[:, 1]
+        z = p[:, 2]
+
+        curl_x = (-1.33 * np.sin(1.33 * y + 0.80 * phase)) - (1.41 * np.cos(1.41 * z + 1.30 * phase))
+        curl_y = (-1.11 * np.sin(1.11 * z - 0.70 * phase)) - (1.57 * np.cos(1.57 * x - 0.90 * phase))
+        curl_z = (-1.27 * np.sin(1.27 * x + 0.60 * phase)) - (1.37 * np.cos(1.37 * y + phase))
+        vectors = np.stack([curl_x, curl_y, curl_z], axis=1).astype("f4", copy=False)
+        length = np.linalg.norm(vectors, axis=1)
+        vectors = vectors / np.maximum(length[:, None], np.float32(1.0e-6))
+        scalar = (
+            vectors[:, 0] * np.float32(0.57)
+            + vectors[:, 1] * np.float32(0.31)
+            + vectors[:, 2] * np.float32(0.12)
+        ).astype("f4", copy=False)
+        scalar = np.clip(scalar, np.float32(-1.0), np.float32(1.0))
+        return vectors.astype("f4", copy=False), scalar
+
+    def _mgl_apply_splat_physics(self, proxy: dict, target_positions: NDArray, frame: int) -> NDArray:
+        if np is None:
+            return target_positions
+        config = proxy.get("splat_physics") if isinstance(proxy, dict) else None
+        if not isinstance(config, dict) or not bool(config.get("enabled", True)):
+            proxy.pop("physics_positions", None)
+            proxy.pop("physics_velocities", None)
+            proxy.pop("physics_last_target", None)
+            proxy.pop("physics_last_frame", None)
+            proxy["physics_config_signature"] = self._mgl_splat_physics_signature(config)
+            return target_positions
+
+        target = np.asarray(target_positions, dtype="f4").reshape(-1, 3)
+        count = int(target.shape[0])
+        sig = self._mgl_splat_physics_signature(config)
+        positions = proxy.get("physics_positions")
+        velocities = proxy.get("physics_velocities")
+        last_target = proxy.get("physics_last_target")
+        last_frame = proxy.get("physics_last_frame")
+        config_changed = proxy.get("physics_config_signature") != sig
+        reset = bool(config_changed)
+        if positions is None or velocities is None or last_target is None:
+            reset = True
+        else:
+            try:
+                reset = reset or int(np.asarray(positions).shape[0]) != count
+                reset = reset or int(np.asarray(velocities).shape[0]) != count
+                reset = reset or int(np.asarray(last_target).shape[0]) != count
+            except Exception:
+                reset = True
+        if last_frame is None:
+            reset = True
+            frame_delta = 1
+        else:
+            try:
+                frame_delta = int(frame) - int(last_frame)
+            except Exception:
+                frame_delta = 1
+        if bool(config.get("reset_on_jump", True)):
+            jump = max(1, int(config.get("reset_frame_jump", 12) or 12))
+            if frame_delta < 0 or abs(int(frame_delta)) > jump:
+                reset = True
+
+        if reset:
+            positions = target.astype("f4", copy=True)
+            velocities = np.zeros_like(positions, dtype="f4")
+            last_target = target.astype("f4", copy=True)
+            frame_delta = 1
+        else:
+            positions = np.asarray(positions, dtype="f4").reshape(-1, 3).copy()
+            velocities = np.asarray(velocities, dtype="f4").reshape(-1, 3).copy()
+            last_target = np.asarray(last_target, dtype="f4").reshape(-1, 3)
+            if frame_delta == 0:
+                frame_delta = 1
+
+        fps = max(1.0, float(self._mgl_timeline_fps_value()))
+        dt = max(1.0 / fps, min(float(abs(frame_delta)) / fps, 0.25))
+        substeps = max(1, int(config.get("substeps", 2) or 2))
+        step_dt = float(dt) / float(substeps)
+        try:
+            follow = max(0.0, float(config.get("follow_strength", 12.0)))
+        except Exception:
+            follow = 12.0
+        try:
+            drag = max(0.0, min(100.0, float(config.get("drag", 0.35))))
+        except Exception:
+            drag = 0.35
+        try:
+            velocity_scale = max(0.0, float(config.get("velocity_scale", 0.15)))
+        except Exception:
+            velocity_scale = 0.15
+        noise_mode = str(config.get("noise_mode") or "none").strip().lower()
+        if noise_mode not in {"none", "curl_force", "velocity_multiply", "follow_multiply", "drag_multiply"}:
+            noise_mode = "none"
+        try:
+            noise_strength = max(0.0, float(config.get("noise_strength", 0.0)))
+        except Exception:
+            noise_strength = 0.0
+        try:
+            max_lag = max(0.0, float(config.get("max_lag", 2.5)))
+        except Exception:
+            max_lag = 2.5
+        try:
+            gravity = np.asarray(config.get("gravity", (0.0, -0.25, 0.0)), dtype="f4").reshape(-1)[:3]
+            if gravity.shape[0] != 3:
+                gravity = np.array([0.0, -0.25, 0.0], dtype="f4")
+        except Exception:
+            gravity = np.array([0.0, -0.25, 0.0], dtype="f4")
+
+        target_velocity = (target - last_target) / max(float(dt), 1.0e-6)
+        noise_vectors = None
+        noise_scalar = None
+        if noise_mode != "none" and noise_strength > 1.0e-6:
+            noise_vectors, noise_scalar = self._mgl_splat_noise_vectors(target, int(frame), config)
+        if velocity_scale > 0.0:
+            if noise_mode == "velocity_multiply" and noise_scalar is not None:
+                velocity_mult = np.clip(
+                    np.float32(1.0) + (np.float32(noise_strength) * noise_scalar),
+                    np.float32(0.0),
+                    np.float32(4.0),
+                )
+                velocities += target_velocity * np.float32(velocity_scale) * velocity_mult[:, None]
+            else:
+                velocities += target_velocity * np.float32(velocity_scale)
+
+        damping = math.exp(-float(drag) * 8.0 * float(step_dt))
+        damping_values = None
+        if noise_mode == "drag_multiply" and noise_scalar is not None:
+            drag_mult = np.clip(
+                np.float32(1.0) + (np.float32(noise_strength) * noise_scalar),
+                np.float32(0.05),
+                np.float32(4.0),
+            )
+            damping_values = np.exp(-float(drag) * drag_mult * np.float32(8.0 * step_dt)).astype("f4", copy=False)
+        follow_values = None
+        if noise_mode == "follow_multiply" and noise_scalar is not None:
+            follow_mult = np.clip(
+                np.float32(1.0) + (np.float32(noise_strength) * noise_scalar),
+                np.float32(0.0),
+                np.float32(4.0),
+            )
+            follow_values = np.float32(follow) * follow_mult
+        for _idx in range(substeps):
+            if follow_values is not None:
+                acceleration = (target - positions) * follow_values[:, None]
+            else:
+                acceleration = (target - positions) * np.float32(follow)
+            acceleration += gravity[None, :]
+            if noise_mode == "curl_force" and noise_vectors is not None:
+                acceleration += noise_vectors * np.float32(noise_strength)
+            if damping_values is not None:
+                velocities = (velocities + acceleration * np.float32(step_dt)) * damping_values[:, None]
+            else:
+                velocities = (velocities + acceleration * np.float32(step_dt)) * np.float32(damping)
+            positions = positions + velocities * np.float32(step_dt)
+            if max_lag > 0.0:
+                offset = positions - target
+                dist = np.linalg.norm(offset, axis=1)
+                mask = dist > max_lag
+                if np.any(mask):
+                    safe_dist = np.maximum(dist[mask], np.float32(1.0e-6))
+                    positions[mask] = target[mask] + offset[mask] * (np.float32(max_lag) / safe_dist)[:, None]
+                    vel_dot = np.sum(velocities[mask] * offset[mask], axis=1)
+                    away = vel_dot > 0.0
+                    if np.any(away):
+                        masked_indices = np.nonzero(mask)[0][away]
+                        velocities[masked_indices] *= np.float32(0.25)
+
+        proxy["physics_positions"] = positions.astype("f4", copy=False)
+        proxy["physics_velocities"] = velocities.astype("f4", copy=False)
+        proxy["physics_last_target"] = target.astype("f4", copy=True)
+        proxy["physics_last_frame"] = int(frame)
+        proxy["physics_config_signature"] = sig
+        if bool(config.get("debug_log", False)):
+            try:
+                max_offset = float(np.linalg.norm(positions - target, axis=1).max()) if count else 0.0
+                self._mgl_log_throttled(
+                    "_mgl_splat_physics_" + str(proxy.get("owner") or ""),
+                    "fx_splat_physics: owner="
+                    + str(proxy.get("owner") or "")
+                    + " frame="
+                    + str(int(frame))
+                    + " count="
+                    + str(count)
+                    + " max_offset="
+                    + f"{max_offset:.4f}",
+                    0.5,
+                )
+            except Exception:
+                pass
+        return positions.astype("f4", copy=False)
+
     def _mgl_load_skinned_splat_proxy(
         self,
         owner: str,
@@ -2060,6 +2356,9 @@ class MGLRendererMixin:
             current[:, 11:15] = bind_quats
             bind_mins = bind_positions.min(axis=0).astype("f4")
             bind_maxs = bind_positions.max(axis=0).astype("f4")
+            physics_config = self._mgl_normalize_splat_physics_config(
+                render_proxy.get("splat_physics") or manifest_data.get("splat_physics")
+            )
 
             proxies = getattr(self, "_mgl_scene_skinned_splat_proxies_by_owner", None)
             if not isinstance(proxies, dict):
@@ -2078,6 +2377,9 @@ class MGLRendererMixin:
                 "bind_bounds": (bind_mins, bind_maxs),
                 "joint_indices": joint_indices,
                 "joint_weights": joint_weights,
+                "render_proxy": dict(render_proxy),
+                "splat_physics": physics_config,
+                "physics_config_signature": self._mgl_splat_physics_signature(physics_config),
                 "last_signature": None,
             }
 
@@ -2198,6 +2500,9 @@ class MGLRendererMixin:
                     joint_indices,
                     joint_weights,
                 )
+                physics_config = proxy.get("splat_physics") if isinstance(proxy, dict) else None
+                if isinstance(physics_config, dict):
+                    deformed = self._mgl_apply_splat_physics(proxy, deformed, int(frame))
                 base = np.asarray(proxy.get("base_splats"), dtype="f4")
                 if base.ndim != 2 or int(base.shape[1]) != 15 or int(base.shape[0]) != int(deformed.shape[0]):
                     continue

@@ -29,6 +29,11 @@ _PASS_THROUGH_KINDS = {
     "transforms",
     "fx",
     "fx_trail",
+    "fx_splat_physics",
+    "fx splat physics",
+    "splat_physics",
+    "splat physics",
+    "splatphysics",
 }
 
 _PLY_SEQ_LOG_ENABLED = False

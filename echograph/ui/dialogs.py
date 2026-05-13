@@ -270,6 +270,8 @@ def _kind_icon(kind: str) -> QtGui.QIcon:
         icon_pm = node_icons._genx_icon() or node_icons._mocap_import_icon() or node_icons._import_icon()
     elif key in ("anim_retarget", "anim retarget", "animretarget", "retarget"):
         icon_pm = node_icons._anim_retarget_icon() or node_icons._transforms_icon() or node_icons._import_icon()
+    elif key in ("skinned_splat_proxy", "skinned splat proxy", "skinnedsplatproxy", "fbx_to_skinned_splat_proxy", "fbx skinned splat proxy"):
+        icon_pm = node_icons._ply_icon() or node_icons._fbx_icon() or node_icons._import_icon()
     elif key == "switch":
         icon_pm = node_icons._switch_icon()
     elif key == "chatbot":
@@ -308,7 +310,7 @@ def _kind_icon(kind: str) -> QtGui.QIcon:
         icon_pm = node_icons._texture_layer_icon() or node_icons._output_icon()
     elif key == "material":
         icon_pm = node_icons._material_node_icon() or node_icons._output_icon()
-    elif key == "fx":
+    elif key in ("fx", "fx_trail", "fx_splat_physics", "fx splat physics", "splat_physics", "splat physics", "splatphysics"):
         icon_pm = node_icons._fx_node_icon() or node_icons._output_icon()
     elif key == "transforms":
         icon_pm = node_icons._transforms_icon() or node_icons._output_icon()
@@ -359,7 +361,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
         self.kind_edit = QtWidgets.QComboBox()
         self.kind_edit.setEditable(True)
         self._kinds = [
-            "node","camera","import","fbx_import","mocap_import","GEN-X-VideoMocap","anim_retarget","instance","primitive","uv_unwrap","texture","texture_pro","texture_layer","material","split_volume","transforms","fx","scene","render","video_player","post_process","sequence_to_mp4","export_fbx","html_preview","python","switch","output","local_server",
+            "node","camera","import","fbx_import","mocap_import","GEN-X-VideoMocap","anim_retarget","skinned_splat_proxy","instance","primitive","uv_unwrap","texture","texture_pro","texture_layer","material","split_volume","transforms","fx","fx_splat_physics","scene","render","video_player","post_process","sequence_to_mp4","export_fbx","html_preview","python","switch","output","local_server",
             "gantt_chart","keyboard_sequence",
             "qubit_deck_controller",
             "llm_prompt","chatbot","voice_actor","mediator_agent","librarian","note","append","image_collection","database"

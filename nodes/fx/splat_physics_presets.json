@@ -1,0 +1,121 @@
+[
+  {
+    "id": "default",
+    "label": "Default",
+    "params": {
+      "follow_strength": 12.0,
+      "drag": 0.35,
+      "velocity_scale": 0.15,
+      "noise_mode": "none",
+      "noise_strength": 0.0,
+      "noise_scale": 1.5,
+      "noise_speed": 0.75,
+      "gravity_y": -0.25,
+      "substeps": 2,
+      "max_lag": 2.5,
+      "reset_frame_jump": 12
+    }
+  },
+  {
+    "id": "none_noise",
+    "label": "None Noise",
+    "params": {
+      "follow_strength": 12.0,
+      "drag": 0.35,
+      "velocity_scale": 0.15,
+      "noise_mode": "none",
+      "noise_strength": 0.0,
+      "noise_scale": 1.5,
+      "noise_speed": 0.75,
+      "gravity_y": -0.25,
+      "substeps": 2,
+      "max_lag": 2.5,
+      "reset_frame_jump": 12
+    }
+  },
+  {
+    "id": "soft_lag",
+    "label": "Soft Lag",
+    "params": {
+      "follow_strength": 7.0,
+      "drag": 0.8,
+      "velocity_scale": 0.22,
+      "noise_mode": "curl_force",
+      "noise_strength": 0.28,
+      "noise_scale": 1.2,
+      "noise_speed": 0.55,
+      "gravity_y": -0.12,
+      "substeps": 2,
+      "max_lag": 2.0,
+      "reset_frame_jump": 12
+    }
+  },
+  {
+    "id": "wispy_trails",
+    "label": "Wispy Trails",
+    "params": {
+      "follow_strength": 4.5,
+      "drag": 0.28,
+      "velocity_scale": 0.45,
+      "noise_mode": "curl_force",
+      "noise_strength": 0.9,
+      "noise_scale": 2.2,
+      "noise_speed": 1.1,
+      "gravity_y": -0.2,
+      "substeps": 3,
+      "max_lag": 4.0,
+      "reset_frame_jump": 12
+    }
+  },
+  {
+    "id": "sticky_skin",
+    "label": "Sticky Skin",
+    "params": {
+      "follow_strength": 28.0,
+      "drag": 5.0,
+      "velocity_scale": 0.08,
+      "noise_mode": "follow_multiply",
+      "noise_strength": 0.35,
+      "noise_scale": 1.8,
+      "noise_speed": 0.35,
+      "gravity_y": 0.0,
+      "substeps": 2,
+      "max_lag": 0.8,
+      "reset_frame_jump": 12
+    }
+  },
+  {
+    "id": "turbulent_drag",
+    "label": "Turbulent Drag",
+    "params": {
+      "follow_strength": 12.0,
+      "drag": 1.25,
+      "velocity_scale": 0.35,
+      "noise_mode": "drag_multiply",
+      "noise_strength": 0.75,
+      "noise_scale": 3.5,
+      "noise_speed": 1.4,
+      "gravity_y": -0.35,
+      "substeps": 4,
+      "max_lag": 3.0,
+      "reset_frame_jump": 12
+    }
+  },
+  {
+    "id": "velocity_shred",
+    "label": "Velocity Shred",
+    "params": {
+      "follow_strength": 9.0,
+      "drag": 0.55,
+      "velocity_scale": 0.75,
+      "noise_mode": "velocity_multiply",
+      "noise_strength": 0.85,
+      "noise_scale": 4.0,
+      "noise_speed": 1.8,
+      "gravity_y": -0.1,
+      "substeps": 4,
+      "max_lag": 5.0,
+      "reset_frame_jump": 12
+    }
+  }
+]

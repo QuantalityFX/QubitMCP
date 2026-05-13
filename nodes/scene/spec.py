@@ -29,6 +29,13 @@ _SKINNED_SPLAT_PROXY_KIND_ALIASES = {
     "fbx_to_skinned_splat_proxy",
     "fbx skinned splat proxy",
 }
+_FX_SPLAT_PHYSICS_KIND_ALIASES = {
+    "fx_splat_physics",
+    "fx splat physics",
+    "splat_physics",
+    "splat physics",
+    "splatphysics",
+}
 _MOCAP_KIND_ALIASES = {
     "mocap_import",
     "mocap import",
@@ -696,7 +703,7 @@ def _resolve_input_item(scene, node_item, port_names=None):
             edge = _switch_active_edge(item)
             if edge is not None:
                 return _trace(getattr(edge, "src", None), depth + 1, visited)
-        if kind in {"fx", "fx_trail"}:
+        if kind in {"fx", "fx_trail"} or kind in _FX_SPLAT_PHYSICS_KIND_ALIASES:
             try:
                 edges = list(scene._ordered_in_edges(item))
             except Exception:
@@ -708,7 +715,7 @@ def _resolve_input_item(scene, node_item, port_names=None):
                 chosen = None
                 for edge in edges:
                     name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
-                    if (name or "").strip().lower() in {"mesh", "path", "source"}:
+                    if (name or "").strip().lower() in {"mesh", "path", "source", "splats", "splat"}:
                         chosen = edge
                         break
                 if chosen is None:
@@ -902,7 +909,20 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
     def _find_upstream_transform(start_item):
         item = start_item
         visited = set()
-        pass_kinds = {"switch", "uv_unwrap", "texture", "texture_pro", "texture_layer", "mnaterial", "material", "split_volume", "volume_selector", "fx", "fx_trail"}
+        pass_kinds = {
+            "switch",
+            "uv_unwrap",
+            "texture",
+            "texture_pro",
+            "texture_layer",
+            "mnaterial",
+            "material",
+            "split_volume",
+            "volume_selector",
+            "fx",
+            "fx_trail",
+            *_FX_SPLAT_PHYSICS_KIND_ALIASES,
+        }
         depth = 0
         while item is not None and item not in visited and depth < 10:
             visited.add(item)
@@ -938,6 +958,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             "transforms",
             "fx",
             "fx_trail",
+            *_FX_SPLAT_PHYSICS_KIND_ALIASES,
         }
         depth = 0
         while item is not None and item not in visited and depth < 12:
@@ -1392,6 +1413,45 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                         + f"path={str(asset.get('path') or '')} "
                         + f"proxy={str(proxy.get('manifest') or proxy.get('status') or '')} "
                         + f"hide_source={bool(proxy.get('hide_source_mesh', False))}",
+                    )
+            continue
+        if kind in _FX_SPLAT_PHYSICS_KIND_ALIASES:
+            try:
+                from nodes.fx import splat_physics_spec as _splat_fx_spec  # type: ignore
+
+                build_asset = getattr(_splat_fx_spec, "build_splat_physics_scene_asset", None)
+                outcome = build_asset(src_item) if callable(build_asset) else None
+                asset = getattr(outcome, "asset", None)
+            except Exception as exc:
+                asset = None
+                if _scene_debug_enabled(model):
+                    _scene_log(
+                        node_item,
+                        f"fx_splat_physics asset build failed node={src_name or kind} err={exc!r}",
+                    )
+            if isinstance(asset, dict):
+                asset_owner = str(asset.get("node") or src_name or kind).strip()
+                saved_xform = _lookup_xform(xforms, asset_owner)
+                if not isinstance(saved_xform, dict) and asset_owner != src_name:
+                    saved_xform = _lookup_xform(xforms, src_name)
+                if isinstance(saved_xform, dict):
+                    asset["xform"] = dict(saved_xform)
+                asset["visible"] = asset_owner not in hidden
+                assets.append(asset)
+                path_key = str(asset.get("path") or "").strip()
+                if path_key:
+                    seen.add(path_key)
+                if dbg_collect:
+                    proxy = asset.get("render_proxy") if isinstance(asset.get("render_proxy"), dict) else {}
+                    physics = proxy.get("splat_physics") if isinstance(proxy.get("splat_physics"), dict) else {}
+                    _scene_log(
+                        node_item,
+                        "fx_splat_physics asset "
+                        + f"node={str(asset.get('node') or '')} "
+                        + f"path={str(asset.get('path') or '')} "
+                        + f"enabled={bool(physics.get('enabled', True))} "
+                        + f"follow={float(physics.get('follow_strength', 0.0) or 0.0):.3f} "
+                        + f"drag={float(physics.get('drag', 0.0) or 0.0):.3f}",
                     )
             continue
         if kind in _MATERIAL_KINDS:

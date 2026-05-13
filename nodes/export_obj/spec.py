@@ -252,6 +252,11 @@ def _collect_scene_assets_for_export(node_item, include_hidden: bool = False):
             "transforms",
             "fx",
             "fx_trail",
+            "fx_splat_physics",
+            "fx splat physics",
+            "splat_physics",
+            "splat physics",
+            "splatphysics",
         }
         visited = set()
         depth = 0
