@@ -5,5 +5,7 @@
     "audio": false
   },
   "voice_audio_mode": "bilateral",
-  "voice_mic_device_index": 1
+  "voice_mic_device_index": 1,
+  "shadow_quality": "medium",
+  "cast_shadows": true
 }

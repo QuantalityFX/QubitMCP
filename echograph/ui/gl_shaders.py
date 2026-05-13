@@ -816,6 +816,84 @@ void main() {
 }
 """,
 
+    "splat_shadow_vertex": """
+#version 330
+
+uniform mat4 LightProj;
+uniform mat4 LightView;
+uniform float SplatWorldScale;
+
+in vec2 in_corner;
+in vec3 in_pos;
+in vec4 in_col;
+in float in_rad;
+in vec3 in_scale3;
+in vec4 in_rot;
+
+out vec2 v_uv;
+out float v_alpha;
+
+vec3 quat_rotate(vec3 v, vec4 q) {
+    vec3 t = 2.0 * cross(q.xyz, v);
+    return v + q.w * t + cross(q.xyz, t);
+}
+
+void main() {
+    vec4 view_p = LightView * vec4(in_pos, 1.0);
+
+    float s = in_rad * SplatWorldScale;
+    mat3 V = mat3(LightView);
+
+    vec3 ax = V * quat_rotate(vec3(1.0, 0.0, 0.0), in_rot) * (in_scale3.x * s);
+    vec3 ay = V * quat_rotate(vec3(0.0, 1.0, 0.0), in_rot) * (in_scale3.y * s);
+    vec3 az = V * quat_rotate(vec3(0.0, 0.0, 1.0), in_rot) * (in_scale3.z * s);
+
+    vec2 a0 = ax.xy;
+    vec2 a1 = ay.xy;
+    vec2 a2 = az.xy;
+
+    float c00 = dot(a0, vec2(a0.x, 0.0)) + dot(a1, vec2(a1.x, 0.0)) + dot(a2, vec2(a2.x, 0.0));
+    float c01 = a0.x*a0.y + a1.x*a1.y + a2.x*a2.y;
+    float c11 = dot(a0, vec2(0.0, a0.y)) + dot(a1, vec2(0.0, a1.y)) + dot(a2, vec2(0.0, a2.y));
+
+    float tr  = c00 + c11;
+    float det = c00*c11 - c01*c01;
+    float disc = max(tr*tr*0.25 - det, 0.0);
+    float root = sqrt(disc);
+
+    float l1 = max(tr*0.5 + root, 1e-12);
+    float l2 = max(tr*0.5 - root, 1e-12);
+
+    vec2 v1 = vec2(c01, l1 - c00);
+    if (length(v1) < 1e-8) v1 = vec2(1.0, 0.0);
+    v1 = normalize(v1);
+    vec2 v2 = vec2(-v1.y, v1.x);
+
+    float r1 = sqrt(l1);
+    float r2 = sqrt(l2);
+
+    view_p.xy += v1 * (in_corner.x * r1) + v2 * (in_corner.y * r2);
+
+    v_uv = in_corner;
+    v_alpha = in_col.a;
+
+    gl_Position = LightProj * view_p;
+}
+""",
+
+    "splat_shadow_fragment": """
+#version 330
+in vec2 v_uv;
+in float v_alpha;
+
+void main() {
+    float r2 = dot(v_uv, v_uv);
+    if (r2 > 1.0) discard;
+    float a = exp(-r2 * 2.0) * v_alpha;
+    if (a < 0.08) discard;
+}
+""",
+
     "example_vertex_330": """
 #version 330
 layout(location = 0) in vec3 a_position;

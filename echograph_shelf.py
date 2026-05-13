@@ -77,6 +77,13 @@ _VOICE_AUDIO_MODE_BILATERAL = "bilateral"
 _VOICE_AUDIO_MODE_TURN_TAKING = "turn_taking"
 _VOICE_AUDIO_MODE_DEFAULT = _VOICE_AUDIO_MODE_TURN_TAKING
 _VOICE_MIC_DEVICE_DEFAULT = None
+_SHADOW_QUALITY_DEFAULT = "low"
+_SHADOW_QUALITY_LABELS = {
+    "low": "Low",
+    "medium": "Medium",
+    "high": "High",
+    "ultra": "Ultra",
+}
 
 def _load_recent_graphs() -> List[str]:
     try:
@@ -179,6 +186,28 @@ def _normalize_voice_mic_device_index(value, fallback=_VOICE_MIC_DEVICE_DEFAULT)
     return _VOICE_MIC_DEVICE_DEFAULT
 
 
+def _normalize_shadow_quality(value, fallback: str = _SHADOW_QUALITY_DEFAULT) -> str:
+    text = str(value or "").strip().lower()
+    aliases = {
+        "l": "low",
+        "lo": "low",
+        "low": "low",
+        "m": "medium",
+        "med": "medium",
+        "medium": "medium",
+        "h": "high",
+        "hi": "high",
+        "high": "high",
+        "u": "ultra",
+        "ultra": "ultra",
+        "max": "ultra",
+    }
+    if text in aliases:
+        return aliases[text]
+    fb = str(fallback or "").strip().lower()
+    return aliases.get(fb, _SHADOW_QUALITY_DEFAULT)
+
+
 def _list_available_microphone_options() -> List[Dict[str, Any]]:
     options = [{"device_index": _VOICE_MIC_DEVICE_DEFAULT, "name": "System Default"}]
     sr_mod = _speech_recognition
@@ -261,11 +290,15 @@ def _load_app_settings() -> Dict[str, Any]:
         raw.get("voice_mic_device_index"),
         _VOICE_MIC_DEVICE_DEFAULT,
     )
+    shadow_quality = _normalize_shadow_quality(raw.get("shadow_quality"), _SHADOW_QUALITY_DEFAULT)
+    cast_shadows = _coerce_bool(raw.get("cast_shadows"), True)
     return {
         "save_layout": bool(save_layout),
         "panel_layout": panel_layout,
         "voice_audio_mode": voice_audio_mode,
         "voice_mic_device_index": voice_mic_device_index,
+        "shadow_quality": shadow_quality,
+        "cast_shadows": bool(cast_shadows),
     }
 
 
@@ -278,6 +311,11 @@ def _save_app_settings(settings: Dict[str, Any]) -> None:
             (settings or {}).get("voice_mic_device_index"),
             _VOICE_MIC_DEVICE_DEFAULT,
         ),
+        "shadow_quality": _normalize_shadow_quality(
+            (settings or {}).get("shadow_quality"),
+            _SHADOW_QUALITY_DEFAULT,
+        ),
+        "cast_shadows": _coerce_bool((settings or {}).get("cast_shadows"), True),
     }
     try:
         _APP_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -2484,6 +2522,11 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             app_settings.get("voice_mic_device_index"),
             _VOICE_MIC_DEVICE_DEFAULT,
         )
+        self._shadow_quality = _normalize_shadow_quality(
+            app_settings.get("shadow_quality"),
+            _SHADOW_QUALITY_DEFAULT,
+        )
+        self._cast_shadows_enabled = _coerce_bool(app_settings.get("cast_shadows"), True)
 
         central = QtWidgets.QWidget(self)
         v = QtWidgets.QVBoxLayout(central)
@@ -4528,21 +4571,44 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         grid.addWidget(self._wireframe_color_btn, 6, 1, 1, 1, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
         self._update_wireframe_color_swatch()
 
+        self._shadow_quality = _normalize_shadow_quality(getattr(self, "_shadow_quality", _SHADOW_QUALITY_DEFAULT))
+        shadow_quality_label = QtWidgets.QLabel("Shadow Quality")
+        self._shadow_quality_combo = QtWidgets.QComboBox()
+        self._shadow_quality_combo.setMinimumWidth(120)
+        self._shadow_quality_combo.setStyleSheet(
+            "QComboBox{background:#11151c;color:#e6edf3;border:1px solid #334155;border-radius:4px;padding:2px 8px;}"
+            "QComboBox QAbstractItemView{background:#0f1216;color:#e6edf3;selection-background-color:#1e3a8a;}"
+        )
+        for key in ("low", "medium", "high", "ultra"):
+            self._shadow_quality_combo.addItem(_SHADOW_QUALITY_LABELS.get(key, key.title()), key)
+        qidx = self._shadow_quality_combo.findData(self._shadow_quality)
+        self._shadow_quality_combo.setCurrentIndex(qidx if qidx >= 0 else 0)
+        self._shadow_quality_combo.currentIndexChanged.connect(self._on_shadow_quality_changed)
+        grid.addWidget(shadow_quality_label, 7, 0, 1, 1, QtCore.Qt.AlignVCenter)
+        grid.addWidget(self._shadow_quality_combo, 7, 1, 1, 1, QtCore.Qt.AlignVCenter)
+
+        cast_shadows_label = QtWidgets.QLabel("Cast Shadows")
+        self._cast_shadows_toggle = QtWidgets.QCheckBox()
+        self._cast_shadows_toggle.setChecked(bool(getattr(self, "_cast_shadows_enabled", True)))
+        self._cast_shadows_toggle.toggled.connect(self._on_cast_shadows_toggled)
+        grid.addWidget(cast_shadows_label, 8, 0, 1, 1, QtCore.Qt.AlignVCenter)
+        grid.addWidget(self._cast_shadows_toggle, 8, 1, 1, 1, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+
         self._splat_log_enabled = bool(getattr(self, "_splat_log_enabled", False))
         splat_log_label = QtWidgets.QLabel("Debug Log")
         self._splat_log_toggle = QtWidgets.QCheckBox()
         self._splat_log_toggle.setChecked(self._splat_log_enabled)
         self._splat_log_toggle.toggled.connect(self._on_splat_log_toggled)
-        grid.addWidget(splat_log_label, 7, 0, 1, 1, QtCore.Qt.AlignVCenter)
-        grid.addWidget(self._splat_log_toggle, 7, 1, 1, 1, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        grid.addWidget(splat_log_label, 9, 0, 1, 1, QtCore.Qt.AlignVCenter)
+        grid.addWidget(self._splat_log_toggle, 9, 1, 1, 1, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
 
         save_layout_label = QtWidgets.QLabel("Auto Save Layout")
         self._save_layout_toggle = QtWidgets.QCheckBox()
         self._save_layout_toggle.setChecked(bool(getattr(self, "_save_layout_enabled", True)))
         self._save_layout_toggle.setToolTip("Automatically save panel visibility changes as the global default layout")
         self._save_layout_toggle.toggled.connect(self._on_save_layout_toggled)
-        grid.addWidget(save_layout_label, 8, 0, 1, 1, QtCore.Qt.AlignVCenter)
-        grid.addWidget(self._save_layout_toggle, 8, 1, 1, 1, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        grid.addWidget(save_layout_label, 10, 0, 1, 1, QtCore.Qt.AlignVCenter)
+        grid.addWidget(self._save_layout_toggle, 10, 1, 1, 1, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
 
         voice_audio_label = QtWidgets.QLabel("Turn-Taking Audio")
         self._voice_audio_toggle = QtWidgets.QCheckBox()
@@ -4551,8 +4617,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             "On = turn-taking (pause mic while another actor speaks). Off = bilateral mic+speaker."
         )
         self._voice_audio_toggle.toggled.connect(self._on_voice_audio_mode_toggled)
-        grid.addWidget(voice_audio_label, 9, 0, 1, 1, QtCore.Qt.AlignVCenter)
-        grid.addWidget(self._voice_audio_toggle, 9, 1, 1, 1, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        grid.addWidget(voice_audio_label, 11, 0, 1, 1, QtCore.Qt.AlignVCenter)
+        grid.addWidget(self._voice_audio_toggle, 11, 1, 1, 1, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
 
         mic_label = QtWidgets.QLabel("Microphone")
         self._voice_mic_combo = QtWidgets.QComboBox()
@@ -4562,8 +4628,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             "QComboBox QAbstractItemView{background:#0f1216;color:#e6edf3;selection-background-color:#1e3a8a;}"
         )
         self._voice_mic_combo.currentIndexChanged.connect(self._on_voice_microphone_changed)
-        grid.addWidget(mic_label, 10, 0, 1, 1, QtCore.Qt.AlignVCenter)
-        grid.addWidget(self._voice_mic_combo, 10, 1, 1, 2, QtCore.Qt.AlignVCenter)
+        grid.addWidget(mic_label, 12, 0, 1, 1, QtCore.Qt.AlignVCenter)
+        grid.addWidget(self._voice_mic_combo, 12, 1, 1, 2, QtCore.Qt.AlignVCenter)
         self._refresh_voice_microphone_options()
 
         panel_action = QtWidgets.QWidgetAction(settings_menu)
@@ -4811,6 +4877,11 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 getattr(self, "_voice_mic_device_index", _VOICE_MIC_DEVICE_DEFAULT),
                 _VOICE_MIC_DEVICE_DEFAULT,
             ),
+            "shadow_quality": _normalize_shadow_quality(
+                getattr(self, "_shadow_quality", _SHADOW_QUALITY_DEFAULT),
+                _SHADOW_QUALITY_DEFAULT,
+            ),
+            "cast_shadows": bool(getattr(self, "_cast_shadows_enabled", True)),
         }
         _save_app_settings(payload)
 
@@ -5049,6 +5120,11 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             getattr(self, "_voice_mic_device_index", _VOICE_MIC_DEVICE_DEFAULT),
             _VOICE_MIC_DEVICE_DEFAULT,
         )
+        settings["shadow_quality"] = _normalize_shadow_quality(
+            getattr(self, "_shadow_quality", _SHADOW_QUALITY_DEFAULT),
+            _SHADOW_QUALITY_DEFAULT,
+        )
+        settings["cast_shadows"] = bool(getattr(self, "_cast_shadows_enabled", True))
         data["settings"] = settings
 
     def _inject_scene_restore_into_workflow_data(self, data: Dict[str, Any]) -> None:
@@ -5311,6 +5387,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._pan_boost = 10.0
         self._gizmo_zoom_scale = 0.02
         self._fly_speed_mult = 1.0
+        self._shadow_quality = _SHADOW_QUALITY_DEFAULT
+        self._cast_shadows_enabled = True
         self._splat_log_enabled = False
         self._save_layout_enabled = True
         self._voice_audio_mode = _VOICE_AUDIO_MODE_DEFAULT
@@ -5348,6 +5426,21 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 self._fly_speed_slider.blockSignals(True)
                 self._fly_speed_slider.setValue(int(round(self._fly_speed_mult * 100.0)))
                 self._fly_speed_slider.blockSignals(False)
+            except Exception:
+                pass
+        if hasattr(self, "_shadow_quality_combo"):
+            try:
+                idx = self._shadow_quality_combo.findData(self._shadow_quality)
+                self._shadow_quality_combo.blockSignals(True)
+                self._shadow_quality_combo.setCurrentIndex(idx if idx >= 0 else 0)
+                self._shadow_quality_combo.blockSignals(False)
+            except Exception:
+                pass
+        if hasattr(self, "_cast_shadows_toggle"):
+            try:
+                self._cast_shadows_toggle.blockSignals(True)
+                self._cast_shadows_toggle.setChecked(bool(self._cast_shadows_enabled))
+                self._cast_shadows_toggle.blockSignals(False)
             except Exception:
                 pass
         if hasattr(self, "_splat_log_toggle"):
@@ -5419,6 +5512,21 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 gv._apply_fly_speed_multiplier(fly_mult, sync_ui=False, sync_scene=False)
             else:
                 gv._fly_speed_mult = fly_mult
+            shadow_quality = _normalize_shadow_quality(
+                getattr(self, "_shadow_quality", _SHADOW_QUALITY_DEFAULT),
+                _SHADOW_QUALITY_DEFAULT,
+            )
+            cast_shadows = bool(getattr(self, "_cast_shadows_enabled", True))
+            if hasattr(gv, "_apply_mgl_shadow_settings"):
+                gv._apply_mgl_shadow_settings(
+                    enabled=cast_shadows,
+                    quality=shadow_quality,
+                    sync_scene=False,
+                )
+            else:
+                gv._mgl_shadows_enabled = cast_shadows
+                gv._mgl_shadow_quality = shadow_quality
+                gv._mgl_shadow_dirty = True
         except Exception:
             pass
         sc = getattr(self, "scene", None)
@@ -5434,6 +5542,11 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 settings["gizmo_zoom_scale"] = float(getattr(self, "_gizmo_zoom_scale", 0.02))
                 settings["splat_log"] = bool(getattr(self, "_splat_log_enabled", False))
                 settings["fly_speed_mult"] = float(getattr(self, "_fly_speed_mult", 1.0))
+                settings["shadow_quality"] = _normalize_shadow_quality(
+                    getattr(self, "_shadow_quality", _SHADOW_QUALITY_DEFAULT),
+                    _SHADOW_QUALITY_DEFAULT,
+                )
+                settings["cast_shadows"] = bool(getattr(self, "_cast_shadows_enabled", True))
                 settings["voice_audio_mode"] = _normalize_voice_audio_mode(
                     getattr(self, "_voice_audio_mode", _VOICE_AUDIO_MODE_DEFAULT),
                     _VOICE_AUDIO_MODE_DEFAULT,
@@ -5603,6 +5716,23 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
     def _on_splat_log_toggled(self, checked: bool) -> None:
         self._splat_log_enabled = bool(checked)
         self._apply_pan_settings_to_gl_view()
+
+    def _on_shadow_quality_changed(self, index: int) -> None:
+        combo = getattr(self, "_shadow_quality_combo", None)
+        value = None
+        if combo is not None:
+            try:
+                value = combo.itemData(int(index))
+            except Exception:
+                value = None
+        self._shadow_quality = _normalize_shadow_quality(value, _SHADOW_QUALITY_DEFAULT)
+        self._apply_pan_settings_to_gl_view()
+        self._persist_app_layout_settings()
+
+    def _on_cast_shadows_toggled(self, checked: bool) -> None:
+        self._cast_shadows_enabled = bool(checked)
+        self._apply_pan_settings_to_gl_view()
+        self._persist_app_layout_settings()
 
     def _create_node_interactive(self):
         dlg = CreateNodeDialog(self, existing_names=list(self.scene._nodes_by_name.keys()))
@@ -5860,6 +5990,17 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         except Exception:
             splat_log = getattr(self, "_splat_log_enabled", False)
         try:
+            shadow_quality = _normalize_shadow_quality(
+                settings.get("shadow_quality", getattr(self, "_shadow_quality", _SHADOW_QUALITY_DEFAULT)),
+                getattr(self, "_shadow_quality", _SHADOW_QUALITY_DEFAULT),
+            )
+        except Exception:
+            shadow_quality = getattr(self, "_shadow_quality", _SHADOW_QUALITY_DEFAULT)
+        try:
+            cast_shadows = _coerce_bool(settings.get("cast_shadows", getattr(self, "_cast_shadows_enabled", True)), True)
+        except Exception:
+            cast_shadows = bool(getattr(self, "_cast_shadows_enabled", True))
+        try:
             voice_audio_mode = _normalize_voice_audio_mode(
                 settings.get("voice_audio_mode", getattr(self, "_voice_audio_mode", _VOICE_AUDIO_MODE_DEFAULT)),
                 getattr(self, "_voice_audio_mode", _VOICE_AUDIO_MODE_DEFAULT),
@@ -5879,6 +6020,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._gizmo_zoom_scale = gizmo_zoom
         self._fly_speed_mult = fly_speed
         self._splat_log_enabled = splat_log
+        self._shadow_quality = shadow_quality
+        self._cast_shadows_enabled = bool(cast_shadows)
         self._voice_audio_mode = voice_audio_mode
         self._voice_mic_device_index = voice_mic_device_index
         if hasattr(self, "_pan_base_slider"):
@@ -5905,6 +6048,15 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             self._splat_log_toggle.blockSignals(True)
             self._splat_log_toggle.setChecked(bool(splat_log))
             self._splat_log_toggle.blockSignals(False)
+        if hasattr(self, "_shadow_quality_combo"):
+            self._shadow_quality_combo.blockSignals(True)
+            idx = self._shadow_quality_combo.findData(shadow_quality)
+            self._shadow_quality_combo.setCurrentIndex(idx if idx >= 0 else 0)
+            self._shadow_quality_combo.blockSignals(False)
+        if hasattr(self, "_cast_shadows_toggle"):
+            self._cast_shadows_toggle.blockSignals(True)
+            self._cast_shadows_toggle.setChecked(bool(cast_shadows))
+            self._cast_shadows_toggle.blockSignals(False)
         if hasattr(self, "_voice_audio_toggle"):
             self._voice_audio_toggle.blockSignals(True)
             self._voice_audio_toggle.setChecked(self._voice_audio_mode_is_turn_taking())

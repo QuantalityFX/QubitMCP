@@ -6936,6 +6936,10 @@ class MGLRendererMixin:
             self._mgl_splats_need_rebuild = False
         except Exception:
             pass
+        try:
+            self._mgl_shadow_dirty = True
+        except Exception:
+            pass
 
         if state is not None:
             # Don't override an already-queued snapshot camera state.
@@ -9124,11 +9128,58 @@ class MGLRendererMixin:
             return (0.35, 0.85, 0.45)
 
     def _mgl_shadow_map_size_value(self) -> int:
+        quality = self._mgl_shadow_quality_value(
+            getattr(
+                self,
+                "_mgl_shadow_render_quality",
+                "high",
+            )
+            if bool(getattr(self, "_mgl_shadow_render_active", False))
+            else getattr(self, "_mgl_shadow_quality", "low")
+        )
+        size_by_quality = {
+            "low": 512,
+            "medium": 1024,
+            "high": 2048,
+            "ultra": 4096,
+        }
+        if quality in size_by_quality:
+            return int(size_by_quality[quality])
         try:
             size = int(getattr(self, "_mgl_shadow_map_size", 2048) or 2048)
         except Exception:
             size = 2048
         return max(256, min(4096, int(size)))
+
+    @staticmethod
+    def _mgl_shadow_quality_value(value) -> str:
+        text = str(value or "").strip().lower()
+        aliases = {
+            "l": "low",
+            "lo": "low",
+            "low": "low",
+            "m": "medium",
+            "med": "medium",
+            "medium": "medium",
+            "h": "high",
+            "hi": "high",
+            "high": "high",
+            "u": "ultra",
+            "ultra": "ultra",
+            "max": "ultra",
+        }
+        return aliases.get(text, "low")
+
+    def _mgl_shadow_update_interval_value(self) -> float:
+        if bool(getattr(self, "_mgl_shadow_render_active", False)):
+            return 0.0
+        quality = self._mgl_shadow_quality_value(getattr(self, "_mgl_shadow_quality", "low"))
+        return {
+            "low": 0.08,
+            "medium": 0.04,
+            "high": 0.0,
+            "ultra": 0.0,
+        }.get(quality, 0.08)
 
     def _mgl_ensure_shadow_resources(self) -> bool:
         if self._mgl_ctx is None or getattr(self, "_mgl_shadow_prog", None) is None:
@@ -9288,9 +9339,65 @@ class MGLRendererMixin:
                 max(2.0, extent * 8.0),
                 dtype="f4",
             )
-            return proj, view, (proj * view).astype("f4")
+            return proj, view, (proj * view).astype("f4"), center, float(radius)
         except Exception:
             return None
+
+    def _mgl_shadow_scene_signature(self, size: int, center, radius) -> tuple:
+        if np is None:
+            return (int(size),)
+        try:
+            frame = int(self._mgl_timeline_frame_index())
+        except Exception:
+            frame = 0
+        parts = [
+            ("size", int(size)),
+            ("quality", self._mgl_shadow_quality_value(getattr(self, "_mgl_shadow_quality", "low"))),
+            ("render", 1 if bool(getattr(self, "_mgl_shadow_render_active", False)) else 0),
+            ("frame", int(frame)),
+        ]
+        try:
+            c = np.asarray(center, dtype=np.float32).reshape(-1)[:3]
+            parts.append(("center", tuple(round(float(v), 3) for v in c)))
+        except Exception:
+            parts.append(("center", (0.0, 0.0, 0.0)))
+        try:
+            parts.append(("radius", round(float(radius), 3)))
+        except Exception:
+            parts.append(("radius", 1.0))
+
+        visibility = getattr(self, "_mgl_scene_visibility", {}) or {}
+        scene = getattr(self, "_mgl_scene", None)
+        if scene is not None:
+            try:
+                for item in sorted(scene.items(), key=lambda it: (str(getattr(it, "tag", "") or ""), str(getattr(it, "name", "") or ""))):
+                    if not bool(getattr(item, "visible", False)):
+                        continue
+                    payload = getattr(item, "payload", None) or {}
+                    owner = str(payload.get("owner") or payload.get("node") or item.name or "").strip()
+                    if owner and not bool(visibility.get(owner, True)):
+                        continue
+                    tag = str(getattr(item, "tag", "") or "")
+                    try:
+                        bmin, bmax = self.get_scene_owner_bounds(owner) if owner else (None, None)
+                        bmin = np.asarray(bmin, dtype=np.float32).reshape(-1)[:3]
+                        bmax = np.asarray(bmax, dtype=np.float32).reshape(-1)[:3]
+                        b = (
+                            tuple(round(float(v), 3) for v in bmin),
+                            tuple(round(float(v), 3) for v in bmax),
+                        )
+                    except Exception:
+                        b = None
+                    parts.append(("item", tag, owner, b))
+            except Exception:
+                pass
+        try:
+            splats_cpu = getattr(self, "_mgl_splats15_cpu", None)
+            if splats_cpu is not None:
+                parts.append(("splats", int(getattr(self, "_mgl_splat_count", 0) or 0)))
+        except Exception:
+            pass
+        return tuple(parts)
 
     def _mgl_apply_shadow_uniforms(self, prog) -> None:
         if prog is None or np is None:
@@ -9422,21 +9529,82 @@ class MGLRendererMixin:
                 except Exception:
                     pass
 
-    def _mgl_render_shadow_map(self) -> None:
+    def _mgl_draw_splat_shadow(self, light_proj, light_view) -> None:
+        if not bool(getattr(self, "_mgl_splat_cast_shadows_enabled", True)):
+            return
+        if not bool(getattr(self, "_mgl_render_splats", False)):
+            return
+        if self._mgl_ctx is None or getattr(self, "_mgl_splat_shadow_prog", None) is None:
+            return
+        vao = getattr(self, "_mgl_splat_shadow_vao", None)
+        count = int(getattr(self, "_mgl_splat_count", 0) or 0)
+        if vao is None or count <= 0:
+            return
         try:
-            self._mgl_shadow_valid = False
+            self._mgl_splat_shadow_prog["LightProj"].write(np.asarray(light_proj, dtype="f4").tobytes())
+            self._mgl_splat_shadow_prog["LightView"].write(np.asarray(light_view, dtype="f4").tobytes())
+            self._mgl_splat_shadow_prog["SplatWorldScale"].value = float(getattr(self, "_mgl_splat_world_scale", 1.0))
         except Exception:
             pass
+        try:
+            vao.render(
+                mode=moderngl.TRIANGLE_STRIP,
+                vertices=4,
+                instances=count,
+            )
+        except Exception:
+            pass
+
+    def _mgl_render_shadow_map(self) -> None:
         if not bool(getattr(self, "_mgl_shadows_enabled", True)):
+            try:
+                self._mgl_shadow_valid = False
+            except Exception:
+                pass
             return
         if self._mgl_ctx is None or not self._mgl_ensure_shadow_resources():
+            try:
+                self._mgl_shadow_valid = False
+            except Exception:
+                pass
             return
         matrices = self._mgl_shadow_light_matrices()
         if matrices is None:
+            try:
+                self._mgl_shadow_valid = False
+            except Exception:
+                pass
             return
-        _light_proj, _light_view, light_mvp = matrices
+        light_proj, light_view, light_mvp, shadow_center, shadow_radius = matrices
         fbo = getattr(self, "_mgl_shadow_fbo", None)
         if fbo is None:
+            try:
+                self._mgl_shadow_valid = False
+            except Exception:
+                pass
+            return
+        size = self._mgl_shadow_map_size_value()
+        signature = self._mgl_shadow_scene_signature(size, shadow_center, shadow_radius)
+        force_update = bool(getattr(self, "_mgl_shadow_dirty", True) or getattr(self, "_mgl_shadow_render_active", False))
+        if not force_update:
+            try:
+                force_update = signature != getattr(self, "_mgl_shadow_signature", None)
+            except Exception:
+                force_update = True
+        if force_update:
+            try:
+                interval = float(self._mgl_shadow_update_interval_value())
+                now = time.perf_counter()
+                last = float(getattr(self, "_mgl_shadow_last_update_ts", 0.0) or 0.0)
+                if interval > 0.0 and (now - last) < interval:
+                    force_update = False
+            except Exception:
+                pass
+        if not force_update and bool(getattr(self, "_mgl_shadow_valid", False)):
+            try:
+                self._mgl_shadow_light_mvp = np.asarray(light_mvp, dtype="f4")
+            except Exception:
+                pass
             return
         old_viewport = None
         old_depth_mask = None
@@ -9459,7 +9627,6 @@ class MGLRendererMixin:
         except Exception:
             old_wireframe = None
         try:
-            size = self._mgl_shadow_map_size_value()
             fbo.use()
             self._mgl_ctx.viewport = (0, 0, size, size)
             try:
@@ -9493,7 +9660,14 @@ class MGLRendererMixin:
                     items = []
                 for item in items:
                     self._mgl_draw_scene_mesh_shadow(item, light_mvp)
+            try:
+                self._mgl_draw_splat_shadow(light_proj, light_view)
+            except Exception:
+                pass
             self._mgl_shadow_light_mvp = np.asarray(light_mvp, dtype="f4")
+            self._mgl_shadow_signature = signature
+            self._mgl_shadow_dirty = False
+            self._mgl_shadow_last_update_ts = time.perf_counter()
             self._mgl_shadow_valid = True
         except Exception as exc:
             try:
@@ -9555,6 +9729,8 @@ class MGLRendererMixin:
         prev_size_override = getattr(self, "_mgl_render_size_override", None)
         prev_target_fbo = int(getattr(self, "_mgl_render_target_fbo_id", 0) or 0)
         prev_render_paused = bool(getattr(self, "_render_paused", False))
+        prev_shadow_render_active = bool(getattr(self, "_mgl_shadow_render_active", False))
+        prev_shadow_dirty = bool(getattr(self, "_mgl_shadow_dirty", True))
         try:
             prev_splat_min_dt = float(getattr(self, "_mgl_splats_rebuild_min_dt", 0.05) or 0.05)
         except Exception:
@@ -9584,6 +9760,11 @@ class MGLRendererMixin:
             except Exception:
                 pass
             self._render_paused = False
+            try:
+                self._mgl_shadow_render_active = True
+                self._mgl_shadow_dirty = True
+            except Exception:
+                pass
             try:
                 self._mgl_splats_rebuild_min_dt = 0.0
             except Exception:
@@ -9622,6 +9803,11 @@ class MGLRendererMixin:
                 self._render_paused = bool(prev_render_paused)
             except Exception:
                 self._render_paused = False
+            try:
+                self._mgl_shadow_render_active = bool(prev_shadow_render_active)
+                self._mgl_shadow_dirty = bool(prev_shadow_dirty)
+            except Exception:
+                pass
             try:
                 self._mgl_splats_rebuild_min_dt = float(prev_splat_min_dt)
             except Exception:
@@ -11603,6 +11789,42 @@ class MGLRendererMixin:
                     pass
         self.update()
 
+    def _apply_mgl_shadow_settings(
+        self,
+        *,
+        enabled: Optional[bool] = None,
+        quality: Optional[str] = None,
+        sync_scene: bool = True,
+    ) -> None:
+        if not self._use_moderngl:
+            return
+        if enabled is not None:
+            self._mgl_shadows_enabled = bool(enabled)
+        if quality is not None:
+            self._mgl_shadow_quality = self._mgl_shadow_quality_value(quality)
+        try:
+            self._mgl_shadow_map_size = int(self._mgl_shadow_map_size_value())
+        except Exception:
+            pass
+        try:
+            self._mgl_shadow_dirty = True
+        except Exception:
+            pass
+        if sync_scene:
+            scene = getattr(self, "_scene", None)
+            if scene is not None:
+                try:
+                    settings = getattr(scene, "_view_settings", None)
+                    if not isinstance(settings, dict):
+                        settings = {}
+                    settings = dict(settings)
+                    settings["cast_shadows"] = bool(getattr(self, "_mgl_shadows_enabled", True))
+                    settings["shadow_quality"] = self._mgl_shadow_quality_value(getattr(self, "_mgl_shadow_quality", "low"))
+                    scene._view_settings = settings
+                except Exception:
+                    pass
+        self.update()
+
     def _apply_mgl_wire_color(self, color, *, sync_scene: bool = True) -> None:
         if not self._use_moderngl:
             return
@@ -11849,9 +12071,15 @@ class MGLRendererMixin:
             splat_fragment = SHADERS["splat_fragment"]
             splatq_vertex = SHADERS["splatq_vertex"]
             splatq_fragment = SHADERS["splatq_fragment"]
+            splat_shadow_vertex = SHADERS["splat_shadow_vertex"]
+            splat_shadow_fragment = SHADERS["splat_shadow_fragment"]
 
             self._mgl_splat_prog = self._mgl_ctx.program(vertex_shader=splat_vertex, fragment_shader=splat_fragment)
             self._mgl_splatq_prog = self._mgl_ctx.program(vertex_shader=splatq_vertex, fragment_shader=splatq_fragment)
+            self._mgl_splat_shadow_prog = self._mgl_ctx.program(
+                vertex_shader=splat_shadow_vertex,
+                fragment_shader=splat_shadow_fragment,
+            )
             try:
                 self._mgl_splatq_prog["ShadowMap"].value = 7
                 self._mgl_splatq_prog["LightDir"].value = self._mgl_light_direction_tuple()
@@ -12054,6 +12282,13 @@ class MGLRendererMixin:
                 pass
             self._mgl_splatq_vao = None
 
+        if getattr(self, "_mgl_splat_shadow_vao", None) is not None:
+            try:
+                self._mgl_splat_shadow_vao.release()
+            except Exception:
+                pass
+            self._mgl_splat_shadow_vao = None
+
         if self._mgl_splatq_vbo is not None:
             try:
                 self._mgl_splatq_vbo.release()
@@ -12120,11 +12355,17 @@ class MGLRendererMixin:
                 except Exception:
                     pass
                 try:
+                    if getattr(self, "_mgl_splat_shadow_vao", None) is not None and hasattr(self._mgl_splat_shadow_vao, "release"):
+                        self._mgl_splat_shadow_vao.release()
+                except Exception:
+                    pass
+                try:
                     if self._mgl_splatq_vbo is not None and hasattr(self._mgl_splatq_vbo, "release"):
                         self._mgl_splatq_vbo.release()
                 except Exception:
                     pass
                 self._mgl_splatq_vao = None
+                self._mgl_splat_shadow_vao = None
                 self._mgl_splatq_vbo = None
 
                 self._mgl_splatq_vbo = self._mgl_ctx.buffer(splats15.tobytes())
@@ -12143,6 +12384,29 @@ class MGLRendererMixin:
                         ),
                         ],
                     )
+                if getattr(self, "_mgl_splat_shadow_prog", None) is not None:
+                    try:
+                        self._mgl_splat_shadow_vao = self._mgl_ctx.vertex_array(
+                            self._mgl_splat_shadow_prog,
+                            [
+                                (self._mgl_splatq_quad_vbo, "2f", "in_corner"),
+                                (
+                                    self._mgl_splatq_vbo,
+                                    "3f 4f 1f 3f 4f /i",
+                                    "in_pos",
+                                    "in_col",
+                                    "in_rad",
+                                    "in_scale3",
+                                    "in_rot",
+                                ),
+                            ],
+                        )
+                    except Exception:
+                        self._mgl_splat_shadow_vao = None
+                try:
+                    self._mgl_shadow_dirty = True
+                except Exception:
+                    pass
                 try:
                     if bool(getattr(self, "_mgl_splat_log_verbose", False)):
                         self._mgl_log_throttled(

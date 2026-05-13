@@ -586,9 +586,11 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         
         # instanced-quad splats (new path)
         self._mgl_splatq_prog = None
+        self._mgl_splat_shadow_prog = None
         self._mgl_splatq_quad_vbo = None   # static quad corners
         self._mgl_splatq_vbo = None        # instance buffer (Nx8)
         self._mgl_splatq_vao = None
+        self._mgl_splat_shadow_vao = None
         self._mgl_splat_world_scale = 3.0  # tuning knob
         self._mgl_splat_sort_tick = 0
         self._mgl_splat_count = 0
@@ -605,13 +607,20 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._mgl_shadow_prog = None
         self._mgl_shadow_fbo = None
         self._mgl_shadow_depth_tex = None
-        self._mgl_shadow_map_size = 2048
+        self._mgl_shadow_quality = "low"
+        self._mgl_shadow_render_quality = "high"
+        self._mgl_shadow_map_size = 512
+        self._mgl_shadow_size_current = 0
         self._mgl_shadows_enabled = True
+        self._mgl_splat_cast_shadows_enabled = True
         self._mgl_shadow_bias = 0.0025
         self._mgl_shadow_darkness = 0.45
         self._mgl_shadow_light_dir = (0.35, 0.85, 0.45)
         self._mgl_shadow_light_mvp = None
         self._mgl_shadow_valid = False
+        self._mgl_shadow_dirty = True
+        self._mgl_shadow_signature = None
+        self._mgl_shadow_last_update_ts = 0.0
         self._mgl_mesh = None
         self._mgl_vao = None
         self._mgl_grid_vao = None
