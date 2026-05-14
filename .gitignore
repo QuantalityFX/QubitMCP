@@ -12,6 +12,7 @@ __pycache__/
 AGENTS.md
 
 # Local app state
+/app_settings.json
 /hotkeys.json
 /recent_graphs.json
 
@@ -36,6 +37,13 @@ AGENTS.md
 /echograph/QOpenGLWidget_example-main/
 /echograph/repos/
 /vcpkg/
+/Unreal/UnrealEnviroment/
+/Unreal/UnrealEnvironment/
+/Unreal/UnrealPythonEnv/
+
+# Unreal local tools/plugins
+/Unreal/UnrealTools/
+/Unreal/Plugins/AnimationReimportTool/
 
 # Large/local data assets
 /echograph/3dmodels/

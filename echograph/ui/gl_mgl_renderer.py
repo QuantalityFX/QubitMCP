@@ -1989,6 +1989,7 @@ class MGLRendererMixin:
             "follow_strength": _float("follow_strength", 12.0, 0.0, 100.0),
             "drag": _float("drag", 0.35, 0.0, 100.0),
             "velocity_scale": _float("velocity_scale", 0.15, 0.0, 4.0),
+            "physics_scale": _float("physics_scale", 1.0, 0.01, 100.0),
             "noise_mode": str(raw.get("noise_mode") or "none").strip().lower(),
             "noise_strength": _float("noise_strength", 0.0, 0.0, 20.0),
             "noise_scale": _float("noise_scale", 1.5, 0.01, 100.0),
@@ -1998,6 +1999,13 @@ class MGLRendererMixin:
             "max_lag": _float("max_lag", 2.5, 0.0, 1000.0),
             "reset_on_jump": _bool("reset_on_jump", True),
             "reset_frame_jump": _int("reset_frame_jump", 12, 1, 240),
+            "trail_enabled": _bool("trail_enabled", False),
+            "trail_spawn_rate": _float("trail_spawn_rate", 0.0, 0.0, 1.0),
+            "trail_lifetime": _int("trail_lifetime", 24, 1, 240),
+            "trail_alpha": _float("trail_alpha", 0.35, 0.0, 1.0),
+            "trail_radius_scale": _float("trail_radius_scale", 0.75, 0.01, 4.0),
+            "trail_curl": _float("trail_curl", 0.0, 0.0, 20.0),
+            "trail_max_particles": _int("trail_max_particles", 120000, 0, 1000000),
         }
 
     def _mgl_splat_physics_signature(self, config: dict | None):
@@ -2019,6 +2027,7 @@ class MGLRendererMixin:
             round(_num("follow_strength", 12.0), 5),
             round(_num("drag", 0.35), 5),
             round(_num("velocity_scale", 0.15), 5),
+            round(_num("physics_scale", 1.0), 5),
             str(config.get("noise_mode") or "none"),
             round(_num("noise_strength", 0.0), 5),
             round(_num("noise_scale", 1.5), 5),
@@ -2028,6 +2037,13 @@ class MGLRendererMixin:
             round(_num("max_lag", 2.5), 5),
             bool(config.get("reset_on_jump", True)),
             int(config.get("reset_frame_jump", 12) or 12),
+            bool(config.get("trail_enabled", False)),
+            round(_num("trail_spawn_rate", 0.0), 5),
+            int(config.get("trail_lifetime", 24) or 24),
+            round(_num("trail_alpha", 0.35), 5),
+            round(_num("trail_radius_scale", 0.75), 5),
+            round(_num("trail_curl", 0.0), 5),
+            int(config.get("trail_max_particles", 120000) or 120000),
         )
 
     def _mgl_splat_noise_vectors(self, positions: NDArray, frame: int, config: dict) -> Tuple[NDArray, NDArray]:
@@ -2038,6 +2054,11 @@ class MGLRendererMixin:
             noise_scale = max(0.01, float(config.get("noise_scale", 1.5)))
         except Exception:
             noise_scale = 1.5
+        try:
+            physics_scale = max(0.01, float(config.get("physics_scale", 1.0)))
+        except Exception:
+            physics_scale = 1.0
+        noise_scale = max(0.01, noise_scale / physics_scale)
         try:
             noise_speed = max(0.0, float(config.get("noise_speed", 0.75)))
         except Exception:
@@ -2062,6 +2083,250 @@ class MGLRendererMixin:
         scalar = np.clip(scalar, np.float32(-1.0), np.float32(1.0))
         return vectors.astype("f4", copy=False), scalar
 
+    @staticmethod
+    def _mgl_clear_splat_trail_state(proxy: dict) -> None:
+        if not isinstance(proxy, dict):
+            return
+        for key in (
+            "trail_splats",
+            "trail_velocities",
+            "trail_ages",
+            "trail_last_frame",
+            "trail_emit_accum",
+            "trail_emit_counter",
+        ):
+            try:
+                proxy.pop(key, None)
+            except Exception:
+                pass
+
+    def _mgl_update_splat_trails(self, proxy: dict, source_splats: NDArray, frame: int) -> NDArray:
+        if np is None or not isinstance(proxy, dict):
+            return np.zeros((0, 15), dtype=np.float32) if np is not None else source_splats
+        config = proxy.get("splat_physics")
+        if not isinstance(config, dict):
+            self._mgl_clear_splat_trail_state(proxy)
+            return np.zeros((0, 15), dtype=np.float32)
+
+        def _empty() -> NDArray:
+            return np.zeros((0, 15), dtype=np.float32)
+
+        try:
+            source = np.asarray(source_splats, dtype="f4").reshape(-1, 15)
+        except Exception:
+            self._mgl_clear_splat_trail_state(proxy)
+            return _empty()
+        count = int(source.shape[0])
+        if count <= 0:
+            self._mgl_clear_splat_trail_state(proxy)
+            return _empty()
+
+        try:
+            spawn_rate = max(0.0, min(1.0, float(config.get("trail_spawn_rate", 0.0))))
+        except Exception:
+            spawn_rate = 0.0
+        try:
+            lifetime = max(1, int(config.get("trail_lifetime", 24) or 24))
+        except Exception:
+            lifetime = 24
+        try:
+            trail_alpha = max(0.0, min(1.0, float(config.get("trail_alpha", 0.35))))
+        except Exception:
+            trail_alpha = 0.35
+        try:
+            max_particles = max(0, int(config.get("trail_max_particles", 120000) or 120000))
+        except Exception:
+            max_particles = 120000
+        enabled = bool(config.get("trail_enabled", False)) and spawn_rate > 0.0 and lifetime > 0 and trail_alpha > 0.0
+        if not enabled or max_particles <= 0:
+            self._mgl_clear_splat_trail_state(proxy)
+            return _empty()
+
+        try:
+            frame_delta = int(frame) - int(proxy.get("trail_last_frame"))
+        except Exception:
+            frame_delta = 1
+        if frame_delta == 0:
+            frame_delta = 1
+        reset = bool(proxy.get("physics_reset", False))
+        if bool(config.get("reset_on_jump", True)):
+            try:
+                jump = max(1, int(config.get("reset_frame_jump", 12) or 12))
+            except Exception:
+                jump = 12
+            if frame_delta < 0 or abs(int(frame_delta)) > jump:
+                reset = True
+        if reset:
+            self._mgl_clear_splat_trail_state(proxy)
+            frame_delta = 1
+
+        try:
+            fps = max(1.0, float(self._mgl_timeline_fps_value()))
+        except Exception:
+            fps = 24.0
+        dt = max(1.0 / fps, min(float(abs(frame_delta)) / fps, 0.25))
+        age_step = max(1.0, float(abs(frame_delta)))
+
+        trail_splats = proxy.get("trail_splats")
+        trail_velocities = proxy.get("trail_velocities")
+        trail_ages = proxy.get("trail_ages")
+        try:
+            trail_splats = np.asarray(trail_splats, dtype="f4").reshape(-1, 15)
+            trail_velocities = np.asarray(trail_velocities, dtype="f4").reshape(-1, 3)
+            trail_ages = np.asarray(trail_ages, dtype="f4").reshape(-1)
+            if (
+                int(trail_splats.shape[0]) != int(trail_velocities.shape[0])
+                or int(trail_splats.shape[0]) != int(trail_ages.shape[0])
+            ):
+                raise ValueError("trail state shape mismatch")
+        except Exception:
+            trail_splats = _empty()
+            trail_velocities = np.zeros((0, 3), dtype=np.float32)
+            trail_ages = np.zeros((0,), dtype=np.float32)
+
+        if int(trail_splats.shape[0]) > 0:
+            trail_ages = trail_ages + np.float32(age_step)
+            keep = trail_ages < np.float32(float(lifetime))
+            if np.any(keep):
+                trail_splats = trail_splats[keep].astype(np.float32, copy=True)
+                trail_velocities = trail_velocities[keep].astype(np.float32, copy=True)
+                trail_ages = trail_ages[keep].astype(np.float32, copy=True)
+                try:
+                    physics_scale = max(0.01, float(config.get("physics_scale", 1.0)))
+                except Exception:
+                    physics_scale = 1.0
+                try:
+                    drag = max(0.0, min(100.0, float(config.get("drag", 0.35))))
+                except Exception:
+                    drag = 0.35
+                try:
+                    gravity = np.asarray(config.get("gravity", (0.0, -0.25, 0.0)), dtype="f4").reshape(-1)[:3]
+                    if gravity.shape[0] != 3:
+                        gravity = np.array([0.0, -0.25, 0.0], dtype="f4")
+                except Exception:
+                    gravity = np.array([0.0, -0.25, 0.0], dtype="f4")
+                gravity = gravity * np.float32(physics_scale)
+                acceleration = np.repeat(gravity[None, :], int(trail_splats.shape[0]), axis=0).astype("f4", copy=False)
+                try:
+                    trail_curl = max(0.0, float(config.get("trail_curl", 0.0)))
+                except Exception:
+                    trail_curl = 0.0
+                if trail_curl > 1.0e-6:
+                    noise_vectors, _noise_scalar = self._mgl_splat_noise_vectors(trail_splats[:, 0:3], int(frame), config)
+                    acceleration += noise_vectors * np.float32(trail_curl * physics_scale)
+                damping = math.exp(-float(drag) * 8.0 * float(dt))
+                trail_velocities = (trail_velocities + acceleration * np.float32(dt)) * np.float32(damping)
+                trail_splats[:, 0:3] = trail_splats[:, 0:3] + trail_velocities * np.float32(dt)
+            else:
+                trail_splats = _empty()
+                trail_velocities = np.zeros((0, 3), dtype=np.float32)
+                trail_ages = np.zeros((0,), dtype=np.float32)
+
+        existing_count = int(trail_splats.shape[0])
+        capacity = max(0, int(max_particles) - existing_count)
+        emit_accum = 0.0 if capacity <= 0 else float(proxy.get("trail_emit_accum", 0.0) or 0.0)
+        emit_accum += float(count) * float(spawn_rate)
+        spawn_count = int(math.floor(emit_accum))
+        if spawn_count > 0:
+            emit_accum -= float(spawn_count)
+        spawn_count = min(int(spawn_count), int(count), int(capacity))
+        if capacity <= 0:
+            emit_accum = 0.0
+        elif spawn_count >= capacity:
+            emit_accum = 0.0
+
+        if spawn_count > 0:
+            try:
+                emit_counter = int(proxy.get("trail_emit_counter", 0) or 0)
+            except Exception:
+                emit_counter = 0
+            candidate_count = min(int(count), max(int(spawn_count), int(spawn_count) * 4))
+            stride = max(1, int(count) // max(1, int(candidate_count)))
+            offset = int((int(frame) * 7919 + emit_counter * 104729) % max(1, int(count)))
+            candidate_idx = (offset + np.arange(candidate_count, dtype=np.int64) * int(stride)) % int(count)
+
+            choose_idx = candidate_idx[:spawn_count]
+            try:
+                noise_strength = max(0.0, float(config.get("noise_strength", 0.0)))
+            except Exception:
+                noise_strength = 0.0
+            try:
+                trail_curl_for_mask = max(0.0, float(config.get("trail_curl", 0.0)))
+            except Exception:
+                trail_curl_for_mask = 0.0
+            if int(candidate_idx.shape[0]) > int(spawn_count) and (noise_strength > 1.0e-6 or trail_curl_for_mask > 1.0e-6):
+                _vectors, scalar = self._mgl_splat_noise_vectors(source[candidate_idx, 0:3], int(frame), config)
+                jitter_raw = (
+                    (candidate_idx.astype(np.uint64) * np.uint64(1103515245) + np.uint64(int(frame) * 12345))
+                    & np.uint64(0xFFFF)
+                ).astype(np.float32)
+                jitter = (jitter_raw / np.float32(65535.0)) * np.float32(0.25)
+                scores = scalar.astype(np.float32, copy=False) + jitter
+                pick = np.argpartition(scores, -int(spawn_count))[-int(spawn_count):]
+                choose_idx = candidate_idx[pick]
+
+            emitted = source[choose_idx].astype(np.float32, copy=True)
+            emitted[:, 6] *= np.float32(trail_alpha)
+            try:
+                radius_scale = max(0.01, min(4.0, float(config.get("trail_radius_scale", 0.75))))
+            except Exception:
+                radius_scale = 0.75
+            emitted[:, 7] *= np.float32(radius_scale)
+
+            spawned_velocities = np.zeros((int(emitted.shape[0]), 3), dtype=np.float32)
+            target_velocity = proxy.get("physics_target_velocity")
+            try:
+                target_velocity = np.asarray(target_velocity, dtype="f4").reshape(-1, 3)
+                if int(target_velocity.shape[0]) == int(count):
+                    try:
+                        velocity_scale = max(0.0, float(config.get("velocity_scale", 0.15)))
+                    except Exception:
+                        velocity_scale = 0.15
+                    inherit = max(0.0, min(1.0, float(velocity_scale) * 0.25))
+                    if inherit > 1.0e-6:
+                        spawned_velocities += target_velocity[choose_idx].astype(np.float32, copy=False) * np.float32(inherit)
+            except Exception:
+                pass
+            try:
+                trail_curl = max(0.0, float(config.get("trail_curl", 0.0)))
+                physics_scale = max(0.01, float(config.get("physics_scale", 1.0)))
+            except Exception:
+                trail_curl = 0.0
+                physics_scale = 1.0
+            if trail_curl > 1.0e-6:
+                noise_vectors, _noise_scalar = self._mgl_splat_noise_vectors(emitted[:, 0:3], int(frame), config)
+                spawned_velocities += noise_vectors * np.float32(trail_curl * physics_scale * 0.05)
+
+            spawned_ages = np.zeros((int(emitted.shape[0]),), dtype=np.float32)
+            if existing_count > 0:
+                trail_splats = np.concatenate([trail_splats, emitted], axis=0)
+                trail_velocities = np.concatenate([trail_velocities, spawned_velocities], axis=0)
+                trail_ages = np.concatenate([trail_ages, spawned_ages], axis=0)
+            else:
+                trail_splats = emitted
+                trail_velocities = spawned_velocities
+                trail_ages = spawned_ages
+            proxy["trail_emit_counter"] = emit_counter + 1
+
+        proxy["trail_emit_accum"] = float(emit_accum)
+        proxy["trail_splats"] = trail_splats.astype(np.float32, copy=False)
+        proxy["trail_velocities"] = trail_velocities.astype(np.float32, copy=False)
+        proxy["trail_ages"] = trail_ages.astype(np.float32, copy=False)
+        proxy["trail_last_frame"] = int(frame)
+
+        if int(trail_splats.shape[0]) <= 0:
+            return _empty()
+        fade = np.clip(
+            np.float32(1.0) - (trail_ages.astype(np.float32, copy=False) / np.float32(max(1.0, float(lifetime)))),
+            np.float32(0.0),
+            np.float32(1.0),
+        )
+        fade = fade * fade
+        out = trail_splats.astype(np.float32, copy=True)
+        out[:, 6] *= fade
+        out[:, 7] *= np.maximum(np.float32(0.15), fade)
+        return out.astype(np.float32, copy=False)
+
     def _mgl_apply_splat_physics(self, proxy: dict, target_positions: NDArray, frame: int) -> NDArray:
         if np is None:
             return target_positions
@@ -2071,6 +2336,11 @@ class MGLRendererMixin:
             proxy.pop("physics_velocities", None)
             proxy.pop("physics_last_target", None)
             proxy.pop("physics_last_frame", None)
+            proxy.pop("physics_target_velocity", None)
+            proxy.pop("physics_dt", None)
+            proxy.pop("physics_frame_delta", None)
+            proxy["physics_reset"] = True
+            self._mgl_clear_splat_trail_state(proxy)
             proxy["physics_config_signature"] = self._mgl_splat_physics_signature(config)
             return target_positions
 
@@ -2133,6 +2403,10 @@ class MGLRendererMixin:
             velocity_scale = max(0.0, float(config.get("velocity_scale", 0.15)))
         except Exception:
             velocity_scale = 0.15
+        try:
+            physics_scale = max(0.01, float(config.get("physics_scale", 1.0)))
+        except Exception:
+            physics_scale = 1.0
         noise_mode = str(config.get("noise_mode") or "none").strip().lower()
         if noise_mode not in {"none", "curl_force", "velocity_multiply", "follow_multiply", "drag_multiply"}:
             noise_mode = "none"
@@ -2144,14 +2418,20 @@ class MGLRendererMixin:
             max_lag = max(0.0, float(config.get("max_lag", 2.5)))
         except Exception:
             max_lag = 2.5
+        max_lag = max_lag * physics_scale
         try:
             gravity = np.asarray(config.get("gravity", (0.0, -0.25, 0.0)), dtype="f4").reshape(-1)[:3]
             if gravity.shape[0] != 3:
                 gravity = np.array([0.0, -0.25, 0.0], dtype="f4")
         except Exception:
             gravity = np.array([0.0, -0.25, 0.0], dtype="f4")
+        gravity = gravity * np.float32(physics_scale)
 
         target_velocity = (target - last_target) / max(float(dt), 1.0e-6)
+        proxy["physics_target_velocity"] = target_velocity.astype("f4", copy=False)
+        proxy["physics_dt"] = float(dt)
+        proxy["physics_frame_delta"] = int(frame_delta)
+        proxy["physics_reset"] = bool(reset)
         noise_vectors = None
         noise_scalar = None
         if noise_mode != "none" and noise_strength > 1.0e-6:
@@ -2191,7 +2471,7 @@ class MGLRendererMixin:
                 acceleration = (target - positions) * np.float32(follow)
             acceleration += gravity[None, :]
             if noise_mode == "curl_force" and noise_vectors is not None:
-                acceleration += noise_vectors * np.float32(noise_strength)
+                acceleration += noise_vectors * np.float32(noise_strength * physics_scale)
             if damping_values is not None:
                 velocities = (velocities + acceleration * np.float32(step_dt)) * damping_values[:, None]
             else:
@@ -2508,6 +2788,19 @@ class MGLRendererMixin:
                     continue
                 current = base.astype(np.float32, copy=True)
                 current[:, 0:3] = deformed
+                try:
+                    trail_splats = self._mgl_update_splat_trails(proxy, current, int(frame))
+                    if getattr(trail_splats, "size", 0):
+                        current = np.concatenate([current, trail_splats], axis=0).astype(np.float32, copy=False)
+                except Exception as exc:
+                    try:
+                        self._mgl_log_throttled(
+                            "_mgl_splat_trail_update_error_" + owner_key,
+                            "fx_splat_physics: trail update failed owner=" + owner_key + " err=" + repr(exc),
+                            1.0,
+                        )
+                    except Exception:
+                        pass
                 proxy["current_splats"] = current
                 proxy["last_signature"] = signature
                 self._mgl_scene_splats[owner_key] = current

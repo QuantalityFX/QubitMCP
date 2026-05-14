@@ -117,5 +117,31 @@
       "max_lag": 5.0,
       "reset_frame_jump": 12
     }
+  },
+  {
+    "id": "comet_sparks_large",
+    "label": "Comet Sparks Large",
+    "params": {
+      "enabled": 1,
+      "follow_strength": 32.0,
+      "drag": 0.12,
+      "velocity_scale": 0.1,
+      "physics_scale": 1.0,
+      "noise_mode": "none",
+      "noise_strength": 0.0,
+      "noise_scale": 8.0,
+      "noise_speed": 2.2,
+      "gravity_y": -0.75,
+      "substeps": 2,
+      "max_lag": 0.25,
+      "reset_on_jump": 1,
+      "reset_frame_jump": 12,
+      "trail_enabled": 1,
+      "trail_spawn_rate": 0.025,
+      "trail_lifetime": 34,
+      "trail_alpha": 0.45,
+      "trail_radius_scale": 0.9,
+      "trail_curl": 5.0
+    }
   }
 ]

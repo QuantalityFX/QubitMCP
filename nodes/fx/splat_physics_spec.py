@@ -35,7 +35,7 @@ SPLAT_PHYSICS_NODE_W = 288
 SPLAT_PHYSICS_BODY_INSET_X = 8
 SPLAT_PHYSICS_BODY_INSET_TOP = 2
 SPLAT_PHYSICS_BODY_INSET_BOTTOM = 4
-SPLAT_PHYSICS_WIDGET_HINT_H = 404
+SPLAT_PHYSICS_WIDGET_HINT_H = 492
 SPLAT_PHYSICS_NODE_BODY_H = (
     SPLAT_PHYSICS_BODY_INSET_TOP
     + SPLAT_PHYSICS_WIDGET_HINT_H
@@ -56,6 +56,7 @@ SETTING_TOOLTIPS = {
     "Follow": "How strongly each splat is pulled back toward its skinned target position.",
     "Drag": "Velocity damping. Higher values slow the splats down faster.",
     "Velocity": "How much animation velocity is injected into the splats when the skinned target moves.",
+    "Scale": "Global multiplier for scale-sensitive physics settings. Higher values make lag, gravity, and curl force act larger while broadening the noise pattern.",
     "Gravity Y": "Vertical gravity force added to the simulated splats.",
     "Noise": "Noise strength. Higher values create more uneven per-splat motion.",
     "N Scale": "Spatial size of the noise pattern. Lower values make broader noise; higher values make tighter breakup.",
@@ -64,11 +65,19 @@ SETTING_TOOLTIPS = {
     "Max Lag": "Maximum distance a splat can drift away from its skinned target.",
     "Jump": "Timeline frame jump threshold before the simulation resets to the current pose.",
     "Reset on timeline jumps": "Resets cached positions when scrubbing or jumping far enough on the timeline.",
+    "Trail": "Emits extra fading splats from the animated surface.",
+    "T Rate": "Fraction of source splats emitted into the trail each frame.",
+    "T Life": "Trail lifetime in frames.",
+    "T Alpha": "Starting opacity for emitted trail splats.",
+    "T Size": "Size multiplier for emitted trail splats.",
+    "T Curl": "Curl-noise force applied to trail splats after they emit.",
 }
 PRESET_PARAM_NAMES = {
+    "enabled",
     "follow_strength",
     "drag",
     "velocity_scale",
+    "physics_scale",
     "noise_mode",
     "noise_strength",
     "noise_scale",
@@ -76,7 +85,14 @@ PRESET_PARAM_NAMES = {
     "gravity_y",
     "substeps",
     "max_lag",
+    "reset_on_jump",
     "reset_frame_jump",
+    "trail_enabled",
+    "trail_spawn_rate",
+    "trail_lifetime",
+    "trail_alpha",
+    "trail_radius_scale",
+    "trail_curl",
 }
 DEFAULT_PRESETS = [
     {
@@ -196,6 +212,32 @@ DEFAULT_PRESETS = [
             "substeps": 4,
             "max_lag": 5.0,
             "reset_frame_jump": 12,
+        },
+    },
+    {
+        "id": "comet_sparks_large",
+        "label": "Comet Sparks Large",
+        "params": {
+            "enabled": 1,
+            "follow_strength": 32.0,
+            "drag": 0.12,
+            "velocity_scale": 0.1,
+            "physics_scale": 1.0,
+            "noise_mode": "none",
+            "noise_strength": 0.0,
+            "noise_scale": 8.0,
+            "noise_speed": 2.2,
+            "gravity_y": -0.75,
+            "substeps": 2,
+            "max_lag": 0.25,
+            "reset_on_jump": 1,
+            "reset_frame_jump": 12,
+            "trail_enabled": 1,
+            "trail_spawn_rate": 0.025,
+            "trail_lifetime": 34,
+            "trail_alpha": 0.45,
+            "trail_radius_scale": 0.9,
+            "trail_curl": 5.0,
         },
     },
 ]
@@ -446,6 +488,7 @@ def splat_physics_config_from_model(model) -> Dict[str, Any]:
         "follow_strength": _param_float(model, "follow_strength", 12.0, min_value=0.0, max_value=100.0),
         "drag": _param_float(model, "drag", 0.35, min_value=0.0, max_value=100.0),
         "velocity_scale": _param_float(model, "velocity_scale", 0.15, min_value=0.0, max_value=4.0),
+        "physics_scale": _param_float(model, "physics_scale", 1.0, min_value=0.01, max_value=100.0),
         "noise_mode": noise_mode,
         "noise_strength": _param_float(model, "noise_strength", 0.0, min_value=0.0, max_value=20.0),
         "noise_scale": _param_float(model, "noise_scale", 1.5, min_value=0.01, max_value=100.0),
@@ -459,6 +502,12 @@ def splat_physics_config_from_model(model) -> Dict[str, Any]:
         "max_lag": _param_float(model, "max_lag", 2.5, min_value=0.0, max_value=1000.0),
         "reset_on_jump": _param_bool(model, "reset_on_jump", True),
         "reset_frame_jump": _param_int(model, "reset_frame_jump", 12, min_value=1, max_value=240),
+        "trail_enabled": _param_bool(model, "trail_enabled", False),
+        "trail_spawn_rate": _param_float(model, "trail_spawn_rate", 0.0, min_value=0.0, max_value=1.0),
+        "trail_lifetime": _param_int(model, "trail_lifetime", 24, min_value=1, max_value=240),
+        "trail_alpha": _param_float(model, "trail_alpha", 0.35, min_value=0.0, max_value=1.0),
+        "trail_radius_scale": _param_float(model, "trail_radius_scale", 0.75, min_value=0.01, max_value=4.0),
+        "trail_curl": _param_float(model, "trail_curl", 0.0, min_value=0.0, max_value=20.0),
     }
 
 
@@ -530,6 +579,7 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, "follow_strength", "12.0")
     _ensure_param(node_item, "drag", "0.35")
     _ensure_param(node_item, "velocity_scale", "0.15")
+    _ensure_param(node_item, "physics_scale", "1.0")
     _ensure_param(node_item, "noise_mode", "none")
     _ensure_param(node_item, "noise_strength", "0.0")
     _ensure_param(node_item, "noise_scale", "1.5")
@@ -541,6 +591,12 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, "max_lag", "2.5")
     _ensure_param(node_item, "reset_on_jump", "1")
     _ensure_param(node_item, "reset_frame_jump", "12")
+    _ensure_param(node_item, "trail_enabled", "0")
+    _ensure_param(node_item, "trail_spawn_rate", "0.0")
+    _ensure_param(node_item, "trail_lifetime", "24")
+    _ensure_param(node_item, "trail_alpha", "0.35")
+    _ensure_param(node_item, "trail_radius_scale", "0.75")
+    _ensure_param(node_item, "trail_curl", "0.0")
     _ensure_param(node_item, "debug_log", "0")
     _ensure_hidden_params(
         getattr(node_item, "model", None),
@@ -552,6 +608,7 @@ def build_ports(node_item) -> None:
             "follow_strength",
             "drag",
             "velocity_scale",
+            "physics_scale",
             "noise_mode",
             "noise_strength",
             "noise_scale",
@@ -563,6 +620,12 @@ def build_ports(node_item) -> None:
             "max_lag",
             "reset_on_jump",
             "reset_frame_jump",
+            "trail_enabled",
+            "trail_spawn_rate",
+            "trail_lifetime",
+            "trail_alpha",
+            "trail_radius_scale",
+            "trail_curl",
             "debug_log",
         ],
     )
@@ -663,6 +726,7 @@ class SplatPhysicsWidget(QtWidgets.QWidget):
         self._follow = _float_box(0.0, 100.0, 1.0, decimals=2)
         self._drag = _float_box(0.0, 100.0, 1.0, decimals=2)
         self._velocity = _float_box(0.0, 4.0, 0.05)
+        self._physics_scale = _float_box(0.01, 100.0, 0.05)
         self._noise_strength = _float_box(0.0, 20.0, 0.05)
         self._noise_scale = _float_box(0.01, 100.0, 0.05)
         self._noise_speed = _float_box(0.0, 20.0, 0.05)
@@ -670,10 +734,16 @@ class SplatPhysicsWidget(QtWidgets.QWidget):
         self._substeps = _int_box(1, 32)
         self._max_lag = _float_box(0.0, 1000.0, 0.05)
         self._reset_jump = _int_box(1, 240)
+        self._trail_spawn_rate = _float_box(0.0, 1.0, 0.01)
+        self._trail_lifetime = _int_box(1, 240)
+        self._trail_alpha = _float_box(0.0, 1.0, 0.05, decimals=2)
+        self._trail_radius_scale = _float_box(0.01, 4.0, 0.05)
+        self._trail_curl = _float_box(0.0, 20.0, 0.05)
         for widget, tip_key in (
             (self._follow, "Follow"),
             (self._drag, "Drag"),
             (self._velocity, "Velocity"),
+            (self._physics_scale, "Scale"),
             (self._gravity_y, "Gravity Y"),
             (self._noise_strength, "Noise"),
             (self._noise_scale, "N Scale"),
@@ -681,6 +751,11 @@ class SplatPhysicsWidget(QtWidgets.QWidget):
             (self._substeps, "Substeps"),
             (self._max_lag, "Max Lag"),
             (self._reset_jump, "Jump"),
+            (self._trail_spawn_rate, "T Rate"),
+            (self._trail_lifetime, "T Life"),
+            (self._trail_alpha, "T Alpha"),
+            (self._trail_radius_scale, "T Size"),
+            (self._trail_curl, "T Curl"),
         ):
             widget.setToolTip(SETTING_TOOLTIPS[tip_key])
 
@@ -692,24 +767,41 @@ class SplatPhysicsWidget(QtWidgets.QWidget):
         grid.addWidget(self._velocity, 1, 1)
         grid.addWidget(_label("Gravity Y"), 1, 2)
         grid.addWidget(self._gravity_y, 1, 3)
-        grid.addWidget(_label("Noise"), 2, 0)
-        grid.addWidget(self._noise_strength, 2, 1)
-        grid.addWidget(_label("N Scale"), 2, 2)
-        grid.addWidget(self._noise_scale, 2, 3)
-        grid.addWidget(_label("N Speed"), 3, 0)
-        grid.addWidget(self._noise_speed, 3, 1)
-        grid.addWidget(_label("Substeps"), 3, 2)
-        grid.addWidget(self._substeps, 3, 3)
-        grid.addWidget(_label("Max Lag"), 4, 0)
-        grid.addWidget(self._max_lag, 4, 1)
-        grid.addWidget(_label("Jump"), 4, 2)
-        grid.addWidget(self._reset_jump, 4, 3)
+        grid.addWidget(_label("Scale"), 2, 0)
+        grid.addWidget(self._physics_scale, 2, 1)
+        grid.addWidget(_label("Noise"), 2, 2)
+        grid.addWidget(self._noise_strength, 2, 3)
+        grid.addWidget(_label("N Scale"), 3, 0)
+        grid.addWidget(self._noise_scale, 3, 1)
+        grid.addWidget(_label("N Speed"), 3, 2)
+        grid.addWidget(self._noise_speed, 3, 3)
+        grid.addWidget(_label("Substeps"), 4, 0)
+        grid.addWidget(self._substeps, 4, 1)
+        grid.addWidget(_label("Max Lag"), 4, 2)
+        grid.addWidget(self._max_lag, 4, 3)
+        grid.addWidget(_label("Jump"), 5, 0)
+        grid.addWidget(self._reset_jump, 5, 1)
+        grid.addWidget(_label("T Rate"), 5, 2)
+        grid.addWidget(self._trail_spawn_rate, 5, 3)
+        grid.addWidget(_label("T Life"), 6, 0)
+        grid.addWidget(self._trail_lifetime, 6, 1)
+        grid.addWidget(_label("T Alpha"), 6, 2)
+        grid.addWidget(self._trail_alpha, 6, 3)
+        grid.addWidget(_label("T Size"), 7, 0)
+        grid.addWidget(self._trail_radius_scale, 7, 1)
+        grid.addWidget(_label("T Curl"), 7, 2)
+        grid.addWidget(self._trail_curl, 7, 3)
         layout.addLayout(grid, 0)
 
         self._reset_on_jump = QtWidgets.QCheckBox("Reset on timeline jumps")
         self._reset_on_jump.setToolTip(SETTING_TOOLTIPS["Reset on timeline jumps"])
         self._reset_on_jump.stateChanged.connect(self._on_reset_on_jump_changed)
         layout.addWidget(self._reset_on_jump, 0)
+
+        self._trail_enabled = QtWidgets.QCheckBox("Trail")
+        self._trail_enabled.setToolTip(SETTING_TOOLTIPS["Trail"])
+        self._trail_enabled.stateChanged.connect(self._on_trail_enabled_changed)
+        layout.addWidget(self._trail_enabled, 0)
 
         hint = QtWidgets.QLabel("Noise can add curl motion or multiply velocity, follow, or drag per splat so the surface no longer trails as one sheet.")
         hint.setWordWrap(True)
@@ -720,15 +812,21 @@ class SplatPhysicsWidget(QtWidgets.QWidget):
             (self._follow, "follow_strength"),
             (self._drag, "drag"),
             (self._velocity, "velocity_scale"),
+            (self._physics_scale, "physics_scale"),
             (self._noise_strength, "noise_strength"),
             (self._noise_scale, "noise_scale"),
             (self._noise_speed, "noise_speed"),
             (self._gravity_y, "gravity_y"),
             (self._max_lag, "max_lag"),
+            (self._trail_spawn_rate, "trail_spawn_rate"),
+            (self._trail_alpha, "trail_alpha"),
+            (self._trail_radius_scale, "trail_radius_scale"),
+            (self._trail_curl, "trail_curl"),
         ):
             widget.valueChanged.connect(lambda value, name=key: self._set_param(name, f"{float(value):.3f}"))
         self._substeps.valueChanged.connect(lambda value: self._set_param("substeps", str(int(value))))
         self._reset_jump.valueChanged.connect(lambda value: self._set_param("reset_frame_jump", str(int(value))))
+        self._trail_lifetime.valueChanged.connect(lambda value: self._set_param("trail_lifetime", str(int(value))))
 
         self._sync_from_params()
         self._ensure_scene()
@@ -782,6 +880,7 @@ class SplatPhysicsWidget(QtWidgets.QWidget):
             self._follow,
             self._drag,
             self._velocity,
+            self._physics_scale,
             self._noise_strength,
             self._noise_scale,
             self._noise_speed,
@@ -790,6 +889,12 @@ class SplatPhysicsWidget(QtWidgets.QWidget):
             self._max_lag,
             self._reset_on_jump,
             self._reset_jump,
+            self._trail_enabled,
+            self._trail_spawn_rate,
+            self._trail_lifetime,
+            self._trail_alpha,
+            self._trail_radius_scale,
+            self._trail_curl,
         )
         for widget in widgets:
             try:
@@ -807,6 +912,7 @@ class SplatPhysicsWidget(QtWidgets.QWidget):
             self._follow.setValue(_param_float(model, "follow_strength", 12.0, min_value=0.0, max_value=100.0))
             self._drag.setValue(_param_float(model, "drag", 0.35, min_value=0.0, max_value=100.0))
             self._velocity.setValue(_param_float(model, "velocity_scale", 0.15, min_value=0.0, max_value=4.0))
+            self._physics_scale.setValue(_param_float(model, "physics_scale", 1.0, min_value=0.01, max_value=100.0))
             self._noise_strength.setValue(_param_float(model, "noise_strength", 0.0, min_value=0.0, max_value=20.0))
             self._noise_scale.setValue(_param_float(model, "noise_scale", 1.5, min_value=0.01, max_value=100.0))
             self._noise_speed.setValue(_param_float(model, "noise_speed", 0.75, min_value=0.0, max_value=20.0))
@@ -815,6 +921,12 @@ class SplatPhysicsWidget(QtWidgets.QWidget):
             self._max_lag.setValue(_param_float(model, "max_lag", 2.5, min_value=0.0, max_value=1000.0))
             self._reset_on_jump.setChecked(_param_bool(model, "reset_on_jump", True))
             self._reset_jump.setValue(_param_int(model, "reset_frame_jump", 12, min_value=1, max_value=240))
+            self._trail_enabled.setChecked(_param_bool(model, "trail_enabled", False))
+            self._trail_spawn_rate.setValue(_param_float(model, "trail_spawn_rate", 0.0, min_value=0.0, max_value=1.0))
+            self._trail_lifetime.setValue(_param_int(model, "trail_lifetime", 24, min_value=1, max_value=240))
+            self._trail_alpha.setValue(_param_float(model, "trail_alpha", 0.35, min_value=0.0, max_value=1.0))
+            self._trail_radius_scale.setValue(_param_float(model, "trail_radius_scale", 0.75, min_value=0.01, max_value=4.0))
+            self._trail_curl.setValue(_param_float(model, "trail_curl", 0.0, min_value=0.0, max_value=20.0))
         finally:
             self._updating = False
             for widget in widgets:
@@ -855,7 +967,13 @@ class SplatPhysicsWidget(QtWidgets.QWidget):
                 raw = str(value or "none").strip().lower()
                 valid = {key for key, _label in NOISE_MODE_OPTIONS}
                 text = raw if raw in valid else "none"
-            elif name in {"substeps", "reset_frame_jump"}:
+            elif name in {"enabled", "reset_on_jump", "trail_enabled"}:
+                if isinstance(value, str):
+                    raw = value.strip().lower()
+                    text = "1" if raw in {"1", "true", "yes", "on", "y"} else "0"
+                else:
+                    text = "1" if bool(value) else "0"
+            elif name in {"substeps", "reset_frame_jump", "trail_lifetime"}:
                 try:
                     text = str(int(round(float(value))))
                 except Exception:
@@ -875,6 +993,9 @@ class SplatPhysicsWidget(QtWidgets.QWidget):
 
     def _on_reset_on_jump_changed(self, _state: int):
         self._set_param("reset_on_jump", "1" if self._reset_on_jump.isChecked() else "0")
+
+    def _on_trail_enabled_changed(self, _state: int):
+        self._set_param("trail_enabled", "1" if self._trail_enabled.isChecked() else "0")
 
 
 def render_node_body(node_item, y_cursor: int) -> int:
