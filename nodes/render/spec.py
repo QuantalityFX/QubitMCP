@@ -117,6 +117,9 @@ def _ensure_hidden_params(model, names) -> None:
 
 
 def _set_param_value(node_item, name: str, value: str, notify_scene: bool = True) -> None:
+    model = getattr(node_item, "model", None)
+    if model is not None and str(_param_value(model, name)) == str(value):
+        return
     try:
         node_item._set_param_value(name, value, rebuild=False, notify_scene=notify_scene)
     except Exception:
@@ -393,6 +396,7 @@ class RenderNodeWidget(QtWidgets.QWidget):
         self._start_spin = QtWidgets.QSpinBox()
         self._start_spin.setRange(0, 1_000_000)
         self._start_spin.setValue(0)
+        self._start_spin.setKeyboardTracking(False)
         self._start_spin.valueChanged.connect(self._on_start_frame_changed)
         row2b.addWidget(self._start_spin, 0)
         row2b.addWidget(QtWidgets.QLabel("End"), 0)
@@ -400,6 +404,7 @@ class RenderNodeWidget(QtWidgets.QWidget):
         self._end_spin.setRange(-1, 1_000_000)
         self._end_spin.setSpecialValueText("Auto")
         self._end_spin.setValue(-1)
+        self._end_spin.setKeyboardTracking(False)
         self._end_spin.setToolTip("End frame (-1/Auto uses timeline max frame).")
         self._end_spin.valueChanged.connect(self._on_end_frame_changed)
         row2b.addWidget(self._end_spin, 0)
