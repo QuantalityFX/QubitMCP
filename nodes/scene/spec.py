@@ -1116,6 +1116,23 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
         count = _parse_int(_param_value(instance_model, "count") or "1", default=1, min_val=1, max_val=200)
         prefix = (_param_value(instance_model, "prefix") or "").strip()
         base_item, base_kind, base_path = _resolve_input_item(scene, instance_item, {"mesh", "path", "source"})
+        base_kind = (base_kind or "").strip().lower()
+
+        def _generated_scene_asset_for_instance():
+            if base_item is None or base_kind not in _ANIM_RETARGET_KIND_ALIASES:
+                return None
+            try:
+                from nodes.anim_retarget import spec as _anim_retarget_spec  # type: ignore
+
+                build_asset = getattr(_anim_retarget_spec, "build_anim_retarget_scene_asset", None)
+                asset = build_asset(base_item) if callable(build_asset) else None
+            except Exception:
+                asset = None
+            return dict(asset) if isinstance(asset, dict) else None
+
+        generated_asset = _generated_scene_asset_for_instance()
+        if generated_asset is not None:
+            base_path = str(generated_asset.get("path") or base_path or "").strip()
         if not base_path:
             return entries, instance_names
 
@@ -1123,14 +1140,38 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
         if not prefix:
             base_name = ""
             try:
-                base_model = getattr(base_item, "model", None) if base_item is not None else None
-                base_name = (getattr(base_model, "name", "") or "").strip()
+                base_name = str((generated_asset or {}).get("node") or "").strip()
+                if not base_name:
+                    base_model = getattr(base_item, "model", None) if base_item is not None else None
+                    base_name = (getattr(base_model, "name", "") or "").strip()
             except Exception:
                 base_name = ""
             if not base_name:
                 base_name = "instance"
             prefix = f"instance_{base_name}" if base_name else "instance"
             _set_param_value(instance_model, "prefix", prefix)
+
+        if generated_asset is not None:
+            base_xform = generated_asset.get("xform") if isinstance(generated_asset.get("xform"), dict) else None
+            for idx in range(int(count)):
+                inst_name = f"{prefix}_{idx + 1}"
+                xf = _lookup_xform(xforms, inst_name)
+                entry = dict(generated_asset)
+                if isinstance(generated_asset.get("fbx_rig_context"), dict):
+                    entry["fbx_rig_context"] = dict(generated_asset.get("fbx_rig_context") or {})
+                if isinstance(generated_asset.get("render_proxy"), dict):
+                    entry["render_proxy"] = dict(generated_asset.get("render_proxy") or {})
+                entry["node"] = inst_name
+                entry["visible"] = inst_name not in hidden
+                if isinstance(xf, dict):
+                    entry["xform"] = dict(xf)
+                elif isinstance(base_xform, dict):
+                    entry["xform"] = dict(base_xform)
+                else:
+                    entry.pop("xform", None)
+                entries.append(entry)
+                instance_names.append(inst_name)
+            return entries, instance_names
 
         owner_model = getattr(base_item, "model", None)
         owner_kind = (base_kind or getattr(owner_model, "kind", "") or "").strip().lower()
@@ -1641,6 +1682,55 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                     fx_asset = None
                     if fx_debug_on:
                         _fx_log(f"[scene_spec] config error node={src_name or kind} err={exc!r}")
+        if kind in _MATERIAL_KINDS and owner_kind == "instance" and owner_item is not None:
+            inst_entries, inst_names = _build_instance_assets(owner_item, owner_model)
+            if not inst_entries:
+                continue
+            material = None
+            if isinstance(material_asset, dict) and isinstance(material_asset.get("material"), dict):
+                material = dict(material_asset.get("material") or {})
+            if material is None:
+                material = _material_payload(material_model)
+            texture = str(material_asset.get("texture") or "") if isinstance(material_asset, dict) else ""
+            texture_provider = material_asset.get("texture_provider") if isinstance(material_asset, dict) else None
+            for entry in inst_entries:
+                if not isinstance(entry, dict):
+                    continue
+                inst_name = str(entry.get("node") or "").strip()
+                if material is not None:
+                    entry["material"] = dict(material)
+                    rig_context = entry.get("fbx_rig_context")
+                    if isinstance(rig_context, dict):
+                        rig_context = dict(rig_context)
+                        rig_context["skin_weight_debug"] = False
+                        rig_context["show_skin_weights"] = False
+                        entry["fbx_rig_context"] = rig_context
+                if texture:
+                    entry["texture"] = texture
+                if texture_provider is not None:
+                    entry["texture_provider"] = texture_provider
+                if material_debug_on:
+                    entry["debug_log"] = True
+                if inst_name:
+                    entry["visible"] = inst_name not in hidden
+                assets.append(entry)
+                if material_debug_on:
+                    _material_debug_log(
+                        "scene.collect.material_instance_entry",
+                        material_node=src_name or kind,
+                        owner_node=inst_name,
+                        path=str(entry.get("path") or ""),
+                        ext=str(entry.get("ext") or ""),
+                        visible=bool(entry.get("visible", True)),
+                        has_retarget_context=bool(isinstance(entry.get("fbx_rig_context"), dict)),
+                        has_texture=bool(entry.get("texture")),
+                        transparency=float((entry.get("material") or {}).get("transparency", 0.0) or 0.0),
+                        ior=float((entry.get("material") or {}).get("ior", 1.0) or 1.0),
+                        tint_color=str((entry.get("material") or {}).get("tint_color") or ""),
+                        fresnel_amount=float((entry.get("material") or {}).get("fresnel_amount", 0.0) or 0.0),
+                        fresnel_color=str((entry.get("material") or {}).get("fresnel_color") or ""),
+                    )
+            continue
         if kind in ("fx", "fx_trail") and owner_kind == "instance" and owner_item is not None:
             inst_entries, inst_names = _build_instance_assets(owner_item, owner_model)
             if not inst_entries:

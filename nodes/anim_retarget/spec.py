@@ -3058,6 +3058,8 @@ def build_anim_retarget_scene_asset(
     rig_context["meshes"] = list(target_context.get("meshes") or rig_context.get("meshes") or [])
     rig_context["loop"] = True
     rig_context["mesh_skinning_enabled"] = True
+    rig_context["skin_weight_debug"] = False
+    rig_context["show_skin_weights"] = False
     rig_context["show_capture_joints"] = False
     rig_context["show_animated_joints"] = bool(rig_context.get("show_animated_joints", False))
     rig_context["retarget_result"] = True

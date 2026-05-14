@@ -3170,6 +3170,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
     def _collect_scene_assets(self) -> list[dict]:
         supported = {".fbx", ".bvh", ".obj", ".gltf", ".glb", ".ply", ".stl", ".off", ".om"}
+        anim_retarget_kinds = {"anim_retarget", "anim retarget", "animretarget", "retarget"}
         splat_physics_kinds = {
             "fx_splat_physics",
             "fx splat physics",
@@ -3524,6 +3525,23 @@ class NodeItem(QtWidgets.QGraphicsObject):
             count = _parse_int(_param_val(instance_model, "count") or "1", default=1, min_val=1, max_val=200)
             prefix = (_param_val(instance_model, "prefix") or "").strip()
             base_item, base_kind, base_path = _resolve_input_item(instance_item, {"mesh", "path", "source"})
+            base_kind = (base_kind or "").strip().lower()
+
+            def _generated_scene_asset_for_instance():
+                if base_item is None or base_kind not in anim_retarget_kinds:
+                    return None
+                try:
+                    from nodes.anim_retarget import spec as _anim_retarget_spec  # type: ignore
+
+                    build_asset = getattr(_anim_retarget_spec, "build_anim_retarget_scene_asset", None)
+                    asset = build_asset(base_item) if callable(build_asset) else None
+                except Exception:
+                    asset = None
+                return dict(asset) if isinstance(asset, dict) else None
+
+            generated_asset = _generated_scene_asset_for_instance()
+            if generated_asset is not None:
+                base_path = str(generated_asset.get("path") or base_path or "").strip()
             if not base_path:
                 if edge_idx is not None:
                     _scene_log(f"edge[{edge_idx}] instance skip: no base path")
@@ -3531,13 +3549,55 @@ class NodeItem(QtWidgets.QGraphicsObject):
             if not prefix:
                 base_name = ""
                 try:
-                    base_model = getattr(base_item, "model", None) if base_item is not None else None
-                    base_name = (getattr(base_model, "name", "") or "").strip()
+                    base_name = str((generated_asset or {}).get("node") or "").strip()
+                    if not base_name:
+                        base_model = getattr(base_item, "model", None) if base_item is not None else None
+                        base_name = (getattr(base_model, "name", "") or "").strip()
                 except Exception:
                     base_name = ""
                 if not base_name:
                     base_name = "instance"
                 prefix = f"instance_{base_name}" if base_name else "instance"
+
+            if generated_asset is not None:
+                base_xform = generated_asset.get("xform") if isinstance(generated_asset.get("xform"), dict) else None
+                if edge_idx is not None:
+                    _scene_log(
+                        f"edge[{edge_idx}] instance resolve generated kind={base_kind!r} "
+                        f"path={base_path!r} count={count} prefix={prefix!r}"
+                    )
+                for idx in range(int(count)):
+                    inst_name = f"{prefix}_{idx + 1}"
+                    xf = None
+                    try:
+                        if inst_name and inst_name in xforms:
+                            xf = xforms.get(inst_name)
+                        elif inst_name:
+                            nl = inst_name.lower()
+                            for k, v in xforms.items():
+                                if str(k).strip().lower() == nl:
+                                    xf = v
+                                    break
+                    except Exception:
+                        xf = None
+                    asset = dict(generated_asset)
+                    if isinstance(generated_asset.get("fbx_rig_context"), dict):
+                        asset["fbx_rig_context"] = dict(generated_asset.get("fbx_rig_context") or {})
+                    if isinstance(generated_asset.get("render_proxy"), dict):
+                        asset["render_proxy"] = dict(generated_asset.get("render_proxy") or {})
+                    asset["node"] = inst_name
+                    asset["visible"] = inst_name not in hidden
+                    if isinstance(xf, dict):
+                        asset["xform"] = dict(xf)
+                    elif isinstance(base_xform, dict):
+                        asset["xform"] = dict(base_xform)
+                    else:
+                        asset.pop("xform", None)
+                    entries.append(asset)
+                    instance_names.append(inst_name)
+                    if edge_idx is not None:
+                        _scene_log(f"edge[{edge_idx}] instance add generated asset node={inst_name} path={base_path!r}")
+                return entries, instance_names
 
             owner_item = base_item
             owner_model = getattr(base_item, "model", None)
