@@ -332,6 +332,111 @@ class _RefreshOnPopupComboBox(QtWidgets.QComboBox):
         super().showPopup()
 
 
+class _RenderProgressDialog(QtWidgets.QDialog):
+    def __init__(self, start_frame: int, end_frame: int, parent=None):
+        super().__init__(parent)
+        self.cancel_requested = False
+        self._allow_close = False
+        self._total_frames = max(1, int(end_frame) - int(start_frame) + 1)
+        self.setWindowTitle("Render Sequence")
+        self.setWindowModality(QtCore.Qt.WindowModal)
+        self.setMinimumWidth(360)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(8)
+
+        title = QtWidgets.QLabel(f"Rendering frames {int(start_frame)} to {int(end_frame)}")
+        layout.addWidget(title, 0)
+
+        self._frame_label = QtWidgets.QLabel("Preparing render...")
+        layout.addWidget(self._frame_label, 0)
+
+        self._last_frame_label = QtWidgets.QLabel("Last rendered frame: none")
+        self._last_frame_label.setStyleSheet("color:#94a3b8;")
+        layout.addWidget(self._last_frame_label, 0)
+
+        self._progress = QtWidgets.QProgressBar()
+        self._progress.setRange(0, self._total_frames)
+        self._progress.setValue(0)
+        self._progress.setFormat("%p%")
+        self._progress.setStyleSheet(
+            "QProgressBar{background:#0f1216;color:#e2e8f0;border:1px solid #334155;"
+            "border-radius:4px;text-align:center;min-height:18px;}"
+            "QProgressBar::chunk{background:#22c55e;border-radius:3px;}"
+        )
+        layout.addWidget(self._progress, 0)
+
+        buttons = QtWidgets.QHBoxLayout()
+        buttons.setContentsMargins(0, 4, 0, 0)
+        buttons.addStretch(1)
+        self._stop_btn = QtWidgets.QPushButton("Stop Render")
+        self._stop_btn.clicked.connect(self.request_cancel)
+        buttons.addWidget(self._stop_btn, 0)
+        layout.addLayout(buttons, 0)
+
+    def request_cancel(self) -> None:
+        self.cancel_requested = True
+        try:
+            self._stop_btn.setEnabled(False)
+            self._stop_btn.setText("Stopping...")
+            self._frame_label.setText("Stopping after the current frame finishes...")
+        except Exception:
+            pass
+        try:
+            self.hide()
+        except Exception:
+            pass
+
+    def reject(self) -> None:
+        self.request_cancel()
+
+    def closeEvent(self, event) -> None:
+        if self._allow_close:
+            super().closeEvent(event)
+            return
+        self.request_cancel()
+        event.accept()
+
+    def update_progress(self, processed: int, *, current_frame: int | None, last_rendered_frame: int | None) -> None:
+        done = max(0, min(self._total_frames, int(processed)))
+        try:
+            self._progress.setValue(done)
+        except Exception:
+            pass
+        try:
+            if current_frame is None:
+                self._frame_label.setText(f"Rendered {done}/{self._total_frames} frame(s).")
+            else:
+                self._frame_label.setText(
+                    f"Processed frame {int(current_frame)} ({done}/{self._total_frames})."
+                )
+        except Exception:
+            pass
+        try:
+            if last_rendered_frame is None:
+                self._last_frame_label.setText("Last rendered frame: none")
+            else:
+                self._last_frame_label.setText(f"Last rendered frame: {int(last_rendered_frame)}")
+        except Exception:
+            pass
+
+    def finish(self) -> None:
+        self._allow_close = True
+        try:
+            self.hide()
+        except Exception:
+            pass
+        try:
+            self.close()
+        except Exception:
+            pass
+        try:
+            self.deleteLater()
+        except Exception:
+            pass
+
+
 def build_ports(node_item) -> None:
     _ensure_param(node_item, "output", "")
     _ensure_param(node_item, "camera", "")
@@ -1019,6 +1124,10 @@ class RenderNodeWidget(QtWidgets.QWidget):
         written = 0
         render_start = 0
         render_end = 0
+        processed_frames = 0
+        last_rendered_frame = None
+        cancelled = False
+        progress_dialog = None
         try:
             try:
                 glv._timeline_on_play_toggled(False)
@@ -1122,7 +1231,14 @@ class RenderNodeWidget(QtWidgets.QWidget):
             total_frames = max(1, int(render_end) - int(render_start) + 1)
             out_fmt_qt = _FORMAT_QT[_norm_fmt(fmt)]
             target_w, target_h = self._camera_resolution(owner)
+            progress_dialog = _RenderProgressDialog(int(render_start), int(render_end), parent=parent)
+            progress_dialog.show()
+            self._process_ui_events(12)
             for idx, frame in enumerate(range(int(render_start), int(render_end) + 1), start=1):
+                self._process_ui_events(8)
+                if progress_dialog is not None and bool(progress_dialog.cancel_requested):
+                    cancelled = True
+                    break
                 self._status.setText(
                     f"Rendering frame {int(frame)} ({int(idx)}/{int(total_frames)})..."
                 )
@@ -1138,6 +1254,9 @@ class RenderNodeWidget(QtWidgets.QWidget):
                     pass
                 image = None
                 for _capture_attempt in range(3):
+                    if progress_dialog is not None and bool(progress_dialog.cancel_requested):
+                        cancelled = True
+                        break
                     image = self._grab_frame_supersampled(glv, target_w, target_h)
                     if image is not None and (not image.isNull()) and (not self._image_is_invalid_capture(image)):
                         break
@@ -1146,8 +1265,17 @@ class RenderNodeWidget(QtWidgets.QWidget):
                         self._process_ui_events(12)
                     except Exception:
                         pass
+                if cancelled:
+                    break
                 if image is None:
                     failures.append(f"Frame {frame}: capture failed.")
+                    processed_frames = int(idx)
+                    if progress_dialog is not None:
+                        progress_dialog.update_progress(
+                            processed_frames,
+                            current_frame=int(frame),
+                            last_rendered_frame=last_rendered_frame,
+                        )
                     continue
                 image = self._fit_image(image, target_w, target_h)
                 out_path = _sequence_frame_path(out_template, frame)
@@ -1158,9 +1286,28 @@ class RenderNodeWidget(QtWidgets.QWidget):
                     ok = False
                 if not ok:
                     failures.append(f"Frame {frame}: save failed ({out_path.name}).")
+                    processed_frames = int(idx)
+                    if progress_dialog is not None:
+                        progress_dialog.update_progress(
+                            processed_frames,
+                            current_frame=int(frame),
+                            last_rendered_frame=last_rendered_frame,
+                        )
                     continue
                 written += 1
+                processed_frames = int(idx)
+                last_rendered_frame = int(frame)
+                if progress_dialog is not None:
+                    progress_dialog.update_progress(
+                        processed_frames,
+                        current_frame=int(frame),
+                        last_rendered_frame=last_rendered_frame,
+                    )
+                self._process_ui_events(8)
         finally:
+            if progress_dialog is not None:
+                progress_dialog.finish()
+                self._process_ui_events(12)
             try:
                 glv._timeline_set_frame_widgets(old_frame)
                 glv._timeline_apply_frame_if_keyed(old_frame, force=True)
@@ -1284,6 +1431,19 @@ class RenderNodeWidget(QtWidgets.QWidget):
             notify_scene=True,
         )
 
+        if cancelled:
+            self._show_popup(
+                QtWidgets.QMessageBox.Information,
+                (
+                    f"Render stopped after {int(written)} frame(s) "
+                    f"[{int(render_start)}-{int(render_end)}]."
+                ),
+                (
+                    "Last rendered frame: "
+                    + (str(int(last_rendered_frame)) if last_rendered_frame is not None else "none")
+                ),
+            )
+            return
         if failures:
             self._show_popup(
                 QtWidgets.QMessageBox.Warning,
