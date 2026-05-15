@@ -3615,6 +3615,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 clean_entry["material"] = dict(entry.get("material") or {})
             if isinstance(entry.get("fbx_rig_context"), dict):
                 clean_entry["fbx_rig_context"] = dict(entry.get("fbx_rig_context") or {})
+            if isinstance(entry.get("music_effects"), dict):
+                clean_entry["music_effects"] = dict(entry.get("music_effects") or {})
             if "debug_log" in entry:
                 clean_entry["debug_log"] = bool(entry.get("debug_log"))
             tex_provider = entry.get("texture_provider")
@@ -3732,6 +3734,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                         round(float(entry.get("age_scale_max", 1.0) or 1.0), 6),
                         repr(list(entry.get("age_scale_points") or [])),
                         repr(dict(entry.get("render_proxy") or {})),
+                        repr(dict(entry.get("music_effects") or {})),
                     )
                 )
             sig = tuple(sorted(sig))

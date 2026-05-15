@@ -85,6 +85,7 @@ def register_defaults() -> None:
     register("anim_retarget", stripe_color="#ec4899")
     register("skinned_splat_proxy", stripe_color="#38bdf8")
     register("fx_splat_physics", stripe_color="#22d3ee")
+    register("fx_music_effects", stripe_color="#f97316")
     register("html_preview", stripe_color="#f97316")
     register("image_collection", stripe_color="#22c55e")
     register("camera",    stripe_color="#f59e0b")

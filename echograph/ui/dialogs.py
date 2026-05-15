@@ -310,7 +310,7 @@ def _kind_icon(kind: str) -> QtGui.QIcon:
         icon_pm = node_icons._texture_layer_icon() or node_icons._output_icon()
     elif key == "material":
         icon_pm = node_icons._material_node_icon() or node_icons._output_icon()
-    elif key in ("fx", "fx_trail", "fx_splat_physics", "fx splat physics", "splat_physics", "splat physics", "splatphysics"):
+    elif key in ("fx", "fx_trail", "fx_splat_physics", "fx splat physics", "splat_physics", "splat physics", "splatphysics", "fx_music_effects", "fx music effects", "music_effects", "music effects", "musiceffects"):
         icon_pm = node_icons._fx_node_icon() or node_icons._output_icon()
     elif key == "transforms":
         icon_pm = node_icons._transforms_icon() or node_icons._output_icon()
@@ -361,7 +361,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
         self.kind_edit = QtWidgets.QComboBox()
         self.kind_edit.setEditable(True)
         self._kinds = [
-            "node","camera","import","fbx_import","mocap_import","GEN-X-VideoMocap","anim_retarget","skinned_splat_proxy","instance","primitive","uv_unwrap","texture","texture_pro","texture_layer","material","split_volume","transforms","fx","fx_splat_physics","scene","render","video_player","post_process","sequence_to_mp4","export_fbx","html_preview","python","switch","output","local_server",
+            "node","camera","import","fbx_import","mocap_import","GEN-X-VideoMocap","anim_retarget","skinned_splat_proxy","instance","primitive","uv_unwrap","texture","texture_pro","texture_layer","material","split_volume","transforms","fx","fx_splat_physics","fx_music_effects","scene","render","video_player","post_process","sequence_to_mp4","export_fbx","html_preview","python","switch","output","local_server",
             "gantt_chart","keyboard_sequence",
             "qubit_deck_controller",
             "llm_prompt","chatbot","voice_actor","mediator_agent","librarian","note","append","image_collection","database"
@@ -409,15 +409,35 @@ class CreateNodeDialog(QtWidgets.QDialog):
         nodes_box = QtWidgets.QGroupBox("Existing Nodes (click to create)")
         nodes_box.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Fixed)
         qv = QtWidgets.QVBoxLayout(nodes_box)
-        qv.setContentsMargins(6, 6, 6, 10)  # keep a bottom gutter before the Parameters section
+        qv.setContentsMargins(6, 6, 6, 6)
         qv.setSpacing(4)
+        qv.setAlignment(QtCore.Qt.AlignTop)
         quick_grid = QtWidgets.QGridLayout()
         quick_grid.setContentsMargins(0, 0, 0, 0)
         quick_grid.setHorizontalSpacing(3)
         quick_grid.setVerticalSpacing(4)
         quick_cols = 4
-        for idx, kind in enumerate(self._kinds):
-            row, col = divmod(idx, quick_cols)
+        forced_positions = {
+            "fx": (4, 3),
+            "fx_splat_physics": (5, 3),
+            "fx_music_effects": (6, 3),
+        }
+        occupied = set(forced_positions.values())
+        next_cell = 0
+        quick_positions = {}
+        for kind in self._kinds:
+            if kind in forced_positions:
+                quick_positions[kind] = forced_positions[kind]
+                continue
+            while True:
+                row, col = divmod(next_cell, quick_cols)
+                next_cell += 1
+                if (row, col) not in occupied:
+                    quick_positions[kind] = (row, col)
+                    break
+
+        for kind in self._kinds:
+            row, col = quick_positions[kind]
             btn = QtWidgets.QToolButton()
             btn.setAutoRaise(True)
             btn.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
@@ -449,13 +469,14 @@ class CreateNodeDialog(QtWidgets.QDialog):
         for col in range(quick_cols):
             quick_grid.setColumnStretch(col, 1)
         qv.addLayout(quick_grid)
-        qv.addSpacing(4)
-        quick_rows = max(1, (len(self._kinds) + quick_cols - 1) // quick_cols)
+        quick_rows = max(row for row, _col in quick_positions.values()) + 1
         button_row_h = 30
         grid_h = (quick_rows * button_row_h) + ((quick_rows - 1) * quick_grid.verticalSpacing())
-        group_extra_h = 50  # title + frame + internal gutters
-        nodes_box_min_h = grid_h + group_extra_h
-        nodes_box.setFixedHeight(max(nodes_box.sizeHint().height() + 14, nodes_box_min_h))
+        bottom_gutter_h = 4
+        qv.addSpacing(bottom_gutter_h)
+        group_extra_h = 42  # title + frame + internal gutters
+        nodes_box_min_h = grid_h + bottom_gutter_h + group_extra_h
+        nodes_box.setFixedHeight(max(nodes_box.sizeHint().height() + 6, nodes_box_min_h))
 
         param_box = QtWidgets.QGroupBox("Parameters (optional)")
         param_box.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Fixed)
@@ -486,6 +507,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
             code_box.setVisible(kind == "python")
             is_llm = kind in ("llm", "local_server", "local server", "localserver")
             self._llm_row.setVisible(is_llm)
+            self._schedule_fit_to_content()
 
         self.kind_edit.currentTextChanged.connect(_toggle_code_box)
         _toggle_code_box(self.kind_edit.currentText())
@@ -506,10 +528,31 @@ class CreateNodeDialog(QtWidgets.QDialog):
         layout.addWidget(code_box)
         layout.addWidget(bb)
         layout.setAlignment(QtCore.Qt.AlignTop)
+        self._fit_to_content()
 
     def showEvent(self, e):
         super().showEvent(e)
+        QtCore.QTimer.singleShot(0, self._fit_to_content)
         QtCore.QTimer.singleShot(0, self._focus_kind)
+
+    def _schedule_fit_to_content(self) -> None:
+        if self.layout() is None:
+            return
+        QtCore.QTimer.singleShot(0, self._fit_to_content)
+
+    def _fit_to_content(self) -> None:
+        layout = self.layout()
+        if layout is None:
+            return
+        try:
+            layout.activate()
+            min_h = 620
+            self.setMinimumHeight(min_h)
+            target_h = max(min_h, int(self.sizeHint().height()))
+            self.setMinimumHeight(target_h)
+            self.resize(max(700, int(self.width())), target_h)
+        except Exception:
+            pass
 
     def _focus_kind(self):
         try:

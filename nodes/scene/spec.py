@@ -36,6 +36,13 @@ _FX_SPLAT_PHYSICS_KIND_ALIASES = {
     "splat physics",
     "splatphysics",
 }
+_FX_MUSIC_EFFECTS_KIND_ALIASES = {
+    "fx_music_effects",
+    "fx music effects",
+    "music_effects",
+    "music effects",
+    "musiceffects",
+}
 _MOCAP_KIND_ALIASES = {
     "mocap_import",
     "mocap import",
@@ -703,7 +710,7 @@ def _resolve_input_item(scene, node_item, port_names=None):
             edge = _switch_active_edge(item)
             if edge is not None:
                 return _trace(getattr(edge, "src", None), depth + 1, visited)
-        if kind in {"fx", "fx_trail"} or kind in _FX_SPLAT_PHYSICS_KIND_ALIASES:
+        if kind in {"fx", "fx_trail"} or kind in _FX_SPLAT_PHYSICS_KIND_ALIASES or kind in _FX_MUSIC_EFFECTS_KIND_ALIASES:
             try:
                 edges = list(scene._ordered_in_edges(item))
             except Exception:
@@ -1493,6 +1500,45 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                         + f"enabled={bool(physics.get('enabled', True))} "
                         + f"follow={float(physics.get('follow_strength', 0.0) or 0.0):.3f} "
                         + f"drag={float(physics.get('drag', 0.0) or 0.0):.3f}",
+                    )
+            continue
+        if kind in _FX_MUSIC_EFFECTS_KIND_ALIASES:
+            try:
+                from nodes.fx import music_effects_spec as _music_fx_spec  # type: ignore
+
+                build_asset = getattr(_music_fx_spec, "build_music_effects_scene_asset", None)
+                outcome = build_asset(src_item) if callable(build_asset) else None
+                asset = getattr(outcome, "asset", None)
+            except Exception as exc:
+                asset = None
+                if _scene_debug_enabled(model):
+                    _scene_log(
+                        node_item,
+                        f"fx_music_effects asset build failed node={src_name or kind} err={exc!r}",
+                    )
+            if isinstance(asset, dict):
+                asset_owner = str(asset.get("node") or src_name or kind).strip()
+                saved_xform = _lookup_xform(xforms, asset_owner)
+                if not isinstance(saved_xform, dict) and asset_owner != src_name:
+                    saved_xform = _lookup_xform(xforms, src_name)
+                if isinstance(saved_xform, dict):
+                    asset["xform"] = dict(saved_xform)
+                asset["visible"] = asset_owner not in hidden
+                assets.append(asset)
+                path_key = str(asset.get("path") or "").strip()
+                if path_key:
+                    seen.add(path_key)
+                if dbg_collect:
+                    music = asset.get("music_effects") if isinstance(asset.get("music_effects"), dict) else {}
+                    mesh_cfg = music.get("mesh") if isinstance(music.get("mesh"), dict) else {}
+                    _scene_log(
+                        node_item,
+                        "fx_music_effects asset "
+                        + f"node={str(asset.get('node') or '')} "
+                        + f"path={str(asset.get('path') or '')} "
+                        + f"audio={str(music.get('audio_path') or '')} "
+                        + f"enabled={bool(music.get('enabled', True))} "
+                        + f"displace={float(mesh_cfg.get('displacement', 0.0) or 0.0):.3f}",
                     )
             continue
         if kind in _MATERIAL_KINDS:

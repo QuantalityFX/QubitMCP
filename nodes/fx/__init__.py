@@ -1,4 +1,6 @@
 from .spec import FX_SPEC
+from .music_effects_spec import KIND_ALIASES as MUSIC_EFFECTS_KIND_ALIASES
+from .music_effects_spec import MUSIC_EFFECTS_SPEC
 from .splat_physics_spec import KIND_ALIASES as SPLAT_PHYSICS_KIND_ALIASES
 from .splat_physics_spec import SPLAT_PHYSICS_SPEC
 
@@ -12,3 +14,5 @@ def register(core=None):
     _core.register_spec("fx_trail", FX_SPEC)
     for kind in SPLAT_PHYSICS_KIND_ALIASES:
         _core.register_spec(kind, SPLAT_PHYSICS_SPEC)
+    for kind in MUSIC_EFFECTS_KIND_ALIASES:
+        _core.register_spec(kind, MUSIC_EFFECTS_SPEC)

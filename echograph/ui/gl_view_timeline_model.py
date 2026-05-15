@@ -26,6 +26,52 @@ class GraphGLTimelineModelMixin:
         except Exception:
             return 0
 
+    def _timeline_set_fps(self, fps: float, *, save: bool = True, sync_ui: bool = True) -> float:
+        try:
+            value = float(fps)
+        except Exception:
+            value = 24.0
+        if value <= 0.0:
+            value = 24.0
+        value = max(1.0, min(240.0, float(value)))
+        self._timeline_fps = float(value)
+
+        timer = getattr(self, "_timeline_play_timer", None)
+        if timer is not None:
+            try:
+                timer.setInterval(max(1, int(round(1000.0 / float(value)))))
+            except Exception:
+                pass
+
+        if bool(sync_ui):
+            spin = getattr(self, "_timeline_fps_spin", None)
+            if spin is not None:
+                try:
+                    spin.blockSignals(True)
+                    spin.setValue(float(value))
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        spin.blockSignals(False)
+                    except Exception:
+                        pass
+
+        try:
+            hook = getattr(self, "_timeline_audio_on_timeline_frame_changed", None)
+            if callable(hook):
+                playing = bool(timer is not None and timer.isActive())
+                hook(int(self._timeline_current_frame()), playing=playing)
+        except Exception:
+            pass
+
+        if bool(save):
+            try:
+                self._timeline_save_to_disk()
+            except Exception:
+                pass
+        return float(value)
+
     def _timeline_target_owner(self) -> str:
         try:
             owner = str(getattr(self, "_timeline_owner_name", "") or "").strip()
@@ -3907,6 +3953,11 @@ class GraphGLTimelineModelMixin:
                 hook(int(frame), playing=False)
         except Exception:
             pass
+
+    def _timeline_on_fps_changed(self, value: float) -> None:
+        if bool(getattr(self, "_timeline_ignore_ui", False)):
+            return
+        self._timeline_set_fps(float(value), save=True, sync_ui=False)
 
     def _timeline_on_frame_slider_changed(self, value: int) -> None:
         if bool(getattr(self, "_timeline_ignore_ui", False)):

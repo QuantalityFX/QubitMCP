@@ -37,6 +37,11 @@ _PASS_THROUGH_KINDS = {
     "splat_physics",
     "splat physics",
     "splatphysics",
+    "fx_music_effects",
+    "fx music effects",
+    "music_effects",
+    "music effects",
+    "musiceffects",
 }
 
 _PLY_SCALAR_TYPES = {

@@ -1938,6 +1938,185 @@ class MGLRendererMixin:
         payload["_fbx_skin_frame"] = frame
         item.payload = payload
 
+    def _mgl_normalize_music_effects_config(self, raw) -> Optional[Dict[str, Any]]:
+        if not isinstance(raw, dict):
+            return None
+
+        def _bool(value, default: bool) -> bool:
+            if isinstance(value, str):
+                text = value.strip().lower()
+                if text in {"1", "true", "yes", "on", "y"}:
+                    return True
+                if text in {"0", "false", "no", "off", "n"}:
+                    return False
+            if value is None:
+                return bool(default)
+            return bool(value)
+
+        def _float(value, default: float, minimum: float, maximum: float) -> float:
+            try:
+                parsed = float(value)
+            except Exception:
+                parsed = float(default)
+            return max(float(minimum), min(float(maximum), float(parsed)))
+
+        analysis = raw.get("analysis") if isinstance(raw.get("analysis"), dict) else {}
+        mesh = raw.get("mesh") if isinstance(raw.get("mesh"), dict) else {}
+        return {
+            "enabled": _bool(raw.get("enabled"), True),
+            "cache_path": str(raw.get("analysis_cache_path") or "").strip(),
+            "gain": _float(analysis.get("gain"), 1.0, 0.0, 8.0),
+            "threshold": _float(analysis.get("threshold"), 0.05, 0.0, 0.95),
+            "offset_s": _float(analysis.get("audio_start_offset_ms"), 0.0, -600000.0, 600000.0)
+            / 1000.0,
+            "displacement": _float(mesh.get("displacement"), 0.15, 0.0, 1000.0),
+            "max_displacement": _float(mesh.get("max_displacement"), 1.0, 0.0, 1000.0),
+            "outward_only": _bool(mesh.get("outward_only"), True),
+        }
+
+    def _mgl_music_effect_entries(self, payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+        entries: List[Dict[str, Any]] = []
+        entry = payload.get("mesh_entry")
+        if isinstance(entry, dict):
+            entries.append(entry)
+        for sub in list(payload.get("submeshes") or []):
+            if isinstance(sub, dict):
+                entries.append(sub)
+        return entries
+
+    def _mgl_restore_music_effects_mesh_item(self, item: MGLSceneItem) -> None:
+        if np is None or item is None:
+            return
+        payload = item.payload or {}
+        changed = False
+        for entry in self._mgl_music_effect_entries(payload):
+            base_points = entry.get("_music_effects_base_points")
+            if base_points is None:
+                continue
+            try:
+                points = np.asarray(base_points, dtype="f4").reshape(-1, 3)
+            except Exception:
+                continue
+            try:
+                vbo = entry.get("vbo")
+                if vbo is not None:
+                    vbo.write(points.tobytes())
+                entry["points"] = points
+                entry["_music_effects_applied"] = False
+                changed = True
+            except Exception:
+                continue
+        if changed:
+            payload["_music_effects_frame_sig"] = None
+            item.payload = payload
+
+    def _mgl_music_effect_curve(self, payload: Dict[str, Any], cache_path: str):
+        if np is None or not cache_path:
+            return None
+        cached = payload.get("_music_effects_curve")
+        if isinstance(cached, dict) and str(cached.get("path") or "") == str(cache_path):
+            return cached
+        try:
+            with np.load(str(cache_path), allow_pickle=False) as data:
+                times = np.asarray(data["times_s"], dtype="f4").reshape(-1)
+                beat = np.asarray(data["beat_strength"], dtype="f4").reshape(-1)
+        except Exception:
+            return None
+        if times.size == 0 or beat.size == 0 or times.size != beat.size:
+            return None
+        cached = {"path": str(cache_path), "times": times, "beat": beat}
+        payload["_music_effects_curve"] = cached
+        return cached
+
+    def _mgl_refresh_music_effects_mesh_item(self, item: MGLSceneItem) -> None:
+        if np is None or item is None:
+            return
+        payload = item.payload or {}
+        if isinstance(payload.get("_fbx_skin_runtime"), dict):
+            return
+        cfg = self._mgl_normalize_music_effects_config(payload.get("music_effects"))
+        if cfg is None or not bool(cfg.get("enabled", True)):
+            self._mgl_restore_music_effects_mesh_item(item)
+            return
+        cache_path = str(cfg.get("cache_path") or "").strip()
+        if not cache_path:
+            self._mgl_restore_music_effects_mesh_item(item)
+            return
+        curve = self._mgl_music_effect_curve(payload, cache_path)
+        if not isinstance(curve, dict):
+            self._mgl_restore_music_effects_mesh_item(item)
+            return
+
+        frame = self._mgl_timeline_frame_index()
+        sig = (
+            frame,
+            cache_path,
+            round(float(cfg.get("gain", 1.0)), 6),
+            round(float(cfg.get("threshold", 0.05)), 6),
+            round(float(cfg.get("offset_s", 0.0)), 6),
+            round(float(cfg.get("displacement", 0.15)), 6),
+            round(float(cfg.get("max_displacement", 1.0)), 6),
+            bool(cfg.get("outward_only", True)),
+        )
+        if payload.get("_music_effects_frame_sig") == sig:
+            return
+
+        time_s = float(self._mgl_timeline_time_seconds()) - float(cfg.get("offset_s", 0.0))
+        times = np.asarray(curve.get("times"), dtype="f4").reshape(-1)
+        beat = np.asarray(curve.get("beat"), dtype="f4").reshape(-1)
+        if times.size == 0 or beat.size == 0:
+            self._mgl_restore_music_effects_mesh_item(item)
+            return
+        if time_s < float(times[0]) or time_s > float(times[-1]):
+            raw_strength = 0.0
+        else:
+            raw_strength = float(np.interp(time_s, times, beat))
+        threshold = float(cfg.get("threshold", 0.05))
+        if raw_strength <= threshold:
+            strength = 0.0
+        else:
+            strength = (raw_strength - threshold) / max(1.0e-6, 1.0 - threshold)
+        strength = max(0.0, min(1.0, strength * float(cfg.get("gain", 1.0))))
+        amount = min(
+            float(cfg.get("max_displacement", 1.0)),
+            float(cfg.get("displacement", 0.15)) * strength,
+        )
+        if bool(cfg.get("outward_only", True)):
+            amount = max(0.0, amount)
+
+        for entry in self._mgl_music_effect_entries(payload):
+            try:
+                points = np.asarray(entry.get("points"), dtype="f4").reshape(-1, 3)
+                normals = np.asarray(entry.get("normals"), dtype="f4").reshape(-1, 3)
+            except Exception:
+                continue
+            if points.size == 0 or normals.shape != points.shape:
+                continue
+            if entry.get("_music_effects_base_points") is None:
+                entry["_music_effects_base_points"] = points.copy()
+                entry["_music_effects_base_normals"] = normals.copy()
+            try:
+                base_points = np.asarray(entry.get("_music_effects_base_points"), dtype="f4").reshape(-1, 3)
+                base_normals = np.asarray(entry.get("_music_effects_base_normals"), dtype="f4").reshape(-1, 3)
+            except Exception:
+                continue
+            if base_points.shape != points.shape or base_normals.shape != points.shape:
+                entry["_music_effects_base_points"] = points.copy()
+                entry["_music_effects_base_normals"] = normals.copy()
+                base_points = points.copy()
+                base_normals = normals.copy()
+            deformed = (base_points + (base_normals * float(amount))).astype("f4", copy=False)
+            try:
+                vbo = entry.get("vbo")
+                if vbo is not None:
+                    vbo.write(deformed.tobytes())
+                entry["points"] = deformed
+                entry["_music_effects_applied"] = True
+            except Exception:
+                continue
+        payload["_music_effects_frame_sig"] = sig
+        item.payload = payload
+
     def _mgl_normalize_splat_physics_config(self, raw) -> Optional[Dict[str, Any]]:
         if not isinstance(raw, dict):
             return None
@@ -7612,6 +7791,8 @@ class MGLRendererMixin:
         if isinstance(payload.get("fbx_rig_context"), dict):
             self._mgl_refresh_fbx_rig_mesh_item(item)
             payload = item.payload or {}
+        self._mgl_refresh_music_effects_mesh_item(item)
+        payload = item.payload or {}
         submeshes = payload.get("submeshes")
         vao = payload.get("vao")
         if not submeshes and vao is None:
@@ -10089,6 +10270,8 @@ class MGLRendererMixin:
         if isinstance(payload.get("fbx_rig_context"), dict):
             self._mgl_refresh_fbx_rig_mesh_item(item)
             payload = getattr(item, "payload", None) or {}
+        self._mgl_refresh_music_effects_mesh_item(item)
+        payload = getattr(item, "payload", None) or {}
         submeshes = [sub for sub in list(payload.get("submeshes") or []) if isinstance(sub, dict)]
         entry = payload.get("mesh_entry") if isinstance(payload.get("mesh_entry"), dict) else None
         if entry is None and payload.get("vao") is not None:
@@ -14217,6 +14400,7 @@ class MGLRendererMixin:
                 wire_only = bool(asset.get("wire_only"))
                 is_volume = bool(asset.get("volume"))
                 render_proxy = asset.get("render_proxy") if isinstance(asset.get("render_proxy"), dict) else None
+                music_effects = asset.get("music_effects") if isinstance(asset.get("music_effects"), dict) else None
                 if isinstance(render_proxy, dict):
                     try:
                         self._mgl_scene_render_proxy_by_owner[owner] = dict(render_proxy)
@@ -14702,6 +14886,7 @@ class MGLRendererMixin:
                             "material": material,
                             "owner": owner,
                             "path": path_key,
+                            "music_effects": music_effects,
                             "fbx_rig_context": fbx_rig_context if isinstance(fbx_rig_context, dict) else None,
                             "fbx_bind_joints_only": bool(fbx_bind_joints_only),
                         },
@@ -14764,6 +14949,7 @@ class MGLRendererMixin:
                                 "material": material,
                                 "owner": owner,
                                 "path": path_key,
+                                "music_effects": music_effects,
                                 "fbx_rig_context": fbx_rig_context if isinstance(fbx_rig_context, dict) else None,
                                 "fbx_bind_joints_only": bool(fbx_bind_joints_only),
                             },
@@ -14863,6 +15049,7 @@ class MGLRendererMixin:
                                 "material": material,
                                 "owner": owner,
                                 "path": path_key,
+                                "music_effects": music_effects,
                                 "fbx_rig_context": fbx_rig_context if isinstance(fbx_rig_context, dict) else None,
                                 "fbx_bind_joints_only": bool(fbx_bind_joints_only),
                             },

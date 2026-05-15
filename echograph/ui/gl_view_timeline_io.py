@@ -502,6 +502,10 @@ class GraphGLTimelineIOMixin:
         fx_proxy_enabled = True
         if path is None or not path.exists():
             try:
+                self._timeline_set_fps(24.0, save=False, sync_ui=True)
+            except Exception:
+                self._timeline_fps = 24.0
+            try:
                 self._timeline_set_material_live_mode(bool(material_live_mode), save=False)
             except Exception:
                 self._timeline_material_live_mode = bool(material_live_mode)
@@ -555,10 +559,9 @@ class GraphGLTimelineIOMixin:
         fx_proxy_enabled = _bool_value(raw.get("fx_proxy_enabled", True), default=True)
         try:
             fps = float(raw.get("fps", 24.0))
-            if fps > 0.0:
-                self._timeline_fps = fps
+            self._timeline_set_fps(fps if fps > 0.0 else 24.0, save=False, sync_ui=True)
         except Exception:
-            self._timeline_fps = 24.0
+            self._timeline_set_fps(24.0, save=False, sync_ui=True)
         try:
             self._timeline_set_material_live_mode(bool(material_live_mode), save=False)
         except Exception:

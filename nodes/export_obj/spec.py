@@ -257,6 +257,11 @@ def _collect_scene_assets_for_export(node_item, include_hidden: bool = False):
             "splat_physics",
             "splat physics",
             "splatphysics",
+            "fx_music_effects",
+            "fx music effects",
+            "music_effects",
+            "music effects",
+            "musiceffects",
         }
         visited = set()
         depth = 0

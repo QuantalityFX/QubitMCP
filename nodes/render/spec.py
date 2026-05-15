@@ -379,6 +379,7 @@ class RenderNodeWidget(QtWidgets.QWidget):
         self._fps_spin = QtWidgets.QDoubleSpinBox()
         self._fps_spin.setRange(1.0, 240.0)
         self._fps_spin.setValue(30.0)
+        self._fps_spin.setKeyboardTracking(False)
         self._fps_spin.valueChanged.connect(self._on_fps_changed)
         row2.addWidget(self._fps_spin, 0)
         row2.addWidget(QtWidgets.QLabel("Format"), 0)
@@ -521,7 +522,11 @@ class RenderNodeWidget(QtWidgets.QWidget):
             fps = 30.0
         if fps <= 0.0:
             fps = 30.0
-        self._fps_spin.setValue(fps)
+        try:
+            self._fps_spin.blockSignals(True)
+            self._fps_spin.setValue(fps)
+        finally:
+            self._fps_spin.blockSignals(False)
         self._set_fmt_combo(fmt)
         try:
             start_frame = int(float(_param_value(model, "start_frame") or "0"))

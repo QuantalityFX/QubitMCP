@@ -430,7 +430,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             except Exception:
                 pass
         # Ensure FX spec is registered even if the loader was skipped.
-        if (self.model.kind or "").strip().lower() in ("fx", "fx_trail", "fx_splat_physics", "fx splat physics", "splat_physics", "splat physics", "splatphysics"):
+        if (self.model.kind or "").strip().lower() in ("fx", "fx_trail", "fx_splat_physics", "fx splat physics", "splat_physics", "splat physics", "splatphysics", "fx_music_effects", "fx music effects", "music_effects", "music effects", "musiceffects"):
             try:
                 from nodes import fx as _fx  # type: ignore
                 if hasattr(_fx, "register"):
@@ -833,7 +833,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         kind = (self.model.kind or "").strip().lower()
         if kind in ("mnaterial", "material"):
             return "material"
-        if kind in ("fx", "fx_trail", "fx_splat_physics", "fx splat physics", "splat_physics", "splat physics", "splatphysics"):
+        if kind in ("fx", "fx_trail", "fx_splat_physics", "fx splat physics", "splat_physics", "splat physics", "splatphysics", "fx_music_effects", "fx music effects", "music_effects", "music effects", "musiceffects"):
             return "fx"
         if kind in ("fbx_import", "fbx import", "fbximport"):
             return "fbx"
@@ -1917,6 +1917,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 from nodes.fx import splat_physics_spec as _splat_fx_spec  # type: ignore
                 body_h = max(0, int(getattr(_splat_fx_spec, "SPLAT_PHYSICS_NODE_BODY_H", body_h)))
                 node_w = max(self._BASE_W, int(getattr(_splat_fx_spec, "SPLAT_PHYSICS_NODE_W", node_w)))
+            except Exception:
+                pass
+        elif kind in ("fx_music_effects", "fx music effects", "music_effects", "music effects", "musiceffects"):
+            body_h = 220
+            node_w = max(self._BASE_W, 288)
+            try:
+                from nodes.fx import music_effects_spec as _music_fx_spec  # type: ignore
+                body_h = max(0, int(getattr(_music_fx_spec, "MUSIC_EFFECTS_NODE_BODY_H", body_h)))
+                node_w = max(self._BASE_W, int(getattr(_music_fx_spec, "MUSIC_EFFECTS_NODE_W", node_w)))
             except Exception:
                 pass
         elif kind in ("mnaterial", "material"):
@@ -3178,6 +3187,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
             "splat physics",
             "splatphysics",
         }
+        music_effects_kinds = {
+            "fx_music_effects",
+            "fx music effects",
+            "music_effects",
+            "music effects",
+            "musiceffects",
+        }
         def _scene_log(msg: str) -> None:
             enabled = True
             if not enabled:
@@ -3293,6 +3309,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "fx",
                 "fx_trail",
                 *splat_physics_kinds,
+                *music_effects_kinds,
             }
             depth = 0
             while item is not None and item not in visited and depth < 10:
@@ -3371,7 +3388,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                             edges = []
                     if edges:
                         return _trace(getattr(edges[0], "src", None), depth + 1, visited)
-                if kind in {"fx", "fx_trail"} or kind in splat_physics_kinds:
+                if kind in {"fx", "fx_trail"} or kind in splat_physics_kinds or kind in music_effects_kinds:
                     try:
                         edges = list(sc._ordered_in_edges(item))
                     except Exception:
@@ -3827,6 +3844,23 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     assets.append(asset)
                     _scene_log(
                         f"edge[{edge_idx}] add fx_splat_physics node={asset.get('node', '')!r} "
+                        f"path={asset.get('path', '')!r}"
+                    )
+                continue
+            if kind in music_effects_kinds:
+                try:
+                    from nodes.fx import music_effects_spec as _music_fx_spec  # type: ignore
+
+                    build_asset = getattr(_music_fx_spec, "build_music_effects_scene_asset", None)
+                    outcome = build_asset(src_item) if callable(build_asset) else None
+                    asset = getattr(outcome, "asset", None)
+                except Exception as exc:
+                    asset = None
+                    _scene_log(f"edge[{edge_idx}] fx_music_effects build failed node={src_name or kind} err={exc!r}")
+                if isinstance(asset, dict):
+                    assets.append(asset)
+                    _scene_log(
+                        f"edge[{edge_idx}] add fx_music_effects node={asset.get('node', '')!r} "
                         f"path={asset.get('path', '')!r}"
                     )
                 continue
@@ -6179,6 +6213,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "fx",
                 "fx_trail",
                 "fx_splat_physics",
+                "fx_music_effects",
                 "fx splat physics",
                 "splat_physics",
                 "splat physics",
@@ -6405,7 +6440,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 icon_pm = node_icons._texture_layer_icon() or node_icons._output_icon()
             elif kind_lower in ("mnaterial", "material"):
                 icon_pm = node_icons._material_node_icon() or node_icons._output_icon()
-            elif kind_lower in ("fx", "fx_trail", "fx_splat_physics", "fx splat physics", "splat_physics", "splat physics", "splatphysics"):
+            elif kind_lower in ("fx", "fx_trail", "fx_splat_physics", "fx splat physics", "splat_physics", "splat physics", "splatphysics", "fx_music_effects", "fx music effects", "music_effects", "music effects", "musiceffects"):
                 icon_pm = node_icons._fx_node_icon() or node_icons._output_icon()
             elif kind_lower == "transforms":
                 icon_pm = node_icons._transforms_icon() or node_icons._output_icon()
@@ -6445,7 +6480,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     size = int(max(34, size * 0.792))
                 if kind_lower in ("texture_layer", "texture layer"):
                     size = int(max(36, size * 0.855))
-                if kind_lower in ("mnaterial", "material", "fx", "fx_trail", "fx_splat_physics", "fx splat physics", "splat_physics", "splat physics", "splatphysics"):
+                if kind_lower in ("mnaterial", "material", "fx", "fx_trail", "fx_splat_physics", "fx splat physics", "splat_physics", "splat physics", "splatphysics", "fx_music_effects", "fx music effects", "music_effects", "music effects", "musiceffects"):
                     size = int(max(36, size * 0.88))
                 if kind_lower in ("chatbot", "chat bot", "chat_bot"):
                     size = int(size * 1.13)

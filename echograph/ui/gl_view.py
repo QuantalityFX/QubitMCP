@@ -897,7 +897,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._timeline_ui_timer.setInterval(250)
         self._timeline_ui_timer.timeout.connect(self._timeline_refresh_coord_labels)
         self._timeline_play_timer = QtCore.QTimer(self)
-        self._timeline_play_timer.setInterval(33)  # 30 FPS playback
+        self._timeline_play_timer.setInterval(max(1, int(round(1000.0 / float(self._timeline_fps)))))
         self._timeline_play_timer.timeout.connect(self._timeline_on_play_tick)
 
         self._fps = 0.0
