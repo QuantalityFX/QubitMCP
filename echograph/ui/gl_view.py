@@ -46,6 +46,7 @@ from echograph.ui.scene_xforms import frame_refresh_xform_seed, scene_xform_is_i
 from echograph.ui.gl_view_example import build_example_program as _ex_build_example_program
 from echograph.ui.gl_view_example import example_cube_data as _ex_cube_data
 from echograph.ui.gl_view_example import example_grid_data as _ex_grid_data
+from echograph.services.profiler import profile_scope
 from .gl_view_math import axis_proj_max_len as _gv_axis_proj_max_len
 from .gl_view_math import axis_line_ray_param as _gv_axis_line_ray_param
 from .gl_view_math import closest_unwrapped_euler as _gv_closest_unwrapped_euler
@@ -5004,7 +5005,8 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         return m
     
     def paintGL(self) -> None:
-        return _paint_gl(self)
+        with profile_scope("render.3d.paint_gl"):
+            return _paint_gl(self)
 
     def _draw_overlay(self, painter: Optional[QtGui.QPainter] = None) -> None:
         depth_disabled = False

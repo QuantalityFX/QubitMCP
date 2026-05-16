@@ -4,6 +4,7 @@
 import math
 import time
 from echograph.qt_compat import QtCore, QtGui, QtWidgets
+from echograph.services.profiler import profile_scope
 
 class GraphView(QtWidgets.QGraphicsView):
     def __init__(self, scene):
@@ -91,6 +92,78 @@ class GraphView(QtWidgets.QGraphicsView):
         self._navigation_idle_timer.setSingleShot(True)
         self._navigation_idle_timer.setInterval(140)
         self._navigation_idle_timer.timeout.connect(self._end_navigation_perf_mode)
+        self._profiler_panel = None
+        self._profiler_panel_h = 660
+        self._profiler_panel_min_h = 240
+        self._profiler_graph_min_h = 120
+
+    def set_profiler_panel(self, panel) -> None:
+        if panel is None:
+            return
+        if self._profiler_panel is panel:
+            self._layout_profiler_panel()
+            return
+        self._profiler_panel = panel
+        try:
+            panel.setParent(self)
+        except Exception:
+            pass
+        try:
+            panel.hide()
+        except Exception:
+            pass
+        if not bool(getattr(panel, "_profiler_height_connected", False)):
+            try:
+                panel.heightResizeRequested.connect(self.set_profiler_height)
+                panel._profiler_height_connected = True
+            except Exception:
+                pass
+        self._layout_profiler_panel()
+
+    def profiler_visible(self) -> bool:
+        panel = getattr(self, "_profiler_panel", None)
+        return bool(panel is not None and not panel.isHidden())
+
+    def set_profiler_visible(self, visible: bool) -> None:
+        panel = getattr(self, "_profiler_panel", None)
+        if panel is None:
+            return
+        if bool(visible):
+            panel.show()
+        else:
+            panel.hide()
+        self._layout_profiler_panel()
+
+    def set_profiler_height(self, height: int) -> None:
+        min_h = int(getattr(self, "_profiler_panel_min_h", 240) or 240)
+        try:
+            self._profiler_panel_h = max(min_h, int(height))
+        except Exception:
+            self._profiler_panel_h = min_h
+        self._layout_profiler_panel()
+
+    def _layout_profiler_panel(self) -> None:
+        panel = getattr(self, "_profiler_panel", None)
+        if panel is None:
+            return
+        visible = bool(not panel.isHidden())
+        if visible:
+            desired_h = int(getattr(self, "_profiler_panel_h", 660) or 660)
+            min_graph_h = int(getattr(self, "_profiler_graph_min_h", 120) or 120)
+            available_h = max(1, int(self.height()) - min_graph_h)
+            height = min(desired_h, available_h)
+        else:
+            height = 0
+        try:
+            self.setViewportMargins(0, height, 0, 0)
+        except Exception:
+            pass
+        try:
+            panel.setGeometry(0, 0, max(1, self.width()), max(1, height))
+            if visible:
+                panel.raise_()
+        except Exception:
+            pass
 
     def _dispatch_embedded_short_right_click(self, viewport_pos: QtCore.QPoint) -> bool:
         scene = self.scene()
@@ -725,8 +798,13 @@ class GraphView(QtWidgets.QGraphicsView):
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
+        self._layout_profiler_panel()
         if self._mode_3d:
             self._apply_3d_projection(force_edges=True)
+
+    def paintEvent(self, e):
+        with profile_scope("render.2d.paint_event"):
+            return super().paintEvent(e)
 
     def keyPressEvent(self, e: QtGui.QKeyEvent):
         if self._mode_3d:

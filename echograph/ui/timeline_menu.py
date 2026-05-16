@@ -11,6 +11,14 @@ def _controller(window):
     return None
 
 
+def _profiler_controller(window):
+    try:
+        return getattr(window, "_profiler_controller", None)
+    except Exception:
+        pass
+    return None
+
+
 def _timeline_panel_enabled(window) -> bool:
     ctl = _controller(window)
     if ctl is not None:
@@ -49,6 +57,25 @@ def _toggle_audio_panel(window, checked: bool) -> None:
             pass
 
 
+def _profiler_panel_enabled(window) -> bool:
+    ctl = _profiler_controller(window)
+    if ctl is not None:
+        try:
+            return bool(ctl.profiler_panel_enabled())
+        except Exception:
+            return False
+    return False
+
+
+def _toggle_profiler_panel(window, checked: bool) -> None:
+    ctl = _profiler_controller(window)
+    if ctl is not None:
+        try:
+            ctl.toggle_profiler_panel_from_menu(bool(checked))
+        except Exception:
+            pass
+
+
 def _save_layout_preset(window) -> None:
     ctl = _controller(window)
     if ctl is not None:
@@ -74,6 +101,12 @@ def _sync_timeline_menu_state(window) -> None:
             ctl.sync_timeline_menu_state()
         except Exception:
             pass
+    pctl = _profiler_controller(window)
+    if pctl is not None:
+        try:
+            pctl.sync_profiler_menu_state()
+        except Exception:
+            pass
 
 
 def _set_timeline_menu_active(window, active: bool) -> None:
@@ -85,7 +118,11 @@ def _set_timeline_menu_active(window, active: bool) -> None:
             pass
 
 
-def build_timeline_panels_menu(window, bar, layout) -> tuple[QtWidgets.QToolButton, QtWidgets.QPushButton, QtWidgets.QPushButton]:
+def build_timeline_panels_menu(
+    window,
+    bar,
+    layout,
+) -> tuple[QtWidgets.QToolButton, QtWidgets.QPushButton, QtWidgets.QPushButton, QtWidgets.QPushButton]:
     timeline_btn = QtWidgets.QToolButton(bar)
     timeline_btn.setObjectName("PanelsButton")
     timeline_btn.setText("Panels")
@@ -137,6 +174,17 @@ def build_timeline_panels_menu(window, bar, layout) -> tuple[QtWidgets.QToolButt
     audio_toggle.clicked.connect(lambda checked=False: _toggle_audio_panel(window, bool(checked)))
     timeline_layout.addWidget(audio_toggle, 0)
 
+    profiler_toggle = QtWidgets.QPushButton("Profiler", timeline_panel)
+    profiler_toggle.setToolTip("Show profiler panel above the 2D graph")
+    profiler_toggle.setFixedHeight(22)
+    profiler_toggle.setCursor(QtCore.Qt.PointingHandCursor)
+    profiler_toggle.setFlat(True)
+    profiler_toggle.setCheckable(True)
+    profiler_toggle.setChecked(_profiler_panel_enabled(window))
+    profiler_toggle.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+    profiler_toggle.clicked.connect(lambda checked=False: _toggle_profiler_panel(window, bool(checked)))
+    timeline_layout.addWidget(profiler_toggle, 0)
+
     save_layout_btn = QtWidgets.QPushButton("Save Layout", timeline_panel)
     save_layout_btn.setToolTip("Save current panel visibility as the app default layout")
     save_layout_btn.setFixedHeight(22)
@@ -161,4 +209,10 @@ def build_timeline_panels_menu(window, bar, layout) -> tuple[QtWidgets.QToolButt
             ctl.bind_menu_widgets(timeline_btn, timeline_toggle, audio_toggle)
         except Exception:
             pass
-    return timeline_btn, timeline_toggle, audio_toggle
+    pctl = _profiler_controller(window)
+    if pctl is not None:
+        try:
+            pctl.bind_menu_widgets(timeline_btn, profiler_toggle)
+        except Exception:
+            pass
+    return timeline_btn, timeline_toggle, audio_toggle, profiler_toggle

@@ -24,6 +24,8 @@ from echograph.ui import actions
 from echograph.ui import hotkeys_config
 from echograph.ui.timeline_controller import TimelineController
 from echograph.ui.timeline_menu import build_timeline_panels_menu
+from echograph.ui.profiler_controller import ProfilerController
+from echograph.services.profiler import profiled, profile_scope
 
 
 from echograph.qt_compat import (
@@ -72,7 +74,7 @@ LLM_NODE_W, LLM_NODE_H = _llm_dims()
 _RECENT_GRAPHS_PATH = script_dir() / "recent_graphs.json"
 _RECENT_GRAPHS_LIMIT = 10
 _APP_SETTINGS_PATH = script_dir() / "app_settings.json"
-_DEFAULT_PANEL_LAYOUT_PRESET = {"timeline": False, "audio": False}
+_DEFAULT_PANEL_LAYOUT_PRESET = {"timeline": False, "audio": False, "profiler": False}
 _VOICE_AUDIO_MODE_BILATERAL = "bilateral"
 _VOICE_AUDIO_MODE_TURN_TAKING = "turn_taking"
 _VOICE_AUDIO_MODE_DEFAULT = _VOICE_AUDIO_MODE_TURN_TAKING
@@ -134,16 +136,24 @@ def _normalize_panel_layout_preset(value, fallback=None) -> Dict[str, bool]:
             base["timeline"] = _coerce_bool(fallback.get("timeline"), base["timeline"])
         if "audio" in fallback:
             base["audio"] = _coerce_bool(fallback.get("audio"), base["audio"])
+        if "profiler" in fallback:
+            base["profiler"] = _coerce_bool(fallback.get("profiler"), base["profiler"])
     if isinstance(value, dict):
         if "timeline" in value:
             base["timeline"] = _coerce_bool(value.get("timeline"), base["timeline"])
         if "audio" in value:
             base["audio"] = _coerce_bool(value.get("audio"), base["audio"])
+        if "profiler" in value:
+            base["profiler"] = _coerce_bool(value.get("profiler"), base["profiler"])
     if base["audio"] and not base["timeline"]:
         base["timeline"] = True
     if not base["timeline"]:
         base["audio"] = False
-    return {"timeline": bool(base["timeline"]), "audio": bool(base["audio"])}
+    return {
+        "timeline": bool(base["timeline"]),
+        "audio": bool(base["audio"]),
+        "profiler": bool(base["profiler"]),
+    }
 
 
 def _normalize_voice_audio_mode(value, fallback: str = _VOICE_AUDIO_MODE_DEFAULT) -> str:
@@ -929,14 +939,15 @@ class GraphScene(QtWidgets.QGraphicsScene):
         self.setSceneRect(QtCore.QRectF(-20000, -20000, 40000, 40000))
 
     def refresh_node_widget(self, name: str):
-        it = self._node_items.get(name)
-        if not it:
-            return
-        it._recompute_height()
-        it._build_widgets()
-        for e in self._edges:
-            if e.src is it or e.dst is it:
-                e.updatePath()
+        with profile_scope("graph.refresh_node_widget"):
+            it = self._node_items.get(name)
+            if not it:
+                return
+            it._recompute_height()
+            it._build_widgets()
+            for e in self._edges:
+                if e.src is it or e.dst is it:
+                    e.updatePath()
 
     def set_node_params(self, name: str, params: list, rebuild: bool = True, emit: bool = True):
         node = self._nodes_by_name.get(name)
@@ -1463,6 +1474,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
     def add_edge(self, src_name, dst_name, dst_port_name=None):
         return self._add_edge_and_update_switch(src_name, dst_name, dst_port_name=dst_port_name)
 
+    @profiled("graph.connect_edge")
     def _add_edge_and_update_switch(self, src_name, dst_name, dst_port_name=None):
         bulk = bool(getattr(self, "_bulk_loading", False))
         src = self._node_items[src_name]; dst = self._node_items[dst_name]
@@ -1514,6 +1526,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
             self.refresh_node_widget(dst.model.name)
         return edge
 
+    @profiled("graph.disconnect_edge")
     def _on_edge_removed(self, edge: 'EdgeItem'):
         self._mark_edge_index_dirty()
         dst = edge.dst; src = edge.src
@@ -2513,6 +2526,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._workflow_load_in_progress = False
         self._update_window_title()
         self._timeline_controller = TimelineController(self)
+        self._profiler_controller = ProfilerController(self)
         self._suspend_panel_layout_persist = False
         app_settings = _load_app_settings()
         self._save_layout_enabled = _coerce_bool(app_settings.get("save_layout"), True)
@@ -2565,6 +2579,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         
         self.view = GraphView(self.scene)
         self.gl_view = GraphGLView(self.scene)
+        self._profiler_controller.attach_panel_to_view()
         self.view.setMinimumSize(400, 300)
         self.gl_view.setMinimumSize(400, 300)
         self._view_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
@@ -4858,6 +4873,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
     def _current_panel_layout_preset(self) -> Dict[str, bool]:
         timeline_on = False
         audio_on = False
+        profiler_on = False
         ctl = getattr(self, "_timeline_controller", None)
         if ctl is not None:
             try:
@@ -4868,8 +4884,14 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 audio_on = bool(ctl.audio_panel_enabled())
             except Exception:
                 audio_on = False
+        pctl = getattr(self, "_profiler_controller", None)
+        if pctl is not None:
+            try:
+                profiler_on = bool(pctl.profiler_panel_enabled())
+            except Exception:
+                profiler_on = False
         preset = _normalize_panel_layout_preset(
-            {"timeline": timeline_on, "audio": audio_on},
+            {"timeline": timeline_on, "audio": audio_on, "profiler": profiler_on},
             _DEFAULT_PANEL_LAYOUT_PRESET,
         )
         return dict(preset)
@@ -5081,9 +5103,28 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                         set_audio_visible(bool(normalized.get("audio")))
                 except Exception:
                     pass
+            pctl = getattr(self, "_profiler_controller", None)
+            view = getattr(self, "view", None)
+            if pctl is not None:
+                try:
+                    pctl.attach_panel_to_view()
+                except Exception:
+                    pass
+            if view is not None:
+                try:
+                    set_profiler_visible = getattr(view, "set_profiler_visible", None)
+                    if callable(set_profiler_visible):
+                        set_profiler_visible(bool(normalized.get("profiler")))
+                except Exception:
+                    pass
             if ctl is not None:
                 try:
                     ctl.sync_timeline_menu_state()
+                except Exception:
+                    pass
+            if pctl is not None:
+                try:
+                    pctl.sync_profiler_menu_state()
                 except Exception:
                     pass
         finally:
@@ -5100,7 +5141,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         raw = settings.get("panel_layout", None)
         if not isinstance(raw, dict):
             return None
-        if "timeline" not in raw and "audio" not in raw:
+        if "timeline" not in raw and "audio" not in raw and "profiler" not in raw:
             return None
         return _normalize_panel_layout_preset(raw, _DEFAULT_PANEL_LAYOUT_PRESET)
 
