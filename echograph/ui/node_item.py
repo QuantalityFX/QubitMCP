@@ -389,6 +389,20 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     _primitive.register()
             except Exception:
                 pass
+        # Ensure Copy To Points spec is registered even if the loader was skipped.
+        if (self.model.kind or "").strip().lower() in (
+            "copy_to_points",
+            "copy to points",
+            "copy_to_point",
+            "copy to point",
+            "copytopoints",
+        ):
+            try:
+                from nodes import copy_to_points as _copy_to_points  # type: ignore
+                if hasattr(_copy_to_points, "register"):
+                    _copy_to_points.register()
+            except Exception:
+                pass
         # Ensure UV Unwrap spec is registered even if the loader was skipped.
         if (self.model.kind or "").strip().lower() == "uv_unwrap":
             try:
@@ -863,6 +877,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
     def _header_badge_text(self) -> str:
         kind = (self.model.kind or "node").strip()
         key = kind.lower()
+        if key in ("fx", "fx_trail"):
+            return "FX BULLET TIME"
+        if key in ("fx_music_effects", "fx music effects", "music_effects", "music effects", "musiceffects"):
+            return "FX MUSIC VISUALIZER"
         if key in ("llm", "local_server", "local server", "localserver"):
             return "LOCAL_SERVER"
         if key in ("mediator_agent", "mediator agent", "medigator_agent", "medigator agent", "medigator", "mediator"):
@@ -1069,6 +1087,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
             hidden.update({"source", "output", "codec", "fps", "bitrate"})
         elif kind == "primitive":
             hidden.update({"primitive", "path"})
+        elif kind in ("copy_to_points", "copy to points", "copy_to_point", "copy to point", "copytopoints"):
+            hidden.update({"match_normal", "pack", "path", "points_source", "copy_source"})
         elif kind == "uv_unwrap":
             hidden.update({"source", "path"})
         elif kind == "texture":
@@ -1873,6 +1893,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
         elif kind == "primitive":
             body_h = 32
             node_w = self._BASE_W
+        elif kind in ("copy_to_points", "copy to points", "copy_to_point", "copy to point", "copytopoints"):
+            body_h = 116
+            node_w = max(self._BASE_W, 236)
+            try:
+                from nodes.copy_to_points import spec as _copy_to_points_spec  # type: ignore
+                body_h = max(body_h, int(getattr(_copy_to_points_spec, "COPY_TO_POINTS_BODY_H", body_h)))
+                node_w = max(node_w, int(getattr(_copy_to_points_spec, "COPY_TO_POINTS_NODE_W", node_w)))
+            except Exception:
+                pass
         elif kind in ("volume_selector", "split_volume"):
             # Match embedded VolumeSplitWidget height so buttons fit inside the frame.
             body_h = 120
@@ -2487,6 +2516,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "chat_bot",
                 "volume_selector",
                 "split_volume",
+                "copy_to_points",
+                "copy to points",
+                "copy_to_point",
+                "copy to point",
+                "copytopoints",
             )
             deferred_render = None
             if kind_lower in ("chatbot", "chat bot", "chat_bot"):
@@ -3194,6 +3228,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
             "music effects",
             "musiceffects",
         }
+        copy_to_points_kinds = {
+            "copy_to_points",
+            "copy to points",
+            "copy_to_point",
+            "copy to point",
+            "copytopoints",
+        }
         def _scene_log(msg: str) -> None:
             enabled = True
             if not enabled:
@@ -3844,6 +3885,23 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     assets.append(asset)
                     _scene_log(
                         f"edge[{edge_idx}] add fx_splat_physics node={asset.get('node', '')!r} "
+                        f"path={asset.get('path', '')!r}"
+                    )
+                continue
+            if kind in copy_to_points_kinds:
+                try:
+                    from nodes.copy_to_points import spec as _copy_to_points_spec  # type: ignore
+
+                    build_asset = getattr(_copy_to_points_spec, "build_copy_to_points_scene_asset", None)
+                    outcome = build_asset(src_item) if callable(build_asset) else None
+                    asset = getattr(outcome, "asset", None)
+                except Exception as exc:
+                    asset = None
+                    _scene_log(f"edge[{edge_idx}] copy_to_points build failed node={src_name or kind} err={exc!r}")
+                if isinstance(asset, dict):
+                    assets.append(asset)
+                    _scene_log(
+                        f"edge[{edge_idx}] add copy_to_points node={asset.get('node', '')!r} "
                         f"path={asset.get('path', '')!r}"
                     )
                 continue
@@ -6195,6 +6253,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "camera",
                 "scene_camera",
                 "instance",
+                "copy_to_points",
+                "copy to points",
+                "copy_to_point",
+                "copy to point",
+                "copytopoints",
                 "primitive",
                 "html_preview",
                 "html preview",
@@ -6428,6 +6491,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 icon_pm = node_icons._sequence_to_mp4_icon() or node_icons._video_player_icon() or node_icons._output_icon()
             elif kind_lower == "instance":
                 icon_pm = node_icons._instance_icon() or node_icons._output_icon()
+            elif kind_lower in ("copy_to_points", "copy to points", "copy_to_point", "copy to point", "copytopoints"):
+                icon_pm = node_icons._instance_icon() or node_icons._primitive_icon() or node_icons._output_icon()
             elif kind_lower == "primitive":
                 icon_pm = node_icons._primitive_icon() or node_icons._output_icon()
             elif kind_lower in ("split_volume", "volume_selector"):

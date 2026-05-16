@@ -1037,7 +1037,7 @@ def render_node_body(node_item, y_cursor: int) -> int:
 
 
 SPLAT_PHYSICS_SPEC = Spec(
-    stripe_color="#22d3ee",
+    stripe_color="#84cc16",
     render_node_body=render_node_body,
     build_ports=build_ports,
 )

@@ -983,7 +983,13 @@ class GraphScene(QtWidgets.QGraphicsScene):
             base = req
         else:
             import re
-            base = re.sub(r"\s+", "_", knd.lower())
+            kind_key = knd.lower().replace(" ", "_")
+            if kind_key in ("fx", "fx_trail"):
+                base = "fx_bullet_time"
+            elif kind_key in ("fx_music_effects", "music_effects", "musiceffects"):
+                base = "fx_music_visualizer"
+            else:
+                base = re.sub(r"\s+", "_", knd.lower())
 
         # If base is free, use it
         if base not in existing:
@@ -3615,6 +3621,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 clean_entry["material"] = dict(entry.get("material") or {})
             if isinstance(entry.get("fbx_rig_context"), dict):
                 clean_entry["fbx_rig_context"] = dict(entry.get("fbx_rig_context") or {})
+            if isinstance(entry.get("copy_to_points"), dict):
+                clean_entry["copy_to_points"] = dict(entry.get("copy_to_points") or {})
             if isinstance(entry.get("music_effects"), dict):
                 clean_entry["music_effects"] = dict(entry.get("music_effects") or {})
             if "debug_log" in entry:
@@ -3734,6 +3742,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                         round(float(entry.get("age_scale_max", 1.0) or 1.0), 6),
                         repr(list(entry.get("age_scale_points") or [])),
                         repr(dict(entry.get("render_proxy") or {})),
+                        repr(dict(entry.get("copy_to_points") or {})),
                         repr(dict(entry.get("music_effects") or {})),
                     )
                 )

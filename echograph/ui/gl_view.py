@@ -42,6 +42,7 @@ from echograph.ui.gl_view_example import example_orbit as _ex_example_orbit
 from echograph.ui.gl_view_example import example_pan as _ex_example_pan
 from echograph.ui.gl_view_example import example_zoom as _ex_example_zoom
 from echograph.ui import hotkeys_config
+from echograph.ui.scene_xforms import frame_refresh_xform_seed, scene_xform_is_identity
 from echograph.ui.gl_view_example import build_example_program as _ex_build_example_program
 from echograph.ui.gl_view_example import example_cube_data as _ex_cube_data
 from echograph.ui.gl_view_example import example_grid_data as _ex_grid_data
@@ -88,6 +89,7 @@ try:
 except Exception:
     from PySide2 import QtCore, QtGui, QtWidgets  # type: ignore
     _HAS_QT6 = False
+
 
 QOpenGLWidget = None  # type: ignore
 QOpenGLShader = None  # type: ignore
@@ -3825,21 +3827,6 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                         continue
                 return False
 
-            def _xf_is_identity(xf) -> bool:
-                if not isinstance(xf, dict):
-                    return True
-                try:
-                    pos = xf.get("pos", (0.0, 0.0, 0.0))
-                    rot = xf.get("rot", (0.0, 0.0, 0.0))
-                    scl = xf.get("scl", (1.0, 1.0, 1.0))
-                    return (
-                        all(abs(float(v)) < 1e-6 for v in (pos or (0.0, 0.0, 0.0)))
-                        and all(abs(float(v)) < 1e-6 for v in (rot or (0.0, 0.0, 0.0)))
-                        and all(abs(float(v) - 1.0) < 1e-6 for v in (scl or (1.0, 1.0, 1.0)))
-                    )
-                except Exception:
-                    return False
-
             try:
                 prev_mesh_xforms = dict(getattr(self, "_mgl_scene_xforms_by_owner", None) or {})
             except Exception:
@@ -3925,14 +3912,27 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                     if not isinstance(xf, dict):
                         continue
                     is_splat = bool(owner_kind_map.get(name, False))
-                    if entry.get("xform_offset") and _xf_is_identity(xf):
+                    prev_raw = (
+                        _dict_lookup_casefold(prev_splat_xforms, name)
+                        if is_splat
+                        else _dict_lookup_casefold(prev_mesh_xforms, name)
+                    )
+                    # Frame-refresh payloads can briefly carry an identity xform even
+                    # while the Scene node still owns a manual transform. Preserve the
+                    # already-live transform in that case so playback reloads do not
+                    # collapse edited owners back to their defaults.
+                    seeded_prev = frame_refresh_xform_seed(frame, xf, prev_raw)
+                    if isinstance(seeded_prev, dict):
+                        if is_splat and bool(splat_zero_pivot_map.get(name, False)):
+                            seeded_prev["pos"] = (0.0, 0.0, 0.0)
+                        if is_splat:
+                            seeded_splat_xforms[name] = seeded_prev
+                        else:
+                            seeded_mesh_xforms[name] = seeded_prev
+                        continue
+                    if entry.get("xform_offset") and scene_xform_is_identity(xf):
                         try:
-                            prev_raw = (
-                                _dict_lookup_casefold(prev_splat_xforms, name)
-                                if is_splat
-                                else _dict_lookup_casefold(prev_mesh_xforms, name)
-                            )
-                            if isinstance(prev_raw, dict) and not _xf_is_identity(prev_raw):
+                            if isinstance(prev_raw, dict) and not scene_xform_is_identity(prev_raw):
                                 seeded_prev = dict(prev_raw)
                                 if is_splat and bool(splat_zero_pivot_map.get(name, False)):
                                     seeded_prev["pos"] = (0.0, 0.0, 0.0)

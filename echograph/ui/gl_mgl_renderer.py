@@ -1984,6 +1984,12 @@ class MGLRendererMixin:
                 entries.append(sub)
         return entries
 
+    def _mgl_music_effect_packed_copies(self, payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+        cfg = payload.get("copy_to_points")
+        if not isinstance(cfg, dict) or not bool(cfg.get("pack", False)):
+            return []
+        return [row for row in list(cfg.get("copies") or []) if isinstance(row, dict)]
+
     def _mgl_restore_music_effects_mesh_item(self, item: MGLSceneItem) -> None:
         if np is None or item is None:
             return
@@ -2083,6 +2089,53 @@ class MGLRendererMixin:
         )
         if bool(cfg.get("outward_only", True)):
             amount = max(0.0, amount)
+
+        packed_copies = self._mgl_music_effect_packed_copies(payload)
+        if packed_copies:
+            entries = self._mgl_music_effect_entries(payload)
+            entry = entries[0] if entries else None
+            if isinstance(entry, dict):
+                try:
+                    points = np.asarray(entry.get("points"), dtype="f4").reshape(-1, 3)
+                    normals = np.asarray(entry.get("normals"), dtype="f4").reshape(-1, 3)
+                except Exception:
+                    points = normals = None
+                if points is not None and normals is not None and points.shape == normals.shape:
+                    if entry.get("_music_effects_base_points") is None:
+                        entry["_music_effects_base_points"] = points.copy()
+                        entry["_music_effects_base_normals"] = normals.copy()
+                    try:
+                        base_points = np.asarray(entry.get("_music_effects_base_points"), dtype="f4").reshape(-1, 3)
+                    except Exception:
+                        base_points = points.copy()
+                        entry["_music_effects_base_points"] = base_points.copy()
+                    deformed = base_points.copy()
+                    for copy in packed_copies:
+                        try:
+                            start = max(0, int(copy.get("vertex_start", 0) or 0))
+                            count = max(0, int(copy.get("vertex_count", 0) or 0))
+                            normal = np.asarray(copy.get("packed_normal"), dtype="f4").reshape(3)
+                        except Exception:
+                            continue
+                        end = min(int(deformed.shape[0]), int(start + count))
+                        if end <= start:
+                            continue
+                        normal_len = float(np.linalg.norm(normal))
+                        if normal_len <= 1.0e-6:
+                            continue
+                        normal = normal / normal_len
+                        deformed[start:end] = base_points[start:end] + (normal * float(amount))
+                    try:
+                        vbo = entry.get("vbo")
+                        if vbo is not None:
+                            vbo.write(deformed.astype("f4", copy=False).tobytes())
+                        entry["points"] = deformed.astype("f4", copy=False)
+                        entry["_music_effects_applied"] = True
+                        payload["_music_effects_frame_sig"] = sig
+                        item.payload = payload
+                        return
+                    except Exception:
+                        pass
 
         for entry in self._mgl_music_effect_entries(payload):
             try:
@@ -14400,6 +14453,7 @@ class MGLRendererMixin:
                 wire_only = bool(asset.get("wire_only"))
                 is_volume = bool(asset.get("volume"))
                 render_proxy = asset.get("render_proxy") if isinstance(asset.get("render_proxy"), dict) else None
+                copy_to_points = asset.get("copy_to_points") if isinstance(asset.get("copy_to_points"), dict) else None
                 music_effects = asset.get("music_effects") if isinstance(asset.get("music_effects"), dict) else None
                 if isinstance(render_proxy, dict):
                     try:
@@ -14886,6 +14940,7 @@ class MGLRendererMixin:
                             "material": material,
                             "owner": owner,
                             "path": path_key,
+                            "copy_to_points": copy_to_points,
                             "music_effects": music_effects,
                             "fbx_rig_context": fbx_rig_context if isinstance(fbx_rig_context, dict) else None,
                             "fbx_bind_joints_only": bool(fbx_bind_joints_only),
@@ -14949,6 +15004,7 @@ class MGLRendererMixin:
                                 "material": material,
                                 "owner": owner,
                                 "path": path_key,
+                                "copy_to_points": copy_to_points,
                                 "music_effects": music_effects,
                                 "fbx_rig_context": fbx_rig_context if isinstance(fbx_rig_context, dict) else None,
                                 "fbx_bind_joints_only": bool(fbx_bind_joints_only),
@@ -15049,6 +15105,7 @@ class MGLRendererMixin:
                                 "material": material,
                                 "owner": owner,
                                 "path": path_key,
+                                "copy_to_points": copy_to_points,
                                 "music_effects": music_effects,
                                 "fbx_rig_context": fbx_rig_context if isinstance(fbx_rig_context, dict) else None,
                                 "fbx_bind_joints_only": bool(fbx_bind_joints_only),

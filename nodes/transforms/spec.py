@@ -548,6 +548,38 @@ def _paths_equal(a: str, b: str) -> bool:
         return str(a or "") == str(b or "")
 
 
+def _transform_stamp(src_path: str, pos, rot, scl):
+    try:
+        st_mesh = os.stat(src_path)
+        return (
+            src_path,
+            int(st_mesh.st_mtime),
+            int(st_mesh.st_size),
+            float(pos[0]), float(pos[1]), float(pos[2]),
+            float(rot[0]), float(rot[1]), float(rot[2]),
+            float(scl[0]), float(scl[1]), float(scl[2]),
+        )
+    except Exception:
+        return (src_path, None, None, pos, rot, scl)
+
+
+def _current_manual_bake_path(node_item, model, src_path: str, stamp) -> str:
+    current_path = (_param_value(model, "path") if model is not None else "").strip()
+    if not current_path or not src_path:
+        return ""
+    if _paths_equal(current_path, src_path):
+        return ""
+    saved_path = Path(current_path)
+    if not saved_path.exists():
+        return ""
+    if _cache_matches(saved_path, stamp):
+        return str(saved_path)
+    if not _read_cached_stamp(saved_path) and _output_is_fresh(saved_path, [src_path]):
+        _write_cached_stamp(saved_path, stamp)
+        return str(saved_path)
+    return ""
+
+
 def _parse_vec3(value: str, default: Tuple[float, float, float]) -> Tuple[float, float, float]:
     try:
         parts = [p.strip() for p in str(value or "").split(",")]
@@ -560,6 +592,17 @@ def _parse_vec3(value: str, default: Tuple[float, float, float]) -> Tuple[float,
 
 def _format_vec3(val: Tuple[float, float, float]) -> str:
     return f"{val[0]:.6f},{val[1]:.6f},{val[2]:.6f}"
+
+
+def _format_spin_value(value: float, decimals: int = 3) -> str:
+    text = f"{float(value):.{max(0, int(decimals))}f}"
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    if text in {"-0", ""}:
+        text = "0"
+    if "." not in text:
+        text = f"{text}.0"
+    return text
 
 
 def _param_vec3(model, name: str, default: Tuple[float, float, float]) -> Tuple[float, float, float]:
@@ -742,8 +785,12 @@ class TransformWidget(QtWidgets.QWidget):
         self._status.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         layout.addWidget(self._status, 0)
 
+        class _CompactDoubleSpinBox(QtWidgets.QDoubleSpinBox):
+            def textFromValue(self, value):
+                return _format_spin_value(value, self.decimals())
+
         def _mk_spin():
-            sb = QtWidgets.QDoubleSpinBox()
+            sb = _CompactDoubleSpinBox()
             sb.setDecimals(3)
             sb.setRange(-1e9, 1e9)
             sb.setSingleStep(0.01)
@@ -994,6 +1041,14 @@ class TransformWidget(QtWidgets.QWidget):
         except Exception:
             pass
 
+    def _publish_baked_path(self, path: str, *, rebaked: bool) -> bool:
+        changed = self._set_param("path", path, notify_scene=True)
+        # Repeated bakes overwrite the same OBJ path. Downstream nodes still need
+        # a refresh event because the mesh contents changed even when the text did not.
+        if rebaked and not changed:
+            self._emit_param_changed()
+        return changed
+
     def _record_history(self, before_pos, before_rot, before_scl, after_pos, after_rot, after_scl):
         try:
             win = _resolve_window(self._node_item)
@@ -1093,6 +1148,10 @@ class TransformWidget(QtWidgets.QWidget):
             changed = self._set_param("pos", _format_vec3(pos), notify_scene=False) or changed
             changed = self._set_param("rot", _format_vec3(rot), notify_scene=False) or changed
             changed = self._set_param("scl", _format_vec3(scl), notify_scene=False) or changed
+            if changed and not self._should_auto_bake():
+                src_path = (_resolve_input_path(self._node_item) or _param_value(model, "source") or "").strip()
+                if src_path:
+                    self._set_param("path", src_path, notify_scene=False)
             self._set_xform_controls(pos, rot, scl)
             if changed:
                 _debug_log(
@@ -1184,7 +1243,9 @@ class TransformWidget(QtWidgets.QWidget):
             self._status.setText(label)
             self._view_btn.setEnabled(True)
             self._set_param("source", src_path, notify_scene=False)
-            self._set_param("path", src_path, notify_scene=False)
+            stamp = _transform_stamp(src_path, pos, rot, scl)
+            manual_bake_path = _current_manual_bake_path(self._node_item, model, src_path, stamp)
+            self._set_param("path", manual_bake_path or src_path, notify_scene=False)
             return
 
         if identity:
@@ -1204,18 +1265,7 @@ class TransformWidget(QtWidgets.QWidget):
                 self._set_param("path", src_path, notify_scene=True)
             return
 
-        try:
-            st_mesh = os.stat(src_path)
-            stamp = (
-                src_path,
-                int(st_mesh.st_mtime),
-                int(st_mesh.st_size),
-                float(pos[0]), float(pos[1]), float(pos[2]),
-                float(rot[0]), float(rot[1]), float(rot[2]),
-                float(scl[0]), float(scl[1]), float(scl[2]),
-            )
-        except Exception:
-            stamp = (src_path, None, None, pos, rot, scl)
+        stamp = _transform_stamp(src_path, pos, rot, scl)
 
         out_path = _output_path(self._node_item, src_path)
         cache_hit = False
@@ -1261,7 +1311,7 @@ class TransformWidget(QtWidgets.QWidget):
         self._status.setText(label)
         self._view_btn.setEnabled(True)
         self._set_param("source", src_path, notify_scene=False)
-        self._set_param("path", str(out_path), notify_scene=True)
+        self._publish_baked_path(str(out_path), rebaked=True)
 
     def _on_view_clicked(self):
         try:
@@ -1391,6 +1441,10 @@ class TransformWidget(QtWidgets.QWidget):
             changed = self._set_param("rot", _format_vec3(rot), notify_scene=False) or changed
             changed = self._set_param("scl", _format_vec3(scl), notify_scene=False) or changed
         if changed:
+            if not self._should_auto_bake():
+                src_path = (_resolve_input_path(self._node_item) or _param_value(model, "source") or "").strip()
+                if src_path:
+                    self._set_param("path", src_path, notify_scene=False)
             self._push_view_xform(pos, rot, scl)
             self._record_history(before_pos, before_rot, before_scl, pos, rot, scl)
             try:

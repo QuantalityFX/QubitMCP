@@ -43,6 +43,13 @@ _FX_MUSIC_EFFECTS_KIND_ALIASES = {
     "music effects",
     "musiceffects",
 }
+_COPY_TO_POINTS_KIND_ALIASES = {
+    "copy_to_points",
+    "copy to points",
+    "copy_to_point",
+    "copy to point",
+    "copytopoints",
+}
 _MOCAP_KIND_ALIASES = {
     "mocap_import",
     "mocap import",
@@ -1501,6 +1508,33 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                         + f"follow={float(physics.get('follow_strength', 0.0) or 0.0):.3f} "
                         + f"drag={float(physics.get('drag', 0.0) or 0.0):.3f}",
                     )
+            continue
+        if kind in _COPY_TO_POINTS_KIND_ALIASES:
+            try:
+                from nodes.copy_to_points import spec as _copy_to_points_spec  # type: ignore
+
+                build_asset = getattr(_copy_to_points_spec, "build_copy_to_points_scene_asset", None)
+                outcome = build_asset(src_item) if callable(build_asset) else None
+                asset = getattr(outcome, "asset", None)
+            except Exception as exc:
+                asset = None
+                if _scene_debug_enabled(model):
+                    _scene_log(
+                        node_item,
+                        f"copy_to_points asset build failed node={src_name or kind} err={exc!r}",
+                    )
+            if isinstance(asset, dict):
+                asset_owner = str(asset.get("node") or src_name or kind).strip()
+                saved_xform = _lookup_xform(xforms, asset_owner)
+                if not isinstance(saved_xform, dict) and asset_owner != src_name:
+                    saved_xform = _lookup_xform(xforms, src_name)
+                if isinstance(saved_xform, dict):
+                    asset["xform"] = dict(saved_xform)
+                asset["visible"] = asset_owner not in hidden
+                assets.append(asset)
+                path_key = str(asset.get("path") or "").strip()
+                if path_key:
+                    seen.add(path_key)
             continue
         if kind in _FX_MUSIC_EFFECTS_KIND_ALIASES:
             try:

@@ -43,6 +43,13 @@ _FX_SPLAT_PHYSICS_KIND_ALIASES = {
 }
 _ANIM_RETARGET_KIND_ALIASES = {"anim_retarget", "anim retarget", "animretarget", "retarget"}
 _FBX_KIND_ALIASES = {"fbx_import", "fbx import", "fbximport"}
+_COPY_TO_POINTS_KIND_ALIASES = {
+    "copy_to_points",
+    "copy to points",
+    "copy_to_point",
+    "copy to point",
+    "copytopoints",
+}
 
 MUSIC_EFFECTS_NODE_W = 288
 MUSIC_EFFECTS_BODY_INSET_X = 8
@@ -305,6 +312,14 @@ def _source_asset_from_item(source_item) -> tuple[Optional[Dict[str, Any]], str]
     kind = _node_kind(source_item)
     if kind in KIND_ALIASES:
         return build_music_effects_scene_asset(source_item).asset, ""
+    if kind in _COPY_TO_POINTS_KIND_ALIASES:
+        try:
+            from nodes.copy_to_points import spec as copy_to_points_spec  # type: ignore
+
+            outcome = copy_to_points_spec.build_copy_to_points_scene_asset(source_item)
+            return getattr(outcome, "asset", None), str(getattr(outcome, "detail", "") or "")
+        except Exception as exc:
+            return None, f"Copy To Points asset build failed: {exc}"
     if kind in _FX_SPLAT_PHYSICS_KIND_ALIASES:
         try:
             from nodes.fx import splat_physics_spec as splat_fx_spec  # type: ignore
@@ -453,12 +468,18 @@ def build_music_effects_scene_asset(node_item) -> MusicEffectsBuildOutcome:
         detail = "Choose an audio file or connect an audio input."
 
     asset = dict(source_asset)
+    effect_node_name = str(getattr(model, "name", "") or "").strip()
+    source_node_name = str(asset.get("node") or "").strip()
+    if source_node_name:
+        asset["music_effects_source_node"] = source_node_name
+    if effect_node_name:
+        asset["node"] = effect_node_name
     asset["music_effects"] = music_effects_config_from_model(
         model,
         audio_path=audio_path,
         analysis_cache_path=analysis_cache_path,
     )
-    asset["music_effects_node"] = str(getattr(model, "name", "") or "")
+    asset["music_effects_node"] = effect_node_name
     asset["kind"] = "fx_music_effects"
     if _debug_enabled(model):
         asset["debug_log"] = True
@@ -781,7 +802,7 @@ def render_node_body(node_item, y_cursor: int) -> int:
 
 
 MUSIC_EFFECTS_SPEC = Spec(
-    stripe_color="#f97316",
+    stripe_color="#84cc16",
     render_node_body=render_node_body,
     build_ports=build_ports,
 )

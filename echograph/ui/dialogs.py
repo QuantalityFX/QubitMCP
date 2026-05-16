@@ -232,11 +232,15 @@ def _kind_label(kind: str) -> str:
     if not text:
         return "Node"
     key = text.lower().replace(" ", "_")
+    if key in ("fx", "fx_trail"):
+        return "FX Bullet Time"
+    if key in ("fx_music_effects", "music_effects", "musiceffects"):
+        return "FX Music Visualizer"
     if key in ("gen-x-videomocap", "gen-x_video_mocap", "genx_video_mocap", "genx_videomocap", "gemx_video_mocap"):
         return "GEN-X Video Mocap"
     if key in ("llm", "local_server", "localserver"):
         return "Local Server"
-    acronyms = {"llm": "LLM", "uv": "UV", "fbx": "FBX", "bvh": "BVH", "html": "HTML"}
+    acronyms = {"llm": "LLM", "uv": "UV", "fbx": "FBX", "bvh": "BVH", "html": "HTML", "fx": "FX"}
     words = []
     for part in text.split("_"):
         if not part:
@@ -294,6 +298,8 @@ def _kind_icon(kind: str) -> QtGui.QIcon:
         icon_pm = node_icons._sequence_to_mp4_icon() or node_icons._video_player_icon() or node_icons._output_icon()
     elif key == "instance":
         icon_pm = node_icons._instance_icon() or node_icons._output_icon()
+    elif key in ("copy_to_points", "copy to points", "copy_to_point", "copy to point", "copytopoints"):
+        icon_pm = node_icons._instance_icon() or node_icons._primitive_icon() or node_icons._output_icon()
     elif key == "primitive":
         icon_pm = node_icons._primitive_icon() or node_icons._output_icon()
     elif key == "html_preview":
@@ -361,7 +367,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
         self.kind_edit = QtWidgets.QComboBox()
         self.kind_edit.setEditable(True)
         self._kinds = [
-            "node","camera","import","fbx_import","mocap_import","GEN-X-VideoMocap","anim_retarget","skinned_splat_proxy","instance","primitive","uv_unwrap","texture","texture_pro","texture_layer","material","split_volume","transforms","fx","fx_splat_physics","fx_music_effects","scene","render","video_player","post_process","sequence_to_mp4","export_fbx","html_preview","python","switch","output","local_server",
+            "node","camera","import","fbx_import","mocap_import","GEN-X-VideoMocap","anim_retarget","skinned_splat_proxy","instance","copy_to_points","primitive","uv_unwrap","texture","texture_pro","texture_layer","material","split_volume","transforms","fx","fx_splat_physics","fx_music_effects","scene","render","video_player","post_process","sequence_to_mp4","export_fbx","html_preview","python","switch","output","local_server",
             "gantt_chart","keyboard_sequence",
             "qubit_deck_controller",
             "llm_prompt","chatbot","voice_actor","mediator_agent","librarian","note","append","image_collection","database"

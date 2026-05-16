@@ -142,6 +142,17 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Primitive plugin import failed:", e)
 
+    # 8.55) Copy To Points
+    try:
+        from nodes import copy_to_points
+        if hasattr(copy_to_points, "register"):
+            copy_to_points.register()
+            _safe_probe("copy_to_points")
+        else:
+            print("[EchoGraph] Copy To Points module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Copy To Points plugin import failed:", e)
+
     # 8.6) UV Unwrap
     try:
         from nodes import uv_unwrap
