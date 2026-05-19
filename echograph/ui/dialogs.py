@@ -324,6 +324,8 @@ def _kind_icon(kind: str) -> QtGui.QIcon:
         icon_pm = node_icons._gantt_icon() or node_icons._output_icon()
     elif key in ("keyboard_sequence", "keyboard sequence", "keyboard_scheduler", "keyboard scheduler"):
         icon_pm = node_icons._keyboard_sequence_icon() or node_icons._output_icon()
+    elif key in ("serial_com", "serial com", "serial_port", "serial port"):
+        icon_pm = node_icons._serial_com_icon() or node_icons._output_icon()
     elif key in ("qubit_deck_controller", "qubit deck controller", "qubitdeckcontroller"):
         icon_pm = (
             node_icons._qubit_deck_controller_icon()
@@ -369,6 +371,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
         self._kinds = [
             "node","camera","import","fbx_import","mocap_import","GEN-X-VideoMocap","anim_retarget","skinned_splat_proxy","instance","copy_to_points","primitive","uv_unwrap","texture","texture_pro","texture_layer","material","split_volume","transforms","fx","fx_splat_physics","fx_music_effects","scene","render","video_player","post_process","sequence_to_mp4","export_fbx","html_preview","python","switch","output","local_server",
             "gantt_chart","keyboard_sequence",
+            "serial_com",
             "qubit_deck_controller",
             "llm_prompt","chatbot","voice_actor","mediator_agent","librarian","note","append","image_collection","database"
         ]

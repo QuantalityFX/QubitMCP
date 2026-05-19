@@ -14,6 +14,7 @@ except Exception:
 
 from nodes.core import Spec
 from echograph.ui import actions
+from echograph.services.profiler import profiled
 from echograph.material_debug import material_debug_log as _material_debug_log
 import traceback
 
@@ -115,6 +116,77 @@ def _scene_log(node_item, msg: str, *, key: str | None = None, interval: float =
         node_name = str(getattr(model, "name", "") or "").strip() if model is not None else ""
         with (log_dir / "scene_view_debug.log").open("a", encoding="utf-8") as f:
             f.write(f"{ts} [{node_name or 'scene'}] {msg}\n")
+    except Exception:
+        pass
+
+
+def _freeze_scene_cache_value(value):
+    if isinstance(value, dict):
+        return tuple(
+            (str(key), _freeze_scene_cache_value(val))
+            for key, val in sorted(value.items(), key=lambda item: str(item[0]))
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_scene_cache_value(val) for val in value)
+    if isinstance(value, set):
+        return tuple(sorted((_freeze_scene_cache_value(val) for val in value), key=repr))
+    if isinstance(value, float):
+        return round(float(value), 8)
+    if isinstance(value, (str, int, bool, type(None))):
+        return value
+    return repr(value)
+
+
+def _scene_collect_cache_key(node_item):
+    scene = node_item.scene() if node_item is not None else None
+    model = getattr(node_item, "model", None)
+    return (
+        int(getattr(scene, "_scene_asset_revision", 0) or 0) if scene is not None else 0,
+        int(getattr(scene, "_edge_index_version", 0) or 0) if scene is not None else 0,
+        _freeze_scene_cache_value(getattr(model, "_scene_hidden", None)),
+        _freeze_scene_cache_value(getattr(model, "_scene_xforms", None)),
+    )
+
+
+def _clone_scene_cache_value(value):
+    if isinstance(value, dict):
+        return {key: _clone_scene_cache_value(val) for key, val in value.items()}
+    if isinstance(value, list):
+        return [_clone_scene_cache_value(val) for val in value]
+    if isinstance(value, tuple):
+        return tuple(_clone_scene_cache_value(val) for val in value)
+    if isinstance(value, set):
+        return {_clone_scene_cache_value(val) for val in value}
+    return value
+
+
+def _scene_collect_cache_get(node_item):
+    entry = getattr(node_item, "_scene_collect_assets_cache", None)
+    if not isinstance(entry, tuple) or len(entry) != 2:
+        return None
+    key, assets = entry
+    if key != _scene_collect_cache_key(node_item):
+        return None
+    return [_clone_scene_cache_value(asset) for asset in list(assets or [])]
+
+
+def _scene_collect_cache_put(node_item, assets) -> None:
+    try:
+        cached_assets = tuple(_clone_scene_cache_value(asset) for asset in list(assets or []))
+        node_item._scene_collect_assets_cache = (_scene_collect_cache_key(node_item), cached_assets)
+    except Exception:
+        return
+
+    def _clear_if_same(item=node_item, cached=cached_assets):
+        try:
+            current = getattr(item, "_scene_collect_assets_cache", None)
+            if isinstance(current, tuple) and len(current) == 2 and current[1] is cached:
+                item._scene_collect_assets_cache = None
+        except Exception:
+            pass
+
+    try:
+        QtCore.QTimer.singleShot(0, _clear_if_same)
     except Exception:
         pass
 
@@ -842,10 +914,14 @@ def _fx_surface_context(scene, owner_item, owner_model, owner_kind):
     return material_item, material_model, texture_model, texture_kind
 
 
+@profiled("scene.collect_assets")
 def _collect_assets(node_item) -> List[Dict[str, str]]:
     scene = node_item.scene()
     if scene is None:
         return []
+    cached_assets = _scene_collect_cache_get(node_item)
+    if cached_assets is not None:
+        return cached_assets
     dbg_collect = _scene_debug_enabled(getattr(node_item, "model", None))
 
     def _norm_path(p: str) -> str:
@@ -2304,6 +2380,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             except Exception:
                 pass
 
+    _scene_collect_cache_put(node_item, assets)
     return assets
 
 

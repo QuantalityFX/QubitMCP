@@ -13,6 +13,7 @@ pymongo==4.15.5
 PyOpenGL==3.1.10
 pypdf==6.3.0
 pyrr==0.10.3
+pyserial==3.5
 PySide6==6.10.0
 PySide6_Addons==6.10.0
 PySide6_Essentials==6.10.0

@@ -390,7 +390,14 @@ def _connected_geometry_item(node_item):
     return None
 
 
-def music_effects_config_from_model(model, *, audio_path: str, analysis_cache_path: str = "") -> Dict[str, Any]:
+def music_effects_config_from_model(
+    model,
+    *,
+    audio_path: str,
+    analysis_cache_path: str = "",
+    analysis_duration_s: float = 0.0,
+    analysis_frame_count: int = 0,
+) -> Dict[str, Any]:
     return {
         "schema": "qubit.music_effects.v1",
         "enabled": _param_bool(model, "enabled", True),
@@ -408,6 +415,8 @@ def music_effects_config_from_model(model, *, audio_path: str, analysis_cache_pa
                 minimum=-600_000.0,
                 maximum=600_000.0,
             ),
+            "duration_s": max(0.0, float(analysis_duration_s or 0.0)),
+            "frame_count": max(0, int(analysis_frame_count or 0)),
         },
         "mesh": {
             "displacement": _param_float(model, "mesh_displacement", 0.15, minimum=0.0, maximum=1000.0),
@@ -433,6 +442,8 @@ def build_music_effects_scene_asset(node_item) -> MusicEffectsBuildOutcome:
 
     audio_path = _audio_path_from_node(node_item)
     analysis_cache_path = ""
+    analysis_duration_s = 0.0
+    analysis_frame_count = 0
     status = "ok"
     detail = "Music effects ready."
     if audio_path:
@@ -450,6 +461,8 @@ def build_music_effects_scene_asset(node_item) -> MusicEffectsBuildOutcome:
                 ),
             )
             analysis_cache_path = str(analysis.cache_path)
+            analysis_duration_s = float(analysis.duration_s)
+            analysis_frame_count = int(analysis.frame_count)
             detail = "Music effects ready."
             _debug_log(
                 model,
@@ -457,6 +470,7 @@ def build_music_effects_scene_asset(node_item) -> MusicEffectsBuildOutcome:
                 audio_path=audio_path,
                 cache_path=analysis_cache_path,
                 frames=int(analysis.frame_count),
+                duration_s=float(analysis.duration_s),
                 from_cache=bool(analysis.from_cache),
             )
         except MusicAnalysisError as exc:
@@ -478,6 +492,8 @@ def build_music_effects_scene_asset(node_item) -> MusicEffectsBuildOutcome:
         model,
         audio_path=audio_path,
         analysis_cache_path=analysis_cache_path,
+        analysis_duration_s=analysis_duration_s,
+        analysis_frame_count=analysis_frame_count,
     )
     asset["music_effects_node"] = effect_node_name
     asset["kind"] = "fx_music_effects"

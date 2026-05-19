@@ -19,6 +19,7 @@ except Exception:
 
 from nodes.core import Spec
 from nodes.util_graph import param_change_relevant as _param_change_relevant
+from echograph.services.profiler import profiled
 
 ANIM_RETARGET_KIND_ALIASES: Tuple[str, ...] = (
     "anim_retarget",
@@ -2840,6 +2841,54 @@ def _is_root_motion_mapping(
         return False
 
 
+def _freeze_cache_value(value: Any):
+    if isinstance(value, dict):
+        return tuple(
+            (str(key), _freeze_cache_value(val))
+            for key, val in sorted(value.items(), key=lambda item: str(item[0]))
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_cache_value(val) for val in value)
+    if isinstance(value, set):
+        return tuple(sorted((_freeze_cache_value(val) for val in value), key=repr))
+    if isinstance(value, float):
+        return round(float(value), 8)
+    if isinstance(value, (str, int, bool, type(None))):
+        return value
+    return repr(value)
+
+
+def _retarget_model_clip_signature(model) -> Tuple[Tuple[str, str], ...]:
+    rows = []
+    for entry in list(getattr(model, "params", None) or []):
+        rows.append(
+            (
+                str(entry.get("name") or ""),
+                str(entry.get("value") or ""),
+            )
+        )
+    return tuple(rows)
+
+
+def _retarget_clip_cache_key(
+    model,
+    source_context: Dict[str, Any],
+    target_context: Dict[str, Any],
+    source_skeleton,
+    target_skeleton,
+    source_clip,
+):
+    return (
+        id(source_skeleton),
+        id(target_skeleton),
+        id(source_clip),
+        _freeze_cache_value(source_context.get("transform_xform")),
+        _freeze_cache_value(target_context.get("transform_xform")),
+        _retarget_model_clip_signature(model),
+    )
+
+
+@profiled("rigging.retarget_clip_build")
 def build_anim_retarget_clip(
     node_item,
     result: RetargetSourceTargetResult | None = None,
@@ -2862,6 +2911,19 @@ def build_anim_retarget_clip(
     mapping = _joint_map_payload(model)
     if not mapping:
         return None
+    clip_cache_key = _retarget_clip_cache_key(
+        model,
+        source_context,
+        target_context,
+        source_skeleton,
+        target_skeleton,
+        source_clip,
+    )
+    if model is not None:
+        cached_key = getattr(model, "_retarget_animation_clip_cache_key", None)
+        cached_clip = getattr(model, "_retarget_animation_clip", None)
+        if cached_key == clip_cache_key and cached_clip is not None:
+            return cached_clip
 
     try:
         from echograph.rigging.fbx_canonical import AnimationClip, JointAnimationTrack
@@ -2998,6 +3060,7 @@ def build_anim_retarget_clip(
     try:
         if model is not None:
             setattr(model, "_retarget_animation_clip", retarget_clip)
+            setattr(model, "_retarget_animation_clip_cache_key", clip_cache_key)
             setattr(model, "_retarget_animation_track_count", int(len(tracks)))
             setattr(model, "_retarget_animation_skipped", list(skipped))
     except Exception:
@@ -3021,6 +3084,7 @@ def build_anim_retarget_clip(
     return retarget_clip
 
 
+@profiled("rigging.retarget_scene_asset")
 def build_anim_retarget_scene_asset(
     node_item,
     result: RetargetSourceTargetResult | None = None,

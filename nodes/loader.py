@@ -86,6 +86,17 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Keyboard Sequence plugin import failed:", e)
 
+    # 4.7) Serial COM
+    try:
+        from nodes import serial_com
+        if hasattr(serial_com, "register"):
+            serial_com.register()
+            _safe_probe("serial_com")
+        else:
+            print("[EchoGraph] Serial COM module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Serial COM plugin import failed:", e)
+
     # 5) Output
     try:
         from nodes import output

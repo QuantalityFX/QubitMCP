@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import tempfile
 import time
@@ -256,13 +257,10 @@ def _collect_scene_assets(node_item):
     return assets, ""
 
 
-def _collect_scene_cameras(node_item):
-    assets, err = _collect_scene_assets(node_item)
-    if err:
-        return [], err
+def _scene_cameras_from_assets(assets):
     out = []
     seen = set()
-    for entry in assets:
+    for entry in list(assets or []):
         if not isinstance(entry, dict):
             continue
         kind = str(entry.get("kind", "")).strip().lower()
@@ -281,9 +279,61 @@ def _collect_scene_cameras(node_item):
                 "aspect_height": entry.get("aspect_height", 1080),
             }
         )
+    return out
+
+
+def _collect_scene_cameras(node_item):
+    assets, err = _collect_scene_assets(node_item)
+    if err:
+        return [], err
+    out = _scene_cameras_from_assets(assets)
     if not out:
         return [], "Connected Scene has no camera nodes."
     return out, ""
+
+
+def _float_value(value, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _bool_value(value, default: bool = True) -> bool:
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "on", "y"}:
+            return True
+        if text in {"0", "false", "no", "off", "n"}:
+            return False
+    if value is None:
+        return bool(default)
+    return bool(value)
+
+
+def _music_effects_max_frame_from_assets(assets, fps: float) -> int:
+    try:
+        fps_value = max(1.0, float(fps))
+    except Exception:
+        fps_value = 30.0
+    max_frame = 0
+    for entry in list(assets or []):
+        if not isinstance(entry, dict):
+            continue
+        cfg = entry.get("music_effects")
+        if not isinstance(cfg, dict) or not _bool_value(cfg.get("enabled"), True):
+            continue
+        analysis = cfg.get("analysis") if isinstance(cfg.get("analysis"), dict) else {}
+        duration_s = _float_value(
+            analysis.get("duration_s", cfg.get("analysis_duration_s", cfg.get("duration_s", 0.0))),
+            0.0,
+        )
+        if duration_s <= 0.0:
+            continue
+        offset_s = _float_value(analysis.get("audio_start_offset_ms"), 0.0) / 1000.0
+        end_s = max(0.0, float(duration_s) + max(0.0, float(offset_s)))
+        max_frame = max(max_frame, int(math.ceil(end_s * fps_value)))
+    return max(0, int(max_frame))
 
 
 def _sequence_frame_path(template_path: Path, frame: int) -> Path:
@@ -730,9 +780,9 @@ class RenderNodeWidget(QtWidgets.QWidget):
             if not self._busy:
                 self._render_btn.setEnabled(True)
             return
-        cams, cam_err = _collect_scene_cameras(self._node_item)
-        if cam_err:
-            self._status.setText(cam_err)
+        cams = _scene_cameras_from_assets(assets)
+        if not cams:
+            self._status.setText("Connected Scene has no camera nodes.")
             if not self._busy:
                 self._render_btn.setEnabled(True)
             return
@@ -1107,6 +1157,10 @@ class RenderNodeWidget(QtWidgets.QWidget):
             old_material_fps_override = float(getattr(glv, "_timeline_material_fps_override", 0.0) or 0.0)
         except Exception:
             old_material_fps_override = 0.0
+        try:
+            old_mgl_render_fps_override = float(getattr(glv, "_mgl_render_fps_override", 0.0) or 0.0)
+        except Exception:
+            old_mgl_render_fps_override = 0.0
         set_material_live_mode = getattr(glv, "_timeline_set_material_live_mode", None)
         set_material_fps_override = getattr(glv, "_timeline_set_material_fps_override", None)
         old_viewport_bg = getattr(glv, "_viewport_bg", None)
@@ -1204,6 +1258,10 @@ class RenderNodeWidget(QtWidgets.QWidget):
             except Exception:
                 pass
             try:
+                glv._mgl_render_fps_override = float(render_fps)
+            except Exception:
+                pass
+            try:
                 if callable(set_material_live_mode):
                     set_material_live_mode(False)
                 else:
@@ -1226,7 +1284,10 @@ class RenderNodeWidget(QtWidgets.QWidget):
                 glv._mgl_splat_sort_every_frame = True
             except Exception:
                 pass
-            timeline_end = self._timeline_max_frame(glv, scene_name, project_path)
+            timeline_end = max(
+                self._timeline_max_frame(glv, scene_name, project_path),
+                _music_effects_max_frame_from_assets(assets, render_fps),
+            )
             render_start, render_end = self._resolved_frame_range(timeline_end)
             total_frames = max(1, int(render_end) - int(render_start) + 1)
             out_fmt_qt = _FORMAT_QT[_norm_fmt(fmt)]
@@ -1343,6 +1404,10 @@ class RenderNodeWidget(QtWidgets.QWidget):
                         set_material_fps_override(None)
                 else:
                     glv._timeline_material_fps_override = float(old_material_fps_override)
+            except Exception:
+                pass
+            try:
+                glv._mgl_render_fps_override = float(old_mgl_render_fps_override)
             except Exception:
                 pass
             try:

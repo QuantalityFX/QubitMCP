@@ -39,6 +39,7 @@ _UV_UNWRAP_ICON = None
 _TRANSFORMS_ICON = None
 _GANTT_ICON = None
 _KEYBOARD_SEQUENCE_ICON = None
+_SERIAL_COM_ICON = None
 _QUBIT_DECK_CONTROLLER_ICON = None
 _FX_NODE_ICON = None
 _CAMERA_NODE_ICON = None
@@ -368,8 +369,20 @@ def _keyboard_sequence_icon():
     global _KEYBOARD_SEQUENCE_ICON
     if _KEYBOARD_SEQUENCE_ICON is not None:
         return _KEYBOARD_SEQUENCE_ICON
-    _KEYBOARD_SEQUENCE_ICON = _load_pm("keyframe_Icon.png") or _load_pm("CalendarToday_Icon.png")
+    _KEYBOARD_SEQUENCE_ICON = (
+        _load_pm("KeyboardActionRunner_Icon_s.png.png")
+        or _load_pm("keyframe_Icon.png")
+        or _load_pm("CalendarToday_Icon.png")
+    )
     return _KEYBOARD_SEQUENCE_ICON
+
+
+def _serial_com_icon():
+    global _SERIAL_COM_ICON
+    if _SERIAL_COM_ICON is not None:
+        return _SERIAL_COM_ICON
+    _SERIAL_COM_ICON = _load_pm("SerialCom_Icon_s.png") or _load_pm("Server_Icon.png")
+    return _SERIAL_COM_ICON
 
 
 def _qubit_deck_controller_icon():

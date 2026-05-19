@@ -916,6 +916,7 @@ class GraphScene(QtWidgets.QGraphicsScene):
         self._edge_index_by_dst = {}
         self._edge_index_dirty = True
         self._edge_index_version = 0
+        self._scene_asset_revision = 0
         self._comment_groups = []
         self._moving_comment_group = False
         self._drag_src_item = None
@@ -937,6 +938,14 @@ class GraphScene(QtWidgets.QGraphicsScene):
 
         self.setBackgroundBrush(QtGui.QColor("#1a1f24"))
         self.setSceneRect(QtCore.QRectF(-20000, -20000, 40000, 40000))
+        try:
+            self.linksChanged.connect(self._bump_scene_asset_revision)
+        except Exception:
+            pass
+        try:
+            self.paramChanged.connect(self._bump_scene_asset_revision)
+        except Exception:
+            pass
 
     def refresh_node_widget(self, name: str):
         with profile_scope("graph.refresh_node_widget"):
@@ -2314,6 +2323,13 @@ class GraphScene(QtWidgets.QGraphicsScene):
             self._edge_index_version = int(getattr(self, "_edge_index_version", 0)) + 1
         except Exception:
             self._edge_index_version = 0
+        self._bump_scene_asset_revision()
+
+    def _bump_scene_asset_revision(self, *_args):
+        try:
+            self._scene_asset_revision = int(getattr(self, "_scene_asset_revision", 0)) + 1
+        except Exception:
+            self._scene_asset_revision = 0
 
     def _rebuild_edge_index(self):
         if not bool(getattr(self, "_edge_index_dirty", True)):
@@ -4212,8 +4228,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                     prev_saved_xf = xforms.get(store_key)
                 # Avoid clobbering a good saved xform with transient identity from getter fallback.
                 if (
-                    (not bool(xf_from_explicit_cache))
-                    and _xf_is_identity(xf)
+                    _xf_is_identity(xf)
                     and isinstance(prev_saved_xf, dict)
                     and (not _xf_is_identity(prev_saved_xf))
                 ):

@@ -1850,8 +1850,17 @@ class NodeItem(QtWidgets.QGraphicsObject):
             body_h = 320
             node_w = max(self._BASE_W, 1010)
         elif kind in ("keyboard_sequence", "keyboard sequence", "keyboard_scheduler", "keyboard scheduler"):
-            body_h = 280
+            body_h = 318
             node_w = max(self._BASE_W, 980)
+        elif kind in ("serial_com", "serial com", "serial_port", "serial port"):
+            body_h = 124
+            node_w = max(self._BASE_W, 360)
+            try:
+                from nodes.serial_com import spec as _serial_com_spec  # type: ignore
+                body_h = max(body_h, int(getattr(_serial_com_spec, "SERIAL_COM_BODY_H", body_h)))
+                node_w = max(node_w, int(getattr(_serial_com_spec, "SERIAL_COM_BODY_W", node_w)))
+            except Exception:
+                pass
         elif kind in ("qubit_deck_controller", "qubit deck controller", "qubitdeckcontroller"):
             # Keep extra lower frame space so deck params do not crowd the bottom border.
             body_h = 44
@@ -3882,6 +3891,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     asset = None
                     _scene_log(f"edge[{edge_idx}] fx_splat_physics build failed node={src_name or kind} err={exc!r}")
                 if isinstance(asset, dict):
+                    asset_owner = str(asset.get("node") or src_name or kind).strip()
+                    xf = _lookup_xform(asset_owner)
+                    if not isinstance(xf, dict) and asset_owner != src_name:
+                        xf = _lookup_xform(src_name)
+                    if isinstance(xf, dict):
+                        asset["xform"] = dict(xf)
+                    asset["visible"] = asset_owner not in hidden
                     assets.append(asset)
                     _scene_log(
                         f"edge[{edge_idx}] add fx_splat_physics node={asset.get('node', '')!r} "
@@ -3899,6 +3915,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     asset = None
                     _scene_log(f"edge[{edge_idx}] copy_to_points build failed node={src_name or kind} err={exc!r}")
                 if isinstance(asset, dict):
+                    asset_owner = str(asset.get("node") or src_name or kind).strip()
+                    xf = _lookup_xform(asset_owner)
+                    if not isinstance(xf, dict) and asset_owner != src_name:
+                        xf = _lookup_xform(src_name)
+                    if isinstance(xf, dict):
+                        asset["xform"] = dict(xf)
+                    asset["visible"] = asset_owner not in hidden
                     assets.append(asset)
                     _scene_log(
                         f"edge[{edge_idx}] add copy_to_points node={asset.get('node', '')!r} "
@@ -3916,6 +3939,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     asset = None
                     _scene_log(f"edge[{edge_idx}] fx_music_effects build failed node={src_name or kind} err={exc!r}")
                 if isinstance(asset, dict):
+                    asset_owner = str(asset.get("node") or src_name or kind).strip()
+                    xf = _lookup_xform(asset_owner)
+                    if not isinstance(xf, dict) and asset_owner != src_name:
+                        xf = _lookup_xform(src_name)
+                    if isinstance(xf, dict):
+                        asset["xform"] = dict(xf)
+                    asset["visible"] = asset_owner not in hidden
                     assets.append(asset)
                     _scene_log(
                         f"edge[{edge_idx}] add fx_music_effects node={asset.get('node', '')!r} "
@@ -6292,6 +6322,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "keyboard sequence",
                 "keyboard_scheduler",
                 "keyboard scheduler",
+                "serial_com",
+                "serial com",
+                "serial_port",
+                "serial port",
                 "export_fbx",
                 "exportfbx",
                 "export fbx",
@@ -6513,6 +6547,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 icon_pm = node_icons._gantt_icon() or node_icons._output_icon()
             elif kind_lower in ("keyboard_sequence", "keyboard sequence", "keyboard_scheduler", "keyboard scheduler"):
                 icon_pm = node_icons._keyboard_sequence_icon() or node_icons._output_icon()
+            elif kind_lower in ("serial_com", "serial com", "serial_port", "serial port"):
+                icon_pm = node_icons._serial_com_icon() or node_icons._output_icon()
             elif kind_lower in ("export_fbx", "exportfbx", "export fbx"):
                 icon_pm = node_icons._fbx_icon() or node_icons._output_icon()
             elif kind_lower == "output":

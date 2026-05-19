@@ -6,6 +6,7 @@ import os
 import re
 import threading
 import time
+from pathlib import Path
 
 try:
     from PySide6 import QtWidgets, QtCore, QtGui
@@ -31,9 +32,10 @@ _MAX_LEAD_IN_MS = 60000
 _MAX_KEY_HOLD_MS = 2000
 _MIN_STEPS = 1
 _MAX_STEPS = 64
+_PRESET_VERSION = 1
 
 KEYBOARD_SEQUENCE_BODY_W = 980
-KEYBOARD_SEQUENCE_BODY_H = 280
+KEYBOARD_SEQUENCE_BODY_H = 318
 
 _INPUT_KEYBOARD = 1
 _KEYEVENTF_EXTENDEDKEY = 0x0001
@@ -153,12 +155,17 @@ _SPECIAL_KEYS = {
     "pause": 0x13,
     "numlock": 0x90,
     "plus": 0xBB,
+    "-": 0xBD,
     "minus": 0xBD,
     "comma": 0xBC,
     "period": 0xBE,
     "dot": 0xBE,
+    "/": 0xBF,
     "slash": 0xBF,
     "backslash": 0xDC,
+    "divide": 0x6F,
+    "numpaddivide": 0x6F,
+    "keypaddivide": 0x6F,
     "semicolon": 0xBA,
     "quote": 0xDE,
     "apostrophe": 0xDE,
@@ -291,6 +298,31 @@ def _set_param_value(node_item, name: str, value: str, *, notify_scene: bool = T
             pass
 
 
+def _notify_node_params_changed(node_item) -> None:
+    model = getattr(node_item, "model", None)
+    if model is None:
+        return
+    params = list(getattr(model, "params", None) or [])
+    scene = None
+    try:
+        scene = node_item.scene()
+    except Exception:
+        scene = None
+    if scene is None:
+        return
+    if hasattr(scene, "set_node_params"):
+        try:
+            scene.set_node_params(model.name, params, rebuild=False, emit=True)
+            return
+        except Exception:
+            pass
+    if hasattr(scene, "paramChanged"):
+        try:
+            scene.paramChanged.emit(model.name, params)
+        except Exception:
+            pass
+
+
 def _coerce_int(value, default: int) -> int:
     try:
         return int(float(value))
@@ -419,7 +451,95 @@ def _write_injection_mode(node_item, value: str, *, notify_scene: bool = True) -
     return clean
 
 
+def _dialog_parent(node_item):
+    scene = None
+    try:
+        scene = node_item.scene()
+    except Exception:
+        scene = None
+    if scene is not None:
+        try:
+            views = scene.views()
+            if views:
+                win = views[0].window()
+                if win is not None:
+                    return win
+        except Exception:
+            pass
+    try:
+        win = node_item.window()
+        if win is not None:
+            return win
+    except Exception:
+        pass
+    try:
+        active = QtWidgets.QApplication.activeWindow()
+        if active is not None and active.isWindow():
+            return active
+    except Exception:
+        pass
+    return None
+
+
+def _apply_dialog_style(dialog, parent=None) -> None:
+    try:
+        icon = None
+        if parent is not None:
+            icon = parent.window().windowIcon()
+        app = QtWidgets.QApplication.instance()
+        if (icon is None or icon.isNull()) and app is not None:
+            icon = app.windowIcon()
+        if icon is not None and not icon.isNull():
+            dialog.setWindowIcon(icon)
+    except Exception:
+        pass
+    dialog.setStyleSheet(
+        "QDialog{background:#0f1216;color:#e6edf3;}"
+        "QLabel{color:#e6edf3;}"
+        "QLineEdit{background:#111827;color:#e2e8f0;border:1px solid #475569;border-radius:4px;padding:5px 7px;}"
+        "QPushButton{background:#1f2937;color:#e2e8f0;border:1px solid #475569;border-radius:4px;padding:4px 12px;min-width:72px;}"
+        "QPushButton:hover{background:#273449;}"
+    )
+
+
+def _preset_payload(
+    steps: list[dict[str, object]],
+    lead_in_ms: int,
+    key_hold_ms: int,
+    injection_mode: str,
+) -> dict[str, object]:
+    return {
+        "version": _PRESET_VERSION,
+        "lead_in_ms": _coerce_lead_in_ms(lead_in_ms),
+        "key_hold_ms": _coerce_key_hold_ms(key_hold_ms),
+        "injection_mode": _normalize_injection_mode(injection_mode),
+        "actions": _normalize_sequence(steps),
+    }
+
+
+def _normalize_preset_payload(raw) -> tuple[dict[str, object] | None, str]:
+    if not isinstance(raw, dict):
+        return None, "Preset JSON must be an object."
+
+    actions = raw.get("actions")
+    if actions is None:
+        actions = raw.get("steps")
+    if not isinstance(actions, list) or not actions:
+        return None, "Preset JSON must include a non-empty 'actions' list."
+
+    payload = _preset_payload(
+        _normalize_sequence(actions),
+        raw.get("lead_in_ms", raw.get("lead_in", _DEFAULT_LEAD_IN_MS)),
+        raw.get("key_hold_ms", raw.get("key_hold", _DEFAULT_KEY_HOLD_MS)),
+        raw.get("injection_mode", raw.get("input_mode", _MODE_VK)),
+    )
+    return payload, ""
+
+
 def _vk_for_named_token(token: str) -> int | None:
+    raw = str(token or "").strip()
+    if raw == "-":
+        return int(_SPECIAL_KEYS["-"])
     key = _normalize_token(token)
     if not key:
         return None
@@ -751,12 +871,32 @@ def _dispatch_key_action(
     return _send_input_events(events)
 
 
+def _connected_serial_target_configs(node_item):
+    try:
+        from nodes.serial_com.spec import connected_serial_target_configs
+    except Exception:
+        return []
+    try:
+        return list(connected_serial_target_configs(node_item) or [])
+    except Exception:
+        return []
+
+
+def _serial_route_label(configs) -> str:
+    ports = [str(getattr(config, "port", "") or "").strip() for config in list(configs or [])]
+    ports = [port for port in ports if port]
+    if not ports:
+        return "Pico HID"
+    return f"Pico HID via {', '.join(ports)}"
+
+
 class _ActionEditDialog(QtWidgets.QDialog):
     def __init__(self, action_text: str, key_text: str, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Edit Keyboard Action")
         self.setModal(True)
         self.resize(420, 170)
+        _apply_dialog_style(self, parent)
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(12, 10, 12, 10)
@@ -794,6 +934,46 @@ class _ActionEditDialog(QtWidgets.QDialog):
         action = str(self._action_edit.text() or "").strip()
         key_text = str(self._key_edit.text() or "").strip()
         return action, key_text
+
+
+class _DelayEditDialog(QtWidgets.QDialog):
+    def __init__(self, delay_ms: int, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Edit Delay")
+        self.setModal(True)
+        self.resize(360, 132)
+        _apply_dialog_style(self, parent)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(8)
+
+        form = QtWidgets.QFormLayout()
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setSpacing(6)
+
+        self._delay_spin = QtWidgets.QSpinBox()
+        self._delay_spin.setRange(int(_MIN_DELAY_MS), int(_MAX_DELAY_MS))
+        self._delay_spin.setSingleStep(50)
+        self._delay_spin.setSuffix(" ms")
+        self._delay_spin.setValue(int(_coerce_delay_ms(delay_ms)))
+        form.addRow("Delay", self._delay_spin)
+        layout.addLayout(form, 0)
+
+        hint = QtWidgets.QLabel("Delay after this action before the next action starts.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("QLabel{color:#94a3b8;font-size:11px;}")
+        layout.addWidget(hint, 0)
+
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons, 0)
+
+        QtCore.QTimer.singleShot(0, self._delay_spin.setFocus)
+
+    def value(self) -> int:
+        return _coerce_delay_ms(self._delay_spin.value())
 
 
 class _PlaybackSignals(QtCore.QObject):
@@ -890,6 +1070,11 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
         button_row.addWidget(self._mode_combo, 0)
 
         self._run_btn = QtWidgets.QPushButton("Run Sequence")
+        self._run_btn.setStyleSheet(
+            "QPushButton{background:#2563eb;color:#f8fafc;border:1px solid #3b82f6;border-radius:4px;padding:4px 10px;font-weight:600;}"
+            "QPushButton:hover{background:#1d4ed8;}"
+            "QPushButton:disabled{background:#1e3a8a;color:#94a3b8;border-color:#1e40af;}"
+        )
         self._run_btn.clicked.connect(self._on_run_clicked)
         button_row.addWidget(self._run_btn, 0)
 
@@ -899,6 +1084,25 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
         button_row.addWidget(self._stop_btn, 0)
 
         root.addLayout(button_row, 0)
+
+        preset_row = QtWidgets.QHBoxLayout()
+        preset_row.setContentsMargins(0, 0, 0, 0)
+        preset_row.setSpacing(6)
+
+        self._preset_label = QtWidgets.QLabel("Preset")
+        self._preset_label.setStyleSheet("QLabel{color:#94a3b8;font-weight:600;}")
+        preset_row.addWidget(self._preset_label, 0)
+
+        self._load_preset_btn = QtWidgets.QPushButton("Load JSON")
+        self._load_preset_btn.clicked.connect(self._on_load_preset)
+        preset_row.addWidget(self._load_preset_btn, 0)
+
+        self._save_preset_btn = QtWidgets.QPushButton("Save JSON")
+        self._save_preset_btn.clicked.connect(self._on_save_preset)
+        preset_row.addWidget(self._save_preset_btn, 0)
+
+        preset_row.addStretch(1)
+        root.addLayout(preset_row, 0)
 
         self._table = QtWidgets.QTableWidget(1, 1, self)
         self._table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectItems)
@@ -930,7 +1134,7 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
         return QtCore.QSize(KEYBOARD_SEQUENCE_BODY_W, KEYBOARD_SEQUENCE_BODY_H)
 
     def minimumSizeHint(self):
-        return QtCore.QSize(700, 220)
+        return QtCore.QSize(700, 258)
 
     def closeEvent(self, event):
         self._request_stop()
@@ -1006,6 +1210,8 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
         self._lead_in_spin.setEnabled(not self._running)
         self._key_hold_spin.setEnabled(not self._running)
         self._mode_combo.setEnabled(not self._running)
+        self._load_preset_btn.setEnabled(not self._running)
+        self._save_preset_btn.setEnabled(not self._running)
         self._table.setEnabled(not self._running)
 
     def _persist_steps(self, notify_scene: bool = True):
@@ -1063,6 +1269,89 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
             return
         mode = str(self._mode_combo.currentData() or _MODE_VK)
         self._injection_mode = _write_injection_mode(self._node_item, mode, notify_scene=True)
+
+    def _preset_dialog_start_path(self) -> str:
+        suggested = "keyboard_sequence_preset.json"
+        try:
+            win = self.window()
+            current_path = str(getattr(win, "_current_path", "") or "").strip()
+            if current_path:
+                suggested = str(Path(current_path).resolve().parent / suggested)
+        except Exception:
+            pass
+        return suggested
+
+    def _apply_preset_payload(self, payload: dict[str, object]) -> None:
+        _write_lead_in_ms(self._node_item, payload.get("lead_in_ms", _DEFAULT_LEAD_IN_MS), notify_scene=False)
+        _write_key_hold_ms(self._node_item, payload.get("key_hold_ms", _DEFAULT_KEY_HOLD_MS), notify_scene=False)
+        _write_injection_mode(self._node_item, str(payload.get("injection_mode", _MODE_VK)), notify_scene=False)
+        _write_sequence(self._node_item, list(payload.get("actions") or []), notify_scene=False)
+        self._sync_from_model()
+        _notify_node_params_changed(self._node_item)
+
+    def _on_load_preset(self):
+        if self._running:
+            return
+        parent = _dialog_parent(self._node_item) or self
+        opts = QtWidgets.QFileDialog.Options()
+        try:
+            opts |= QtWidgets.QFileDialog.DontUseNativeDialog
+        except Exception:
+            pass
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            parent,
+            "Load Keyboard Sequence Preset",
+            self._preset_dialog_start_path(),
+            "JSON Files (*.json)",
+            options=opts,
+        )
+        if not path:
+            return
+        try:
+            raw = json.loads(Path(path).read_text(encoding="utf-8"))
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Keyboard Sequence", f"Could not load preset:\n{exc}")
+            return
+        payload, error = _normalize_preset_payload(raw)
+        if payload is None:
+            QtWidgets.QMessageBox.warning(self, "Keyboard Sequence", error or "Preset JSON is invalid.")
+            return
+        self._apply_preset_payload(payload)
+        self._set_status(f"Loaded preset: {Path(path).name}")
+
+    def _on_save_preset(self):
+        if self._running:
+            return
+        parent = _dialog_parent(self._node_item) or self
+        opts = QtWidgets.QFileDialog.Options()
+        try:
+            opts |= QtWidgets.QFileDialog.DontUseNativeDialog
+        except Exception:
+            pass
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            parent,
+            "Save Keyboard Sequence Preset",
+            self._preset_dialog_start_path(),
+            "JSON Files (*.json)",
+            options=opts,
+        )
+        if not path:
+            return
+        target = Path(path)
+        if not target.suffix:
+            target = target.with_suffix(".json")
+        payload = _preset_payload(
+            self._steps,
+            self._lead_in_ms,
+            self._key_hold_ms,
+            self._injection_mode,
+        )
+        try:
+            target.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Keyboard Sequence", f"Could not save preset:\n{exc}")
+            return
+        self._set_status(f"Saved preset: {target.name}")
 
     def _rebuild_table(self):
         steps = list(self._steps or [])
@@ -1123,7 +1412,9 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
         step = dict(self._steps[index] or {})
         initial_action = str(step.get("action") or "").strip() or f"Action {index + 1}"
         initial_key = str(step.get("key") or "").strip()
-        dialog = _ActionEditDialog(initial_action, initial_key, self)
+        parent = _dialog_parent(self._node_item) or self
+        dialog = _ActionEditDialog(initial_action, initial_key, parent)
+        self._position_action_dialog(dialog, index)
         try:
             result = dialog.exec()
         except Exception:
@@ -1142,23 +1433,60 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
         self._rebuild_table()
         self._set_status(f"Updated action {index + 1}.")
 
+    def _position_table_dialog(self, dialog: QtWidgets.QDialog, col: int) -> None:
+        try:
+            model_index = self._table.model().index(0, max(0, int(col)))
+            cell_rect = self._table.visualRect(model_index)
+            if not cell_rect.isValid():
+                raise RuntimeError("invalid table cell")
+
+            viewport = self._table.viewport()
+            top_left = viewport.mapToGlobal(cell_rect.topLeft())
+            bottom_left = viewport.mapToGlobal(cell_rect.bottomLeft())
+            screen = QtGui.QGuiApplication.screenAt(top_left)
+            if screen is None:
+                screen = QtGui.QGuiApplication.primaryScreen()
+            if screen is None:
+                return
+
+            dialog.adjustSize()
+            size = dialog.size()
+            bounds = screen.availableGeometry()
+            margin = 8
+            x = top_left.x() + ((cell_rect.width() - size.width()) // 2)
+            y = bottom_left.y() + margin
+            if y + size.height() > bounds.bottom() - margin:
+                y = top_left.y() - size.height() - margin
+            max_x = bounds.right() - size.width() + 1 - margin
+            max_y = bounds.bottom() - size.height() + 1 - margin
+            x = max(bounds.left() + margin, min(x, max_x))
+            y = max(bounds.top() + margin, min(y, max_y))
+            dialog.move(int(x), int(y))
+        except Exception:
+            try:
+                cursor = QtGui.QCursor.pos()
+                dialog.move(cursor + QtCore.QPoint(12, 12))
+            except Exception:
+                pass
+
+    def _position_action_dialog(self, dialog: QtWidgets.QDialog, index: int) -> None:
+        self._position_table_dialog(dialog, max(0, int(index)) * 2)
+
     def _edit_delay_cell(self, index: int):
         if not (0 <= index < len(self._steps)):
             return
         step = dict(self._steps[index] or {})
         current_delay = _coerce_delay_ms(step.get("delay_ms", _DEFAULT_DELAY_MS))
-        value, ok = QtWidgets.QInputDialog.getInt(
-            self,
-            "Set Delay",
-            "Delay after this action (ms):",
-            int(current_delay),
-            int(_MIN_DELAY_MS),
-            int(_MAX_DELAY_MS),
-            50,
-        )
-        if not ok:
+        parent = _dialog_parent(self._node_item) or self
+        dialog = _DelayEditDialog(current_delay, parent)
+        self._position_table_dialog(dialog, (max(0, int(index)) * 2) + 1)
+        try:
+            result = dialog.exec()
+        except Exception:
+            result = dialog.exec_()
+        if result != QtWidgets.QDialog.Accepted:
             return
-        step["delay_ms"] = _coerce_delay_ms(value)
+        step["delay_ms"] = dialog.value()
         self._steps[index] = step
         self._persist_steps(notify_scene=True)
         self._rebuild_table()
@@ -1197,10 +1525,24 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
         lead_in_ms = int(self._lead_in_ms)
         key_hold_ms = int(self._key_hold_ms)
         injection_mode = str(self._injection_mode or _MODE_VK)
+        serial_configs = _connected_serial_target_configs(self._node_item)
+        if serial_configs:
+            try:
+                from nodes.serial_com.spec import prompt_install_pyserial, serial_runtime_available
+            except Exception as exc:
+                self._set_status(f"Pico HID backend unavailable: {exc}")
+                self._set_running(False)
+                return
+            if not serial_runtime_available():
+                ready, message = prompt_install_pyserial(self)
+                if not ready:
+                    self._set_status(message or "pyserial is required for Pico HID playback.")
+                    self._set_running(False)
+                    return
 
         thread = threading.Thread(
             target=self._playback_worker,
-            args=(worker_steps, lead_in_ms, key_hold_ms, injection_mode),
+            args=(worker_steps, lead_in_ms, key_hold_ms, injection_mode, serial_configs),
             daemon=True,
         )
         self._run_thread = thread
@@ -1236,50 +1578,87 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
         lead_in_ms: int,
         key_hold_ms: int,
         injection_mode: str,
+        serial_configs,
     ):
-        if os.name != "nt":
+        use_serial = bool(serial_configs)
+        if (not use_serial) and os.name != "nt":
             self._signals.finished.emit(False, "Keyboard playback is currently available on Windows only.")
             return
         mode = _normalize_injection_mode(injection_mode)
         hold_ms = _coerce_key_hold_ms(key_hold_ms)
+        serial_sessions = []
+        if use_serial:
+            try:
+                from nodes.serial_com.spec import open_pico_sessions
+            except Exception as exc:
+                self._signals.finished.emit(False, f"Pico HID backend unavailable: {exc}")
+                return
+            serial_sessions, serial_error = open_pico_sessions(list(serial_configs or []))
+            if not serial_sessions:
+                self._signals.finished.emit(False, serial_error or "Could not open Pico HID serial session.")
+                return
         if lead_in_ms > 0:
             self._signals.status.emit(
                 f"Lead-in {int(lead_in_ms)} ms. Switch focus to the target app now."
             )
             if not self._sleep_with_cancel(int(lead_in_ms)):
+                if serial_sessions:
+                    try:
+                        from nodes.serial_com.spec import close_pico_sessions
+                        close_pico_sessions(serial_sessions, release_all=True)
+                    except Exception:
+                        pass
                 self._signals.finished.emit(False, "Playback stopped before start.")
                 return
 
-        action_count = len(steps)
-        for idx, step in enumerate(steps):
-            if self._stop_event.is_set():
-                self._signals.finished.emit(False, "Playback stopped.")
-                return
-            action_name = str(step.get("action") or "").strip() or f"Action {idx + 1}"
-            key_text = str(step.get("key") or "").strip()
-            ok, message = _dispatch_key_action(key_text, injection_mode=mode, key_hold_ms=hold_ms)
-            if not ok:
-                self._signals.finished.emit(
-                    False,
-                    f"Action {idx + 1} '{action_name}' failed: {message}",
-                )
-                return
-            if mode == _MODE_SCANCODE:
-                mode_label = "ScanCode"
-            elif mode == _MODE_HYBRID:
-                mode_label = "Hybrid"
-            else:
-                mode_label = "Standard"
-            self._signals.status.emit(
-                f"Sent {idx + 1}/{action_count}: {action_name} [{key_text}] ({mode_label}, hold={hold_ms}ms)"
-            )
-            if idx < action_count - 1:
-                delay_ms = _coerce_delay_ms(step.get("delay_ms", _DEFAULT_DELAY_MS))
-                if delay_ms > 0 and not self._sleep_with_cancel(delay_ms):
+        try:
+            action_count = len(steps)
+            for idx, step in enumerate(steps):
+                if self._stop_event.is_set():
                     self._signals.finished.emit(False, "Playback stopped.")
                     return
+                action_name = str(step.get("action") or "").strip() or f"Action {idx + 1}"
+                key_text = str(step.get("key") or "").strip()
+                if serial_sessions:
+                    ok = True
+                    message = ""
+                    for session in serial_sessions:
+                        ok, message = session.tap(key_text, hold_ms)
+                        if not ok:
+                            break
+                else:
+                    ok, message = _dispatch_key_action(key_text, injection_mode=mode, key_hold_ms=hold_ms)
+                if not ok:
+                    self._signals.finished.emit(
+                        False,
+                        f"Action {idx + 1} '{action_name}' failed: {message}",
+                    )
+                    return
+                if serial_sessions:
+                    mode_label = _serial_route_label(serial_configs)
+                elif mode == _MODE_SCANCODE:
+                    mode_label = "ScanCode"
+                elif mode == _MODE_HYBRID:
+                    mode_label = "Hybrid"
+                else:
+                    mode_label = "Standard"
+                self._signals.status.emit(
+                    f"Sent {idx + 1}/{action_count}: {action_name} [{key_text}] ({mode_label}, hold={hold_ms}ms)"
+                )
+                if idx < action_count - 1:
+                    delay_ms = _coerce_delay_ms(step.get("delay_ms", _DEFAULT_DELAY_MS))
+                    if delay_ms > 0 and not self._sleep_with_cancel(delay_ms):
+                        self._signals.finished.emit(False, "Playback stopped.")
+                        return
 
-        self._signals.finished.emit(True, f"Completed {action_count} keyboard actions.")
+            self._signals.finished.emit(True, f"Completed {action_count} keyboard actions.")
+        finally:
+            if serial_sessions:
+                try:
+                    from nodes.serial_com.spec import close_pico_sessions
+                    close_pico_sessions(serial_sessions, release_all=True)
+                except Exception:
+                    pass
 
     def _on_worker_status(self, text: str):
         self._set_status(text)

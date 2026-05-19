@@ -390,6 +390,12 @@ class MGLRendererMixin:
 
     def _mgl_timeline_fps_value(self) -> float:
         try:
+            override = float(getattr(self, "_mgl_render_fps_override", 0.0) or 0.0)
+        except Exception:
+            override = 0.0
+        if override > 1.0e-6:
+            return float(override)
+        try:
             fps = float(getattr(self, "_timeline_fps", 24.0) or 24.0)
         except Exception:
             fps = 24.0
@@ -7156,10 +7162,7 @@ class MGLRendererMixin:
         _, sx = self._mgl_lookup_owner_entry(splat_map, owner_key)
         if isinstance(sx, dict):
             return sx
-        x = {"pos": (0.0, 0.0, 0.0), "rot": (0.0, 0.0, 0.0), "scl": (1.0, 1.0, 1.0)}
-        if owner_key:
-            d[owner_key] = x
-        return x
+        return {"pos": (0.0, 0.0, 0.0), "rot": (0.0, 0.0, 0.0), "scl": (1.0, 1.0, 1.0)}
 
     def _mgl_get_scene_splat_xform(self, owner: str):
         owner_key = str(owner or "").strip()
@@ -7175,10 +7178,7 @@ class MGLRendererMixin:
         _, mx = self._mgl_lookup_owner_entry(mesh_map, owner_key)
         if isinstance(mx, dict):
             return mx
-        x = {"pos": (0.0, 0.0, 0.0), "rot": (0.0, 0.0, 0.0), "scl": (1.0, 1.0, 1.0)}
-        if owner_key:
-            d[owner_key] = x
-        return x
+        return {"pos": (0.0, 0.0, 0.0), "rot": (0.0, 0.0, 0.0), "scl": (1.0, 1.0, 1.0)}
 
     def _mgl_set_scene_asset_xform(
         self,
@@ -7215,7 +7215,24 @@ class MGLRendererMixin:
                     x = {"pos": (0.0, 0.0, 0.0), "rot": (0.0, 0.0, 0.0), "scl": (1.0, 1.0, 1.0)}
                 splat_xforms[str(owner).strip()] = x
         else:
-            x = self._mgl_get_scene_asset_xform(owner)
+            mesh_xforms = getattr(self, "_mgl_scene_xforms_by_owner", None)
+            if not isinstance(mesh_xforms, dict):
+                mesh_xforms = {}
+                setattr(self, "_mgl_scene_xforms_by_owner", mesh_xforms)
+            _, existing_mesh_xf = self._mgl_lookup_owner_entry(mesh_xforms, owner)
+            if isinstance(existing_mesh_xf, dict):
+                x = existing_mesh_xf
+            else:
+                mesh_xf = self._mgl_get_scene_asset_xform(owner)
+                if isinstance(mesh_xf, dict):
+                    x = {
+                        "pos": tuple(mesh_xf.get("pos", (0.0, 0.0, 0.0))),
+                        "rot": tuple(mesh_xf.get("rot", (0.0, 0.0, 0.0))),
+                        "scl": tuple(mesh_xf.get("scl", (1.0, 1.0, 1.0))),
+                    }
+                else:
+                    x = {"pos": (0.0, 0.0, 0.0), "rot": (0.0, 0.0, 0.0), "scl": (1.0, 1.0, 1.0)}
+                mesh_xforms[str(owner).strip()] = x
         if pos is not None:
             x["pos"] = tuple(float(v) for v in pos)
         if rot is not None:

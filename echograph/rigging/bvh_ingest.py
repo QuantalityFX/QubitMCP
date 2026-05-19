@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 import math
 from pathlib import Path
 import re
-from typing import List, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 from .fbx_canonical import (
     AnimationClip,
@@ -15,6 +15,7 @@ from .fbx_canonical import (
     SkeletonAsset,
     Vec3Keyframe,
 )
+from echograph.services.profiler import profiled
 
 _TIME_EPSILON = 1e-8
 _IDENTITY_MATRIX_4X4: Tuple[float, ...] = (
@@ -35,6 +36,8 @@ _IDENTITY_MATRIX_4X4: Tuple[float, ...] = (
     0.0,
     1.0,
 )
+_BVH_INGEST_CACHE: Dict[Tuple[str, int, int, Tuple[Tuple[str, int], ...]], "BVHAnimationIngestResult"] = {}
+_BVH_INGEST_CACHE_LIMIT = 32
 
 
 class BVHIngestError(RuntimeError):
@@ -67,6 +70,64 @@ class _ParsedBVH:
     @property
     def channel_count(self) -> int:
         return sum(len(joint.channels) for joint in self.joints)
+
+
+def _path_cache_token(path_obj: Path) -> Tuple[str, int, int]:
+    try:
+        resolved = str(path_obj.resolve())
+    except Exception:
+        resolved = str(path_obj)
+    try:
+        stat = path_obj.stat()
+        return (resolved, int(getattr(stat, "st_mtime_ns", 0) or 0), int(stat.st_size))
+    except Exception:
+        return (resolved, 0, 0)
+
+
+def _skeleton_cache_signature(skeleton: SkeletonAsset | None) -> Tuple[Tuple[str, int], ...]:
+    if skeleton is None:
+        return ()
+    out = []
+    for joint in list(getattr(skeleton, "joints", []) or []):
+        try:
+            parent_index = int(getattr(joint, "parent_index", -1))
+        except Exception:
+            parent_index = -1
+        out.append(
+            (
+                str(getattr(joint, "name", "") or ""),
+                parent_index,
+            )
+        )
+    return tuple(out)
+
+
+def _ingest_cache_key(
+    path_obj: Path,
+    skeleton: SkeletonAsset | None,
+) -> Tuple[str, int, int, Tuple[Tuple[str, int], ...]]:
+    path_text, mtime_ns, size = _path_cache_token(path_obj)
+    return (path_text, mtime_ns, size, _skeleton_cache_signature(skeleton))
+
+
+def _ingest_cache_get(
+    key: Tuple[str, int, int, Tuple[Tuple[str, int], ...]],
+) -> "BVHAnimationIngestResult | None":
+    return _BVH_INGEST_CACHE.get(key)
+
+
+def _ingest_cache_put(
+    key: Tuple[str, int, int, Tuple[Tuple[str, int], ...]],
+    result: "BVHAnimationIngestResult",
+) -> None:
+    _BVH_INGEST_CACHE[key] = result
+    if len(_BVH_INGEST_CACHE) <= _BVH_INGEST_CACHE_LIMIT:
+        return
+    try:
+        oldest = next(iter(_BVH_INGEST_CACHE.keys()))
+        _BVH_INGEST_CACHE.pop(oldest, None)
+    except Exception:
+        pass
 
 
 def _safe_name(value: str, fallback: str) -> str:
@@ -442,6 +503,7 @@ def _build_clip_from_parsed(
     return clip
 
 
+@profiled("rigging.bvh_ingest")
 def ingest_bvh_animation_data(
     path: str | Path,
     *,
@@ -454,6 +516,10 @@ def ingest_bvh_animation_data(
         raise BVHIngestError(f"Path is not a .bvh file: {path_obj}")
     if skeleton is not None:
         skeleton.validate()
+    cache_key = _ingest_cache_key(path_obj, skeleton)
+    cached = _ingest_cache_get(cache_key)
+    if cached is not None:
+        return cached
 
     try:
         text = path_obj.read_text(encoding="utf-8", errors="ignore")
@@ -472,12 +538,14 @@ def ingest_bvh_animation_data(
         warnings=warnings,
     )
     clips = [clip] if clip is not None else []
-    return BVHAnimationIngestResult(
+    result = BVHAnimationIngestResult(
         source_path=str(path_obj),
         skeleton=parsed_skeleton,
         clips=clips,
         warnings=warnings,
     )
+    _ingest_cache_put(cache_key, result)
+    return result
 
 
 __all__ = [
