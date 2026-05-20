@@ -7,10 +7,15 @@ SHADERS = {
 uniform mat4 Mvp;
 uniform mat4 Model;
 uniform mat4 LightMvp;
+uniform int UseInstancing;
 in vec3 in_position;
 in vec3 in_normal;
 in vec2 in_uv;
 in vec4 in_color;
+in vec4 in_instance_col0;
+in vec4 in_instance_col1;
+in vec4 in_instance_col2;
+in vec4 in_instance_col3;
 out vec3 v_norm;
 out vec3 v_vert;
 out vec2 v_uv;
@@ -26,12 +31,23 @@ vec3 safe_normalize(vec3 v) {
     return v * inversesqrt(len2);
 }
 void main() {
-    vec4 world = Model * vec4(in_position, 1.0);
-    gl_Position = Mvp * vec4(in_position, 1.0);
-    v_norm = in_normal;
-    v_vert = in_position;
+    mat4 instance_model = mat4(
+        in_instance_col0,
+        in_instance_col1,
+        in_instance_col2,
+        in_instance_col3
+    );
+    if (UseInstancing == 0) {
+        instance_model = mat4(1.0);
+    }
+    vec4 local = instance_model * vec4(in_position, 1.0);
+    mat4 world_model = Model * instance_model;
+    vec4 world = world_model * vec4(in_position, 1.0);
+    gl_Position = Mvp * local;
+    v_norm = safe_normalize(mat3(instance_model) * in_normal);
+    v_vert = local.xyz;
     v_uv = in_uv;
-    v_world_norm = safe_normalize(mat3(Model) * in_normal);
+    v_world_norm = safe_normalize(mat3(world_model) * in_normal);
     v_world_pos = world.xyz;
     v_color = in_color;
     v_shadow_pos = LightMvp * world;
@@ -475,9 +491,23 @@ void main() {
 #version 330
 uniform mat4 LightMvp;
 uniform mat4 Model;
+uniform int UseInstancing;
 in vec3 in_position;
+in vec4 in_instance_col0;
+in vec4 in_instance_col1;
+in vec4 in_instance_col2;
+in vec4 in_instance_col3;
 void main() {
-    gl_Position = LightMvp * Model * vec4(in_position, 1.0);
+    mat4 instance_model = mat4(
+        in_instance_col0,
+        in_instance_col1,
+        in_instance_col2,
+        in_instance_col3
+    );
+    if (UseInstancing == 0) {
+        instance_model = mat4(1.0);
+    }
+    gl_Position = LightMvp * Model * instance_model * vec4(in_position, 1.0);
 }
 """,
 

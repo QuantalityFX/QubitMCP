@@ -34,7 +34,7 @@ _TEXTURE_KINDS = {"texture", "texture_pro", "texture_layer"}
 _MATERIAL_KINDS = {"mnaterial", "material"}
 
 COPY_TO_POINTS_NODE_W = 236
-COPY_TO_POINTS_BODY_H = 116
+COPY_TO_POINTS_BODY_H = 140
 
 
 @dataclass(frozen=True)
@@ -518,6 +518,36 @@ def _build_output_path(node_item, points_path: str, copy_path: str, match_normal
     return _copy_dir(node_item) / f"{node_name}_{sig}.obj"
 
 
+def _bbox_corners(points):
+    pts = np.asarray(points, dtype="f4").reshape(-1, 3)
+    mins = pts.min(axis=0)
+    maxs = pts.max(axis=0)
+    return np.asarray(
+        [
+            [mins[0], mins[1], mins[2]],
+            [mins[0], mins[1], maxs[2]],
+            [mins[0], maxs[1], mins[2]],
+            [mins[0], maxs[1], maxs[2]],
+            [maxs[0], mins[1], mins[2]],
+            [maxs[0], mins[1], maxs[2]],
+            [maxs[0], maxs[1], mins[2]],
+            [maxs[0], maxs[1], maxs[2]],
+        ],
+        dtype="f4",
+    )
+
+
+def _instance_matrix_columns(rotation, translation):
+    rot = np.asarray(rotation, dtype="f4").reshape(3, 3)
+    tr = np.asarray(translation, dtype="f4").reshape(3)
+    return [
+        [float(rot[0, 0]), float(rot[1, 0]), float(rot[2, 0]), 0.0],
+        [float(rot[0, 1]), float(rot[1, 1]), float(rot[2, 1]), 0.0],
+        [float(rot[0, 2]), float(rot[1, 2]), float(rot[2, 2]), 0.0],
+        [float(tr[0]), float(tr[1]), float(tr[2]), 1.0],
+    ]
+
+
 def build_copy_to_points_scene_asset(node_item) -> CopyToPointsBuildOutcome:
     if np is None:
         return CopyToPointsBuildOutcome(None, "error", "NumPy is required for Copy To Points.")
@@ -556,25 +586,51 @@ def build_copy_to_points_scene_asset(node_item) -> CopyToPointsBuildOutcome:
 
     match_normal = _param_bool(model, "match_normal", False)
     pack = _param_bool(model, "pack", False)
+    gpu_instances = _param_bool(model, "gpu_instances", True)
     source_center = ((copy_points.min(axis=0) + copy_points.max(axis=0)) * 0.5).astype("f4")
     centered_copy_points = copy_points - source_center
+    copy_corners = _bbox_corners(copy_points)
     all_points = []
     all_normals = []
     all_uvs = []
     copies = []
+    instance_matrices = []
+    instance_bounds_min = None
+    instance_bounds_max = None
     vertex_count = int(centered_copy_points.shape[0])
     for point_index, (target_point, target_normal) in enumerate(zip(target_points, target_normals)):
         rotation = _rotation_from_up(target_normal) if match_normal else np.identity(3, dtype="f4")
+        normal = np.asarray(target_normal, dtype="f4").reshape(3)
+        normal_len = float(np.linalg.norm(normal))
+        if normal_len > 1.0e-6:
+            normal = normal / normal_len
+        if gpu_instances:
+            translation = np.asarray(target_point, dtype="f4").reshape(3) - (rotation @ source_center)
+            matrix_cols = _instance_matrix_columns(rotation, translation)
+            instance_matrices.append(matrix_cols)
+            corners = (copy_corners @ rotation.T) + translation
+            bmin = corners.min(axis=0).astype("f4")
+            bmax = corners.max(axis=0).astype("f4")
+            if instance_bounds_min is None or instance_bounds_max is None:
+                instance_bounds_min = bmin
+                instance_bounds_max = bmax
+            else:
+                instance_bounds_min = np.minimum(instance_bounds_min, bmin)
+                instance_bounds_max = np.maximum(instance_bounds_max, bmax)
+            copies.append(
+                {
+                    "point_index": int(point_index),
+                    "packed_center": [float(v) for v in target_point],
+                    "packed_normal": [float(v) for v in normal],
+                }
+            )
+            continue
         copy_pts = (centered_copy_points @ rotation.T) + target_point
         copy_nrm = copy_normals @ rotation.T
         start = len(all_points) * vertex_count
         all_points.append(copy_pts.astype("f4", copy=False))
         all_normals.append(copy_nrm.astype("f4", copy=False))
         all_uvs.append(copy_uvs)
-        normal = np.asarray(target_normal, dtype="f4").reshape(3)
-        normal_len = float(np.linalg.norm(normal))
-        if normal_len > 1.0e-6:
-            normal = normal / normal_len
         copies.append(
             {
                 "point_index": int(point_index),
@@ -584,6 +640,40 @@ def build_copy_to_points_scene_asset(node_item) -> CopyToPointsBuildOutcome:
                 "packed_normal": [float(v) for v in normal],
             }
         )
+
+    if gpu_instances:
+        _set_param(node_item, "path", copy_path, notify_scene=False)
+        _set_param(node_item, "points_source", points_path, notify_scene=False)
+        _set_param(node_item, "copy_source", copy_path, notify_scene=False)
+        copy_to_points: Dict[str, Any] = {
+            "schema": "qubit.copy_to_points.v1",
+            "gpu_instances": True,
+            "match_normal": bool(match_normal),
+            "pack": False,
+            "pack_requested": bool(pack),
+            "prototype_path": str(copy_file),
+            "source_center": [float(v) for v in source_center],
+            "copy_vertex_count": int(vertex_count),
+            "copy_count": int(len(copies)),
+            "copies": copies,
+            "instance_matrices": instance_matrices,
+        }
+        if instance_bounds_min is not None and instance_bounds_max is not None:
+            copy_to_points["bounds_min"] = [float(v) for v in instance_bounds_min]
+            copy_to_points["bounds_max"] = [float(v) for v in instance_bounds_max]
+        asset = {
+            "path": str(copy_file),
+            "ext": str(copy_file.suffix).lower(),
+            "node": str(getattr(model, "name", "") or "copy_to_points"),
+            "kind": "copy_to_points",
+            "visible": True,
+            "copy_to_points": copy_to_points,
+        }
+        asset.update(_copy_surface_payload(copy_item))
+        detail = f"GPU instanced {int(len(copies))} model(s) to points."
+        if pack:
+            detail += " Pack is baked-mode only."
+        return CopyToPointsBuildOutcome(asset, "ok", detail)
 
     merged_points = np.concatenate(all_points, axis=0).astype("f4", copy=False)
     merged_normals = np.concatenate(all_normals, axis=0).astype("f4", copy=False)
@@ -605,6 +695,7 @@ def build_copy_to_points_scene_asset(node_item) -> CopyToPointsBuildOutcome:
         "visible": True,
         "copy_to_points": {
             "schema": "qubit.copy_to_points.v1",
+            "gpu_instances": False,
             "match_normal": bool(match_normal),
             "pack": bool(pack),
             "source_center": [float(v) for v in source_center],
@@ -627,6 +718,7 @@ def build_ports(node_item) -> None:
         ("copy", ""),
         ("match_normal", "0"),
         ("pack", "0"),
+        ("gpu_instances", "1"),
         ("path", ""),
         ("points_source", ""),
         ("copy_source", ""),
@@ -634,7 +726,7 @@ def build_ports(node_item) -> None:
         _ensure_param(node_item, name, default)
     _ensure_hidden_params(
         getattr(node_item, "model", None),
-        ["match_normal", "pack", "path", "points_source", "copy_source"],
+        ["match_normal", "pack", "gpu_instances", "path", "points_source", "copy_source"],
     )
     _ensure_visible_params(getattr(node_item, "model", None), ["points", "copy"])
     if hasattr(node_item, "ensure_input"):
@@ -659,12 +751,26 @@ class CopyToPointsWidget(QtWidgets.QWidget):
         layout.addWidget(self._status, 0)
 
         self._match_normal = QtWidgets.QCheckBox("Match Normal")
+        self._match_normal.setToolTip(
+            "Rotate each copy so its local up axis follows the target point normal."
+        )
         self._match_normal.toggled.connect(self._on_match_normal_toggled)
         layout.addWidget(self._match_normal, 0)
 
         self._pack = QtWidgets.QCheckBox("Pack")
+        self._pack.setToolTip(
+            "Baked mode only: records each copied mesh range so per-copy effects can deform it later."
+        )
         self._pack.toggled.connect(self._on_pack_toggled)
         layout.addWidget(self._pack, 0)
+
+        self._gpu_instances = QtWidgets.QCheckBox("GPU Instances")
+        self._gpu_instances.setToolTip(
+            "Draws the source mesh once per point with GPU instance transforms. Faster to render, "
+            "but it does not create baked per-copy vertex ranges."
+        )
+        self._gpu_instances.toggled.connect(self._on_gpu_instances_toggled)
+        layout.addWidget(self._gpu_instances, 0)
 
         self._view_btn = QtWidgets.QPushButton("View")
         self._view_btn.setMinimumHeight(24)
@@ -711,12 +817,21 @@ class CopyToPointsWidget(QtWidgets.QWidget):
 
     def _sync_from_params(self):
         model = getattr(self._node_item, "model", None)
-        for widget, name in ((self._match_normal, "match_normal"), (self._pack, "pack")):
+        for widget, name in (
+            (self._match_normal, "match_normal"),
+            (self._pack, "pack"),
+            (self._gpu_instances, "gpu_instances"),
+        ):
             try:
                 widget.blockSignals(True)
-                widget.setChecked(_param_bool(model, name, False))
+                widget.setChecked(_param_bool(model, name, True if name == "gpu_instances" else False))
             finally:
                 widget.blockSignals(False)
+        try:
+            gpu = _param_bool(model, "gpu_instances", True)
+            self._pack.setEnabled(not gpu)
+        except Exception:
+            pass
 
     def _refresh_status(self):
         self._pending = False
@@ -735,6 +850,10 @@ class CopyToPointsWidget(QtWidgets.QWidget):
 
     def _on_pack_toggled(self, checked: bool):
         _set_param(self._node_item, "pack", "1" if checked else "0", notify_scene=True)
+        self._schedule_refresh()
+
+    def _on_gpu_instances_toggled(self, checked: bool):
+        _set_param(self._node_item, "gpu_instances", "1" if checked else "0", notify_scene=True)
         self._schedule_refresh()
 
     def _on_view_clicked(self):

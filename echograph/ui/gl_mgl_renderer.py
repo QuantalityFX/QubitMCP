@@ -2021,7 +2021,99 @@ class MGLRendererMixin:
         cfg = payload.get("copy_to_points")
         if not isinstance(cfg, dict) or not bool(cfg.get("pack", False)):
             return []
+        if bool(cfg.get("gpu_instances", False)):
+            return []
         return [row for row in list(cfg.get("copies") or []) if isinstance(row, dict)]
+
+    def _mgl_music_effect_gpu_instance_copies(self, payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+        cfg = payload.get("copy_to_points")
+        if not isinstance(cfg, dict) or not bool(cfg.get("gpu_instances", False)):
+            return []
+        return [row for row in list(cfg.get("copies") or []) if isinstance(row, dict)]
+
+    def _mgl_write_copy_to_points_instance_matrices(self, payload: Dict[str, Any], matrices) -> bool:
+        if np is None or not isinstance(payload, dict):
+            return False
+        try:
+            mats = np.asarray(matrices, dtype="f4").reshape(-1, 4, 4)
+        except Exception:
+            return False
+        buffers = payload.get("_instance_buffers")
+        if not isinstance(buffers, tuple) or len(buffers) != 4:
+            return False
+        try:
+            for idx, buf in enumerate(buffers):
+                if buf is None:
+                    return False
+                buf.write(np.ascontiguousarray(mats[:, idx, :], dtype="f4").tobytes())
+            payload["_copy_to_points_current_instance_matrices"] = mats.astype("f4", copy=True)
+            return True
+        except Exception:
+            return False
+
+    def _mgl_restore_music_effects_instances(self, payload: Dict[str, Any]) -> bool:
+        if np is None or not isinstance(payload, dict):
+            return False
+        cfg = payload.get("copy_to_points")
+        if not isinstance(cfg, dict) or not bool(cfg.get("gpu_instances", False)):
+            return False
+        base = payload.get("_copy_to_points_base_instance_matrices")
+        if base is None:
+            base = self._mgl_copy_to_points_instance_matrices(cfg)
+            if base is None:
+                return False
+            payload["_copy_to_points_base_instance_matrices"] = base.astype("f4", copy=True)
+        if not bool(payload.get("_music_effects_instance_applied", False)):
+            return False
+        if not self._mgl_write_copy_to_points_instance_matrices(payload, base):
+            return False
+        payload["_music_effects_instance_applied"] = False
+        return True
+
+    def _mgl_apply_music_effects_to_gpu_instances(
+        self,
+        item: MGLSceneItem,
+        amount: float,
+    ) -> bool:
+        if np is None or item is None:
+            return False
+        payload = item.payload or {}
+        cfg = payload.get("copy_to_points")
+        if not isinstance(cfg, dict) or not bool(cfg.get("gpu_instances", False)):
+            return False
+        base = payload.get("_copy_to_points_base_instance_matrices")
+        if base is None:
+            base = self._mgl_copy_to_points_instance_matrices(cfg)
+            if base is None:
+                return False
+            payload["_copy_to_points_base_instance_matrices"] = base.astype("f4", copy=True)
+        try:
+            base_mats = np.asarray(base, dtype="f4").reshape(-1, 4, 4)
+        except Exception:
+            return False
+        if base_mats.size == 0:
+            return False
+        copies = self._mgl_music_effect_gpu_instance_copies(payload)
+        if not copies:
+            return False
+        deformed = base_mats.copy()
+        limit = min(int(deformed.shape[0]), int(len(copies)))
+        for idx in range(limit):
+            copy = copies[idx]
+            try:
+                normal = np.asarray(copy.get("packed_normal"), dtype="f4").reshape(3)
+            except Exception:
+                continue
+            normal_len = float(np.linalg.norm(normal))
+            if normal_len <= 1.0e-6:
+                continue
+            normal = normal / normal_len
+            deformed[idx, 3, :3] = base_mats[idx, 3, :3] + (normal * float(amount))
+        if not self._mgl_write_copy_to_points_instance_matrices(payload, deformed):
+            return False
+        payload["_music_effects_instance_applied"] = True
+        item.payload = payload
+        return True
 
     def _mgl_restore_music_effects_mesh_item(self, item: MGLSceneItem) -> None:
         if np is None or item is None:
@@ -2045,6 +2137,8 @@ class MGLRendererMixin:
                 changed = True
             except Exception:
                 continue
+        if self._mgl_restore_music_effects_instances(payload):
+            changed = True
         if changed:
             payload["_music_effects_frame_sig"] = None
             item.payload = payload
@@ -2122,6 +2216,16 @@ class MGLRendererMixin:
         )
         if bool(cfg.get("outward_only", True)):
             amount = max(0.0, amount)
+
+        copy_cfg = payload.get("copy_to_points")
+        if isinstance(copy_cfg, dict) and bool(copy_cfg.get("gpu_instances", False)):
+            self._mgl_restore_music_effects_mesh_item(item)
+            payload = item.payload or {}
+            self._mgl_apply_music_effects_to_gpu_instances(item, amount)
+            payload = item.payload or {}
+            payload["_music_effects_frame_sig"] = sig
+            item.payload = payload
+            return
 
         packed_copies = self._mgl_music_effect_packed_copies(payload)
         if packed_copies:
@@ -7891,6 +7995,7 @@ class MGLRendererMixin:
         self._mgl_refresh_music_effects_mesh_item(item)
         payload = item.payload or {}
         submeshes = payload.get("submeshes")
+        mesh_entry = payload.get("mesh_entry") if isinstance(payload.get("mesh_entry"), dict) else None
         vao = payload.get("vao")
         if not submeshes and vao is None:
             if payload.get("material") is not None:
@@ -7901,6 +8006,34 @@ class MGLRendererMixin:
                     material=payload.get("material"),
                 )
             return
+        try:
+            instance_count = max(1, int(payload.get("instance_count", 1) or 1))
+        except Exception:
+            instance_count = 1
+        use_instancing = bool(payload.get("gpu_instancing", False)) and instance_count > 0
+
+        def _vao_for_entry(entry, fallback=None):
+            if isinstance(entry, dict):
+                if use_instancing:
+                    instanced_vao = entry.get("instanced_vao")
+                    if instanced_vao is not None:
+                        return instanced_vao
+                normal_vao = entry.get("vao")
+                if normal_vao is not None:
+                    return normal_vao
+            return fallback
+
+        def _render_vao(draw_vao) -> None:
+            if draw_vao is None:
+                return
+            if use_instancing:
+                draw_vao.render(instances=instance_count)
+            else:
+                draw_vao.render()
+
+        def _render_entry(entry, fallback=None) -> None:
+            _render_vao(_vao_for_entry(entry, fallback))
+
         edge_wire = bool(payload.get("edge_wire"))
         path_key = str(payload.get("path", "") or "").strip().lower()
         is_fbx_payload = path_key.endswith(".fbx")
@@ -7927,6 +8060,10 @@ class MGLRendererMixin:
                     mvp_to_use = mvp
 
             self._mgl_prog["Mvp"].write(mvp_to_use.astype("f4").tobytes())
+            try:
+                self._mgl_prog["UseInstancing"].value = 1 if use_instancing else 0
+            except Exception:
+                pass
             if np is not None:
                 if model_np is None:
                     model_np = np.eye(4, dtype="f4")
@@ -8327,9 +8464,7 @@ class MGLRendererMixin:
             if explicit_edge_wire:
                 def _draw_submeshes_depth() -> None:
                     for sub in submeshes:
-                        sub_vao = sub.get("vao")
-                        if sub_vao is not None:
-                            sub_vao.render()
+                        _render_entry(sub)
 
                 _render_depth_prepass(_draw_submeshes_depth)
                 self._mgl_apply_procedural_uniforms(proc_state)
@@ -8351,9 +8486,7 @@ class MGLRendererMixin:
                         tex.use(location=0)
                     except Exception:
                         pass
-                sub_vao = sub.get("vao")
-                if sub_vao is not None:
-                    sub_vao.render()
+                _render_entry(sub)
             if wire_overlay:
                 try:
                     self._mgl_ctx.polygon_offset = (0.0, 0.0)
@@ -8361,14 +8494,12 @@ class MGLRendererMixin:
                     pass
                 def _draw_submeshes() -> None:
                     for sub in submeshes:
-                        sub_vao = sub.get("vao")
-                        if sub_vao is not None:
-                            sub_vao.render()
+                        _render_entry(sub)
 
                 _render_wire_overlay(_draw_submeshes)
         else:
             if explicit_edge_wire and vao is not None:
-                _render_depth_prepass(vao.render)
+                _render_depth_prepass(lambda: _render_entry(mesh_entry, vao))
                 self._mgl_apply_procedural_uniforms(proc_state)
                 _apply_material_uniforms()
             color = payload.get("color") or self._mgl_mesh_color
@@ -8388,13 +8519,13 @@ class MGLRendererMixin:
                 except Exception:
                     pass
             if vao is not None:
-                vao.render()
+                _render_entry(mesh_entry, vao)
             if wire_overlay and vao is not None:
                 try:
                     self._mgl_ctx.polygon_offset = (0.0, 0.0)
                 except Exception:
                     pass
-                _render_wire_overlay(vao.render)
+                _render_wire_overlay(lambda: _render_entry(mesh_entry, vao))
 
         overrides = None
         if owner:
@@ -8423,9 +8554,7 @@ class MGLRendererMixin:
                                 tex.use(location=0)
                             except Exception:
                                 pass
-                        sub_vao = sub.get("vao")
-                        if sub_vao is not None:
-                            sub_vao.render()
+                        _render_entry(sub)
                 else:
                     color = payload.get("color") or self._mgl_mesh_color
                     tex = tex_override
@@ -8444,7 +8573,7 @@ class MGLRendererMixin:
                         except Exception:
                             pass
                     if vao is not None:
-                        vao.render()
+                        _render_entry(mesh_entry, vao)
 
             def _volume_inv_matrix(vol_owner: str):
                 if np is None or not vol_owner:
@@ -8959,6 +9088,61 @@ class MGLRendererMixin:
                 except Exception:
                     pass
 
+    def _mgl_get_default_instance_buffers(self):
+        if self._mgl_ctx is None or np is None:
+            return None
+        buffers = getattr(self, "_mgl_default_mesh_instance_buffers", None)
+        if isinstance(buffers, tuple) and len(buffers) == 4 and all(buf is not None for buf in buffers):
+            return buffers
+        identity_cols = np.asarray(
+            [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            dtype="f4",
+        )
+        try:
+            buffers = tuple(self._mgl_ctx.buffer(identity_cols[idx : idx + 1].tobytes()) for idx in range(4))
+        except Exception:
+            return None
+        self._mgl_default_mesh_instance_buffers = buffers
+        return buffers
+
+    def _mgl_mesh_vao_content(self, pos_buf, norm_buf, uv_buf, color_buf, instance_buffers=None):
+        content = [
+            (pos_buf, "3f", "in_position"),
+            (norm_buf, "3f", "in_normal"),
+            (uv_buf, "2f", "in_uv"),
+            (color_buf, "4f", "in_color"),
+        ]
+        buffers = instance_buffers or self._mgl_get_default_instance_buffers()
+        if isinstance(buffers, tuple) and len(buffers) == 4:
+            content.extend(
+                [
+                    (buffers[0], "4f/i", "in_instance_col0"),
+                    (buffers[1], "4f/i", "in_instance_col1"),
+                    (buffers[2], "4f/i", "in_instance_col2"),
+                    (buffers[3], "4f/i", "in_instance_col3"),
+                ]
+            )
+        return content
+
+    def _mgl_shadow_vao_content(self, pos_buf, instance_buffers=None):
+        content = [(pos_buf, "3f", "in_position")]
+        buffers = instance_buffers or self._mgl_get_default_instance_buffers()
+        if isinstance(buffers, tuple) and len(buffers) == 4:
+            content.extend(
+                [
+                    (buffers[0], "4f/i", "in_instance_col0"),
+                    (buffers[1], "4f/i", "in_instance_col1"),
+                    (buffers[2], "4f/i", "in_instance_col2"),
+                    (buffers[3], "4f/i", "in_instance_col3"),
+                ]
+            )
+        return content
+
     def _mgl_build_mesh_entry(
         self,
         points: NDArray,
@@ -9001,12 +9185,7 @@ class MGLRendererMixin:
         norm_buf = self._mgl_ctx.buffer(normals.tobytes())
         uv_buf = self._mgl_ctx.buffer(uvs.tobytes())
         color_buf = self._mgl_ctx.buffer(colors.tobytes())
-        vao_content = [
-            (pos_buf, "3f", "in_position"),
-            (norm_buf, "3f", "in_normal"),
-            (uv_buf, "2f", "in_uv"),
-            (color_buf, "4f", "in_color"),
-        ]
+        vao_content = self._mgl_mesh_vao_content(pos_buf, norm_buf, uv_buf, color_buf)
         vao = self._mgl_ctx.vertex_array(self._mgl_prog, vao_content, index_buffer, 4)
         return {
             "vao": vao,
@@ -9043,12 +9222,7 @@ class MGLRendererMixin:
             tbo = self._mgl_ctx.buffer(uvs.tobytes())
             colors = np.ones((points.shape[0], 4), dtype="f4")
             cbo = self._mgl_ctx.buffer(colors.tobytes())
-            vao_content = [
-                (vbo, "3f", "in_position"),
-                (nbo, "3f", "in_normal"),
-                (tbo, "2f", "in_uv"),
-                (cbo, "4f", "in_color"),
-            ]
+            vao_content = self._mgl_mesh_vao_content(vbo, nbo, tbo, cbo)
             vao = self._mgl_ctx.vertex_array(self._mgl_prog, vao_content, ibo, 4)
 
             texture = None
@@ -9096,6 +9270,128 @@ class MGLRendererMixin:
             total_indices += int(indices.size)
             combined_uvs.append(uvs)
         return entries, combined_uvs, texture_paths, total_indices
+
+    def _mgl_copy_to_points_instance_matrices(self, cfg: dict):
+        if np is None or not isinstance(cfg, dict):
+            return None
+        if not bool(cfg.get("gpu_instances", False)):
+            return None
+        raw = cfg.get("instance_matrices")
+        if raw is None:
+            return None
+        try:
+            matrices = np.asarray(raw, dtype="f4")
+        except Exception:
+            return None
+        if matrices.ndim == 2 and matrices.shape[1] == 16:
+            matrices = matrices.reshape((-1, 4, 4))
+        elif matrices.ndim == 3 and matrices.shape[1:] == (4, 4):
+            pass
+        else:
+            return None
+        if matrices.shape[0] <= 0:
+            return None
+        try:
+            finite = np.isfinite(matrices).all(axis=(1, 2))
+            if not bool(np.all(finite)):
+                matrices = matrices[finite]
+        except Exception:
+            pass
+        if matrices.shape[0] <= 0:
+            return None
+        return matrices.astype("f4", copy=False)
+
+    def _mgl_copy_to_points_bounds(self, cfg: dict):
+        if np is None or not isinstance(cfg, dict):
+            return None
+        try:
+            bmin = np.asarray(cfg.get("bounds_min"), dtype="f4").reshape(-1)
+            bmax = np.asarray(cfg.get("bounds_max"), dtype="f4").reshape(-1)
+        except Exception:
+            return None
+        if bmin.size < 3 or bmax.size < 3:
+            return None
+        bmin = bmin[:3].astype("f4", copy=False)
+        bmax = bmax[:3].astype("f4", copy=False)
+        try:
+            if not bool(np.all(np.isfinite(bmin))) or not bool(np.all(np.isfinite(bmax))):
+                return None
+        except Exception:
+            return None
+        return bmin, bmax
+
+    def _mgl_mesh_entries_for_payload(self, payload: dict) -> List[Dict[str, object]]:
+        entries: List[Dict[str, object]] = []
+        if not isinstance(payload, dict):
+            return entries
+        entry = payload.get("mesh_entry")
+        if isinstance(entry, dict):
+            entries.append(entry)
+        for sub in list(payload.get("submeshes") or []):
+            if isinstance(sub, dict):
+                entries.append(sub)
+        return entries
+
+    def _mgl_setup_copy_to_points_instances(self, item: MGLSceneItem) -> int:
+        if self._mgl_ctx is None or self._mgl_prog is None or item is None:
+            return 1
+        payload = item.payload or {}
+        cfg = payload.get("copy_to_points")
+        matrices = self._mgl_copy_to_points_instance_matrices(cfg if isinstance(cfg, dict) else {})
+        if matrices is None:
+            return 1
+        count = int(matrices.shape[0])
+        if count <= 0:
+            return 1
+        entries = self._mgl_mesh_entries_for_payload(payload)
+        if not entries:
+            return 1
+        try:
+            instance_buffers = tuple(
+                self._mgl_ctx.buffer(np.ascontiguousarray(matrices[:, idx, :], dtype="f4").tobytes())
+                for idx in range(4)
+            )
+        except Exception:
+            return 1
+        resources = getattr(item, "resources", None)
+        if not isinstance(resources, list):
+            resources = []
+        for buf in instance_buffers:
+            resources.append(buf)
+        ready_entries = 0
+        for entry in entries:
+            try:
+                vbo = entry.get("vbo")
+                nbo = entry.get("nbo")
+                tbo = entry.get("tbo")
+                cbo = entry.get("cbo")
+                ibo = entry.get("ibo")
+                if vbo is None or nbo is None or tbo is None or cbo is None:
+                    continue
+                vao = self._mgl_ctx.vertex_array(
+                    self._mgl_prog,
+                    self._mgl_mesh_vao_content(vbo, nbo, tbo, cbo, instance_buffers),
+                    ibo,
+                    4,
+                )
+                entry["instanced_vao"] = vao
+                entry["_instance_buffers"] = instance_buffers
+                entry["instance_count"] = count
+                resources.append(vao)
+                ready_entries += 1
+            except Exception:
+                continue
+        if ready_entries <= 0:
+            return 1
+        payload["gpu_instancing"] = True
+        payload["instance_count"] = count
+        payload["_instance_buffers"] = instance_buffers
+        payload["_copy_to_points_base_instance_matrices"] = matrices.astype("f4", copy=True)
+        payload["_copy_to_points_current_instance_matrices"] = matrices.astype("f4", copy=True)
+        payload["_music_effects_instance_applied"] = False
+        item.payload = payload
+        item.resources = resources
+        return count
 
     def _mgl_qimage_from_texture(self, texture: object) -> Optional[QtGui.QImage]:
         if isinstance(texture, QtGui.QImage):
@@ -10328,26 +10624,28 @@ class MGLRendererMixin:
             except Exception:
                 pass
 
-    def _mgl_shadow_vao_for_entry(self, item: MGLSceneItem, entry: dict):
+    def _mgl_shadow_vao_for_entry(self, item: MGLSceneItem, entry: dict, *, instanced: bool = False):
         if self._mgl_ctx is None or getattr(self, "_mgl_shadow_prog", None) is None or not isinstance(entry, dict):
             return None
-        vao = entry.get("_shadow_vao")
+        key = "_shadow_instanced_vao" if instanced else "_shadow_vao"
+        vao = entry.get(key)
         if vao is not None:
             return vao
         vbo = entry.get("vbo")
         ibo = entry.get("ibo")
         if vbo is None:
             return None
+        instance_buffers = entry.get("_instance_buffers") if instanced else None
         try:
             vao = self._mgl_ctx.vertex_array(
                 self._mgl_shadow_prog,
-                [(vbo, "3f", "in_position")],
+                self._mgl_shadow_vao_content(vbo, instance_buffers),
                 ibo,
                 4,
             )
         except Exception:
             return None
-        entry["_shadow_vao"] = vao
+        entry[key] = vao
         try:
             resources = getattr(item, "resources", None)
             if isinstance(resources, list):
@@ -10377,6 +10675,11 @@ class MGLRendererMixin:
             entry = None
         if not submeshes and entry is None:
             return
+        try:
+            instance_count = max(1, int(payload.get("instance_count", 1) or 1))
+        except Exception:
+            instance_count = 1
+        use_instancing = bool(payload.get("gpu_instancing", False)) and instance_count > 0
         model_np = np.eye(4, dtype="f4")
         try:
             model = payload.get("model")
@@ -10389,21 +10692,28 @@ class MGLRendererMixin:
         try:
             self._mgl_shadow_prog["LightMvp"].write(np.asarray(light_mvp, dtype="f4").tobytes())
             self._mgl_shadow_prog["Model"].write(model_np.astype("f4", copy=False).tobytes())
+            self._mgl_shadow_prog["UseInstancing"].value = 1 if use_instancing else 0
         except Exception:
             pass
         if submeshes:
             for sub in submeshes:
-                vao = self._mgl_shadow_vao_for_entry(item, sub)
+                vao = self._mgl_shadow_vao_for_entry(item, sub, instanced=use_instancing)
                 if vao is not None:
                     try:
-                        vao.render()
+                        if use_instancing:
+                            vao.render(instances=instance_count)
+                        else:
+                            vao.render()
                     except Exception:
                         pass
         elif entry is not None:
-            vao = self._mgl_shadow_vao_for_entry(item, entry)
+            vao = self._mgl_shadow_vao_for_entry(item, entry, instanced=use_instancing)
             if vao is not None:
                 try:
-                    vao.render()
+                    if use_instancing:
+                        vao.render(instances=instance_count)
+                    else:
+                        vao.render()
                 except Exception:
                     pass
 
@@ -12827,6 +13137,7 @@ class MGLRendererMixin:
             return
         try:
             self._mgl_ctx = moderngl.create_context()
+            self._mgl_default_mesh_instance_buffers = None
             self._mgl_ctx.enable(moderngl.BLEND | moderngl.DEPTH_TEST)
             self._mgl_ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
 
@@ -12858,6 +13169,7 @@ class MGLRendererMixin:
                 self._mgl_prog["LightDir"].value = self._mgl_light_direction_tuple()
                 self._mgl_prog["LightIntensity"].value = float(self._mgl_light_intensity)
                 self._mgl_prog["UseLighting"].value = 1
+                self._mgl_prog["UseInstancing"].value = 0
                 self._mgl_prog["UseShadows"].value = 0
                 self._mgl_prog["ShadowBias"].value = float(getattr(self, "_mgl_shadow_bias", 0.0025) or 0.0025)
                 self._mgl_prog["ShadowDarkness"].value = float(getattr(self, "_mgl_shadow_darkness", 0.45) or 0.45)
@@ -12915,6 +13227,10 @@ class MGLRendererMixin:
                         self._mgl_prog["VolumeInv"].write(ident.tobytes())
                     except Exception:
                         pass
+            except Exception:
+                pass
+            try:
+                self._mgl_shadow_prog["UseInstancing"].value = 0
             except Exception:
                 pass
             self._mgl_grid_prog["Color"].value = (0.8, 0.8, 0.8, self._mgl_grid_alpha)
@@ -14498,6 +14814,7 @@ class MGLRendererMixin:
                 is_volume = bool(asset.get("volume"))
                 render_proxy = asset.get("render_proxy") if isinstance(asset.get("render_proxy"), dict) else None
                 copy_to_points = asset.get("copy_to_points") if isinstance(asset.get("copy_to_points"), dict) else None
+                gpu_copy_instances = bool(copy_to_points.get("gpu_instances", False)) if isinstance(copy_to_points, dict) else False
                 music_effects = asset.get("music_effects") if isinstance(asset.get("music_effects"), dict) else None
                 if isinstance(render_proxy, dict):
                     try:
@@ -15067,7 +15384,7 @@ class MGLRendererMixin:
                                 self._mgl_scene_mesh_bounds_by_owner[owner] = (mins.astype("f4"), maxs.astype("f4"))
                             except Exception:
                                 pass
-                            if contribute_mesh_bounds:
+                            if contribute_mesh_bounds and not gpu_copy_instances:
                                 bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, mins, maxs)
                                 has_mesh_bounds = True
                         elif mesh_arrays.submeshes:
@@ -15082,7 +15399,7 @@ class MGLRendererMixin:
                                     self._mgl_scene_mesh_bounds_by_owner[owner] = (mins.astype("f4"), maxs.astype("f4"))
                                 except Exception:
                                     pass
-                                if contribute_mesh_bounds:
+                                if contribute_mesh_bounds and not gpu_copy_instances:
                                     bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, mins, maxs)
                                     has_mesh_bounds = True
                         wire_sets = []
@@ -15162,6 +15479,16 @@ class MGLRendererMixin:
                         total_indices += int(entry.get("count", 0))
 
                 if model_item is not None:
+                    instance_count = self._mgl_setup_copy_to_points_instances(model_item)
+                    if instance_count > 1:
+                        try:
+                            base_count = sum(
+                                int(entry.get("count", 0) or 0)
+                                for entry in self._mgl_mesh_entries_for_payload(model_item.payload or {})
+                            )
+                            total_indices += int(base_count) * int(instance_count - 1)
+                        except Exception:
+                            pass
                     scene.add(model_item)
                     if material is not None:
                         self._mgl_material_log(
@@ -15189,11 +15516,33 @@ class MGLRendererMixin:
                             self._mgl_scene_mesh_bounds_by_owner[owner] = (mins.astype("f4"), maxs.astype("f4"))
                         except Exception:
                             pass
-                        if contribute_mesh_bounds:
+                        if contribute_mesh_bounds and not gpu_copy_instances:
                             bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, mins, maxs)
                             has_mesh_bounds = True
+                    if gpu_copy_instances:
+                        instance_bounds = self._mgl_copy_to_points_bounds(
+                            copy_to_points if isinstance(copy_to_points, dict) else {}
+                        )
+                        if instance_bounds is not None:
+                            try:
+                                inst_min, inst_max = instance_bounds
+                                self._mgl_scene_bounds_by_owner[owner] = (
+                                    inst_min.astype("f4"),
+                                    inst_max.astype("f4"),
+                                )
+                                self._mgl_scene_mesh_bounds_by_owner[owner] = (
+                                    inst_min.astype("f4"),
+                                    inst_max.astype("f4"),
+                                )
+                                if contribute_mesh_bounds:
+                                    bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, inst_min, inst_max)
+                                    has_mesh_bounds = True
+                            except Exception:
+                                pass
                     wire_item = None
-                    if ext in (".obj", ".fbx"):
+                    if gpu_copy_instances:
+                        wire_item = None
+                    elif ext in (".obj", ".fbx"):
                         if ext == ".obj":
                             wire_item = self._mgl_add_obj_wire_item(
                                 path,
