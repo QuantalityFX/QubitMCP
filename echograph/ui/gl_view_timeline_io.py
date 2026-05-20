@@ -753,4 +753,7 @@ class GraphGLTimelineIOMixin:
             self._timeline_update_target_label()
         except Exception:
             pass
-
+        try:
+            self._timeline_refresh_speed_control()
+        except Exception:
+            pass

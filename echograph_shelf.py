@@ -3638,6 +3638,12 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 clean_entry["xform_offset"] = bool(entry.get("xform_offset"))
             if "splat_zero_pivot" in entry:
                 clean_entry["splat_zero_pivot"] = bool(entry.get("splat_zero_pivot"))
+            if "retime_percent" in entry or "speed_percent" in entry:
+                raw_speed = entry.get("retime_percent", entry.get("speed_percent"))
+                try:
+                    clean_entry["retime_percent"] = max(1.0, min(1000.0, float(raw_speed)))
+                except Exception:
+                    pass
             if "wire_only" in entry:
                 clean_entry["wire_only"] = bool(entry.get("wire_only"))
             if "volume" in entry:
@@ -3758,6 +3764,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                         _round3((xf or {}).get("scl"), (1.0, 1.0, 1.0)),
                         bool(entry.get("xform_offset", False)),
                         bool(entry.get("splat_zero_pivot", False)),
+                        round(float(entry.get("retime_percent", entry.get("speed_percent", 100.0)) or 100.0), 6),
                         bool(entry.get("enabled", True)),
                         int(entry.get("samples", 28) or 28),
                         int(entry.get("frame_step", 1) or 1),

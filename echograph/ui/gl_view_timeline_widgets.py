@@ -270,6 +270,7 @@ class GraphGLTimelineWidgetsMixin:
             has_mark_out_btn = isinstance(getattr(self, "_timeline_mark_out_btn", None), QtWidgets.QPushButton)
             has_loop_btn = isinstance(getattr(self, "_timeline_loop_btn", None), QtWidgets.QPushButton)
             has_fps_spin = isinstance(getattr(self, "_timeline_fps_spin", None), QtWidgets.QDoubleSpinBox)
+            has_speed_spin = isinstance(getattr(self, "_timeline_speed_spin", None), QtWidgets.QDoubleSpinBox)
             has_seed_spin = isinstance(getattr(self, "_timeline_texture_seed_spin", None), QtWidgets.QSpinBox)
             has_scroll = getattr(self, "_timeline_scrollbar", None) is not None
             has_spacer = getattr(self, "_timeline_left_header_spacer", None) is not None
@@ -298,6 +299,7 @@ class GraphGLTimelineWidgetsMixin:
                 and has_mark_out_btn
                 and has_loop_btn
                 and has_fps_spin
+                and has_speed_spin
                 and has_seed_spin
                 and has_scroll
                 and has_spacer
@@ -326,6 +328,10 @@ class GraphGLTimelineWidgetsMixin:
                     pass
                 try:
                     self._timeline_update_range_button_tooltips()
+                except Exception:
+                    pass
+                try:
+                    self._timeline_refresh_speed_control()
                 except Exception:
                     pass
                 return
@@ -359,6 +365,7 @@ class GraphGLTimelineWidgetsMixin:
             self._timeline_frame_slider = None
             self._timeline_frame_spin = None
             self._timeline_fps_spin = None
+            self._timeline_speed_spin = None
             self._timeline_texture_seed_spin = None
             self._timeline_key_count_label = None
             self._timeline_tick_labels = []
@@ -470,6 +477,23 @@ class GraphGLTimelineWidgetsMixin:
             fps_spin.valueChanged.connect(self._timeline_on_fps_changed)
             header.addWidget(fps_spin, 0)
             self._timeline_fps_spin = fps_spin
+
+            speed_lbl = QtWidgets.QLabel("Speed", panel)
+            header.addWidget(speed_lbl, 0)
+
+            speed_spin = QtWidgets.QDoubleSpinBox(panel)
+            speed_spin.setRange(1.0, 1000.0)
+            speed_spin.setDecimals(2)
+            speed_spin.setSingleStep(10.0)
+            speed_spin.setSuffix("%")
+            speed_spin.setKeyboardTracking(False)
+            speed_spin.setValue(float(getattr(self, "_timeline_owner_speed_percent", lambda *_: 100.0)()))
+            speed_spin.setFixedWidth(78)
+            speed_spin.setToolTip("Playback speed for the selected Scene outliner item.")
+            speed_spin.valueChanged.connect(self._timeline_on_speed_changed)
+            header.addWidget(speed_spin, 0)
+            self._timeline_speed_spin = speed_spin
+            self._timeline_refresh_speed_control()
 
             play_btn = QtWidgets.QPushButton(panel)
             play_btn.setObjectName("GLTimelinePlayButton")
@@ -2100,6 +2124,7 @@ class GraphGLTimelineWidgetsMixin:
             self._timeline_frame_slider = None
             self._timeline_frame_spin = None
             self._timeline_fps_spin = None
+            self._timeline_speed_spin = None
             self._timeline_key_count_label = None
             self._timeline_tick_labels = []
             self._timeline_target_label = None

@@ -30,6 +30,7 @@ _MIN_DELAY_MS = 0
 _MAX_DELAY_MS = 600000
 _MAX_LEAD_IN_MS = 60000
 _MAX_KEY_HOLD_MS = 2000
+_MAX_ACTION_HOLD_MS = 600000
 _MIN_STEPS = 1
 _MAX_STEPS = 64
 _PRESET_VERSION = 1
@@ -342,6 +343,10 @@ def _coerce_key_hold_ms(value) -> int:
     return max(0, min(_MAX_KEY_HOLD_MS, _coerce_int(value, _DEFAULT_KEY_HOLD_MS)))
 
 
+def _coerce_action_hold_ms(value) -> int:
+    return max(0, min(_MAX_ACTION_HOLD_MS, _coerce_int(value, _DEFAULT_KEY_HOLD_MS)))
+
+
 def _normalize_injection_mode(raw) -> str:
     token = _normalize_token(str(raw or ""))
     if token in {"hybrid", "both", "combo"}:
@@ -362,7 +367,13 @@ def _normalize_step(raw, index: int) -> dict[str, object] | None:
         action = str(raw.get("action", default_name) or "").strip() or default_name
         key = str(raw.get("key", raw.get("hotkey", "")) or "").strip()
         delay_ms = _coerce_delay_ms(raw.get("delay_ms", raw.get("delay", _DEFAULT_DELAY_MS)))
-        return {"action": action, "key": key, "delay_ms": delay_ms}
+        step = {"action": action, "key": key, "delay_ms": delay_ms}
+        hold_flag = bool(raw.get("hold", False) or raw.get("press_and_hold", False))
+        if hold_flag:
+            step["hold"] = True
+        if "hold_ms" in raw:
+            step["hold_ms"] = _coerce_action_hold_ms(raw.get("hold_ms", raw.get("hold", _DEFAULT_KEY_HOLD_MS)))
+        return step
     if isinstance(raw, str):
         action = default_name
         key = raw.strip()
@@ -497,6 +508,8 @@ def _apply_dialog_style(dialog, parent=None) -> None:
         "QDialog{background:#0f1216;color:#e6edf3;}"
         "QLabel{color:#e6edf3;}"
         "QLineEdit{background:#111827;color:#e2e8f0;border:1px solid #475569;border-radius:4px;padding:5px 7px;}"
+        "QSpinBox{background:#111827;color:#e2e8f0;border:1px solid #475569;border-radius:4px;padding:5px 7px;}"
+        "QCheckBox{color:#e6edf3;spacing:6px;}"
         "QPushButton{background:#1f2937;color:#e2e8f0;border:1px solid #475569;border-radius:4px;padding:4px 12px;min-width:72px;}"
         "QPushButton:hover{background:#273449;}"
     )
@@ -729,7 +742,7 @@ def _is_matching_keyup_event(
 def _send_input_event_stream(events: list[tuple[int, int, int]], *, key_hold_ms: int) -> tuple[bool, str]:
     if not events:
         return False, "No keyboard events to send."
-    hold_ms = _coerce_key_hold_ms(key_hold_ms)
+    hold_ms = _coerce_action_hold_ms(key_hold_ms)
     inter_seconds = max(0.0, float(_INTER_EVENT_MS) / 1000.0)
     hold_seconds = max(0.0, float(hold_ms) / 1000.0)
     for idx, event in enumerate(events):
@@ -816,7 +829,7 @@ def _post_window_event_stream(events: list[tuple[int, int, int]], *, key_hold_ms
     hwnd = _USER32.GetForegroundWindow()
     if not hwnd:
         return False, "No foreground window for window-message keyboard path."
-    hold_ms = _coerce_key_hold_ms(key_hold_ms)
+    hold_ms = _coerce_action_hold_ms(key_hold_ms)
     inter_seconds = max(0.0, float(_INTER_EVENT_MS) / 1000.0)
     hold_seconds = max(0.0, float(hold_ms) / 1000.0)
     for idx, event in enumerate(events):
@@ -866,7 +879,7 @@ def _dispatch_key_action(
         events, error = _build_text_events(clean, injection_mode=mode)
     if events is None:
         return False, error or "Invalid key action."
-    if _coerce_key_hold_ms(key_hold_ms) > 0:
+    if _coerce_action_hold_ms(key_hold_ms) > 0:
         return _send_input_event_stream(events, key_hold_ms=key_hold_ms)
     return _send_input_events(events)
 
@@ -891,11 +904,19 @@ def _serial_route_label(configs) -> str:
 
 
 class _ActionEditDialog(QtWidgets.QDialog):
-    def __init__(self, action_text: str, key_text: str, parent=None):
+    def __init__(
+        self,
+        action_text: str,
+        key_text: str,
+        delay_ms: int,
+        hold: bool = False,
+        hold_ms: int | None = None,
+        parent=None,
+    ):
         super().__init__(parent)
         self.setWindowTitle("Edit Keyboard Action")
         self.setModal(True)
-        self.resize(420, 170)
+        self.resize(450, 260)
         _apply_dialog_style(self, parent)
 
         layout = QtWidgets.QVBoxLayout(self)
@@ -913,11 +934,32 @@ class _ActionEditDialog(QtWidgets.QDialog):
         self._key_edit = QtWidgets.QLineEdit(str(key_text or ""))
         self._key_edit.setPlaceholderText("Example: ctrl+shift+s, F5, enter, a")
         form.addRow("Key", self._key_edit)
+
+        self._hold_check = QtWidgets.QCheckBox("Hold key")
+        self._hold_check.setChecked(bool(hold))
+        form.addRow("Mode", self._hold_check)
+
+        hold_default = hold_ms if hold_ms is not None else delay_ms
+        self._hold_spin = QtWidgets.QSpinBox()
+        self._hold_spin.setRange(1, int(_MAX_ACTION_HOLD_MS))
+        self._hold_spin.setSingleStep(100)
+        self._hold_spin.setSuffix(" ms")
+        self._hold_spin.setValue(int(_coerce_action_hold_ms(hold_default)))
+        self._hold_spin.setEnabled(self._hold_check.isChecked())
+        self._hold_check.toggled.connect(self._hold_spin.setEnabled)
+        form.addRow("Hold Time", self._hold_spin)
+
+        self._delay_spin = QtWidgets.QSpinBox()
+        self._delay_spin.setRange(int(_MIN_DELAY_MS), int(_MAX_DELAY_MS))
+        self._delay_spin.setSingleStep(50)
+        self._delay_spin.setSuffix(" ms")
+        self._delay_spin.setValue(int(_coerce_delay_ms(delay_ms)))
+        form.addRow("Delay After", self._delay_spin)
         layout.addLayout(form, 0)
 
         hint = QtWidgets.QLabel(
             "Use one key per action. Modifiers are supported with '+'.\n"
-            "If no special key is provided, plain text will be typed."
+            "Hold Time keeps the key down. Delay After waits before the next action."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("QLabel{color:#94a3b8;font-size:11px;}")
@@ -930,10 +972,12 @@ class _ActionEditDialog(QtWidgets.QDialog):
 
         QtCore.QTimer.singleShot(0, self._key_edit.setFocus)
 
-    def values(self) -> tuple[str, str]:
+    def values(self) -> tuple[str, str, int, bool, int | None]:
         action = str(self._action_edit.text() or "").strip()
         key_text = str(self._key_edit.text() or "").strip()
-        return action, key_text
+        hold = bool(self._hold_check.isChecked())
+        hold_ms = _coerce_action_hold_ms(self._hold_spin.value()) if hold else None
+        return action, key_text, _coerce_delay_ms(self._delay_spin.value()), hold, hold_ms
 
 
 class _DelayEditDialog(QtWidgets.QDialog):
@@ -1308,7 +1352,7 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
         if not path:
             return
         try:
-            raw = json.loads(Path(path).read_text(encoding="utf-8"))
+            raw = json.loads(Path(path).read_text(encoding="utf-8-sig"))
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Keyboard Sequence", f"Could not load preset:\n{exc}")
             return
@@ -1385,8 +1429,14 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
                     label = str(step.get("action") or "").strip() or f"Action {step_index + 1}"
                     key_text = str(step.get("key") or "").strip()
                     body = key_text if key_text else "Click to assign key"
+                    if key_text and (bool(step.get("hold")) or "hold_ms" in step):
+                        hold_label = _coerce_action_hold_ms(step.get("hold_ms")) if "hold_ms" in step else _coerce_delay_ms(step.get("delay_ms", _DEFAULT_DELAY_MS))
+                        body = f"{key_text} | Hold {hold_label} ms"
                     item.setText(f"{label}\n{body}")
-                    item.setBackground(QtGui.QColor("#162433"))
+                    if bool(step.get("hold")) or "hold_ms" in step:
+                        item.setBackground(QtGui.QColor("#1d3f72"))
+                    else:
+                        item.setBackground(QtGui.QColor("#162433"))
                     item.setForeground(QtGui.QColor("#e2e8f0"))
                 else:
                     step_index = col // 2
@@ -1412,8 +1462,11 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
         step = dict(self._steps[index] or {})
         initial_action = str(step.get("action") or "").strip() or f"Action {index + 1}"
         initial_key = str(step.get("key") or "").strip()
+        initial_delay = _coerce_delay_ms(step.get("delay_ms", _DEFAULT_DELAY_MS))
+        initial_hold = bool(step.get("hold")) or "hold_ms" in step
+        initial_hold_ms = _coerce_action_hold_ms(step.get("hold_ms")) if "hold_ms" in step else None
         parent = _dialog_parent(self._node_item) or self
-        dialog = _ActionEditDialog(initial_action, initial_key, parent)
+        dialog = _ActionEditDialog(initial_action, initial_key, initial_delay, initial_hold, initial_hold_ms, parent)
         self._position_action_dialog(dialog, index)
         try:
             result = dialog.exec()
@@ -1421,13 +1474,19 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
             result = dialog.exec_()
         if result != QtWidgets.QDialog.Accepted:
             return
-        action_text, key_text = dialog.values()
+        action_text, key_text, delay_ms, hold, hold_ms = dialog.values()
         if not action_text:
             action_text = f"Action {index + 1}"
         new_step = dict(step)
         new_step["action"] = action_text
         new_step["key"] = key_text
-        new_step["delay_ms"] = _coerce_delay_ms(new_step.get("delay_ms", _DEFAULT_DELAY_MS))
+        new_step["delay_ms"] = _coerce_delay_ms(delay_ms)
+        if hold:
+            new_step["hold"] = True
+            new_step["hold_ms"] = _coerce_action_hold_ms(hold_ms)
+        else:
+            new_step.pop("hold", None)
+            new_step.pop("hold_ms", None)
         self._steps[index] = new_step
         self._persist_steps(notify_scene=True)
         self._rebuild_table()
@@ -1507,6 +1566,10 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
                     "delay_ms": _coerce_delay_ms(step.get("delay_ms", _DEFAULT_DELAY_MS)),
                 }
             )
+            if bool(step.get("hold")):
+                runnable[-1]["hold"] = True
+            if "hold_ms" in step:
+                runnable[-1]["hold_ms"] = _coerce_action_hold_ms(step.get("hold_ms"))
         return runnable
 
     def _on_run_clicked(self):
@@ -1585,7 +1648,7 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
             self._signals.finished.emit(False, "Keyboard playback is currently available on Windows only.")
             return
         mode = _normalize_injection_mode(injection_mode)
-        hold_ms = _coerce_key_hold_ms(key_hold_ms)
+        default_hold_ms = _coerce_key_hold_ms(key_hold_ms)
         serial_sessions = []
         if use_serial:
             try:
@@ -1619,13 +1682,47 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
                     return
                 action_name = str(step.get("action") or "").strip() or f"Action {idx + 1}"
                 key_text = str(step.get("key") or "").strip()
+                has_explicit_hold = bool(step.get("hold")) or "hold_ms" in step
+                delay_ms = _coerce_delay_ms(step.get("delay_ms", _DEFAULT_DELAY_MS))
+                uses_separate_hold_duration = "hold_ms" in step
+                hold_ms = (
+                    _coerce_action_hold_ms(step.get("hold_ms"))
+                    if uses_separate_hold_duration
+                    else delay_ms
+                    if has_explicit_hold
+                    else default_hold_ms
+                )
+                post_action_delay_ms = delay_ms if (not has_explicit_hold or uses_separate_hold_duration) else 0
+                if has_explicit_hold and hold_ms > 0:
+                    self._signals.status.emit(
+                        f"Holding {idx + 1}/{action_count}: {action_name} [{key_text}] for {hold_ms}ms"
+                    )
                 if serial_sessions:
                     ok = True
                     message = ""
-                    for session in serial_sessions:
-                        ok, message = session.tap(key_text, hold_ms)
-                        if not ok:
-                            break
+                    if has_explicit_hold and hold_ms > 0:
+                        for session in serial_sessions:
+                            ok, message = session.key_down(key_text)
+                            if not ok:
+                                break
+                        if ok and not self._sleep_with_cancel(hold_ms):
+                            for session in serial_sessions:
+                                try:
+                                    session.release_all()
+                                except Exception:
+                                    pass
+                            self._signals.finished.emit(False, "Playback stopped.")
+                            return
+                        if ok:
+                            for session in serial_sessions:
+                                ok, message = session.release_all()
+                                if not ok:
+                                    break
+                    else:
+                        for session in serial_sessions:
+                            ok, message = session.tap(key_text, hold_ms)
+                            if not ok:
+                                break
                 else:
                     ok, message = _dispatch_key_action(key_text, injection_mode=mode, key_hold_ms=hold_ms)
                 if not ok:
@@ -1646,8 +1743,7 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
                     f"Sent {idx + 1}/{action_count}: {action_name} [{key_text}] ({mode_label}, hold={hold_ms}ms)"
                 )
                 if idx < action_count - 1:
-                    delay_ms = _coerce_delay_ms(step.get("delay_ms", _DEFAULT_DELAY_MS))
-                    if delay_ms > 0 and not self._sleep_with_cancel(delay_ms):
+                    if post_action_delay_ms > 0 and not self._sleep_with_cancel(post_action_delay_ms):
                         self._signals.finished.emit(False, "Playback stopped.")
                         return
 

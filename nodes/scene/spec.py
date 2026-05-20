@@ -145,6 +145,7 @@ def _scene_collect_cache_key(node_item):
         int(getattr(scene, "_edge_index_version", 0) or 0) if scene is not None else 0,
         _freeze_scene_cache_value(getattr(model, "_scene_hidden", None)),
         _freeze_scene_cache_value(getattr(model, "_scene_xforms", None)),
+        _freeze_scene_cache_value(getattr(model, "_scene_retimes", None)),
     )
 
 
@@ -1196,6 +1197,44 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             xforms = raw_xforms
     except Exception:
         xforms = {}
+    retimes = {}
+    try:
+        raw_retimes = getattr(getattr(node_item, "model", None), "_scene_retimes", None)
+        if isinstance(raw_retimes, dict):
+            retimes = raw_retimes
+    except Exception:
+        retimes = {}
+
+    def _lookup_retime(retimes_map, name: str):
+        if not name:
+            return None
+        try:
+            if name in retimes_map:
+                return retimes_map.get(name)
+            nl = name.lower()
+            for k, v in retimes_map.items():
+                if str(k).strip().lower() == nl:
+                    return v
+        except Exception:
+            return None
+        return None
+
+    def _apply_retime(entry, name: str) -> bool:
+        if not isinstance(entry, dict):
+            return False
+        raw = _lookup_retime(retimes, name)
+        if raw is None:
+            return False
+        try:
+            pct = float(raw)
+        except Exception:
+            return False
+        if pct <= 0.0:
+            pct = 100.0
+        pct = max(1.0, min(1000.0, float(pct)))
+        entry["retime_percent"] = float(pct)
+        entry["speed_percent"] = float(pct)
+        return True
 
     def _build_instance_assets(instance_item, instance_model):
         entries = []
@@ -2380,6 +2419,17 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             except Exception:
                 pass
 
+    for entry in assets:
+        if not isinstance(entry, dict):
+            continue
+        owner_name = str(entry.get("node") or "").strip()
+        if owner_name and _apply_retime(entry, owner_name):
+            continue
+        for alias_key in ("source_owner", "target_owner", "instance_source_name"):
+            alias = str(entry.get(alias_key) or "").strip()
+            if alias and _apply_retime(entry, alias):
+                break
+
     _scene_collect_cache_put(node_item, assets)
     return assets
 
@@ -3298,6 +3348,12 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 glv = getattr(win, "gl_view", None) if win is not None else None
                 if glv is not None:
                     glv._xform_gizmo_owner = owner
+                    try:
+                        refresh_speed = getattr(glv, "_timeline_refresh_speed_control", None)
+                        if callable(refresh_speed):
+                            refresh_speed()
+                    except Exception:
+                        pass
                     try:
                         if hasattr(glv, "set_scene_asset_uv_overlay"):
                             glv.set_scene_asset_uv_overlay(owner)

@@ -469,6 +469,19 @@ class PicoSerialSession:
             return False, f"Unexpected tap reply: {reply}"
         return True, reply
 
+    def key_down(self, key_text: str) -> tuple[bool, str]:
+        clean_key = str(key_text or "").strip()
+        if not clean_key:
+            return False, "Key is empty."
+        if "|" in clean_key:
+            return False, "Key text cannot contain '|'."
+        ok, reply = self._request(f"DOWN|{clean_key}")
+        if not ok:
+            return ok, reply
+        if not reply.upper().startswith("OK"):
+            return False, f"Unexpected key-down reply: {reply}"
+        return True, reply
+
     def release_all(self) -> tuple[bool, str]:
         ok, reply = self._request("RELEASE_ALL")
         if not ok:

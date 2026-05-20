@@ -136,6 +136,21 @@ def _node_to_dict(node) -> Dict[str, Any]:
                 clean_xf[str(name)] = {"pos": pos, "rot": rot, "scl": scl}
             if clean_xf:
                 d["scene_xforms"] = clean_xf
+        retimes = getattr(node, "_scene_retimes", None)
+        if isinstance(retimes, dict) and retimes:
+            clean_rt = {}
+            for name, value in retimes.items():
+                if not name:
+                    continue
+                try:
+                    pct = float(value)
+                except Exception:
+                    continue
+                if pct <= 0.0:
+                    continue
+                clean_rt[str(name)] = float(pct)
+            if clean_rt:
+                d["scene_retimes"] = clean_rt
 
     return d
 
@@ -361,6 +376,12 @@ def deserialize_scene(
                 if isinstance(raw_xforms, dict):
                     try:
                         setattr(n, "_scene_xforms", raw_xforms)
+                    except Exception:
+                        pass
+                raw_retimes = nd.get("scene_retimes") or {}
+                if isinstance(raw_retimes, dict):
+                    try:
+                        setattr(n, "_scene_retimes", raw_retimes)
                     except Exception:
                         pass
 

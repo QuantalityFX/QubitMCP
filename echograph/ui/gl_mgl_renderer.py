@@ -406,8 +406,32 @@ class MGLRendererMixin:
     def _mgl_timeline_time_seconds(self) -> float:
         return float(self._mgl_timeline_frame_index()) / float(self._mgl_timeline_fps_value())
 
-    def _mgl_fbx_context_timeline_sample_seconds(self, context: dict | None) -> float:
+    def _mgl_fbx_context_timeline_sample_seconds(self, context: dict | None, owner: str | None = None) -> float:
         timeline_seconds = self._mgl_timeline_time_seconds()
+        owner_key = str(owner or "").strip()
+        if owner_key:
+            try:
+                speed_fn = getattr(self, "_timeline_owner_speed_factor", None)
+                if callable(speed_fn):
+                    timeline_seconds *= float(speed_fn(owner_key))
+                else:
+                    speeds = getattr(self, "_timeline_owner_speed_percent_by_owner", None)
+                    pct = None
+                    if isinstance(speeds, dict):
+                        pct = speeds.get(owner_key, None)
+                        if pct is None:
+                            owner_l = owner_key.lower()
+                            for maybe_key, maybe_val in speeds.items():
+                                try:
+                                    if str(maybe_key).strip().lower() == owner_l:
+                                        pct = maybe_val
+                                        break
+                                except Exception:
+                                    continue
+                    if pct is not None:
+                        timeline_seconds *= max(0.01, float(pct) / 100.0)
+            except Exception:
+                pass
         if not isinstance(context, dict):
             return timeline_seconds
         clip = context.get("clip")
@@ -631,7 +655,7 @@ class MGLRendererMixin:
                 sample_time = 0.0
             else:
                 clip = context.get("clip")
-                sample_time = self._mgl_fbx_context_timeline_sample_seconds(context)
+                sample_time = self._mgl_fbx_context_timeline_sample_seconds(context, payload.get("owner"))
             loop = bool(context.get("loop", True))
         line_points = self._mgl_fbx_joint_line_points(
             skeleton,
@@ -1842,17 +1866,20 @@ class MGLRendererMixin:
         if not isinstance(runtime, dict):
             return
 
-        frame = self._mgl_timeline_frame_index()
-        if payload.get("_fbx_skin_frame", None) == frame:
-            return
-
         skeleton = runtime.get("skeleton")
         if skeleton is None:
             return
         clip = runtime.get("clip")
         loop = bool(runtime.get("loop", True))
         context = payload.get("fbx_rig_context")
-        sample_seconds = self._mgl_fbx_context_timeline_sample_seconds(context if isinstance(context, dict) else None)
+        frame = self._mgl_timeline_frame_index()
+        sample_seconds = self._mgl_fbx_context_timeline_sample_seconds(
+            context if isinstance(context, dict) else None,
+            payload.get("owner"),
+        )
+        skin_frame_key = (int(frame), round(float(sample_seconds), 6))
+        if payload.get("_fbx_skin_frame", None) == skin_frame_key:
+            return
         try:
             evaluation = evaluate_rig_at_time(
                 skeleton,
@@ -1941,7 +1968,7 @@ class MGLRendererMixin:
             except Exception:
                 continue
 
-        payload["_fbx_skin_frame"] = frame
+            payload["_fbx_skin_frame"] = skin_frame_key
         item.payload = payload
 
     def _mgl_normalize_music_effects_config(self, raw) -> Optional[Dict[str, Any]]:
@@ -2991,7 +3018,7 @@ class MGLRendererMixin:
                 continue
             clip = context.get("clip")
             loop = bool(context.get("loop", True))
-            sample_seconds = self._mgl_fbx_context_timeline_sample_seconds(context)
+            sample_seconds = self._mgl_fbx_context_timeline_sample_seconds(context, owner_key)
             signature = (
                 int(frame),
                 round(float(sample_seconds), 6),
@@ -3436,7 +3463,7 @@ class MGLRendererMixin:
                     sample = evaluate_skeleton_line_points(
                         context.get("skeleton"),
                         context.get("clip"),
-                        self._mgl_fbx_context_timeline_sample_seconds(context),
+                        self._mgl_fbx_context_timeline_sample_seconds(context, owner),
                         loop=bool(context.get("loop", True)),
                     )
                     line_points = np.array(sample.line_points or [], dtype="f4").reshape(-1, 3)
@@ -3516,7 +3543,7 @@ class MGLRendererMixin:
                 sample_time = 0.0
             else:
                 clip = context.get("clip")
-                sample_time = self._mgl_fbx_context_timeline_sample_seconds(context)
+                sample_time = self._mgl_fbx_context_timeline_sample_seconds(context, owner)
             loop = bool(context.get("loop", True))
             default_color = (1.00, 0.95, 0.15, 1.0)
         try:
@@ -4233,7 +4260,7 @@ class MGLRendererMixin:
             return rows_trow
         return rows_tcol
 
-    def _mgl_retarget_joint_positions_for_context(self, context: dict | None, role: str):
+    def _mgl_retarget_joint_positions_for_context(self, context: dict | None, role: str, owner: str | None = None):
         if not isinstance(context, dict):
             return []
         skeleton = context.get("skeleton")
@@ -4261,7 +4288,7 @@ class MGLRendererMixin:
         try:
             clip = context.get("clip") if (role_key == "source" or target_animated) else None
             sample_time = (
-                self._mgl_fbx_context_timeline_sample_seconds(context)
+                self._mgl_fbx_context_timeline_sample_seconds(context, owner)
                 if (role_key == "source" or target_animated)
                 else 0.0
             )
@@ -4335,7 +4362,7 @@ class MGLRendererMixin:
             self._mgl_retarget_handle_frame_keys = frame_keys
         if not bool(force) and frame_keys.get(owner_key) == frame_key:
             return False
-        positions = self._mgl_retarget_joint_positions_for_context(context, role_key)
+        positions = self._mgl_retarget_joint_positions_for_context(context, role_key, owner_key)
         if not positions:
             return False
         role_positions = {}

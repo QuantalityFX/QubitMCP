@@ -803,6 +803,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._timeline_owner_name = None
         self._timeline_manual_override_owners = set()
         self._timeline_owner_keys_cache = {}
+        self._timeline_owner_speed_percent_by_owner: Dict[str, float] = {}
         self._timeline_project_dir: Optional[Path] = None
         self._timeline_anim_path: Optional[Path] = None
         self._timeline_range_cfg_path: Optional[Path] = None
@@ -851,6 +852,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._timeline_view_span = 120
         self._timeline_play_btn = None
         self._timeline_curves_btn = None
+        self._timeline_speed_spin = None
         self._timeline_material_live_btn = None
         self._timeline_fx_instances_btn = None
         self._timeline_handle_straight_btn = None
@@ -3708,6 +3710,11 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 self._set_scene_camera_options([])
             except Exception:
                 pass
+            try:
+                self._timeline_owner_speed_percent_by_owner = {}
+                self._timeline_refresh_speed_control()
+            except Exception:
+                pass
             return
         if self._use_moderngl:
             try:
@@ -3827,6 +3834,35 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                     except Exception:
                         continue
                 return False
+
+            try:
+                speed_map = {}
+                norm_speed = getattr(self, "_timeline_normalize_speed_percent", None)
+                for entry in assets or []:
+                    if not isinstance(entry, dict):
+                        continue
+                    name = _owner_name(entry)
+                    if not name:
+                        continue
+                    raw_speed = entry.get("retime_percent", entry.get("speed_percent", None))
+                    if raw_speed is None:
+                        continue
+                    if callable(norm_speed):
+                        value = float(norm_speed(raw_speed))
+                    else:
+                        value = max(1.0, min(1000.0, float(raw_speed)))
+                    if abs(float(value) - 100.0) > 1.0e-6:
+                        speed_map[name] = float(value)
+                self._timeline_owner_speed_percent_by_owner = speed_map
+                renderer = getattr(self, "_mgl_renderer", None)
+                if renderer is not None and renderer is not self:
+                    try:
+                        setattr(renderer, "_timeline_owner_speed_percent_by_owner", dict(speed_map))
+                    except Exception:
+                        pass
+                self._timeline_refresh_speed_control()
+            except Exception:
+                self._timeline_owner_speed_percent_by_owner = {}
 
             try:
                 prev_mesh_xforms = dict(getattr(self, "_mgl_scene_xforms_by_owner", None) or {})

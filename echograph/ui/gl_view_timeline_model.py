@@ -87,6 +87,229 @@ class GraphGLTimelineModelMixin:
             return mode
         return ""
 
+    def _timeline_retime_owner(self) -> str:
+        owner = self._timeline_target_owner()
+        if owner:
+            return owner
+        try:
+            owner = str(getattr(self, "_xform_gizmo_owner", "") or "").strip()
+        except Exception:
+            owner = ""
+        return owner
+
+    def _timeline_normalize_speed_percent(self, value) -> float:
+        try:
+            pct = float(value)
+        except Exception:
+            pct = 100.0
+        if not math.isfinite(float(pct)):
+            pct = 100.0
+        return max(1.0, min(1000.0, float(pct)))
+
+    def _timeline_owner_speed_map(self) -> Dict[str, float]:
+        speeds = getattr(self, "_timeline_owner_speed_percent_by_owner", None)
+        if not isinstance(speeds, dict):
+            speeds = {}
+            self._timeline_owner_speed_percent_by_owner = speeds
+        return speeds
+
+    def _timeline_owner_speed_percent(self, owner: str | None = None) -> float:
+        key = str(owner or self._timeline_retime_owner() or "").strip()
+        if not key:
+            return 100.0
+        speeds = self._timeline_owner_speed_map()
+        raw = speeds.get(key, None)
+        if raw is None:
+            key_l = key.lower()
+            for maybe_key, maybe_val in speeds.items():
+                try:
+                    if str(maybe_key).strip().lower() == key_l:
+                        raw = maybe_val
+                        break
+                except Exception:
+                    continue
+        if raw is None:
+            return 100.0
+        return self._timeline_normalize_speed_percent(raw)
+
+    def _timeline_owner_speed_factor(self, owner: str | None = None) -> float:
+        return float(self._timeline_owner_speed_percent(owner)) / 100.0
+
+    def _timeline_retimed_frame_for_owner(self, owner: str | None, frame: float) -> float:
+        try:
+            f = float(frame)
+        except Exception:
+            f = 0.0
+        factor = self._timeline_owner_speed_factor(owner)
+        return max(0.0, float(f) * float(factor))
+
+    def _timeline_refresh_speed_control(self) -> None:
+        spin = getattr(self, "_timeline_speed_spin", None)
+        if spin is None:
+            return
+        owner = self._timeline_retime_owner()
+        value = self._timeline_owner_speed_percent(owner) if owner else 100.0
+        try:
+            spin.blockSignals(True)
+            spin.setValue(float(value))
+            spin.setEnabled(bool(owner))
+            if owner:
+                spin.setToolTip(f"Playback speed for {owner}. 100% is original speed.")
+            else:
+                spin.setToolTip("Select a Scene outliner item to retime its playback.")
+        except Exception:
+            pass
+        finally:
+            try:
+                spin.blockSignals(False)
+            except Exception:
+                pass
+
+    def _timeline_sync_owner_speed_to_scene(self, owner: str, percent: float) -> None:
+        key = str(owner or "").strip()
+        if not key:
+            return
+        try:
+            win = self.window()
+        except Exception:
+            win = None
+        node = getattr(win, "_active_scene_node", None) if win is not None else None
+        if node is None:
+            return
+        retimes = getattr(node, "_scene_retimes", None)
+        if not isinstance(retimes, dict):
+            retimes = {}
+        store_key = key
+        key_l = key.lower()
+        for maybe_key in list(retimes.keys()):
+            try:
+                if str(maybe_key).strip().lower() == key_l:
+                    store_key = str(maybe_key)
+                    break
+            except Exception:
+                continue
+        if abs(float(percent) - 100.0) <= 1.0e-6:
+            for maybe_key in list(retimes.keys()):
+                try:
+                    if str(maybe_key).strip().lower() == key_l:
+                        retimes.pop(maybe_key, None)
+                except Exception:
+                    continue
+        else:
+            retimes[store_key] = float(percent)
+        try:
+            setattr(node, "_scene_retimes", retimes)
+        except Exception:
+            pass
+
+    def _timeline_invalidate_owner_animation_cache(self, owner: str) -> None:
+        key = str(owner or "").strip()
+        if not key:
+            return
+        key_l = key.lower()
+        scene = getattr(self, "_mgl_scene", None)
+        if scene is not None:
+            for tag in ("scene-model", "scene-wire", "scene-rig-joints", "scene-camera", "model", "model-wire"):
+                try:
+                    items = list(scene.iter_by_tag(tag))
+                except Exception:
+                    items = []
+                for item in items:
+                    payload = getattr(item, "payload", None)
+                    if not isinstance(payload, dict):
+                        continue
+                    try:
+                        payload_owner = str(payload.get("owner") or "").strip()
+                    except Exception:
+                        payload_owner = ""
+                    if not payload_owner or payload_owner.lower() != key_l:
+                        continue
+                    changed = False
+                    for cache_key in ("_fbx_rig_frame", "_fbx_skin_frame"):
+                        if cache_key in payload:
+                            payload.pop(cache_key, None)
+                            changed = True
+                    if changed:
+                        try:
+                            item.payload = payload
+                        except Exception:
+                            pass
+        proxies = getattr(self, "_mgl_scene_skinned_splat_proxies_by_owner", None)
+        if isinstance(proxies, dict):
+            for maybe_key, proxy in proxies.items():
+                try:
+                    if str(maybe_key).strip().lower() != key_l:
+                        continue
+                except Exception:
+                    continue
+                if isinstance(proxy, dict):
+                    proxy.pop("last_signature", None)
+        frame_keys = getattr(self, "_mgl_retarget_handle_frame_keys", None)
+        if isinstance(frame_keys, dict):
+            for maybe_key in list(frame_keys.keys()):
+                try:
+                    if str(maybe_key).strip().lower() == key_l:
+                        frame_keys.pop(maybe_key, None)
+                except Exception:
+                    continue
+
+    def _timeline_set_owner_speed_percent(
+        self,
+        owner: str,
+        percent: float,
+        *,
+        sync_ui: bool = True,
+        sync_scene: bool = True,
+        apply_frame: bool = True,
+    ) -> float:
+        key = str(owner or "").strip()
+        value = self._timeline_normalize_speed_percent(percent)
+        if not key:
+            if bool(sync_ui):
+                self._timeline_refresh_speed_control()
+            return float(value)
+        speeds = self._timeline_owner_speed_map()
+        key_l = key.lower()
+        existing_keys = []
+        for maybe_key in list(speeds.keys()):
+            try:
+                if str(maybe_key).strip().lower() == key_l:
+                    existing_keys.append(maybe_key)
+            except Exception:
+                continue
+        if abs(float(value) - 100.0) <= 1.0e-6:
+            for maybe_key in existing_keys:
+                speeds.pop(maybe_key, None)
+        else:
+            store_key = str(existing_keys[0]) if existing_keys else key
+            for maybe_key in existing_keys[1:]:
+                speeds.pop(maybe_key, None)
+            speeds[store_key] = float(value)
+        self._timeline_owner_speed_percent_by_owner = speeds
+        if bool(sync_scene):
+            self._timeline_sync_owner_speed_to_scene(key, float(value))
+        self._timeline_invalidate_owner_animation_cache(key)
+        if bool(sync_ui):
+            self._timeline_refresh_speed_control()
+        if bool(apply_frame):
+            try:
+                frame = int(self._timeline_current_frame())
+            except Exception:
+                frame = 0
+            try:
+                self._timeline_apply_frame_if_keyed(frame, force=True)
+            except Exception:
+                pass
+            try:
+                self._timeline_apply_other_owner_frames(frame)
+            except Exception:
+                pass
+            try:
+                self.update()
+            except Exception:
+                pass
+        return float(value)
+
     def _timeline_owner_file_paths(self) -> List[Path]:
         scene_name = str(getattr(self, "_timeline_scene_name", "") or "").strip()
         if not scene_name:
@@ -1735,11 +1958,17 @@ class GraphGLTimelineModelMixin:
             )
         return None
 
-    def _timeline_eval_frame_values(self, frame: int) -> Tuple[Optional[Tuple[float, float, float]], Optional[Tuple[float, float, float]]]:
+    def _timeline_eval_frame_values(self, frame: float) -> Tuple[Optional[Tuple[float, float, float]], Optional[Tuple[float, float, float]]]:
         try:
-            f = int(frame)
+            f = float(frame)
         except Exception:
-            f = 0
+            f = 0.0
+        try:
+            owner = self._timeline_target_owner()
+        except Exception:
+            owner = ""
+        if owner:
+            f = self._timeline_retimed_frame_for_owner(owner, f)
         vals: List[Optional[float]] = [self._timeline_eval_axis_curve(axis, f) for axis in range(6)]
         any_pos = any(vals[i] is not None for i in (0, 1, 2))
         any_rot = any(vals[i] is not None for i in (3, 4, 5))
@@ -3890,7 +4119,8 @@ class GraphGLTimelineModelMixin:
                 self._timeline_refresh_coord_labels()
                 return
         try:
-            entry = (getattr(self, "_timeline_keys", {}) or {}).get(int(frame))
+            lookup_frame = self._timeline_retimed_frame_for_owner(owner, float(frame)) if owner_key else float(frame)
+            entry = (getattr(self, "_timeline_keys", {}) or {}).get(int(round(float(lookup_frame))))
         except Exception:
             entry = None
         if not isinstance(entry, dict) or not self._timeline_entry_has_any_axis(entry):
@@ -3958,6 +4188,15 @@ class GraphGLTimelineModelMixin:
         if bool(getattr(self, "_timeline_ignore_ui", False)):
             return
         self._timeline_set_fps(float(value), save=True, sync_ui=False)
+
+    def _timeline_on_speed_changed(self, value: float) -> None:
+        if bool(getattr(self, "_timeline_ignore_ui", False)):
+            return
+        owner = self._timeline_retime_owner()
+        if not owner:
+            self._timeline_refresh_speed_control()
+            return
+        self._timeline_set_owner_speed_percent(owner, float(value), sync_ui=False, sync_scene=True, apply_frame=True)
 
     def _timeline_on_frame_slider_changed(self, value: int) -> None:
         if bool(getattr(self, "_timeline_ignore_ui", False)):
