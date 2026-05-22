@@ -2047,6 +2047,12 @@ class MGLRendererMixin:
                     return False
                 buf.write(np.ascontiguousarray(mats[:, idx, :], dtype="f4").tobytes())
             payload["_copy_to_points_current_instance_matrices"] = mats.astype("f4", copy=True)
+            try:
+                self._mgl_shadow_dirty = True
+                self._mgl_shadow_valid = False
+                self._mgl_shadow_signature = None
+            except Exception:
+                pass
             return True
         except Exception:
             return False
@@ -4044,6 +4050,7 @@ class MGLRendererMixin:
             "scene-rig-joints",
             "scene-volume",
             "scene-camera",
+            "scene-light",
             "scene-fx-trail",
             "retarget-handles",
             "retarget-selection",
@@ -4051,6 +4058,21 @@ class MGLRendererMixin:
             "retarget-drag-link",
         ):
             scene.remove_by_tag(tag)
+        try:
+            self._mgl_scene_light_owner = None
+            self._mgl_scene_light_type = "directional"
+            self._mgl_scene_light_dir = None
+            self._mgl_scene_light_pos = None
+            self._mgl_scene_light_intensity = None
+            self._mgl_scene_light_shadow_strength = None
+        except Exception:
+            pass
+        try:
+            self._mgl_shadow_dirty = True
+            self._mgl_shadow_valid = False
+            self._mgl_shadow_signature = None
+        except Exception:
+            pass
 
     @staticmethod
     def _mgl_retarget_parse_joint_map(raw_map) -> Dict[str, str]:
@@ -7371,6 +7393,19 @@ class MGLRendererMixin:
         if scl is not None:
             x["scl"] = tuple(float(v) for v in scl)
 
+        try:
+            light_owner = str(getattr(self, "_mgl_scene_light_owner", "") or "").strip().lower()
+            if light_owner and owner_norm == light_owner:
+                pos_vals = list(x.get("pos", (4.0, 6.0, 4.0)))[:3]
+                if len(pos_vals) >= 3:
+                    self._mgl_scene_light_pos = (
+                        float(pos_vals[0]),
+                        float(pos_vals[1]),
+                        float(pos_vals[2]),
+                    )
+        except Exception:
+            pass
+
         # pivot around asset bounds center if we have it
         cx = cy = cz = 0.0
         offset_mode = False
@@ -7505,6 +7540,7 @@ class MGLRendererMixin:
                     "scene-rig-joints",
                     "scene-volume",
                     "scene-camera",
+                    "scene-light",
                     "retarget-handles",
                     "retarget-selection",
                 ):
@@ -7545,6 +7581,12 @@ class MGLRendererMixin:
         except Exception:
             pass
 
+        try:
+            self._mgl_shadow_dirty = True
+            self._mgl_shadow_valid = False
+            self._mgl_shadow_signature = None
+        except Exception:
+            pass
         try:
             self.update()
         except Exception:
@@ -8079,6 +8121,11 @@ class MGLRendererMixin:
                 self._mgl_apply_shadow_uniforms(self._mgl_prog)
             except Exception:
                 pass
+            try:
+                shadow_id = max(0, min(65535, int(getattr(item, "item_id", 0) or 0))) / 65535.0
+                self._mgl_prog["ShadowReceiverId"].value = float(shadow_id)
+            except Exception:
+                pass
 
         except Exception:
             pass
@@ -8477,7 +8524,7 @@ class MGLRendererMixin:
                     self._mgl_prog["UseTexture"].value = 1 if use_texture else 0
                     self._mgl_prog["UseVertexColor"].value = 1 if use_vertex_color else 0
                     self._mgl_prog["UseLighting"].value = 1
-                    self._mgl_prog["LightIntensity"].value = float(self._mgl_light_intensity)
+                    self._mgl_prog["LightIntensity"].value = float(self._mgl_effective_light_intensity())
                     self._mgl_prog["Color"].value = color
                 except Exception:
                     pass
@@ -8509,7 +8556,7 @@ class MGLRendererMixin:
                 self._mgl_prog["UseTexture"].value = 1 if use_texture else 0
                 self._mgl_prog["UseVertexColor"].value = 1 if use_vertex_color else 0
                 self._mgl_prog["UseLighting"].value = 1
-                self._mgl_prog["LightIntensity"].value = float(self._mgl_light_intensity)
+                self._mgl_prog["LightIntensity"].value = float(self._mgl_effective_light_intensity())
                 self._mgl_prog["Color"].value = color
             except Exception:
                 pass
@@ -8545,7 +8592,7 @@ class MGLRendererMixin:
                             self._mgl_prog["UseTexture"].value = 1 if use_texture else 0
                             self._mgl_prog["UseVertexColor"].value = 1 if use_vertex_color else 0
                             self._mgl_prog["UseLighting"].value = 1
-                            self._mgl_prog["LightIntensity"].value = float(self._mgl_light_intensity)
+                            self._mgl_prog["LightIntensity"].value = float(self._mgl_effective_light_intensity())
                             self._mgl_prog["Color"].value = color
                         except Exception:
                             pass
@@ -8563,7 +8610,7 @@ class MGLRendererMixin:
                         self._mgl_prog["UseTexture"].value = 1 if use_texture else 0
                         self._mgl_prog["UseVertexColor"].value = 1 if use_vertex_color else 0
                         self._mgl_prog["UseLighting"].value = 1
-                        self._mgl_prog["LightIntensity"].value = float(self._mgl_light_intensity)
+                        self._mgl_prog["LightIntensity"].value = float(self._mgl_effective_light_intensity())
                         self._mgl_prog["Color"].value = color
                     except Exception:
                         pass
@@ -9741,8 +9788,10 @@ class MGLRendererMixin:
             prog["UseLighting"].value = 0
             prog["UseShadows"].value = 0
             prog["LightDir"].value = self._mgl_light_direction_tuple()
-            prog["ShadowBias"].value = float(getattr(self, "_mgl_shadow_bias", 0.0025) or 0.0025)
-            prog["ShadowDarkness"].value = float(getattr(self, "_mgl_shadow_darkness", 0.45) or 0.45)
+            prog["LightIntensity"].value = float(self._mgl_effective_light_intensity())
+            prog["AmbientLight"].value = float(self._mgl_effective_ambient_light())
+            prog["ShadowBias"].value = float(getattr(self, "_mgl_shadow_bias", 0.0009) or 0.0009)
+            prog["ShadowDarkness"].value = float(self._mgl_effective_shadow_darkness())
             size_f = float(getattr(self, "_mgl_shadow_map_size", 2048) or 2048)
             prog["ShadowMapSize"].value = (size_f, size_f)
             prog["UseProcedural"].value = 1
@@ -9893,7 +9942,8 @@ class MGLRendererMixin:
                 except Exception:
                     pass
                 prog["LightDir"].value = self._mgl_light_direction_tuple()
-                prog["LightIntensity"].value = float(getattr(self, "_mgl_light_intensity", 1.0) or 1.0)
+                prog["LightIntensity"].value = float(self._mgl_effective_light_intensity())
+                prog["AmbientLight"].value = float(self._mgl_effective_ambient_light())
                 prog["MaterialTransparency"].value = 0.0
                 prog["MaterialIor"].value = 1.0
                 prog["MaterialTint"].value = (1.0, 1.0, 1.0)
@@ -10279,6 +10329,33 @@ class MGLRendererMixin:
             return 2, 2
 
     def _mgl_light_direction_tuple(self) -> Tuple[float, float, float]:
+        scene_rot_dir = self._mgl_scene_light_direction_from_rotation()
+        if scene_rot_dir is not None and np is not None:
+            try:
+                self._mgl_scene_light_dir = scene_rot_dir
+                arr = np.asarray(scene_rot_dir, dtype=np.float32).reshape(-1)[:3]
+                length = float(np.linalg.norm(arr))
+                if length > 1.0e-6:
+                    arr = arr / length
+                    return (float(arr[0]), float(arr[1]), float(arr[2]))
+            except Exception:
+                pass
+        try:
+            if str(getattr(self, "_mgl_scene_light_owner", "") or "").strip():
+                self._mgl_scene_light_dir = None
+        except Exception:
+            pass
+        scene_dir = getattr(self, "_mgl_scene_light_dir", None)
+        if scene_dir is not None and np is not None:
+            try:
+                arr = np.asarray(scene_dir, dtype=np.float32).reshape(-1)[:3]
+                if arr.shape[0] >= 3 and np.all(np.isfinite(arr)):
+                    length = float(np.linalg.norm(arr))
+                    if length > 1.0e-6:
+                        arr = arr / length
+                        return (float(arr[0]), float(arr[1]), float(arr[2]))
+            except Exception:
+                pass
         if np is None:
             return (0.35, 0.85, 0.45)
         try:
@@ -10298,6 +10375,233 @@ class MGLRendererMixin:
             return (float(arr[0]), float(arr[1]), float(arr[2]))
         except Exception:
             return (0.35, 0.85, 0.45)
+
+    @staticmethod
+    def _mgl_normalize_light_type(value) -> str:
+        text = str(value or "").strip().lower().replace("-", "_")
+        text = " ".join(text.replace("_", " ").split())
+        aliases = {
+            "dir": "directional",
+            "directional": "directional",
+            "directional light": "directional",
+            "directional_light": "directional",
+            "point": "point",
+            "point light": "point",
+            "point_light": "point",
+            "spot": "spot",
+            "spot light": "spot",
+            "spot_light": "spot",
+            "spotlight": "spot",
+            "area": "area",
+            "area light": "area",
+            "area_light": "area",
+        }
+        return aliases.get(text, aliases.get(text.replace(" ", "_"), "directional"))
+
+    @staticmethod
+    def _mgl_light_type_index(value) -> int:
+        light_type = MGLRendererMixin._mgl_normalize_light_type(value)
+        return {
+            "directional": 0,
+            "point": 1,
+            "spot": 2,
+            "area": 3,
+        }.get(light_type, 0)
+
+    @staticmethod
+    def _mgl_light_guide_line_points(light_type: str):
+        if np is None:
+            return None
+        kind = MGLRendererMixin._mgl_normalize_light_type(light_type)
+        points = []
+
+        def add(a, b):
+            points.append((float(a[0]), float(a[1]), float(a[2])))
+            points.append((float(b[0]), float(b[1]), float(b[2])))
+
+        def add_ring(axis: str, radius: float = 0.32, segments: int = 32):
+            coords = []
+            for i in range(int(segments)):
+                t = (math.tau * float(i)) / float(segments)
+                c = math.cos(t) * radius
+                s = math.sin(t) * radius
+                if axis == "xy":
+                    coords.append((c, s, 0.0))
+                elif axis == "xz":
+                    coords.append((c, 0.0, s))
+                else:
+                    coords.append((0.0, c, s))
+            for i, a in enumerate(coords):
+                add(a, coords[(i + 1) % len(coords)])
+
+        if kind == "point":
+            add_ring("xy")
+            add_ring("xz")
+            ray_dirs = [
+                (1.0, 0.0, 0.0), (-1.0, 0.0, 0.0),
+                (0.0, 1.0, 0.0), (0.0, -1.0, 0.0),
+                (0.0, 0.0, 1.0), (0.0, 0.0, -1.0),
+                (1.0, 1.0, 0.0), (-1.0, 1.0, 0.0),
+                (1.0, -1.0, 0.0), (-1.0, -1.0, 0.0),
+            ]
+            for d in ray_dirs:
+                arr = np.asarray(d, dtype=np.float32)
+                length = float(np.linalg.norm(arr))
+                if length > 1.0e-6:
+                    arr = arr / length
+                add(tuple(arr * 0.38), tuple(arr * 0.62))
+        elif kind == "spot":
+            apex = (0.0, 0.0, 0.0)
+            base_z = -0.95
+            radius = 0.38
+            segments = 32
+            base = []
+            for i in range(segments):
+                t = (math.tau * float(i)) / float(segments)
+                base.append((math.cos(t) * radius, math.sin(t) * radius, base_z))
+            for i, a in enumerate(base):
+                add(a, base[(i + 1) % len(base)])
+            for i in range(0, segments, 4):
+                add(apex, base[i])
+            add(apex, (0.0, 0.0, base_z))
+        elif kind == "area":
+            s = 0.42
+            corners = [(-s, s, 0.0), (s, s, 0.0), (s, -s, 0.0), (-s, -s, 0.0)]
+            for i, a in enumerate(corners):
+                add(a, corners[(i + 1) % len(corners)])
+            add(corners[0], corners[2])
+            add(corners[1], corners[3])
+        else:
+            add((-0.35, 0.35, 0.0), (0.35, 0.35, 0.0))
+            add((0.35, 0.35, 0.0), (0.35, -0.35, 0.0))
+            add((0.35, -0.35, 0.0), (-0.35, -0.35, 0.0))
+            add((-0.35, -0.35, 0.0), (-0.35, 0.35, 0.0))
+            add((-0.35, 0.35, 0.0), (0.35, -0.35, 0.0))
+            add((0.35, 0.35, 0.0), (-0.35, -0.35, 0.0))
+            add((0.0, 0.0, 0.0), (0.0, 0.0, -1.05))
+            add((0.0, 0.0, -1.05), (-0.13, 0.0, -0.82))
+            add((0.0, 0.0, -1.05), (0.13, 0.0, -0.82))
+            add((0.0, 0.0, -1.05), (0.0, -0.13, -0.82))
+            add((0.0, 0.0, -1.05), (0.0, 0.13, -0.82))
+        return np.asarray(points, dtype="f4").reshape(-1, 3)
+
+    def _mgl_light_position_tuple(self) -> Tuple[float, float, float]:
+        try:
+            owner = str(getattr(self, "_mgl_scene_light_owner", "") or "").strip()
+            if owner:
+                xf = self._mgl_get_scene_asset_xform(owner)
+                if isinstance(xf, dict):
+                    pos = list(xf.get("pos", (4.0, 6.0, 4.0)))[:3]
+                    if len(pos) >= 3:
+                        return (float(pos[0]), float(pos[1]), float(pos[2]))
+        except Exception:
+            pass
+        try:
+            pos = list(getattr(self, "_mgl_scene_light_pos", (4.0, 6.0, 4.0)) or (4.0, 6.0, 4.0))[:3]
+            if len(pos) >= 3:
+                return (float(pos[0]), float(pos[1]), float(pos[2]))
+        except Exception:
+            pass
+        return (4.0, 6.0, 4.0)
+
+    def _mgl_light_range_value(self) -> float:
+        try:
+            zoom = float(getattr(self, "_mgl_camera_zoom", 20.0) or 20.0)
+        except Exception:
+            zoom = 20.0
+        return max(20.0, min(100000.0, abs(zoom) * 6.0))
+
+    def _mgl_scene_light_direction_from_rotation(self):
+        if np is None:
+            return None
+        owner = str(getattr(self, "_mgl_scene_light_owner", "") or "").strip()
+        if not owner:
+            return None
+        try:
+            xf = self._mgl_get_scene_asset_xform(owner)
+            rot = list(xf.get("rot", (0.0, 0.0, 0.0)))[:3] if isinstance(xf, dict) else (0.0, 0.0, 0.0)
+            rx, ry, rz = (float(rot[0]), float(rot[1]), float(rot[2]))
+        except Exception:
+            rx = ry = rz = 0.0
+
+        def _rx(a):
+            a = math.radians(a)
+            c, s = math.cos(a), math.sin(a)
+            m = np.eye(4, dtype=np.float32)
+            m[1, 1] = c
+            m[1, 2] = s
+            m[2, 1] = -s
+            m[2, 2] = c
+            return m
+
+        def _ry(a):
+            a = math.radians(a)
+            c, s = math.cos(a), math.sin(a)
+            m = np.eye(4, dtype=np.float32)
+            m[0, 0] = c
+            m[0, 2] = -s
+            m[2, 0] = s
+            m[2, 2] = c
+            return m
+
+        def _rz(a):
+            a = math.radians(a)
+            c, s = math.cos(a), math.sin(a)
+            m = np.eye(4, dtype=np.float32)
+            m[0, 0] = c
+            m[0, 1] = s
+            m[1, 0] = -s
+            m[1, 1] = c
+            return m
+
+        try:
+            rmat = _rx(-rx) @ _ry(-ry) @ _rz(-rz)
+            ray_dir = (np.array([0.0, 0.0, -1.0, 0.0], dtype=np.float32) @ rmat)[:3]
+            length = float(np.linalg.norm(ray_dir))
+            if length <= 1.0e-6:
+                return None
+            ray_dir = ray_dir / length
+            light_dir = -ray_dir
+            return (float(light_dir[0]), float(light_dir[1]), float(light_dir[2]))
+        except Exception:
+            return None
+
+    def _mgl_effective_light_intensity(self) -> float:
+        try:
+            scene_value = getattr(self, "_mgl_scene_light_intensity", None)
+            if scene_value is not None:
+                return max(0.0, float(scene_value))
+        except Exception:
+            pass
+        try:
+            return max(0.0, float(getattr(self, "_mgl_light_intensity", 1.0) or 1.0))
+        except Exception:
+            return 1.0
+
+    def _mgl_effective_ambient_light(self) -> float:
+        try:
+            if not bool(getattr(self, "_mgl_ambient_light_enabled", True)):
+                return 0.0
+        except Exception:
+            pass
+        try:
+            return max(0.0, min(1.0, float(getattr(self, "_mgl_ambient_light_strength", 0.10))))
+        except Exception:
+            return 0.10
+
+    def _mgl_effective_shadow_darkness(self) -> float:
+        try:
+            raw_base = getattr(self, "_mgl_shadow_darkness", 1.0)
+            base = 1.0 if raw_base is None else float(raw_base)
+        except Exception:
+            base = 1.0
+        try:
+            strength = getattr(self, "_mgl_scene_light_shadow_strength", None)
+            if strength is not None:
+                base *= max(0.0, min(1.0, float(strength)))
+        except Exception:
+            pass
+        return max(0.0, min(1.0, float(base)))
 
     def _mgl_shadow_map_size_value(self) -> int:
         quality = self._mgl_shadow_quality_value(
@@ -10357,9 +10661,11 @@ class MGLRendererMixin:
         if self._mgl_ctx is None or getattr(self, "_mgl_shadow_prog", None) is None:
             return False
         size = self._mgl_shadow_map_size_value()
+        need_id_map = not bool(getattr(self, "_mgl_self_shadows_enabled", True))
         if (
             getattr(self, "_mgl_shadow_fbo", None) is not None
             and getattr(self, "_mgl_shadow_depth_tex", None) is not None
+            and (bool(getattr(self, "_mgl_shadow_id_tex", None) is not None) == bool(need_id_map))
             and int(getattr(self, "_mgl_shadow_size_current", 0) or 0) == int(size)
         ):
             return True
@@ -10371,6 +10677,12 @@ class MGLRendererMixin:
             pass
         try:
             tex = getattr(self, "_mgl_shadow_depth_tex", None)
+            if tex is not None and hasattr(tex, "release"):
+                tex.release()
+        except Exception:
+            pass
+        try:
+            tex = getattr(self, "_mgl_shadow_id_tex", None)
             if tex is not None and hasattr(tex, "release"):
                 tex.release()
         except Exception:
@@ -10390,7 +10702,21 @@ class MGLRendererMixin:
                 depth.compare_func = ""
             except Exception:
                 pass
-            fbo = self._mgl_ctx.framebuffer(depth_attachment=depth)
+            id_tex = None
+            if need_id_map:
+                id_tex = self._mgl_ctx.texture((size, size), 1, dtype="f4")
+                try:
+                    id_tex.repeat_x = False
+                    id_tex.repeat_y = False
+                except Exception:
+                    pass
+                try:
+                    id_tex.filter = (moderngl.NEAREST, moderngl.NEAREST)
+                except Exception:
+                    pass
+                fbo = self._mgl_ctx.framebuffer(color_attachments=[id_tex], depth_attachment=depth)
+            else:
+                fbo = self._mgl_ctx.framebuffer(depth_attachment=depth)
         except Exception as exc:
             try:
                 self._mgl_log_throttled(
@@ -10402,10 +10728,12 @@ class MGLRendererMixin:
                 pass
             self._mgl_shadow_fbo = None
             self._mgl_shadow_depth_tex = None
+            self._mgl_shadow_id_tex = None
             self._mgl_shadow_size_current = 0
             return False
         self._mgl_shadow_fbo = fbo
         self._mgl_shadow_depth_tex = depth
+        self._mgl_shadow_id_tex = id_tex
         self._mgl_shadow_size_current = int(size)
         return True
 
@@ -10443,6 +10771,12 @@ class MGLRendererMixin:
                     if owner and not bool(visibility.get(owner, True)):
                         continue
                     if owner:
+                        try:
+                            tag = str(getattr(item, "tag", "") or "")
+                            if tag == "scene-light":
+                                continue
+                        except Exception:
+                            pass
                         try:
                             _add_bounds(owner, self.get_scene_owner_bounds(owner))
                         except Exception:
@@ -10488,9 +10822,71 @@ class MGLRendererMixin:
         if bounds is None:
             return None
         center, radius = bounds
+        light_type = self._mgl_normalize_light_type(getattr(self, "_mgl_scene_light_type", "directional"))
+        scene_light_dir = self._mgl_scene_light_direction_from_rotation()
+        if scene_light_dir is not None:
+            try:
+                self._mgl_scene_light_dir = scene_light_dir
+            except Exception:
+                pass
+        else:
+            try:
+                self._mgl_scene_light_dir = None
+            except Exception:
+                pass
         light_dir = np.asarray(self._mgl_light_direction_tuple(), dtype=np.float32)
-        extent = max(1.0, float(radius) * 1.35)
-        distance = extent * 3.0
+        if light_type in {"point", "spot", "area"}:
+            try:
+                light_pos = np.asarray(self._mgl_light_position_tuple(), dtype=np.float32).reshape(-1)[:3]
+                if light_pos.shape[0] < 3 or not np.all(np.isfinite(light_pos)):
+                    raise ValueError("invalid light position")
+            except Exception:
+                light_pos = center + light_dir * max(4.0, float(radius) * 4.0)
+            ray_dir = -light_dir
+            ray_len = float(np.linalg.norm(ray_dir))
+            if ray_len <= 1.0e-6 or not np.all(np.isfinite(ray_dir)):
+                ray_dir = np.array([0.0, 0.0, -1.0], dtype=np.float32)
+            else:
+                ray_dir = ray_dir / ray_len
+            to_center = center - light_pos
+            to_center_len = float(np.linalg.norm(to_center))
+            if light_type == "spot":
+                forward = ray_dir
+                fov = 58.0
+            elif light_type == "area":
+                forward = ray_dir
+                fov = 100.0
+            elif to_center_len > max(0.05, float(radius) * 0.02):
+                forward = to_center / to_center_len
+                fov = 150.0
+            else:
+                forward = ray_dir
+                fov = 150.0
+            forward_len = float(np.linalg.norm(forward))
+            if forward_len <= 1.0e-6 or not np.all(np.isfinite(forward)):
+                forward = np.array([0.0, 0.0, -1.0], dtype=np.float32)
+            else:
+                forward = forward / forward_len
+            eye = light_pos
+            target = eye + forward
+            up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+            if abs(float(np.dot(up, forward))) > 0.92:
+                up = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+            try:
+                far = max(2.0, float(to_center_len) + float(radius) * 4.0)
+                near = max(0.001, min(0.05, far * 0.001))
+                view = Matrix44.look_at(
+                    (float(eye[0]), float(eye[1]), float(eye[2])),
+                    (float(target[0]), float(target[1]), float(target[2])),
+                    (float(up[0]), float(up[1]), float(up[2])),
+                    dtype="f4",
+                )
+                proj = Matrix44.perspective_projection(float(fov), 1.0, float(near), float(far))
+                return proj, view, (proj * view).astype("f4"), center, float(radius)
+            except Exception:
+                return None
+        extent = max(1.0, float(radius) * 2.5)
+        distance = extent * 4.0
         eye = center + light_dir * distance
         up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
         if abs(float(np.dot(up, light_dir))) > 0.92:
@@ -10508,7 +10904,7 @@ class MGLRendererMixin:
                 extent,
                 -extent,
                 0.01,
-                max(2.0, extent * 8.0),
+                max(2.0, extent * 12.0),
                 dtype="f4",
             )
             return proj, view, (proj * view).astype("f4"), center, float(radius)
@@ -10526,6 +10922,8 @@ class MGLRendererMixin:
             ("size", int(size)),
             ("quality", self._mgl_shadow_quality_value(getattr(self, "_mgl_shadow_quality", "low"))),
             ("render", 1 if bool(getattr(self, "_mgl_shadow_render_active", False)) else 0),
+            ("self", 1 if bool(getattr(self, "_mgl_self_shadows_enabled", True)) else 0),
+            ("two_sided", 1 if bool(getattr(self, "_mgl_two_sided_shadows_enabled", True)) else 0),
             ("frame", int(frame)),
         ]
         try:
@@ -10537,6 +10935,15 @@ class MGLRendererMixin:
             parts.append(("radius", round(float(radius), 3)))
         except Exception:
             parts.append(("radius", 1.0))
+        try:
+            parts.append(("light_owner", str(getattr(self, "_mgl_scene_light_owner", "") or "")))
+            parts.append(("light_type", str(getattr(self, "_mgl_scene_light_type", "directional") or "directional")))
+            parts.append(("light_pos", tuple(round(float(v), 5) for v in self._mgl_light_position_tuple())))
+            parts.append(("light_dir", tuple(round(float(v), 5) for v in self._mgl_light_direction_tuple())))
+            parts.append(("light_intensity", round(float(self._mgl_effective_light_intensity()), 5)))
+            parts.append(("light_shadow", round(float(self._mgl_effective_shadow_darkness()), 5)))
+        except Exception:
+            pass
 
         visibility = getattr(self, "_mgl_scene_visibility", {}) or {}
         scene = getattr(self, "_mgl_scene", None)
@@ -10560,7 +10967,26 @@ class MGLRendererMixin:
                         )
                     except Exception:
                         b = None
-                    parts.append(("item", tag, owner, b))
+                    model_sig = None
+                    try:
+                        model = payload.get("model")
+                        if model is not None:
+                            model_arr = np.asarray(model, dtype=np.float32).reshape(4, 4)
+                            model_sig = tuple(round(float(v), 5) for v in model_arr.reshape(-1))
+                    except Exception:
+                        model_sig = None
+                    xform_sig = None
+                    if model_sig is None and owner:
+                        try:
+                            xf = self._mgl_get_scene_asset_xform(owner)
+                            if isinstance(xf, dict):
+                                pos = tuple(round(float(v), 5) for v in list(xf.get("pos", (0.0, 0.0, 0.0)))[:3])
+                                rot = tuple(round(float(v), 5) for v in list(xf.get("rot", (0.0, 0.0, 0.0)))[:3])
+                                scl = tuple(round(float(v), 5) for v in list(xf.get("scl", (1.0, 1.0, 1.0)))[:3])
+                                xform_sig = (pos, rot, scl)
+                        except Exception:
+                            xform_sig = None
+                    parts.append(("item", tag, owner, b, model_sig, xform_sig))
             except Exception:
                 pass
         try:
@@ -10580,7 +11006,32 @@ class MGLRendererMixin:
         except Exception:
             pass
         try:
-            prog["LightIntensity"].value = float(getattr(self, "_mgl_light_intensity", 1.0) or 1.0)
+            light_type = self._mgl_normalize_light_type(getattr(self, "_mgl_scene_light_type", "directional"))
+            prog["LightType"].value = int(self._mgl_light_type_index(light_type))
+        except Exception:
+            pass
+        try:
+            prog["LightPos"].value = self._mgl_light_position_tuple()
+        except Exception:
+            pass
+        try:
+            prog["LightRange"].value = float(self._mgl_light_range_value())
+        except Exception:
+            pass
+        try:
+            prog["SpotCosInner"].value = float(math.cos(math.radians(16.0)))
+        except Exception:
+            pass
+        try:
+            prog["SpotCosOuter"].value = float(math.cos(math.radians(32.0)))
+        except Exception:
+            pass
+        try:
+            prog["LightIntensity"].value = float(self._mgl_effective_light_intensity())
+        except Exception:
+            pass
+        try:
+            prog["AmbientLight"].value = float(self._mgl_effective_ambient_light())
         except Exception:
             pass
         light_mvp = getattr(self, "_mgl_shadow_light_mvp", None)
@@ -10600,11 +11051,17 @@ class MGLRendererMixin:
         except Exception:
             pass
         try:
-            prog["ShadowBias"].value = float(getattr(self, "_mgl_shadow_bias", 0.0025) or 0.0025)
+            prog["ShadowBias"].value = float(getattr(self, "_mgl_shadow_bias", 0.0009) or 0.0009)
         except Exception:
             pass
         try:
-            prog["ShadowDarkness"].value = float(getattr(self, "_mgl_shadow_darkness", 0.45) or 0.45)
+            prog["ShadowDarkness"].value = float(self._mgl_effective_shadow_darkness())
+        except Exception:
+            pass
+        try:
+            id_tex = getattr(self, "_mgl_shadow_id_tex", None)
+            self_shadows = bool(getattr(self, "_mgl_self_shadows_enabled", True)) or id_tex is None
+            prog["UseSelfShadows"].value = 1 if self_shadows else 0
         except Exception:
             pass
         size = float(self._mgl_shadow_map_size_value())
@@ -10618,9 +11075,19 @@ class MGLRendererMixin:
             except Exception:
                 pass
             try:
+                prog["ShadowIdMap"].value = 8
+            except Exception:
+                pass
+            try:
                 tex = getattr(self, "_mgl_shadow_depth_tex", None)
                 if tex is not None:
                     tex.use(location=7)
+            except Exception:
+                pass
+            try:
+                id_tex = getattr(self, "_mgl_shadow_id_tex", None)
+                if id_tex is not None:
+                    id_tex.use(location=8)
             except Exception:
                 pass
 
@@ -10658,8 +11125,6 @@ class MGLRendererMixin:
         if self._mgl_ctx is None or getattr(self, "_mgl_shadow_prog", None) is None or item is None:
             return
         payload = getattr(item, "payload", None) or {}
-        if bool(payload.get("edge_wire", False)):
-            return
         if self._mgl_scene_item_is_transparent(item):
             return
         if isinstance(payload.get("fbx_rig_context"), dict):
@@ -10693,6 +11158,8 @@ class MGLRendererMixin:
             self._mgl_shadow_prog["LightMvp"].write(np.asarray(light_mvp, dtype="f4").tobytes())
             self._mgl_shadow_prog["Model"].write(model_np.astype("f4", copy=False).tobytes())
             self._mgl_shadow_prog["UseInstancing"].value = 1 if use_instancing else 0
+            shadow_id = max(0, min(65535, int(getattr(item, "item_id", 0) or 0))) / 65535.0
+            self._mgl_shadow_prog["ShadowCasterId"].value = float(shadow_id)
         except Exception:
             pass
         if submeshes:
@@ -10732,6 +11199,7 @@ class MGLRendererMixin:
             self._mgl_splat_shadow_prog["LightProj"].write(np.asarray(light_proj, dtype="f4").tobytes())
             self._mgl_splat_shadow_prog["LightView"].write(np.asarray(light_view, dtype="f4").tobytes())
             self._mgl_splat_shadow_prog["SplatWorldScale"].value = float(getattr(self, "_mgl_splat_world_scale", 1.0))
+            self._mgl_splat_shadow_prog["ShadowCasterId"].value = 0.0
         except Exception:
             pass
         try:
@@ -10773,13 +11241,14 @@ class MGLRendererMixin:
             return
         size = self._mgl_shadow_map_size_value()
         signature = self._mgl_shadow_scene_signature(size, shadow_center, shadow_radius)
-        force_update = bool(getattr(self, "_mgl_shadow_dirty", True) or getattr(self, "_mgl_shadow_render_active", False))
+        explicit_update = bool(getattr(self, "_mgl_shadow_dirty", True) or getattr(self, "_mgl_shadow_render_active", False))
+        force_update = bool(explicit_update)
         if not force_update:
             try:
                 force_update = signature != getattr(self, "_mgl_shadow_signature", None)
             except Exception:
                 force_update = True
-        if force_update:
+        if force_update and not explicit_update:
             try:
                 interval = float(self._mgl_shadow_update_interval_value())
                 now = time.perf_counter()
@@ -10816,18 +11285,39 @@ class MGLRendererMixin:
             old_wireframe = None
         try:
             fbo.use()
+            try:
+                raw_gl = getattr(self, "_gl", None)
+                glo = int(getattr(fbo, "glo", 0) or 0)
+                if raw_gl is not None and glo > 0 and hasattr(raw_gl, "glBindFramebuffer"):
+                    raw_gl.glBindFramebuffer(0x8D40, glo)  # GL_FRAMEBUFFER
+                if raw_gl is not None and getattr(self, "_mgl_shadow_id_tex", None) is not None:
+                    if hasattr(raw_gl, "glColorMask"):
+                        raw_gl.glColorMask(True, True, True, True)
+                    if hasattr(raw_gl, "glDrawBuffer"):
+                        raw_gl.glDrawBuffer(0x8CE0)  # GL_COLOR_ATTACHMENT0
+            except Exception:
+                pass
             self._mgl_ctx.viewport = (0, 0, size, size)
             try:
-                self._mgl_ctx.clear(depth=1.0)
+                if getattr(self, "_mgl_shadow_id_tex", None) is not None:
+                    fbo.clear(0.0, 0.0, 0.0, 0.0, depth=1.0)
+                else:
+                    fbo.clear(depth=1.0)
             except Exception:
                 try:
-                    fbo.clear(depth=1.0)
+                    if getattr(self, "_mgl_shadow_id_tex", None) is not None:
+                        self._mgl_ctx.clear(0.0, 0.0, 0.0, 0.0, depth=1.0)
+                    else:
+                        self._mgl_ctx.clear(depth=1.0)
                 except Exception:
                     pass
             try:
                 self._mgl_ctx.enable(moderngl.DEPTH_TEST)
                 self._mgl_ctx.disable(moderngl.BLEND)
-                self._mgl_ctx.disable(moderngl.CULL_FACE)
+                if bool(getattr(self, "_mgl_two_sided_shadows_enabled", True)):
+                    self._mgl_ctx.disable(moderngl.CULL_FACE)
+                else:
+                    self._mgl_ctx.enable(moderngl.CULL_FACE)
             except Exception:
                 pass
             try:
@@ -12977,11 +13467,94 @@ class MGLRendererMixin:
                     pass
         self.update()
 
+    def _on_mgl_ambient_toggled(self, checked: bool) -> None:
+        self._apply_mgl_ambient_settings(enabled=bool(checked), sync_ui=False, sync_scene=True)
+
+    def _apply_mgl_ambient_settings(
+        self,
+        *,
+        enabled: Optional[bool] = None,
+        strength: Optional[float] = None,
+        sync_ui: bool = True,
+        sync_scene: bool = True,
+    ) -> None:
+        if not self._use_moderngl:
+            return
+        if enabled is not None:
+            self._mgl_ambient_light_enabled = bool(enabled)
+        if strength is not None:
+            try:
+                self._mgl_ambient_light_strength = max(0.0, min(1.0, float(strength)))
+            except Exception:
+                self._mgl_ambient_light_strength = 0.10
+        ambient = float(self._mgl_effective_ambient_light())
+        for prog_name in ("_mgl_prog", "_mgl_splatq_prog"):
+            try:
+                prog = getattr(self, prog_name, None)
+                if prog is not None:
+                    prog["AmbientLight"].value = ambient
+            except Exception:
+                pass
+        if sync_ui:
+            toggle = getattr(self, "_mgl_ambient_toggle", None)
+            if toggle is not None:
+                try:
+                    toggle.blockSignals(True)
+                    toggle.setChecked(bool(getattr(self, "_mgl_ambient_light_enabled", True)))
+                finally:
+                    try:
+                        toggle.blockSignals(False)
+                    except Exception:
+                        pass
+        try:
+            win = self.window()
+        except Exception:
+            win = None
+        if win is not None and win is not self:
+            try:
+                if hasattr(win, "_ambient_light_enabled"):
+                    win._ambient_light_enabled = bool(getattr(self, "_mgl_ambient_light_enabled", True))
+                if hasattr(win, "_ambient_light_strength"):
+                    win._ambient_light_strength = float(getattr(self, "_mgl_ambient_light_strength", 0.10))
+                toggle = getattr(win, "_ambient_light_toggle", None)
+                if toggle is not None:
+                    try:
+                        toggle.blockSignals(True)
+                        toggle.setChecked(bool(getattr(self, "_mgl_ambient_light_enabled", True)))
+                    finally:
+                        try:
+                            toggle.blockSignals(False)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+        if sync_scene:
+            scene = getattr(self, "_scene", None)
+            if scene is not None:
+                try:
+                    settings = getattr(scene, "_view_settings", None)
+                    if not isinstance(settings, dict):
+                        settings = {}
+                    settings = dict(settings)
+                    settings["ambient_light"] = bool(getattr(self, "_mgl_ambient_light_enabled", True))
+                    settings["ambient_light_strength"] = float(
+                        getattr(self, "_mgl_ambient_light_strength", 0.10)
+                    )
+                    scene._view_settings = settings
+                except Exception:
+                    pass
+        self.update()
+
+    def _on_mgl_two_sided_shadows_toggled(self, checked: bool) -> None:
+        self._apply_mgl_shadow_settings(two_sided_shadows=bool(checked), sync_scene=True)
+
     def _apply_mgl_shadow_settings(
         self,
         *,
         enabled: Optional[bool] = None,
         quality: Optional[str] = None,
+        self_shadows: Optional[bool] = None,
+        two_sided_shadows: Optional[bool] = None,
         sync_scene: bool = True,
     ) -> None:
         if not self._use_moderngl:
@@ -12990,12 +13563,54 @@ class MGLRendererMixin:
             self._mgl_shadows_enabled = bool(enabled)
         if quality is not None:
             self._mgl_shadow_quality = self._mgl_shadow_quality_value(quality)
+        if self_shadows is not None:
+            self._mgl_self_shadows_enabled = bool(self_shadows)
+        if two_sided_shadows is not None:
+            self._mgl_two_sided_shadows_enabled = bool(two_sided_shadows)
+        toggle = getattr(self, "_mgl_two_sided_shadow_toggle", None)
+        if toggle is not None:
+            try:
+                toggle.blockSignals(True)
+                toggle.setChecked(bool(getattr(self, "_mgl_two_sided_shadows_enabled", True)))
+            finally:
+                try:
+                    toggle.blockSignals(False)
+                except Exception:
+                    pass
+        try:
+            win = self.window()
+        except Exception:
+            win = None
+        if win is not None and win is not self:
+            try:
+                if hasattr(win, "_shadow_quality"):
+                    win._shadow_quality = self._mgl_shadow_quality_value(getattr(self, "_mgl_shadow_quality", "low"))
+                if hasattr(win, "_cast_shadows_enabled"):
+                    win._cast_shadows_enabled = bool(getattr(self, "_mgl_shadows_enabled", True))
+                if hasattr(win, "_self_shadows_enabled"):
+                    win._self_shadows_enabled = bool(getattr(self, "_mgl_self_shadows_enabled", True))
+                if hasattr(win, "_two_sided_shadows_enabled"):
+                    win._two_sided_shadows_enabled = bool(getattr(self, "_mgl_two_sided_shadows_enabled", True))
+                toggle = getattr(win, "_two_sided_shadows_toggle", None)
+                if toggle is not None:
+                    try:
+                        toggle.blockSignals(True)
+                        toggle.setChecked(bool(getattr(self, "_mgl_two_sided_shadows_enabled", True)))
+                    finally:
+                        try:
+                            toggle.blockSignals(False)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
         try:
             self._mgl_shadow_map_size = int(self._mgl_shadow_map_size_value())
         except Exception:
             pass
         try:
             self._mgl_shadow_dirty = True
+            self._mgl_shadow_valid = False
+            self._mgl_shadow_signature = None
         except Exception:
             pass
         if sync_scene:
@@ -13008,6 +13623,10 @@ class MGLRendererMixin:
                     settings = dict(settings)
                     settings["cast_shadows"] = bool(getattr(self, "_mgl_shadows_enabled", True))
                     settings["shadow_quality"] = self._mgl_shadow_quality_value(getattr(self, "_mgl_shadow_quality", "low"))
+                    settings["self_shadows"] = bool(getattr(self, "_mgl_self_shadows_enabled", True))
+                    settings["two_sided_shadows"] = bool(
+                        getattr(self, "_mgl_two_sided_shadows_enabled", True)
+                    )
                     scene._view_settings = settings
                 except Exception:
                     pass
@@ -13046,7 +13665,7 @@ class MGLRendererMixin:
             if scene_items is not None:
                 for item in scene_items.items():
                     tag = str(getattr(item, "tag", "") or "")
-                    if tag not in ("model-wire", "scene-wire", "scene-volume", "scene-camera"):
+                    if tag not in ("model-wire", "scene-wire", "scene-volume", "scene-camera", "scene-light"):
                         continue
                     payload = getattr(item, "payload", None)
                     if isinstance(payload, dict):
@@ -13163,16 +13782,20 @@ class MGLRendererMixin:
             try:
                 self._mgl_prog["Texture"].value = 0
                 self._mgl_prog["ShadowMap"].value = 7
+                self._mgl_prog["ShadowIdMap"].value = 8
                 self._mgl_prog["SceneColorTex"].value = 5
                 self._mgl_prog["UseTexture"].value = 0
                 self._mgl_prog["UseVertexColor"].value = 0
                 self._mgl_prog["LightDir"].value = self._mgl_light_direction_tuple()
-                self._mgl_prog["LightIntensity"].value = float(self._mgl_light_intensity)
+                self._mgl_prog["LightIntensity"].value = float(self._mgl_effective_light_intensity())
+                self._mgl_prog["AmbientLight"].value = float(self._mgl_effective_ambient_light())
                 self._mgl_prog["UseLighting"].value = 1
                 self._mgl_prog["UseInstancing"].value = 0
                 self._mgl_prog["UseShadows"].value = 0
-                self._mgl_prog["ShadowBias"].value = float(getattr(self, "_mgl_shadow_bias", 0.0025) or 0.0025)
-                self._mgl_prog["ShadowDarkness"].value = float(getattr(self, "_mgl_shadow_darkness", 0.45) or 0.45)
+                self._mgl_prog["UseSelfShadows"].value = 1
+                self._mgl_prog["ShadowBias"].value = float(getattr(self, "_mgl_shadow_bias", 0.0009) or 0.0009)
+                self._mgl_prog["ShadowDarkness"].value = float(self._mgl_effective_shadow_darkness())
+                self._mgl_prog["ShadowReceiverId"].value = 0.0
                 size = float(getattr(self, "_mgl_shadow_map_size", 2048) or 2048)
                 self._mgl_prog["ShadowMapSize"].value = (size, size)
                 self._mgl_prog["UseMaterial"].value = 0
@@ -13231,14 +13854,15 @@ class MGLRendererMixin:
                 pass
             try:
                 self._mgl_shadow_prog["UseInstancing"].value = 0
+                self._mgl_shadow_prog["ShadowCasterId"].value = 0.0
             except Exception:
                 pass
             self._mgl_grid_prog["Color"].value = (0.8, 0.8, 0.8, self._mgl_grid_alpha)
             try:
                 self._mgl_grid_prog["ShadowMap"].value = 7
                 self._mgl_grid_prog["UseShadows"].value = 0
-                self._mgl_grid_prog["ShadowBias"].value = float(getattr(self, "_mgl_shadow_bias", 0.0025) or 0.0025)
-                self._mgl_grid_prog["ShadowDarkness"].value = float(getattr(self, "_mgl_shadow_darkness", 0.45) or 0.45)
+                self._mgl_grid_prog["ShadowBias"].value = float(getattr(self, "_mgl_shadow_bias", 0.0009) or 0.0009)
+                self._mgl_grid_prog["ShadowDarkness"].value = float(self._mgl_effective_shadow_darkness())
                 size = float(getattr(self, "_mgl_shadow_map_size", 2048) or 2048)
                 self._mgl_grid_prog["ShadowMapSize"].value = (size, size)
                 if np is not None:
@@ -13277,11 +13901,12 @@ class MGLRendererMixin:
             try:
                 self._mgl_splatq_prog["ShadowMap"].value = 7
                 self._mgl_splatq_prog["LightDir"].value = self._mgl_light_direction_tuple()
-                self._mgl_splatq_prog["LightIntensity"].value = float(self._mgl_light_intensity)
+                self._mgl_splatq_prog["LightIntensity"].value = float(self._mgl_effective_light_intensity())
+                self._mgl_splatq_prog["AmbientLight"].value = float(self._mgl_effective_ambient_light())
                 self._mgl_splatq_prog["UseSplatLighting"].value = 0
                 self._mgl_splatq_prog["UseShadows"].value = 0
-                self._mgl_splatq_prog["ShadowBias"].value = float(getattr(self, "_mgl_shadow_bias", 0.0025) or 0.0025)
-                self._mgl_splatq_prog["ShadowDarkness"].value = float(getattr(self, "_mgl_shadow_darkness", 0.45) or 0.45)
+                self._mgl_splatq_prog["ShadowBias"].value = float(getattr(self, "_mgl_shadow_bias", 0.0009) or 0.0009)
+                self._mgl_splatq_prog["ShadowDarkness"].value = float(self._mgl_effective_shadow_darkness())
                 size = float(getattr(self, "_mgl_shadow_map_size", 2048) or 2048)
                 self._mgl_splatq_prog["ShadowMapSize"].value = (size, size)
                 if np is not None:
@@ -14456,6 +15081,53 @@ class MGLRendererMixin:
                 return new_min.copy(), new_max.copy()
             return np.minimum(bmin, new_min), np.maximum(bmax, new_max)
 
+        def _normalize_asset_xform(raw):
+            if not isinstance(raw, dict):
+                return None
+
+            def _triplet(value, default):
+                seq = value if isinstance(value, (list, tuple)) else default
+                try:
+                    return (float(seq[0]), float(seq[1]), float(seq[2]))
+                except Exception:
+                    return (float(default[0]), float(default[1]), float(default[2]))
+
+            return {
+                "pos": _triplet(raw.get("pos", (0.0, 0.0, 0.0)), (0.0, 0.0, 0.0)),
+                "rot": _triplet(raw.get("rot", (0.0, 0.0, 0.0)), (0.0, 0.0, 0.0)),
+                "scl": _triplet(raw.get("scl", (1.0, 1.0, 1.0)), (1.0, 1.0, 1.0)),
+            }
+
+        def _xform_is_identity(xf) -> bool:
+            if not isinstance(xf, dict):
+                return False
+            try:
+                pos = xf.get("pos", (0.0, 0.0, 0.0))
+                rot = xf.get("rot", (0.0, 0.0, 0.0))
+                scl = xf.get("scl", (1.0, 1.0, 1.0))
+                return (
+                    all(abs(float(v)) < 1.0e-6 for v in pos)
+                    and all(abs(float(v)) < 1.0e-6 for v in rot)
+                    and all(abs(float(v) - 1.0) < 1.0e-6 for v in scl)
+                )
+            except Exception:
+                return False
+
+        def _seed_asset_xform(owner_name: str, raw_xform, *, is_splat: bool = False) -> None:
+            owner_key = str(owner_name or "").strip()
+            xf = _normalize_asset_xform(raw_xform)
+            if not owner_key or not isinstance(xf, dict):
+                return
+            attr = "_mgl_scene_splat_xforms_by_owner" if is_splat else "_mgl_scene_xforms_by_owner"
+            mapping = getattr(self, attr, None)
+            if not isinstance(mapping, dict):
+                mapping = {}
+                setattr(self, attr, mapping)
+            existing = self._mgl_casefold_get(mapping, owner_key)
+            if isinstance(existing, dict) and _xform_is_identity(xf) and not _xform_is_identity(existing):
+                return
+            mapping[owner_key] = xf
+
         self._mgl_error = ""
         # Reset scene scale for every load (snapshots should not override this).
         try:
@@ -14766,6 +15438,7 @@ class MGLRendererMixin:
                     )
                     continue
                 is_camera = kind == "camera" or ext_hint == ".camera"
+                is_light = kind == "light" or ext_hint == ".light"
                 path_str = str(asset.get("path", "") or "").strip()
                 path = None
                 ext = ext_hint
@@ -14787,7 +15460,7 @@ class MGLRendererMixin:
                         ext = path.suffix.lower()
                     if not owner:
                         owner = path.name
-                elif not is_camera:
+                elif not (is_camera or is_light):
                     if material is not None:
                         self._mgl_material_log(
                             "renderer.load.skip_no_path",
@@ -14807,7 +15480,12 @@ class MGLRendererMixin:
                             material=material,
                         )
                     continue
-                path_key = str(path) if path is not None else f"camera://{owner}"
+                if path is not None:
+                    path_key = str(path)
+                elif is_light:
+                    path_key = f"light://{owner}"
+                else:
+                    path_key = f"camera://{owner}"
                 visibility_map = getattr(self, "_mgl_scene_visibility", {}) or {}
                 visible = bool(visibility_map.get(owner, True))
                 wire_only = bool(asset.get("wire_only"))
@@ -14816,11 +15494,77 @@ class MGLRendererMixin:
                 copy_to_points = asset.get("copy_to_points") if isinstance(asset.get("copy_to_points"), dict) else None
                 gpu_copy_instances = bool(copy_to_points.get("gpu_instances", False)) if isinstance(copy_to_points, dict) else False
                 music_effects = asset.get("music_effects") if isinstance(asset.get("music_effects"), dict) else None
+                proxy_type = str((render_proxy or {}).get("type") or "").strip().lower() if isinstance(render_proxy, dict) else ""
+                _seed_asset_xform(
+                    owner,
+                    asset.get("xform"),
+                    is_splat=bool(ext == ".ply" or proxy_type in {"skinned_splat", "skinned_gaussian_splat"}),
+                )
                 if isinstance(render_proxy, dict):
                     try:
                         self._mgl_scene_render_proxy_by_owner[owner] = dict(render_proxy)
                     except Exception:
                         pass
+                if is_light:
+                    light_cfg = asset.get("light") if isinstance(asset.get("light"), dict) else {}
+                    light_type = self._mgl_normalize_light_type(light_cfg.get("type", "directional"))
+                    if bool(visible) and not str(getattr(self, "_mgl_scene_light_owner", "") or "").strip():
+                        try:
+                            self._mgl_scene_light_owner = owner
+                        except Exception:
+                            pass
+                        try:
+                            self._mgl_scene_light_type = light_type
+                        except Exception:
+                            self._mgl_scene_light_type = "directional"
+                        try:
+                            self._mgl_scene_light_intensity = max(0.0, float(light_cfg.get("intensity", 1.0)))
+                        except Exception:
+                            self._mgl_scene_light_intensity = 1.0
+                        try:
+                            self._mgl_scene_light_shadow_strength = max(
+                                0.0,
+                                min(1.0, float(light_cfg.get("shadow_strength", 1.0))),
+                            )
+                        except Exception:
+                            self._mgl_scene_light_shadow_strength = 1.0
+                        try:
+                            xf = self._mgl_get_scene_asset_xform(owner)
+                            pos = list(xf.get("pos", (4.0, 6.0, 4.0)))[:3] if isinstance(xf, dict) else (4.0, 6.0, 4.0)
+                            self._mgl_scene_light_pos = tuple(float(v) for v in pos)
+                        except Exception:
+                            self._mgl_scene_light_pos = (4.0, 6.0, 4.0)
+
+                    wire_item = None
+                    try:
+                        line_points = self._mgl_light_guide_line_points(light_type)
+                        if line_points is None or line_points.size == 0:
+                            raise ValueError("empty light guide")
+                        self._mgl_scene_bounds_by_owner[owner] = (
+                            line_points.min(axis=0).astype("f4"),
+                            line_points.max(axis=0).astype("f4"),
+                        )
+                        self._mgl_scene_mesh_bounds_by_owner[owner] = self._mgl_scene_bounds_by_owner[owner]
+                        wire_item = self._mgl_add_wire_item_from_points(
+                            name=f"{owner}-light",
+                            line_points=line_points,
+                            visible=visible,
+                            tag="scene-light",
+                            owner=owner,
+                            path_key=path_key,
+                        )
+                    except Exception:
+                        wire_item = None
+                    if wire_item is not None:
+                        payload = wire_item.payload or {}
+                        payload["color"] = (1.0, 0.92, 0.25, 1.0)
+                        payload["line_width"] = 2.2
+                        light_payload = dict(light_cfg)
+                        light_payload["type"] = light_type
+                        payload["light"] = light_payload
+                        wire_item.payload = payload
+                        scene.add(wire_item)
+                    continue
                 fbx_rig_context = asset.get("fbx_rig_context") if isinstance(asset, dict) else None
                 if (
                     not isinstance(fbx_rig_context, dict)

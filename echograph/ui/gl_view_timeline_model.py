@@ -209,7 +209,7 @@ class GraphGLTimelineModelMixin:
         key_l = key.lower()
         scene = getattr(self, "_mgl_scene", None)
         if scene is not None:
-            for tag in ("scene-model", "scene-wire", "scene-rig-joints", "scene-camera", "model", "model-wire"):
+            for tag in ("scene-model", "scene-wire", "scene-rig-joints", "scene-camera", "scene-light", "model", "model-wire"):
                 try:
                     items = list(scene.iter_by_tag(tag))
                 except Exception:

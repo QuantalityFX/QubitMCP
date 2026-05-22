@@ -69,16 +69,38 @@ def _primitive_path(node_item, node_name: str, shape: str) -> Path:
     return _primitive_dir(node_item) / f"{safe}_{shape_key}.obj"
 
 
-def _write_obj(path: Path, verts: list[tuple[float, float, float]], faces: list[list[int]]) -> None:
+def _write_obj(
+    path: Path,
+    verts: list[tuple[float, float, float]],
+    faces: list[list[int]],
+    normals: list[tuple[float, float, float]] | None = None,
+) -> None:
     lines = ["# EchoGraph primitive"]
     for x, y, z in verts:
         lines.append(f"v {x:.6f} {y:.6f} {z:.6f}")
+    normals_list = [] if normals is None else list(normals)
+    for nx, ny, nz in normals_list:
+        lines.append(f"vn {nx:.6f} {ny:.6f} {nz:.6f}")
     for face in faces:
         if not face or len(face) < 3:
             continue
-        idxs = " ".join(str(i + 1) for i in face)
+        if normals_list and all(0 <= int(i) < len(normals_list) for i in face):
+            idxs = " ".join(f"{int(i) + 1}//{int(i) + 1}" for i in face)
+        else:
+            idxs = " ".join(str(int(i) + 1) for i in face)
         lines.append(f"f {idxs}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _radial_normals(verts: list[tuple[float, float, float]]) -> list[tuple[float, float, float]]:
+    out: list[tuple[float, float, float]] = []
+    for x, y, z in verts:
+        length = math.sqrt((x * x) + (y * y) + (z * z))
+        if length > 1.0e-8:
+            out.append((x / length, y / length, z / length))
+        else:
+            out.append((0.0, 1.0, 0.0))
+    return out
 
 
 def _cube(size: float = 1.0):
@@ -112,7 +134,7 @@ def _plane(size: float = 1.0):
         (s, 0.0, s),
         (-s, 0.0, s),
     ]
-    faces = [[0, 1, 2, 3]]
+    faces = [[0, 3, 2, 1]]
     return verts, faces
 
 
@@ -348,7 +370,13 @@ class PrimitiveWidget(QtWidgets.QWidget):
         path = _primitive_path(self._node_item, getattr(self._node_item.model, "name", "primitive"), shape)
         try:
             verts, faces = _build_primitive_mesh(shape)
-            _write_obj(path, verts, faces)
+            if shape == "sphere":
+                normals = _radial_normals(verts)
+            elif shape == "plane":
+                normals = [(0.0, 1.0, 0.0) for _ in verts]
+            else:
+                normals = None
+            _write_obj(path, verts, faces, normals=normals)
         except Exception:
             pass
 

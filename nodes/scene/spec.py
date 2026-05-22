@@ -51,6 +51,29 @@ _COPY_TO_POINTS_KIND_ALIASES = {
     "copy to point",
     "copytopoints",
 }
+_LIGHT_KIND_ALIASES = {
+    "light",
+    "scene_light",
+    "scene light",
+    "directional_light",
+    "directional light",
+}
+_LIGHT_TYPE_ALIASES = {
+    "dir": "directional",
+    "directional": "directional",
+    "directional_light": "directional",
+    "directional light": "directional",
+    "point": "point",
+    "point_light": "point",
+    "point light": "point",
+    "spot": "spot",
+    "spot_light": "spot",
+    "spot light": "spot",
+    "spotlight": "spot",
+    "area": "area",
+    "area_light": "area",
+    "area light": "area",
+}
 _MOCAP_KIND_ALIASES = {
     "mocap_import",
     "mocap import",
@@ -63,6 +86,12 @@ _MOCAP_KIND_ALIASES = {
 _EYE_ICON_CACHE = {}
 _FX_LOG_ENABLED = True
 _SCENE_LOG_TIMES = {}
+
+
+def _normalize_light_type(value) -> str:
+    text = str(value or "").strip().lower().replace("-", "_")
+    text = " ".join(text.replace("_", " ").split())
+    return _LIGHT_TYPE_ALIASES.get(text, _LIGHT_TYPE_ALIASES.get(text.replace(" ", "_"), "directional"))
 
 
 def _fx_log(msg: str) -> None:
@@ -730,6 +759,61 @@ def _camera_proxy_obj_path(node_item, camera_name: str) -> str:
     return str(out_path)
 
 
+def _light_proxy_obj_path(node_item, light_name: str) -> str:
+    primitive_spec = None
+    try:
+        from nodes.primitive import spec as primitive_spec  # type: ignore
+    except Exception:
+        primitive_spec = None
+
+    base_dir = None
+    if primitive_spec is not None:
+        get_dir = getattr(primitive_spec, "_primitive_dir", None)
+        if callable(get_dir):
+            try:
+                base_dir = Path(get_dir(node_item))
+            except Exception:
+                base_dir = None
+    if base_dir is None:
+        base_dir = Path(tempfile.gettempdir()) / "EchoGraph" / "primitives"
+    out_dir = base_dir / "_scene_light"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    out_path = out_dir / f"{_safe_name(light_name)}_light.obj"
+    verts = [
+        (-0.35, 0.35, 0.0),
+        (0.35, 0.35, 0.0),
+        (0.35, -0.35, 0.0),
+        (-0.35, -0.35, 0.0),
+        (0.0, 0.0, 0.0),
+        (0.0, 0.0, -1.05),
+        (-0.13, 0.0, -0.82),
+        (0.13, 0.0, -0.82),
+        (0.0, -0.13, -0.82),
+        (0.0, 0.13, -0.82),
+    ]
+    lines_idx = [
+        [0, 1, 2, 3, 0],
+        [0, 2],
+        [1, 3],
+        [4, 5],
+        [5, 6],
+        [5, 7],
+        [5, 8],
+        [5, 9],
+    ]
+    try:
+        lines = ["# EchoGraph scene light proxy"]
+        for x, y, z in verts:
+            lines.append(f"v {float(x):.6f} {float(y):.6f} {float(z):.6f}")
+        for row in lines_idx:
+            lines.append("l " + " ".join(str(int(i) + 1) for i in row))
+        out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except Exception:
+        return ""
+    return str(out_path)
+
+
 def _resolve_input_item(scene, node_item, port_names=None):
     if scene is None or node_item is None:
         return None, "", ""
@@ -1393,9 +1477,8 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
         transform_model = _find_upstream_transform(base_item)
         if transform_model is not None and path:
             src_path = _param_value(transform_model, "source")
-            out_path = _param_value(transform_model, "path")
             norm_path = _norm_path(path)
-            if norm_path == _norm_path(src_path) and norm_path != _norm_path(out_path):
+            if src_path and norm_path == _norm_path(src_path):
                 pos = _parse_vec3(_param_value(transform_model, "pos"), (0.0, 0.0, 0.0))
                 rot = _parse_vec3(_param_value(transform_model, "rot"), (0.0, 0.0, 0.0))
                 scl = _parse_vec3(_param_value(transform_model, "scl"), (1.0, 1.0, 1.0))
@@ -1462,6 +1545,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
     seen = set()
     seen_wire = set()
     seen_camera = set()
+    seen_light = set()
     scene_owner_names = set()
     for edge in in_edges:
         src_item = getattr(edge, "src", None)
@@ -1711,6 +1795,50 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                 )
         material_debug_on = bool(material_asset.get("debug_log")) if isinstance(material_asset, dict) else _material_debug_enabled(model)
         fx_debug_on = _fx_debug_enabled(model)
+
+        if kind in _LIGHT_KIND_ALIASES:
+            light_name = (getattr(model, "name", "") or "").strip() or "light"
+            if light_name in seen_light:
+                continue
+            seen_light.add(light_name)
+            light_path = _light_proxy_obj_path(node_item, light_name)
+            if not light_path:
+                continue
+            xf = _lookup_xform(xforms, light_name)
+            if not isinstance(xf, dict):
+                xf = {
+                    "pos": [4.0, 6.0, 4.0],
+                    "rot": [133.5, 135.0, 0.0],
+                    "scl": [1.0, 1.0, 1.0],
+                }
+            try:
+                intensity = float((_param_value(model, "intensity") or "").strip() or 1.0)
+            except Exception:
+                intensity = 1.0
+            try:
+                shadow_strength = float((_param_value(model, "shadow_strength") or "").strip() or 1.0)
+            except Exception:
+                shadow_strength = 1.0
+            light_type = _normalize_light_type(_param_value(model, "type") or _param_value(model, "light_type"))
+            assets.append(
+                {
+                    "path": light_path,
+                    "texture": "",
+                    "node": light_name,
+                    "ext": ".obj",
+                    "kind": "light",
+                    "visible": light_name not in hidden,
+                    "xform": xf,
+                    "wire_only": True,
+                    "volume": True,
+                    "light": {
+                        "type": light_type,
+                        "intensity": max(0.0, float(intensity)),
+                        "shadow_strength": max(0.0, min(1.0, float(shadow_strength))),
+                    },
+                }
+            )
+            continue
 
         if kind == "camera":
             cam_name = (getattr(model, "name", "") or "").strip() or "camera"
@@ -2232,9 +2360,8 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
         transform_model = _find_upstream_transform(src_item)
         if transform_model is not None and path:
             src_path = _param_value(transform_model, "source")
-            out_path = _param_value(transform_model, "path")
             norm_path = _norm_path(path)
-            if norm_path == _norm_path(src_path) and norm_path != _norm_path(out_path):
+            if src_path and norm_path == _norm_path(src_path):
                 if xf is None:
                     pos = _parse_vec3(_param_value(transform_model, "pos"), (0.0, 0.0, 0.0))
                     rot = _parse_vec3(_param_value(transform_model, "rot"), (0.0, 0.0, 0.0))
@@ -2577,13 +2704,16 @@ class SceneAssemblyWidget(QtWidgets.QWidget):
             if (str(a.get("kind", "")).strip().lower() == "camera")
             or (str(a.get("ext", "")).strip().lower() == ".camera")
         )
+        light_count = sum(1 for a in assets if str(a.get("kind", "")).strip().lower() == "light")
         splat_count = sum(1 for a in assets if str(a.get("ext", "")).strip().lower() == ".ply")
-        mesh_count = max(0, len(assets) - splat_count - camera_count)
+        mesh_count = max(0, len(assets) - splat_count - camera_count - light_count)
         label = f"{len(assets)} connected (mesh {mesh_count}"
         if splat_count:
             label += f", splat {splat_count}"
         if camera_count:
             label += f", camera {camera_count}"
+        if light_count:
+            label += f", light {light_count}"
         label += ")"
         self._status.setText(label)
 
@@ -2593,7 +2723,7 @@ class SceneAssemblyWidget(QtWidgets.QWidget):
             QtWidgets.QMessageBox.information(
                 self,
                 "Scene",
-            "Connect one or more 3D import, primitive, material, volume, UV unwrap, texture, texture layer, texture pro, or camera nodes first.",
+            "Connect one or more 3D import, primitive, material, volume, UV unwrap, texture, texture layer, texture pro, camera, or light nodes first.",
             )
             return
         try:
@@ -3601,6 +3731,10 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                     seen.add(name)
                     rows.append({"name": name, "path": "", "kind": "camera"})
                     continue
+                if kind == "light":
+                    seen.add(name)
+                    rows.append({"name": name, "path": "", "kind": "light"})
+                    continue
                 path = str(asset.get("path") or "").strip()
                 if not path:
                     continue
@@ -3611,7 +3745,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 rows.append({"name": name, "path": path, "kind": "mesh"})
 
             if not rows:
-                empty = QtWidgets.QListWidgetItem("(no connected imports, primitives, volumes, UV unwraps, textures, texture layers, texture pros, or cameras)")
+                empty = QtWidgets.QListWidgetItem("(no connected imports, primitives, volumes, UV unwraps, textures, texture layers, texture pros, cameras, or lights)")
                 empty.setFlags(QtCore.Qt.NoItemFlags)
                 outliner.addItem(empty)
                 try:

@@ -288,6 +288,8 @@ def _kind_icon(kind: str) -> QtGui.QIcon:
         icon_pm = node_icons._scene_icon()
     elif key == "camera":
         icon_pm = node_icons._camera_node_icon() or node_icons._screengrab_icon()
+    elif key in ("light", "scene_light", "directional_light"):
+        icon_pm = node_icons._light_node_icon() or node_icons._scene_icon() or node_icons._output_icon()
     elif key == "render":
         icon_pm = node_icons._render_node_icon() or node_icons._output_icon()
     elif key == "video_player":
@@ -369,7 +371,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
         self.kind_edit = QtWidgets.QComboBox()
         self.kind_edit.setEditable(True)
         self._kinds = [
-            "node","camera","import","fbx_import","mocap_import","GEN-X-VideoMocap","anim_retarget","skinned_splat_proxy","instance","copy_to_points","primitive","uv_unwrap","texture","texture_pro","texture_layer","material","split_volume","transforms","fx","fx_splat_physics","fx_music_effects","scene","render","video_player","post_process","sequence_to_mp4","export_fbx","html_preview","python","switch","output","local_server",
+            "node","camera","light","import","fbx_import","mocap_import","GEN-X-VideoMocap","anim_retarget","skinned_splat_proxy","instance","copy_to_points","primitive","uv_unwrap","texture","texture_pro","texture_layer","material","split_volume","transforms","fx","fx_splat_physics","fx_music_effects","scene","render","video_player","post_process","sequence_to_mp4","export_fbx","html_preview","python","switch","output","local_server",
             "gantt_chart","keyboard_sequence",
             "serial_com",
             "qubit_deck_controller",

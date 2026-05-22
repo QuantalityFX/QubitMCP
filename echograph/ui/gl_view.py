@@ -253,6 +253,21 @@ def _qt_shift_active(mods) -> bool:
     except Exception:
         return False
 
+
+def _coerce_view_bool(value, default: bool) -> bool:
+    if isinstance(value, bool):
+        return bool(value)
+    if isinstance(value, (int, float)):
+        return bool(int(value))
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "on", "y"}:
+            return True
+        if text in {"0", "false", "no", "off", "n"}:
+            return False
+    return bool(default)
+
+
 class _TimelineAxisMouseFilter(QtCore.QObject):
     def __init__(self, view):
         super().__init__(view)
@@ -610,15 +625,26 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._mgl_shadow_prog = None
         self._mgl_shadow_fbo = None
         self._mgl_shadow_depth_tex = None
+        self._mgl_shadow_id_tex = None
         self._mgl_shadow_quality = "low"
         self._mgl_shadow_render_quality = "high"
         self._mgl_shadow_map_size = 512
         self._mgl_shadow_size_current = 0
         self._mgl_shadows_enabled = True
+        self._mgl_self_shadows_enabled = True
+        self._mgl_two_sided_shadows_enabled = True
         self._mgl_splat_cast_shadows_enabled = True
-        self._mgl_shadow_bias = 0.0025
-        self._mgl_shadow_darkness = 0.45
+        self._mgl_shadow_bias = 0.0009
+        self._mgl_shadow_darkness = 1.0
         self._mgl_shadow_light_dir = (0.35, 0.85, 0.45)
+        self._mgl_ambient_light_enabled = True
+        self._mgl_ambient_light_strength = 0.10
+        self._mgl_scene_light_owner = None
+        self._mgl_scene_light_type = "directional"
+        self._mgl_scene_light_dir = None
+        self._mgl_scene_light_pos = None
+        self._mgl_scene_light_intensity = None
+        self._mgl_scene_light_shadow_strength = None
         self._mgl_shadow_light_mvp = None
         self._mgl_shadow_valid = False
         self._mgl_shadow_dirty = True
@@ -975,6 +1001,39 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 texture_seed = settings.get("timeline_texture_seed", None)
                 if texture_seed is not None:
                     self._apply_timeline_texture_seed(int(texture_seed), sync_ui=True, sync_scene=False)
+                ambient_light = settings.get("ambient_light", None)
+                ambient_strength = settings.get("ambient_light_strength", None)
+                if ambient_light is not None or ambient_strength is not None:
+                    try:
+                        strength = None if ambient_strength is None else float(ambient_strength)
+                    except Exception:
+                        strength = None
+                    if hasattr(self, "_apply_mgl_ambient_settings"):
+                        self._apply_mgl_ambient_settings(
+                            enabled=None if ambient_light is None else _coerce_view_bool(ambient_light, True),
+                            strength=strength,
+                            sync_ui=True,
+                            sync_scene=False,
+                        )
+                shadow_quality = settings.get("shadow_quality", None)
+                cast_shadows = settings.get("cast_shadows", None)
+                self_shadows = settings.get("self_shadows", None)
+                two_sided_shadows = settings.get("two_sided_shadows", None)
+                if (
+                    shadow_quality is not None
+                    or cast_shadows is not None
+                    or self_shadows is not None
+                    or two_sided_shadows is not None
+                ) and hasattr(self, "_apply_mgl_shadow_settings"):
+                    self._apply_mgl_shadow_settings(
+                        enabled=None if cast_shadows is None else _coerce_view_bool(cast_shadows, True),
+                        quality=shadow_quality,
+                        self_shadows=None if self_shadows is None else _coerce_view_bool(self_shadows, True),
+                        two_sided_shadows=(
+                            None if two_sided_shadows is None else _coerce_view_bool(two_sided_shadows, True)
+                        ),
+                        sync_scene=False,
+                    )
         except Exception:
             pass
         try:
@@ -1484,6 +1543,20 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 self._mgl_light_slider.valueChanged.connect(self._on_mgl_light_changed)
                 layout.addWidget(self._mgl_light_label, 0)
                 layout.addWidget(self._mgl_light_slider, 0)
+                self._mgl_ambient_toggle = QtWidgets.QCheckBox("Ambient")
+                self._mgl_ambient_toggle.setChecked(bool(getattr(self, "_mgl_ambient_light_enabled", True)))
+                self._mgl_ambient_toggle.setToolTip("Enable the renderer's base ambient fill light.")
+                self._mgl_ambient_toggle.toggled.connect(self._on_mgl_ambient_toggled)
+                layout.addWidget(self._mgl_ambient_toggle, 0)
+                self._mgl_two_sided_shadow_toggle = QtWidgets.QCheckBox("2-Sided")
+                self._mgl_two_sided_shadow_toggle.setChecked(
+                    bool(getattr(self, "_mgl_two_sided_shadows_enabled", True))
+                )
+                self._mgl_two_sided_shadow_toggle.setToolTip(
+                    "Cast shadows from front and back faces so thin or inside-visible geometry blocks light."
+                )
+                self._mgl_two_sided_shadow_toggle.toggled.connect(self._on_mgl_two_sided_shadows_toggled)
+                layout.addWidget(self._mgl_two_sided_shadow_toggle, 0)
                 self._mgl_clip_label = QtWidgets.QLabel("Clip")
                 self._mgl_clip_input = QtWidgets.QLineEdit(str(int(self._mgl_clip_far)))
                 self._mgl_clip_input.setFixedWidth(70)

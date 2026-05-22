@@ -373,6 +373,17 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Camera plugin import failed:", e)
 
+    # 13.6) Light
+    try:
+        from nodes import light as light_node
+        if hasattr(light_node, "register"):
+            light_node.register()
+            _safe_probe("light")
+        else:
+            print("[EchoGraph] Light module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Light plugin import failed:", e)
+
     # 13.7) FBX Import
     try:
         from nodes import fbx_import

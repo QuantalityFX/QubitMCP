@@ -30,6 +30,14 @@ vec3 safe_normalize(vec3 v) {
     }
     return v * inversesqrt(len2);
 }
+mat3 normal_matrix(mat4 m) {
+    mat3 n = mat3(m);
+    float det = determinant(n);
+    if (abs(det) <= 1e-8) {
+        return n;
+    }
+    return transpose(inverse(n));
+}
 void main() {
     mat4 instance_model = mat4(
         in_instance_col0,
@@ -44,10 +52,10 @@ void main() {
     mat4 world_model = Model * instance_model;
     vec4 world = world_model * vec4(in_position, 1.0);
     gl_Position = Mvp * local;
-    v_norm = safe_normalize(mat3(instance_model) * in_normal);
+    v_norm = safe_normalize(normal_matrix(instance_model) * in_normal);
     v_vert = local.xyz;
     v_uv = in_uv;
-    v_world_norm = safe_normalize(mat3(world_model) * in_normal);
+    v_world_norm = safe_normalize(normal_matrix(world_model) * in_normal);
     v_world_pos = world.xyz;
     v_color = in_color;
     v_shadow_pos = LightMvp * world;
@@ -59,14 +67,22 @@ void main() {
 uniform vec4 Color;
 uniform vec3 Light;
 uniform vec3 LightDir;
+uniform vec3 LightPos;
+uniform int LightType;
 uniform float LightIntensity;
+uniform float AmbientLight;
+uniform float LightRange;
+uniform float SpotCosInner;
+uniform float SpotCosOuter;
 uniform sampler2D Texture;
 uniform sampler2D ShadowMap;
+uniform sampler2D ShadowIdMap;
 uniform int UseTexture;
 uniform int UseVertexColor;
 uniform int UseMaterial;
 uniform int UseLighting;
 uniform int UseShadows;
+uniform int UseSelfShadows;
 uniform int UseProcedural;
 uniform int UseProceduralLayer;
 uniform int UseVolumeMask;
@@ -74,6 +90,7 @@ uniform mat4 VolumeInv;
 uniform mat4 Model;
 uniform float ShadowBias;
 uniform float ShadowDarkness;
+uniform float ShadowReceiverId;
 uniform vec2 ShadowMapSize;
 uniform float MaterialTransparency;
 uniform float MaterialIor;
@@ -133,6 +150,10 @@ vec3 safe_normalize(vec3 v) {
         return vec3(0.0, 0.0, 1.0);
     }
     return v * inversesqrt(len2);
+}
+
+vec3 face_normal(vec3 n) {
+    return safe_normalize(n);
 }
 
 float hash11(float n) {
@@ -318,7 +339,7 @@ vec3 apply_lighting(vec3 rgb, float lum, float light_mix, float emissive) {
     return lit;
 }
 
-float sample_shadow_factor(vec4 shadow_pos, vec3 normal) {
+float sample_shadow_factor(vec4 shadow_pos, vec3 normal, vec3 light_vec) {
     if (UseShadows == 0) {
         return 1.0;
     }
@@ -332,19 +353,47 @@ float sample_shadow_factor(vec4 shadow_pos, vec3 normal) {
         return 1.0;
     }
     vec3 n = safe_normalize(normal);
-    vec3 l = safe_normalize(LightDir);
-    float ndotl = clamp(dot(n, l), 0.0, 1.0);
-    float bias = max(ShadowBias * (1.0 - ndotl), ShadowBias * 0.35);
+    vec3 l = safe_normalize(light_vec);
+    float ndotl = clamp(abs(dot(n, l)), 0.0, 1.0);
+    float bias = max(ShadowBias * (1.0 - ndotl), ShadowBias * 0.25);
     vec2 texel = 1.0 / max(ShadowMapSize, vec2(1.0));
     float visible = 0.0;
     for (int x = -1; x <= 1; x++) {
         for (int y = -1; y <= 1; y++) {
-            float closest = texture(ShadowMap, uvw.xy + vec2(float(x), float(y)) * texel).r;
-            visible += ((uvw.z - bias) <= closest) ? 1.0 : 0.0;
+            vec2 sample_uv = uvw.xy + vec2(float(x), float(y)) * texel;
+            float closest = texture(ShadowMap, sample_uv).r;
+            float sample_visible = ((uvw.z - bias) <= closest) ? 1.0 : 0.0;
+            if (UseSelfShadows == 0 && sample_visible < 1.0 && ShadowReceiverId > 0.0) {
+                float caster_id = texture(ShadowIdMap, sample_uv).r;
+                if (abs(caster_id - ShadowReceiverId) < 0.000008) {
+                    sample_visible = 1.0;
+                }
+            }
+            visible += sample_visible;
         }
     }
     visible /= 9.0;
     return mix(1.0 - clamp(ShadowDarkness, 0.0, 1.0), 1.0, visible);
+}
+
+vec3 light_vector_at(vec3 world_pos, out float attenuation) {
+    attenuation = 1.0;
+    if (LightType == 0) {
+        return safe_normalize(LightDir);
+    }
+    vec3 to_light = LightPos - world_pos;
+    float dist = length(to_light);
+    vec3 l = (dist > 1e-5) ? (to_light / dist) : safe_normalize(LightDir);
+    float range = max(LightRange, 0.001);
+    float d = dist / range;
+    attenuation = 1.0 / (1.0 + 4.0 * d * d);
+    if (LightType == 2) {
+        float cone = dot(l, safe_normalize(LightDir));
+        attenuation *= smoothstep(SpotCosOuter, SpotCosInner, cone);
+    } else if (LightType == 3) {
+        attenuation *= 0.85;
+    }
+    return l;
 }
 
 vec4 composite_over(vec4 base, vec4 over) {
@@ -364,12 +413,24 @@ void main() {
     }
     vec4 base = Color;
     float lum = 1.0;
+    float material_light = 1.0;
+    vec3 view_dir = safe_normalize(CameraWorldPos - v_world_pos);
+    vec3 shading_n = face_normal(v_world_norm);
     if (UseLighting == 1) {
-        vec3 n = safe_normalize(v_world_norm);
-        vec3 l = safe_normalize(LightDir);
-        float diffuse = max(dot(n, l), 0.0);
-        lum = 0.22 + diffuse * 0.86 * max(LightIntensity, 0.0);
+        vec3 n = shading_n;
+        if (LightType != 0 && !gl_FrontFacing) {
+            n = -n;
+        }
+        float light_attenuation = 1.0;
+        vec3 l = light_vector_at(v_world_pos, light_attenuation);
+        float surface_gate = (LightType == 0 && !gl_FrontFacing) ? 0.0 : 1.0;
+        float diffuse = max(dot(n, l), 0.0) * surface_gate * light_attenuation;
+        float shadow_visibility = sample_shadow_factor(v_shadow_pos, n, l);
+        float ambient = clamp(AmbientLight, 0.0, 1.0);
+        float direct = diffuse * 0.86 * max(LightIntensity, 0.0) * shadow_visibility;
+        lum = ambient + direct;
         lum = clamp(lum, 0.0, 10.0);
+        material_light = clamp(lum, 0.0, 1.0);
     }
     if (UseProcedural == 1) {
         vec4 p0 = (ProceduralMode == 1)
@@ -433,10 +494,9 @@ void main() {
         vec3 tint = clamp(MaterialTint, vec3(0.0), vec3(1.0));
         float fresnel_amount = clamp(MaterialFresnelAmount, 0.0, 1.0);
         vec3 fresnel_color = clamp(MaterialFresnelColor, vec3(0.0), vec3(1.0));
-        vec3 n = safe_normalize(v_world_norm);
-        vec3 view_dir = safe_normalize(CameraWorldPos - v_world_pos);
+        vec3 n = shading_n;
         float edge = pow(1.0 - clamp(abs(n.z), 0.0, 1.0), 1.6);
-        vec3 material_rgb = clamp(mix(base.rgb, tint, 0.58), 0.0, 1.0);
+        vec3 material_rgb = clamp(base.rgb * mix(vec3(1.0), tint, 0.58), 0.0, 1.0);
         float refraction_present = 0.0;
         if (UseSceneRefraction == 1 && refraction_strength > 0.001) {
             refraction_present = 1.0;
@@ -461,11 +521,12 @@ void main() {
                 clamp(0.88 + transmission * 0.08, 0.0, 0.98)
             );
         }
-        vec3 edge_rgb = clamp(mix(material_rgb, tint, 0.30), 0.0, 1.0);
+        vec3 edge_rgb = clamp(material_rgb * mix(vec3(1.0), tint, 0.30), 0.0, 1.0);
         material_rgb = mix(material_rgb, edge_rgb, clamp(edge * (0.22 + refraction_strength * 0.12), 0.0, 0.34));
         if (fresnel_amount > 0.001) {
             float fresnel_term = pow(1.0 - clamp(abs(dot(n, view_dir)), 0.0, 1.0), 3.0);
-            material_rgb = mix(material_rgb, fresnel_color, clamp(fresnel_term * fresnel_amount, 0.0, 1.0));
+            vec3 fresnel_rgb = fresnel_color * max(material_light, refraction_present);
+            material_rgb = mix(material_rgb, fresnel_rgb, clamp(fresnel_term * fresnel_amount, 0.0, 1.0));
         }
         base.rgb = material_rgb;
         float material_alpha = max(0.0, 1.0 - transmission);
@@ -476,9 +537,6 @@ void main() {
             alpha_out = mix(alpha_out, 0.96, clamp(0.62 + transmission * 0.24, 0.0, 0.98));
         }
         base.a *= alpha_out;
-    }
-    if (UseLighting == 1) {
-        base.rgb *= sample_shadow_factor(v_shadow_pos, v_world_norm);
     }
     if (base.a <= 0.001) {
         discard;
@@ -513,7 +571,10 @@ void main() {
 
     "shadow_fragment": """
 #version 330
+uniform float ShadowCasterId;
+layout(location = 0) out float f_shadow_id;
 void main() {
+    f_shadow_id = ShadowCasterId;
 }
 """,
 
@@ -717,6 +778,7 @@ in vec4 in_rot;
 out vec2 v_uv;
 out vec4 v_col;
 out vec3 v_world_norm;
+out vec3 v_world_pos;
 out vec4 v_shadow_pos;
 
 vec3 quat_rotate(vec3 v, vec4 q) {
@@ -763,8 +825,9 @@ void main() {
 
     v_uv = in_corner;
     v_col = in_col;
-    v_world_norm = normalize(quat_rotate(vec3(0.0, 0.0, 1.0), in_rot));
-    v_shadow_pos = LightMvp * vec4(in_pos, 1.0);
+    v_world_norm = normalize(mat3(Model) * quat_rotate(vec3(0.0, 0.0, 1.0), in_rot));
+    v_world_pos = world_p.xyz;
+    v_shadow_pos = LightMvp * world_p;
 
     gl_Position = Proj * view_p;
 }
@@ -773,7 +836,13 @@ void main() {
     "splatq_fragment": """
 #version 330
 uniform vec3 LightDir;
+uniform vec3 LightPos;
+uniform int LightType;
 uniform float LightIntensity;
+uniform float AmbientLight;
+uniform float LightRange;
+uniform float SpotCosInner;
+uniform float SpotCosOuter;
 uniform sampler2D ShadowMap;
 uniform int UseSplatLighting;
 uniform int UseShadows;
@@ -783,6 +852,7 @@ uniform vec2 ShadowMapSize;
 in vec2 v_uv;
 in vec4 v_col;
 in vec3 v_world_norm;
+in vec3 v_world_pos;
 in vec4 v_shadow_pos;
 out vec4 f_color;
 
@@ -794,7 +864,7 @@ vec3 safe_normalize(vec3 v) {
     return v * inversesqrt(len2);
 }
 
-float sample_shadow_factor(vec4 shadow_pos, vec3 normal) {
+float sample_shadow_factor(vec4 shadow_pos, vec3 normal, vec3 light_vec) {
     if (UseShadows == 0) {
         return 1.0;
     }
@@ -808,9 +878,9 @@ float sample_shadow_factor(vec4 shadow_pos, vec3 normal) {
         return 1.0;
     }
     vec3 n = safe_normalize(normal);
-    vec3 l = safe_normalize(LightDir);
+    vec3 l = safe_normalize(light_vec);
     float ndotl = clamp(abs(dot(n, l)), 0.0, 1.0);
-    float bias = max(ShadowBias * (1.0 - ndotl), ShadowBias * 0.35);
+    float bias = max(ShadowBias * (1.0 - ndotl), ShadowBias * 0.25);
     vec2 texel = 1.0 / max(ShadowMapSize, vec2(1.0));
     float visible = 0.0;
     for (int x = -1; x <= 1; x++) {
@@ -821,6 +891,26 @@ float sample_shadow_factor(vec4 shadow_pos, vec3 normal) {
     }
     visible /= 9.0;
     return mix(1.0 - clamp(ShadowDarkness, 0.0, 1.0), 1.0, visible);
+}
+
+vec3 light_vector_at(vec3 world_pos, out float attenuation) {
+    attenuation = 1.0;
+    if (LightType == 0) {
+        return safe_normalize(LightDir);
+    }
+    vec3 to_light = LightPos - world_pos;
+    float dist = length(to_light);
+    vec3 l = (dist > 1e-5) ? (to_light / dist) : safe_normalize(LightDir);
+    float range = max(LightRange, 0.001);
+    float d = dist / range;
+    attenuation = 1.0 / (1.0 + 4.0 * d * d);
+    if (LightType == 2) {
+        float cone = dot(l, safe_normalize(LightDir));
+        attenuation *= smoothstep(SpotCosOuter, SpotCosInner, cone);
+    } else if (LightType == 3) {
+        attenuation *= 0.85;
+    }
+    return l;
 }
 
 void main() {
@@ -835,11 +925,12 @@ void main() {
     vec3 rgb = v_col.rgb;
     if (UseSplatLighting == 1) {
         vec3 n = safe_normalize(v_world_norm);
-        vec3 l = safe_normalize(LightDir);
-        float diffuse = clamp(abs(dot(n, l)), 0.0, 1.0);
-        float lum = 0.32 + diffuse * 0.72 * max(LightIntensity, 0.0);
+        float light_attenuation = 1.0;
+        vec3 l = light_vector_at(v_world_pos, light_attenuation);
+        float diffuse = clamp(abs(dot(n, l)), 0.0, 1.0) * light_attenuation;
+        float shadow_visibility = sample_shadow_factor(v_shadow_pos, n, l);
+        float lum = clamp(AmbientLight, 0.0, 1.0) + diffuse * 0.72 * max(LightIntensity, 0.0) * shadow_visibility;
         rgb *= clamp(lum, 0.0, 3.0);
-        rgb *= sample_shadow_factor(v_shadow_pos, n);
     }
 
     f_color = vec4(rgb * a, a);
@@ -913,14 +1004,17 @@ void main() {
 
     "splat_shadow_fragment": """
 #version 330
+uniform float ShadowCasterId;
 in vec2 v_uv;
 in float v_alpha;
+layout(location = 0) out float f_shadow_id;
 
 void main() {
     float r2 = dot(v_uv, v_uv);
     if (r2 > 1.0) discard;
     float a = exp(-r2 * 2.0) * v_alpha;
     if (a < 0.08) discard;
+    f_shadow_id = ShadowCasterId;
 }
 """,
 

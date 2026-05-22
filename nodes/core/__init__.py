@@ -90,6 +90,7 @@ def register_defaults() -> None:
     register("html_preview", stripe_color="#f97316")
     register("image_collection", stripe_color="#22c55e")
     register("camera",    stripe_color="#f59e0b")
+    register("light",     stripe_color="#facc15")
     register("output",    stripe_color="#a855f7")
     register("llm",       stripe_color="#14b8a6")
     register("local_server", stripe_color="#14b8a6")
@@ -103,7 +104,7 @@ def register_defaults() -> None:
         from nodes import gpt_prompt as _gpt_prompt  # type: ignore
         if hasattr(_gpt_prompt, "register"):
             _gpt_prompt.register(core=sys.modules[__name__])
-    except Exception as exc:  # pragma: no cover - optional plugin
+    except (Exception, SystemExit) as exc:  # pragma: no cover - optional plugin
         print("[EchoGraph] GPT Prompt auto-register failed:", exc)
 
     # Auto-register Chatbot node so its body renderer is available early
@@ -111,7 +112,7 @@ def register_defaults() -> None:
         from nodes import chatbot as _chatbot  # type: ignore
         if hasattr(_chatbot, "register"):
             _chatbot.register(core=sys.modules[__name__])
-    except Exception as exc:  # pragma: no cover - optional plugin
+    except (Exception, SystemExit) as exc:  # pragma: no cover - optional plugin
         print("[EchoGraph] Chatbot auto-register failed:", exc)
 
     # Auto-register Image Collection so its render hook is present even if loader plugins fail later
@@ -119,7 +120,7 @@ def register_defaults() -> None:
         from nodes import image_collection as _img_col  # type: ignore
         if hasattr(_img_col, "register"):
             _img_col.register(core=sys.modules[__name__])
-    except Exception as exc:  # pragma: no cover - optional plugin
+    except (Exception, SystemExit) as exc:  # pragma: no cover - optional plugin
         print("[EchoGraph] Image Collection auto-register failed:", exc)
 
     # Auto-register Camera so scene camera nodes are available even if loader plugins fail later
@@ -127,8 +128,16 @@ def register_defaults() -> None:
         from nodes import camera as _camera  # type: ignore
         if hasattr(_camera, "register"):
             _camera.register(core=sys.modules[__name__])
-    except Exception as exc:  # pragma: no cover - optional plugin
+    except (Exception, SystemExit) as exc:  # pragma: no cover - optional plugin
         print("[EchoGraph] Camera auto-register failed:", exc)
+
+    # Auto-register Light so scene light nodes are available even if loader plugins fail later
+    try:
+        from nodes import light as _light  # type: ignore
+        if hasattr(_light, "register"):
+            _light.register(core=sys.modules[__name__])
+    except (Exception, SystemExit) as exc:  # pragma: no cover - optional plugin
+        print("[EchoGraph] Light auto-register failed:", exc)
 
 
 def apply_spec_to_item(item: Any, kind: str | Spec, *, debug: bool = False) -> Any:

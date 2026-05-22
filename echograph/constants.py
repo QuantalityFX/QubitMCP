@@ -27,4 +27,8 @@ APP_USER_MODEL_ID = "QuantalityFX.EchoGraph"
 ICON_PATH = script_dir() / "icons" / "QubitMCP_Icon.ico"
 if not ICON_PATH.exists():
     ICON_PATH = script_dir() / "icons" / "QubitMCP_Icon_s.png"
-APP_ICON = QtGui.QIcon(str(ICON_PATH)) if ICON_PATH.exists() else QtGui.QIcon()
+try:
+    _gui_app = QtGui.QGuiApplication.instance()
+except Exception:
+    _gui_app = None
+APP_ICON = QtGui.QIcon(str(ICON_PATH)) if (_gui_app is not None and ICON_PATH.exists()) else QtGui.QIcon()

@@ -24,6 +24,30 @@ from echograph.constants import (
 
 import nodes.core as core
 
+_LIGHT_TYPE_ALIASES = {
+    "dir": "directional",
+    "directional": "directional",
+    "directional_light": "directional",
+    "directional light": "directional",
+    "point": "point",
+    "point_light": "point",
+    "point light": "point",
+    "spot": "spot",
+    "spot_light": "spot",
+    "spot light": "spot",
+    "spotlight": "spot",
+    "area": "area",
+    "area_light": "area",
+    "area light": "area",
+}
+
+
+def _normalize_light_type(value) -> str:
+    text = str(value or "").strip().lower().replace("-", "_")
+    text = " ".join(text.replace("_", " ").split())
+    return _LIGHT_TYPE_ALIASES.get(text, _LIGHT_TYPE_ALIASES.get(text.replace(" ", "_"), "directional"))
+
+
 try:
     from nodes.gpt_prompt import spec as _gpt_prompt_spec  # optional plugin
 except Exception:  # pragma: no cover - optional
@@ -298,6 +322,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 from nodes import camera as _camera  # type: ignore
                 if hasattr(_camera, "register"):
                     _camera.register()
+            except Exception:
+                pass
+        # Ensure Light spec is registered even if the loader was skipped.
+        if (self.model.kind or "").strip().lower() in ("light", "scene_light", "directional_light"):
+            try:
+                from nodes import light as _light  # type: ignore
+                if hasattr(_light, "register"):
+                    _light.register()
             except Exception:
                 pass
         # Ensure Export FBX spec is registered even if the loader was skipped.
@@ -1105,6 +1137,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
             hidden.update({"source", "path", "pos", "rot", "scl"})
         elif kind in ("camera", "scene_camera"):
             hidden.update({"pos", "rot", "scl", "near", "far"})
+        elif kind in ("light", "scene_light", "directional_light"):
+            hidden.update({"pos", "rot", "scl"})
 
         return hidden
 
@@ -2857,38 +2891,86 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     lab_holder.addStretch(1)
                     lay.addLayout(lab_holder)
 
-                    edit = QtWidgets.QLineEdit(pval)
-                    edit.setPlaceholderText("value")
-                    edit.setStyleSheet(
-                        "QLineEdit{background:#12151a;color:#e6edf3;"
-                        "border:1px solid #3c4450;border-radius:4px;padding:2px 6px;}"
+                    use_light_type_combo = (
+                        kind in ("light", "scene_light", "directional_light")
+                        and pname_key in ("type", "light_type")
                     )
-                    if wired:
-                        edit.setEnabled(False)
-                        edit.setToolTip("Driven by connected input.")
-                        edit.setStyleSheet(
-                            "QLineEdit{background:#191d24;color:#94a3b8;"
-                            "border:1px dashed #475569;border-radius:4px;padding:2px 6px;}"
+                    if use_light_type_combo:
+                        combo = QtWidgets.QComboBox()
+                        combo.setStyleSheet(
+                            "QComboBox{background:#12151a;color:#e6edf3;"
+                            "border:1px solid #3c4450;border-radius:4px;padding:2px 6px;}"
+                            "QComboBox QAbstractItemView{background:#0f1216;color:#e6edf3;"
+                            "selection-background-color:#1e3a8a;}"
                         )
+                        light_types = (
+                            ("Directional", "directional"),
+                            ("Point", "point"),
+                            ("Spot", "spot"),
+                            ("Area", "area"),
+                        )
+                        current = str(pval or "directional").strip().lower().replace("-", "_")
+                        current = " ".join(current.replace("_", " ").split()).replace(" ", "_")
+                        aliases = {
+                            "dir": "directional",
+                            "directional_light": "directional",
+                            "point_light": "point",
+                            "spot_light": "spot",
+                            "spotlight": "spot",
+                            "area_light": "area",
+                        }
+                        current = aliases.get(current, current)
+                        selected_idx = 0
+                        for opt_idx, (label_text, value_text) in enumerate(light_types):
+                            combo.addItem(label_text, value_text)
+                            if value_text == current:
+                                selected_idx = opt_idx
+                        combo.setCurrentIndex(selected_idx)
+                        combo.setToolTip("Choose the light model stored on this Light node.")
+                        if wired:
+                            combo.setEnabled(False)
+                            combo.setToolTip("Driven by connected input.")
+                        combo.currentIndexChanged.connect(
+                            lambda _row, c=combo, idx=i: self._on_param_changed(
+                                idx,
+                                str(c.currentData() or c.currentText()).strip().lower(),
+                                emit_scene=True,
+                            )
+                        )
+                        lay.addWidget(combo, 1)
                     else:
-                        edit.setToolTip("")
-                    if kind == "note":
-                        edit.setStyleSheet(self._note_param_line_edit_style(completed=is_completed, wired=wired))
-                        try:
-                            completion_refs["edit"] = edit
-                        except Exception:
-                            pass
-                    is_note = (kind == "note")
-                    edit.textChanged.connect(
-                        lambda txt, idx=i, emit=not is_note: self._on_param_changed(idx, txt, emit_scene=emit)
-                    )
-                    if is_note:
-                        edit.editingFinished.connect(
-                            lambda e=edit, idx=i: self._on_param_changed(idx, e.text(), emit_scene=True)
+                        edit = QtWidgets.QLineEdit(pval)
+                        edit.setPlaceholderText("value")
+                        edit.setStyleSheet(
+                            "QLineEdit{background:#12151a;color:#e6edf3;"
+                            "border:1px solid #3c4450;border-radius:4px;padding:2px 6px;}"
                         )
-                    lay.addWidget(edit, 1)
-                    if attach_import_browse:
-                        edit.editingFinished.connect(lambda e=edit: self._commit_import_path_edit(e))
+                        if wired:
+                            edit.setEnabled(False)
+                            edit.setToolTip("Driven by connected input.")
+                            edit.setStyleSheet(
+                                "QLineEdit{background:#191d24;color:#94a3b8;"
+                                "border:1px dashed #475569;border-radius:4px;padding:2px 6px;}"
+                            )
+                        else:
+                            edit.setToolTip("")
+                        if kind == "note":
+                            edit.setStyleSheet(self._note_param_line_edit_style(completed=is_completed, wired=wired))
+                            try:
+                                completion_refs["edit"] = edit
+                            except Exception:
+                                pass
+                        is_note = (kind == "note")
+                        edit.textChanged.connect(
+                            lambda txt, idx=i, emit=not is_note: self._on_param_changed(idx, txt, emit_scene=emit)
+                        )
+                        if is_note:
+                            edit.editingFinished.connect(
+                                lambda e=edit, idx=i: self._on_param_changed(idx, e.text(), emit_scene=True)
+                            )
+                        lay.addWidget(edit, 1)
+                        if attach_import_browse:
+                            edit.editingFinished.connect(lambda e=edit: self._commit_import_path_edit(e))
 
                     if attach_file_browse:
                         browse_btn = QtWidgets.QToolButton()
@@ -3244,6 +3326,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
             "copy to point",
             "copytopoints",
         }
+        light_kinds = {
+            "light",
+            "scene_light",
+            "scene light",
+            "directional_light",
+            "directional light",
+        }
         def _scene_log(msg: str) -> None:
             enabled = True
             if not enabled:
@@ -3568,6 +3657,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         assets = []
         seen = set()
         seen_camera = set()
+        seen_light = set()
         hidden = set()
         xforms = {}
         try:
@@ -3817,6 +3907,60 @@ class NodeItem(QtWidgets.QGraphicsObject):
             kind = (getattr(model, "kind", "") or "").strip().lower()
             model_name = src_name
             _scene_log(f"edge[{edge_idx}] kind={kind} name={model_name} path_param={path!r}")
+            if kind in light_kinds:
+                light_name = model_name or "light"
+                if light_name in seen_light:
+                    continue
+                seen_light.add(light_name)
+                light_path = ""
+                try:
+                    from nodes.scene import spec as _scene_spec  # type: ignore
+                    builder = getattr(_scene_spec, "_light_proxy_obj_path", None)
+                    if callable(builder):
+                        light_path = str(builder(self, light_name) or "").strip()
+                except Exception:
+                    light_path = ""
+                if not light_path:
+                    _scene_log(f"edge[{edge_idx}] light skip: proxy build failed name={light_name!r}")
+                    continue
+                xf = _lookup_xform(light_name)
+                if not isinstance(xf, dict):
+                    xf = {
+                        "pos": [4.0, 6.0, 4.0],
+                        "rot": [133.5, 135.0, 0.0],
+                        "scl": [1.0, 1.0, 1.0],
+                    }
+                try:
+                    intensity = float(_param_val(model, "intensity") or 1.0)
+                except Exception:
+                    intensity = 1.0
+                try:
+                    shadow_strength = float(_param_val(model, "shadow_strength") or 1.0)
+                except Exception:
+                    shadow_strength = 1.0
+                light_type = _normalize_light_type(_param_val(model, "type") or _param_val(model, "light_type"))
+                asset = {
+                    "path": light_path,
+                    "texture": "",
+                    "ext": ".obj",
+                    "node": light_name,
+                    "kind": "light",
+                    "visible": light_name not in hidden,
+                    "xform": xf,
+                    "wire_only": True,
+                    "volume": True,
+                    "light": {
+                        "type": light_type,
+                        "intensity": max(0.0, float(intensity)),
+                        "shadow_strength": max(0.0, min(1.0, float(shadow_strength))),
+                    },
+                }
+                assets.append(asset)
+                _scene_log(
+                    f"edge[{edge_idx}] light add asset node={light_name!r} "
+                    f"path={light_path!r} wire_only=True volume=True"
+                )
+                continue
             if kind == "camera":
                 camera_name = model_name or "camera"
                 if camera_name in seen_camera:
@@ -4430,12 +4574,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
         else:
             splat_count = sum(1 for a in assets if str(a.get("ext") or "").strip().lower() == ".ply")
             camera_count = sum(1 for a in assets if str(a.get("kind") or "").strip().lower() == "camera")
-            mesh_count = max(0, len(assets) - splat_count - camera_count)
+            light_count = sum(1 for a in assets if str(a.get("kind") or "").strip().lower() == "light")
+            mesh_count = max(0, len(assets) - splat_count - camera_count - light_count)
             detail = f"{len(assets)} connected (mesh {mesh_count}"
             if splat_count:
                 detail += f", splat {splat_count}"
             if camera_count:
                 detail += f", camera {camera_count}"
+            if light_count:
+                detail += f", light {light_count}"
             detail += ")"
             btn_enabled = True
 
@@ -6282,6 +6429,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "scene_outliner",
                 "camera",
                 "scene_camera",
+                "light",
+                "scene_light",
+                "directional_light",
                 "instance",
                 "copy_to_points",
                 "copy to points",
@@ -6515,6 +6665,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 icon_pm = node_icons._scene_icon()
             elif kind_lower in ("camera", "scene_camera"):
                 icon_pm = node_icons._camera_node_icon() or node_icons._screengrab_icon()
+            elif kind_lower in ("light", "scene_light", "directional_light"):
+                icon_pm = node_icons._light_node_icon() or node_icons._scene_icon() or node_icons._output_icon()
             elif kind_lower in ("render", "render_sequence", "render node"):
                 icon_pm = node_icons._render_node_icon() or node_icons._output_icon()
             elif kind_lower in ("video_player", "video player", "videoplayer"):

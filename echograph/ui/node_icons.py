@@ -43,6 +43,7 @@ _SERIAL_COM_ICON = None
 _QUBIT_DECK_CONTROLLER_ICON = None
 _FX_NODE_ICON = None
 _CAMERA_NODE_ICON = None
+_LIGHT_NODE_ICON = None
 _VOLUME_SPLIT_ICON = None
 _VOICE_ACTOR_ICON = None
 _MEDIGATOR_ICON = None
@@ -307,6 +308,14 @@ def _camera_node_icon():
         or _load_pm("CameraCtrl_On_Icon.png")
     )
     return _CAMERA_NODE_ICON
+
+
+def _light_node_icon():
+    global _LIGHT_NODE_ICON
+    if _LIGHT_NODE_ICON is not None:
+        return _LIGHT_NODE_ICON
+    _LIGHT_NODE_ICON = _load_pm("LightSource_Icon_s.png")
+    return _LIGHT_NODE_ICON
 
 
 def _volume_split_icon():
