@@ -6,6 +6,5 @@ def register(core=None):
         from nodes import core as _core
     else:
         _core = core
-    _core.register_spec("light", LIGHT_SPEC)
-    _core.register_spec("scene_light", LIGHT_SPEC)
-    _core.register_spec("directional_light", LIGHT_SPEC)
+    for kind in ("light", "scene_light", "directional_light", "point_light", "spot_light", "area_light"):
+        _core.register_spec(kind, LIGHT_SPEC)

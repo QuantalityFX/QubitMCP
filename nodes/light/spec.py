@@ -102,9 +102,23 @@ def _ensure_hidden_params(node_item, names: list[str]) -> None:
 
 
 def build_ports(node_item) -> None:
-    _ensure_param(node_item, "type", "directional")
+    kind = str(getattr(getattr(node_item, "model", None), "kind", "") or "").strip().lower()
+    default_type = {
+        "point_light": "point",
+        "point light": "point",
+        "spot_light": "spot",
+        "spot light": "spot",
+        "area_light": "area",
+        "area light": "area",
+    }.get(kind, "directional")
+    _ensure_param(node_item, "type", default_type)
     _ensure_param(node_item, "intensity", "1.0")
+    _ensure_param(node_item, "range", "0")
     _ensure_param(node_item, "shadow_strength", "1.0")
+    _ensure_param(node_item, "shadow_range", "0")
+    _ensure_param(node_item, "shadow_fov", "0")
+    _ensure_param(node_item, "shadow_near", "0")
+    _ensure_param(node_item, "shadow_bias", "0")
     # Light transforms live on the Scene node outliner.
     _remove_param(node_item, "pos")
     _remove_param(node_item, "rot")

@@ -325,7 +325,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
             except Exception:
                 pass
         # Ensure Light spec is registered even if the loader was skipped.
-        if (self.model.kind or "").strip().lower() in ("light", "scene_light", "directional_light"):
+        if (self.model.kind or "").strip().lower() in (
+            "light",
+            "scene_light",
+            "directional_light",
+            "point_light",
+            "spot_light",
+            "area_light",
+        ):
             try:
                 from nodes import light as _light  # type: ignore
                 if hasattr(_light, "register"):
@@ -1137,7 +1144,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             hidden.update({"source", "path", "pos", "rot", "scl"})
         elif kind in ("camera", "scene_camera"):
             hidden.update({"pos", "rot", "scl", "near", "far"})
-        elif kind in ("light", "scene_light", "directional_light"):
+        elif kind in ("light", "scene_light", "directional_light", "point_light", "spot_light", "area_light"):
             hidden.update({"pos", "rot", "scl"})
 
         return hidden
@@ -2892,11 +2899,16 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     lay.addLayout(lab_holder)
 
                     use_light_type_combo = (
-                        kind in ("light", "scene_light", "directional_light")
+                        kind in ("light", "scene_light", "directional_light", "point_light", "spot_light", "area_light")
                         and pname_key in ("type", "light_type")
                     )
                     if use_light_type_combo:
                         combo = QtWidgets.QComboBox()
+                        combo.setMaxVisibleItems(8)
+                        combo_view = QtWidgets.QListView()
+                        combo_view.setMouseTracking(True)
+                        combo_view.setUniformItemSizes(True)
+                        combo.setView(combo_view)
                         combo.setStyleSheet(
                             "QComboBox{background:#12151a;color:#e6edf3;"
                             "border:1px solid #3c4450;border-radius:4px;padding:2px 6px;}"
@@ -2930,6 +2942,41 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         if wired:
                             combo.setEnabled(False)
                             combo.setToolTip("Driven by connected input.")
+
+                        node_ref = self
+
+                        class _LightTypeComboPopupFilter(QtCore.QObject):
+                            def __init__(self, combo_widget: QtWidgets.QComboBox):
+                                super().__init__(combo_widget)
+                                self._combo = combo_widget
+
+                            def eventFilter(self, obj, ev):
+                                try:
+                                    if ev.type() in (QtCore.QEvent.MouseButtonPress, QtCore.QEvent.MouseButtonDblClick):
+                                        node_ref._bring_to_front()
+                                    elif ev.type() == QtCore.QEvent.Show:
+                                        QtCore.QTimer.singleShot(0, self._raise_popup)
+                                        QtCore.QTimer.singleShot(20, self._raise_popup)
+                                except Exception:
+                                    pass
+                                return False
+
+                            def _raise_popup(self):
+                                try:
+                                    combo_widget = self._combo
+                                    view = combo_widget.view()
+                                    popup = view.window()
+                                    popup.move(combo_widget.mapToGlobal(QtCore.QPoint(0, combo_widget.height())))
+                                    popup.setMinimumWidth(combo_widget.width())
+                                    view.setMinimumWidth(combo_widget.width())
+                                    popup.raise_()
+                                    popup.activateWindow()
+                                except Exception:
+                                    pass
+
+                        combo._light_type_popup_filter = _LightTypeComboPopupFilter(combo)
+                        combo.installEventFilter(combo._light_type_popup_filter)
+                        combo.view().installEventFilter(combo._light_type_popup_filter)
                         combo.currentIndexChanged.connect(
                             lambda _row, c=combo, idx=i: self._on_param_changed(
                                 idx,
@@ -2941,6 +2988,18 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     else:
                         edit = QtWidgets.QLineEdit(pval)
                         edit.setPlaceholderText("value")
+                        if kind in ("light", "scene_light", "directional_light", "point_light", "spot_light", "area_light"):
+                            light_tooltips = {
+                                "range": "Local light attenuation distance. Use 0 for automatic scene scale.",
+                                "shadow_range": "Local light shadow far clip distance. Use 0 for automatic scene scale.",
+                                "shadow_fov": "Point/spot shadow cone angle in degrees. Use 0 for per-type automatic.",
+                                "shadow_near": "Minimum shadow clip distance. Lower values render closer to the light; use 0 for automatic.",
+                                "shadow_bias": "Shadow acne/leak offset. Lower values keep close shadows; use 0 for automatic.",
+                                "shadow_strength": "Shadow darkness multiplier.",
+                            }
+                            tip = light_tooltips.get(pname_key)
+                            if tip:
+                                edit.setToolTip(tip)
                         edit.setStyleSheet(
                             "QLineEdit{background:#12151a;color:#e6edf3;"
                             "border:1px solid #3c4450;border-radius:4px;padding:2px 6px;}"
@@ -3332,6 +3391,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
             "scene light",
             "directional_light",
             "directional light",
+            "point_light",
+            "point light",
+            "spot_light",
+            "spot light",
+            "area_light",
+            "area light",
         }
         def _scene_log(msg: str) -> None:
             enabled = True
@@ -3935,9 +4000,30 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 except Exception:
                     intensity = 1.0
                 try:
+                    light_range = float(_param_val(model, "range") or 0.0)
+                except Exception:
+                    light_range = 0.0
+                try:
                     shadow_strength = float(_param_val(model, "shadow_strength") or 1.0)
                 except Exception:
                     shadow_strength = 1.0
+                try:
+                    shadow_range = float(_param_val(model, "shadow_range") or 0.0)
+                except Exception:
+                    shadow_range = 0.0
+                try:
+                    shadow_fov = float(_param_val(model, "shadow_fov") or 0.0)
+                except Exception:
+                    shadow_fov = 0.0
+                try:
+                    shadow_near = float(_param_val(model, "shadow_near") or 0.0)
+                except Exception:
+                    shadow_near = 0.0
+                try:
+                    shadow_bias = float(_param_val(model, "shadow_bias") or 0.0)
+                except Exception:
+                    shadow_bias = 0.0
+                shadow_fov_value = 0.0 if float(shadow_fov) <= 0.0 else max(1.0, min(179.0, float(shadow_fov)))
                 light_type = _normalize_light_type(_param_val(model, "type") or _param_val(model, "light_type"))
                 asset = {
                     "path": light_path,
@@ -3952,7 +4038,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     "light": {
                         "type": light_type,
                         "intensity": max(0.0, float(intensity)),
+                        "range": max(0.0, float(light_range)),
                         "shadow_strength": max(0.0, min(1.0, float(shadow_strength))),
+                        "shadow_range": max(0.0, float(shadow_range)),
+                        "shadow_fov": float(shadow_fov_value),
+                        "shadow_near": max(0.0, float(shadow_near)),
+                        "shadow_bias": max(0.0, float(shadow_bias)),
                     },
                 }
                 assets.append(asset)
@@ -6432,6 +6523,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "light",
                 "scene_light",
                 "directional_light",
+                "point_light",
+                "spot_light",
+                "area_light",
                 "instance",
                 "copy_to_points",
                 "copy to points",
@@ -6665,7 +6759,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 icon_pm = node_icons._scene_icon()
             elif kind_lower in ("camera", "scene_camera"):
                 icon_pm = node_icons._camera_node_icon() or node_icons._screengrab_icon()
-            elif kind_lower in ("light", "scene_light", "directional_light"):
+            elif kind_lower in ("light", "scene_light", "directional_light", "point_light", "spot_light", "area_light"):
                 icon_pm = node_icons._light_node_icon() or node_icons._scene_icon() or node_icons._output_icon()
             elif kind_lower in ("render", "render_sequence", "render node"):
                 icon_pm = node_icons._render_node_icon() or node_icons._output_icon()

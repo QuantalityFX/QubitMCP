@@ -644,7 +644,12 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._mgl_scene_light_dir = None
         self._mgl_scene_light_pos = None
         self._mgl_scene_light_intensity = None
+        self._mgl_scene_light_range = None
         self._mgl_scene_light_shadow_strength = None
+        self._mgl_scene_light_shadow_range = None
+        self._mgl_scene_light_shadow_fov = None
+        self._mgl_scene_light_shadow_near = None
+        self._mgl_scene_light_shadow_bias = None
         self._mgl_shadow_light_mvp = None
         self._mgl_shadow_valid = False
         self._mgl_shadow_dirty = True

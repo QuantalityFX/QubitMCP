@@ -297,6 +297,16 @@ def _param_bool(model, name: str, default: bool = False) -> bool:
     return bool(default)
 
 
+def _param_float(model, name: str, default: float = 0.0) -> float:
+    raw = str(_param_value(model, name) or "").strip()
+    if not raw:
+        return float(default)
+    try:
+        return float(raw)
+    except Exception:
+        return float(default)
+
+
 def _exclusive_joint_debug_flags(
     show_capture_joints: bool,
     show_animated_joints: bool,
@@ -1815,10 +1825,13 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                 intensity = float((_param_value(model, "intensity") or "").strip() or 1.0)
             except Exception:
                 intensity = 1.0
-            try:
-                shadow_strength = float((_param_value(model, "shadow_strength") or "").strip() or 1.0)
-            except Exception:
-                shadow_strength = 1.0
+            light_range = _param_float(model, "range", 0.0)
+            shadow_strength = _param_float(model, "shadow_strength", 1.0)
+            shadow_range = _param_float(model, "shadow_range", 0.0)
+            shadow_fov = _param_float(model, "shadow_fov", 0.0)
+            shadow_near = _param_float(model, "shadow_near", 0.0)
+            shadow_bias = _param_float(model, "shadow_bias", 0.0)
+            shadow_fov_value = 0.0 if float(shadow_fov) <= 0.0 else max(1.0, min(179.0, float(shadow_fov)))
             light_type = _normalize_light_type(_param_value(model, "type") or _param_value(model, "light_type"))
             assets.append(
                 {
@@ -1834,7 +1847,12 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                     "light": {
                         "type": light_type,
                         "intensity": max(0.0, float(intensity)),
+                        "range": max(0.0, float(light_range)),
                         "shadow_strength": max(0.0, min(1.0, float(shadow_strength))),
+                        "shadow_range": max(0.0, float(shadow_range)),
+                        "shadow_fov": float(shadow_fov_value),
+                        "shadow_near": max(0.0, float(shadow_near)),
+                        "shadow_bias": max(0.0, float(shadow_bias)),
                     },
                 }
             )
