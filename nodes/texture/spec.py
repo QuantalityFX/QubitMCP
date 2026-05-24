@@ -15,6 +15,7 @@ from nodes.util_graph import param_change_relevant as _param_change_relevant
 
 SUPPORTED_TEX_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tga", ".tif", ".tiff"}
 SUPPORTED_MESH_EXTS = {".obj", ".fbx", ".gltf", ".glb"}
+_NORMALS_PROCESS_KINDS = {"normals", "normal", "smooth_normals", "smooth normals"}
 
 
 def _param_value(model, name: str) -> str:
@@ -23,6 +24,26 @@ def _param_value(model, name: str) -> str:
         if (p.get("name") or "").strip().lower() == key:
             return p.get("value", "") or ""
     return ""
+
+
+def _mesh_path_from_item(item) -> str:
+    model = getattr(item, "model", None)
+    if model is None:
+        return ""
+    kind = (getattr(model, "kind", "") or "").strip().lower()
+    path = _param_value(model, "path") or _param_value(model, "mesh") or _param_value(model, "source")
+    if kind in _NORMALS_PROCESS_KINDS:
+        try:
+            from nodes.normals import spec as _normals_spec  # type: ignore
+
+            build = getattr(_normals_spec, "build_normals_obj", None)
+            if callable(build):
+                built_path, _err = build(item, force=False, notify_scene=False)
+                if built_path:
+                    return str(built_path)
+        except Exception:
+            pass
+    return str(path or "")
 
 
 def _ensure_param(node_item, name: str, default: str = "") -> None:
@@ -86,7 +107,7 @@ def _resolve_input_path(node_item) -> str:
                     edges = []
             if edges:
                 return _path_from_item(getattr(edges[0], "src", None), depth + 1, visited)
-        return _param_value(m, "path")
+        return _mesh_path_from_item(item)
 
     if sc is not None:
         try:
@@ -142,7 +163,7 @@ def _resolve_input_item(node_item):
                     edges = []
             if edges:
                 return _trace(getattr(edges[0], "src", None), depth + 1, visited)
-        path = _param_value(m, "path")
+        path = _mesh_path_from_item(item)
         return item, kind, path
 
     if sc is not None:

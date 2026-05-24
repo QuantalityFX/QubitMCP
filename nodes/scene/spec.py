@@ -21,6 +21,8 @@ import traceback
 SUPPORTED_EXTS = {".fbx", ".bvh", ".obj", ".gltf", ".glb", ".ply", ".stl", ".off", ".om"}
 _MATERIAL_KINDS = {"mnaterial", "material"}
 _TEXTURE_KINDS = {"texture", "texture_pro", "texture_layer"}
+_NORMALS_PROCESS_KINDS = {"normals", "normal", "smooth_normals", "smooth normals"}
+_GEOMETRY_PROCESS_KINDS = {"uv_unwrap"} | _NORMALS_PROCESS_KINDS
 _FBX_KIND_ALIASES = {"fbx_import", "fbx import", "fbximport"}
 _ANIM_RETARGET_KIND_ALIASES = {"anim_retarget", "anim retarget", "animretarget", "retarget"}
 _SKINNED_SPLAT_PROXY_KIND_ALIASES = {
@@ -853,6 +855,22 @@ def _light_proxy_obj_path(node_item, light_name: str) -> str:
     return str(out_path)
 
 
+def _geometry_process_output_path(item, kind: str, fallback_path: str = "") -> str:
+    kind = (kind or "").strip().lower()
+    if kind in _NORMALS_PROCESS_KINDS and item is not None:
+        try:
+            from nodes.normals import spec as _normals_spec  # type: ignore
+
+            build = getattr(_normals_spec, "build_normals_obj", None)
+            if callable(build):
+                path, _err = build(item, force=False, notify_scene=False)
+                if path:
+                    return str(path)
+        except Exception:
+            pass
+    return str(fallback_path or "")
+
+
 def _resolve_input_item(scene, node_item, port_names=None):
     if scene is None or node_item is None:
         return None, "", ""
@@ -943,6 +961,8 @@ def _resolve_input_item(scene, node_item, port_names=None):
         path = _param_value(m, "path")
         if not path:
             path = _param_value(m, "mesh") or _param_value(m, "source")
+        if kind in _GEOMETRY_PROCESS_KINDS:
+            path = _geometry_process_output_path(item, kind, path)
         return item, kind, path
 
     try:
@@ -1027,7 +1047,7 @@ def _fx_surface_context(scene, owner_item, owner_model, owner_kind):
         if kind in _TEXTURE_KINDS:
             texture_model = model
             texture_kind = kind
-        if kind not in _TEXTURE_KINDS and kind not in _MATERIAL_KINDS and kind not in {"transforms", "uv_unwrap"}:
+        if kind not in _TEXTURE_KINDS and kind not in _MATERIAL_KINDS and kind not in ({"transforms"} | _GEOMETRY_PROCESS_KINDS):
             break
         next_item, next_kind, _ = _resolve_input_item(scene, item)
         if next_item is None or next_item is item:
@@ -1126,6 +1146,10 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
         pass_kinds = {
             "switch",
             "uv_unwrap",
+            "normals",
+            "normal",
+            "smooth_normals",
+            "smooth normals",
             "texture",
             "texture_pro",
             "texture_layer",
@@ -1162,6 +1186,10 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
         pass_kinds = {
             "switch",
             "uv_unwrap",
+            "normals",
+            "normal",
+            "smooth_normals",
+            "smooth normals",
             "texture",
             "texture_pro",
             "texture_layer",
@@ -1221,6 +1249,10 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
         pass_kinds = {
             "switch",
             "uv_unwrap",
+            "normals",
+            "normal",
+            "smooth_normals",
+            "smooth normals",
             "texture",
             "texture_pro",
             "texture_layer",
@@ -1359,6 +1391,62 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
         entry["speed_percent"] = float(pct)
         return True
 
+    def _resolve_processed_owner_chain(start_item, start_kind):
+        item = start_item
+        kind = (start_kind or "").strip().lower()
+        owner_path = ""
+        material_model = None
+        texture_model = None
+        texture_kind = ""
+        visited = set()
+        depth = 0
+
+        while item is not None and item not in visited and depth < 12:
+            visited.add(item)
+            depth += 1
+            model = getattr(item, "model", None)
+            if model is None:
+                break
+            kind = (kind or getattr(model, "kind", "") or "").strip().lower()
+
+            if kind in _TEXTURE_KINDS:
+                texture_model = model
+                texture_kind = kind
+                next_item, next_kind, next_path = _resolve_input_item(scene, item)
+                if next_item is None or next_item is item:
+                    break
+                if next_path:
+                    owner_path = next_path
+                item = next_item
+                kind = (next_kind or "").strip().lower()
+                continue
+
+            if kind in _MATERIAL_KINDS:
+                if material_model is None:
+                    material_model = model
+                next_item, next_kind, next_path = _resolve_input_item(scene, item)
+                if next_item is None or next_item is item:
+                    break
+                if next_path:
+                    owner_path = next_path
+                item = next_item
+                kind = (next_kind or "").strip().lower()
+                continue
+
+            if kind in _GEOMETRY_PROCESS_KINDS or kind == "transforms":
+                next_item, next_kind, next_path = _resolve_input_item(scene, item)
+                if next_item is None or next_item is item:
+                    break
+                if next_path:
+                    owner_path = next_path
+                item = next_item
+                kind = (next_kind or "").strip().lower()
+                continue
+
+            break
+
+        return item, kind, owner_path, material_model, texture_model, texture_kind
+
     def _build_instance_assets(instance_item, instance_model):
         entries = []
         instance_names = []
@@ -1447,27 +1535,47 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
         if owner_kind in _TEXTURE_KINDS:
             upstream_item, upstream_kind, upstream_path = _resolve_input_item(scene, owner_item)
             if upstream_item is not None and getattr(upstream_item, "model", None) is not None:
-                if upstream_kind == "uv_unwrap":
+                if upstream_kind in _GEOMETRY_PROCESS_KINDS:
                     if upstream_path:
                         path = upstream_path
-                    upstream2_item, upstream2_kind, _ = _resolve_input_item(scene, upstream_item)
-                    if upstream2_item is not None and getattr(upstream2_item, "model", None) is not None:
-                        owner_model = getattr(upstream2_item, "model", owner_model)
-                        owner_kind = upstream2_kind or owner_kind
+                    owner2_item, owner2_kind, owner2_path, mat2_model, _tex2_model, _tex2_kind = (
+                        _resolve_processed_owner_chain(upstream_item, upstream_kind)
+                    )
+                    if owner2_item is not None and getattr(owner2_item, "model", None) is not None:
+                        owner_item = owner2_item
+                        owner_model = getattr(owner2_item, "model", owner_model)
+                        owner_kind = owner2_kind or owner_kind
+                        if mat2_model is not None and material_model is None:
+                            material_model = mat2_model
+                        if not path and owner2_path:
+                            path = owner2_path
                 else:
                     owner_item = upstream_item
                     owner_model = getattr(upstream_item, "model", owner_model)
                     owner_kind = upstream_kind or owner_kind
                     if upstream_path:
                         path = upstream_path
-        elif owner_kind == "uv_unwrap":
+        elif owner_kind in _GEOMETRY_PROCESS_KINDS:
             upstream_item, upstream_kind, upstream_path = _resolve_input_item(scene, owner_item)
             if upstream_item is not None and getattr(upstream_item, "model", None) is not None:
-                owner_item = upstream_item
-                owner_model = getattr(upstream_item, "model", owner_model)
-                owner_kind = upstream_kind or owner_kind
-                if not path and upstream_path:
-                    path = upstream_path
+                owner2_item, owner2_kind, owner2_path, mat2_model, tex2_model, tex2_kind = (
+                    _resolve_processed_owner_chain(upstream_item, upstream_kind)
+                )
+                if owner2_item is not None and getattr(owner2_item, "model", None) is not None:
+                    owner_item = owner2_item
+                    owner_model = getattr(owner2_item, "model", owner_model)
+                    owner_kind = owner2_kind or owner_kind
+                else:
+                    owner_item = upstream_item
+                    owner_model = getattr(upstream_item, "model", owner_model)
+                    owner_kind = upstream_kind or owner_kind
+                if mat2_model is not None and material_model is None:
+                    material_model = mat2_model
+                if tex2_model is not None:
+                    texture_model = tex2_model
+                    texture_kind = tex2_kind or texture_kind
+                if not path:
+                    path = upstream_path or owner2_path or path
         elif owner_kind == "transforms":
             upstream_item, upstream_kind, upstream_path = _resolve_input_item(scene, owner_item)
             if upstream_path:
@@ -1953,6 +2061,8 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             path = _fbx_import_resolved_rest_path(model)
         if kind in _MOCAP_KIND_ALIASES and not path:
             path = _mocap_import_resolved_path(model)
+        if kind in _GEOMETRY_PROCESS_KINDS:
+            path = _geometry_process_output_path(src_item, kind, path)
         if isinstance(material_asset, dict):
             try:
                 material_path = str(material_asset.get("path") or "").strip()
@@ -1981,13 +2091,20 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                     texture_kind = owner_kind
                     if upstream_path:
                         path = upstream_path
-                elif upstream_kind == "uv_unwrap":
+                elif upstream_kind in _GEOMETRY_PROCESS_KINDS:
                     if upstream_path:
                         path = upstream_path
-                    upstream2_item, upstream2_kind, _ = _resolve_input_item(scene, upstream_item)
-                    if upstream2_item is not None and getattr(upstream2_item, "model", None) is not None:
-                        owner_model = getattr(upstream2_item, "model", owner_model)
-                        owner_kind = upstream2_kind or owner_kind
+                    owner2_item, owner2_kind, owner2_path, mat2_model, _tex2_model, _tex2_kind = (
+                        _resolve_processed_owner_chain(upstream_item, upstream_kind)
+                    )
+                    if owner2_item is not None and getattr(owner2_item, "model", None) is not None:
+                        owner_item = owner2_item
+                        owner_model = getattr(owner2_item, "model", owner_model)
+                        owner_kind = owner2_kind or owner_kind
+                        if mat2_model is not None and material_model is None:
+                            material_model = mat2_model
+                        if not path and owner2_path:
+                            path = owner2_path
                 elif kind in ("fx", "fx_trail"):
                     owner_item = upstream_item
                     owner_model = getattr(upstream_item, "model", owner_model)
@@ -2138,7 +2255,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
         if kind in _MATERIAL_KINDS and owner_kind in _TEXTURE_KINDS:
             upstream_item, upstream_kind, upstream_path = _resolve_input_item(scene, owner_item)
             if upstream_item is not None and getattr(upstream_item, "model", None) is not None:
-                if upstream_kind == "uv_unwrap":
+                if upstream_kind in _GEOMETRY_PROCESS_KINDS:
                     if upstream_path:
                         path = upstream_path
                     upstream2_item, upstream2_kind, _ = _resolve_input_item(scene, upstream_item)
@@ -2152,7 +2269,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                     owner_kind = upstream_kind or owner_kind
                     if upstream_path:
                         path = upstream_path
-        elif kind in _MATERIAL_KINDS and owner_kind == "uv_unwrap":
+        elif kind in _MATERIAL_KINDS and owner_kind in _GEOMETRY_PROCESS_KINDS:
             upstream_item, upstream_kind, upstream_path = _resolve_input_item(scene, owner_item)
             if upstream_item is not None and getattr(upstream_item, "model", None) is not None:
                 owner_item = upstream_item
@@ -2160,13 +2277,27 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                 owner_kind = upstream_kind or owner_kind
                 if upstream_path:
                     path = upstream_path
-        elif kind == "uv_unwrap":
+        elif kind in _GEOMETRY_PROCESS_KINDS:
             upstream_item, upstream_kind, upstream_path = _resolve_input_item(scene, src_item)
             if upstream_item is not None and getattr(upstream_item, "model", None) is not None:
-                owner_model = getattr(upstream_item, "model", owner_model)
-                owner_kind = upstream_kind or owner_kind
-                if not path and upstream_path:
-                    path = upstream_path
+                owner2_item, owner2_kind, owner2_path, mat2_model, tex2_model, tex2_kind = (
+                    _resolve_processed_owner_chain(upstream_item, upstream_kind)
+                )
+                if owner2_item is not None and getattr(owner2_item, "model", None) is not None:
+                    owner_item = owner2_item
+                    owner_model = getattr(owner2_item, "model", owner_model)
+                    owner_kind = owner2_kind or owner_kind
+                else:
+                    owner_item = upstream_item
+                    owner_model = getattr(upstream_item, "model", owner_model)
+                    owner_kind = upstream_kind or owner_kind
+                if mat2_model is not None and material_model is None:
+                    material_model = mat2_model
+                if tex2_model is not None:
+                    texture_model = tex2_model
+                    texture_kind = tex2_kind or texture_kind
+                if not path:
+                    path = upstream_path or owner2_path or path
         elif kind == "switch":
             # Switch is a pass-through node; use the currently active branch.
             upstream_item, upstream_kind, upstream_path = _resolve_input_item(scene, src_item, {"mesh", "path", "source"})
@@ -2339,6 +2470,17 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                 texture_provider = getattr(model, "_texture_layer_provider", None)
             except Exception:
                 texture_provider = None
+        elif kind in _GEOMETRY_PROCESS_KINDS:
+            if texture_kind == "texture_pro":
+                try:
+                    texture_provider = getattr(texture_model, "_texture_pro_provider", None)
+                except Exception:
+                    texture_provider = None
+            elif texture_kind == "texture_layer":
+                try:
+                    texture_provider = getattr(texture_model, "_texture_layer_provider", None)
+                except Exception:
+                    texture_provider = None
         elif kind in ("fx", "fx_trail"):
             if isinstance(material_asset, dict) and material_asset.get("texture_provider") is not None:
                 texture_provider = material_asset.get("texture_provider")
@@ -2372,6 +2514,13 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                 texture = _param_value(texture_model, "texture") if ext == ".obj" else ""
         elif kind in ("texture", "texture_pro"):
             texture = _param_value(model, "texture")
+        elif kind in _GEOMETRY_PROCESS_KINDS and texture_model is not None:
+            if texture_kind in ("texture", "texture_pro"):
+                texture = _param_value(texture_model, "texture")
+            elif texture_kind == "texture_layer":
+                texture = _param_value(texture_model, "texture") if ext == ".obj" else ""
+            else:
+                texture = _param_value(model, "texture") if ext == ".obj" else ""
         else:
             texture = _param_value(model, "texture") if ext == ".obj" else ""
         wire_only = False

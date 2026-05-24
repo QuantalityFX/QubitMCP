@@ -486,6 +486,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     _uv_unwrap.register()
             except Exception:
                 pass
+        # Ensure Normals spec is registered even if the loader was skipped.
+        if (self.model.kind or "").strip().lower() in ("normals", "normal", "smooth_normals", "smooth normals"):
+            try:
+                from nodes import normals as _normals  # type: ignore
+                if hasattr(_normals, "register"):
+                    _normals.register()
+            except Exception:
+                pass
         # Ensure Texture spec is registered even if the loader was skipped.
         if (self.model.kind or "").strip().lower() == "texture":
             try:
@@ -697,13 +705,18 @@ class NodeItem(QtWidgets.QGraphicsObject):
             hidden.update({"source", "path", "pos", "rot", "scl"})
             hidden_entry["value"] = ",".join(sorted(hidden))
             self.model.params = params
-        elif kind_lower == "uv_unwrap":
+        elif kind_lower in ("uv_unwrap", "normals", "normal", "smooth_normals", "smooth normals"):
             params = list(self.model.params or [])
             names = {(p.get("name") or "").strip().lower() for p in params}
             if "source" not in names:
                 params.append({"name": "source", "value": ""})
             if "path" not in names:
                 params.append({"name": "path", "value": ""})
+            if kind_lower in ("normals", "normal", "smooth_normals", "smooth normals"):
+                if "angle" not in names:
+                    params.append({"name": "angle", "value": "180"})
+                if "weld_tolerance" not in names:
+                    params.append({"name": "weld_tolerance", "value": "0.0001"})
             # Hide internal params on the node surface.
             store_key = "__ui_hidden_params"
             hidden_entry = None
@@ -1180,7 +1193,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             hidden.update({"primitive", "path"})
         elif kind in ("copy_to_points", "copy to points", "copy_to_point", "copy to point", "copytopoints"):
             hidden.update({"match_normal", "pack", "path", "points_source", "copy_source"})
-        elif kind == "uv_unwrap":
+        elif kind in ("uv_unwrap", "normals", "normal", "smooth_normals", "smooth normals"):
             hidden.update({"source", "path"})
         elif kind == "texture":
             hidden.update({"texture", "source", "path"})
@@ -2015,6 +2028,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
         elif kind == "uv_unwrap":
             body_h = 32
             node_w = self._BASE_W
+        elif kind in ("normals", "normal", "smooth_normals", "smooth normals"):
+            body_h = 44
+            node_w = self._BASE_W
+            try:
+                from nodes.normals import spec as _normals_spec  # type: ignore
+                body_h = max(body_h, int(getattr(_normals_spec, "NORMALS_NODE_BODY_H", body_h)))
+            except Exception:
+                pass
         elif kind == "texture":
             body_h = 32
             node_w = self._BASE_W
@@ -2625,6 +2646,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "copy_to_point",
                 "copy to point",
                 "copytopoints",
+                "normals",
+                "normal",
+                "smooth_normals",
+                "smooth normals",
             )
             deferred_render = None
             if kind_lower in ("chatbot", "chat bot", "chat_bot"):
@@ -6642,6 +6667,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "imagecollection",
                 "uv_unwrap",
                 "uv unwrap",
+                "normals",
+                "normal",
+                "smooth_normals",
+                "smooth normals",
                 "texture",
                 "texture_pro",
                 "texture pro",
@@ -6879,7 +6908,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 icon_pm = node_icons._primitive_icon() or node_icons._output_icon()
             elif kind_lower in ("split_volume", "volume_selector"):
                 icon_pm = node_icons._volume_split_icon() or node_icons._output_icon()
-            elif kind_lower in ("uv_unwrap", "uv unwrap"):
+            elif kind_lower in ("uv_unwrap", "uv unwrap", "normals", "normal", "smooth_normals", "smooth normals"):
                 icon_pm = node_icons._uv_unwrap_icon() or node_icons._output_icon()
             elif kind_lower in ("texture", "texture_pro", "texture pro"):
                 icon_pm = node_icons._texture_node_icon() or node_icons._output_icon()
@@ -6923,7 +6952,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     size = int(max(34, size * 0.86))
                 if kind_lower in ("sequence_to_mp4", "sequence mp4", "sequence_to_video", "image_sequence_to_mp4"):
                     size = int(max(70, size * 1.65))
-                if kind_lower in ("uv_unwrap", "uv unwrap"):
+                if kind_lower in ("uv_unwrap", "uv unwrap", "normals", "normal", "smooth_normals", "smooth normals"):
                     size = int(max(34, size * 0.792))
                 if kind_lower in ("texture", "texture_pro", "texture pro"):
                     size = int(max(34, size * 0.792))

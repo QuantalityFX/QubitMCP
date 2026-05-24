@@ -4,6 +4,7 @@ import math
 import os
 import re
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Tuple, Optional
 
@@ -17,6 +18,15 @@ from nodes.util_graph import param_change_relevant as _param_change_relevant
 
 
 SUPPORTED_EXTS = {".obj", ".fbx", ".gltf", ".glb"}
+_NORMALS_PROCESS_KINDS = {"normals", "normal", "smooth_normals", "smooth normals"}
+
+
+@dataclass
+class _UVMesh:
+    positions: List[Tuple[float, float, float]]
+    faces: List[List[int]]
+    normals: List[Tuple[float, float, float]]
+    face_normals: List[Optional[List[int]]]
 
 
 def _sanitize_name(name: str) -> str:
@@ -66,6 +76,26 @@ def _param_value(model, name: str) -> str:
         if (p.get("name") or "").strip().lower() == key:
             return p.get("value", "") or ""
     return ""
+
+
+def _mesh_path_from_item(item) -> str:
+    model = getattr(item, "model", None)
+    if model is None:
+        return ""
+    kind = (getattr(model, "kind", "") or "").strip().lower()
+    path = _param_value(model, "path") or _param_value(model, "mesh") or _param_value(model, "source")
+    if kind in _NORMALS_PROCESS_KINDS:
+        try:
+            from nodes.normals import spec as _normals_spec  # type: ignore
+
+            build = getattr(_normals_spec, "build_normals_obj", None)
+            if callable(build):
+                built_path, _err = build(item, force=False, notify_scene=False)
+                if built_path:
+                    return str(built_path)
+        except Exception:
+            pass
+    return str(path or "")
 
 
 def _ensure_param(node_item, name: str, default: str = "") -> None:
@@ -121,11 +151,9 @@ def _resolve_input_path(node_item) -> str:
         if chosen is None and in_edges:
             chosen = in_edges[0]
         if chosen is not None:
-            src_model = getattr(getattr(chosen, "src", None), "model", None)
-            if src_model is not None:
-                path = _param_value(src_model, "path")
-                if path:
-                    return path
+            path = _mesh_path_from_item(getattr(chosen, "src", None))
+            if path:
+                return path
     if model is not None:
         return _param_value(model, "source") or _param_value(model, "path")
     return ""
@@ -137,9 +165,21 @@ def _output_path(node_item, src_path: str) -> Path:
     return _unwrap_dir(node_item) / f"{node_name}_{src_stem}_uv.obj"
 
 
-def _load_obj_faces(path: Path) -> Tuple[List[Tuple[float, float, float]], List[List[int]]]:
+def _resolve_obj_index(value: Optional[int], total: int) -> Optional[int]:
+    if value is None or total <= 0:
+        return None
+    if value < 0:
+        value = total + value + 1
+    if value <= 0 or value > total:
+        return None
+    return value - 1
+
+
+def _load_obj_faces(path: Path) -> _UVMesh:
     positions: List[Tuple[float, float, float]] = []
+    normals: List[Tuple[float, float, float]] = []
     faces: List[List[int]] = []
+    face_normals: List[Optional[List[int]]] = []
     try:
         raw = path.read_text(encoding="utf-8", errors="ignore")
     except Exception:
@@ -157,36 +197,110 @@ def _load_obj_faces(path: Path) -> Tuple[List[Tuple[float, float, float]], List[
                 positions.append((float(parts[1]), float(parts[2]), float(parts[3])))
             except Exception:
                 continue
+        elif head == "vn" and len(parts) >= 4:
+            try:
+                normals.append((float(parts[1]), float(parts[2]), float(parts[3])))
+            except Exception:
+                continue
         elif head == "f" and len(parts) >= 4:
             face: List[int] = []
+            normal_refs: List[Optional[int]] = []
             for token in parts[1:]:
                 if not token:
                     continue
-                idx_str = token.split("/")[0]
+                vals = token.split("/")
+                idx_str = vals[0] if vals else ""
                 if not idx_str:
                     continue
                 try:
                     idx = int(idx_str)
                 except Exception:
                     continue
-                if idx < 0:
-                    idx = len(positions) + idx + 1
-                if idx <= 0 or idx > len(positions):
+                vidx = _resolve_obj_index(idx, len(positions))
+                if vidx is None:
                     continue
-                face.append(idx - 1)
+                nidx = None
+                if len(vals) > 2 and vals[2]:
+                    try:
+                        nidx = _resolve_obj_index(int(vals[2]), len(normals))
+                    except Exception:
+                        nidx = None
+                face.append(vidx)
+                normal_refs.append(nidx)
             if len(face) >= 3:
                 faces.append(face)
-    return positions, faces
+                if len(normal_refs) == len(face) and all(n is not None for n in normal_refs):
+                    face_normals.append([int(n) for n in normal_refs if n is not None])
+                else:
+                    face_normals.append(None)
+    return _UVMesh(positions=positions, faces=faces, normals=normals, face_normals=face_normals)
 
 
-def _load_tri_mesh(path: Path) -> Tuple[List[Tuple[float, float, float]], List[List[int]]]:
+def _mesh_from_arrays(points, normals=None) -> _UVMesh:
+    positions: List[Tuple[float, float, float]] = []
+    normal_values: List[Tuple[float, float, float]] = []
     try:
-        from echograph.ui.gl_loaders import load_model
+        pts = points.reshape(-1, 3)
     except Exception:
-        return [], []
+        pts = []
+    nrm = None
+    if normals is not None:
+        try:
+            nrm = normals.reshape(-1, 3)
+        except Exception:
+            nrm = None
+    for idx, row in enumerate(pts):
+        try:
+            positions.append((float(row[0]), float(row[1]), float(row[2])))
+        except Exception:
+            continue
+        if nrm is not None and idx < len(nrm):
+            try:
+                n = nrm[idx]
+                normal_values.append((float(n[0]), float(n[1]), float(n[2])))
+            except Exception:
+                normal_values.append((0.0, 0.0, 1.0))
+
+    faces: List[List[int]] = []
+    face_normals: List[Optional[List[int]]] = []
+    use_normals = bool(normal_values) and len(normal_values) >= len(positions)
+    for i in range(0, len(positions) - 2, 3):
+        faces.append([i, i + 1, i + 2])
+        face_normals.append([i, i + 1, i + 2] if use_normals else None)
+    return _UVMesh(
+        positions=positions,
+        faces=faces,
+        normals=normal_values if use_normals else [],
+        face_normals=face_normals,
+    )
+
+
+def _load_tri_mesh(path: Path) -> _UVMesh:
+    try:
+        from echograph.ui import gl_loaders
+    except Exception:
+        return _UVMesh([], [], [], [])
+    ext = path.suffix.lower()
+    array_loader = None
+    if ext in {".gltf", ".glb"}:
+        array_loader = getattr(gl_loaders, "load_gltf_mesh_arrays", None)
+    elif ext == ".fbx":
+        array_loader = getattr(gl_loaders, "_load_fbx_mesh_arrays", None)
+    if callable(array_loader):
+        try:
+            arrays = array_loader(path)
+            points = getattr(arrays, "points", None)
+            if points is not None and getattr(points, "size", 0):
+                return _mesh_from_arrays(points, getattr(arrays, "normals", None))
+        except Exception:
+            pass
+
+    load_model = getattr(gl_loaders, "load_model", None)
+    if not callable(load_model):
+        return _UVMesh([], [], [], [])
     model = load_model(path)
     if model is None or not model.vertices:
-        return [], []
+        return _UVMesh([], [], [], [])
     verts: List[Tuple[float, float, float]] = []
     vals = model.vertices
     for i in range(0, len(vals), 3):
@@ -195,9 +309,11 @@ def _load_tri_mesh(path: Path) -> Tuple[List[Tuple[float, float, float]], List[L
         except Exception:
             continue
     faces: List[List[int]] = []
+    face_normals: List[Optional[List[int]]] = []
     for i in range(0, len(verts) - 2, 3):
         faces.append([i, i + 1, i + 2])
-    return verts, faces
+        face_normals.append(None)
+    return _UVMesh(positions=verts, faces=faces, normals=[], face_normals=face_normals)
 
 
 def _bounds(verts: List[Tuple[float, float, float]]) -> Tuple[float, float, float, float, float, float]:
@@ -266,10 +382,11 @@ def _project_uv(
 
 
 def _unwrap_to_obj(
-    verts: List[Tuple[float, float, float]],
-    faces: List[List[int]],
+    mesh: _UVMesh,
     out_path: Path,
 ) -> Optional[str]:
+    verts = mesh.positions
+    faces = mesh.faces
     if not verts or not faces:
         return "No mesh data."
     bounds = _bounds(verts)
@@ -278,10 +395,10 @@ def _unwrap_to_obj(
         return "Invalid mesh bounds."
 
     uvs: List[Tuple[float, float]] = []
-    face_uv_indices: List[Tuple[List[int], List[int]]] = []
+    face_uv_indices: List[Tuple[List[int], List[int], Optional[List[int]]]] = []
     uv_index = 1
 
-    for face in faces:
+    for face_idx, face in enumerate(faces):
         if len(face) < 3:
             continue
         try:
@@ -323,7 +440,10 @@ def _unwrap_to_obj(
             uv_index += 1
 
         if len(face_uvs) == len(face) and face_uvs:
-            face_uv_indices.append((face, face_uvs))
+            normal_refs = mesh.face_normals[face_idx] if face_idx < len(mesh.face_normals) else None
+            if normal_refs is not None and len(normal_refs) != len(face):
+                normal_refs = None
+            face_uv_indices.append((face, face_uvs, normal_refs))
 
     if not face_uv_indices:
         return "No valid faces to unwrap."
@@ -333,10 +453,17 @@ def _unwrap_to_obj(
         lines.append(f"v {x:.6f} {y:.6f} {z:.6f}")
     for u, v in uvs:
         lines.append(f"vt {u:.6f} {v:.6f}")
-    for face, uv_idxs in face_uv_indices:
+    has_normal_refs = any(nidxs for _face, _uvs, nidxs in face_uv_indices)
+    if has_normal_refs:
+        for nx, ny, nz in mesh.normals:
+            lines.append(f"vn {nx:.6f} {ny:.6f} {nz:.6f}")
+    for face, uv_idxs, normal_idxs in face_uv_indices:
         parts = []
-        for vidx, vt_idx in zip(face, uv_idxs):
-            parts.append(f"{vidx + 1}/{vt_idx}")
+        for idx, (vidx, vt_idx) in enumerate(zip(face, uv_idxs)):
+            if has_normal_refs and normal_idxs is not None and idx < len(normal_idxs):
+                parts.append(f"{vidx + 1}/{vt_idx}/{int(normal_idxs[idx]) + 1}")
+            else:
+                parts.append(f"{vidx + 1}/{vt_idx}")
         lines.append("f " + " ".join(parts))
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -461,11 +588,11 @@ class UVUnwrapWidget(QtWidgets.QWidget):
             return
 
         if ext == ".obj":
-            verts, faces = _load_obj_faces(Path(src_path))
+            mesh = _load_obj_faces(Path(src_path))
         else:
-            verts, faces = _load_tri_mesh(Path(src_path))
+            mesh = _load_tri_mesh(Path(src_path))
 
-        err = _unwrap_to_obj(verts, faces, out_path)
+        err = _unwrap_to_obj(mesh, out_path)
         if err:
             self._status.setText(err)
             self._view_btn.setEnabled(False)

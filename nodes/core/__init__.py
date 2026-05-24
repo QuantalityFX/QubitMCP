@@ -91,6 +91,7 @@ def register_defaults() -> None:
     register("image_collection", stripe_color="#22c55e")
     register("camera",    stripe_color="#f59e0b")
     register("light",     stripe_color="#facc15")
+    register("normals",   stripe_color="#38bdf8")
     register("output",    stripe_color="#a855f7")
     register("llm",       stripe_color="#14b8a6")
     register("local_server", stripe_color="#14b8a6")
@@ -138,6 +139,14 @@ def register_defaults() -> None:
             _light.register(core=sys.modules[__name__])
     except (Exception, SystemExit) as exc:  # pragma: no cover - optional plugin
         print("[EchoGraph] Light auto-register failed:", exc)
+
+    # Auto-register Normals so mesh smoothing nodes are available early.
+    try:
+        from nodes import normals as _normals  # type: ignore
+        if hasattr(_normals, "register"):
+            _normals.register(core=sys.modules[__name__])
+    except (Exception, SystemExit) as exc:  # pragma: no cover - optional plugin
+        print("[EchoGraph] Normals auto-register failed:", exc)
 
 
 def apply_spec_to_item(item: Any, kind: str | Spec, *, debug: bool = False) -> Any:
