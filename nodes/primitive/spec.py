@@ -205,7 +205,7 @@ def _sphere(radius: float = 0.5, segments: int = 24, rings: int = 12):
         a = 0
         b = 1 + j
         c = 1 + (j + 1) % segments
-        faces.append([a, b, c])
+        faces.append([a, c, b])
 
     for i in range(1, rings - 1):
         ring_start = 1 + (i - 1) * segments
