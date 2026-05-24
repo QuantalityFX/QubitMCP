@@ -348,6 +348,18 @@ def _kind_icon(kind: str) -> QtGui.QIcon:
     return QtGui.QIcon()
 
 
+_LIGHT_PRESET_TYPES = {
+    "directional_light": "directional",
+    "directional light": "directional",
+    "point_light": "point",
+    "point light": "point",
+    "spot_light": "spot",
+    "spot light": "spot",
+    "area_light": "area",
+    "area light": "area",
+}
+
+
 class CreateNodeDialog(QtWidgets.QDialog):
     def __init__(self, parent=None, existing_names=None):
         super().__init__(parent)
@@ -356,6 +368,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
         self.setMinimumSize(660, 620)
         self.resize(700, 630)
         self._existing = set(existing_names or [])
+        self._quick_kind_override = None
 
         form = QtWidgets.QGridLayout()
         form.setContentsMargins(0, 0, 0, 0)
@@ -371,7 +384,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
         self.kind_edit = QtWidgets.QComboBox()
         self.kind_edit.setEditable(True)
         self._kinds = [
-            "node","camera","light","import","fbx_import","mocap_import","GEN-X-VideoMocap","anim_retarget","skinned_splat_proxy","instance","copy_to_points","primitive","uv_unwrap","texture","texture_pro","texture_layer","material","split_volume","transforms","fx","fx_splat_physics","fx_music_effects","scene","render","video_player","post_process","sequence_to_mp4","export_fbx","html_preview","python","switch","output","local_server",
+            "node","camera","light","directional_light","point_light","spot_light","area_light","import","fbx_import","mocap_import","GEN-X-VideoMocap","anim_retarget","skinned_splat_proxy","instance","copy_to_points","primitive","uv_unwrap","texture","texture_pro","texture_layer","material","split_volume","transforms","fx","fx_splat_physics","fx_music_effects","scene","render","video_player","post_process","sequence_to_mp4","export_fbx","html_preview","python","switch","output","local_server",
             "gantt_chart","keyboard_sequence",
             "serial_com",
             "qubit_deck_controller",
@@ -591,25 +604,41 @@ class CreateNodeDialog(QtWidgets.QDialog):
         kind = (kind or "").strip()
         if not kind:
             return
+        self._quick_kind_override = kind
         self.kind_edit.setEditText(kind)
         self._accept()
 
     def _accept(self):
-        name = self.name_edit.text().strip()
-        if name in self._existing:
-            QtWidgets.QMessageBox.warning(self, APP_TITLE, f"Node '{name}' already exists.")
-            return
+        # Callers already finalize the name with their scene-level unique-name
+        # helper. Accept duplicate typed names here so quick-create buttons can
+        # always create another node, e.g. light -> light1.
         self.accept()
 
     def result_payload(self):
         params = [{"name": self.param_list.item(i).text(), "value": ""} for i in range(self.param_list.count())]
-        kind_raw = self.kind_edit.currentText().strip() or "node"
+        quick_kind = str(getattr(self, "_quick_kind_override", "") or "").strip()
+        kind_raw = quick_kind or self.kind_edit.currentText().strip() or "node"
         kind_key = kind_raw.lower().replace(" ", "_")
         if kind_key == "localserver":
             kind_key = "local_server"
         if kind_key == "llm":
             kind_key = "local_server"
+        light_preset_type = _LIGHT_PRESET_TYPES.get(kind_key)
         kind = "local_server" if kind_key == "local_server" else kind_raw
+        if light_preset_type:
+            kind = "light"
+            type_param = None
+            for p in params:
+                if (p.get("name") or "").strip().lower() in ("type", "light_type"):
+                    type_param = p
+                    break
+            if type_param is None:
+                params.append({"name": "type", "value": light_preset_type})
+            else:
+                type_param["value"] = light_preset_type
+        node_name = self.name_edit.text().strip()
+        if light_preset_type and not node_name:
+            node_name = f"{light_preset_type}_light"
         code = None
         if kind.lower() == "python":
             code_text = self.code_edit.toPlainText()
@@ -624,7 +653,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
                         break
             else:
                 params.append({"name": "URL", "value": url_val})
-        return {"name": self.name_edit.text().strip(), "kind": kind, "params": params, "code": code}
+        return {"name": node_name, "kind": kind, "params": params, "code": code}
 
 
 class RecentGraphsDialog(QtWidgets.QDialog):

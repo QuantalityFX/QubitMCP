@@ -79,7 +79,7 @@ _VOICE_AUDIO_MODE_BILATERAL = "bilateral"
 _VOICE_AUDIO_MODE_TURN_TAKING = "turn_taking"
 _VOICE_AUDIO_MODE_DEFAULT = _VOICE_AUDIO_MODE_TURN_TAKING
 _VOICE_MIC_DEVICE_DEFAULT = None
-_SHADOW_QUALITY_DEFAULT = "low"
+_SHADOW_QUALITY_DEFAULT = "high"
 _AMBIENT_LIGHT_STRENGTH_DEFAULT = 0.10
 _SHADOW_QUALITY_LABELS = {
     "low": "Low",
@@ -1469,6 +1469,15 @@ class GraphScene(QtWidgets.QGraphicsScene):
         self.setSceneRect(QtCore.QRectF(-20000, -20000, 40000, 40000))
 
     def add_node(self, node: GraphNode, pos):
+        try:
+            requested_name = str(getattr(node, "name", "") or "").strip()
+            kind = str(getattr(node, "kind", "") or "node")
+            unique_name = self._unique_node_name(requested_name, kind)
+            if unique_name != requested_name:
+                node.name = unique_name
+        except Exception:
+            pass
+
         # If the model already has a stored position (e.g., after load), prefer it.
         try:
             x, y = node.pos_xy  # may raise if not set yet
@@ -2621,6 +2630,11 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             self.scene.paramChanged.connect(self._on_params_changed)
         except Exception:
             pass
+        self._active_scene_refresh_node = ""
+        self._active_scene_refresh_timer = QtCore.QTimer(self)
+        self._active_scene_refresh_timer.setSingleShot(True)
+        self._active_scene_refresh_timer.setInterval(180)
+        self._active_scene_refresh_timer.timeout.connect(self._refresh_active_scene_from_graph)
         self._apply_voice_audio_mode_to_scene(sync_view_settings=True)
         self._apply_voice_microphone_to_scene(sync_view_settings=True)
 
@@ -3822,6 +3836,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                         repr(dict(entry.get("render_proxy") or {})),
                         repr(dict(entry.get("copy_to_points") or {})),
                         repr(dict(entry.get("music_effects") or {})),
+                        repr(dict(entry.get("light") or {})),
+                        repr(entry.get("fov", None)),
+                        repr(entry.get("aspect_width", None)),
+                        repr(entry.get("aspect_height", None)),
                     )
                 )
             sig = tuple(sorted(sig))
@@ -6824,6 +6842,110 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         except Exception:
             pass
 
+    def _active_scene_node_item(self):
+        sc = getattr(self, "scene", None)
+        if sc is None:
+            return None
+        active = getattr(self, "_active_scene_node", None)
+        if active is None:
+            return None
+        if hasattr(active, "model"):
+            return active
+        active_name = str(getattr(active, "name", "") or "").strip()
+        node_items = getattr(sc, "_node_items", None)
+        if isinstance(node_items, dict):
+            if active_name and active_name in node_items:
+                return node_items.get(active_name)
+            try:
+                for item in node_items.values():
+                    if getattr(item, "model", None) is active:
+                        return item
+            except Exception:
+                pass
+        return None
+
+    def _node_feeds_active_scene(self, node_name: str) -> bool:
+        target = str(node_name or "").strip().lower()
+        if not target:
+            return False
+        sc = getattr(self, "scene", None)
+        root = self._active_scene_node_item()
+        if sc is None or root is None:
+            return False
+        seen = set()
+        stack = [root]
+        while stack:
+            item = stack.pop()
+            if item is None:
+                continue
+            ident = id(item)
+            if ident in seen:
+                continue
+            seen.add(ident)
+            model = getattr(item, "model", None)
+            if str(getattr(model, "name", "") or "").strip().lower() == target:
+                return True
+            try:
+                edges = list(sc._ordered_in_edges(item))
+            except Exception:
+                try:
+                    edges = list(sc._in_edges(item))
+                except Exception:
+                    edges = []
+            for edge in edges:
+                src = getattr(edge, "src", None)
+                if src is not None:
+                    stack.append(src)
+        return False
+
+    def _schedule_active_scene_refresh_for_node(self, node_name: str) -> None:
+        try:
+            if str(getattr(self, "_view_mode", "2d") or "").strip().lower() not in {"3d", "split"}:
+                return
+            if getattr(self, "gl_view", None) is None:
+                return
+            if not self._node_feeds_active_scene(node_name):
+                return
+            self._active_scene_refresh_node = str(node_name or "")
+            timer = getattr(self, "_active_scene_refresh_timer", None)
+            if timer is not None:
+                timer.start()
+            else:
+                self._refresh_active_scene_from_graph()
+        except Exception:
+            pass
+
+    def _refresh_active_scene_from_graph(self) -> None:
+        item = self._active_scene_node_item()
+        if item is None:
+            return
+        assets = []
+        try:
+            collect = getattr(item, "_collect_scene_assets", None)
+            if callable(collect):
+                assets = list(collect() or [])
+        except Exception:
+            assets = []
+        if not assets:
+            try:
+                from nodes.scene import spec as _scene_spec  # type: ignore
+
+                collect = getattr(_scene_spec, "_collect_assets", None)
+                if callable(collect):
+                    assets = list(collect(item) or [])
+            except Exception:
+                assets = []
+        if not assets:
+            return
+        try:
+            self._active_scene_node = getattr(item, "model", None)
+        except Exception:
+            pass
+        try:
+            self.open_scene_assets(assets, frame=False)
+        except Exception:
+            pass
+
     def _on_params_changed(self, node_name: str, params: list):
         # Refresh just the affected card (no full branch rebuild)
         try:
@@ -6842,6 +6964,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                     out_card.apply_append_preview_if_output()
         except Exception:
             pass
+
+        self._schedule_active_scene_refresh_for_node(node_name)
 
 
     def _on_node_deleted(self, name: str):

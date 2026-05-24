@@ -57,6 +57,12 @@ _LIGHT_KIND_ALIASES = {
     "scene light",
     "directional_light",
     "directional light",
+    "point_light",
+    "point light",
+    "spot_light",
+    "spot light",
+    "area_light",
+    "area light",
 }
 _LIGHT_TYPE_ALIASES = {
     "dir": "directional",
@@ -74,6 +80,29 @@ _LIGHT_TYPE_ALIASES = {
     "area_light": "area",
     "area light": "area",
 }
+
+
+def _identity_xform() -> dict:
+    return {"pos": [0.0, 0.0, 0.0], "rot": [0.0, 0.0, 0.0], "scl": [1.0, 1.0, 1.0]}
+
+
+def _is_legacy_default_light_xform(xf) -> bool:
+    if not isinstance(xf, dict):
+        return False
+    try:
+        pos = list(xf.get("pos", ()))[:3]
+        rot = list(xf.get("rot", ()))[:3]
+        scl = list(xf.get("scl", ()))[:3]
+        return (
+            len(pos) >= 3
+            and len(rot) >= 3
+            and len(scl) >= 3
+            and all(abs(float(a) - float(b)) < 1.0e-4 for a, b in zip(pos, (4.0, 6.0, 4.0)))
+            and all(abs(float(a) - float(b)) < 1.0e-4 for a, b in zip(rot, (133.5, 135.0, 0.0)))
+            and all(abs(float(a) - float(b)) < 1.0e-4 for a, b in zip(scl, (1.0, 1.0, 1.0)))
+        )
+    except Exception:
+        return False
 _MOCAP_KIND_ALIASES = {
     "mocap_import",
     "mocap import",
@@ -1816,11 +1845,9 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                 continue
             xf = _lookup_xform(xforms, light_name)
             if not isinstance(xf, dict):
-                xf = {
-                    "pos": [4.0, 6.0, 4.0],
-                    "rot": [133.5, 135.0, 0.0],
-                    "scl": [1.0, 1.0, 1.0],
-                }
+                xf = _identity_xform()
+            elif _is_legacy_default_light_xform(xf):
+                xf = _identity_xform()
             try:
                 intensity = float((_param_value(model, "intensity") or "").strip() or 1.0)
             except Exception:

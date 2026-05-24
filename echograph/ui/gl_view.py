@@ -626,10 +626,10 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._mgl_shadow_fbo = None
         self._mgl_shadow_depth_tex = None
         self._mgl_shadow_id_tex = None
-        self._mgl_shadow_quality = "low"
+        self._mgl_shadow_quality = "high"
         self._mgl_shadow_render_quality = "high"
-        self._mgl_shadow_map_size = 512
-        self._mgl_shadow_size_current = 0
+        self._mgl_shadow_map_size = 2048
+        self._mgl_shadow_size_current = ()
         self._mgl_shadows_enabled = True
         self._mgl_self_shadows_enabled = True
         self._mgl_two_sided_shadows_enabled = True
@@ -3953,6 +3953,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             seeded_mesh_xforms = {}
             seeded_splat_xforms = {}
             owner_kind_map = {}
+            owner_asset_kind_map = {}
             splat_zero_pivot_map = {}
             try:
                 self._mgl_scene_xform_offset_by_owner = {}
@@ -4001,6 +4002,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                         continue
                     ext = _owner_ext(entry)
                     owner_kind_map[name] = bool(_owner_is_splat_asset(entry))
+                    owner_asset_kind_map[name] = str(entry.get("kind") or "").strip().lower()
                     if ext == ".ply":
                         splat_zero_pivot_map[name] = bool(entry.get("splat_zero_pivot", False))
                     if not entry.get("xform_offset"):
@@ -4036,7 +4038,8 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                     # while the Scene node still owns a manual transform. Preserve the
                     # already-live transform in that case so playback reloads do not
                     # collapse edited owners back to their defaults.
-                    seeded_prev = frame_refresh_xform_seed(frame, xf, prev_raw)
+                    is_light_asset = str(owner_asset_kind_map.get(name) or "").strip().lower() == "light"
+                    seeded_prev = None if is_light_asset else frame_refresh_xform_seed(frame, xf, prev_raw)
                     if isinstance(seeded_prev, dict):
                         if is_splat and bool(splat_zero_pivot_map.get(name, False)):
                             seeded_prev["pos"] = (0.0, 0.0, 0.0)

@@ -40,12 +40,48 @@ _LIGHT_TYPE_ALIASES = {
     "area_light": "area",
     "area light": "area",
 }
+_LIGHT_NODE_KINDS = (
+    "light",
+    "scene_light",
+    "scene light",
+    "directional_light",
+    "directional light",
+    "point_light",
+    "point light",
+    "spot_light",
+    "spot light",
+    "area_light",
+    "area light",
+)
 
 
 def _normalize_light_type(value) -> str:
     text = str(value or "").strip().lower().replace("-", "_")
     text = " ".join(text.replace("_", " ").split())
     return _LIGHT_TYPE_ALIASES.get(text, _LIGHT_TYPE_ALIASES.get(text.replace(" ", "_"), "directional"))
+
+
+def _identity_xform() -> dict:
+    return {"pos": [0.0, 0.0, 0.0], "rot": [0.0, 0.0, 0.0], "scl": [1.0, 1.0, 1.0]}
+
+
+def _is_legacy_default_light_xform(xf) -> bool:
+    if not isinstance(xf, dict):
+        return False
+    try:
+        pos = list(xf.get("pos", ()))[:3]
+        rot = list(xf.get("rot", ()))[:3]
+        scl = list(xf.get("scl", ()))[:3]
+        return (
+            len(pos) >= 3
+            and len(rot) >= 3
+            and len(scl) >= 3
+            and all(abs(float(a) - float(b)) < 1.0e-4 for a, b in zip(pos, (4.0, 6.0, 4.0)))
+            and all(abs(float(a) - float(b)) < 1.0e-4 for a, b in zip(rot, (133.5, 135.0, 0.0)))
+            and all(abs(float(a) - float(b)) < 1.0e-4 for a, b in zip(scl, (1.0, 1.0, 1.0)))
+        )
+    except Exception:
+        return False
 
 
 try:
@@ -988,6 +1024,22 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 return p.get("value", "") or ""
         return ""
 
+    def _sync_light_param_visibility(self, light_type: str | None = None) -> bool:
+        if (self.model.kind or "").strip().lower() not in _LIGHT_NODE_KINDS:
+            return False
+        try:
+            from nodes.light import spec as _light_spec  # type: ignore
+            return bool(_light_spec.sync_light_hidden_params(self, light_type))
+        except Exception:
+            return False
+
+    def _on_light_type_changed(self, idx: int, value: str) -> None:
+        light_type = _normalize_light_type(value)
+        self._on_param_changed(idx, light_type, emit_scene=True)
+        if self._sync_light_param_visibility(light_type):
+            self._schedule_param_emit()
+            QtCore.QTimer.singleShot(0, self._build_widgets)
+
     def _sync_transforms_gizmo(self, selected: bool) -> None:
         owner = (getattr(self.model, "name", "") or "").strip()
         if not owner:
@@ -1145,7 +1197,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         elif kind in ("camera", "scene_camera"):
             hidden.update({"pos", "rot", "scl", "near", "far"})
         elif kind in ("light", "scene_light", "directional_light", "point_light", "spot_light", "area_light"):
-            hidden.update({"pos", "rot", "scl"})
+            hidden.update({"pos", "rot", "scl", "shadow_near"})
 
         return hidden
 
@@ -2560,6 +2612,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
             y_cursor = 38 + 16 + self._PADDING
 
             kind_lower = (self.model.kind or "").strip().lower()
+            if kind_lower in _LIGHT_NODE_KINDS:
+                self._sync_light_param_visibility()
             defer_plugin = kind_lower in (
                 "chatbot",
                 "chat bot",
@@ -2902,8 +2956,61 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         kind in ("light", "scene_light", "directional_light", "point_light", "spot_light", "area_light")
                         and pname_key in ("type", "light_type")
                     )
+                    edit = None
                     if use_light_type_combo:
-                        combo = QtWidgets.QComboBox()
+                        class _LightTypeComboBox(QtWidgets.QComboBox):
+                            def __init__(self, parent=None):
+                                super().__init__(parent)
+                                self._light_type_popup = None
+
+                            def showPopup(self):
+                                try:
+                                    node_ref._bring_to_front()
+                                except Exception:
+                                    pass
+                                popup = QtWidgets.QListWidget(None)
+                                popup.setWindowFlags(QtCore.Qt.Popup | QtCore.Qt.FramelessWindowHint)
+                                popup.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
+                                popup.setMouseTracking(True)
+                                popup.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+                                popup.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+                                popup.setStyleSheet(
+                                    "QListWidget{background:#0f1216;color:#e6edf3;"
+                                    "border:1px solid #3c4450;outline:0px;}"
+                                    "QListWidget::item{padding:6px 10px;min-height:18px;}"
+                                    "QListWidget::item:hover{background:#1f2937;}"
+                                    "QListWidget::item:selected{background:#1e3a8a;color:#e6edf3;}"
+                                )
+                                for row in range(self.count()):
+                                    item = QtWidgets.QListWidgetItem(self.itemText(row))
+                                    item.setData(QtCore.Qt.UserRole, row)
+                                    popup.addItem(item)
+                                    if row == self.currentIndex():
+                                        popup.setCurrentItem(item)
+                                popup.setFixedWidth(max(self.width(), popup.sizeHintForColumn(0) + 24))
+                                row_h = max(24, popup.sizeHintForRow(0) if popup.count() else 24)
+                                popup.setFixedHeight(max(row_h, row_h * max(1, popup.count()) + 2))
+
+                                def _choose(item):
+                                    try:
+                                        row = int(item.data(QtCore.Qt.UserRole))
+                                        self.setCurrentIndex(row)
+                                    except Exception:
+                                        pass
+                                    try:
+                                        popup.close()
+                                    except Exception:
+                                        pass
+
+                                popup.itemClicked.connect(_choose)
+                                popup.move(self.mapToGlobal(QtCore.QPoint(0, self.height())))
+                                self._light_type_popup = popup
+                                popup.show()
+                                popup.raise_()
+                                popup.activateWindow()
+
+                        node_ref = self
+                        combo = _LightTypeComboBox()
                         combo.setMaxVisibleItems(8)
                         combo_view = QtWidgets.QListView()
                         combo_view.setMouseTracking(True)
@@ -2943,8 +3050,6 @@ class NodeItem(QtWidgets.QGraphicsObject):
                             combo.setEnabled(False)
                             combo.setToolTip("Driven by connected input.")
 
-                        node_ref = self
-
                         class _LightTypeComboPopupFilter(QtCore.QObject):
                             def __init__(self, combo_widget: QtWidgets.QComboBox):
                                 super().__init__(combo_widget)
@@ -2978,10 +3083,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         combo.installEventFilter(combo._light_type_popup_filter)
                         combo.view().installEventFilter(combo._light_type_popup_filter)
                         combo.currentIndexChanged.connect(
-                            lambda _row, c=combo, idx=i: self._on_param_changed(
+                            lambda _row, c=combo, idx=i: self._on_light_type_changed(
                                 idx,
                                 str(c.currentData() or c.currentText()).strip().lower(),
-                                emit_scene=True,
                             )
                         )
                         lay.addWidget(combo, 1)
@@ -2990,10 +3094,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         edit.setPlaceholderText("value")
                         if kind in ("light", "scene_light", "directional_light", "point_light", "spot_light", "area_light"):
                             light_tooltips = {
-                                "range": "Local light attenuation distance. Use 0 for automatic scene scale.",
-                                "shadow_range": "Local light shadow far clip distance. Use 0 for automatic scene scale.",
-                                "shadow_fov": "Point/spot shadow cone angle in degrees. Use 0 for per-type automatic.",
-                                "shadow_near": "Minimum shadow clip distance. Lower values render closer to the light; use 0 for automatic.",
+                                "range": "Light reach distance. Use 0 for automatic scene scale.",
+                                "shadow_range": "Shadow reach override. Use 0 to follow Range or automatic scene scale.",
+                                "shadow_fov": "Spot cone and shadow FOV in degrees. Use 0 for automatic.",
                                 "shadow_bias": "Shadow acne/leak offset. Lower values keep close shadows; use 0 for automatic.",
                                 "shadow_strength": "Shadow darkness multiplier.",
                             }
@@ -3011,7 +3114,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                                 "QLineEdit{background:#191d24;color:#94a3b8;"
                                 "border:1px dashed #475569;border-radius:4px;padding:2px 6px;}"
                             )
-                        else:
+                        elif not edit.toolTip():
                             edit.setToolTip("")
                         if kind == "note":
                             edit.setStyleSheet(self._note_param_line_edit_style(completed=is_completed, wired=wired))
@@ -3068,8 +3171,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         lay.addWidget(browse_btn, 0)
 
                     # Big editor wiring
-                    nm = p.get("name", "value")
-                    actions.wire_big_editor_for_lineedit(self, edit, nm)
+                    if edit is not None:
+                        nm = p.get("name", "value")
+                        actions.wire_big_editor_for_lineedit(self, edit, nm)
 
                     row_center_y = y_cursor + self._PARAM_ROW_H / 2.0
                     proxy = QtWidgets.QGraphicsProxyWidget(self)
@@ -3990,11 +4094,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     continue
                 xf = _lookup_xform(light_name)
                 if not isinstance(xf, dict):
-                    xf = {
-                        "pos": [4.0, 6.0, 4.0],
-                        "rot": [133.5, 135.0, 0.0],
-                        "scl": [1.0, 1.0, 1.0],
-                    }
+                    xf = _identity_xform()
+                elif _is_legacy_default_light_xform(xf):
+                    xf = _identity_xform()
                 try:
                     intensity = float(_param_val(model, "intensity") or 1.0)
                 except Exception:
