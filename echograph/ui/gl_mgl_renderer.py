@@ -5637,9 +5637,11 @@ class MGLRendererMixin:
         except Exception:
             pass
         self._mgl_pending_splats = None
+        self._mgl_pending_splat_lit_flags = None
         self._mgl_render_splats = False
         self._mgl_splat_count = 0
         self._mgl_splats15_cpu = None
+        self._mgl_splat_lit_cpu = None
         self._mgl_splats_all_lit = False
         self._mgl_splats_has_lit = False
         try:
@@ -7729,6 +7731,7 @@ class MGLRendererMixin:
             return np.concatenate([a[:, 0:8], scale3, quat], axis=1)
 
         arrays15 = []
+        lit_arrays = []
         lit_splat_owners = set()
         unlit_splat_owners = set()
         skinned_proxy_owners = set()
@@ -7859,14 +7862,22 @@ class MGLRendererMixin:
                 pass
 
             arrays15.append(a15)
+            owner_is_lit = False
             try:
                 owner_norm = str(owner or "").strip().lower()
                 if owner_norm and owner_norm in skinned_proxy_owners:
                     lit_splat_owners.add(owner_norm)
+                    owner_is_lit = True
                 else:
                     unlit_splat_owners.add(owner_norm)
             except Exception:
                 unlit_splat_owners.add(str(owner or "").strip().lower())
+            try:
+                lit_arrays.append(
+                    np.full((int(a15.shape[0]), 1), 1.0 if owner_is_lit else 0.0, dtype=np.float32)
+                )
+            except Exception:
+                lit_arrays.append(np.zeros((int(a15.shape[0]), 1), dtype=np.float32))
             try:
                 splats_world[owner] = a15[:, :3].astype(np.float32, copy=True)
             except Exception:
@@ -7921,6 +7932,7 @@ class MGLRendererMixin:
             pass
 
         combined = arrays15[0] if len(arrays15) == 1 else np.concatenate(arrays15, axis=0)
+        combined_lit = lit_arrays[0] if len(lit_arrays) == 1 else np.concatenate(lit_arrays, axis=0)
         try:
             if bool(getattr(self, "_mgl_splat_log_verbose", False)):
                 self._mgl_log_throttled(
@@ -7935,27 +7947,41 @@ class MGLRendererMixin:
             # Fast path: same-size buffer, just overwrite bytes (no VAO/VBO rebuild)
             if combined is not None and getattr(combined, "ndim", 0) == 2 and int(combined.shape[1]) == 15:
                 splats15 = combined.astype("f4", copy=False)
+                splat_lit = combined_lit.astype("f4", copy=False)
 
                 vbo = getattr(self, "_mgl_splatq_vbo", None)
+                lit_vbo = getattr(self, "_mgl_splatq_lit_vbo", None)
                 if vbo is not None:
                     try:
                         vbo_size = int(getattr(vbo, "size", 0) or 0)
                     except Exception:
                         vbo_size = 0
+                    try:
+                        lit_vbo_size = int(getattr(lit_vbo, "size", 0) or 0) if lit_vbo is not None else 0
+                    except Exception:
+                        lit_vbo_size = 0
 
-                    if vbo_size == int(splats15.nbytes):
+                    if vbo_size == int(splats15.nbytes) and lit_vbo_size == int(splat_lit.nbytes):
                         # keep CPU copy (sorting path relies on this)
                         self._mgl_splat_count = int(splats15.shape[0])
                         self._mgl_splats15_cpu = splats15
+                        self._mgl_splat_lit_cpu = splat_lit
+                        try:
+                            has_lit = bool(np.any(splat_lit > 0.5))
+                            self._mgl_splats_has_lit = has_lit
+                            self._mgl_splats_all_lit = has_lit and bool(np.all(splat_lit > 0.5))
+                        except Exception:
+                            pass
 
                         vbo.write(splats15.tobytes())
+                        lit_vbo.write(splat_lit.tobytes())
                         did_in_place = True
         except Exception:
             did_in_place = False
 
         # Fallback: count changed or buffer missing, do the full rebuild
         if not did_in_place:
-            self.set_splats(combined)
+            self.set_splats(combined, lit_flags=combined_lit)
 
         try:
             self._mgl_splats_need_rebuild = False
@@ -12510,7 +12536,7 @@ class MGLRendererMixin:
                 try:
                     self._mgl_apply_shadow_uniforms(self._mgl_splatq_prog)
                     self._mgl_splatq_prog["UseSplatLighting"].value = (
-                        1 if bool(getattr(self, "_mgl_splats_all_lit", False)) else 0
+                        1 if bool(getattr(self, "_mgl_splats_has_lit", False)) else 0
                     )
                 except Exception:
                     pass
@@ -12537,6 +12563,7 @@ class MGLRendererMixin:
                 try:
                     if do_sort and np is not None:
                         cpu = getattr(self, "_mgl_splats15_cpu", None)
+                        lit_cpu = getattr(self, "_mgl_splat_lit_cpu", None)
                         if cpu is not None and self._mgl_splatq_vbo is not None and cpu.shape[0] > 1:
 
                             view_model = (lookat * model).astype("f4")
@@ -12563,6 +12590,13 @@ class MGLRendererMixin:
                                 )
 
                             self._mgl_splatq_vbo.write(cpu[order].tobytes())
+                            try:
+                                lit_vbo = getattr(self, "_mgl_splatq_lit_vbo", None)
+                                if lit_vbo is not None and lit_cpu is not None:
+                                    lit_sorted = np.asarray(lit_cpu, dtype=np.float32).reshape(-1, 1)[order]
+                                    lit_vbo.write(lit_sorted.tobytes())
+                            except Exception:
+                                pass
                             did_sort = True
                 except Exception as exc:
                     if dbg:
@@ -14248,7 +14282,7 @@ class MGLRendererMixin:
         except Exception as exc:
             self._mgl_error = str(exc)
 
-    def set_splats(self, splats_np) -> None:
+    def set_splats(self, splats_np, *, lit_flags=None) -> None:
         """Queue splat instance data for GL-thread upload.
         Accepts (N,8), (N,10), (N,14), or (N,15) float32 arrays.
 
@@ -14256,9 +14290,11 @@ class MGLRendererMixin:
         (N,10): [x,y,z, r,g,b,a, radius, sx, sy]
         (N,14): [x,y,z, r,g,b,a, radius, sx, sy, qx, qy, qz, qw]
         (N,15): [x,y,z, r,g,b,a, radius, sx, sy, sz, qx, qy, qz, qw]
+        lit_flags: optional per-splat lighting mask; omitted flags default to unlit.
         """
         if np is None:
             self._mgl_pending_splats = None
+            self._mgl_pending_splat_lit_flags = None
             self._mgl_render_splats = False
             self.update()
             return
@@ -14271,6 +14307,15 @@ class MGLRendererMixin:
             raise ValueError(
                 f"Expected splats_np shape (N,8) or (N,10) or (N,14) or (N,15), got {arr.shape}"
             )
+        if lit_flags is None:
+            lit_arr = np.zeros((int(arr.shape[0]), 1), dtype=np.float32)
+        else:
+            lit_arr = np.asarray(lit_flags, dtype=np.float32).reshape(-1, 1)
+            if int(lit_arr.shape[0]) != int(arr.shape[0]):
+                raise ValueError(
+                    f"Expected lit_flags length {int(arr.shape[0])}, got {int(lit_arr.shape[0])}"
+                )
+            lit_arr = np.where(lit_arr > 0.5, np.float32(1.0), np.float32(0.0)).astype(np.float32, copy=False)
 
         dbg = bool(getattr(self, "_mgl_debug", False))
         if dbg:
@@ -14286,6 +14331,7 @@ class MGLRendererMixin:
             pass
 
         self._mgl_pending_splats = arr
+        self._mgl_pending_splat_lit_flags = lit_arr
         self._mgl_render_splats = True
         self.update()
 
@@ -14302,7 +14348,9 @@ class MGLRendererMixin:
             return
 
         splats_np = self._mgl_pending_splats
+        splat_lit_flags = getattr(self, "_mgl_pending_splat_lit_flags", None)
         self._mgl_pending_splats = None
+        self._mgl_pending_splat_lit_flags = None
         try:
             if bool(getattr(self, "_mgl_splat_log_verbose", False)):
                 self._mgl_log_throttled(
@@ -14428,6 +14476,12 @@ class MGLRendererMixin:
             except Exception:
                 pass
             self._mgl_splatq_vbo = None
+        if getattr(self, "_mgl_splatq_lit_vbo", None) is not None:
+            try:
+                self._mgl_splatq_lit_vbo.release()
+            except Exception:
+                pass
+            self._mgl_splatq_lit_vbo = None
 
         dbg = bool(getattr(self, "_mgl_debug", False))
         if dbg:
@@ -14477,9 +14531,24 @@ class MGLRendererMixin:
 
             if splats15.shape[1] == 15:
                 self._mgl_splat_count = int(splats15.shape[0])
+                try:
+                    lit_cpu = np.asarray(splat_lit_flags, dtype=np.float32).reshape(-1, 1)
+                    if int(lit_cpu.shape[0]) != int(splats15.shape[0]):
+                        lit_cpu = np.zeros((int(splats15.shape[0]), 1), dtype=np.float32)
+                except Exception:
+                    lit_cpu = np.zeros((int(splats15.shape[0]), 1), dtype=np.float32)
+                lit_cpu = np.where(lit_cpu > 0.5, np.float32(1.0), np.float32(0.0)).astype(np.float32, copy=False)
 
                 # Keep CPU copy so we can sort per-frame (10k is fine)
                 self._mgl_splats15_cpu = splats15
+                self._mgl_splat_lit_cpu = lit_cpu
+                try:
+                    has_lit = bool(np.any(lit_cpu > 0.5))
+                    self._mgl_splats_has_lit = has_lit
+                    self._mgl_splats_all_lit = has_lit and bool(np.all(lit_cpu > 0.5))
+                except Exception:
+                    self._mgl_splats_has_lit = False
+                    self._mgl_splats_all_lit = False
 
                 # release previous GPU objects before replacing them
                 try:
@@ -14497,11 +14566,18 @@ class MGLRendererMixin:
                         self._mgl_splatq_vbo.release()
                 except Exception:
                     pass
+                try:
+                    if getattr(self, "_mgl_splatq_lit_vbo", None) is not None and hasattr(self._mgl_splatq_lit_vbo, "release"):
+                        self._mgl_splatq_lit_vbo.release()
+                except Exception:
+                    pass
                 self._mgl_splatq_vao = None
                 self._mgl_splat_shadow_vao = None
                 self._mgl_splatq_vbo = None
+                self._mgl_splatq_lit_vbo = None
 
                 self._mgl_splatq_vbo = self._mgl_ctx.buffer(splats15.tobytes())
+                self._mgl_splatq_lit_vbo = self._mgl_ctx.buffer(lit_cpu.tobytes())
                 self._mgl_splatq_vao = self._mgl_ctx.vertex_array(
                     self._mgl_splatq_prog,
                     [
@@ -14515,8 +14591,9 @@ class MGLRendererMixin:
                             "in_scale3",
                             "in_rot",
                         ),
-                        ],
-                    )
+                        (self._mgl_splatq_lit_vbo, "1f /i", "in_lit"),
+                    ],
+                )
                 if getattr(self, "_mgl_splat_shadow_prog", None) is not None:
                     try:
                         self._mgl_splat_shadow_vao = self._mgl_ctx.vertex_array(

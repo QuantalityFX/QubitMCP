@@ -549,6 +549,58 @@ def _refresh_connected_scenes(node_item, changed_name: str, *, follow_camera: bo
     # Follow Cam is preview-only; scene refresh should keep viewport stable.
     _ = bool(follow_camera)
 
+    def _bump_scene_cache_revision() -> None:
+        try:
+            bump = getattr(scene, "_bump_scene_asset_revision", None)
+            if callable(bump):
+                bump()
+                return
+        except Exception:
+            pass
+        try:
+            scene._scene_asset_revision = int(getattr(scene, "_scene_asset_revision", 0) or 0) + 1
+        except Exception:
+            pass
+
+    def _refresh_scene_outliner(scene_item) -> None:
+        if win is None or scene_item is None:
+            return
+        model = getattr(scene_item, "model", None)
+        scene_name = str(getattr(model, "name", "") or "").strip()
+        cards = getattr(win, "_card_by_node", None)
+        if not isinstance(cards, dict):
+            return
+
+        targets = []
+        if scene_name:
+            card = cards.get(scene_name)
+            if card is not None:
+                targets.append(card)
+        for card in cards.values():
+            ref = getattr(card, "_node_ref", None)
+            ref_model = getattr(ref, "model", None)
+            ref_name = str(getattr(ref, "name", "") or getattr(ref_model, "name", "") or "").strip()
+            if ref is model or ref is scene_item or ref_model is model or (scene_name and ref_name == scene_name):
+                targets.append(card)
+
+        seen_cards = set()
+        for card in targets:
+            if card is None or id(card) in seen_cards:
+                continue
+            seen_cards.add(id(card))
+            try:
+                connect = getattr(card, "_scene_outliner_connect", None)
+                if callable(connect):
+                    connect(scene)
+            except Exception:
+                pass
+            try:
+                refresh = getattr(card, "_scene_outliner_refresh", None)
+                if callable(refresh):
+                    refresh(scene)
+            except Exception:
+                pass
+
     def _reapply_asset_xforms(asset_rows) -> int:
         glv = getattr(win, "gl_view", None) if win is not None else None
         renderer = getattr(glv, "_mgl_renderer", None) or glv
@@ -604,6 +656,7 @@ def _refresh_connected_scenes(node_item, changed_name: str, *, follow_camera: bo
                 pass
         return int(applied)
 
+    _bump_scene_cache_revision()
     refreshed = 0
     for item in candidates:
         model = getattr(item, "model", None)
@@ -614,6 +667,10 @@ def _refresh_connected_scenes(node_item, changed_name: str, *, follow_camera: bo
             continue
         if not _param_change_relevant(item, changed_name):
             continue
+        try:
+            item._scene_collect_assets_cache = None
+        except Exception:
+            pass
         try:
             assets = list(collector(item) or [])
         except Exception:
@@ -635,6 +692,7 @@ def _refresh_connected_scenes(node_item, changed_name: str, *, follow_camera: bo
         if not dispatched:
             continue
         refreshed += 1
+        _refresh_scene_outliner(item)
         try:
             applied = _reapply_asset_xforms(assets)
             _log_throttled(

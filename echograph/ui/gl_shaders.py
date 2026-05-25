@@ -883,12 +883,14 @@ in vec4 in_col;
 in float in_rad;
 in vec3 in_scale3;
 in vec4 in_rot;
+in float in_lit;
 
 out vec2 v_uv;
 out vec4 v_col;
 out vec3 v_world_norm;
 out vec3 v_world_pos;
 out vec4 v_shadow_pos;
+out float v_lit;
 
 vec3 quat_rotate(vec3 v, vec4 q) {
     vec3 t = 2.0 * cross(q.xyz, v);
@@ -937,6 +939,7 @@ void main() {
     v_world_norm = normalize(mat3(Model) * quat_rotate(vec3(0.0, 0.0, 1.0), in_rot));
     v_world_pos = world_p.xyz;
     v_shadow_pos = LightMvp * world_p;
+    v_lit = in_lit;
 
     gl_Position = Proj * view_p;
 }
@@ -970,6 +973,7 @@ in vec4 v_col;
 in vec3 v_world_norm;
 in vec3 v_world_pos;
 in vec4 v_shadow_pos;
+in float v_lit;
 out vec4 f_color;
 
 vec3 safe_normalize(vec3 v) {
@@ -1086,7 +1090,7 @@ void main() {
     if (a < 1e-4) discard;
 
     vec3 rgb = v_col.rgb;
-    if (UseSplatLighting == 1) {
+    if (UseSplatLighting == 1 && v_lit > 0.5) {
         vec3 n = safe_normalize(v_world_norm);
         float light_attenuation = 1.0;
         vec3 l = light_vector_at(v_world_pos, light_attenuation);
