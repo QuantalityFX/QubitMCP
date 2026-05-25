@@ -321,6 +321,9 @@ def _music_effects_max_frame_from_assets(assets, fps: float) -> int:
         if not isinstance(entry, dict):
             continue
         cfg = entry.get("music_effects")
+        if not isinstance(cfg, dict):
+            proxy = entry.get("render_proxy") if isinstance(entry.get("render_proxy"), dict) else {}
+            cfg = proxy.get("splat_fx") if isinstance(proxy.get("splat_fx"), dict) else None
         if not isinstance(cfg, dict) or not _bool_value(cfg.get("enabled"), True):
             continue
         analysis = cfg.get("analysis") if isinstance(cfg.get("analysis"), dict) else {}

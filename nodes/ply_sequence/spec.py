@@ -34,6 +34,15 @@ _PASS_THROUGH_KINDS = {
     "splat_physics",
     "splat physics",
     "splatphysics",
+    "fx_splat_fx",
+    "fx splat fx",
+    "splat_fx",
+    "splat fx",
+    "fx_splat_glow",
+    "fx splat glow",
+    "splat_glow",
+    "splat glow",
+    "splatglow",
 }
 
 _PLY_SEQ_LOG_ENABLED = False

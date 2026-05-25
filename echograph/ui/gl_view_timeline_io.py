@@ -25,6 +25,11 @@ class GraphGLTimelineIOMixin:
     def _timeline_default_scene_name(self) -> str:
         try:
             win = self.window()
+            preview = getattr(win, "_active_scene_preview_context", None) if win is not None else None
+            if isinstance(preview, dict):
+                nm = str(preview.get("scene_name") or preview.get("name") or "").strip()
+                if nm:
+                    return nm
             active = getattr(win, "_active_scene_node", None) if win is not None else None
             nm = (getattr(active, "name", "") or "").strip() if active is not None else ""
             if nm:
@@ -87,6 +92,15 @@ class GraphGLTimelineIOMixin:
         raw = str(scene_name or "").strip()
         if raw:
             return raw
+        try:
+            win = self.window()
+            preview = getattr(win, "_active_scene_preview_context", None) if win is not None else None
+            if isinstance(preview, dict):
+                name = str(preview.get("scene_name") or preview.get("name") or "").strip()
+                if name:
+                    return name
+        except Exception:
+            pass
         try:
             win = self.window()
             active = getattr(win, "_active_scene_node", None) if win is not None else None
@@ -369,6 +383,9 @@ class GraphGLTimelineIOMixin:
 
     def _timeline_capture_camera_state(self) -> dict:
         try:
+            target_owner = getattr(self, "_timeline_target_owner", None)
+            if callable(target_owner) and str(target_owner() or "").strip():
+                return {}
             if str(getattr(self, "_timeline_owner_name", "") or "").strip():
                 return {}
         except Exception:
@@ -493,7 +510,7 @@ class GraphGLTimelineIOMixin:
         except Exception:
             pass
 
-    def _timeline_load_from_disk(self) -> None:
+    def _timeline_load_from_disk(self, *, apply_current_frame: bool = True) -> None:
         path = getattr(self, "_timeline_anim_path", None)
         self._timeline_keys = {}
         self._timeline_curve_selected = set()
@@ -695,16 +712,19 @@ class GraphGLTimelineIOMixin:
             self._timeline_update_range_marker_visuals()
         except Exception:
             pass
-        try:
-            self._timeline_apply_frame_if_keyed(self._timeline_current_frame())
-        except Exception:
-            pass
+        if bool(apply_current_frame):
+            try:
+                self._timeline_apply_frame_if_keyed(self._timeline_current_frame())
+            except Exception:
+                pass
 
     def set_timeline_scene_context(
         self,
         scene_name: str | None = None,
         project_path: str | None = None,
         owner_name: str | None = None,
+        apply_current_frame: bool = True,
+        load_audio: bool = True,
     ) -> None:
         scene_arg = str(scene_name or "").strip()
         name = str(scene_arg).strip()
@@ -744,10 +764,10 @@ class GraphGLTimelineIOMixin:
         # so owner/outliner timeline changes inherit the same in/out + loop state.
         self._timeline_range_load_from_disk()
         if not same:
-            self._timeline_load_from_disk()
+            self._timeline_load_from_disk(apply_current_frame=bool(apply_current_frame))
         else:
             self._timeline_refresh_coord_labels()
-        if not same_audio:
+        if not same_audio and bool(load_audio):
             self._timeline_audio_load_from_disk()
         try:
             self._timeline_update_target_label()

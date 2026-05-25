@@ -118,7 +118,7 @@ class TimelineController:
             pass
         return False
 
-    def sync_timeline_context(self) -> None:
+    def sync_timeline_context(self, *, apply_current_frame: bool = True, load_audio: bool = True) -> None:
         win = self._win()
         gv = self._gl_view()
         if gv is None:
@@ -127,11 +127,22 @@ class TimelineController:
         if not callable(setter):
             return
         scene_name = ""
+        preview_context = None
+        try:
+            raw_preview = getattr(win, "_active_scene_preview_context", None)
+            if isinstance(raw_preview, dict):
+                preview_context = raw_preview
+                scene_name = str(raw_preview.get("scene_name") or raw_preview.get("name") or "").strip()
+        except Exception:
+            preview_context = None
+            scene_name = ""
         try:
             active_scene = getattr(win, "_active_scene_node", None)
-            scene_name = str(getattr(active_scene, "name", "") or "").strip() if active_scene is not None else ""
+            if preview_context is None:
+                scene_name = str(getattr(active_scene, "name", "") or "").strip() if active_scene is not None else ""
         except Exception:
-            scene_name = ""
+            if preview_context is None:
+                scene_name = ""
         project_path = None
         try:
             raw_path = str(getattr(win, "_current_path", "") or "").strip()
@@ -144,7 +155,7 @@ class TimelineController:
         try:
             active_name = str(scene_name or "").strip()
             cards = getattr(win, "_card_by_node", None)
-            if isinstance(cards, dict):
+            if preview_context is None and isinstance(cards, dict):
                 if active_name:
                     card = cards.get(active_name)
                 if card is None:
@@ -159,7 +170,7 @@ class TimelineController:
                     owner_name = raw_owner
         except Exception:
             owner_name = None
-        if owner_name is None and card is not None:
+        if preview_context is None and owner_name is None and card is not None:
             # Fallback to current outliner row even when the user-selected flag is stale.
             try:
                 outliner = getattr(card, "_scene_outliner_widget", None)
@@ -170,7 +181,7 @@ class TimelineController:
                         owner_name = raw_owner
             except Exception:
                 pass
-        if owner_name is None:
+        if preview_context is None and owner_name is None:
             try:
                 raw_owner = str(getattr(gv, "_xform_gizmo_owner", "") or "").strip()
                 if raw_owner:
@@ -182,7 +193,18 @@ class TimelineController:
                 scene_name=scene_name or None,
                 project_path=project_path,
                 owner_name=owner_name or None,
+                apply_current_frame=bool(apply_current_frame),
+                load_audio=bool(load_audio),
             )
+        except TypeError:
+            try:
+                setter(
+                    scene_name=scene_name or None,
+                    project_path=project_path,
+                    owner_name=owner_name or None,
+                )
+            except Exception:
+                pass
         except Exception:
             pass
 

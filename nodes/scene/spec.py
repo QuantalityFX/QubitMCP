@@ -39,6 +39,17 @@ _FX_SPLAT_PHYSICS_KIND_ALIASES = {
     "splat physics",
     "splatphysics",
 }
+_FX_SPLAT_FX_KIND_ALIASES = {
+    "fx_splat_fx",
+    "fx splat fx",
+    "splat_fx",
+    "splat fx",
+    "fx_splat_glow",
+    "fx splat glow",
+    "splat_glow",
+    "splat glow",
+    "splatglow",
+}
 _FX_MUSIC_EFFECTS_KIND_ALIASES = {
     "fx_music_effects",
     "fx music effects",
@@ -46,6 +57,7 @@ _FX_MUSIC_EFFECTS_KIND_ALIASES = {
     "music effects",
     "musiceffects",
 }
+_SCENE_COLLECT_CACHE_TTL_SEC = 8.0
 _COPY_TO_POINTS_KIND_ALIASES = {
     "copy_to_points",
     "copy to points",
@@ -203,6 +215,7 @@ def _scene_collect_cache_key(node_item):
     return (
         int(getattr(scene, "_scene_asset_revision", 0) or 0) if scene is not None else 0,
         int(getattr(scene, "_edge_index_version", 0) or 0) if scene is not None else 0,
+        int(_scene_timeline_frame(node_item)),
         _freeze_scene_cache_value(getattr(model, "_scene_hidden", None)),
         _freeze_scene_cache_value(getattr(model, "_scene_xforms", None)),
         _freeze_scene_cache_value(getattr(model, "_scene_retimes", None)),
@@ -223,9 +236,17 @@ def _clone_scene_cache_value(value):
 
 def _scene_collect_cache_get(node_item):
     entry = getattr(node_item, "_scene_collect_assets_cache", None)
-    if not isinstance(entry, tuple) or len(entry) != 2:
+    if not isinstance(entry, tuple) or len(entry) not in {2, 3}:
         return None
-    key, assets = entry
+    if len(entry) == 3:
+        stamp, key, assets = entry
+        try:
+            if (time.monotonic() - float(stamp)) > float(_SCENE_COLLECT_CACHE_TTL_SEC):
+                return None
+        except Exception:
+            return None
+    else:
+        key, assets = entry
     if key != _scene_collect_cache_key(node_item):
         return None
     return [_clone_scene_cache_value(asset) for asset in list(assets or [])]
@@ -234,20 +255,20 @@ def _scene_collect_cache_get(node_item):
 def _scene_collect_cache_put(node_item, assets) -> None:
     try:
         cached_assets = tuple(_clone_scene_cache_value(asset) for asset in list(assets or []))
-        node_item._scene_collect_assets_cache = (_scene_collect_cache_key(node_item), cached_assets)
+        node_item._scene_collect_assets_cache = (time.monotonic(), _scene_collect_cache_key(node_item), cached_assets)
     except Exception:
         return
 
     def _clear_if_same(item=node_item, cached=cached_assets):
         try:
             current = getattr(item, "_scene_collect_assets_cache", None)
-            if isinstance(current, tuple) and len(current) == 2 and current[1] is cached:
+            if isinstance(current, tuple) and len(current) == 3 and current[2] is cached:
                 item._scene_collect_assets_cache = None
         except Exception:
             pass
 
     try:
-        QtCore.QTimer.singleShot(0, _clear_if_same)
+        QtCore.QTimer.singleShot(int(max(1.0, _SCENE_COLLECT_CACHE_TTL_SEC) * 1000.0), _clear_if_same)
     except Exception:
         pass
 
@@ -931,7 +952,12 @@ def _resolve_input_item(scene, node_item, port_names=None):
             edge = _switch_active_edge(item)
             if edge is not None:
                 return _trace(getattr(edge, "src", None), depth + 1, visited)
-        if kind in {"fx", "fx_trail"} or kind in _FX_SPLAT_PHYSICS_KIND_ALIASES or kind in _FX_MUSIC_EFFECTS_KIND_ALIASES:
+        if (
+            kind in {"fx", "fx_trail"}
+            or kind in _FX_SPLAT_PHYSICS_KIND_ALIASES
+            or kind in _FX_SPLAT_FX_KIND_ALIASES
+            or kind in _FX_MUSIC_EFFECTS_KIND_ALIASES
+        ):
             try:
                 edges = list(scene._ordered_in_edges(item))
             except Exception:
@@ -1065,6 +1091,13 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
         return []
     cached_assets = _scene_collect_cache_get(node_item)
     if cached_assets is not None:
+        if _scene_debug_enabled(getattr(node_item, "model", None)):
+            _scene_log(
+                node_item,
+                "collect_cache_hit assets=" + str(len(cached_assets)),
+                key="scene_collect_cache_hit_" + str(getattr(getattr(node_item, "model", None), "name", "") or "<scene>"),
+                interval=0.02,
+            )
         return cached_assets
     dbg_collect = _scene_debug_enabled(getattr(node_item, "model", None))
 
@@ -1160,6 +1193,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             "fx",
             "fx_trail",
             *_FX_SPLAT_PHYSICS_KIND_ALIASES,
+            *_FX_SPLAT_FX_KIND_ALIASES,
         }
         depth = 0
         while item is not None and item not in visited and depth < 10:
@@ -1201,6 +1235,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             "fx",
             "fx_trail",
             *_FX_SPLAT_PHYSICS_KIND_ALIASES,
+            *_FX_SPLAT_FX_KIND_ALIASES,
         }
         depth = 0
         while item is not None and item not in visited and depth < 12:
@@ -1853,6 +1888,46 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                         + f"enabled={bool(physics.get('enabled', True))} "
                         + f"follow={float(physics.get('follow_strength', 0.0) or 0.0):.3f} "
                         + f"drag={float(physics.get('drag', 0.0) or 0.0):.3f}",
+                    )
+            continue
+        if kind in _FX_SPLAT_FX_KIND_ALIASES:
+            try:
+                from nodes.fx import splat_fx_spec as _splat_fx_spec  # type: ignore
+
+                build_asset = getattr(_splat_fx_spec, "build_splat_fx_scene_asset", None)
+                outcome = build_asset(src_item) if callable(build_asset) else None
+                asset = getattr(outcome, "asset", None)
+            except Exception as exc:
+                asset = None
+                if _scene_debug_enabled(model):
+                    _scene_log(
+                        node_item,
+                        f"fx_splat_fx asset build failed node={src_name or kind} err={exc!r}",
+                    )
+            if isinstance(asset, dict):
+                asset_owner = str(asset.get("node") or src_name or kind).strip()
+                saved_xform = _lookup_xform(xforms, asset_owner)
+                if not isinstance(saved_xform, dict) and asset_owner != src_name:
+                    saved_xform = _lookup_xform(xforms, src_name)
+                if isinstance(saved_xform, dict):
+                    asset["xform"] = dict(saved_xform)
+                asset["visible"] = asset_owner not in hidden
+                assets.append(asset)
+                path_key = str(asset.get("path") or "").strip()
+                if path_key:
+                    seen.add(path_key)
+                if dbg_collect:
+                    proxy = asset.get("render_proxy") if isinstance(asset.get("render_proxy"), dict) else {}
+                    splat_fx = proxy.get("splat_fx") if isinstance(proxy.get("splat_fx"), dict) else {}
+                    glow_cfg = splat_fx.get("glow") if isinstance(splat_fx.get("glow"), dict) else {}
+                    _scene_log(
+                        node_item,
+                        "fx_splat_fx asset "
+                        + f"node={str(asset.get('node') or '')} "
+                        + f"path={str(asset.get('path') or '')} "
+                        + f"audio={str(splat_fx.get('audio_path') or '')} "
+                        + f"enabled={bool(splat_fx.get('enabled', True))} "
+                        + f"glow={float(glow_cfg.get('intensity', 0.0) or 0.0):.3f}",
                     )
             continue
         if kind in _COPY_TO_POINTS_KIND_ALIASES:
@@ -2888,20 +2963,11 @@ class SceneAssemblyWidget(QtWidgets.QWidget):
         self._scene_connected = True
 
     def _update_status(self, *_):
-        assets = _collect_assets(self._node_item)
-        if not assets:
+        total, mesh_count, splat_count, camera_count, light_count = self._quick_status_counts()
+        if total <= 0:
             self._status.setText("No 3D assets connected.")
             return
-        camera_count = sum(
-            1
-            for a in assets
-            if (str(a.get("kind", "")).strip().lower() == "camera")
-            or (str(a.get("ext", "")).strip().lower() == ".camera")
-        )
-        light_count = sum(1 for a in assets if str(a.get("kind", "")).strip().lower() == "light")
-        splat_count = sum(1 for a in assets if str(a.get("ext", "")).strip().lower() == ".ply")
-        mesh_count = max(0, len(assets) - splat_count - camera_count - light_count)
-        label = f"{len(assets)} connected (mesh {mesh_count}"
+        label = f"{total} connected (mesh {mesh_count}"
         if splat_count:
             label += f", splat {splat_count}"
         if camera_count:
@@ -2910,6 +2976,64 @@ class SceneAssemblyWidget(QtWidgets.QWidget):
             label += f", light {light_count}"
         label += ")"
         self._status.setText(label)
+
+    def _quick_status_counts(self):
+        scene = self._scene
+        if scene is None:
+            try:
+                scene = self._node_item.scene()
+            except Exception:
+                scene = None
+        if scene is None:
+            return 0, 0, 0, 0, 0
+
+        try:
+            edges = list(scene._ordered_in_edges(self._node_item))
+        except Exception:
+            try:
+                edges = list(scene._in_edges(self._node_item))
+            except Exception:
+                edges = []
+
+        seen = set()
+        mesh_count = 0
+        splat_count = 0
+        camera_count = 0
+        light_count = 0
+
+        for edge in edges:
+            src = getattr(edge, "src", None)
+            if src is None:
+                continue
+            ident = id(src)
+            if ident in seen:
+                continue
+            seen.add(ident)
+            model = getattr(src, "model", None)
+            kind = (getattr(model, "kind", "") or "").strip().lower()
+            path = (
+                _param_value(model, "path")
+                or _param_value(model, "mesh")
+                or _param_value(model, "source")
+            )
+            ext = Path(str(path or "")).suffix.lower()
+            if kind == "camera" or ext == ".camera":
+                camera_count += 1
+            elif kind in _LIGHT_KIND_ALIASES:
+                light_count += 1
+            elif (
+                kind in {"ply_sequence", "ply sequence"}
+                or kind in _SKINNED_SPLAT_PROXY_KIND_ALIASES
+                or kind in _FX_SPLAT_PHYSICS_KIND_ALIASES
+                or kind in _FX_SPLAT_FX_KIND_ALIASES
+                or ext == ".ply"
+            ):
+                splat_count += 1
+            else:
+                mesh_count += 1
+
+        total = mesh_count + splat_count + camera_count + light_count
+        return total, mesh_count, splat_count, camera_count, light_count
 
     def _on_view_clicked(self):
         assets = _collect_assets(self._node_item)
@@ -2970,6 +3094,13 @@ class SceneAssemblyWidget(QtWidgets.QWidget):
             )
             return
         try:
+            if win is not None:
+                try:
+                    setattr(win, "_active_scene_node", getattr(self._node_item, "model", None))
+                    setattr(win, "_active_scene_preview_context", None)
+                    setattr(win, "_opening_scene_assets_from_scene_node", True)
+                except Exception:
+                    pass
             has_wire_paths = any(
                 bool(a.get("wire_only")) and not bool(a.get("volume"))
                 for a in assets
@@ -3022,7 +3153,14 @@ class SceneAssemblyWidget(QtWidgets.QWidget):
                 )
         except Exception:
             pass
-        handler(assets)
+        try:
+            handler(assets)
+        finally:
+            if win is not None:
+                try:
+                    setattr(win, "_opening_scene_assets_from_scene_node", False)
+                except Exception:
+                    pass
         try:
             _force_scene_wire_white(win, wire_paths)
         except Exception:
@@ -3867,7 +4005,64 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 handler(old_name, new_name)
             return True
 
+        def _quick_outliner_asset_rows(scene, item):
+            try:
+                edges = list(scene._ordered_in_edges(item))
+            except Exception:
+                try:
+                    edges = list(scene._in_edges(item))
+                except Exception:
+                    edges = []
+            rows = []
+            seen_names = set()
+            for edge in edges:
+                src = getattr(edge, "src", None)
+                if src is None:
+                    continue
+                model = getattr(src, "model", None)
+                name = str(getattr(model, "name", "") or "").strip()
+                if not name or name in seen_names:
+                    continue
+                seen_names.add(name)
+                kind = (getattr(model, "kind", "") or "").strip().lower()
+                path = (
+                    _param_value(model, "path")
+                    or _param_value(model, "mesh")
+                    or _param_value(model, "source")
+                )
+                ext = Path(str(path or "")).suffix.lower()
+                if kind == "camera" or ext == ".camera":
+                    rows.append({"node": name, "path": "", "kind": "camera", "ext": ".camera", "_quick": True})
+                elif kind in _LIGHT_KIND_ALIASES:
+                    rows.append({"node": name, "path": "", "kind": "light", "ext": "", "_quick": True})
+                else:
+                    if (
+                        kind in {"ply_sequence", "ply sequence"}
+                        or kind in _SKINNED_SPLAT_PROXY_KIND_ALIASES
+                        or kind in _FX_SPLAT_PHYSICS_KIND_ALIASES
+                        or kind in _FX_SPLAT_FX_KIND_ALIASES
+                    ) and not ext:
+                        ext = ".ply"
+                    rows.append({"node": name, "path": path, "kind": "mesh", "ext": ext, "_quick": True})
+            return rows
+
+        def _outliner_alive() -> bool:
+            try:
+                if outliner is None:
+                    return False
+                if getattr(card, "_scene_outliner_widget", None) is not outliner:
+                    return False
+                # Touch the Qt object so PySide raises if the C++ widget was deleted.
+                outliner.objectName()
+                return True
+            except RuntimeError:
+                return False
+            except Exception:
+                return False
+
         def _refresh(scene_override=None):
+            if not _outliner_alive():
+                return
             prev_owner = getattr(card, "_scene_selected_owner", None)
             if not prev_owner:
                 try:
@@ -3908,8 +4103,17 @@ def augment_infocard_footer(card, footer_layout) -> bool:
 
             rows = []
             seen = set()
+            loading_workflow = False
             try:
-                asset_rows = list(_collect_assets(item) or [])
+                win = card.window()
+                loading_workflow = bool(getattr(win, "_workflow_load_in_progress", False)) if win is not None else False
+            except Exception:
+                loading_workflow = False
+            try:
+                if loading_workflow:
+                    asset_rows = list(_quick_outliner_asset_rows(scene, item) or [])
+                else:
+                    asset_rows = list(_collect_assets(item) or [])
             except Exception:
                 asset_rows = []
             for asset in asset_rows:
@@ -3930,10 +4134,12 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                     rows.append({"name": name, "path": "", "kind": "light"})
                     continue
                 path = str(asset.get("path") or "").strip()
-                if not path:
+                if not path and not bool(asset.get("_quick")):
                     continue
                 ext = Path(path).suffix.lower()
-                if ext not in SUPPORTED_EXTS:
+                if not ext:
+                    ext = str(asset.get("ext") or "").strip().lower()
+                if ext and ext not in SUPPORTED_EXTS:
                     continue
                 seen.add(name)
                 rows.append({"name": name, "path": path, "kind": "mesh"})
@@ -4220,6 +4426,16 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             if selected_row is not None:
                 _on_outliner_select()
 
+        def _safe_refresh(scene_override=None):
+            if not _outliner_alive():
+                return
+            try:
+                _refresh(scene_override)
+            except RuntimeError as exc:
+                if "already deleted" in str(exc).lower():
+                    return
+                raise
+
         def _connect(scene):
             if scene is None:
                 return
@@ -4227,23 +4443,23 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 return
             try:
                 if hasattr(scene, "linksChanged"):
-                    scene.linksChanged.connect(lambda *_: _refresh(scene))
+                    scene.linksChanged.connect(lambda *_, scn=scene: _safe_refresh(scn))
                 if hasattr(scene, "paramChanged"):
-                    scene.paramChanged.connect(lambda *_: _refresh(scene))
+                    scene.paramChanged.connect(lambda *_, scn=scene: _safe_refresh(scn))
                 card._scene_outliner_connected = True
             except Exception:
                 pass
 
-        card._scene_outliner_refresh = _refresh
+        card._scene_outliner_refresh = _safe_refresh
         card._scene_outliner_connect = _connect
 
         # initial populate
         sc = getattr(card, "_graph_scene", None)
         if sc is not None:
             _connect(sc)
-            _refresh(sc)
+            _safe_refresh(sc)
         else:
-            _refresh()
+            _safe_refresh()
 
         return True
 

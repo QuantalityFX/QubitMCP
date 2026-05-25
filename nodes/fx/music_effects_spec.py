@@ -41,6 +41,17 @@ _FX_SPLAT_PHYSICS_KIND_ALIASES = {
     "splat physics",
     "splatphysics",
 }
+_FX_SPLAT_FX_KIND_ALIASES = {
+    "fx_splat_fx",
+    "fx splat fx",
+    "splat_fx",
+    "splat fx",
+    "fx_splat_glow",
+    "fx splat glow",
+    "splat_glow",
+    "splat glow",
+    "splatglow",
+}
 _ANIM_RETARGET_KIND_ALIASES = {"anim_retarget", "anim retarget", "animretarget", "retarget"}
 _FBX_KIND_ALIASES = {"fbx_import", "fbx import", "fbximport"}
 _COPY_TO_POINTS_KIND_ALIASES = {
@@ -306,6 +317,41 @@ def _load_preview_audio_into_timeline(win, audio_path: str) -> None:
         pass
 
 
+def _enter_preview_timeline_context(win, prefix: str, node_name: str = "") -> Dict[str, str]:
+    raw = "_".join(part for part in (str(prefix or "").strip(), str(node_name or "").strip()) if part)
+    safe = "".join(ch if (ch.isalnum() or ch in ("_", "-")) else "_" for ch in raw).strip("_")
+    if not safe:
+        safe = "preview"
+    context = {
+        "kind": str(prefix or "preview"),
+        "node": str(node_name or ""),
+        "scene_name": safe,
+    }
+    if win is None:
+        return context
+    try:
+        setattr(win, "_active_scene_preview_context", context)
+        setattr(win, "_active_scene_node", None)
+        timer = getattr(win, "_active_scene_refresh_timer", None)
+        if timer is not None:
+            timer.stop()
+    except Exception:
+        pass
+    gl_view = getattr(win, "gl_view", None)
+    set_context = getattr(gl_view, "set_timeline_scene_context", None) if gl_view is not None else None
+    if not callable(set_context):
+        return
+    try:
+        project_path = str(getattr(win, "_current_path", "") or "").strip() or None
+    except Exception:
+        project_path = None
+    try:
+        set_context(scene_name=safe, project_path=project_path, owner_name=None)
+    except Exception:
+        pass
+    return context
+
+
 def _source_asset_from_item(source_item) -> tuple[Optional[Dict[str, Any]], str]:
     if source_item is None:
         return None, "Connect a model or splat source."
@@ -328,6 +374,14 @@ def _source_asset_from_item(source_item) -> tuple[Optional[Dict[str, Any]], str]
             return getattr(outcome, "asset", None), str(getattr(outcome, "detail", "") or "")
         except Exception as exc:
             return None, f"FX Splat Physics asset build failed: {exc}"
+    if kind in _FX_SPLAT_FX_KIND_ALIASES:
+        try:
+            from nodes.fx import splat_fx_spec as splat_fx_spec  # type: ignore
+
+            outcome = splat_fx_spec.build_splat_fx_scene_asset(source_item)
+            return getattr(outcome, "asset", None), str(getattr(outcome, "detail", "") or "")
+        except Exception as exc:
+            return None, f"FX Splat FX asset build failed: {exc}"
     if kind in _SKINNED_SPLAT_PROXY_KIND_ALIASES:
         try:
             from nodes.skinned_splat_proxy import spec as proxy_spec  # type: ignore
@@ -486,7 +540,9 @@ def build_music_effects_scene_asset(node_item) -> MusicEffectsBuildOutcome:
     source_node_name = str(asset.get("node") or "").strip()
     if source_node_name:
         asset["music_effects_source_node"] = source_node_name
-    if effect_node_name:
+    render_proxy = asset.get("render_proxy") if isinstance(asset.get("render_proxy"), dict) else {}
+    proxy_type = str(render_proxy.get("type") or "").strip().lower()
+    if effect_node_name and proxy_type not in {"skinned_splat", "skinned_gaussian_splat"}:
         asset["node"] = effect_node_name
     asset["music_effects"] = music_effects_config_from_model(
         model,
@@ -773,7 +829,15 @@ class MusicEffectsWidget(QtWidgets.QWidget):
                 "No viewport is available for preview.",
             )
             return
-        if handler([dict(outcome.asset)], frame=True):
+        node_name = str(getattr(getattr(self._node_item, "model", None), "name", "") or "")
+        preview_context = _enter_preview_timeline_context(
+            win,
+            "fx_music_effects_preview",
+            node_name,
+        )
+        asset = dict(outcome.asset)
+        asset["preview_context"] = dict(preview_context)
+        if handler([asset], frame=True):
             effect_cfg = outcome.asset.get("music_effects")
             if isinstance(effect_cfg, dict):
                 _load_preview_audio_into_timeline(win, str(effect_cfg.get("audio_path") or ""))

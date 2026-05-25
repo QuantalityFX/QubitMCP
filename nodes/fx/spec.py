@@ -755,7 +755,7 @@ class FxTrailWidget(QtWidgets.QWidget):
             if model is None:
                 return None, "", ""
             kind = (getattr(model, "kind", "") or "").strip().lower()
-            if kind in {"switch", "fx", "fx_trail", "fx_splat_physics", "fx splat physics", "splat_physics", "splat physics", "splatphysics", "transforms", "mnaterial", "material", "texture", "texture_pro", "texture_layer", "uv_unwrap", "instance"}:
+            if kind in {"switch", "fx", "fx_trail", "fx_splat_physics", "fx splat physics", "splat_physics", "splat physics", "splatphysics", "fx_splat_fx", "fx splat fx", "splat_fx", "splat fx", "fx_splat_glow", "fx splat glow", "splat_glow", "splat glow", "splatglow", "transforms", "mnaterial", "material", "texture", "texture_pro", "texture_layer", "uv_unwrap", "instance"}:
                 edge = _choose_edge(item, {"mesh", "path", "source"} if kind == "instance" else None)
                 if edge is not None:
                     return _trace(getattr(edge, "src", None), depth + 1, visited)

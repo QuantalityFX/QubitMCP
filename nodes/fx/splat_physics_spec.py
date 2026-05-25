@@ -30,12 +30,23 @@ _SKINNED_SPLAT_PROXY_KIND_ALIASES = {
     "fbx_to_skinned_splat_proxy",
     "fbx skinned splat proxy",
 }
+_FX_SPLAT_FX_KIND_ALIASES = {
+    "fx_splat_fx",
+    "fx splat fx",
+    "splat_fx",
+    "splat fx",
+    "fx_splat_glow",
+    "fx splat glow",
+    "splat_glow",
+    "splat glow",
+    "splatglow",
+}
 
 SPLAT_PHYSICS_NODE_W = 288
 SPLAT_PHYSICS_BODY_INSET_X = 8
 SPLAT_PHYSICS_BODY_INSET_TOP = 2
 SPLAT_PHYSICS_BODY_INSET_BOTTOM = 4
-SPLAT_PHYSICS_WIDGET_HINT_H = 492
+SPLAT_PHYSICS_WIDGET_HINT_H = 516
 SPLAT_PHYSICS_NODE_BODY_H = (
     SPLAT_PHYSICS_BODY_INSET_TOP
     + SPLAT_PHYSICS_WIDGET_HINT_H
@@ -71,6 +82,7 @@ SETTING_TOOLTIPS = {
     "T Alpha": "Starting opacity for emitted trail splats.",
     "T Size": "Size multiplier for emitted trail splats.",
     "T Curl": "Curl-noise force applied to trail splats after they emit.",
+    "Glow": "Adds a glow overlay driven by the physics lag and velocity this node creates.",
 }
 PRESET_PARAM_NAMES = {
     "enabled",
@@ -93,6 +105,9 @@ PRESET_PARAM_NAMES = {
     "trail_alpha",
     "trail_radius_scale",
     "trail_curl",
+    "glow_enabled",
+    "glow_intensity",
+    "glow_radius_boost",
 }
 DEFAULT_PRESETS = [
     {
@@ -508,6 +523,9 @@ def splat_physics_config_from_model(model) -> Dict[str, Any]:
         "trail_alpha": _param_float(model, "trail_alpha", 0.35, min_value=0.0, max_value=1.0),
         "trail_radius_scale": _param_float(model, "trail_radius_scale", 0.75, min_value=0.01, max_value=4.0),
         "trail_curl": _param_float(model, "trail_curl", 0.0, min_value=0.0, max_value=20.0),
+        "glow_enabled": _param_bool(model, "glow_enabled", False),
+        "glow_intensity": _param_float(model, "glow_intensity", 1.0, min_value=0.0, max_value=8.0),
+        "glow_radius_boost": _param_float(model, "glow_radius_boost", 0.25, min_value=0.0, max_value=4.0),
     }
 
 
@@ -517,6 +535,14 @@ def _source_asset_from_item(source_item) -> tuple[Optional[Dict[str, Any]], str]
     kind = _node_kind(source_item)
     if kind in KIND_ALIASES:
         return build_splat_physics_scene_asset(source_item).asset, ""
+    if kind in _FX_SPLAT_FX_KIND_ALIASES:
+        try:
+            from nodes.fx import splat_fx_spec as splat_fx_spec  # type: ignore
+
+            outcome = splat_fx_spec.build_splat_fx_scene_asset(source_item)
+            return getattr(outcome, "asset", None), str(getattr(outcome, "detail", "") or "")
+        except Exception as exc:
+            return None, f"FX Splat FX asset build failed: {exc}"
     if kind not in _SKINNED_SPLAT_PROXY_KIND_ALIASES:
         return None, f"Unsupported input node kind: {kind or '<none>'}."
     try:
@@ -597,6 +623,9 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, "trail_alpha", "0.35")
     _ensure_param(node_item, "trail_radius_scale", "0.75")
     _ensure_param(node_item, "trail_curl", "0.0")
+    _ensure_param(node_item, "glow_enabled", "0")
+    _ensure_param(node_item, "glow_intensity", "1.0")
+    _ensure_param(node_item, "glow_radius_boost", "0.25")
     _ensure_param(node_item, "debug_log", "0")
     _ensure_hidden_params(
         getattr(node_item, "model", None),
@@ -626,6 +655,9 @@ def build_ports(node_item) -> None:
             "trail_alpha",
             "trail_radius_scale",
             "trail_curl",
+            "glow_enabled",
+            "glow_intensity",
+            "glow_radius_boost",
             "debug_log",
         ],
     )
@@ -739,6 +771,8 @@ class SplatPhysicsWidget(QtWidgets.QWidget):
         self._trail_alpha = _float_box(0.0, 1.0, 0.05, decimals=2)
         self._trail_radius_scale = _float_box(0.01, 4.0, 0.05)
         self._trail_curl = _float_box(0.0, 20.0, 0.05)
+        self._glow_intensity = _float_box(0.0, 8.0, 0.05)
+        self._glow_radius_boost = _float_box(0.0, 4.0, 0.05)
         for widget, tip_key in (
             (self._follow, "Follow"),
             (self._drag, "Drag"),
@@ -756,6 +790,8 @@ class SplatPhysicsWidget(QtWidgets.QWidget):
             (self._trail_alpha, "T Alpha"),
             (self._trail_radius_scale, "T Size"),
             (self._trail_curl, "T Curl"),
+            (self._glow_intensity, "Glow"),
+            (self._glow_radius_boost, "Glow"),
         ):
             widget.setToolTip(SETTING_TOOLTIPS[tip_key])
 
@@ -791,6 +827,10 @@ class SplatPhysicsWidget(QtWidgets.QWidget):
         grid.addWidget(self._trail_radius_scale, 7, 1)
         grid.addWidget(_label("T Curl"), 7, 2)
         grid.addWidget(self._trail_curl, 7, 3)
+        grid.addWidget(_label("Glow"), 8, 0)
+        grid.addWidget(self._glow_intensity, 8, 1)
+        grid.addWidget(_label("G Size"), 8, 2)
+        grid.addWidget(self._glow_radius_boost, 8, 3)
         layout.addLayout(grid, 0)
 
         self._reset_on_jump = QtWidgets.QCheckBox("Reset on timeline jumps")
@@ -802,6 +842,11 @@ class SplatPhysicsWidget(QtWidgets.QWidget):
         self._trail_enabled.setToolTip(SETTING_TOOLTIPS["Trail"])
         self._trail_enabled.stateChanged.connect(self._on_trail_enabled_changed)
         layout.addWidget(self._trail_enabled, 0)
+
+        self._glow_enabled = QtWidgets.QCheckBox("Glow from physics")
+        self._glow_enabled.setToolTip(SETTING_TOOLTIPS["Glow"])
+        self._glow_enabled.stateChanged.connect(self._on_glow_enabled_changed)
+        layout.addWidget(self._glow_enabled, 0)
 
         hint = QtWidgets.QLabel("Noise can add curl motion or multiply velocity, follow, or drag per splat so the surface no longer trails as one sheet.")
         hint.setWordWrap(True)
@@ -822,6 +867,8 @@ class SplatPhysicsWidget(QtWidgets.QWidget):
             (self._trail_alpha, "trail_alpha"),
             (self._trail_radius_scale, "trail_radius_scale"),
             (self._trail_curl, "trail_curl"),
+            (self._glow_intensity, "glow_intensity"),
+            (self._glow_radius_boost, "glow_radius_boost"),
         ):
             widget.valueChanged.connect(lambda value, name=key: self._set_param(name, f"{float(value):.3f}"))
         self._substeps.valueChanged.connect(lambda value: self._set_param("substeps", str(int(value))))
@@ -895,6 +942,9 @@ class SplatPhysicsWidget(QtWidgets.QWidget):
             self._trail_alpha,
             self._trail_radius_scale,
             self._trail_curl,
+            self._glow_enabled,
+            self._glow_intensity,
+            self._glow_radius_boost,
         )
         for widget in widgets:
             try:
@@ -927,6 +977,9 @@ class SplatPhysicsWidget(QtWidgets.QWidget):
             self._trail_alpha.setValue(_param_float(model, "trail_alpha", 0.35, min_value=0.0, max_value=1.0))
             self._trail_radius_scale.setValue(_param_float(model, "trail_radius_scale", 0.75, min_value=0.01, max_value=4.0))
             self._trail_curl.setValue(_param_float(model, "trail_curl", 0.0, min_value=0.0, max_value=20.0))
+            self._glow_enabled.setChecked(_param_bool(model, "glow_enabled", False))
+            self._glow_intensity.setValue(_param_float(model, "glow_intensity", 1.0, min_value=0.0, max_value=8.0))
+            self._glow_radius_boost.setValue(_param_float(model, "glow_radius_boost", 0.25, min_value=0.0, max_value=4.0))
         finally:
             self._updating = False
             for widget in widgets:
@@ -967,7 +1020,7 @@ class SplatPhysicsWidget(QtWidgets.QWidget):
                 raw = str(value or "none").strip().lower()
                 valid = {key for key, _label in NOISE_MODE_OPTIONS}
                 text = raw if raw in valid else "none"
-            elif name in {"enabled", "reset_on_jump", "trail_enabled"}:
+            elif name in {"enabled", "reset_on_jump", "trail_enabled", "glow_enabled"}:
                 if isinstance(value, str):
                     raw = value.strip().lower()
                     text = "1" if raw in {"1", "true", "yes", "on", "y"} else "0"
@@ -996,6 +1049,9 @@ class SplatPhysicsWidget(QtWidgets.QWidget):
 
     def _on_trail_enabled_changed(self, _state: int):
         self._set_param("trail_enabled", "1" if self._trail_enabled.isChecked() else "0")
+
+    def _on_glow_enabled_changed(self, _state: int):
+        self._set_param("glow_enabled", "1" if self._glow_enabled.isChecked() else "0")
 
 
 def render_node_body(node_item, y_cursor: int) -> int:

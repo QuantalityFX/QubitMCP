@@ -15,7 +15,6 @@ from echograph.qt_compat import QtCore, QtGui, QtWidgets
 from echograph.ui.fps_camera import FpsCamera
 
 
-
 class GraphGLTimelineModelMixin:
     def _timeline_current_frame(self) -> int:
         spin = getattr(self, "_timeline_frame_spin", None)
@@ -25,6 +24,27 @@ class GraphGLTimelineModelMixin:
             return int(spin.value())
         except Exception:
             return 0
+
+    def _timeline_preview_context_active(self) -> bool:
+        try:
+            win = self.window()
+        except Exception:
+            win = None
+        try:
+            return isinstance(getattr(win, "_active_scene_preview_context", None), dict)
+        except Exception:
+            return False
+
+    def _timeline_camera_state_for_playback(self, state):
+        if not isinstance(state, dict):
+            return None
+        out = dict(state)
+        # Timeline camera keys must not replay embedded scene-object xforms.
+        # Older saved camera snapshots can contain these and applying them while
+        # a Scene is loading can trigger expensive graph refresh loops.
+        out.pop("scene_xforms", None)
+        out["_apply_scene_xforms"] = False
+        return out
 
     def _timeline_set_fps(self, fps: float, *, save: bool = True, sync_ui: bool = True) -> float:
         try:
@@ -536,6 +556,8 @@ class GraphGLTimelineModelMixin:
         return {}
 
     def _timeline_apply_selected_camera_owner_frame(self, frame: int) -> None:
+        if self._timeline_preview_context_active():
+            return
         try:
             mode = str(getattr(self, "_camera_select_mode", "default") or "default").strip()
         except Exception:
@@ -570,6 +592,8 @@ class GraphGLTimelineModelMixin:
             pass
 
     def _timeline_apply_other_owner_frames(self, frame: int) -> None:
+        if self._timeline_preview_context_active():
+            return
         try:
             f = int(frame)
         except Exception:
@@ -4093,6 +4117,16 @@ class GraphGLTimelineModelMixin:
             pass
 
     def _timeline_apply_frame_if_keyed(self, frame: int, *, force: bool = False) -> None:
+        if self._timeline_preview_context_active():
+            try:
+                self._timeline_refresh_coord_labels()
+            except Exception:
+                pass
+            try:
+                self.update()
+            except Exception:
+                pass
+            return
         owner = self._timeline_target_owner()
         owner_key = self._timeline_owner_norm(owner)
         if owner_key:
@@ -4106,6 +4140,36 @@ class GraphGLTimelineModelMixin:
                         return
                 except Exception:
                     pass
+        try:
+            lookup_frame = self._timeline_retimed_frame_for_owner(owner, float(frame)) if owner_key else float(frame)
+            entry = (getattr(self, "_timeline_keys", {}) or {}).get(int(round(float(lookup_frame))))
+        except Exception:
+            entry = None
+        if not owner_key and isinstance(entry, dict):
+            state = entry.get("camera_state", None)
+            if isinstance(state, dict) and state:
+                applied = False
+                try:
+                    renderer = getattr(self, "_mgl_renderer", None) or self
+                    apply_state = getattr(renderer, "_mgl_apply_camera_state", None)
+                    if callable(apply_state):
+                        play_state = self._timeline_camera_state_for_playback(state)
+                        apply_state(play_state if isinstance(play_state, dict) else dict(state))
+                        applied = True
+                except Exception:
+                    applied = False
+                if applied:
+                    try:
+                        if not isinstance(state.get("fps_camera", None), dict) and bool(getattr(self, "_fly_mode_enabled", False)):
+                            self._timeline_apply_xyz_only(entry.get("xyz", None), entry.get("rxyz", None))
+                    except Exception:
+                        pass
+                    try:
+                        self.update()
+                    except Exception:
+                        pass
+                    self._timeline_refresh_coord_labels()
+                    return
         xyz_eval, rxyz_eval = self._timeline_eval_frame_values(int(frame))
         if xyz_eval is not None or rxyz_eval is not None:
             if xyz_eval is None:
@@ -4118,11 +4182,6 @@ class GraphGLTimelineModelMixin:
                     pass
                 self._timeline_refresh_coord_labels()
                 return
-        try:
-            lookup_frame = self._timeline_retimed_frame_for_owner(owner, float(frame)) if owner_key else float(frame)
-            entry = (getattr(self, "_timeline_keys", {}) or {}).get(int(round(float(lookup_frame))))
-        except Exception:
-            entry = None
         if not isinstance(entry, dict) or not self._timeline_entry_has_any_axis(entry):
             if bool(force):
                 try:
@@ -4139,7 +4198,8 @@ class GraphGLTimelineModelMixin:
             try:
                 apply_state = getattr(renderer, "_mgl_apply_camera_state", None)
                 if callable(apply_state):
-                    apply_state(dict(state))
+                    play_state = self._timeline_camera_state_for_playback(state)
+                    apply_state(play_state if isinstance(play_state, dict) else dict(state))
                     applied = True
             except Exception:
                 applied = False
@@ -4218,6 +4278,10 @@ class GraphGLTimelineModelMixin:
                     spin.blockSignals(False)
                 except Exception:
                     pass
+        try:
+            self._timeline_update_playhead()
+        except Exception:
+            pass
         self._timeline_apply_frame_if_keyed(frame, force=True)
         allow_aux_updates = True
         slider = getattr(self, "_timeline_frame_slider", None)
@@ -4254,6 +4318,12 @@ class GraphGLTimelineModelMixin:
             pass
 
     def _timeline_on_set_key_clicked(self) -> None:
+        try:
+            apply_locked = getattr(self, "_camera_selector_apply_fps_to_locked_owner", None)
+            if callable(apply_locked):
+                apply_locked(sync_ui=True)
+        except Exception:
+            pass
         frame = self._timeline_current_frame()
         xyz = self._timeline_current_cam_xyz()
         rxyz = self._timeline_current_cam_rxyz()

@@ -884,6 +884,7 @@ in float in_rad;
 in vec3 in_scale3;
 in vec4 in_rot;
 in float in_lit;
+in float in_glow;
 
 out vec2 v_uv;
 out vec4 v_col;
@@ -891,6 +892,7 @@ out vec3 v_world_norm;
 out vec3 v_world_pos;
 out vec4 v_shadow_pos;
 out float v_lit;
+out float v_glow;
 
 vec3 quat_rotate(vec3 v, vec4 q) {
     vec3 t = 2.0 * cross(q.xyz, v);
@@ -940,6 +942,7 @@ void main() {
     v_world_pos = world_p.xyz;
     v_shadow_pos = LightMvp * world_p;
     v_lit = in_lit;
+    v_glow = in_glow;
 
     gl_Position = Proj * view_p;
 }
@@ -974,6 +977,7 @@ in vec3 v_world_norm;
 in vec3 v_world_pos;
 in vec4 v_shadow_pos;
 in float v_lit;
+in float v_glow;
 out vec4 f_color;
 
 vec3 safe_normalize(vec3 v) {
@@ -1089,7 +1093,8 @@ void main() {
 
     if (a < 1e-4) discard;
 
-    vec3 rgb = v_col.rgb;
+    vec3 base_rgb = v_col.rgb;
+    vec3 rgb = base_rgb;
     if (UseSplatLighting == 1 && v_lit > 0.5) {
         vec3 n = safe_normalize(v_world_norm);
         float light_attenuation = 1.0;
@@ -1098,6 +1103,12 @@ void main() {
         float shadow_visibility = sample_shadow_factor(v_shadow_pos, n, l);
         float lum = clamp(AmbientLight, 0.0, 1.0) + diffuse * 0.72 * max(LightIntensity, 0.0) * shadow_visibility;
         rgb *= clamp(lum, 0.0, 3.0);
+    }
+    float glow = clamp(v_glow, 0.0, 4.0);
+    if (glow > 1e-4) {
+        vec3 emissive = base_rgb * (0.75 + 1.35 * glow) + vec3(0.12, 0.08, 0.03) * glow;
+        rgb = mix(rgb, emissive, clamp(glow * 0.72, 0.0, 1.0));
+        a = min(1.0, a * (1.0 + 0.35 * glow));
     }
 
     f_color = vec4(rgb * a, a);

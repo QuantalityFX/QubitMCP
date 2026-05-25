@@ -3097,12 +3097,13 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             try:
                 sc = getattr(self, "scene", None)
                 gl_view.set_scene(sc)
-                self._timeline_controller.sync_timeline_context()
+                if not bool(getattr(self, "_scene_view_open_in_progress", False)):
+                    self._timeline_controller.sync_timeline_context()
 
-                # Only refresh when the scene object changes (prevents slow toggle stalls)
-                if getattr(gl_view, "_last_refresh_scene_obj", None) is not sc:
-                    gl_view._last_refresh_scene_obj = sc
-                    gl_view.refresh_from_scene()
+                    # Only refresh when the scene object changes (prevents slow toggle stalls)
+                    if getattr(gl_view, "_last_refresh_scene_obj", None) is not sc:
+                        gl_view._last_refresh_scene_obj = sc
+                        gl_view.refresh_from_scene()
             except Exception:
                 pass
         if view and hasattr(view, "set_3d_mode"):
@@ -3569,9 +3570,18 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         import time
 
         assets = list(assets or [])
+        scene_debug_enabled = bool(os.environ.get("ECHOGRAPH_SCENE_DEBUG_VERBOSE"))
+        if not scene_debug_enabled:
+            try:
+                scene_debug_enabled = any(
+                    isinstance(entry, dict) and bool(entry.get("debug_log", False))
+                    for entry in assets
+                )
+            except Exception:
+                scene_debug_enabled = False
+
         def _scene_log(msg: str) -> None:
-            enabled = False
-            if not enabled:
+            if not scene_debug_enabled:
                 return
             try:
                 root = Path(__file__).resolve().parent
@@ -3582,7 +3592,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                     f.write(f"{ts} {msg}\n")
             except Exception:
                 pass
-        fx_log_enabled = True
+        fx_log_enabled = scene_debug_enabled
 
         def _fx_log(msg: str) -> None:
             if not fx_log_enabled:
@@ -3600,19 +3610,92 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             cur_path = getattr(self, "_current_path", None)
         except Exception:
             cur_path = None
+        try:
+            glv_for_frame = getattr(self, "gl_view", None)
+            current_timeline_frame = int(glv_for_frame._timeline_current_frame()) if glv_for_frame is not None else 0
+        except Exception:
+            current_timeline_frame = 0
         _scene_log("")
-        _scene_log(f"=== open_scene_assets start raw_count={len(assets)} current_path={cur_path} ===")
+        _scene_log(
+            "=== open_scene_assets start "
+            + f"raw_count={len(assets)} frame_arg={bool(frame)} timeline_frame={current_timeline_frame} "
+            + f"current_path={cur_path} ==="
+        )
         if not assets:
             _scene_log("open_scene_assets: no assets")
             print("[open_scene_assets] no assets", flush=True)
             return False
 
+        preview_context = None
+        try:
+            for entry in assets:
+                if not isinstance(entry, dict):
+                    continue
+                ctx = entry.get("preview_context") or entry.get("__preview_context")
+                if isinstance(ctx, dict):
+                    preview_context = dict(ctx)
+                    break
+        except Exception:
+            preview_context = None
+        scene_source_open = False
+        try:
+            scene_source_open = bool(getattr(self, "_opening_scene_assets_from_scene_node", False))
+        except Exception:
+            scene_source_open = False
+        if preview_context is None and bool(frame) and not scene_source_open:
+            try:
+                first = next((entry for entry in assets if isinstance(entry, dict)), {})
+            except Exception:
+                first = {}
+            try:
+                node_label = str((first or {}).get("node") or "").strip()
+                kind_label = str((first or {}).get("kind") or "").strip()
+                path_label = str((first or {}).get("path") or "").strip()
+                if not node_label and path_label:
+                    node_label = Path(path_label).stem
+                raw_name = "_".join(part for part in ("preview", kind_label, node_label) if part)
+                safe_name = "".join(ch if (ch.isalnum() or ch in ("_", "-")) else "_" for ch in raw_name).strip("_")
+                preview_context = {
+                    "kind": kind_label or "node_preview",
+                    "node": node_label,
+                    "scene_name": safe_name or "node_preview",
+                }
+            except Exception:
+                preview_context = {"kind": "node_preview", "node": "", "scene_name": "node_preview"}
+        if isinstance(preview_context, dict):
+            try:
+                self._active_scene_preview_context = preview_context
+                self._active_scene_node = None
+                timer = getattr(self, "_active_scene_refresh_timer", None)
+                if timer is not None:
+                    timer.stop()
+            except Exception:
+                pass
+        else:
+            try:
+                active = getattr(self, "_active_scene_node", None)
+                active_kind = str(getattr(active, "kind", "") or "").strip().lower() if active is not None else ""
+                if scene_source_open or active_kind in {"scene", "scene_assembly", "scene_outliner"} or (bool(frame) and active is None):
+                    self._active_scene_preview_context = None
+            except Exception:
+                pass
+
+        _scene_log(
+            "open_scene_assets: pre_clean "
+            + f"preview={bool(isinstance(preview_context, dict))} "
+            + f"scene_source={bool(scene_source_open)}"
+        )
+
         # Only clear selection on full scene opens. Playback refreshes (`frame=False`)
-        # must preserve outliner/timeline owner context across frame swaps.
+        # must preserve outliner/timeline owner context across frame swaps. Do not
+        # sync the timeline here; the scene has not been loaded into the viewport yet.
         try:
             if bool(frame) and hasattr(self, "clear_scene_asset_selection"):
-                self.clear_scene_asset_selection()
+                _scene_log("open_scene_assets: clear_selection begin")
+                self.clear_scene_asset_selection(sync_timeline=False)
+                _scene_log("open_scene_assets: clear_selection done")
         except Exception:
+            _scene_log("open_scene_assets: clear_selection error\n" + traceback.format_exc())
             pass
 
         clean = []
@@ -3716,6 +3799,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 clean_entry["copy_to_points"] = dict(entry.get("copy_to_points") or {})
             if isinstance(entry.get("music_effects"), dict):
                 clean_entry["music_effects"] = dict(entry.get("music_effects") or {})
+            if isinstance(entry.get("preview_context"), dict):
+                clean_entry["preview_context"] = dict(entry.get("preview_context") or {})
+            elif isinstance(entry.get("__preview_context"), dict):
+                clean_entry["preview_context"] = dict(entry.get("__preview_context") or {})
             if "debug_log" in entry:
                 clean_entry["debug_log"] = bool(entry.get("debug_log"))
             tex_provider = entry.get("texture_provider")
@@ -3790,6 +3877,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                         return tuple(default)
                 sig.append(
                     (
+                        bool(frame),
+                        int(current_timeline_frame),
                         str(entry.get("kind") or ""),
                         str(entry.get("ext") or ""),
                         str(entry.get("path") or ""),
@@ -3836,6 +3925,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                         repr(dict(entry.get("render_proxy") or {})),
                         repr(dict(entry.get("copy_to_points") or {})),
                         repr(dict(entry.get("music_effects") or {})),
+                        repr(dict(entry.get("preview_context") or {})),
                         repr(dict(entry.get("light") or {})),
                         repr(entry.get("fov", None)),
                         repr(entry.get("aspect_width", None)),
@@ -3847,6 +3937,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             last_sig = getattr(self, "_scene_assets_sig", None)
             last_ts = float(getattr(self, "_scene_assets_ts", 0.0) or 0.0)
             if sig == last_sig and (now - last_ts) < 0.5:
+                _scene_log("open_scene_assets: duplicate signature skipped")
                 return True
             self._scene_assets_sig = sig
             self._scene_assets_ts = now
@@ -3854,15 +3945,72 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             pass
 
         mode = getattr(self, "_view_mode", "2d")
-        if mode == "3d":
-            self._set_view_mode("3d")
-        else:
-            self._set_view_mode("split")
+        try:
+            target_mode = "3d" if str(mode or "").strip().lower() == "3d" else "split"
+            if str(mode or "").strip().lower() == target_mode:
+                _scene_log(f"open_scene_assets: set_view_mode skip already={target_mode!r}")
+            else:
+                _scene_log(f"open_scene_assets: set_view_mode begin mode={mode!r} target={target_mode!r}")
+                self._scene_view_open_in_progress = True
+                try:
+                    self._set_view_mode(target_mode)
+                finally:
+                    self._scene_view_open_in_progress = False
+                _scene_log("open_scene_assets: set_view_mode done")
+        except Exception:
+            try:
+                self._scene_view_open_in_progress = False
+            except Exception:
+                pass
+            _scene_log("open_scene_assets: set_view_mode error\n" + traceback.format_exc())
+            raise
 
         gl_view = getattr(self, "gl_view", None)
         if gl_view is None:
             print("[open_scene_assets] gl_view is None", flush=True)
             return False
+
+        def _defer_timeline_context_sync(reason: str) -> None:
+            if not bool(frame):
+                return
+
+            def _run_sync() -> None:
+                try:
+                    _scene_log(f"open_scene_assets: sync_timeline_context {reason} begin")
+                    self._timeline_controller.sync_timeline_context(apply_current_frame=False, load_audio=False)
+                    _scene_log(f"open_scene_assets: sync_timeline_context {reason} done")
+                except Exception:
+                    _scene_log("open_scene_assets: sync_timeline_context error\n" + traceback.format_exc())
+
+            try:
+                QtCore.QTimer.singleShot(0, _run_sync)
+            except Exception:
+                _run_sync()
+
+        if isinstance(preview_context, dict):
+            try:
+                gl_view._camera_select_mode = "default"
+                gl_view._camera_select_lock_enabled = False
+                gl_view._camera_select_saved_default_state = None
+                gl_view._scene_camera_entries = []
+                gl_view._scene_camera_fov_by_owner = {}
+                gl_view._scene_camera_aspect_by_owner = {}
+                refresh_cameras = getattr(gl_view, "_refresh_camera_selector_dropdown", None)
+                if callable(refresh_cameras):
+                    refresh_cameras()
+            except Exception:
+                pass
+            try:
+                scene_name = str(preview_context.get("scene_name") or preview_context.get("name") or "").strip()
+                set_ctx = getattr(gl_view, "set_timeline_scene_context", None)
+                if callable(set_ctx):
+                    set_ctx(
+                        scene_name=scene_name or "node_preview",
+                        project_path=str(cur_path) if cur_path else None,
+                        owner_name=None,
+                    )
+            except Exception:
+                pass
         preserve_owner = ""
         if not bool(frame):
             # Playback refresh: preserve current scene-owner selection/gizmo binding.
@@ -3885,12 +4033,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                     preserve_owner = str(getattr(gl_view, "_xform_gizmo_owner", "") or "").strip()
                 except Exception:
                     preserve_owner = ""
-        try:
-            # Full scene open: timeline context can be rebuilt immediately.
-            if bool(frame):
-                self._timeline_controller.sync_timeline_context()
-        except Exception:
-            pass
+        # Sync timeline context after scene load. Doing it inline here can apply
+        # saved camera/owner keys while the viewport is switching scenes.
         try:
             if hasattr(gl_view, "set_gizmo_visible"):
                 gl_view.set_gizmo_visible(True)
@@ -3912,6 +4056,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             try:
                 _scene_log(f"open_scene_assets: load_scene_assets count={len(clean)} frame={frame}")
                 loader(clean, frame=frame)
+                _scene_log("open_scene_assets: load_scene_assets done")
+                _defer_timeline_context_sync("post_load")
                 if (not bool(frame)) and preserve_owner:
                     # Re-assert selected owner after frame-swap reloads.
                     def _restore_owner_selection(owner_name=str(preserve_owner)):
@@ -3938,6 +4084,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             return False
         try:
             gl_view.load_model_path(first["path"], first.get("texture"), frame=frame)
+            _defer_timeline_context_sync("fallback_post_load")
             if frame and hasattr(gl_view, "_on_frame_clicked"):
                 gl_view._on_frame_clicked()
             return True
@@ -4006,7 +4153,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             except Exception:
                 pass
 
-    def clear_scene_asset_selection(self) -> None:
+    def clear_scene_asset_selection(self, *, sync_timeline: bool = True) -> None:
         try:
             gl_view = getattr(self, "gl_view", None)
             if gl_view is not None:
@@ -4056,19 +4203,24 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                     panel.setEnabled(False)
             except Exception:
                 pass
-        try:
-            self._timeline_controller.sync_timeline_context()
-        except Exception:
-            pass
+        if bool(sync_timeline):
+            try:
+                self._timeline_controller.sync_timeline_context()
+            except Exception:
+                pass
 
     def _reset_viewport_scene_state_for_workflow_load(self) -> None:
         # Prevent per-owner xforms/gizmo state from leaking across workflow files.
         try:
-            self.clear_scene_asset_selection()
+            self.clear_scene_asset_selection(sync_timeline=False)
         except Exception:
             pass
         try:
             self._active_scene_node = None
+            self._active_scene_preview_context = None
+            timer = getattr(self, "_active_scene_refresh_timer", None)
+            if timer is not None:
+                timer.stop()
         except Exception:
             pass
         try:
@@ -5412,13 +5564,20 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             pass
         try:
             self._active_scene_node = getattr(item, "model", None)
+            self._active_scene_preview_context = None
         except Exception:
             pass
         loaded = False
         try:
+            self._opening_scene_assets_from_scene_node = True
             loaded = bool(self.open_scene_assets(assets, frame=True))
         except Exception:
             loaded = False
+        finally:
+            try:
+                self._opening_scene_assets_from_scene_node = False
+            except Exception:
+                pass
         if not loaded:
             return False
         try:
@@ -5466,6 +5625,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 if cam_path.exists():
                     with open(cam_path, "r", encoding="utf-8") as f:
                         cam = json.load(f)
+                    if isinstance(cam, dict):
+                        cam = dict(cam)
+                        cam.pop("scene_xforms", None)
+                        cam["_apply_scene_xforms"] = False
                     glv = getattr(self, "gl_view", None)
 
                     def _apply_cam() -> None:
@@ -6420,13 +6583,9 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         except Exception:
             pass
         try:
-            self._restore_workflow_active_scene_deferred(
-                workflow_scene_restore,
-                workflow_path=path,
-                delay_ms=260,
-            )
+            self._pending_workflow_scene_restore = str(workflow_scene_restore or "").strip()
         except Exception:
-            pass
+            self._pending_workflow_scene_restore = ""
         self._remember_recent(path)
         self._update_window_title()
         try:
@@ -6900,6 +7059,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
     def _schedule_active_scene_refresh_for_node(self, node_name: str) -> None:
         try:
+            if isinstance(getattr(self, "_active_scene_preview_context", None), dict):
+                return
             if str(getattr(self, "_view_mode", "2d") or "").strip().lower() not in {"3d", "split"}:
                 return
             if getattr(self, "gl_view", None) is None:
@@ -6916,6 +7077,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             pass
 
     def _refresh_active_scene_from_graph(self) -> None:
+        if isinstance(getattr(self, "_active_scene_preview_context", None), dict):
+            return
         item = self._active_scene_node_item()
         if item is None:
             return
@@ -6939,12 +7102,19 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             return
         try:
             self._active_scene_node = getattr(item, "model", None)
+            self._active_scene_preview_context = None
         except Exception:
             pass
         try:
+            self._opening_scene_assets_from_scene_node = True
             self.open_scene_assets(assets, frame=False)
         except Exception:
             pass
+        finally:
+            try:
+                self._opening_scene_assets_from_scene_node = False
+            except Exception:
+                pass
 
     def _on_params_changed(self, node_name: str, params: list):
         # Refresh just the affected card (no full branch rebuild)

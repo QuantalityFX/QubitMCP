@@ -607,12 +607,19 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._mgl_splat_shadow_prog = None
         self._mgl_splatq_quad_vbo = None   # static quad corners
         self._mgl_splatq_vbo = None        # instance buffer (Nx8)
+        self._mgl_splatq_lit_vbo = None
+        self._mgl_splatq_glow_vbo = None
         self._mgl_splatq_vao = None
         self._mgl_splat_shadow_vao = None
         self._mgl_splat_world_scale = 3.0  # tuning knob
         self._mgl_splat_sort_tick = 0
         self._mgl_splat_count = 0
         self._mgl_pending_splats = None
+        self._mgl_pending_splat_lit_flags = None
+        self._mgl_pending_splat_glow_flags = None
+        self._mgl_splats15_cpu = None
+        self._mgl_splat_lit_cpu = None
+        self._mgl_splat_glow_cpu = None
         self._mgl_render_splats = False
         self._mgl_splats_visibility_dirty = False
         self._mgl_splats_need_rebuild = False
@@ -3794,6 +3801,33 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             except Exception:
                 pass
             return
+
+        def _scene_load_log(message: str) -> None:
+            try:
+                enabled = bool(os.environ.get("ECHOGRAPH_SCENE_DEBUG_VERBOSE"))
+                if not enabled:
+                    try:
+                        enabled = any(
+                            isinstance(entry, dict) and bool(entry.get("debug_log", False))
+                            for entry in (assets or [])
+                        )
+                    except Exception:
+                        enabled = False
+                if not enabled:
+                    return
+                root = Path(__file__).resolve().parents[2]
+                log_dir = root / "logs"
+                log_dir.mkdir(parents=True, exist_ok=True)
+                line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} {message}\n"
+                with (log_dir / "scene_assets_debug.log").open("a", encoding="utf-8") as fh:
+                    fh.write(line)
+            except Exception:
+                pass
+
+        _scene_load_log(
+            "gl_view.load_scene_assets start "
+            + f"count={len(assets or [])} frame={bool(frame)} mgl={bool(self._use_moderngl)}"
+        )
         if self._use_moderngl:
             try:
                 cam_entries: List[Dict[str, object]] = []
@@ -3854,6 +3888,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                     self._refresh_camera_selector_dropdown()
             except Exception:
                 pass
+            _scene_load_log("gl_view.load_scene_assets camera_options done")
             def _owner_name(entry: dict) -> str:
                 name = (entry.get("node") or "").strip()
                 if name:
@@ -4083,11 +4118,18 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 self._mgl_scene_splat_xforms_by_owner = seeded_splat_xforms
             except Exception:
                 pass
+            _scene_load_log("gl_view.load_scene_assets pre_mgl_setup done")
             try:
+                _scene_load_log("gl_view.load_scene_assets mgl begin")
                 self._mgl_load_scene_assets(assets, frame=frame)
             except Exception:
+                import traceback as _traceback
+                _scene_load_log("gl_view.load_scene_assets mgl error\n" + _traceback.format_exc())
                 pass
+            else:
+                _scene_load_log("gl_view.load_scene_assets mgl done")
             # Final pass: enforce per-owner xforms after scene load (ply_sequence frame swaps).
+            _scene_load_log("gl_view.load_scene_assets enforce_xforms begin")
             try:
                 renderer = getattr(self, "_mgl_renderer", None) or self
                 setf = getattr(renderer, "_mgl_set_scene_asset_xform", None)
@@ -4127,7 +4169,11 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                     except Exception:
                         pass
             except Exception:
+                import traceback as _traceback
+                _scene_load_log("gl_view.load_scene_assets enforce_xforms error\n" + _traceback.format_exc())
                 pass
+            else:
+                _scene_load_log("gl_view.load_scene_assets enforce_xforms done")
             try:
                 selected = str(getattr(self, "_camera_select_mode", "default") or "default").strip()
                 if selected and selected != "default":
@@ -4144,7 +4190,10 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 try:
                     w = self.window()
                     if w is not None and hasattr(w, "clear_scene_asset_selection"):
-                        w.clear_scene_asset_selection()
+                        try:
+                            w.clear_scene_asset_selection(sync_timeline=False)
+                        except TypeError:
+                            w.clear_scene_asset_selection()
                 except Exception:
                     pass
             else:
@@ -4213,8 +4262,10 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 except Exception:
                     pass
             self.update()
+            _scene_load_log("gl_view.load_scene_assets done")
             return
 
+        _scene_load_log("gl_view.load_scene_assets legacy begin")
         for asset in assets:
             path = str(asset.get("path", "") or "").strip()
             if not path:

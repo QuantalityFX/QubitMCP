@@ -70,6 +70,7 @@ GL_DEPTH_BUFFER_BIT = 0x00000100
 
 _HAS_MGL = moderngl is not None and np is not None and Matrix44 is not None
 
+
 _THUMB_VERT = """
 #version 330
 in vec2 in_pos;
@@ -2007,6 +2008,199 @@ class MGLRendererMixin:
             "outward_only": _bool(mesh.get("outward_only"), True),
         }
 
+    def _mgl_splat_fx_from_music_effects(self, raw) -> Optional[Dict[str, Any]]:
+        if not isinstance(raw, dict):
+            return None
+        analysis = raw.get("analysis") if isinstance(raw.get("analysis"), dict) else {}
+        return {
+            "schema": "qubit.splat_fx.from_music_effects.v1",
+            "enabled": raw.get("enabled", True),
+            "audio_path": str(raw.get("audio_path") or ""),
+            "analysis_cache_path": str(raw.get("analysis_cache_path") or ""),
+            "analysis": dict(analysis),
+            "glow": {
+                "intensity": 1.15,
+                "radius_boost": 0.28,
+                "saturation": 0.42,
+                "wave_strength": 0.55,
+                "wave_width": 0.34,
+                "wave_speed": 1.0,
+                "wave_axis": "y",
+            },
+        }
+
+    def _mgl_normalize_splat_fx_config(self, raw) -> Optional[Dict[str, Any]]:
+        if not isinstance(raw, dict):
+            return None
+
+        def _bool(value, default: bool) -> bool:
+            if isinstance(value, str):
+                text = value.strip().lower()
+                if text in {"1", "true", "yes", "on", "y"}:
+                    return True
+                if text in {"0", "false", "no", "off", "n"}:
+                    return False
+            if value is None:
+                return bool(default)
+            return bool(value)
+
+        def _float(value, default: float, minimum: float, maximum: float) -> float:
+            try:
+                parsed = float(value)
+            except Exception:
+                parsed = float(default)
+            return max(float(minimum), min(float(maximum), float(parsed)))
+
+        analysis = raw.get("analysis") if isinstance(raw.get("analysis"), dict) else {}
+        glow = raw.get("glow") if isinstance(raw.get("glow"), dict) else {}
+        axis = str(glow.get("wave_axis") or raw.get("wave_axis") or "y").strip().lower()
+        if axis not in {"x", "y", "z"}:
+            axis = "y"
+        return {
+            "enabled": _bool(raw.get("enabled"), True),
+            "cache_path": str(raw.get("analysis_cache_path") or "").strip(),
+            "gain": _float(analysis.get("gain"), 1.25, 0.0, 8.0),
+            "threshold": _float(analysis.get("threshold"), 0.04, 0.0, 0.95),
+            "offset_s": _float(analysis.get("audio_start_offset_ms"), 0.0, -600000.0, 600000.0)
+            / 1000.0,
+            "intensity": _float(glow.get("intensity"), 1.25, 0.0, 8.0),
+            "radius_boost": _float(glow.get("radius_boost"), 0.35, 0.0, 4.0),
+            "saturation": _float(glow.get("saturation"), 0.45, 0.0, 4.0),
+            "wave_strength": _float(glow.get("wave_strength"), 0.65, 0.0, 1.0),
+            "wave_width": _float(glow.get("wave_width"), 0.32, 0.01, 2.0),
+            "wave_speed": _float(glow.get("wave_speed"), 1.0, 0.0, 8.0),
+            "wave_axis": axis,
+        }
+
+    def _mgl_splat_fx_music_values(self, proxy: dict, splats: NDArray, frame: int) -> Optional[NDArray]:
+        if np is None or not isinstance(proxy, dict):
+            return None
+        render_proxy = proxy.get("render_proxy") if isinstance(proxy.get("render_proxy"), dict) else {}
+        cfg = self._mgl_normalize_splat_fx_config(render_proxy.get("splat_fx"))
+        if cfg is None or not bool(cfg.get("enabled", True)):
+            return None
+        cache_path = str(cfg.get("cache_path") or "").strip()
+        if not cache_path:
+            return None
+        curve = self._mgl_music_effect_curve(proxy, cache_path)
+        if not isinstance(curve, dict):
+            return None
+        try:
+            source = np.asarray(splats, dtype="f4").reshape(-1, 15)
+        except Exception:
+            return None
+        count = int(source.shape[0])
+        if count <= 0:
+            return np.zeros((0, 1), dtype=np.float32)
+        times = np.asarray(curve.get("times"), dtype="f4").reshape(-1)
+        beat = np.asarray(curve.get("beat"), dtype="f4").reshape(-1)
+        if times.size == 0 or beat.size == 0:
+            return None
+        time_s = float(self._mgl_timeline_time_seconds()) - float(cfg.get("offset_s", 0.0))
+        if time_s < float(times[0]) or time_s > float(times[-1]):
+            raw_strength = 0.0
+        else:
+            raw_strength = float(np.interp(time_s, times, beat))
+        threshold = float(cfg.get("threshold", 0.04))
+        if raw_strength <= threshold:
+            strength = 0.0
+        else:
+            strength = (raw_strength - threshold) / max(1.0e-6, 1.0 - threshold)
+        strength = max(0.0, min(1.0, strength * float(cfg.get("gain", 1.25))))
+        if strength <= 1.0e-5:
+            return np.zeros((count, 1), dtype=np.float32)
+
+        axis_idx = {"x": 0, "y": 1, "z": 2}.get(str(cfg.get("wave_axis") or "y"), 1)
+        coord = source[:, axis_idx].astype(np.float32, copy=False)
+        cmin = float(np.min(coord))
+        cmax = float(np.max(coord))
+        if abs(cmax - cmin) <= 1.0e-6:
+            normalized = np.zeros_like(coord, dtype=np.float32)
+        else:
+            normalized = (coord - np.float32(cmin)) / np.float32(cmax - cmin)
+        wave_strength = float(cfg.get("wave_strength", 0.65))
+        wave_width = max(0.01, float(cfg.get("wave_width", 0.32)))
+        wave_speed = max(0.0, float(cfg.get("wave_speed", 1.0)))
+        center = (float(time_s) * wave_speed) % 1.0 if wave_speed > 1.0e-6 else 0.5
+        dist = np.abs(normalized - np.float32(center))
+        dist = np.minimum(dist, np.float32(1.0) - dist)
+        wave = np.exp(-((dist / np.float32(wave_width)) ** 2)).astype(np.float32, copy=False)
+        values = np.float32(strength) * (
+            np.float32(1.0 - wave_strength) + (np.float32(wave_strength) * wave)
+        )
+        values *= np.float32(float(cfg.get("intensity", 1.25)))
+        return np.clip(values.reshape(-1, 1), np.float32(0.0), np.float32(4.0)).astype(np.float32, copy=False)
+
+    def _mgl_splat_physics_glow_values(self, proxy: dict, count: int) -> Optional[NDArray]:
+        if np is None or not isinstance(proxy, dict) or count <= 0:
+            return None
+        config = proxy.get("splat_physics") if isinstance(proxy.get("splat_physics"), dict) else None
+        if not isinstance(config, dict) or not bool(config.get("glow_enabled", False)):
+            return None
+        try:
+            base = np.asarray(proxy.get("physics_glow_values"), dtype="f4").reshape(-1, 1)
+        except Exception:
+            base = np.zeros((0, 1), dtype=np.float32)
+        out = np.zeros((int(count), 1), dtype=np.float32)
+        if int(base.shape[0]) > 0:
+            limit = min(int(count), int(base.shape[0]))
+            try:
+                intensity = max(0.0, min(8.0, float(config.get("glow_intensity", 1.0))))
+            except Exception:
+                intensity = 1.0
+            out[:limit, 0] = np.clip(base[:limit, 0], np.float32(0.0), np.float32(1.0)) * np.float32(intensity)
+        return np.clip(out, np.float32(0.0), np.float32(4.0)).astype(np.float32, copy=False)
+
+    def _mgl_apply_splat_fx_to_splats(self, proxy: dict, splats: NDArray, frame: int) -> tuple[NDArray, NDArray]:
+        if np is None:
+            return splats, splats
+        try:
+            out = np.asarray(splats, dtype="f4").reshape(-1, 15).astype(np.float32, copy=True)
+        except Exception:
+            return splats, np.zeros((0, 1), dtype=np.float32)
+        count = int(out.shape[0])
+        if count <= 0:
+            return out, np.zeros((0, 1), dtype=np.float32)
+        glow = np.zeros((count, 1), dtype=np.float32)
+        music_values = self._mgl_splat_fx_music_values(proxy, out, int(frame))
+        if music_values is not None and int(music_values.shape[0]) == count:
+            glow = np.maximum(glow, music_values.astype(np.float32, copy=False))
+        physics_values = self._mgl_splat_physics_glow_values(proxy, count)
+        if physics_values is not None and int(physics_values.shape[0]) == count:
+            glow = np.maximum(glow, physics_values.astype(np.float32, copy=False))
+        glow = np.clip(glow, np.float32(0.0), np.float32(4.0)).astype(np.float32, copy=False)
+        if not np.any(glow > np.float32(1.0e-5)):
+            return out, glow
+
+        render_proxy = proxy.get("render_proxy") if isinstance(proxy.get("render_proxy"), dict) else {}
+        cfg = self._mgl_normalize_splat_fx_config(render_proxy.get("splat_fx")) or {}
+        physics_cfg = proxy.get("splat_physics") if isinstance(proxy.get("splat_physics"), dict) else {}
+        try:
+            radius_boost = max(
+                float(cfg.get("radius_boost", 0.0) or 0.0),
+                float(physics_cfg.get("glow_radius_boost", 0.0) or 0.0),
+            )
+        except Exception:
+            radius_boost = float(cfg.get("radius_boost", 0.0) or 0.0)
+        try:
+            saturation = max(0.0, float(cfg.get("saturation", 0.45) or 0.0))
+        except Exception:
+            saturation = 0.45
+
+        g = glow[:, 0].astype(np.float32, copy=False)
+        if radius_boost > 1.0e-6:
+            out[:, 7] *= np.float32(1.0) + (g * np.float32(radius_boost))
+        if saturation > 1.0e-6:
+            rgb = out[:, 3:6].astype(np.float32, copy=False)
+            luma = (
+                rgb[:, 0:1] * np.float32(0.2126)
+                + rgb[:, 1:2] * np.float32(0.7152)
+                + rgb[:, 2:3] * np.float32(0.0722)
+            )
+            sat = np.float32(1.0) + (g[:, None] * np.float32(saturation))
+            out[:, 3:6] = np.clip(luma + (rgb - luma) * sat + (g[:, None] * np.float32(0.08)), 0.0, 4.0)
+        return out.astype(np.float32, copy=False), glow.astype(np.float32, copy=False)
+
     def _mgl_music_effect_entries(self, payload: Dict[str, Any]) -> List[Dict[str, Any]]:
         entries: List[Dict[str, Any]] = []
         entry = payload.get("mesh_entry")
@@ -2381,6 +2575,9 @@ class MGLRendererMixin:
             "trail_radius_scale": _float("trail_radius_scale", 0.75, 0.01, 4.0),
             "trail_curl": _float("trail_curl", 0.0, 0.0, 20.0),
             "trail_max_particles": _int("trail_max_particles", 120000, 0, 1000000),
+            "glow_enabled": _bool("glow_enabled", False),
+            "glow_intensity": _float("glow_intensity", 1.0, 0.0, 8.0),
+            "glow_radius_boost": _float("glow_radius_boost", 0.25, 0.0, 4.0),
         }
 
     def _mgl_splat_physics_signature(self, config: dict | None):
@@ -2419,6 +2616,9 @@ class MGLRendererMixin:
             round(_num("trail_radius_scale", 0.75), 5),
             round(_num("trail_curl", 0.0), 5),
             int(config.get("trail_max_particles", 120000) or 120000),
+            bool(config.get("glow_enabled", False)),
+            round(_num("glow_intensity", 1.0), 5),
+            round(_num("glow_radius_boost", 0.25), 5),
         )
 
     def _mgl_splat_noise_vectors(self, positions: NDArray, frame: int, config: dict) -> Tuple[NDArray, NDArray]:
@@ -2714,6 +2914,7 @@ class MGLRendererMixin:
             proxy.pop("physics_target_velocity", None)
             proxy.pop("physics_dt", None)
             proxy.pop("physics_frame_delta", None)
+            proxy.pop("physics_glow_values", None)
             proxy["physics_reset"] = True
             self._mgl_clear_splat_trail_state(proxy)
             proxy["physics_config_signature"] = self._mgl_splat_physics_signature(config)
@@ -2870,6 +3071,16 @@ class MGLRendererMixin:
         proxy["physics_last_target"] = target.astype("f4", copy=True)
         proxy["physics_last_frame"] = int(frame)
         proxy["physics_config_signature"] = sig
+        try:
+            offset_mag = np.linalg.norm(positions - target, axis=1).astype("f4", copy=False)
+            velocity_mag = np.linalg.norm(velocities, axis=1).astype("f4", copy=False)
+            lag_scale = max(1.0e-6, float(max_lag) * 0.65) if max_lag > 0.0 else max(1.0e-6, float(physics_scale))
+            vel_scale = max(1.0e-6, float(physics_scale) * 4.0)
+            lag_metric = np.clip(offset_mag / np.float32(lag_scale), np.float32(0.0), np.float32(1.0))
+            vel_metric = np.clip(velocity_mag / np.float32(vel_scale), np.float32(0.0), np.float32(1.0))
+            proxy["physics_glow_values"] = np.maximum(lag_metric, vel_metric * np.float32(0.45)).astype("f4", copy=False)
+        except Exception:
+            proxy.pop("physics_glow_values", None)
         if bool(config.get("debug_log", False)):
             try:
                 max_offset = float(np.linalg.norm(positions - target, axis=1).max()) if count else 0.0
@@ -3037,6 +3248,20 @@ class MGLRendererMixin:
                 "physics_config_signature": self._mgl_splat_physics_signature(physics_config),
                 "last_signature": None,
             }
+            try:
+                current, glow_values = self._mgl_apply_splat_fx_to_splats(
+                    proxies[owner_key],
+                    current,
+                    int(self._mgl_timeline_frame_index()),
+                )
+                proxies[owner_key]["current_splats"] = current
+                glow_map = getattr(self, "_mgl_scene_splat_glow_by_owner", None)
+                if not isinstance(glow_map, dict):
+                    glow_map = {}
+                    self._mgl_scene_splat_glow_by_owner = glow_map
+                glow_map[owner_key] = glow_values
+            except Exception:
+                pass
 
             try:
                 self._mgl_scene_splats[owner_key] = current
@@ -3176,6 +3401,15 @@ class MGLRendererMixin:
                         )
                     except Exception:
                         pass
+                try:
+                    current, glow_values = self._mgl_apply_splat_fx_to_splats(proxy, current, int(frame))
+                    glow_map = getattr(self, "_mgl_scene_splat_glow_by_owner", None)
+                    if not isinstance(glow_map, dict):
+                        glow_map = {}
+                        self._mgl_scene_splat_glow_by_owner = glow_map
+                    glow_map[owner_key] = glow_values
+                except Exception:
+                    pass
                 proxy["current_splats"] = current
                 proxy["last_signature"] = signature
                 self._mgl_scene_splats[owner_key] = current
@@ -5638,10 +5872,12 @@ class MGLRendererMixin:
             pass
         self._mgl_pending_splats = None
         self._mgl_pending_splat_lit_flags = None
+        self._mgl_pending_splat_glow_flags = None
         self._mgl_render_splats = False
         self._mgl_splat_count = 0
         self._mgl_splats15_cpu = None
         self._mgl_splat_lit_cpu = None
+        self._mgl_splat_glow_cpu = None
         self._mgl_splats_all_lit = False
         self._mgl_splats_has_lit = False
         try:
@@ -5650,6 +5886,13 @@ class MGLRendererMixin:
                 self._mgl_scene_splats_world = {}
             else:
                 self._mgl_scene_splats_world.clear()
+        except Exception:
+            pass
+        try:
+            if not isinstance(getattr(self, "_mgl_scene_splat_glow_by_owner", None), dict):
+                self._mgl_scene_splat_glow_by_owner = {}
+            else:
+                self._mgl_scene_splat_glow_by_owner.clear()
         except Exception:
             pass
         try:
@@ -7644,6 +7887,13 @@ class MGLRendererMixin:
                 self._mgl_scene_splat_bounds_by_owner = bounds_by_owner
             except Exception:
                 pass
+        glow_by_owner = getattr(self, "_mgl_scene_splat_glow_by_owner", None)
+        if not isinstance(glow_by_owner, dict):
+            glow_by_owner = {}
+            try:
+                self._mgl_scene_splat_glow_by_owner = glow_by_owner
+            except Exception:
+                pass
 
         # normalized lookup for xforms
         xforms_norm = {}
@@ -7732,6 +7982,7 @@ class MGLRendererMixin:
 
         arrays15 = []
         lit_arrays = []
+        glow_arrays = []
         lit_splat_owners = set()
         unlit_splat_owners = set()
         skinned_proxy_owners = set()
@@ -7879,6 +8130,24 @@ class MGLRendererMixin:
             except Exception:
                 lit_arrays.append(np.zeros((int(a15.shape[0]), 1), dtype=np.float32))
             try:
+                glow_values = None
+                if isinstance(glow_by_owner, dict):
+                    glow_values = glow_by_owner.get(owner)
+                    if glow_values is None:
+                        owner_key = str(owner or "").strip().lower()
+                        for glow_owner, candidate in glow_by_owner.items():
+                            if str(glow_owner or "").strip().lower() == owner_key:
+                                glow_values = candidate
+                                break
+                glow_values = np.asarray(glow_values, dtype=np.float32).reshape(-1, 1)
+                if int(glow_values.shape[0]) != int(a15.shape[0]):
+                    glow_values = np.zeros((int(a15.shape[0]), 1), dtype=np.float32)
+                glow_arrays.append(
+                    np.clip(glow_values, np.float32(0.0), np.float32(4.0)).astype(np.float32, copy=False)
+                )
+            except Exception:
+                glow_arrays.append(np.zeros((int(a15.shape[0]), 1), dtype=np.float32))
+            try:
                 splats_world[owner] = a15[:, :3].astype(np.float32, copy=True)
             except Exception:
                 pass
@@ -7933,6 +8202,7 @@ class MGLRendererMixin:
 
         combined = arrays15[0] if len(arrays15) == 1 else np.concatenate(arrays15, axis=0)
         combined_lit = lit_arrays[0] if len(lit_arrays) == 1 else np.concatenate(lit_arrays, axis=0)
+        combined_glow = glow_arrays[0] if len(glow_arrays) == 1 else np.concatenate(glow_arrays, axis=0)
         try:
             if bool(getattr(self, "_mgl_splat_log_verbose", False)):
                 self._mgl_log_throttled(
@@ -7948,9 +8218,11 @@ class MGLRendererMixin:
             if combined is not None and getattr(combined, "ndim", 0) == 2 and int(combined.shape[1]) == 15:
                 splats15 = combined.astype("f4", copy=False)
                 splat_lit = combined_lit.astype("f4", copy=False)
+                splat_glow = combined_glow.astype("f4", copy=False)
 
                 vbo = getattr(self, "_mgl_splatq_vbo", None)
                 lit_vbo = getattr(self, "_mgl_splatq_lit_vbo", None)
+                glow_vbo = getattr(self, "_mgl_splatq_glow_vbo", None)
                 if vbo is not None:
                     try:
                         vbo_size = int(getattr(vbo, "size", 0) or 0)
@@ -7960,12 +8232,21 @@ class MGLRendererMixin:
                         lit_vbo_size = int(getattr(lit_vbo, "size", 0) or 0) if lit_vbo is not None else 0
                     except Exception:
                         lit_vbo_size = 0
+                    try:
+                        glow_vbo_size = int(getattr(glow_vbo, "size", 0) or 0) if glow_vbo is not None else 0
+                    except Exception:
+                        glow_vbo_size = 0
 
-                    if vbo_size == int(splats15.nbytes) and lit_vbo_size == int(splat_lit.nbytes):
+                    if (
+                        vbo_size == int(splats15.nbytes)
+                        and lit_vbo_size == int(splat_lit.nbytes)
+                        and glow_vbo_size == int(splat_glow.nbytes)
+                    ):
                         # keep CPU copy (sorting path relies on this)
                         self._mgl_splat_count = int(splats15.shape[0])
                         self._mgl_splats15_cpu = splats15
                         self._mgl_splat_lit_cpu = splat_lit
+                        self._mgl_splat_glow_cpu = splat_glow
                         try:
                             has_lit = bool(np.any(splat_lit > 0.5))
                             self._mgl_splats_has_lit = has_lit
@@ -7975,13 +8256,14 @@ class MGLRendererMixin:
 
                         vbo.write(splats15.tobytes())
                         lit_vbo.write(splat_lit.tobytes())
+                        glow_vbo.write(splat_glow.tobytes())
                         did_in_place = True
         except Exception:
             did_in_place = False
 
         # Fallback: count changed or buffer missing, do the full rebuild
         if not did_in_place:
-            self.set_splats(combined, lit_flags=combined_lit)
+            self.set_splats(combined, lit_flags=combined_lit, glow_flags=combined_glow)
 
         try:
             self._mgl_splats_need_rebuild = False
@@ -12564,6 +12846,7 @@ class MGLRendererMixin:
                     if do_sort and np is not None:
                         cpu = getattr(self, "_mgl_splats15_cpu", None)
                         lit_cpu = getattr(self, "_mgl_splat_lit_cpu", None)
+                        glow_cpu = getattr(self, "_mgl_splat_glow_cpu", None)
                         if cpu is not None and self._mgl_splatq_vbo is not None and cpu.shape[0] > 1:
 
                             view_model = (lookat * model).astype("f4")
@@ -12595,6 +12878,13 @@ class MGLRendererMixin:
                                 if lit_vbo is not None and lit_cpu is not None:
                                     lit_sorted = np.asarray(lit_cpu, dtype=np.float32).reshape(-1, 1)[order]
                                     lit_vbo.write(lit_sorted.tobytes())
+                            except Exception:
+                                pass
+                            try:
+                                glow_vbo = getattr(self, "_mgl_splatq_glow_vbo", None)
+                                if glow_vbo is not None and glow_cpu is not None:
+                                    glow_sorted = np.asarray(glow_cpu, dtype=np.float32).reshape(-1, 1)[order]
+                                    glow_vbo.write(glow_sorted.tobytes())
                             except Exception:
                                 pass
                             did_sort = True
@@ -13304,6 +13594,21 @@ class MGLRendererMixin:
         except Exception:
             state["splat_scale"] = 1.0
 
+        try:
+            state["fps_camera_active"] = bool(getattr(self, "_fps_camera_active", False))
+            cam = getattr(self, "_fps_camera", None)
+            if cam is not None and np is not None:
+                pos = np.array(getattr(cam, "position", (0.0, 0.0, 0.0)), dtype=np.float32).reshape(3)
+                fwd = np.array(getattr(cam, "forward", (0.0, 0.0, -1.0)), dtype=np.float32).reshape(3)
+                up = np.array(getattr(cam, "up", (0.0, 1.0, 0.0)), dtype=np.float32).reshape(3)
+                state["fps_camera"] = {
+                    "position": [float(pos[0]), float(pos[1]), float(pos[2])],
+                    "forward": [float(fwd[0]), float(fwd[1]), float(fwd[2])],
+                    "up": [float(up[0]), float(up[1]), float(up[2])],
+                }
+        except Exception:
+            pass
+
         # scene xforms (mesh + splat) for snapshot persistence
         try:
             offset_keys = None
@@ -13385,13 +13690,20 @@ class MGLRendererMixin:
         """Queue camera state to apply after splats finish uploading/framing."""
         if not isinstance(state, dict):
             return
+        try:
+            apply_scene_xforms = bool(state.get("_apply_scene_xforms", state.get("apply_scene_xforms", True)))
+        except Exception:
+            apply_scene_xforms = True
 
         if getattr(self, "_mgl_pending_splats", None) is None:
             self._mgl_pending_cam_state = None
             self._mgl_apply_camera_state(state)
             return
 
-        self._mgl_pending_cam_state = dict(state)
+        pending_state = dict(state)
+        if not bool(apply_scene_xforms):
+            pending_state.pop("scene_xforms", None)
+        self._mgl_pending_cam_state = pending_state
 
         dbg = bool(getattr(self, "_mgl_cam_debug", False))
         if dbg:
@@ -13409,7 +13721,7 @@ class MGLRendererMixin:
 
         # scene xforms (optional snapshot payload)
         try:
-            xf_state = state.get("scene_xforms", None)
+            xf_state = state.get("scene_xforms", None) if bool(apply_scene_xforms) else None
             if isinstance(xf_state, dict):
                 mesh_xf = xf_state.get("mesh") or xf_state.get("meshes") or {}
                 splat_xf = xf_state.get("splat") or xf_state.get("splats") or {}
@@ -13638,6 +13950,43 @@ class MGLRendererMixin:
                 self._mgl_clip_far = float(clip_far)
                 if hasattr(self, "_mgl_clip_input") and self._mgl_clip_input is not None:
                     self._mgl_clip_input.setText(str(int(self._mgl_clip_far)))
+        except Exception:
+            pass
+
+        try:
+            fps_state = state.get("fps_camera", None)
+            if isinstance(fps_state, dict) and np is not None:
+                from echograph.ui.fps_camera import FpsCamera
+
+                cam = getattr(self, "_fps_camera", None)
+                if cam is None:
+                    cam = FpsCamera()
+                pos = fps_state.get("position", None)
+                fwd = fps_state.get("forward", None)
+                up = fps_state.get("up", None)
+                if isinstance(pos, (list, tuple)) and len(pos) >= 3:
+                    cam.position = np.array([float(pos[0]), float(pos[1]), float(pos[2])], dtype=np.float32)
+                if isinstance(fwd, (list, tuple)) and len(fwd) >= 3:
+                    cam.forward = np.array([float(fwd[0]), float(fwd[1]), float(fwd[2])], dtype=np.float32)
+                if isinstance(up, (list, tuple)) and len(up) >= 3:
+                    cam.up = np.array([float(up[0]), float(up[1]), float(up[2])], dtype=np.float32)
+                if hasattr(cam, "_orthonormalize"):
+                    cam._orthonormalize()
+                self._fps_camera = cam
+                self._fps_camera_active = bool(state.get("fps_camera_active", True))
+                if bool(self._fps_camera_active):
+                    self._orbit_cam_enabled = False
+                else:
+                    self._orbit_cam_enabled = True
+            elif "fps_camera_active" in state:
+                self._fps_camera_active = bool(state.get("fps_camera_active", False))
+                if not bool(self._fps_camera_active):
+                    self._orbit_cam_enabled = True
+                else:
+                    self._orbit_cam_enabled = False
+            else:
+                self._fps_camera_active = False
+                self._orbit_cam_enabled = True
         except Exception:
             pass
 
@@ -14282,7 +14631,7 @@ class MGLRendererMixin:
         except Exception as exc:
             self._mgl_error = str(exc)
 
-    def set_splats(self, splats_np, *, lit_flags=None) -> None:
+    def set_splats(self, splats_np, *, lit_flags=None, glow_flags=None) -> None:
         """Queue splat instance data for GL-thread upload.
         Accepts (N,8), (N,10), (N,14), or (N,15) float32 arrays.
 
@@ -14291,10 +14640,12 @@ class MGLRendererMixin:
         (N,14): [x,y,z, r,g,b,a, radius, sx, sy, qx, qy, qz, qw]
         (N,15): [x,y,z, r,g,b,a, radius, sx, sy, sz, qx, qy, qz, qw]
         lit_flags: optional per-splat lighting mask; omitted flags default to unlit.
+        glow_flags: optional per-splat glow amount; omitted flags default to no glow.
         """
         if np is None:
             self._mgl_pending_splats = None
             self._mgl_pending_splat_lit_flags = None
+            self._mgl_pending_splat_glow_flags = None
             self._mgl_render_splats = False
             self.update()
             return
@@ -14316,6 +14667,15 @@ class MGLRendererMixin:
                     f"Expected lit_flags length {int(arr.shape[0])}, got {int(lit_arr.shape[0])}"
                 )
             lit_arr = np.where(lit_arr > 0.5, np.float32(1.0), np.float32(0.0)).astype(np.float32, copy=False)
+        if glow_flags is None:
+            glow_arr = np.zeros((int(arr.shape[0]), 1), dtype=np.float32)
+        else:
+            glow_arr = np.asarray(glow_flags, dtype=np.float32).reshape(-1, 1)
+            if int(glow_arr.shape[0]) != int(arr.shape[0]):
+                raise ValueError(
+                    f"Expected glow_flags length {int(arr.shape[0])}, got {int(glow_arr.shape[0])}"
+                )
+            glow_arr = np.clip(glow_arr, np.float32(0.0), np.float32(4.0)).astype(np.float32, copy=False)
 
         dbg = bool(getattr(self, "_mgl_debug", False))
         if dbg:
@@ -14332,6 +14692,7 @@ class MGLRendererMixin:
 
         self._mgl_pending_splats = arr
         self._mgl_pending_splat_lit_flags = lit_arr
+        self._mgl_pending_splat_glow_flags = glow_arr
         self._mgl_render_splats = True
         self.update()
 
@@ -14349,8 +14710,10 @@ class MGLRendererMixin:
 
         splats_np = self._mgl_pending_splats
         splat_lit_flags = getattr(self, "_mgl_pending_splat_lit_flags", None)
+        splat_glow_flags = getattr(self, "_mgl_pending_splat_glow_flags", None)
         self._mgl_pending_splats = None
         self._mgl_pending_splat_lit_flags = None
+        self._mgl_pending_splat_glow_flags = None
         try:
             if bool(getattr(self, "_mgl_splat_log_verbose", False)):
                 self._mgl_log_throttled(
@@ -14482,6 +14845,12 @@ class MGLRendererMixin:
             except Exception:
                 pass
             self._mgl_splatq_lit_vbo = None
+        if getattr(self, "_mgl_splatq_glow_vbo", None) is not None:
+            try:
+                self._mgl_splatq_glow_vbo.release()
+            except Exception:
+                pass
+            self._mgl_splatq_glow_vbo = None
 
         dbg = bool(getattr(self, "_mgl_debug", False))
         if dbg:
@@ -14538,10 +14907,18 @@ class MGLRendererMixin:
                 except Exception:
                     lit_cpu = np.zeros((int(splats15.shape[0]), 1), dtype=np.float32)
                 lit_cpu = np.where(lit_cpu > 0.5, np.float32(1.0), np.float32(0.0)).astype(np.float32, copy=False)
+                try:
+                    glow_cpu = np.asarray(splat_glow_flags, dtype=np.float32).reshape(-1, 1)
+                    if int(glow_cpu.shape[0]) != int(splats15.shape[0]):
+                        glow_cpu = np.zeros((int(splats15.shape[0]), 1), dtype=np.float32)
+                except Exception:
+                    glow_cpu = np.zeros((int(splats15.shape[0]), 1), dtype=np.float32)
+                glow_cpu = np.clip(glow_cpu, np.float32(0.0), np.float32(4.0)).astype(np.float32, copy=False)
 
                 # Keep CPU copy so we can sort per-frame (10k is fine)
                 self._mgl_splats15_cpu = splats15
                 self._mgl_splat_lit_cpu = lit_cpu
+                self._mgl_splat_glow_cpu = glow_cpu
                 try:
                     has_lit = bool(np.any(lit_cpu > 0.5))
                     self._mgl_splats_has_lit = has_lit
@@ -14571,13 +14948,20 @@ class MGLRendererMixin:
                         self._mgl_splatq_lit_vbo.release()
                 except Exception:
                     pass
+                try:
+                    if getattr(self, "_mgl_splatq_glow_vbo", None) is not None and hasattr(self._mgl_splatq_glow_vbo, "release"):
+                        self._mgl_splatq_glow_vbo.release()
+                except Exception:
+                    pass
                 self._mgl_splatq_vao = None
                 self._mgl_splat_shadow_vao = None
                 self._mgl_splatq_vbo = None
                 self._mgl_splatq_lit_vbo = None
+                self._mgl_splatq_glow_vbo = None
 
                 self._mgl_splatq_vbo = self._mgl_ctx.buffer(splats15.tobytes())
                 self._mgl_splatq_lit_vbo = self._mgl_ctx.buffer(lit_cpu.tobytes())
+                self._mgl_splatq_glow_vbo = self._mgl_ctx.buffer(glow_cpu.tobytes())
                 self._mgl_splatq_vao = self._mgl_ctx.vertex_array(
                     self._mgl_splatq_prog,
                     [
@@ -14592,6 +14976,7 @@ class MGLRendererMixin:
                             "in_rot",
                         ),
                         (self._mgl_splatq_lit_vbo, "1f /i", "in_lit"),
+                        (self._mgl_splatq_glow_vbo, "1f /i", "in_glow"),
                     ],
                 )
                 if getattr(self, "_mgl_splat_shadow_prog", None) is not None:
@@ -15636,6 +16021,7 @@ class MGLRendererMixin:
             self._mgl_scene_splats = {}
             self._mgl_scene_bounds_by_owner = {}
             self._mgl_scene_splats_world = {}
+            self._mgl_scene_splat_glow_by_owner = {}
             self._mgl_scene_splats_bounds_local = {}
             self._mgl_scene_splat_bounds_by_owner = {}
             self._mgl_scene_mesh_bounds_by_owner = {}
@@ -15886,6 +16272,13 @@ class MGLRendererMixin:
                 gpu_copy_instances = bool(copy_to_points.get("gpu_instances", False)) if isinstance(copy_to_points, dict) else False
                 music_effects = asset.get("music_effects") if isinstance(asset.get("music_effects"), dict) else None
                 proxy_type = str((render_proxy or {}).get("type") or "").strip().lower() if isinstance(render_proxy, dict) else ""
+                if isinstance(render_proxy, dict) and isinstance(music_effects, dict) and proxy_type in {"skinned_splat", "skinned_gaussian_splat"}:
+                    render_proxy = dict(render_proxy)
+                    if not isinstance(render_proxy.get("splat_fx"), dict):
+                        converted_splat_fx = self._mgl_splat_fx_from_music_effects(music_effects)
+                        if isinstance(converted_splat_fx, dict):
+                            render_proxy["splat_fx"] = converted_splat_fx
+                    proxy_type = str(render_proxy.get("type") or "").strip().lower()
                 _seed_asset_xform(
                     owner,
                     asset.get("xform"),

@@ -527,7 +527,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             except Exception:
                 pass
         # Ensure FX spec is registered even if the loader was skipped.
-        if (self.model.kind or "").strip().lower() in ("fx", "fx_trail", "fx_splat_physics", "fx splat physics", "splat_physics", "splat physics", "splatphysics", "fx_music_effects", "fx music effects", "music_effects", "music effects", "musiceffects"):
+        if (self.model.kind or "").strip().lower() in ("fx", "fx_trail", "fx_splat_physics", "fx splat physics", "splat_physics", "splat physics", "splatphysics", "fx_splat_fx", "fx splat fx", "splat_fx", "splat fx", "fx_splat_glow", "fx splat glow", "splat_glow", "splat glow", "splatglow", "fx_music_effects", "fx music effects", "music_effects", "music effects", "musiceffects"):
             try:
                 from nodes import fx as _fx  # type: ignore
                 if hasattr(_fx, "register"):
@@ -935,7 +935,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         kind = (self.model.kind or "").strip().lower()
         if kind in ("mnaterial", "material"):
             return "material"
-        if kind in ("fx", "fx_trail", "fx_splat_physics", "fx splat physics", "splat_physics", "splat physics", "splatphysics", "fx_music_effects", "fx music effects", "music_effects", "music effects", "musiceffects"):
+        if kind in ("fx", "fx_trail", "fx_splat_physics", "fx splat physics", "splat_physics", "splat physics", "splatphysics", "fx_splat_fx", "fx splat fx", "splat_fx", "splat fx", "fx_splat_glow", "fx splat glow", "splat_glow", "splat glow", "splatglow", "fx_music_effects", "fx music effects", "music_effects", "music effects", "musiceffects"):
             return "fx"
         if kind in ("fbx_import", "fbx import", "fbximport"):
             return "fbx"
@@ -969,6 +969,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
             return "FX BULLET TIME"
         if key in ("fx_music_effects", "fx music effects", "music_effects", "music effects", "musiceffects"):
             return "FX MUSIC VISUALIZER"
+        if key in ("fx_splat_fx", "fx splat fx", "splat_fx", "splat fx", "fx_splat_glow", "fx splat glow", "splat_glow", "splat glow", "splatglow"):
+            return "FX SPLAT GLOW"
         if key in ("llm", "local_server", "local server", "localserver"):
             return "LOCAL_SERVER"
         if key in ("mediator_agent", "mediator agent", "medigator_agent", "medigator agent", "medigator", "mediator"):
@@ -2069,6 +2071,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 from nodes.fx import splat_physics_spec as _splat_fx_spec  # type: ignore
                 body_h = max(0, int(getattr(_splat_fx_spec, "SPLAT_PHYSICS_NODE_BODY_H", body_h)))
                 node_w = max(self._BASE_W, int(getattr(_splat_fx_spec, "SPLAT_PHYSICS_NODE_W", node_w)))
+            except Exception:
+                pass
+        elif kind in ("fx_splat_fx", "fx splat fx", "splat_fx", "splat fx", "fx_splat_glow", "fx splat glow", "splat_glow", "splat glow", "splatglow"):
+            body_h = 280
+            node_w = max(self._BASE_W, 288)
+            try:
+                from nodes.fx import splat_fx_spec as _splat_fx_spec  # type: ignore
+                body_h = max(0, int(getattr(_splat_fx_spec, "SPLAT_FX_NODE_BODY_H", body_h)))
+                node_w = max(self._BASE_W, int(getattr(_splat_fx_spec, "SPLAT_FX_NODE_W", node_w)))
             except Exception:
                 pass
         elif kind in ("fx_music_effects", "fx music effects", "music_effects", "music effects", "musiceffects"):
@@ -3500,6 +3511,17 @@ class NodeItem(QtWidgets.QGraphicsObject):
             "splat physics",
             "splatphysics",
         }
+        splat_fx_kinds = {
+            "fx_splat_fx",
+            "fx splat fx",
+            "splat_fx",
+            "splat fx",
+            "fx_splat_glow",
+            "fx splat glow",
+            "splat_glow",
+            "splat glow",
+            "splatglow",
+        }
         music_effects_kinds = {
             "fx_music_effects",
             "fx music effects",
@@ -3527,9 +3549,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
             "area_light",
             "area light",
         }
+        scene_debug_enabled = bool(os.environ.get("ECHOGRAPH_SCENE_DEBUG_VERBOSE"))
+
         def _scene_log(msg: str) -> None:
-            enabled = True
-            if not enabled:
+            if not scene_debug_enabled:
                 return
             try:
                 root = Path(__file__).resolve().parents[2]
@@ -3540,7 +3563,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     f.write(f"{ts} {msg}\n")
             except Exception:
                 pass
-        fx_log_enabled = True
+        fx_log_enabled = scene_debug_enabled
 
         def _fx_log(msg: str) -> None:
             if not fx_log_enabled:
@@ -3642,6 +3665,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "fx",
                 "fx_trail",
                 *splat_physics_kinds,
+                *splat_fx_kinds,
                 *music_effects_kinds,
             }
             depth = 0
@@ -3678,6 +3702,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "fx",
                 "fx_trail",
                 *splat_physics_kinds,
+                *splat_fx_kinds,
             }
             depth = 0
             while item is not None and item not in visited and depth < 12:
@@ -3721,7 +3746,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                             edges = []
                     if edges:
                         return _trace(getattr(edges[0], "src", None), depth + 1, visited)
-                if kind in {"fx", "fx_trail"} or kind in splat_physics_kinds or kind in music_effects_kinds:
+                if kind in {"fx", "fx_trail"} or kind in splat_physics_kinds or kind in splat_fx_kinds or kind in music_effects_kinds:
                     try:
                         edges = list(sc._ordered_in_edges(item))
                     except Exception:
@@ -4266,6 +4291,30 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         f"path={asset.get('path', '')!r}"
                     )
                 continue
+            if kind in splat_fx_kinds:
+                try:
+                    from nodes.fx import splat_fx_spec as _splat_fx_spec  # type: ignore
+
+                    build_asset = getattr(_splat_fx_spec, "build_splat_fx_scene_asset", None)
+                    outcome = build_asset(src_item) if callable(build_asset) else None
+                    asset = getattr(outcome, "asset", None)
+                except Exception as exc:
+                    asset = None
+                    _scene_log(f"edge[{edge_idx}] fx_splat_fx build failed node={src_name or kind} err={exc!r}")
+                if isinstance(asset, dict):
+                    asset_owner = str(asset.get("node") or src_name or kind).strip()
+                    xf = _lookup_xform(asset_owner)
+                    if not isinstance(xf, dict) and asset_owner != src_name:
+                        xf = _lookup_xform(src_name)
+                    if isinstance(xf, dict):
+                        asset["xform"] = dict(xf)
+                    asset["visible"] = asset_owner not in hidden
+                    assets.append(asset)
+                    _scene_log(
+                        f"edge[{edge_idx}] add fx_splat_fx node={asset.get('node', '')!r} "
+                        f"path={asset.get('path', '')!r}"
+                    )
+                continue
             if kind in copy_to_points_kinds:
                 try:
                     from nodes.copy_to_points import spec as _copy_to_points_spec  # type: ignore
@@ -4621,6 +4670,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
         try:
             try:
                 setattr(parent, "_active_scene_node", self.model)
+                setattr(parent, "_active_scene_preview_context", None)
+                setattr(parent, "_opening_scene_assets_from_scene_node", True)
                 if not hasattr(self.model, "_rev_number"):
                     try:
                         counter = int(getattr(parent, "_scene_rev_counter", 0)) + 1
@@ -4636,7 +4687,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         pass
             except Exception:
                 pass
-            handler(assets)
+            try:
+                handler(assets)
+            finally:
+                try:
+                    setattr(parent, "_opening_scene_assets_from_scene_node", False)
+                except Exception:
+                    pass
 
             # Push Scene-node render toggle into the viewport (used by splat draw)
             glv = getattr(parent, "gl_view", None)
@@ -4644,10 +4701,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 raw = (self._param_value("splat_depth_test") or "").strip()
                 glv._mgl_splat_depth_test = raw  # "1"/"0" or ""
 
-        except Exception as exc:
-            import traceback
-            print("[SCENE] open_scene_assets failed:", exc, flush=True)
-            print(traceback.format_exc(), flush=True)
+        except Exception:
             return
 
         # Auto-select this Scene node so the info card updates on View Scene.
@@ -4683,13 +4737,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     snap_png = base_path
 
                 cam_path = snap_png.with_suffix(".json")
-                print("[SCENE] selected snapshot =", sel, flush=True)
-                print("[SCENE] cam_path =", str(cam_path), "exists =", cam_path.exists(), flush=True)
                 if cam_path.exists():
 
                     with open(cam_path, "r", encoding="utf-8") as f:
                         cam = json.load(f)
-                    print("[SCENE] cam keys =", list(cam.keys())[:10], flush=True)
+                    if isinstance(cam, dict):
+                        cam = dict(cam)
+                        cam.pop("scene_xforms", None)
+                        cam["_apply_scene_xforms"] = False
                     glv = getattr(parent, "gl_view", None)
 
                     def _apply_cam():
@@ -4709,8 +4764,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     QtCore.QTimer.singleShot(900, _apply_cam)
 
 
-        except Exception as exc:
-            print("[SCENE] camera restore failed:", exc, flush=True)
+        except Exception:
+            pass
 
 
 
@@ -4784,17 +4839,92 @@ class NodeItem(QtWidgets.QGraphicsObject):
 
 
 
+    def _quick_scene_summary_counts(self):
+        sc = self.scene()
+        if sc is None:
+            return 0, 0, 0, 0, 0
+        try:
+            edges = list(sc._ordered_in_edges(self))
+        except Exception:
+            try:
+                edges = list(sc._in_edges(self))
+            except Exception:
+                edges = []
+
+        splat_kinds = {
+            "ply_sequence",
+            "ply sequence",
+            "skinned_splat_proxy",
+            "skinned splat proxy",
+            "skinnedsplatproxy",
+            "fbx_to_skinned_splat_proxy",
+            "fbx skinned splat proxy",
+            "fx_splat_physics",
+            "fx splat physics",
+            "splat_physics",
+            "splat physics",
+            "splatphysics",
+            "fx_splat_fx",
+            "fx splat fx",
+            "splat_fx",
+            "splat fx",
+            "fx_splat_glow",
+            "fx splat glow",
+            "splat_glow",
+            "splat glow",
+            "splatglow",
+        }
+
+        def _model_param(model, name: str) -> str:
+            key = (name or "").strip().lower()
+            for p in (getattr(model, "params", None) or []):
+                try:
+                    if (p.get("name") or "").strip().lower() == key:
+                        return (p.get("value") or "").strip()
+                except Exception:
+                    continue
+            return ""
+
+        seen = set()
+        mesh_count = 0
+        splat_count = 0
+        camera_count = 0
+        light_count = 0
+        for edge in edges:
+            src = getattr(edge, "src", None)
+            if src is None:
+                continue
+            ident = id(src)
+            if ident in seen:
+                continue
+            seen.add(ident)
+            model = getattr(src, "model", None)
+            kind = (getattr(model, "kind", "") or "").strip().lower()
+            path = (
+                _model_param(model, "path")
+                or _model_param(model, "mesh")
+                or _model_param(model, "source")
+            )
+            ext = Path(str(path or "")).suffix.lower()
+            if kind == "camera" or ext == ".camera":
+                camera_count += 1
+            elif kind in _LIGHT_NODE_KINDS:
+                light_count += 1
+            elif kind in splat_kinds or ext == ".ply":
+                splat_count += 1
+            else:
+                mesh_count += 1
+
+        total = mesh_count + splat_count + camera_count + light_count
+        return total, mesh_count, splat_count, camera_count, light_count
+
     def _build_scene_summary(self, y_cursor: int) -> int:
-        assets = self._collect_scene_assets()
-        if not assets:
+        total, mesh_count, splat_count, camera_count, light_count = self._quick_scene_summary_counts()
+        if total <= 0:
             detail = "No 3D assets connected."
             btn_enabled = False
         else:
-            splat_count = sum(1 for a in assets if str(a.get("ext") or "").strip().lower() == ".ply")
-            camera_count = sum(1 for a in assets if str(a.get("kind") or "").strip().lower() == "camera")
-            light_count = sum(1 for a in assets if str(a.get("kind") or "").strip().lower() == "light")
-            mesh_count = max(0, len(assets) - splat_count - camera_count - light_count)
-            detail = f"{len(assets)} connected (mesh {mesh_count}"
+            detail = f"{total} connected (mesh {mesh_count}"
             if splat_count:
                 detail += f", splat {splat_count}"
             if camera_count:
@@ -6186,6 +6316,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         if cam_path.exists():
                             with open(cam_path, "r", encoding="utf-8") as f:
                                 cam = json.load(f)
+                            if isinstance(cam, dict):
+                                cam = dict(cam)
+                                cam.pop("scene_xforms", None)
+                                cam["_apply_scene_xforms"] = False
 
                             glv = getattr(parent, "gl_view", None)
 
@@ -6681,8 +6815,16 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "fx",
                 "fx_trail",
                 "fx_splat_physics",
+                "fx_splat_fx",
+                "fx_splat_glow",
                 "fx_music_effects",
                 "fx splat physics",
+                "fx splat fx",
+                "splat_fx",
+                "splat fx",
+                "splat_glow",
+                "splat glow",
+                "splatglow",
                 "splat_physics",
                 "splat physics",
                 "splatphysics",
@@ -6916,7 +7058,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 icon_pm = node_icons._texture_layer_icon() or node_icons._output_icon()
             elif kind_lower in ("mnaterial", "material"):
                 icon_pm = node_icons._material_node_icon() or node_icons._output_icon()
-            elif kind_lower in ("fx", "fx_trail", "fx_splat_physics", "fx splat physics", "splat_physics", "splat physics", "splatphysics", "fx_music_effects", "fx music effects", "music_effects", "music effects", "musiceffects"):
+            elif kind_lower in ("fx", "fx_trail", "fx_splat_physics", "fx splat physics", "splat_physics", "splat physics", "splatphysics", "fx_splat_fx", "fx splat fx", "splat_fx", "splat fx", "fx_splat_glow", "fx splat glow", "splat_glow", "splat glow", "splatglow", "fx_music_effects", "fx music effects", "music_effects", "music effects", "musiceffects"):
                 icon_pm = node_icons._fx_node_icon() or node_icons._output_icon()
             elif kind_lower == "transforms":
                 icon_pm = node_icons._transforms_icon() or node_icons._output_icon()
@@ -6958,7 +7100,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     size = int(max(34, size * 0.792))
                 if kind_lower in ("texture_layer", "texture layer"):
                     size = int(max(36, size * 0.855))
-                if kind_lower in ("mnaterial", "material", "fx", "fx_trail", "fx_splat_physics", "fx splat physics", "splat_physics", "splat physics", "splatphysics", "fx_music_effects", "fx music effects", "music_effects", "music effects", "musiceffects"):
+                if kind_lower in ("mnaterial", "material", "fx", "fx_trail", "fx_splat_physics", "fx splat physics", "splat_physics", "splat physics", "splatphysics", "fx_splat_fx", "fx splat fx", "splat_fx", "splat fx", "fx_splat_glow", "fx splat glow", "splat_glow", "splat glow", "splatglow", "fx_music_effects", "fx music effects", "music_effects", "music effects", "musiceffects"):
                     size = int(max(36, size * 0.88))
                 if kind_lower in ("chatbot", "chat bot", "chat_bot"):
                     size = int(size * 1.13)
