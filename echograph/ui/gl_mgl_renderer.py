@@ -12173,7 +12173,6 @@ class MGLRendererMixin:
             except Exception:
                 pass
             self._paint_mgl()
-            self._paint_mgl()
             try:
                 if hasattr(self._mgl_ctx, "finish"):
                     self._mgl_ctx.finish()
@@ -13327,11 +13326,44 @@ class MGLRendererMixin:
             zoom = float(getattr(self, "_mgl_camera_zoom", 1.0))
         except Exception:
             zoom = 1.0
-        near = max(0.0001, min(0.02, zoom * 0.002))
         try:
             far = float(getattr(self, "_mgl_clip_far", 1000.0))
         except Exception:
             far = 1000.0
+        try:
+            use_fps_cam = bool(getattr(self, "_fps_camera_active", False)) and getattr(self, "_fps_camera", None) is not None
+        except Exception:
+            use_fps_cam = False
+        # Keep the near plane large enough for stable depth/shadow edges, but below close-camera distances.
+        near = max(0.002, min(0.2, max(zoom * 0.02, far / 20000.0)))
+        try:
+            near = min(float(near), max(0.002, float(zoom) * 0.25))
+        except Exception:
+            pass
+        if use_fps_cam and np is not None:
+            try:
+                cam = getattr(self, "_fps_camera", None)
+                cam_pos = np.asarray(getattr(cam, "position", (0.0, 0.0, 0.0)), dtype=np.float32).reshape(-1)[:3]
+                if cam_pos.shape[0] >= 3 and np.all(np.isfinite(cam_pos)):
+                    fps_near = max(0.002, min(0.2, far / 20000.0))
+                    bounds = self._mgl_shadow_scene_bounds()
+                    if bounds is not None:
+                        center, radius = bounds
+                        center = np.asarray(center, dtype=np.float32).reshape(-1)[:3]
+                        if center.shape[0] >= 3 and np.all(np.isfinite(center)):
+                            dist = float(np.linalg.norm(cam_pos - center))
+                            if math.isfinite(dist):
+                                try:
+                                    radius = max(0.0, float(radius))
+                                except Exception:
+                                    radius = 0.0
+                                surface_dist = max(0.0, dist - radius)
+                                if surface_dist > 0.0:
+                                    fps_near = max(fps_near, min(0.2, surface_dist * 0.05))
+                                fps_near = min(fps_near, max(0.002, max(dist, 0.05) * 0.25))
+                    near = float(fps_near)
+            except Exception:
+                pass
         if far <= near:
             far = near + 1.0
         proj = Matrix44.perspective_projection(self._mgl_fov, aspect, near, far)
@@ -13363,10 +13395,6 @@ class MGLRendererMixin:
             transform = Matrix44.identity(dtype="f4")
 
         # If FPS camera is active, override view matrix and bypass arcball transform.
-        try:
-            use_fps_cam = bool(getattr(self, "_fps_camera_active", False)) and getattr(self, "_fps_camera", None) is not None
-        except Exception:
-            use_fps_cam = False
         if use_fps_cam:
             try:
                 cam = getattr(self, "_fps_camera", None)
