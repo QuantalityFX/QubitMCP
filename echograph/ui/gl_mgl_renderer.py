@@ -5738,8 +5738,11 @@ class MGLRendererMixin:
             return None
         try:
             inv_pv = np.linalg.inv((P @ V @ M).astype(np.float32))
-            x = (2.0 * (float(px) / max(1.0, float(viewport_w)))) - 1.0
-            y = 1.0 - (2.0 * (float(py) / max(1.0, float(viewport_h))))
+            ndc_fn = getattr(self, "_mgl_screen_to_active_ndc", None)
+            ndc = ndc_fn(px, py, viewport_w, viewport_h) if callable(ndc_fn) else None
+            if ndc is None:
+                return None
+            x, y = ndc
             near = np.array([x, y, -1.0, 1.0], dtype=np.float32)
             far = np.array([x, y, 1.0, 1.0], dtype=np.float32)
             p0 = inv_pv @ near
@@ -10641,6 +10644,60 @@ class MGLRendererMixin:
         except Exception:
             return 2, 2
 
+    def _mgl_active_render_viewport(self) -> Tuple[int, int, int, int]:
+        vp_w, vp_h = self._mgl_render_size()
+        full = (0, 0, max(2, int(vp_w)), max(2, int(vp_h)))
+        if isinstance(getattr(self, "_mgl_render_size_override", None), (list, tuple)):
+            return full
+        owner_fn = getattr(self, "_camera_film_gate_owner", None)
+        rect_fn = getattr(self, "_camera_film_gate_rect", None)
+        if not callable(owner_fn) or not callable(rect_fn):
+            return full
+        try:
+            owner = str(owner_fn() or "").strip()
+        except Exception:
+            owner = ""
+        if not owner:
+            return full
+        try:
+            gate, _visible, _aspect_w, _aspect_h = rect_fn(owner)
+        except Exception:
+            return full
+        try:
+            if gate is None or gate.isNull() or gate.width() <= 2.0 or gate.height() <= 2.0:
+                return full
+            x = int(round(float(gate.left())))
+            w = int(round(float(gate.width())))
+            h = int(round(float(gate.height())))
+            y = int(round(float(vp_h) - float(gate.bottom())))
+            x = max(0, min(max(0, int(vp_w) - 2), int(x)))
+            y = max(0, min(max(0, int(vp_h) - 2), int(y)))
+            w = max(2, min(int(vp_w) - int(x), int(w)))
+            h = max(2, min(int(vp_h) - int(y), int(h)))
+            return (int(x), int(y), int(w), int(h))
+        except Exception:
+            return full
+
+    def _mgl_screen_to_active_ndc(self, px: int, py: int, viewport_w: int, viewport_h: int):
+        active = getattr(self, "_mgl_active_viewport_rect", None)
+        if not (isinstance(active, (list, tuple)) and len(active) >= 4):
+            active = self._mgl_active_render_viewport()
+        try:
+            render_w, render_h = self._mgl_render_size()
+            scale_x = float(viewport_w) / max(1.0, float(render_w))
+            scale_y = float(viewport_h) / max(1.0, float(render_h))
+            ax = float(active[0]) * scale_x
+            ay = float(active[1]) * scale_y
+            aw = max(1.0, float(active[2]) * scale_x)
+            ah = max(1.0, float(active[3]) * scale_y)
+            nx = (float(px) - ax) / aw
+            ny = ((float(viewport_h) - float(py)) - ay) / ah
+            if nx < 0.0 or nx > 1.0 or ny < 0.0 or ny > 1.0:
+                return None
+            return ((2.0 * nx) - 1.0, (2.0 * ny) - 1.0)
+        except Exception:
+            return None
+
     def _mgl_light_direction_tuple(self) -> Tuple[float, float, float]:
         scene_rot_dir = self._mgl_scene_light_direction_from_rotation()
         if scene_rot_dir is not None and np is not None:
@@ -13029,6 +13086,8 @@ class MGLRendererMixin:
             return False
         try:
             vp_w, vp_h = self._mgl_render_size()
+            active_viewport = self._mgl_active_render_viewport()
+            self._mgl_active_viewport_rect = active_viewport
             self._mgl_bind_default_fbo()
             # QOpenGLWidget already has the correct default framebuffer bound.
             # Avoid Framebuffer.clear() because it may bind/use() internally and can hard-crash some drivers.
@@ -13098,6 +13157,23 @@ class MGLRendererMixin:
                     self._gl.glBindFramebuffer(0x8D40, fbo)  # GL_FRAMEBUFFER
             except Exception:
                 pass
+            try:
+                self._mgl_ctx.viewport = tuple(int(v) for v in active_viewport)
+            except Exception:
+                pass
+            try:
+                if tuple(int(v) for v in active_viewport) == (0, 0, max(2, int(vp_w)), max(2, int(vp_h))):
+                    self._mgl_ctx.scissor = None
+                else:
+                    self._mgl_ctx.scissor = tuple(int(v) for v in active_viewport)
+            except Exception:
+                pass
+            try:
+                if self._gl is not None:
+                    ax, ay, aw, ah = (int(v) for v in active_viewport)
+                    self._gl.glViewport(ax, ay, max(2, aw), max(2, ah))
+            except Exception:
+                pass
 
         except Exception as exc:
             import traceback
@@ -13141,7 +13217,14 @@ class MGLRendererMixin:
         return True
 
     def _paint_mgl_build_matrices(self, *, dbg):
-        vp_w, vp_h = self._mgl_render_size()
+        active_viewport = getattr(self, "_mgl_active_viewport_rect", None)
+        if isinstance(active_viewport, (list, tuple)) and len(active_viewport) >= 4:
+            try:
+                vp_w, vp_h = max(2, int(active_viewport[2])), max(2, int(active_viewport[3]))
+            except Exception:
+                vp_w, vp_h = self._mgl_render_size()
+        else:
+            vp_w, vp_h = self._mgl_render_size()
         aspect = float(vp_w) / max(1.0, float(vp_h))
         try:
             zoom = float(getattr(self, "_mgl_camera_zoom", 1.0))
@@ -17428,9 +17511,12 @@ class MGLRendererMixin:
         except Exception:
             return None
 
-        # window coords -> NDC
-        x = (2.0 * (float(px) / max(1.0, float(viewport_w)))) - 1.0
-        y = 1.0 - (2.0 * (float(py) / max(1.0, float(viewport_h))))  # flip Y
+        # window coords -> active GL viewport NDC
+        ndc_fn = getattr(self, "_mgl_screen_to_active_ndc", None)
+        ndc = ndc_fn(px, py, viewport_w, viewport_h) if callable(ndc_fn) else None
+        if ndc is None:
+            return None
+        x, y = ndc
         near = np.array([x, y, -1.0, 1.0], dtype=np.float32)
         far  = np.array([x, y,  1.0, 1.0], dtype=np.float32)
 
@@ -17711,9 +17797,12 @@ def pick_hit_at(self, px: int, py: int, viewport_w: int, viewport_h: int):
     except Exception:
         return None, None
 
-    # window coords -> NDC
-    x = (2.0 * (float(px) / max(1.0, float(viewport_w)))) - 1.0
-    y = 1.0 - (2.0 * (float(py) / max(1.0, float(viewport_h))))  # flip Y
+    # window coords -> active GL viewport NDC
+    ndc_fn = getattr(self, "_mgl_screen_to_active_ndc", None)
+    ndc = ndc_fn(px, py, viewport_w, viewport_h) if callable(ndc_fn) else None
+    if ndc is None:
+        return None, None
+    x, y = ndc
     near = np.array([x, y, -1.0, 1.0], dtype=np.float32)
     far  = np.array([x, y,  1.0, 1.0], dtype=np.float32)
 

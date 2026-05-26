@@ -826,6 +826,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._scene_camera_entries: List[Dict[str, object]] = []
         self._scene_camera_fov_by_owner: Dict[str, float] = {}
         self._scene_camera_aspect_by_owner: Dict[str, Tuple[int, int]] = {}
+        self._camera_film_gate_enabled = True
         self._cam_select_frame = None
         self._cam_select_combo = None
         self._cam_select_lock_btn = None
@@ -2296,6 +2297,110 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             except Exception:
                 continue
         return None
+
+    def _camera_film_gate_owner(self) -> str:
+        if not bool(getattr(self, "_camera_film_gate_enabled", True)):
+            return ""
+        try:
+            owner = str(getattr(self, "_camera_select_mode", "default") or "default").strip()
+        except Exception:
+            owner = "default"
+        if not owner or owner.lower() == "default":
+            return ""
+        return owner
+
+    def _camera_film_gate_aspect(self, owner: str) -> Tuple[float, int, int]:
+        aspect = self._camera_casefold_get(getattr(self, "_scene_camera_aspect_by_owner", {}), owner)
+        width = 1920
+        height = 1080
+        if isinstance(aspect, (list, tuple)) and len(aspect) >= 2:
+            try:
+                width = int(float(aspect[0]))
+                height = int(float(aspect[1]))
+            except Exception:
+                width = 1920
+                height = 1080
+        width = max(1, int(width))
+        height = max(1, int(height))
+        return float(width) / float(height), int(width), int(height)
+
+    def _camera_visible_viewport_rect(self) -> QtCore.QRectF:
+        view_w = max(1.0, float(self.width()))
+        view_h = max(1.0, float(self.height()))
+        bottom_h = 0.0
+        bottom_fn = getattr(self, "_bottom_overlay_height", None)
+        if callable(bottom_fn):
+            try:
+                bottom_h = float(bottom_fn())
+            except Exception:
+                bottom_h = 0.0
+        else:
+            for name in ("_controls", "_timeline_panel", "_timeline_audio_panel"):
+                panel = getattr(self, name, None)
+                if panel is None or not panel.isVisible():
+                    continue
+                try:
+                    bottom_h += float(panel.geometry().height())
+                except Exception:
+                    pass
+        bottom_h = max(0.0, min(view_h - 1.0, float(bottom_h)))
+        return QtCore.QRectF(0.0, 0.0, view_w, max(1.0, view_h - bottom_h))
+
+    def _camera_film_gate_rect(self, owner: str) -> Tuple[QtCore.QRectF, QtCore.QRectF, int, int]:
+        visible = self._camera_visible_viewport_rect()
+        target_aspect, aspect_w, aspect_h = self._camera_film_gate_aspect(owner)
+        if visible.width() <= 1.0 or visible.height() <= 1.0:
+            return QtCore.QRectF(), visible, aspect_w, aspect_h
+        view_aspect = float(visible.width()) / max(1.0, float(visible.height()))
+        if view_aspect > target_aspect:
+            gate_h = float(visible.height())
+            gate_w = gate_h * target_aspect
+        else:
+            gate_w = float(visible.width())
+            gate_h = gate_w / max(1.0e-6, target_aspect)
+        gate_x = float(visible.left()) + ((float(visible.width()) - gate_w) * 0.5)
+        gate_y = float(visible.top()) + ((float(visible.height()) - gate_h) * 0.5)
+        gate = QtCore.QRectF(gate_x, gate_y, max(1.0, gate_w), max(1.0, gate_h))
+        return gate, visible, aspect_w, aspect_h
+
+    def _draw_camera_film_gate(self, painter: QtGui.QPainter) -> None:
+        owner = self._camera_film_gate_owner()
+        if not owner:
+            return
+        gate, visible, _aspect_w, _aspect_h = self._camera_film_gate_rect(owner)
+        if gate.isNull() or gate.width() <= 2.0 or gate.height() <= 2.0:
+            return
+        painter.save()
+        painter.setClipRect(visible)
+        mask = QtGui.QColor(0, 0, 0, 118)
+        if gate.left() > visible.left():
+            painter.fillRect(
+                QtCore.QRectF(visible.left(), visible.top(), gate.left() - visible.left(), visible.height()),
+                mask,
+            )
+        if gate.right() < visible.right():
+            painter.fillRect(
+                QtCore.QRectF(gate.right(), visible.top(), visible.right() - gate.right(), visible.height()),
+                mask,
+            )
+        if gate.top() > visible.top():
+            painter.fillRect(
+                QtCore.QRectF(gate.left(), visible.top(), gate.width(), gate.top() - visible.top()),
+                mask,
+            )
+        if gate.bottom() < visible.bottom():
+            painter.fillRect(
+                QtCore.QRectF(gate.left(), gate.bottom(), gate.width(), visible.bottom() - gate.bottom()),
+                mask,
+            )
+
+        border = gate.adjusted(0.5, 0.5, -0.5, -0.5)
+        painter.setBrush(QtCore.Qt.NoBrush)
+        painter.setPen(QtGui.QPen(QtGui.QColor(0, 0, 0, 170), 3.0))
+        painter.drawRect(border)
+        painter.setPen(QtGui.QPen(QtGui.QColor(241, 245, 249, 220), 1.15))
+        painter.drawRect(border)
+        painter.restore()
 
     def _load_camera_selector_lock_icons(self) -> None:
         if (
@@ -5267,12 +5372,22 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 depth_disabled = True
             except Exception:
                 depth_disabled = False
+            try:
+                self._gl.glViewport(0, 0, max(2, int(self.width())), max(2, int(self.height())))
+            except Exception:
+                pass
+        try:
+            if getattr(self, "_mgl_ctx", None) is not None:
+                self._mgl_ctx.scissor = None
+        except Exception:
+            pass
         owns_painter = False
         if painter is None:
             painter = QtGui.QPainter(self)
             owns_painter = True
         painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
         painter.setRenderHint(QtGui.QPainter.TextAntialiasing, True)
+        self._draw_camera_film_gate(painter)
         show_debug = self._debug_overlay
         if show_debug:
             lines = self._debug_status_lines()

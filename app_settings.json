@@ -2,7 +2,7 @@
   "save_layout": true,
   "panel_layout": {
     "timeline": true,
-    "audio": true,
+    "audio": false,
     "profiler": false
   },
   "voice_audio_mode": "bilateral",
