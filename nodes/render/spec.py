@@ -1065,12 +1065,12 @@ class RenderNodeWidget(QtWidgets.QWidget):
         h = max(1, int(target_h))
         render_offscreen = getattr(glv, "_mgl_render_to_image", None)
         if callable(render_offscreen):
-            factors = []
+            factors = [1.0]
             try:
                 factors.append(max(1.0, float(_RENDER_SUPERSAMPLE)))
             except Exception:
                 factors.append(2.0)
-            factors.extend([1.5, 1.0])
+            factors.append(1.5)
             seen = set()
             factors = [ff for ff in factors if not (ff in seen or seen.add(ff))]
             for factor in factors:
@@ -1097,9 +1097,6 @@ class RenderNodeWidget(QtWidgets.QWidget):
                         time.sleep(0.012)
                     except Exception:
                         pass
-            image = self._grab_frame(glv)
-            if image is not None and (not image.isNull()) and (not self._image_is_invalid_capture(image)):
-                return image
             return None
         return self._grab_frame(glv)
 
