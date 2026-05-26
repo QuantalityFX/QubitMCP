@@ -834,6 +834,14 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._timeline_panel = None
         self._timeline_h = 220
         self._timeline_enabled = False
+        self._timeline_mode = "composition"
+        self._timeline_composition_path: Optional[Path] = None
+        self._timeline_composition_blocks: List[Dict[str, object]] = []
+        self._timeline_composition_selected_owner = ""
+        self._timeline_composition_canvas = None
+        self._timeline_master_btn = None
+        self._timeline_back_btn = None
+        self._timeline_scene_assets: List[Dict[str, object]] = []
         self._timeline_audio_panel = None
         self._timeline_audio_h = 88
         self._timeline_audio_enabled = False
@@ -925,6 +933,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._timeline_icon_loop = None
         self._timeline_icon_loop_on = None
         self._timeline_icon_loop_off = None
+        self._timeline_icon_back = None
         self._timeline_keyframe_handle_path = None
         self._timeline_texture_seed = 0
         self._timeline_frame_spin = None
@@ -4019,6 +4028,28 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             pass
 
     def load_scene_assets(self, assets: List[Dict[str, str]], frame: bool = True) -> None:
+        try:
+            self._timeline_scene_assets = [
+                dict(entry)
+                for entry in (assets or [])
+                if isinstance(entry, dict)
+            ]
+        except Exception:
+            self._timeline_scene_assets = []
+        try:
+            if bool(frame):
+                self._timeline_mode = "composition"
+                self._timeline_owner_name = None
+                self._timeline_curve_selected = set()
+                self._timeline_composition_selected_owner = ""
+                self._timeline_update_mode_controls()
+        except Exception:
+            pass
+        try:
+            if bool(getattr(self, "_timeline_enabled", False)) and bool(self._timeline_is_composition_mode()):
+                self._timeline_load_composition(apply_current_frame=False)
+        except Exception:
+            pass
         if not assets:
             try:
                 self._set_scene_camera_options([])

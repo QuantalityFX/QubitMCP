@@ -188,6 +188,18 @@ class TimelineController:
                     owner_name = raw_owner
             except Exception:
                 owner_name = None
+        try:
+            if (
+                preview_context is None
+                and owner_name
+                and str(getattr(gv, "_timeline_mode", "composition") or "composition").strip().lower() == "composition"
+            ):
+                select_fn = getattr(gv, "_timeline_select_composition_owner", None)
+                if callable(select_fn):
+                    select_fn(owner_name)
+                owner_name = None
+        except Exception:
+            pass
         effective_apply_current_frame = bool(apply_current_frame)
         if effective_apply_current_frame and owner_name:
             try:

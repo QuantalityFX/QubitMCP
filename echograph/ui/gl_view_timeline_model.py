@@ -25,6 +25,9 @@ class GraphGLTimelineModelMixin:
         except Exception:
             return 0
 
+    def _timeline_is_composition_mode(self) -> bool:
+        return str(getattr(self, "_timeline_mode", "composition") or "composition").strip().lower() == "composition"
+
     def _timeline_preview_context_active(self) -> bool:
         try:
             win = self.window()
@@ -34,6 +37,568 @@ class GraphGLTimelineModelMixin:
             return isinstance(getattr(win, "_active_scene_preview_context", None), dict)
         except Exception:
             return False
+
+    def _timeline_composition_file_path(
+        self,
+        scene_name: str | None = None,
+        project_path: str | None = None,
+    ) -> Path:
+        scene = str(scene_name or getattr(self, "_timeline_scene_name", "") or "").strip()
+        if not scene:
+            try:
+                scene = self._timeline_default_scene_name()
+            except Exception:
+                scene = "scene"
+        if not scene:
+            scene = "scene"
+        base_dir = self._timeline_default_project_dir(project_path=project_path)
+        out_dir = Path(base_dir) / "projects"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        safe_scene = self._timeline_safe_name(scene)
+        return out_dir / f"{safe_scene}_timeline_composition.json"
+
+    def _timeline_scene_asset_owner(self, entry: dict) -> str:
+        if not isinstance(entry, dict):
+            return ""
+        name = str(entry.get("node") or "").strip()
+        if name:
+            return name
+        path_str = str(entry.get("path") or "").strip()
+        if path_str:
+            try:
+                return Path(path_str).name
+            except Exception:
+                return ""
+        return ""
+
+    def _timeline_scene_asset_kind(self, entry: dict) -> str:
+        if not isinstance(entry, dict):
+            return "static"
+        kind = str(entry.get("kind") or "").strip().lower()
+        ext = str(entry.get("ext") or "").strip().lower()
+        if not ext:
+            try:
+                ext = Path(str(entry.get("path") or "")).suffix.lower()
+            except Exception:
+                ext = ""
+        if kind in {"camera", "light", "fx_trail"}:
+            return kind
+        if ext == ".fbx":
+            return "fbx"
+        if ext == ".bvh":
+            return "bvh"
+        if ext == ".ply":
+            return "splat"
+        return kind or ext.lstrip(".") or "static"
+
+    def _timeline_owner_timeline_filename(self, owner: str) -> str:
+        try:
+            scene_name = str(getattr(self, "_timeline_scene_name", "") or "").strip() or "scene"
+            return self._timeline_anim_file_path(scene_name, owner_name=str(owner or "").strip()).name
+        except Exception:
+            return ""
+
+    def _timeline_owner_key_range(self, owner: str) -> Tuple[Optional[int], Optional[int]]:
+        key = str(owner or "").strip()
+        if not key:
+            return (None, None)
+        key_norm = self._timeline_owner_norm(key)
+        for path in self._timeline_owner_file_paths() or []:
+            try:
+                file_owner, keys_map = self._timeline_read_owner_keys_file(path)
+            except Exception:
+                continue
+            if self._timeline_owner_norm(file_owner) != key_norm:
+                continue
+            if isinstance(keys_map, dict) and keys_map:
+                try:
+                    frames = [int(k) for k in keys_map.keys()]
+                    return (max(0, min(frames)), max(0, max(frames)))
+                except Exception:
+                    return (None, None)
+            break
+        return (None, None)
+
+    def _timeline_rig_clip_frame_range(self, entry: dict) -> Tuple[Optional[int], Optional[int]]:
+        if not isinstance(entry, dict):
+            return (None, None)
+        context = entry.get("fbx_rig_context")
+        if not isinstance(context, dict):
+            return (None, None)
+        clip = context.get("clip")
+        if clip is None:
+            return (None, None)
+        fps = float(getattr(self, "_timeline_fps", 24.0) or 24.0)
+        try:
+            from echograph.rigging.fbx_stage7_timeline import clip_marker_frames
+
+            frames = [int(f) for f in (clip_marker_frames(clip, fps=fps) or [])]
+            if frames:
+                return (max(0, min(frames)), max(0, max(frames)))
+        except Exception:
+            pass
+        try:
+            start_time = float(getattr(clip, "start_time", 0.0) or 0.0)
+            end_time = float(getattr(clip, "end_time", start_time) or start_time)
+            end_frame = int(round(max(0.0, end_time - start_time) * fps))
+            return (0, max(0, end_frame))
+        except Exception:
+            return (None, None)
+
+    def _timeline_default_static_end_frame(self) -> int:
+        try:
+            return max(24, int(self._timeline_end_frame_value()))
+        except Exception:
+            pass
+        try:
+            return max(24, int(getattr(self, "_timeline_total_max", 120) or 120))
+        except Exception:
+            return 120
+
+    def _timeline_default_composition_block_for_asset(self, entry: dict) -> Optional[Dict[str, object]]:
+        owner = self._timeline_scene_asset_owner(entry)
+        if not owner:
+            return None
+        kind = self._timeline_scene_asset_kind(entry)
+        if kind == "fx_trail":
+            return None
+        src_start, src_end = self._timeline_rig_clip_frame_range(entry)
+        if src_start is None or src_end is None:
+            key_start, key_end = self._timeline_owner_key_range(owner)
+            src_start = key_start
+            src_end = key_end
+        animated = src_start is not None and src_end is not None and int(src_end) > int(src_start)
+        if not animated:
+            src_start = 0
+            src_end = self._timeline_default_static_end_frame()
+        try:
+            speed = float(entry.get("retime_percent", entry.get("speed_percent", 100.0)) or 100.0)
+        except Exception:
+            speed = 100.0
+        speed = self._timeline_normalize_speed_percent(speed)
+        source_start = max(0, int(src_start or 0))
+        source_end = max(source_start, int(src_end if src_end is not None else source_start))
+        clip_start = 0
+        clip_end = max(clip_start + 1, int(round(float(source_end - source_start) / max(0.01, speed / 100.0))))
+        path_text = str(entry.get("path") or "").strip()
+        block = {
+            "id": f"owner:{owner}",
+            "owner": owner,
+            "label": owner,
+            "kind": kind,
+            "enabled": True,
+            "locked": False,
+            "clip_start_frame": int(clip_start),
+            "clip_end_frame": int(clip_end),
+            "source_start_frame": int(source_start),
+            "source_end_frame": int(source_end),
+            "speed_percent": float(speed),
+            "loop": False,
+            "hold_before": True,
+            "hold_after": True,
+            "owner_timeline_file": self._timeline_owner_timeline_filename(owner),
+            "source": {
+                "type": "scene_asset",
+                "path": path_text,
+                "has_rig_clip": bool(isinstance(entry.get("fbx_rig_context"), dict) and entry.get("fbx_rig_context", {}).get("clip") is not None),
+            },
+            "resolved": True,
+        }
+        return block
+
+    def _timeline_default_composition_blocks(self) -> List[Dict[str, object]]:
+        assets = getattr(self, "_timeline_scene_assets", None)
+        if not isinstance(assets, list):
+            assets = []
+        out: List[Dict[str, object]] = []
+        seen = set()
+        for entry in assets:
+            if not isinstance(entry, dict):
+                continue
+            block = self._timeline_default_composition_block_for_asset(entry)
+            if not isinstance(block, dict):
+                continue
+            owner_norm = self._timeline_owner_norm(str(block.get("owner") or ""))
+            if not owner_norm or owner_norm in seen:
+                continue
+            seen.add(owner_norm)
+            out.append(block)
+        return out
+
+    def _timeline_normalize_composition_block(self, raw: dict) -> Optional[Dict[str, object]]:
+        if not isinstance(raw, dict):
+            return None
+        owner = str(raw.get("owner") or "").strip()
+        if not owner:
+            return None
+        try:
+            clip_start = max(0, int(raw.get("clip_start_frame", 0)))
+        except Exception:
+            clip_start = 0
+        try:
+            clip_end = max(clip_start + 1, int(raw.get("clip_end_frame", clip_start + 1)))
+        except Exception:
+            clip_end = clip_start + 1
+        try:
+            source_start = max(0, int(raw.get("source_start_frame", 0)))
+        except Exception:
+            source_start = 0
+        try:
+            source_end = max(source_start, int(raw.get("source_end_frame", source_start + (clip_end - clip_start))))
+        except Exception:
+            source_end = source_start + max(0, clip_end - clip_start)
+        try:
+            speed = self._timeline_normalize_speed_percent(raw.get("speed_percent", 100.0))
+        except Exception:
+            speed = 100.0
+        block = dict(raw)
+        block["id"] = str(block.get("id") or f"owner:{owner}")
+        block["owner"] = owner
+        block["label"] = str(block.get("label") or owner)
+        block["kind"] = str(block.get("kind") or "static")
+        block["enabled"] = bool(block.get("enabled", True))
+        block["locked"] = bool(block.get("locked", False))
+        block["clip_start_frame"] = int(clip_start)
+        block["clip_end_frame"] = int(clip_end)
+        block["source_start_frame"] = int(source_start)
+        block["source_end_frame"] = int(source_end)
+        block["speed_percent"] = float(speed)
+        block["loop"] = bool(block.get("loop", False))
+        block["hold_before"] = bool(block.get("hold_before", True))
+        block["hold_after"] = bool(block.get("hold_after", True))
+        block["owner_timeline_file"] = str(block.get("owner_timeline_file") or self._timeline_owner_timeline_filename(owner))
+        if not isinstance(block.get("source"), dict):
+            block["source"] = {}
+        block["resolved"] = bool(block.get("resolved", True))
+        return block
+
+    def _timeline_merge_composition_blocks(
+        self,
+        saved_blocks: List[Dict[str, object]],
+        default_blocks: List[Dict[str, object]],
+    ) -> Tuple[List[Dict[str, object]], bool]:
+        changed = False
+        out: List[Dict[str, object]] = []
+        saved_by_owner: Dict[str, Dict[str, object]] = {}
+        default_owner_norms = {
+            self._timeline_owner_norm(str(block.get("owner") or ""))
+            for block in default_blocks
+            if isinstance(block, dict)
+        }
+        for raw in saved_blocks or []:
+            block = self._timeline_normalize_composition_block(raw)
+            if not isinstance(block, dict):
+                changed = True
+                continue
+            owner_norm = self._timeline_owner_norm(str(block.get("owner") or ""))
+            if not owner_norm:
+                changed = True
+                continue
+            block["resolved"] = owner_norm in default_owner_norms
+            saved_by_owner[owner_norm] = block
+            out.append(block)
+        for default in default_blocks or []:
+            owner_norm = self._timeline_owner_norm(str(default.get("owner") or ""))
+            if not owner_norm:
+                continue
+            if owner_norm in saved_by_owner:
+                continue
+            out.append(dict(default))
+            changed = True
+        return (out, changed)
+
+    def _timeline_load_composition(self, *, apply_current_frame: bool = True) -> None:
+        try:
+            path = getattr(self, "_timeline_composition_path", None)
+            if path is None:
+                path = self._timeline_composition_file_path()
+                self._timeline_composition_path = path
+        except Exception:
+            path = None
+        saved_blocks: List[Dict[str, object]] = []
+        raw = {}
+        if path is not None and Path(path).exists():
+            try:
+                raw = json.loads(Path(path).read_text(encoding="utf-8"))
+            except Exception:
+                raw = {}
+        if isinstance(raw, dict):
+            rows = raw.get("tracks", raw.get("blocks", [])) or []
+            if isinstance(rows, list):
+                saved_blocks = [r for r in rows if isinstance(r, dict)]
+            try:
+                fps = float(raw.get("fps", getattr(self, "_timeline_fps", 24.0)) or 24.0)
+                self._timeline_set_fps(fps if fps > 0.0 else 24.0, save=False, sync_ui=True)
+            except Exception:
+                pass
+        default_blocks = self._timeline_default_composition_blocks()
+        blocks, changed = self._timeline_merge_composition_blocks(saved_blocks, default_blocks)
+        self._timeline_mode = "composition"
+        self._timeline_owner_name = None
+        self._timeline_keys = {}
+        self._timeline_curve_selected = set()
+        self._timeline_composition_blocks = blocks
+        try:
+            self._timeline_total_max = max(240, self._timeline_composition_max_frame())
+        except Exception:
+            self._timeline_total_max = 240
+        if changed or (path is not None and not Path(path).exists()):
+            self._timeline_save_composition()
+        try:
+            self._timeline_sync_range_controls(keep_current_visible=True, refresh_key_markers=True)
+        except Exception:
+            pass
+        try:
+            self._timeline_update_mode_controls()
+        except Exception:
+            pass
+        try:
+            self._timeline_refresh_speed_control()
+        except Exception:
+            pass
+        if bool(apply_current_frame):
+            try:
+                frame = int(self._timeline_current_frame())
+                self._timeline_apply_frame_if_keyed(frame, force=True)
+                self._timeline_apply_selected_camera_owner_frame(frame)
+                self._timeline_apply_other_owner_frames(frame)
+            except Exception:
+                pass
+
+    def _timeline_save_composition(self) -> None:
+        path = getattr(self, "_timeline_composition_path", None)
+        if path is None:
+            try:
+                path = self._timeline_composition_file_path()
+                self._timeline_composition_path = path
+            except Exception:
+                path = None
+        if path is None:
+            return
+        blocks = []
+        for raw in getattr(self, "_timeline_composition_blocks", []) or []:
+            block = self._timeline_normalize_composition_block(raw)
+            if isinstance(block, dict):
+                blocks.append(block)
+        payload = {
+            "version": 1,
+            "scene": str(getattr(self, "_timeline_scene_name", "scene") or "scene"),
+            "fps": float(getattr(self, "_timeline_fps", 24.0) or 24.0),
+            "tracks": blocks,
+        }
+        try:
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            Path(path).write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _timeline_composition_blocks_list(self) -> List[Dict[str, object]]:
+        blocks = getattr(self, "_timeline_composition_blocks", None)
+        if not isinstance(blocks, list):
+            blocks = []
+            self._timeline_composition_blocks = blocks
+        return blocks
+
+    def _timeline_composition_max_frame(self) -> int:
+        max_frame = 0
+        for block in self._timeline_composition_blocks_list():
+            if not isinstance(block, dict):
+                continue
+            try:
+                max_frame = max(max_frame, int(block.get("clip_end_frame", 0)))
+            except Exception:
+                continue
+        return max(0, int(max_frame))
+
+    def _timeline_find_composition_block(self, owner: str | None = None, block_id: str | None = None) -> Optional[Dict[str, object]]:
+        owner_norm = self._timeline_owner_norm(str(owner or "")) if owner else ""
+        bid = str(block_id or "").strip()
+        for block in self._timeline_composition_blocks_list():
+            if not isinstance(block, dict):
+                continue
+            if bid and str(block.get("id") or "").strip() == bid:
+                return block
+            if owner_norm and self._timeline_owner_norm(str(block.get("owner") or "")) == owner_norm:
+                return block
+        return None
+
+    def _timeline_composition_source_frame(self, owner: str, scene_frame: float) -> Optional[float]:
+        if not self._timeline_is_composition_mode():
+            return None
+        block = self._timeline_find_composition_block(owner=owner)
+        if not isinstance(block, dict) or not bool(block.get("enabled", True)):
+            return None
+        try:
+            frame = float(scene_frame)
+            clip_start = float(block.get("clip_start_frame", 0) or 0)
+            clip_end = float(block.get("clip_end_frame", clip_start) or clip_start)
+            source_start = float(block.get("source_start_frame", 0) or 0)
+            source_end = float(block.get("source_end_frame", source_start) or source_start)
+            speed = self._timeline_normalize_speed_percent(block.get("speed_percent", 100.0)) / 100.0
+        except Exception:
+            return None
+        if clip_end < clip_start:
+            clip_end = clip_start
+        if source_end < source_start:
+            source_end = source_start
+        if frame < clip_start:
+            return source_start if bool(block.get("hold_before", True)) else None
+        if frame > clip_end:
+            return source_end if bool(block.get("hold_after", True)) else None
+        local = max(0.0, frame - clip_start)
+        source = source_start + (local * max(0.01, speed))
+        return max(source_start, min(source_end, float(source)))
+
+    def _timeline_composition_sample_seconds_for_owner(
+        self,
+        owner: str,
+        scene_frame: int | float | None = None,
+        fps: float | None = None,
+    ) -> Optional[float]:
+        try:
+            frame = float(self._timeline_current_frame() if scene_frame is None else scene_frame)
+        except Exception:
+            frame = 0.0
+        source_frame = self._timeline_composition_source_frame(owner, frame)
+        if source_frame is None:
+            return None
+        try:
+            fps_value = float(fps if fps is not None else getattr(self, "_timeline_fps", 24.0))
+        except Exception:
+            fps_value = 24.0
+        if fps_value <= 1.0e-6:
+            fps_value = 24.0
+        return float(source_frame) / float(fps_value)
+
+    def _timeline_select_composition_owner(self, owner: str | None) -> None:
+        key = str(owner or "").strip()
+        self._timeline_composition_selected_owner = key
+        try:
+            if key:
+                self._xform_gizmo_owner = key
+        except Exception:
+            pass
+        if key:
+            try:
+                win = self.window()
+                active_scene = getattr(win, "_active_scene_node", None) if win is not None else None
+                card = None
+                cards = getattr(win, "_card_by_node", None) if win is not None else None
+                if isinstance(cards, dict):
+                    for maybe in cards.values():
+                        if getattr(maybe, "_node_ref", None) is active_scene:
+                            card = maybe
+                            break
+                outliner = getattr(card, "_scene_outliner_widget", None) if card is not None else None
+                if outliner is not None:
+                    current = outliner.currentItem()
+                    current_owner = str(current.data(QtCore.Qt.UserRole) or "").strip() if current is not None else ""
+                    if current_owner.lower() != key.lower():
+                        for idx in range(outliner.count()):
+                            item = outliner.item(idx)
+                            if item is None:
+                                continue
+                            item_owner = str(item.data(QtCore.Qt.UserRole) or "").strip()
+                            if item_owner.lower() == key.lower():
+                                outliner.setCurrentItem(item)
+                                break
+            except Exception:
+                pass
+        canvas = getattr(self, "_timeline_composition_canvas", None)
+        if canvas is not None:
+            try:
+                canvas.update()
+            except Exception:
+                pass
+        try:
+            self._timeline_refresh_speed_control()
+        except Exception:
+            pass
+
+    def _timeline_update_composition_block(
+        self,
+        block_id: str,
+        *,
+        clip_start_frame: Optional[int] = None,
+        clip_end_frame: Optional[int] = None,
+        source_start_frame: Optional[int] = None,
+        source_end_frame: Optional[int] = None,
+        save: bool = False,
+    ) -> None:
+        block = self._timeline_find_composition_block(block_id=block_id)
+        if not isinstance(block, dict) or bool(block.get("locked", False)):
+            return
+        if clip_start_frame is not None:
+            try:
+                block["clip_start_frame"] = max(0, int(clip_start_frame))
+            except Exception:
+                pass
+        if clip_end_frame is not None:
+            try:
+                block["clip_end_frame"] = max(int(block.get("clip_start_frame", 0)) + 1, int(clip_end_frame))
+            except Exception:
+                pass
+        if source_start_frame is not None:
+            try:
+                block["source_start_frame"] = max(0, int(source_start_frame))
+            except Exception:
+                pass
+        if source_end_frame is not None:
+            try:
+                block["source_end_frame"] = max(int(block.get("source_start_frame", 0)), int(source_end_frame))
+            except Exception:
+                pass
+        try:
+            self._timeline_total_max = max(240, self._timeline_composition_max_frame(), int(self._timeline_current_frame()))
+            self._timeline_sync_range_controls(keep_current_visible=True, refresh_key_markers=True)
+        except Exception:
+            pass
+        try:
+            owner = str(block.get("owner") or "").strip()
+            if owner:
+                self._timeline_invalidate_owner_animation_cache(owner)
+        except Exception:
+            pass
+        if bool(save):
+            self._timeline_save_composition()
+
+    def _timeline_enter_owner_key_mode(self, owner: str) -> None:
+        key = str(owner or "").strip()
+        if not key:
+            return
+        self._timeline_mode = "owner_keys"
+        self._timeline_curves_mode = False
+        try:
+            self.set_timeline_scene_context(
+                scene_name=str(getattr(self, "_timeline_scene_name", "") or "") or None,
+                project_path=None,
+                owner_name=key,
+                apply_current_frame=True,
+                load_audio=False,
+            )
+        except TypeError:
+            self.set_timeline_scene_context(owner_name=key)
+        try:
+            self._timeline_update_mode_controls()
+        except Exception:
+            pass
+
+    def _timeline_show_composition_mode(self) -> None:
+        self._timeline_mode = "composition"
+        try:
+            self.set_timeline_scene_context(
+                scene_name=str(getattr(self, "_timeline_scene_name", "") or "") or None,
+                project_path=None,
+                owner_name=None,
+                apply_current_frame=True,
+                load_audio=False,
+            )
+        except TypeError:
+            self.set_timeline_scene_context(owner_name=None)
+        try:
+            self._timeline_update_mode_controls()
+        except Exception:
+            pass
 
     def _timeline_camera_state_for_playback(self, state):
         if not isinstance(state, dict):
@@ -87,7 +652,10 @@ class GraphGLTimelineModelMixin:
 
         if bool(save):
             try:
-                self._timeline_save_to_disk()
+                if self._timeline_is_composition_mode():
+                    self._timeline_save_composition()
+                else:
+                    self._timeline_save_to_disk()
             except Exception:
                 pass
         return float(value)
@@ -108,6 +676,13 @@ class GraphGLTimelineModelMixin:
         return ""
 
     def _timeline_retime_owner(self) -> str:
+        if self._timeline_is_composition_mode():
+            try:
+                owner = str(getattr(self, "_timeline_composition_selected_owner", "") or "").strip()
+            except Exception:
+                owner = ""
+            if owner:
+                return owner
         owner = self._timeline_target_owner()
         if owner:
             return owner
@@ -137,6 +712,10 @@ class GraphGLTimelineModelMixin:
         key = str(owner or self._timeline_retime_owner() or "").strip()
         if not key:
             return 100.0
+        if self._timeline_is_composition_mode():
+            block = self._timeline_find_composition_block(owner=key)
+            if isinstance(block, dict):
+                return self._timeline_normalize_speed_percent(block.get("speed_percent", 100.0))
         speeds = self._timeline_owner_speed_map()
         raw = speeds.get(key, None)
         if raw is None:
@@ -288,6 +867,34 @@ class GraphGLTimelineModelMixin:
             if bool(sync_ui):
                 self._timeline_refresh_speed_control()
             return float(value)
+        if self._timeline_is_composition_mode():
+            block = self._timeline_find_composition_block(owner=key)
+            if isinstance(block, dict):
+                block["speed_percent"] = float(value)
+                try:
+                    source_start = int(block.get("source_start_frame", 0) or 0)
+                    duration = max(1, int(block.get("clip_end_frame", 0) or 0) - int(block.get("clip_start_frame", 0) or 0))
+                    block["source_end_frame"] = max(source_start, int(round(source_start + (duration * (float(value) / 100.0)))))
+                except Exception:
+                    pass
+                self._timeline_save_composition()
+                self._timeline_invalidate_owner_animation_cache(key)
+                canvas = getattr(self, "_timeline_composition_canvas", None)
+                if canvas is not None:
+                    try:
+                        canvas.update()
+                    except Exception:
+                        pass
+                if bool(sync_ui):
+                    self._timeline_refresh_speed_control()
+                if bool(apply_frame):
+                    try:
+                        frame = int(self._timeline_current_frame())
+                        self._timeline_apply_other_owner_frames(frame)
+                        self.update()
+                    except Exception:
+                        pass
+                return float(value)
         speeds = self._timeline_owner_speed_map()
         key_l = key.lower()
         existing_keys = []
@@ -577,7 +1184,14 @@ class GraphGLTimelineModelMixin:
             f = int(frame)
         except Exception:
             f = 0
-        xyz_eval, rxyz_eval = self._timeline_eval_frame_values_for_owner_keys(owner, keys_map, f)
+        eval_frame = f
+        mapped = self._timeline_composition_source_frame(owner, f)
+        if mapped is not None:
+            try:
+                eval_frame = int(round(float(mapped)))
+            except Exception:
+                eval_frame = f
+        xyz_eval, rxyz_eval = self._timeline_eval_frame_values_for_owner_keys(owner, keys_map, eval_frame)
         if xyz_eval is None and rxyz_eval is None:
             return
         if xyz_eval is None:
@@ -606,6 +1220,7 @@ class GraphGLTimelineModelMixin:
                     "xyz_eval": xyz_eval,
                     "rxyz_eval": rxyz_eval,
                     "keys_map_count": len(keys_map) if isinstance(keys_map, dict) else 0,
+                    "source_frame": int(eval_frame),
                 },
             )
         except Exception:
@@ -622,10 +1237,30 @@ class GraphGLTimelineModelMixin:
             f = int(frame)
         except Exception:
             f = 0
-        for owner, keys_map in self._timeline_collect_other_owner_keys():
+        if self._timeline_is_composition_mode():
+            pairs: List[Tuple[str, Dict[int, Dict[str, object]]]] = []
+            for block in self._timeline_composition_blocks_list():
+                if not isinstance(block, dict) or not bool(block.get("enabled", True)):
+                    continue
+                owner = str(block.get("owner") or "").strip()
+                if not owner:
+                    continue
+                keys_map = self._timeline_keys_map_for_owner(owner)
+                if isinstance(keys_map, dict) and keys_map:
+                    pairs.append((owner, keys_map))
+        else:
+            pairs = self._timeline_collect_other_owner_keys()
+        for owner, keys_map in pairs:
             if not owner or not isinstance(keys_map, dict) or not keys_map:
                 continue
-            xyz_eval, rxyz_eval = self._timeline_eval_frame_values_for_owner_keys(owner, keys_map, f)
+            eval_frame = f
+            mapped = self._timeline_composition_source_frame(owner, f)
+            if mapped is not None:
+                try:
+                    eval_frame = int(round(float(mapped)))
+                except Exception:
+                    eval_frame = f
+            xyz_eval, rxyz_eval = self._timeline_eval_frame_values_for_owner_keys(owner, keys_map, eval_frame)
             if xyz_eval is None and rxyz_eval is None:
                 continue
             if xyz_eval is None:
@@ -1005,6 +1640,8 @@ class GraphGLTimelineModelMixin:
         lbl.setText(f"Keys: {int(count)}")
 
     def _timeline_max_key_frame(self) -> int:
+        if self._timeline_is_composition_mode():
+            return int(self._timeline_composition_max_frame())
         try:
             keys = getattr(self, "_timeline_keys", {}) or {}
             if keys:
@@ -1166,6 +1803,8 @@ class GraphGLTimelineModelMixin:
         self._timeline_update_playhead()
 
     def _timeline_target_label_text(self) -> str:
+        if self._timeline_is_composition_mode():
+            return "Master Timeline"
         owner = self._timeline_target_owner()
         if owner:
             return owner
@@ -2480,6 +3119,94 @@ class GraphGLTimelineModelMixin:
         except Exception:
             pass
 
+    def _timeline_update_mode_controls(self) -> None:
+        comp = bool(self._timeline_is_composition_mode())
+        stack = getattr(self, "_timeline_tracks_stack", None)
+        if stack is not None:
+            try:
+                comp_canvas = getattr(self, "_timeline_composition_canvas", None)
+                if comp and comp_canvas is not None:
+                    stack.setCurrentWidget(comp_canvas)
+                else:
+                    stack.setCurrentIndex(1 if bool(getattr(self, "_timeline_curves_mode", False)) else 0)
+            except Exception:
+                pass
+        axis_widgets = list(getattr(self, "_timeline_axis_labels", []) or [])
+        for attr in (
+            "_timeline_coord_x",
+            "_timeline_coord_y",
+            "_timeline_coord_z",
+            "_timeline_coord_rx",
+            "_timeline_coord_ry",
+            "_timeline_coord_rz",
+        ):
+            widget = getattr(self, attr, None)
+            if widget is not None:
+                axis_widgets.append(widget)
+        for widget in axis_widgets:
+            try:
+                widget.setVisible(not comp)
+            except Exception:
+                pass
+        for attr in (
+            "_timeline_curves_btn",
+            "_timeline_handle_straight_btn",
+            "_timeline_handle_tied_btn",
+            "_timeline_handle_untied_btn",
+        ):
+            btn = getattr(self, attr, None)
+            if btn is not None:
+                try:
+                    btn.setEnabled(not comp)
+                except Exception:
+                    pass
+        master_btn = getattr(self, "_timeline_master_btn", None)
+        if master_btn is not None:
+            try:
+                master_btn.blockSignals(True)
+                master_btn.setChecked(comp)
+                master_btn.setEnabled(not comp)
+                master_btn.setText("Master" if not comp else "Master")
+                master_btn.setToolTip("Return to the master composition timeline" if not comp else "Master composition timeline")
+            except Exception:
+                pass
+            finally:
+                try:
+                    master_btn.blockSignals(False)
+                except Exception:
+                    pass
+        back_btn = getattr(self, "_timeline_back_btn", None)
+        if back_btn is not None:
+            try:
+                self._load_timeline_button_icons()
+                icon = getattr(self, "_timeline_icon_back", None)
+                if icon is not None:
+                    back_btn.setIcon(icon)
+                    back_btn.setText("")
+                    back_btn.setIconSize(QtCore.QSize(18, 18))
+                else:
+                    back_btn.setIcon(QtGui.QIcon())
+                    back_btn.setText("<")
+                back_btn.setVisible(not comp)
+                back_btn.setEnabled(not comp)
+                back_btn.setToolTip("Back to master timeline")
+            except Exception:
+                pass
+        try:
+            self._timeline_update_target_label()
+        except Exception:
+            pass
+        try:
+            self._timeline_update_key_markers()
+        except Exception:
+            pass
+        canvas = getattr(self, "_timeline_composition_canvas", None)
+        if canvas is not None:
+            try:
+                canvas.update()
+            except Exception:
+                pass
+
     def _timeline_scene_debug_enabled(self) -> bool:
         try:
             win = self.window()
@@ -2914,6 +3641,7 @@ class GraphGLTimelineModelMixin:
         icon_loop = None
         icon_loop_on = None
         icon_loop_off = None
+        icon_back = None
         keyframe_handle_path = None
         try:
             root = Path(__file__).resolve().parents[2]
@@ -2933,6 +3661,7 @@ class GraphGLTimelineModelMixin:
             remove_key_path = root / "icons" / "RemoveKey_Icon.png"
             loop_on_path = root / "icons" / "Refresh_Icon.png"
             loop_off_path = root / "icons" / "StreightArrow_Icon.png"
+            back_path = root / "icons" / "StreightArrow_Left_Icon.png"
             handle_path = root / "icons" / "KeyframeHandle_Icon.png"
             if play_path.exists():
                 icon_play = QtGui.QIcon(str(play_path))
@@ -2974,6 +3703,8 @@ class GraphGLTimelineModelMixin:
                 icon_loop_on = QtGui.QIcon(str(loop_on_path))
             if loop_off_path.exists():
                 icon_loop_off = QtGui.QIcon(str(loop_off_path))
+            if back_path.exists():
+                icon_back = QtGui.QIcon(str(back_path))
             if icon_loop_on is None:
                 icon_loop_on = icon_loop_off
             if icon_loop_off is None:
@@ -3000,6 +3731,7 @@ class GraphGLTimelineModelMixin:
             icon_loop = None
             icon_loop_on = None
             icon_loop_off = None
+            icon_back = None
             keyframe_handle_path = None
         self._timeline_icon_play = icon_play
         self._timeline_icon_stop = icon_stop
@@ -3019,6 +3751,7 @@ class GraphGLTimelineModelMixin:
         self._timeline_icon_loop = icon_loop
         self._timeline_icon_loop_on = icon_loop_on
         self._timeline_icon_loop_off = icon_loop_off
+        self._timeline_icon_back = icon_back
         self._timeline_keyframe_handle_path = keyframe_handle_path
 
     def _update_timeline_play_button(self) -> None:
@@ -3700,6 +4433,22 @@ class GraphGLTimelineModelMixin:
         self._timeline_set_selected_handles_mode("untied")
 
     def _timeline_set_curves_mode(self, enabled: bool, *, sync_button: bool = True) -> None:
+        if self._timeline_is_composition_mode():
+            self._timeline_curves_mode = False
+            btn = getattr(self, "_timeline_curves_btn", None)
+            if btn is not None:
+                try:
+                    btn.blockSignals(True)
+                    btn.setChecked(False)
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        btn.blockSignals(False)
+                    except Exception:
+                        pass
+            self._timeline_update_mode_controls()
+            return
         mode = bool(enabled)
         self._timeline_curves_mode = mode
         btn = getattr(self, "_timeline_curves_btn", None)
@@ -4252,6 +5001,19 @@ class GraphGLTimelineModelMixin:
         return out
 
     def _timeline_update_key_markers(self) -> None:
+        if self._timeline_is_composition_mode():
+            self._timeline_clear_key_markers()
+            canvas = getattr(self, "_timeline_composition_canvas", None)
+            if canvas is not None:
+                try:
+                    canvas.update()
+                except Exception:
+                    pass
+            try:
+                self._timeline_update_handle_mode_buttons()
+            except Exception:
+                pass
+            return
         tracks = getattr(self, "_timeline_tracks_frame", None)
         slider = getattr(self, "_timeline_frame_slider", None)
         row_frames = getattr(self, "_timeline_track_rows", None)
@@ -4718,6 +5480,12 @@ class GraphGLTimelineModelMixin:
             pass
 
     def _timeline_apply_frame_if_keyed(self, frame: int, *, force: bool = False) -> None:
+        if self._timeline_is_composition_mode():
+            try:
+                self._timeline_refresh_coord_labels()
+            except Exception:
+                pass
+            return
         if self._timeline_preview_context_active():
             try:
                 self._timeline_refresh_coord_labels()
@@ -4944,6 +5712,11 @@ class GraphGLTimelineModelMixin:
             pass
 
     def _timeline_on_set_key_clicked(self) -> None:
+        if self._timeline_is_composition_mode():
+            owner = str(getattr(self, "_timeline_composition_selected_owner", "") or "").strip()
+            if owner:
+                self._timeline_enter_owner_key_mode(owner)
+            return
         self._timeline_sync_key_owner_from_outliner()
         locked_camera_owner = self._timeline_active_locked_camera_owner()
         try:
@@ -5119,6 +5892,8 @@ class GraphGLTimelineModelMixin:
         self._timeline_refresh_coord_labels()
 
     def _timeline_on_delete_key_clicked(self) -> None:
+        if self._timeline_is_composition_mode():
+            return
         deleted_any = False
         selection_changed = False
         try:

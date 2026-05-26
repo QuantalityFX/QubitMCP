@@ -278,7 +278,10 @@ class GraphGLTimelineWidgetsMixin:
             has_rows = bool(getattr(self, "_timeline_track_rows", []))
             has_stack = getattr(self, "_timeline_tracks_stack", None) is not None
             has_canvas = getattr(self, "_timeline_curves_canvas", None) is not None
+            has_comp_canvas = getattr(self, "_timeline_composition_canvas", None) is not None
             has_target_label = getattr(self, "_timeline_target_label", None) is not None
+            has_master_btn = isinstance(getattr(self, "_timeline_master_btn", None), QtWidgets.QPushButton)
+            has_back_btn = isinstance(getattr(self, "_timeline_back_btn", None), QtWidgets.QPushButton)
             has_axis_labels = (
                 isinstance(getattr(self, "_timeline_axis_labels", None), list)
                 and len(getattr(self, "_timeline_axis_labels", [])) == 6
@@ -308,7 +311,10 @@ class GraphGLTimelineWidgetsMixin:
                 and has_rows
                 and has_stack
                 and has_canvas
+                and has_comp_canvas
                 and has_target_label
+                and has_master_btn
+                and has_back_btn
                 and has_axis_labels
             ):
                 self._timeline_update_axis_label_styles()
@@ -336,6 +342,10 @@ class GraphGLTimelineWidgetsMixin:
                     self._timeline_refresh_speed_control()
                 except Exception:
                     pass
+                try:
+                    self._timeline_update_mode_controls()
+                except Exception:
+                    pass
                 return
             try:
                 existing.hide()
@@ -348,6 +358,7 @@ class GraphGLTimelineWidgetsMixin:
             self._timeline_tracks_stack = None
             self._timeline_rows_host = None
             self._timeline_curves_canvas = None
+            self._timeline_composition_canvas = None
             self._timeline_left_header_spacer = None
             self._timeline_area_widget = None
             self._timeline_axis_labels = []
@@ -359,6 +370,8 @@ class GraphGLTimelineWidgetsMixin:
             self._timeline_mark_out_btn = None
             self._timeline_loop_btn = None
             self._timeline_curves_btn = None
+            self._timeline_master_btn = None
+            self._timeline_back_btn = None
             self._timeline_material_live_btn = None
             self._timeline_fx_instances_btn = None
             self._timeline_handle_straight_btn = None
@@ -409,6 +422,8 @@ class GraphGLTimelineWidgetsMixin:
                     "#GLTimelinePanel QPushButton#GLTimelineLoopButton{padding:0px;background:transparent;border:0px;}",
                     "#GLTimelinePanel QPushButton#GLTimelineLoopButton:hover{background:transparent;border:0px;}",
                     "#GLTimelinePanel QPushButton#GLTimelineLoopButton:checked{background:transparent;border:0px;}",
+                    "#GLTimelinePanel QPushButton#GLTimelineBackButton{padding:0px;background:transparent;border:0px;}",
+                    "#GLTimelinePanel QPushButton#GLTimelineBackButton:hover{background:rgba(148,163,184,45);border-radius:3px;}",
                     "#GLTimelinePanel QFrame#GLTimelineTracks{background:rgba(15,18,22,120);border:1px solid #334155;border-radius:4px;}",
                     "#GLTimelinePanel QFrame#GLTimelineTrackRow{background:rgba(15,18,22,34);border-radius:3px;}",
                     "#GLTimelinePanel QFrame#GLTimelineTrackLine{background:rgba(148,163,184,80);border:0px;}",
@@ -550,6 +565,15 @@ class GraphGLTimelineWidgetsMixin:
             self._timeline_set_loop_enabled(bool(getattr(self, "_timeline_loop_enabled", True)), save=False)
             self._timeline_update_range_button_tooltips()
 
+            master_btn = QtWidgets.QPushButton("Master", panel)
+            master_btn.setObjectName("GLTimelineMasterButton")
+            master_btn.setCheckable(True)
+            master_btn.setFixedHeight(24)
+            master_btn.setToolTip("Master composition timeline")
+            master_btn.clicked.connect(lambda _checked=False: self._timeline_show_composition_mode())
+            header.addWidget(master_btn, 0)
+            self._timeline_master_btn = master_btn
+
             material_btn = QtWidgets.QPushButton(panel)
             material_btn.setObjectName("GLTimelineMaterialLiveButton")
             material_btn.setCheckable(True)
@@ -676,8 +700,27 @@ class GraphGLTimelineWidgetsMixin:
             left_header_spacer.setFixedHeight(34)
             left_header_layout = QtWidgets.QHBoxLayout(left_header_spacer)
             left_header_layout.setContentsMargins(0, 0, 6, 0)
-            left_header_layout.setSpacing(0)
+            left_header_layout.setSpacing(3)
             left_header_layout.addStretch(1)
+            back_btn = QtWidgets.QPushButton(left_header_spacer)
+            back_btn.setObjectName("GLTimelineBackButton")
+            back_btn.setFixedSize(22, 22)
+            back_btn.setFlat(True)
+            back_btn.setFocusPolicy(QtCore.Qt.NoFocus)
+            back_btn.setToolTip("Back to master timeline")
+            back_icon = getattr(self, "_timeline_icon_back", None)
+            if back_icon is not None:
+                try:
+                    back_btn.setIcon(back_icon)
+                    back_btn.setIconSize(QtCore.QSize(18, 18))
+                except Exception:
+                    pass
+            else:
+                back_btn.setText("<")
+            back_btn.clicked.connect(lambda _checked=False: self._timeline_show_composition_mode())
+            back_btn.hide()
+            left_header_layout.addWidget(back_btn, 0, QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+            self._timeline_back_btn = back_btn
             target_lbl = QtWidgets.QLabel("", left_header_spacer)
             target_lbl.setObjectName("GLTimelineTargetLabel")
             target_lbl.setStyleSheet(
@@ -2000,6 +2043,278 @@ class GraphGLTimelineWidgetsMixin:
                     self.update()
                     ev.accept()
 
+            class _TimelineCompositionCanvas(QtWidgets.QWidget):
+                def __init__(self, view, host):
+                    super().__init__(host)
+                    self._view = view
+                    self._drag = None
+                    self.setMouseTracking(True)
+                    self.setObjectName("GLTimelineCompositionCanvas")
+
+                @staticmethod
+                def _event_pos(ev):
+                    try:
+                        if hasattr(ev, "position"):
+                            return ev.position()
+                    except Exception:
+                        pass
+                    return ev.pos()
+
+                def _blocks(self):
+                    try:
+                        return [
+                            block
+                            for block in (self._view._timeline_composition_blocks_list() or [])
+                            if isinstance(block, dict)
+                        ]
+                    except Exception:
+                        return []
+
+                def _layout(self):
+                    blocks = self._blocks()
+                    count = max(1, len(blocks))
+                    top = 6.0
+                    bottom = 6.0
+                    gap = 4.0 if count <= 6 else 2.0
+                    avail = max(1.0, float(self.height()) - top - bottom - (gap * max(0, count - 1)))
+                    row_h = max(10.0, min(24.0, avail / float(count)))
+                    return blocks, top, row_h, gap
+
+                def _block_rect(self, block, index: int):
+                    try:
+                        start = int(max(0, int(getattr(self._view, "_timeline_view_start", 0) or 0)))
+                    except Exception:
+                        start = 0
+                    try:
+                        clip_start = float(block.get("clip_start_frame", 0) or 0)
+                        clip_end = float(block.get("clip_end_frame", clip_start + 1) or (clip_start + 1))
+                    except Exception:
+                        clip_start = 0.0
+                        clip_end = 1.0
+                    x1 = self._view._timeline_local_frame_to_tracks_x_float(float(clip_start) - float(start), clamp=False)
+                    x2 = self._view._timeline_local_frame_to_tracks_x_float(float(clip_end) - float(start), clamp=False)
+                    if x1 is None or x2 is None:
+                        return QtCore.QRectF()
+                    blocks, top, row_h, gap = self._layout()
+                    _ = blocks
+                    y = top + (float(index) * (row_h + gap))
+                    left = min(float(x1), float(x2))
+                    right = max(float(x1), float(x2))
+                    if right - left < 8.0:
+                        right = left + 8.0
+                    return QtCore.QRectF(left, y, right - left, row_h)
+
+                def _hit(self, posf):
+                    x = float(posf.x())
+                    y = float(posf.y())
+                    blocks, _top, _row_h, _gap = self._layout()
+                    for idx, block in enumerate(blocks):
+                        rect = self._block_rect(block, idx)
+                        if rect.isNull():
+                            continue
+                        padded = QtCore.QRectF(rect).adjusted(-4.0, -3.0, 4.0, 3.0)
+                        if not padded.contains(QtCore.QPointF(x, y)):
+                            continue
+                        edge = 6.0
+                        if abs(x - rect.left()) <= edge:
+                            mode = "left"
+                        elif abs(x - rect.right()) <= edge:
+                            mode = "right"
+                        else:
+                            mode = "body"
+                        return block, idx, mode
+                    return None
+
+                def paintEvent(self, ev):
+                    super().paintEvent(ev)
+                    _ = ev
+                    p = QtGui.QPainter(self)
+                    try:
+                        p.setRenderHint(QtGui.QPainter.Antialiasing, True)
+                    except Exception:
+                        pass
+                    blocks, top, row_h, gap = self._layout()
+                    selected = str(getattr(self._view, "_timeline_composition_selected_owner", "") or "").strip().lower()
+                    font = p.font()
+                    try:
+                        font.setPointSize(max(7, min(10, int(row_h - 3))))
+                        p.setFont(font)
+                    except Exception:
+                        pass
+                    for idx, block in enumerate(blocks):
+                        y = top + (float(idx) * (row_h + gap))
+                        row_rect = QtCore.QRectF(0.0, y, float(self.width()), row_h)
+                        bg = QtGui.QColor(15, 23, 42, 95 if idx % 2 else 60)
+                        p.setPen(QtCore.Qt.NoPen)
+                        p.setBrush(QtGui.QBrush(bg))
+                        p.drawRoundedRect(row_rect.adjusted(1.0, 0.0, -1.0, 0.0), 3.0, 3.0)
+
+                        rect = self._block_rect(block, idx)
+                        if rect.isNull():
+                            continue
+                        visible_rect = rect.intersected(QtCore.QRectF(0.0, 0.0, float(self.width()), float(self.height())))
+                        if visible_rect.isNull():
+                            continue
+                        owner = str(block.get("owner") or "").strip()
+                        is_selected = bool(owner and owner.lower() == selected)
+                        unresolved = not bool(block.get("resolved", True))
+                        enabled = bool(block.get("enabled", True))
+                        fill = QtGui.QColor("#2563eb" if is_selected else "#0f766e")
+                        if not enabled:
+                            fill = QtGui.QColor("#475569")
+                        if unresolved:
+                            fill = QtGui.QColor("#92400e")
+                        fill.setAlpha(220 if is_selected else 190)
+                        border = QtGui.QColor("#fde047" if is_selected else "#67e8f9")
+                        border.setAlpha(235 if is_selected else 170)
+                        p.setBrush(QtGui.QBrush(fill))
+                        p.setPen(QtGui.QPen(border, 1.2))
+                        p.drawRoundedRect(visible_rect.adjusted(0.5, 0.5, -0.5, -0.5), 4.0, 4.0)
+                        p.setPen(QtGui.QPen(QtGui.QColor(226, 232, 240, 230), 1))
+                        label = str(block.get("label") or owner or "Item")
+                        try:
+                            text_rect = visible_rect.adjusted(7.0, 0.0, -7.0, 0.0)
+                            p.drawText(text_rect, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, label)
+                        except Exception:
+                            pass
+                        p.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 115), 1))
+                        p.drawLine(int(round(visible_rect.left() + 4.0)), int(round(visible_rect.top() + 3.0)), int(round(visible_rect.left() + 4.0)), int(round(visible_rect.bottom() - 3.0)))
+                        p.drawLine(int(round(visible_rect.right() - 4.0)), int(round(visible_rect.top() + 3.0)), int(round(visible_rect.right() - 4.0)), int(round(visible_rect.bottom() - 3.0)))
+                    p.end()
+
+                def mouseDoubleClickEvent(self, ev):
+                    if ev.button() != QtCore.Qt.LeftButton:
+                        return super().mouseDoubleClickEvent(ev)
+                    hit = self._hit(self._event_pos(ev))
+                    if hit is None:
+                        return super().mouseDoubleClickEvent(ev)
+                    block, _idx, _mode = hit
+                    owner = str(block.get("owner") or "").strip()
+                    if owner:
+                        self._view._timeline_enter_owner_key_mode(owner)
+                        ev.accept()
+                        return
+                    return super().mouseDoubleClickEvent(ev)
+
+                def mousePressEvent(self, ev):
+                    if ev.button() != QtCore.Qt.LeftButton:
+                        return super().mousePressEvent(ev)
+                    posf = self._event_pos(ev)
+                    hit = self._hit(posf)
+                    if hit is None:
+                        self._drag = None
+                        self._view._timeline_select_composition_owner(None)
+                        self.update()
+                        return super().mousePressEvent(ev)
+                    block, _idx, mode = hit
+                    owner = str(block.get("owner") or "").strip()
+                    if owner:
+                        self._view._timeline_select_composition_owner(owner)
+                    try:
+                        local = self._view._timeline_tracks_x_to_slider_value(int(round(float(posf.x()))))
+                    except Exception:
+                        local = None
+                    try:
+                        start = int(max(0, int(getattr(self._view, "_timeline_view_start", 0) or 0)))
+                    except Exception:
+                        start = 0
+                    press_frame = int(start + int(local)) if local is not None else int(block.get("clip_start_frame", 0) or 0)
+                    self._drag = {
+                        "id": str(block.get("id") or ""),
+                        "mode": mode,
+                        "press_frame": int(press_frame),
+                        "clip_start": int(block.get("clip_start_frame", 0) or 0),
+                        "clip_end": int(block.get("clip_end_frame", 1) or 1),
+                        "source_start": int(block.get("source_start_frame", 0) or 0),
+                        "source_end": int(block.get("source_end_frame", 1) or 1),
+                        "speed": float(block.get("speed_percent", 100.0) or 100.0),
+                    }
+                    self.update()
+                    ev.accept()
+
+                def mouseMoveEvent(self, ev):
+                    posf = self._event_pos(ev)
+                    if not isinstance(self._drag, dict):
+                        hit = self._hit(posf)
+                        try:
+                            if hit is None:
+                                self.setCursor(QtCore.Qt.ArrowCursor)
+                            elif hit[2] in {"left", "right"}:
+                                self.setCursor(QtCore.Qt.SizeHorCursor)
+                            else:
+                                self.setCursor(QtCore.Qt.OpenHandCursor)
+                        except Exception:
+                            pass
+                        return super().mouseMoveEvent(ev)
+                    try:
+                        local = self._view._timeline_tracks_x_to_slider_value(int(round(float(posf.x()))))
+                    except Exception:
+                        local = None
+                    if local is None:
+                        return
+                    try:
+                        start = int(max(0, int(getattr(self._view, "_timeline_view_start", 0) or 0)))
+                    except Exception:
+                        start = 0
+                    target = max(0, int(start + int(local)))
+                    mode = str(self._drag.get("mode") or "body")
+                    orig_start = int(self._drag.get("clip_start", 0) or 0)
+                    orig_end = max(orig_start + 1, int(self._drag.get("clip_end", orig_start + 1) or (orig_start + 1)))
+                    src_start = int(self._drag.get("source_start", 0) or 0)
+                    src_end = max(src_start, int(self._drag.get("source_end", src_start) or src_start))
+                    speed = max(0.01, float(self._drag.get("speed", 100.0) or 100.0) / 100.0)
+                    if mode == "body":
+                        delta = int(target) - int(self._drag.get("press_frame", orig_start) or orig_start)
+                        new_start = max(0, orig_start + delta)
+                        duration = max(1, orig_end - orig_start)
+                        self._view._timeline_update_composition_block(
+                            str(self._drag.get("id") or ""),
+                            clip_start_frame=int(new_start),
+                            clip_end_frame=int(new_start + duration),
+                            save=False,
+                        )
+                    elif mode == "left":
+                        new_start = max(0, min(orig_end - 1, int(target)))
+                        delta = int(new_start) - int(orig_start)
+                        new_src_start = max(0, int(round(src_start + (delta * speed))))
+                        self._view._timeline_update_composition_block(
+                            str(self._drag.get("id") or ""),
+                            clip_start_frame=int(new_start),
+                            source_start_frame=min(new_src_start, src_end),
+                            save=False,
+                        )
+                    else:
+                        new_end = max(orig_start + 1, int(target))
+                        new_src_end = max(src_start, int(round(src_start + ((new_end - orig_start) * speed))))
+                        self._view._timeline_update_composition_block(
+                            str(self._drag.get("id") or ""),
+                            clip_end_frame=int(new_end),
+                            source_end_frame=int(new_src_end),
+                            save=False,
+                        )
+                    try:
+                        self.setCursor(QtCore.Qt.ClosedHandCursor if mode == "body" else QtCore.Qt.SizeHorCursor)
+                    except Exception:
+                        pass
+                    self.update()
+                    ev.accept()
+
+                def mouseReleaseEvent(self, ev):
+                    if ev.button() != QtCore.Qt.LeftButton:
+                        return super().mouseReleaseEvent(ev)
+                    if not isinstance(self._drag, dict):
+                        return super().mouseReleaseEvent(ev)
+                    try:
+                        self._view._timeline_save_composition()
+                        frame = int(self._view._timeline_current_frame())
+                        self._view._timeline_apply_other_owner_frames(frame)
+                        self._view.update()
+                    except Exception:
+                        pass
+                    self._drag = None
+                    self.update()
+                    ev.accept()
+
             tracks_frame = QtWidgets.QFrame(timeline_area)
             tracks_frame.setObjectName("GLTimelineTracks")
             tracks_frame.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.MinimumExpanding)
@@ -2036,6 +2351,10 @@ class GraphGLTimelineWidgetsMixin:
             curves_canvas = _TimelineCurveCanvas(self, tracks_frame)
             self._timeline_curves_canvas = curves_canvas
             tracks_stack.addWidget(curves_canvas)
+
+            composition_canvas = _TimelineCompositionCanvas(self, tracks_frame)
+            self._timeline_composition_canvas = composition_canvas
+            tracks_stack.addWidget(composition_canvas)
             timeline_area_layout.addWidget(tracks_frame, 1)
 
             playhead = QtWidgets.QFrame(tracks_frame)
@@ -2086,6 +2405,7 @@ class GraphGLTimelineWidgetsMixin:
             timeline_area.installEventFilter(tracks_frame._timeline_tracks_filter)
             rows_host.installEventFilter(tracks_frame._timeline_tracks_filter)
             curves_canvas.installEventFilter(tracks_frame._timeline_tracks_filter)
+            composition_canvas.installEventFilter(tracks_frame._timeline_tracks_filter)
 
             tracks_grid.addWidget(timeline_area, 0, 2, len(channels) + 1, 1)
             tracks_grid.setColumnStretch(2, 1)
@@ -2122,6 +2442,7 @@ class GraphGLTimelineWidgetsMixin:
             self._timeline_tracks_stack = None
             self._timeline_rows_host = None
             self._timeline_curves_canvas = None
+            self._timeline_composition_canvas = None
             self._timeline_left_header_spacer = None
             self._timeline_area_widget = None
             self._timeline_axis_labels = []
@@ -2133,6 +2454,8 @@ class GraphGLTimelineWidgetsMixin:
             self._timeline_mark_out_btn = None
             self._timeline_loop_btn = None
             self._timeline_curves_btn = None
+            self._timeline_master_btn = None
+            self._timeline_back_btn = None
             self._timeline_material_live_btn = None
             self._timeline_fx_instances_btn = None
             self._timeline_handle_straight_btn = None

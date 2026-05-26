@@ -411,7 +411,22 @@ class MGLRendererMixin:
     def _mgl_fbx_context_timeline_sample_seconds(self, context: dict | None, owner: str | None = None) -> float:
         timeline_seconds = self._mgl_timeline_time_seconds()
         owner_key = str(owner or "").strip()
+        mapped_by_composition = False
         if owner_key:
+            try:
+                map_fn = getattr(self, "_timeline_composition_sample_seconds_for_owner", None)
+                if callable(map_fn):
+                    mapped = map_fn(
+                        owner_key,
+                        self._mgl_timeline_frame_index(),
+                        self._mgl_timeline_fps_value(),
+                    )
+                    if mapped is not None:
+                        timeline_seconds = max(0.0, float(mapped))
+                        mapped_by_composition = True
+            except Exception:
+                mapped_by_composition = False
+        if owner_key and not bool(mapped_by_composition):
             try:
                 speed_fn = getattr(self, "_timeline_owner_speed_factor", None)
                 if callable(speed_fn):

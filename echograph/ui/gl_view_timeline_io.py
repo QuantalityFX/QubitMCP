@@ -764,6 +764,11 @@ class GraphGLTimelineIOMixin:
         )
         old_path = getattr(self, "_timeline_anim_path", None)
         same = old_path is not None and str(old_path) == str(anim_path)
+        old_mode = str(getattr(self, "_timeline_mode", "composition") or "composition").strip().lower()
+        requested_mode = "owner_keys" if owner else "composition"
+        if old_mode == "owner_keys" and owner:
+            requested_mode = "owner_keys"
+        self._timeline_mode = requested_mode
         audio_scene_name = self._timeline_audio_context_scene_name(scene_arg)
         audio_cfg_path = self._timeline_audio_file_path(
             audio_scene_name,
@@ -776,6 +781,13 @@ class GraphGLTimelineIOMixin:
         self._timeline_project_dir = anim_path.parent
         self._timeline_anim_path = anim_path
         self._timeline_range_cfg_path = range_cfg_path
+        try:
+            self._timeline_composition_path = self._timeline_composition_file_path(
+                name,
+                project_path=project_path,
+            )
+        except Exception:
+            self._timeline_composition_path = None
         self._timeline_audio_scene_name = audio_scene_name
         self._timeline_audio_cfg_path = audio_cfg_path
         try:
@@ -812,7 +824,9 @@ class GraphGLTimelineIOMixin:
         # Range markers are scene-level settings; reload on every context switch
         # so owner/outliner timeline changes inherit the same in/out + loop state.
         self._timeline_range_load_from_disk()
-        if not same:
+        if str(getattr(self, "_timeline_mode", "") or "").strip().lower() == "composition":
+            self._timeline_load_composition(apply_current_frame=bool(apply_current_frame))
+        elif not same or old_mode == "composition":
             self._timeline_load_from_disk(apply_current_frame=bool(apply_current_frame))
         else:
             self._timeline_refresh_coord_labels()
@@ -824,5 +838,9 @@ class GraphGLTimelineIOMixin:
             pass
         try:
             self._timeline_refresh_speed_control()
+        except Exception:
+            pass
+        try:
+            self._timeline_update_mode_controls()
         except Exception:
             pass
