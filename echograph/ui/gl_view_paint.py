@@ -52,6 +52,11 @@ def paint_gl(view: Any) -> None:
         # Axis overlay (debug) in ModernGL path
         if getattr(view, "_debug_show_axis_overlay", False):
             try:
+                active_rect_fn = getattr(view, "_mgl_apply_active_viewport_for_overlay", None)
+                if callable(active_rect_fn):
+                    active_rect = active_rect_fn()
+                else:
+                    active_rect = QtCore.QRectF(view.rect())
                 if getattr(view, "_axis_overlay", None) is None:
                     from echograph.ui.axis_gizmo_overlay import AxisGizmoOverlay
                     view._axis_overlay = AxisGizmoOverlay()
@@ -150,7 +155,7 @@ def paint_gl(view: Any) -> None:
                             except Exception:
                                 dpr = 1.0
 
-                            vh = float(max(1, view.height())) * dpr
+                            vh = float(max(1.0, active_rect.height())) * dpr
                             Pn = np.asarray(P, dtype=np.float32)
                             Vn = np.asarray(V, dtype=np.float32)
                             Mn = np.asarray(M, dtype=np.float32)
@@ -238,10 +243,10 @@ def paint_gl(view: Any) -> None:
                                 v = mvp.map(QtGui.QVector3D(float(x), float(y), float(z)))
                                 ndc_x = float(v.x())
                                 ndc_y = float(v.y())
-                                w = float(max(1, int(view.width())))
-                                h = float(max(1, int(view.height())))
-                                sx = (ndc_x * 0.5 + 0.5) * w
-                                sy = (1.0 - (ndc_y * 0.5 + 0.5)) * h
+                                sx = float(active_rect.left()) + ((ndc_x * 0.5 + 0.5) * float(max(1.0, active_rect.width())))
+                                sy = float(active_rect.top()) + (
+                                    (1.0 - (ndc_y * 0.5 + 0.5)) * float(max(1.0, active_rect.height()))
+                                )
                                 return QtCore.QPointF(float(sx), float(sy))
 
                             def dist_pt_seg(px2, py2, ax, ay, bx, by):

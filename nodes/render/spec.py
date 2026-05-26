@@ -963,6 +963,51 @@ class RenderNodeWidget(QtWidgets.QWidget):
             return None
         return image
 
+    def _image_has_black_half(self, image: QtGui.QImage, threshold: int = 4) -> bool:
+        if image is None or image.isNull():
+            return True
+        w = max(1, int(image.width()))
+        h = max(1, int(image.height()))
+        if w < 16 or h < 16:
+            return False
+
+        def sample_region(x0: int, x1: int) -> tuple[float, float, float]:
+            x0 = max(0, min(w - 1, int(x0)))
+            x1 = max(x0 + 1, min(w, int(x1)))
+            cols = 8
+            rows = 8
+            total = 0
+            black = 0
+            lit = 0
+            luma_sum = 0.0
+            for iy in range(rows):
+                y = int(round(((iy + 0.5) / float(rows)) * float(h - 1)))
+                for ix in range(cols):
+                    x = int(round(float(x0) + ((ix + 0.5) / float(cols)) * float(x1 - x0 - 1)))
+                    try:
+                        c = image.pixelColor(x, y)
+                    except Exception:
+                        continue
+                    total += 1
+                    r = int(c.red())
+                    g = int(c.green())
+                    b = int(c.blue())
+                    luma = (0.2126 * float(r)) + (0.7152 * float(g)) + (0.0722 * float(b))
+                    luma_sum += luma
+                    if r <= threshold and g <= threshold and b <= threshold:
+                        black += 1
+                    if luma > float(threshold) * 4.0:
+                        lit += 1
+            if total <= 0:
+                return 1.0, 0.0, 0.0
+            return float(black) / float(total), float(lit) / float(total), luma_sum / float(total)
+
+        left_black, left_lit, left_avg = sample_region(0, w // 2)
+        right_black, right_lit, right_avg = sample_region(w // 2, w)
+        right_clipped = right_black >= 0.92 and (left_lit >= 0.12 or left_avg >= 12.0)
+        left_clipped = left_black >= 0.92 and (right_lit >= 0.12 or right_avg >= 12.0)
+        return bool(left_clipped or right_clipped)
+
     def _image_is_invalid_capture(self, image: QtGui.QImage, threshold: int = 2) -> bool:
         if image is None or image.isNull():
             return True
@@ -1010,6 +1055,8 @@ class RenderNodeWidget(QtWidgets.QWidget):
             return True
         # Explicit black-clear capture.
         if max_r <= int(threshold) and max_g <= int(threshold) and max_b <= int(threshold):
+            return True
+        if self._image_has_black_half(image, threshold=max(4, int(threshold))):
             return True
         return False
 

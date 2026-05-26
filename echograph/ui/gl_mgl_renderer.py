@@ -67,6 +67,7 @@ from echograph.rigging.fbx_stage7_timeline import (
 # OpenGL constants (avoid optional PyOpenGL dependency).
 GL_COLOR_BUFFER_BIT = 0x00004000
 GL_DEPTH_BUFFER_BIT = 0x00000100
+GL_SCISSOR_TEST = 0x0C11
 
 _HAS_MGL = moderngl is not None and np is not None and Matrix44 is not None
 
@@ -11895,6 +11896,7 @@ class MGLRendererMixin:
                 pass
             return
         old_viewport = None
+        old_scissor = None
         old_depth_mask = None
         old_depth_func = None
         old_wireframe = None
@@ -11902,6 +11904,10 @@ class MGLRendererMixin:
             old_viewport = self._mgl_ctx.viewport
         except Exception:
             old_viewport = None
+        try:
+            old_scissor = self._mgl_ctx.scissor
+        except Exception:
+            old_scissor = None
         try:
             old_depth_mask = getattr(self._mgl_ctx, "depth_mask", None)
         except Exception:
@@ -11929,6 +11935,11 @@ class MGLRendererMixin:
             except Exception:
                 pass
             self._mgl_ctx.viewport = (0, 0, int(texture_size[0]), int(texture_size[1]))
+            try:
+                # Film-gate camera views use scissor on the main pass; shadow maps must render unclipped.
+                self._mgl_ctx.scissor = None
+            except Exception:
+                pass
             try:
                 if getattr(self, "_mgl_shadow_id_tex", None) is not None:
                     fbo.clear(0.0, 0.0, 0.0, 0.0, depth=1.0)
@@ -12060,18 +12071,49 @@ class MGLRendererMixin:
                     self._mgl_ctx.viewport = (0, 0, int(w), int(h))
             except Exception:
                 pass
+            try:
+                self._mgl_ctx.scissor = old_scissor
+            except Exception:
+                pass
+
+    def _mgl_clamped_offscreen_render_size(self, width: int, height: int) -> Tuple[int, int]:
+        w = max(2, int(width))
+        h = max(2, int(height))
+        max_w = 0
+        max_h = 0
+        try:
+            info = getattr(self._mgl_ctx, "info", {}) if getattr(self, "_mgl_ctx", None) is not None else {}
+            if isinstance(info, dict):
+                viewport = info.get("GL_MAX_VIEWPORT_DIMS", None)
+                if isinstance(viewport, (list, tuple)) and len(viewport) >= 2:
+                    max_w = max(max_w, int(viewport[0]))
+                    max_h = max(max_h, int(viewport[1]))
+                for key in ("GL_MAX_TEXTURE_SIZE", "GL_MAX_RENDERBUFFER_SIZE"):
+                    limit = int(info.get(key, 0) or 0)
+                    if limit > 0:
+                        max_w = limit if max_w <= 0 else min(max_w, limit)
+                        max_h = limit if max_h <= 0 else min(max_h, limit)
+        except Exception:
+            max_w = max_h = 0
+        if max_w > 1 and max_h > 1 and (w > max_w or h > max_h):
+            scale = min(float(max_w) / float(max(1, w)), float(max_h) / float(max(1, h)))
+            if scale > 0.0:
+                w = max(2, int(math.floor(float(w) * scale)))
+                h = max(2, int(math.floor(float(h) * scale)))
+        return int(w), int(h)
 
     def _mgl_render_to_image(self, width: int, height: int) -> Optional[QtGui.QImage]:
         if (not _HAS_MGL) or getattr(self, "_mgl_ctx", None) is None:
             return None
-        w = max(2, int(width))
-        h = max(2, int(height))
+        w, h = self._mgl_clamped_offscreen_render_size(width, height)
         fbo = None
         prev_size_override = getattr(self, "_mgl_render_size_override", None)
         prev_target_fbo = int(getattr(self, "_mgl_render_target_fbo_id", 0) or 0)
         prev_render_paused = bool(getattr(self, "_render_paused", False))
         prev_shadow_render_active = bool(getattr(self, "_mgl_shadow_render_active", False))
         prev_shadow_dirty = bool(getattr(self, "_mgl_shadow_dirty", True))
+        prev_viewport = None
+        prev_scissor = None
         try:
             prev_splat_min_dt = float(getattr(self, "_mgl_splats_rebuild_min_dt", 0.05) or 0.05)
         except Exception:
@@ -12082,6 +12124,14 @@ class MGLRendererMixin:
                     self.makeCurrent()
             except Exception:
                 pass
+            try:
+                prev_viewport = self._mgl_ctx.viewport
+            except Exception:
+                prev_viewport = None
+            try:
+                prev_scissor = self._mgl_ctx.scissor
+            except Exception:
+                prev_scissor = None
 
             fbo = self._mgl_get_render_offscreen_fbo(w, h)
             if fbo is None:
@@ -12098,6 +12148,18 @@ class MGLRendererMixin:
             # to the offscreen target to keep behavior consistent across frames.
             try:
                 fbo.use()
+            except Exception:
+                pass
+            try:
+                self._mgl_ctx.viewport = (0, 0, int(w), int(h))
+                self._mgl_ctx.scissor = None
+            except Exception:
+                pass
+            try:
+                if self._gl is not None:
+                    self._gl.glBindFramebuffer(0x8D40, int(getattr(fbo, "glo", 0) or 0))  # GL_FRAMEBUFFER
+                    self._gl.glViewport(0, 0, int(w), int(h))
+                    self._gl.glDisable(GL_SCISSOR_TEST)
             except Exception:
                 pass
             self._render_paused = False
@@ -12118,7 +12180,20 @@ class MGLRendererMixin:
             except Exception:
                 pass
 
-            data = fbo.read(components=4, alignment=1)
+            data = None
+            try:
+                tex = getattr(self, "_mgl_render_offscreen_tex", None)
+                if tex is not None:
+                    raw = tex.read(alignment=1)
+                    if raw and len(raw) == int(w) * int(h) * 4:
+                        data = raw
+            except Exception:
+                data = None
+            if not data:
+                try:
+                    data = fbo.read(viewport=(0, 0, int(w), int(h)), components=4, alignment=1)
+                except TypeError:
+                    data = fbo.read(components=4, alignment=1)
             if not data:
                 return None
             if hasattr(QtGui.QImage, "Format_RGBA8888"):
@@ -12160,6 +12235,15 @@ class MGLRendererMixin:
             try:
                 if hasattr(self._mgl_ctx, "screen"):
                     self._mgl_ctx.screen.use()
+            except Exception:
+                pass
+            try:
+                if prev_viewport is not None:
+                    self._mgl_ctx.viewport = prev_viewport
+            except Exception:
+                pass
+            try:
+                self._mgl_ctx.scissor = prev_scissor
             except Exception:
                 pass
             try:
@@ -13093,6 +13177,11 @@ class MGLRendererMixin:
             # Avoid Framebuffer.clear() because it may bind/use() internally and can hard-crash some drivers.
             self._dbgprint(dbg, "[MGL] set viewport", flush=True)
             self._mgl_ctx.viewport = (0, 0, max(2, int(vp_w)), max(2, int(vp_h)))
+            try:
+                # Clear the whole render target first. The camera film gate reapplies scissor below.
+                self._mgl_ctx.scissor = None
+            except Exception:
+                pass
             self._dbgprint(dbg, "[MGL] after viewport assign", flush=True)
 
             col = self._mgl_bg_color or (0.15, 0.15, 0.15, 1.0)
@@ -13108,6 +13197,10 @@ class MGLRendererMixin:
                     h = max(2, int(vp_h))
                     self._dbgprint(dbg, "[MGL] before glViewport", flush=True)
                     self._gl.glViewport(0, 0, w, h)
+                    try:
+                        self._gl.glDisable(GL_SCISSOR_TEST)
+                    except Exception:
+                        pass
                     self._dbgprint(dbg, "[MGL] after glViewport", flush=True)
 
                     self._dbgprint(dbg, "[MGL] before glClearColor", flush=True)
@@ -13140,6 +13233,10 @@ class MGLRendererMixin:
                             pass
 
                         self._gl.glClearColor(r, g, b, a)
+                        try:
+                            self._gl.glDisable(GL_SCISSOR_TEST)
+                        except Exception:
+                            pass
                         try:
                             self._gl.glClearDepth(1.0)
                         except Exception:

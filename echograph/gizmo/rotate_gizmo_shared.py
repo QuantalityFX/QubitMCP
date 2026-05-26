@@ -118,7 +118,14 @@ class RotateGizmoShared:
         # fraction of the xyz ring radius
         return float(self.xyz_ring_radius_px()) * 0.28
 
-    def project_to_screen(self, viewport_w: int, viewport_h: int, mvp: QtGui.QMatrix4x4, p: QtGui.QVector3D) -> QtCore.QPointF | None:
+    def project_to_screen(
+        self,
+        viewport_w: int,
+        viewport_h: int,
+        mvp: QtGui.QMatrix4x4,
+        p: QtGui.QVector3D,
+        viewport_origin: QtCore.QPointF | None = None,
+    ) -> QtCore.QPointF | None:
         x = float(p.x())
         y = float(p.y())
         z = float(p.z())
@@ -135,8 +142,10 @@ class RotateGizmoShared:
         w = float(max(1, int(viewport_w)))
         h = float(max(1, int(viewport_h)))
 
-        sx = (ndc_x * 0.5 + 0.5) * w
-        sy = (1.0 - (ndc_y * 0.5 + 0.5)) * h
+        ox = float(viewport_origin.x()) if isinstance(viewport_origin, QtCore.QPointF) else 0.0
+        oy = float(viewport_origin.y()) if isinstance(viewport_origin, QtCore.QPointF) else 0.0
+        sx = ox + ((ndc_x * 0.5 + 0.5) * w)
+        sy = oy + ((1.0 - (ndc_y * 0.5 + 0.5)) * h)
         return QtCore.QPointF(sx, sy)
 
     def ring_clip_discard(
@@ -242,6 +251,7 @@ class RotateGizmoShared:
         view_dir_local: QtGui.QVector3D,
         back_clip_cos: float,
         clip_enabled: bool,
+        viewport_origin: QtCore.QPointF | None = None,
     ) -> None:
         r = float(self.gizmo_radius)
         steps = 128
@@ -277,7 +287,7 @@ class RotateGizmoShared:
                 seg = []
                 continue
 
-            sp = self.project_to_screen(viewport_w, viewport_h, mvp, p)
+            sp = self.project_to_screen(viewport_w, viewport_h, mvp, p, viewport_origin)
             if sp is None:
                 if len(seg) >= 2:
                     segments.append(seg)
@@ -327,6 +337,7 @@ class RotateGizmoShared:
         back_clip_cos: float,
         clip_enabled: bool,
         width_px: int = 2,
+        viewport_origin: QtCore.QPointF | None = None,
     ) -> None:
         r = float(self.gizmo_radius)
         steps = 128
@@ -374,7 +385,7 @@ class RotateGizmoShared:
                     seg = []
                     continue
 
-                sp = self.project_to_screen(viewport_w, viewport_h, mvp, p)
+                sp = self.project_to_screen(viewport_w, viewport_h, mvp, p, viewport_origin)
                 if sp is None:
                     if len(seg) >= 2:
                         segments.append(seg)
@@ -428,6 +439,7 @@ class RotateGizmoShared:
         back_clip_cos: float = -0.25,
         clip_enabled: bool = False,
         threshold_px: float = 14.0,
+        viewport_origin: QtCore.QPointF | None = None,
     ) -> str | None:
 
 
@@ -490,7 +502,7 @@ class RotateGizmoShared:
                     prev = None
                     continue
 
-                sp = self.project_to_screen(int(viewport_w), int(viewport_h), mvp, p)
+                sp = self.project_to_screen(int(viewport_w), int(viewport_h), mvp, p, viewport_origin)
                 if sp is None:
                     prev = None
                     continue

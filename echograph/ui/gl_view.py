@@ -2363,6 +2363,58 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         gate = QtCore.QRectF(gate_x, gate_y, max(1.0, gate_w), max(1.0, gate_h))
         return gate, visible, aspect_w, aspect_h
 
+    def _mgl_active_viewport_qrectf(self) -> QtCore.QRectF:
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        active = getattr(renderer, "_mgl_active_viewport_rect", None)
+        if not (isinstance(active, (list, tuple)) and len(active) >= 4):
+            return QtCore.QRectF(self.rect())
+        try:
+            render_size = getattr(renderer, "_mgl_render_size", None)
+            if callable(render_size):
+                render_w, render_h = render_size()
+            else:
+                render_w, render_h = self.width(), self.height()
+            render_w = max(1.0, float(render_w))
+            render_h = max(1.0, float(render_h))
+            scale_x = float(max(1, self.width())) / render_w
+            scale_y = float(max(1, self.height())) / render_h
+            x = float(active[0]) * scale_x
+            y = float(max(1, self.height())) - ((float(active[1]) + float(active[3])) * scale_y)
+            w = float(active[2]) * scale_x
+            h = float(active[3]) * scale_y
+            if w <= 1.0 or h <= 1.0:
+                return QtCore.QRectF(self.rect())
+            return QtCore.QRectF(x, y, w, h)
+        except Exception:
+            return QtCore.QRectF(self.rect())
+
+    def _mgl_apply_active_viewport_for_overlay(self) -> QtCore.QRectF:
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        active = getattr(renderer, "_mgl_active_viewport_rect", None)
+        if not (isinstance(active, (list, tuple)) and len(active) >= 4):
+            active = (0, 0, max(2, int(self.width())), max(2, int(self.height())))
+        try:
+            active_tuple = tuple(int(v) for v in active[:4])
+        except Exception:
+            active_tuple = (0, 0, max(2, int(self.width())), max(2, int(self.height())))
+        full_tuple = (0, 0, max(2, int(self.width())), max(2, int(self.height())))
+        try:
+            if getattr(self, "_gl", None) is not None:
+                ax, ay, aw, ah = active_tuple
+                self._gl.glViewport(ax, ay, max(2, aw), max(2, ah))
+        except Exception:
+            pass
+        try:
+            ctx = getattr(self, "_mgl_ctx", None)
+            if ctx is not None:
+                if active_tuple == full_tuple:
+                    ctx.scissor = None
+                else:
+                    ctx.scissor = active_tuple
+        except Exception:
+            pass
+        return self._mgl_active_viewport_qrectf()
+
     def _draw_camera_film_gate(self, painter: QtGui.QPainter) -> None:
         owner = self._camera_film_gate_owner()
         if not owner:
@@ -5565,7 +5617,21 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             float(mvp_np[3, 0]), float(mvp_np[3, 1]), float(mvp_np[3, 2]), float(mvp_np[3, 3]),
         )
 
-        center = rot_shared.project_to_screen(self.width(), self.height(), mvp, QtGui.QVector3D(0.0, 0.0, 0.0))
+        active_rect_fn = getattr(self, "_mgl_active_viewport_qrectf", None)
+        active_rect = active_rect_fn() if callable(active_rect_fn) else QtCore.QRectF(self.rect())
+        if not isinstance(active_rect, QtCore.QRectF) or active_rect.width() <= 1.0 or active_rect.height() <= 1.0:
+            active_rect = QtCore.QRectF(self.rect())
+        viewport_w = max(1, int(round(float(active_rect.width()))))
+        viewport_h = max(1, int(round(float(active_rect.height()))))
+        viewport_origin = QtCore.QPointF(float(active_rect.left()), float(active_rect.top()))
+
+        center = rot_shared.project_to_screen(
+            viewport_w,
+            viewport_h,
+            mvp,
+            QtGui.QVector3D(0.0, 0.0, 0.0),
+            viewport_origin,
+        )
         if center is None:
             return
 
@@ -5579,7 +5645,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             print(
                 "[ROT_SHARED_SIZES]"
                 f" dpr={dpr}"
-                f" viewport={self.width()}x{self.height()}"
+                f" viewport={viewport_w}x{viewport_h}"
                 f" gizmo_radius={rot_shared.gizmo_radius}"
                 f" screen_radius_px={rot_shared.gizmo_screen_radius_px}"
                 f" ui_scale={rot_shared.gizmo_ui_scale}"
@@ -5595,7 +5661,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             except Exception:
                 dpr = 1.0
 
-            vh = float(max(1, self.height())) * dpr
+            vh = float(max(1, viewport_h)) * dpr
 
             # Robust: force numpy 4x4 arrays (Matrix44, lists, etc.)
             Pn = np.asarray(P, dtype=np.float32)
@@ -5676,6 +5742,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._rot_shared_center_px = center
         self._rot_shared_mvp = mvp
         self._rot_shared_world_pos = pos
+        self._rot_shared_viewport_rect = QtCore.QRectF(active_rect)
 
         # Compute view_dir_local in the SAME gizmo-local space used by mvp = Pn @ Vn @ Mn @ (T @ R @ S)
         view_dir_local = QtGui.QVector3D(0.0, 0.0, 1.0)
@@ -5714,13 +5781,14 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
 
         rot_shared.draw_xyz_core_2d(
             widget=self,
-            viewport_w=self.width(),
-            viewport_h=self.height(),
+            viewport_w=viewport_w,
+            viewport_h=viewport_h,
             mvp=mvp,
             view_dir_local=view_dir_local,
             back_clip_cos=float(back_clip_cos),
             clip_enabled=(clip_val > 0.5),
             width_px=2,
+            viewport_origin=viewport_origin,
         )
 
         # draw center + view ring on top (always constant px)
@@ -5735,13 +5803,14 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 widget=self,
                 center=center,
                 mouse_px=mouse_px,
-                viewport_w=self.width(),
-                viewport_h=self.height(),
+                viewport_w=viewport_w,
+                viewport_h=viewport_h,
                 mvp=mvp,
                 view_dir_local=view_dir_local,
                 back_clip_cos=float(back_clip_cos),
                 clip_enabled=(clip_val > 0.5),
                 threshold_px=float(band),
+                viewport_origin=viewport_origin,
             )
 
 
@@ -5777,12 +5846,13 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             rot_shared.draw_hover_halo_2d(
                 widget=self,
                 axis=str(hover_axis),
-                viewport_w=self.width(),
-                viewport_h=self.height(),
+                viewport_w=viewport_w,
+                viewport_h=viewport_h,
                 mvp=mvp,
                 view_dir_local=view_dir_local,
                 back_clip_cos=float(back_clip_cos),
                 clip_enabled=(clip_val > 0.5),
+                viewport_origin=viewport_origin,
             )
 
 

@@ -280,8 +280,11 @@ def _ray_from_mouse(self, pos: QtCore.QPoint):
         ).astype(np.float32)
         invPV = np.linalg.inv(PV)
 
-        x = (2.0 * (px / max(1.0, vw))) - 1.0
-        y = 1.0 - (2.0 * (py / max(1.0, vh)))
+        ndc_fn = getattr(renderer, "_mgl_screen_to_active_ndc", None)
+        ndc = ndc_fn(px, py, vw, vh) if callable(ndc_fn) else None
+        if ndc is None:
+            return None
+        x, y = ndc
         near = np.array([x, y, -1.0, 1.0], dtype=np.float32)
         far = np.array([x, y, 1.0, 1.0], dtype=np.float32)
         pN = invPV @ near
@@ -493,8 +496,14 @@ def _handle_mouse_press_moderngl_left_gizmo_owner_pos(self):
 
 def _handle_mouse_press_moderngl_left_gizmo_pick_viewport(self):
     dpr = float(getattr(self, "devicePixelRatioF", lambda: 1.0)())
-    vw = float(self.width()) * dpr
-    vh = float(self.height()) * dpr
+    rect_fn = getattr(self, "_mgl_active_viewport_qrectf", None)
+    rect = rect_fn() if callable(rect_fn) else None
+    if isinstance(rect, QtCore.QRectF) and rect.width() > 1.0 and rect.height() > 1.0:
+        vw = float(rect.width()) * dpr
+        vh = float(rect.height()) * dpr
+    else:
+        vw = float(self.width()) * dpr
+        vh = float(self.height()) * dpr
     return dpr, vw, vh
 
 def _handle_mouse_press_moderngl_left_gizmo_pick_matrices(self, *, renderer):
@@ -715,7 +724,11 @@ def _handle_mouse_press_moderngl_left_gizmo_mouse_dev_pos(self, *, e, dpr):
         mp = e.position() if hasattr(e, "position") else QtCore.QPointF(e.x(), e.y())
     except Exception:
         mp = QtCore.QPointF(e.x(), e.y())
-    return float(mp.x()) * float(dpr), float(mp.y()) * float(dpr)
+    rect_fn = getattr(self, "_mgl_active_viewport_qrectf", None)
+    rect = rect_fn() if callable(rect_fn) else None
+    off_x = float(rect.left()) if isinstance(rect, QtCore.QRectF) else 0.0
+    off_y = float(rect.top()) if isinstance(rect, QtCore.QRectF) else 0.0
+    return (float(mp.x()) - off_x) * float(dpr), (float(mp.y()) - off_y) * float(dpr)
 
 def _handle_mouse_press_moderngl_left_gizmo_dist_pt_seg(self, px2, py2, ax, ay, bx, by):
     return _gv_dist_pt_seg(px2=px2, py2=py2, ax=ax, ay=ay, bx=bx, by=by)
@@ -806,6 +819,15 @@ def _handle_mouse_press_moderngl_left_gizmo_rotate_ring_pick_ready(self, *, rot_
 
 def _handle_mouse_press_moderngl_left_gizmo_rotate_ring_pick_hit(self, *, e, rot_shared, center, mvp):
     mp = e.position() if hasattr(e, "position") else QtCore.QPointF(e.x(), e.y())
+    rect = getattr(self, "_rot_shared_viewport_rect", None)
+    if not isinstance(rect, QtCore.QRectF) or rect.width() <= 1.0 or rect.height() <= 1.0:
+        rect_fn = getattr(self, "_mgl_active_viewport_qrectf", None)
+        rect = rect_fn() if callable(rect_fn) else None
+    if not isinstance(rect, QtCore.QRectF) or rect.width() <= 1.0 or rect.height() <= 1.0:
+        rect = QtCore.QRectF(self.rect())
+    viewport_w = max(1, int(round(float(rect.width()))))
+    viewport_h = max(1, int(round(float(rect.height()))))
+    viewport_origin = QtCore.QPointF(float(rect.left()), float(rect.top()))
 
     # match smoketest-style picking (same args as hover/draw)
     band = max(12.0, float(rot_shared.xyz_ring_radius_px()) * 0.14)
@@ -821,13 +843,14 @@ def _handle_mouse_press_moderngl_left_gizmo_rotate_ring_pick_hit(self, *, e, rot
         widget=self,
         center=center,
         mouse_px=QtCore.QPointF(mp),  # logical px
-        viewport_w=self.width(),  # logical px (must match center/mouse)
-        viewport_h=self.height(),
+        viewport_w=viewport_w,  # logical px (must match center/mouse)
+        viewport_h=viewport_h,
         mvp=mvp,
         view_dir_local=view_dir_local,
         back_clip_cos=float(back_clip_cos),
         clip_enabled=bool(clip_enabled),
         threshold_px=float(band),
+        viewport_origin=viewport_origin,
     )
     return mp, hit
 
@@ -996,8 +1019,12 @@ def _handle_mouse_press_moderngl_left_gizmo_rotate_ring_axis_start_dir_cache_inv
     return invPV
 
 def _handle_mouse_press_moderngl_left_gizmo_rotate_ring_axis_start_dir_ray(self, *, mp, dpr, vw, vh, invPV):
-    px = float(mp.x()) * dpr
-    py = float(mp.y()) * dpr
+    rect_fn = getattr(self, "_mgl_active_viewport_qrectf", None)
+    rect = rect_fn() if callable(rect_fn) else None
+    off_x = float(rect.left()) if isinstance(rect, QtCore.QRectF) else 0.0
+    off_y = float(rect.top()) if isinstance(rect, QtCore.QRectF) else 0.0
+    px = (float(mp.x()) - off_x) * dpr
+    py = (float(mp.y()) - off_y) * dpr
     ray = _gv_ray_from_screen(invPV=invPV, px=px, py=py, vw=vw, vh=vh)
     if ray is None:
         print("[ROT_SHARED_AXIS_BEGIN_ERR] ray", flush=True)
@@ -1921,7 +1948,12 @@ def _handle_mouse_press_moderngl_left_gizmo_translate_axis_proj_scaled_map(self,
     }
 
 def _handle_mouse_press_moderngl_left_gizmo_translate_axis_proj_scale(self, *, dpr, P, V, M, T, R, renderer):
-    vh_s = float(max(1, self.height())) * float(dpr)
+    rect_fn = getattr(self, "_mgl_active_viewport_qrectf", None)
+    rect = rect_fn() if callable(rect_fn) else None
+    if isinstance(rect, QtCore.QRectF) and rect.height() > 1.0:
+        vh_s = float(max(1.0, rect.height())) * float(dpr)
+    else:
+        vh_s = float(max(1, self.height())) * float(dpr)
     sm = self._handle_mouse_press_moderngl_left_gizmo_translate_axis_proj_scale_multiplier(renderer=renderer)
     target_ring_px, ring_r = self._handle_mouse_press_moderngl_left_gizmo_translate_axis_proj_scale_target()
     return _gv_gizmo_screen_scale(
@@ -3164,14 +3196,24 @@ def _handle_mouse_move_moderngl_rot_shared_axis_prepare_ray_viewport(self, *, mp
 
     vw = float(getattr(self, "_rot_shared_vw", 0.0) or 0.0)
     vh = float(getattr(self, "_rot_shared_vh", 0.0) or 0.0)
+    rect_fn = getattr(self, "_mgl_active_viewport_qrectf", None)
+    rect = rect_fn() if callable(rect_fn) else None
     if vw <= 1.0:
-        vw = float(self.width()) * dpr
+        if isinstance(rect, QtCore.QRectF) and rect.width() > 1.0:
+            vw = float(rect.width()) * dpr
+        else:
+            vw = float(self.width()) * dpr
     if vh <= 1.0:
-        vh = float(self.height()) * dpr
+        if isinstance(rect, QtCore.QRectF) and rect.height() > 1.0:
+            vh = float(rect.height()) * dpr
+        else:
+            vh = float(self.height()) * dpr
 
-    # IMPORTANT: compute mouse in the same pixel space as vw/vh.
-    px = float(mp.x()) * dpr
-    py = float(mp.y()) * dpr
+    # IMPORTANT: compute mouse in the same active-gate pixel space as vw/vh.
+    off_x = float(rect.left()) if isinstance(rect, QtCore.QRectF) else 0.0
+    off_y = float(rect.top()) if isinstance(rect, QtCore.QRectF) else 0.0
+    px = (float(mp.x()) - off_x) * dpr
+    py = (float(mp.y()) - off_y) * dpr
     return dpr, vw, vh, px, py
 
 def _handle_mouse_move_moderngl_rot_shared_axis_prepare_ray_invpv(self, *, dpr, vw, vh, _rot_dbg):
@@ -3343,10 +3385,18 @@ def _handle_mouse_move_moderngl_xform_drag_context(self, *, e):
         return None
 
     dpr = float(getattr(self, "devicePixelRatioF", lambda: 1.0)())
-    px = float(e.x()) * dpr
-    py = float(e.y()) * dpr
-    vw = float(self.width()) * dpr
-    vh = float(self.height()) * dpr
+    rect_fn = getattr(self, "_mgl_active_viewport_qrectf", None)
+    rect = rect_fn() if callable(rect_fn) else None
+    if isinstance(rect, QtCore.QRectF) and rect.width() > 1.0 and rect.height() > 1.0:
+        px = (float(e.x()) - float(rect.left())) * dpr
+        py = (float(e.y()) - float(rect.top())) * dpr
+        vw = float(rect.width()) * dpr
+        vh = float(rect.height()) * dpr
+    else:
+        px = float(e.x()) * dpr
+        py = float(e.y()) * dpr
+        vw = float(self.width()) * dpr
+        vh = float(self.height()) * dpr
 
     renderer = getattr(self, "_mgl_renderer", None) or self
     return {
