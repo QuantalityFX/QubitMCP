@@ -4407,7 +4407,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                         it = outliner.item(i)
                         if it is None:
                             continue
-                        if (it.data(QtCore.Qt.UserRole) or "") == owner:
+                        item_owner = str(it.data(QtCore.Qt.UserRole) or "").strip()
+                        if item_owner.lower() == owner_l:
                             found = True
                             break
                     if not found:
@@ -4446,6 +4447,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 # Avoid clobbering a good saved xform with transient identity from getter fallback.
                 if (
                     _xf_is_identity(xf)
+                    and not bool(xf_from_explicit_cache)
                     and isinstance(prev_saved_xf, dict)
                     and (not _xf_is_identity(prev_saved_xf))
                 ):
@@ -4456,6 +4458,35 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                     "scl": list(xf.get("scl", (1.0, 1.0, 1.0))),
                 }
                 setattr(node, "_scene_xforms", xforms)
+                try:
+                    selected_owner = str(getattr(card, "_scene_selected_owner", "") or "").strip()
+                    if selected_owner.lower() == owner_l:
+                        prev_updating = bool(getattr(card, "_xform_updating", False))
+                        card._xform_updating = True
+                        try:
+                            for attr_name, values in (
+                                ("_xform_pos", xf.get("pos", (0.0, 0.0, 0.0))),
+                                ("_xform_rot", xf.get("rot", (0.0, 0.0, 0.0))),
+                                ("_xform_scl", xf.get("scl", (1.0, 1.0, 1.0))),
+                            ):
+                                spins = getattr(card, attr_name, None)
+                                if not isinstance(spins, (list, tuple)):
+                                    continue
+                                for spin, value in zip(spins, values):
+                                    if spin is None:
+                                        continue
+                                    try:
+                                        spin.blockSignals(True)
+                                        spin.setValue(float(value))
+                                    finally:
+                                        try:
+                                            spin.blockSignals(False)
+                                        except Exception:
+                                            pass
+                        finally:
+                            card._xform_updating = prev_updating
+                except Exception:
+                    pass
             except Exception:
                 pass
 

@@ -188,12 +188,49 @@ class TimelineController:
                     owner_name = raw_owner
             except Exception:
                 owner_name = None
+        effective_apply_current_frame = bool(apply_current_frame)
+        if effective_apply_current_frame and owner_name:
+            try:
+                mode = str(getattr(gv, "_camera_select_mode", "default") or "default").strip()
+                camera_live = (
+                    bool(getattr(gv, "_camera_select_lock_enabled", False))
+                    or bool(getattr(gv, "_fly_mode_enabled", False))
+                    or bool(getattr(gv, "_fps_camera_active", False))
+                )
+                if mode and mode.lower() == str(owner_name).strip().lower() and bool(camera_live):
+                    effective_apply_current_frame = False
+                    log_fn = getattr(gv, "_timeline_scene_view_log", None)
+                    if callable(log_fn):
+                        log_fn(
+                            "timeline_context_preserve_live_camera "
+                            f"owner={str(owner_name)!r} mode={mode!r} "
+                            f"fly={bool(getattr(gv, '_fly_mode_enabled', False))} "
+                            f"lock={bool(getattr(gv, '_camera_select_lock_enabled', False))} "
+                            f"fps_active={bool(getattr(gv, '_fps_camera_active', False))}",
+                            throttle_key=f"timeline_context_preserve:{str(owner_name).strip()}",
+                            interval=0.05,
+                        )
+                    debug_fn = getattr(gv, "_timeline_camera_key_debug_log", None)
+                    if callable(debug_fn):
+                        debug_fn(
+                            "timeline_context_preserve_live_camera",
+                            owner=str(owner_name),
+                            frame=gv._timeline_current_frame() if hasattr(gv, "_timeline_current_frame") else None,
+                            extra={
+                                "mode": mode,
+                                "requested_apply_current_frame": bool(apply_current_frame),
+                                "effective_apply_current_frame": bool(effective_apply_current_frame),
+                                "load_audio": bool(load_audio),
+                            },
+                        )
+            except Exception:
+                effective_apply_current_frame = bool(apply_current_frame)
         try:
             setter(
                 scene_name=scene_name or None,
                 project_path=project_path,
                 owner_name=owner_name or None,
-                apply_current_frame=bool(apply_current_frame),
+                apply_current_frame=bool(effective_apply_current_frame),
                 load_audio=bool(load_audio),
             )
         except TypeError:
@@ -372,7 +409,9 @@ class TimelineController:
         gv = self.timeline_hotkey_target()
         if gv is None:
             return
-        self.sync_timeline_context()
+        # Set Key must capture the current live transform. Applying the current
+        # timeline frame here can overwrite a moved locked camera before capture.
+        self.sync_timeline_context(apply_current_frame=False, load_audio=False)
         try:
             add_key = getattr(gv, "timeline_set_key", None)
             if callable(add_key):

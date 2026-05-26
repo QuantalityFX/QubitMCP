@@ -272,6 +272,7 @@ class GraphGLTimelineWidgetsMixin:
             has_fps_spin = isinstance(getattr(self, "_timeline_fps_spin", None), QtWidgets.QDoubleSpinBox)
             has_speed_spin = isinstance(getattr(self, "_timeline_speed_spin", None), QtWidgets.QDoubleSpinBox)
             has_seed_spin = isinstance(getattr(self, "_timeline_texture_seed_spin", None), QtWidgets.QSpinBox)
+            has_end_spin = isinstance(getattr(self, "_timeline_end_frame_spin", None), QtWidgets.QSpinBox)
             has_scroll = getattr(self, "_timeline_scrollbar", None) is not None
             has_spacer = getattr(self, "_timeline_left_header_spacer", None) is not None
             has_rows = bool(getattr(self, "_timeline_track_rows", []))
@@ -301,6 +302,7 @@ class GraphGLTimelineWidgetsMixin:
                 and has_fps_spin
                 and has_speed_spin
                 and has_seed_spin
+                and has_end_spin
                 and has_scroll
                 and has_spacer
                 and has_rows
@@ -364,6 +366,7 @@ class GraphGLTimelineWidgetsMixin:
             self._timeline_handle_untied_btn = None
             self._timeline_frame_slider = None
             self._timeline_frame_spin = None
+            self._timeline_end_frame_spin = None
             self._timeline_fps_spin = None
             self._timeline_speed_spin = None
             self._timeline_texture_seed_spin = None
@@ -462,6 +465,20 @@ class GraphGLTimelineWidgetsMixin:
             frame_spin.valueChanged.connect(self._timeline_on_frame_spin_changed)
             header.addWidget(frame_spin, 0)
             self._timeline_frame_spin = frame_spin
+
+            end_lbl = QtWidgets.QLabel("End", panel)
+            header.addWidget(end_lbl, 0)
+
+            end_spin = QtWidgets.QSpinBox(panel)
+            end_spin.setRange(0, 100000)
+            end_spin.setValue(int(getattr(self, "_timeline_out_frame", None) or getattr(self, "_timeline_total_max", 240) or 240))
+            end_spin.setFixedWidth(64)
+            end_spin.setKeyboardTracking(False)
+            end_spin.setToolTip("Scene timeline end frame.")
+            end_spin.valueChanged.connect(self._timeline_on_end_frame_spin_changed)
+            header.addWidget(end_spin, 0)
+            self._timeline_end_frame_spin = end_spin
+            self._timeline_update_end_frame_spin()
 
             fps_lbl = QtWidgets.QLabel("FPS", panel)
             header.addWidget(fps_lbl, 0)

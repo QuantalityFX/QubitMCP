@@ -927,6 +927,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._timeline_keyframe_handle_path = None
         self._timeline_texture_seed = 0
         self._timeline_frame_spin = None
+        self._timeline_end_frame_spin = None
         self._timeline_texture_seed_spin = None
         self._timeline_frame_slider = None
         self._timeline_key_count_label = None
@@ -2357,6 +2358,21 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 self._mgl_fov = max(5.0, min(170.0, float(fov)))
         except Exception:
             pass
+        try:
+            debug_fn = getattr(self, "_timeline_camera_key_debug_log", None)
+            if callable(debug_fn):
+                debug_fn(
+                    "sync_fps_from_owner_pose",
+                    owner=owner_key,
+                    frame=self._timeline_current_frame() if hasattr(self, "_timeline_current_frame") else None,
+                    extra={
+                        "pose_pos": tuple(float(v) for v in pos),
+                        "pose_forward": tuple(float(v) for v in fwd),
+                        "pose_up": tuple(float(v) for v in up),
+                    },
+                )
+        except Exception:
+            pass
         return True
 
     def _camera_selector_sync_fps_from_locked_owner(self) -> bool:
@@ -2431,6 +2447,22 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                     w.update_scene_asset_xform(owner)
             except Exception:
                 pass
+        try:
+            debug_fn = getattr(self, "_timeline_camera_key_debug_log", None)
+            if callable(debug_fn):
+                debug_fn(
+                    "apply_fps_to_locked_owner",
+                    owner=owner,
+                    frame=self._timeline_current_frame() if hasattr(self, "_timeline_current_frame") else None,
+                    extra={
+                        "sync_ui": bool(sync_ui),
+                        "is_splat": bool(is_splat),
+                        "pos": (float(pos_v[0]), float(pos_v[1]), float(pos_v[2])),
+                        "rot": (float(-pitch), float(yaw), 0.0),
+                    },
+                )
+        except Exception:
+            pass
         return True
 
     def _update_camera_selector_lock_button(self) -> None:
@@ -2887,6 +2919,22 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             return
         if np is None:
             return
+        try:
+            debug_fn = getattr(self, "_timeline_camera_key_debug_log", None)
+            if callable(debug_fn):
+                debug_fn(
+                    "select_scene_camera_begin",
+                    owner=owner_key,
+                    frame=self._timeline_current_frame() if hasattr(self, "_timeline_current_frame") else None,
+                    extra={
+                        "camera_entries": list(getattr(self, "_scene_camera_entries", []) or []),
+                        "camera_mode_before": str(getattr(self, "_camera_select_mode", "default") or "default"),
+                        "fly": bool(getattr(self, "_fly_mode_enabled", False)),
+                        "lock": bool(getattr(self, "_camera_select_lock_enabled", False)),
+                    },
+                )
+        except Exception:
+            pass
         renderer = getattr(self, "_mgl_renderer", None) or self
         if self._camera_select_saved_default_state is None:
             try:
@@ -2942,9 +2990,20 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             pass
 
         if not bool(self._sync_selected_scene_camera_view(owner_key)):
+            try:
+                debug_fn = getattr(self, "_timeline_camera_key_debug_log", None)
+                if callable(debug_fn):
+                    debug_fn(
+                        "select_scene_camera_sync_failed",
+                        owner=owner_key,
+                        frame=self._timeline_current_frame() if hasattr(self, "_timeline_current_frame") else None,
+                    )
+            except Exception:
+                pass
             self._select_default_camera()
             return
 
+        self._camera_select_mode = owner_key
         try:
             set_ctx = getattr(self, "set_timeline_scene_context", None)
             if callable(set_ctx):
@@ -2961,9 +3020,22 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         except Exception:
             pass
 
-        self._camera_select_mode = owner_key
         try:
             self.update()
+        except Exception:
+            pass
+        try:
+            debug_fn = getattr(self, "_timeline_camera_key_debug_log", None)
+            if callable(debug_fn):
+                debug_fn(
+                    "select_scene_camera_done",
+                    owner=owner_key,
+                    frame=self._timeline_current_frame() if hasattr(self, "_timeline_current_frame") else None,
+                    extra={
+                        "camera_mode_after": str(getattr(self, "_camera_select_mode", "default") or "default"),
+                        "fps_active": bool(getattr(self, "_fps_camera_active", False)),
+                    },
+                )
         except Exception:
             pass
         self._refresh_camera_selector_dropdown()
@@ -3805,6 +3877,17 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         def _scene_load_log(message: str) -> None:
             try:
                 enabled = bool(os.environ.get("ECHOGRAPH_SCENE_DEBUG_VERBOSE"))
+                if not enabled:
+                    try:
+                        win = self.window()
+                        scene_node = getattr(win, "_active_scene_node", None) if win is not None else None
+                        for p in (getattr(scene_node, "params", None) or []):
+                            if (p.get("name") or "").strip().lower() != "debug_log":
+                                continue
+                            enabled = str(p.get("value") or "").strip().lower() in {"1", "true", "yes", "on"}
+                            break
+                    except Exception:
+                        enabled = False
                 if not enabled:
                     try:
                         enabled = any(

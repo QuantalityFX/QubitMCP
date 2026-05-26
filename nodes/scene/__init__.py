@@ -207,7 +207,7 @@ def _patch_timeline_frame_slider_edge_pan() -> None:
             try:
                 sync_fn = getattr(view, "_timeline_sync_range_controls", None)
                 if callable(sync_fn):
-                    sync_fn(keep_current_visible=False, refresh_key_markers=False)
+                    sync_fn(keep_current_visible=False, refresh_key_markers=True)
             except Exception:
                 return None
             try:

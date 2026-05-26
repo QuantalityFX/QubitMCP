@@ -3549,7 +3549,19 @@ class NodeItem(QtWidgets.QGraphicsObject):
             "area_light",
             "area light",
         }
-        scene_debug_enabled = bool(os.environ.get("ECHOGRAPH_SCENE_DEBUG_VERBOSE"))
+        def _scene_debug_param_enabled(model) -> bool:
+            try:
+                for p in (getattr(model, "params", None) or []):
+                    if (p.get("name") or "").strip().lower() != "debug_log":
+                        continue
+                    return str(p.get("value") or "").strip().lower() in {"1", "true", "yes", "on"}
+            except Exception:
+                pass
+            return False
+
+        scene_debug_enabled = _scene_debug_param_enabled(getattr(self, "model", None)) or bool(
+            os.environ.get("ECHOGRAPH_SCENE_DEBUG_VERBOSE")
+        )
 
         def _scene_log(msg: str) -> None:
             if not scene_debug_enabled:

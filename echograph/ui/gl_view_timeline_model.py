@@ -587,6 +587,30 @@ class GraphGLTimelineModelMixin:
         except Exception:
             pass
         try:
+            self._timeline_scene_view_log(
+                "selected_camera_apply "
+                f"frame={int(f)} owner={str(owner)!r} "
+                f"xyz={tuple(round(float(v), 4) for v in xyz_eval)} "
+                f"rxyz={None if rxyz_eval is None else tuple(round(float(v), 4) for v in rxyz_eval)}",
+                throttle_key=f"selected_camera_apply:{str(owner)}:{int(f)}",
+                interval=0.05,
+            )
+        except Exception:
+            pass
+        try:
+            self._timeline_camera_key_debug_log(
+                "selected_camera_apply_eval",
+                owner=owner,
+                frame=int(f),
+                extra={
+                    "xyz_eval": xyz_eval,
+                    "rxyz_eval": rxyz_eval,
+                    "keys_map_count": len(keys_map) if isinstance(keys_map, dict) else 0,
+                },
+            )
+        except Exception:
+            pass
+        try:
             self._timeline_apply_owner_xyz_only(owner, xyz_eval, rxyz=rxyz_eval)
         except Exception:
             pass
@@ -691,9 +715,160 @@ class GraphGLTimelineModelMixin:
         except Exception:
             return None, False
 
+    def _timeline_live_locked_camera_xform(self, owner: str):
+        key = str(owner or "").strip()
+        if not key or np is None:
+            return None
+        try:
+            locked_owner_fn = getattr(self, "_camera_selector_locked_owner", None)
+            locked_owner = str(locked_owner_fn() or "").strip() if callable(locked_owner_fn) else ""
+        except Exception:
+            locked_owner = ""
+        if not locked_owner or locked_owner.lower() != key.lower():
+            return None
+        cam = getattr(self, "_fps_camera", None)
+        if cam is None:
+            return None
+        try:
+            pos_v = np.array(getattr(cam, "position", (0.0, 0.0, 0.0)), dtype=np.float32).reshape(3)
+        except Exception:
+            return None
+        try:
+            fwd_v = np.array(getattr(cam, "forward", (0.0, 0.0, -1.0)), dtype=np.float32).reshape(3)
+            fn = float(np.linalg.norm(fwd_v))
+            if fn > 1.0e-6:
+                fwd_v = fwd_v / fn
+            else:
+                fwd_v = np.array([0.0, 0.0, -1.0], dtype=np.float32)
+        except Exception:
+            fwd_v = np.array([0.0, 0.0, -1.0], dtype=np.float32)
+        try:
+            pitch = math.degrees(math.asin(max(-1.0, min(1.0, float(fwd_v[1])))))
+            yaw = math.degrees(math.atan2(float(fwd_v[0]), float(-fwd_v[2])))
+        except Exception:
+            pitch = 0.0
+            yaw = 0.0
+        return {
+            "pos": (float(pos_v[0]), float(pos_v[1]), float(pos_v[2])),
+            # Scene camera xforms use the inverse pitch convention consumed by _build_scene_camera_pose.
+            "rot": (float(-pitch), float(yaw), 0.0),
+        }
+
+    def _timeline_active_locked_camera_owner(self) -> str:
+        try:
+            locked_owner_fn = getattr(self, "_camera_selector_locked_owner", None)
+            owner = str(locked_owner_fn() or "").strip() if callable(locked_owner_fn) else ""
+        except Exception:
+            owner = ""
+        if not owner:
+            return ""
+        try:
+            timeline_owner = str(getattr(self, "_timeline_owner_name", "") or "").strip()
+        except Exception:
+            timeline_owner = ""
+        if timeline_owner and self._timeline_owner_norm(timeline_owner) != self._timeline_owner_norm(owner):
+            return ""
+        return owner
+
+    def _timeline_current_outliner_owner_for_key(self) -> str:
+        try:
+            win = self.window()
+        except Exception:
+            win = None
+        if win is None:
+            return ""
+        card = None
+        try:
+            scene_node = getattr(win, "_active_scene_node", None)
+            cards = getattr(win, "_card_by_node", None)
+            if isinstance(cards, dict):
+                if scene_node is not None:
+                    for maybe in cards.values():
+                        if getattr(maybe, "_node_ref", None) is scene_node:
+                            card = maybe
+                            break
+                if card is None:
+                    scene_name = str(getattr(self, "_timeline_scene_name", "") or "").strip()
+                    if scene_name:
+                        card = cards.get(scene_name)
+        except Exception:
+            card = None
+        if card is None:
+            return ""
+        try:
+            owner = str(getattr(card, "_scene_selected_owner", "") or "").strip()
+            if owner and bool(getattr(card, "_scene_outliner_user_selected", False)):
+                return owner
+        except Exception:
+            pass
+        try:
+            outliner = getattr(card, "_scene_outliner_widget", None)
+            current_item = outliner.currentItem() if outliner is not None else None
+            if current_item is not None:
+                return str(current_item.data(QtCore.Qt.UserRole) or "").strip()
+        except Exception:
+            return ""
+        return ""
+
+    def _timeline_sync_key_owner_from_outliner(self) -> None:
+        owner = self._timeline_current_outliner_owner_for_key()
+        if not owner:
+            return
+        try:
+            current_owner = str(getattr(self, "_timeline_owner_name", "") or "").strip()
+        except Exception:
+            current_owner = ""
+        try:
+            locked_owner_fn = getattr(self, "_camera_selector_locked_owner", None)
+            locked_owner = str(locked_owner_fn() or "").strip() if callable(locked_owner_fn) else ""
+        except Exception:
+            locked_owner = ""
+        if (
+            locked_owner
+            and current_owner
+            and self._timeline_owner_norm(current_owner) == self._timeline_owner_norm(locked_owner)
+            and self._timeline_owner_norm(owner) != self._timeline_owner_norm(locked_owner)
+        ):
+            return
+        if self._timeline_owner_norm(current_owner) == self._timeline_owner_norm(owner):
+            return
+        try:
+            project_path = None
+            win = self.window()
+            raw_path = str(getattr(win, "_current_path", "") or "").strip() if win is not None else ""
+            if raw_path:
+                project_path = raw_path
+        except Exception:
+            project_path = None
+        try:
+            set_ctx = getattr(self, "set_timeline_scene_context", None)
+            if callable(set_ctx):
+                set_ctx(
+                    scene_name=str(getattr(self, "_timeline_scene_name", "") or "").strip() or None,
+                    project_path=project_path,
+                    owner_name=owner,
+                    apply_current_frame=False,
+                    load_audio=False,
+                )
+            else:
+                self._timeline_owner_name = owner
+        except Exception:
+            try:
+                self._timeline_owner_name = owner
+            except Exception:
+                pass
+
     def _timeline_current_cam_xyz(self):
         owner = self._timeline_target_owner()
         if owner:
+            live_xf = self._timeline_live_locked_camera_xform(owner)
+            if isinstance(live_xf, dict):
+                pos = live_xf.get("pos", None)
+                if isinstance(pos, (list, tuple)) and len(pos) >= 3:
+                    try:
+                        return (float(pos[0]), float(pos[1]), float(pos[2]))
+                    except Exception:
+                        pass
             xf, _is_splat = self._timeline_get_owner_xform(owner)
             if isinstance(xf, dict):
                 pos = xf.get("pos", None)
@@ -729,6 +904,14 @@ class GraphGLTimelineModelMixin:
     def _timeline_current_cam_rxyz(self):
         owner = self._timeline_target_owner()
         if owner:
+            live_xf = self._timeline_live_locked_camera_xform(owner)
+            if isinstance(live_xf, dict):
+                rot = live_xf.get("rot", None)
+                if isinstance(rot, (list, tuple)) and len(rot) >= 3:
+                    try:
+                        return (float(rot[0]), float(rot[1]), float(rot[2]))
+                    except Exception:
+                        pass
             xf, _is_splat = self._timeline_get_owner_xform(owner)
             if isinstance(xf, dict):
                 rot = xf.get("rot", None)
@@ -821,14 +1004,17 @@ class GraphGLTimelineModelMixin:
             count = 0
         lbl.setText(f"Keys: {int(count)}")
 
-    def _timeline_max_known_frame(self) -> int:
-        max_key = 0
+    def _timeline_max_key_frame(self) -> int:
         try:
             keys = getattr(self, "_timeline_keys", {}) or {}
             if keys:
-                max_key = max(int(k) for k in keys.keys())
+                return max(0, max(int(k) for k in keys.keys()))
         except Exception:
-            max_key = 0
+            pass
+        return 0
+
+    def _timeline_max_known_frame(self) -> int:
+        max_key = int(self._timeline_max_key_frame())
         marker_max = 0
         try:
             in_frame, out_frame = self._timeline_in_out_frames()
@@ -841,11 +1027,65 @@ class GraphGLTimelineModelMixin:
             cur = int(self._timeline_current_frame())
         except Exception:
             cur = 0
+        explicit_out = self._timeline_marker_frame(getattr(self, "_timeline_out_frame", None))
         try:
-            base_total = int(getattr(self, "_timeline_total_max", 240) or 240)
+            if explicit_out is not None:
+                base_total = int(explicit_out)
+            else:
+                base_total = int(getattr(self, "_timeline_total_max", 240) or 240)
         except Exception:
             base_total = 240
-        return max(240, base_total, max_key, marker_max, cur)
+        default_floor = 0 if explicit_out is not None else 240
+        return max(int(default_floor), base_total, max_key, marker_max, cur)
+
+    def _timeline_end_frame_value(self) -> int:
+        explicit_out = self._timeline_marker_frame(getattr(self, "_timeline_out_frame", None))
+        if explicit_out is not None:
+            return int(explicit_out)
+        try:
+            return int(max(0, int(getattr(self, "_timeline_total_max", 240) or 240)))
+        except Exception:
+            return 240
+
+    def _timeline_update_end_frame_spin(self) -> None:
+        spin = getattr(self, "_timeline_end_frame_spin", None)
+        if spin is None:
+            return
+        value = int(max(0, self._timeline_end_frame_value()))
+        try:
+            spin.blockSignals(True)
+            if int(spin.maximum()) < int(value):
+                spin.setMaximum(int(value))
+            spin.setValue(int(value))
+        except Exception:
+            pass
+        finally:
+            try:
+                spin.blockSignals(False)
+            except Exception:
+                pass
+
+    def _timeline_set_end_frame(self, frame: int, *, save: bool = True) -> None:
+        try:
+            end_frame = max(0, int(frame))
+        except Exception:
+            end_frame = 0
+        in_frame = self._timeline_marker_frame(getattr(self, "_timeline_in_frame", None))
+        if in_frame is not None and int(end_frame) < int(in_frame):
+            end_frame = int(in_frame)
+        self._timeline_out_frame = int(end_frame)
+        try:
+            self._timeline_total_max = max(int(end_frame), int(self._timeline_max_key_frame()), int(self._timeline_current_frame()))
+        except Exception:
+            self._timeline_total_max = int(end_frame)
+        self._timeline_sync_range_controls(keep_current_visible=True, refresh_key_markers=True)
+        self._timeline_update_range_button_tooltips()
+        self._timeline_update_range_marker_visuals()
+        if bool(save):
+            try:
+                self._timeline_range_save_to_disk()
+            except Exception:
+                pass
 
     def _timeline_sync_range_controls(
         self,
@@ -920,6 +1160,7 @@ class GraphGLTimelineModelMixin:
                 pass
 
         self._timeline_update_tick_labels()
+        self._timeline_update_end_frame_spin()
         if bool(refresh_key_markers) or int(start) != int(prev_start) or int(local_max) != int(prev_local_max):
             self._timeline_update_key_markers()
         self._timeline_update_playhead()
@@ -1987,13 +2228,30 @@ class GraphGLTimelineModelMixin:
             f = float(frame)
         except Exception:
             f = 0.0
+        exact_entry = None
+        exact_mask: List[bool] = [False, False, False, False, False, False]
         try:
-            owner = self._timeline_target_owner()
+            exact_frame = int(round(float(f)))
+            if abs(float(f) - float(exact_frame)) <= 1.0e-6:
+                maybe_entry = (getattr(self, "_timeline_keys", {}) or {}).get(int(exact_frame))
+                if isinstance(maybe_entry, dict):
+                    exact_entry = maybe_entry
+                    exact_mask = self._timeline_entry_axis_mask(maybe_entry)
         except Exception:
-            owner = ""
-        if owner:
-            f = self._timeline_retimed_frame_for_owner(owner, f)
-        vals: List[Optional[float]] = [self._timeline_eval_axis_curve(axis, f) for axis in range(6)]
+            exact_entry = None
+            exact_mask = [False, False, False, False, False, False]
+        vals: List[Optional[float]] = []
+        for axis in range(6):
+            exact_val = None
+            try:
+                if isinstance(exact_entry, dict) and bool(exact_mask[axis]):
+                    exact_val = self._timeline_axis_value_for_entry(exact_entry, axis)
+            except Exception:
+                exact_val = None
+            if exact_val is not None:
+                vals.append(float(exact_val))
+            else:
+                vals.append(self._timeline_eval_axis_curve(axis, f))
         any_pos = any(vals[i] is not None for i in (0, 1, 2))
         any_rot = any(vals[i] is not None for i in (3, 4, 5))
         if not any_pos and not any_rot:
@@ -2221,6 +2479,300 @@ class GraphGLTimelineModelMixin:
                 f.write(f"[{ts}] {str(msg)}\n")
         except Exception:
             pass
+
+    def _timeline_scene_debug_enabled(self) -> bool:
+        try:
+            win = self.window()
+        except Exception:
+            win = None
+        node = getattr(win, "_active_scene_node", None) if win is not None else None
+        try:
+            params = getattr(node, "params", None)
+            if isinstance(params, (list, tuple)):
+                for param in params:
+                    if not isinstance(param, dict):
+                        continue
+                    if str(param.get("name", "") or "").strip().lower() != "debug_log":
+                        continue
+                    value = str(param.get("value", "") or "").strip().lower()
+                    return value in {"1", "true", "yes", "on"}
+        except Exception:
+            pass
+        return False
+
+    def _timeline_scene_view_log(
+        self,
+        msg: str,
+        *,
+        throttle_key: str | None = None,
+        interval: float = 0.0,
+    ) -> None:
+        if not self._timeline_scene_debug_enabled():
+            return
+        try:
+            if throttle_key:
+                now = time.time()
+                last_map = getattr(self, "_timeline_scene_view_log_last", None)
+                if not isinstance(last_map, dict):
+                    last_map = {}
+                    self._timeline_scene_view_log_last = last_map
+                last = float(last_map.get(str(throttle_key), 0.0))
+                if float(interval) > 0.0 and (now - last) < float(interval):
+                    return
+                last_map[str(throttle_key)] = float(now)
+            path = getattr(self, "_timeline_scene_view_log_path", None)
+            if path is None:
+                try:
+                    root = Path(__file__).resolve().parents[2]
+                    log_dir = root / "logs"
+                except Exception:
+                    log_dir = Path.cwd() / "logs"
+                try:
+                    log_dir.mkdir(parents=True, exist_ok=True)
+                except Exception:
+                    pass
+                path = log_dir / "scene_view_timeline.log"
+                self._timeline_scene_view_log_path = path
+            ts = time.strftime("%Y-%m-%d %H:%M:%S")
+            with Path(path).open("a", encoding="utf-8") as f:
+                f.write(f"[{ts}] {str(msg)}\n")
+        except Exception:
+            pass
+
+    def _timeline_camera_key_debug_log(self, label: str, *, owner: str = "", frame=None, extra=None) -> None:
+        if not self._timeline_scene_debug_enabled():
+            return
+
+        def _clean(value):
+            if value is None or isinstance(value, (bool, int, float, str)):
+                return value
+            if isinstance(value, Path):
+                return str(value)
+            if isinstance(value, dict):
+                out = {}
+                for k, v in value.items():
+                    try:
+                        out[str(k)] = _clean(v)
+                    except Exception:
+                        continue
+                return out
+            if isinstance(value, (list, tuple, set)):
+                out = []
+                for v in list(value):
+                    out.append(_clean(v))
+                return out
+            try:
+                return float(value)
+            except Exception:
+                return str(value)
+
+        def _vec3_from(value):
+            try:
+                if hasattr(value, "tolist"):
+                    value = value.tolist()
+            except Exception:
+                pass
+            if not isinstance(value, (list, tuple)) or len(value) < 3:
+                return None
+            try:
+                return [round(float(value[0]), 6), round(float(value[1]), 6), round(float(value[2]), 6)]
+            except Exception:
+                return None
+
+        try:
+            cur_frame = int(frame) if frame is not None else int(self._timeline_current_frame())
+        except Exception:
+            cur_frame = 0
+        try:
+            timeline_owner = str(getattr(self, "_timeline_owner_name", "") or "").strip()
+        except Exception:
+            timeline_owner = ""
+        try:
+            camera_mode = str(getattr(self, "_camera_select_mode", "default") or "default").strip()
+        except Exception:
+            camera_mode = "default"
+        owner_key = str(owner or "").strip() or timeline_owner
+        if not owner_key and camera_mode and camera_mode.lower() != "default":
+            owner_key = camera_mode
+
+        scene_node = None
+        win = None
+        try:
+            win = self.window()
+            scene_node = getattr(win, "_active_scene_node", None) if win is not None else None
+        except Exception:
+            win = None
+            scene_node = None
+
+        scene_xf = None
+        is_splat = False
+        if owner_key:
+            try:
+                scene_xf, is_splat = self._timeline_get_owner_xform(owner_key)
+            except Exception:
+                scene_xf = None
+                is_splat = False
+
+        live_xf = None
+        if owner_key:
+            try:
+                live_xf = self._timeline_live_locked_camera_xform(owner_key)
+            except Exception:
+                live_xf = None
+
+        fps_payload = None
+        try:
+            cam = getattr(self, "_fps_camera", None)
+            if cam is not None:
+                fps_payload = {
+                    "pos": _vec3_from(getattr(cam, "position", None)),
+                    "forward": _vec3_from(getattr(cam, "forward", None)),
+                    "up": _vec3_from(getattr(cam, "up", None)),
+                }
+        except Exception:
+            fps_payload = None
+
+        entry = None
+        owner_entry = None
+        try:
+            entry = (getattr(self, "_timeline_keys", {}) or {}).get(int(cur_frame))
+        except Exception:
+            entry = None
+        if owner_key:
+            try:
+                owner_keys = self._timeline_keys_map_for_owner(owner_key)
+                if isinstance(owner_keys, dict):
+                    owner_entry = owner_keys.get(int(cur_frame))
+            except Exception:
+                owner_entry = None
+
+        outliner_payload = {}
+        try:
+            cards = getattr(win, "_card_by_node", None) if win is not None else None
+            if isinstance(cards, dict):
+                card = None
+                if scene_node is not None:
+                    for maybe in cards.values():
+                        if getattr(maybe, "_node_ref", None) is scene_node:
+                            card = maybe
+                            break
+                if card is not None:
+                    outliner_payload = {
+                        "selected_owner": str(getattr(card, "_scene_selected_owner", "") or ""),
+                        "selected_kind": str(getattr(card, "_scene_selected_kind", "") or ""),
+                        "user_selected": bool(getattr(card, "_scene_outliner_user_selected", False)),
+                    }
+        except Exception:
+            outliner_payload = {}
+
+        anim_path = getattr(self, "_timeline_anim_path", None)
+        payload = {
+            "label": str(label or ""),
+            "scene": str(getattr(scene_node, "name", "") or getattr(self, "_timeline_scene_name", "") or ""),
+            "frame": int(cur_frame),
+            "owner": owner_key,
+            "timeline_owner": timeline_owner,
+            "camera_mode": camera_mode,
+            "lock": bool(getattr(self, "_camera_select_lock_enabled", False)),
+            "fly": bool(getattr(self, "_fly_mode_enabled", False)),
+            "fps_active": bool(getattr(self, "_fps_camera_active", False)),
+            "fps_nav_active": bool(getattr(self, "_fps_nav_active", False)),
+            "timeline_path": str(anim_path or ""),
+            "timeline_path_exists": bool(Path(anim_path).exists()) if anim_path is not None else False,
+            "timeline_keys_count": len(getattr(self, "_timeline_keys", {}) or {}),
+            "current_entry": _clean(entry),
+            "owner_entry_at_frame": _clean(owner_entry),
+            "scene_xform": _clean(scene_xf),
+            "scene_xform_is_splat": bool(is_splat),
+            "live_locked_xform": _clean(live_xf),
+            "fps_camera": _clean(fps_payload),
+            "outliner": _clean(outliner_payload),
+            "extra": _clean(extra or {}),
+        }
+
+        try:
+            path = getattr(self, "_timeline_camera_key_debug_log_path", None)
+            if path is None:
+                try:
+                    root = Path(__file__).resolve().parents[2]
+                    log_dir = root / "logs"
+                except Exception:
+                    log_dir = Path.cwd() / "logs"
+                try:
+                    log_dir.mkdir(parents=True, exist_ok=True)
+                except Exception:
+                    pass
+                path = log_dir / "scene_camera_key_debug.log"
+                self._timeline_camera_key_debug_log_path = path
+            ts = time.strftime("%Y-%m-%d %H:%M:%S")
+            with Path(path).open("a", encoding="utf-8") as f:
+                f.write(f"[{ts}] {json.dumps(payload, ensure_ascii=True, sort_keys=True)}\n")
+        except Exception:
+            pass
+
+    def _timeline_sync_selected_camera_view_from_owner(
+        self,
+        owner: str,
+        *,
+        reason: str = "",
+        frame: int | None = None,
+    ) -> bool:
+        key = str(owner or "").strip()
+        if not key:
+            return False
+        try:
+            mode = str(getattr(self, "_camera_select_mode", "default") or "default").strip()
+        except Exception:
+            mode = "default"
+        if not mode or mode.lower() == "default" or mode.lower() != key.lower():
+            return False
+
+        synced = False
+        try:
+            sync_pose = getattr(self, "_camera_selector_sync_fps_from_owner_pose", None)
+            if callable(sync_pose):
+                synced = bool(sync_pose(key))
+        except Exception:
+            synced = False
+        if not bool(synced):
+            try:
+                sync_fn = getattr(self, "_sync_selected_scene_camera_view", None)
+                if callable(sync_fn):
+                    synced = bool(sync_fn(key))
+            except Exception:
+                synced = False
+
+        if bool(synced):
+            try:
+                if (
+                    bool(getattr(self, "_fly_mode_enabled", False))
+                    or bool(getattr(self, "_camera_select_lock_enabled", False))
+                    or bool(getattr(self, "_fps_camera_active", False))
+                ):
+                    self._fps_camera_active = True
+                else:
+                    sync_orbit = getattr(self, "_fps_cam_sync_orbit_from_camera", None)
+                    if callable(sync_orbit):
+                        sync_orbit()
+                    self._fps_camera_active = False
+            except Exception:
+                pass
+            try:
+                self.update()
+            except Exception:
+                pass
+
+        self._timeline_scene_view_log(
+            "camera_sync "
+            f"reason={reason or 'timeline'} frame={frame if frame is not None else self._timeline_current_frame()} "
+            f"owner={key!r} mode={mode!r} synced={bool(synced)} "
+            f"fly={bool(getattr(self, '_fly_mode_enabled', False))} "
+            f"lock={bool(getattr(self, '_camera_select_lock_enabled', False))} "
+            f"fps_active={bool(getattr(self, '_fps_camera_active', False))}",
+            throttle_key=f"camera_sync:{key}:{reason}",
+            interval=0.1,
+        )
+        return bool(synced)
 
     def _timeline_axis_is_visible(self, axis: int) -> bool:
         try:
@@ -3861,6 +4413,10 @@ class GraphGLTimelineModelMixin:
                 self._timeline_set_frame_widgets(int(start))
                 self._timeline_apply_frame_if_keyed(int(start), force=True)
                 try:
+                    self._timeline_apply_selected_camera_owner_frame(int(start))
+                except Exception:
+                    pass
+                try:
                     self._timeline_apply_other_owner_frames(int(start))
                 except Exception:
                     pass
@@ -3916,6 +4472,10 @@ class GraphGLTimelineModelMixin:
                 stop_after = True
         self._timeline_set_frame_widgets(frame)
         self._timeline_apply_frame_if_keyed(frame, force=True)
+        try:
+            self._timeline_apply_selected_camera_owner_frame(frame)
+        except Exception:
+            pass
         try:
             self._timeline_apply_other_owner_frames(frame)
         except Exception:
@@ -4028,6 +4588,19 @@ class GraphGLTimelineModelMixin:
                 rot = None
         is_splat = bool(self._timeline_owner_is_splat(key))
         try:
+            self._timeline_camera_key_debug_log(
+                "owner_apply_before_set",
+                owner=key,
+                frame=self._timeline_current_frame(),
+                extra={
+                    "requested_pos": pos,
+                    "requested_rot": rot,
+                    "is_splat": bool(is_splat),
+                },
+            )
+        except Exception:
+            pass
+        try:
             if rot is None:
                 setf(
                     key,
@@ -4052,18 +4625,46 @@ class GraphGLTimelineModelMixin:
                 self._xform_gizmo_pos = pos
         except Exception:
             pass
+        outliner_synced = False
         try:
             win = self.window()
             if win is not None and hasattr(win, "update_scene_asset_xform"):
                 win.update_scene_asset_xform(key)
+                outliner_synced = True
         except Exception:
             pass
+        camera_synced = False
         try:
-            mode = str(getattr(self, "_camera_select_mode", "default") or "").strip()
-            if mode and mode.lower() != "default" and mode.lower() == key.lower():
-                sync_fn = getattr(self, "_sync_selected_scene_camera_view", None)
-                if callable(sync_fn):
-                    sync_fn(key)
+            camera_synced = bool(
+                self._timeline_sync_selected_camera_view_from_owner(
+                    key,
+                    reason="owner_apply",
+                    frame=self._timeline_current_frame(),
+                )
+            )
+        except Exception:
+            camera_synced = False
+        self._timeline_scene_view_log(
+            "owner_apply "
+            f"frame={self._timeline_current_frame()} owner={key!r} "
+            f"pos={tuple(round(float(v), 4) for v in pos)} "
+            f"rot={None if rot is None else tuple(round(float(v), 4) for v in rot)} "
+            f"outliner_synced={bool(outliner_synced)} camera_synced={bool(camera_synced)}",
+            throttle_key=f"owner_apply:{key}",
+            interval=0.05,
+        )
+        try:
+            self._timeline_camera_key_debug_log(
+                "owner_apply_after_sync",
+                owner=key,
+                frame=self._timeline_current_frame(),
+                extra={
+                    "requested_pos": pos,
+                    "requested_rot": rot,
+                    "outliner_synced": bool(outliner_synced),
+                    "camera_synced": bool(camera_synced),
+                },
+            )
         except Exception:
             pass
         try:
@@ -4141,40 +4742,44 @@ class GraphGLTimelineModelMixin:
                 except Exception:
                     pass
         try:
-            lookup_frame = self._timeline_retimed_frame_for_owner(owner, float(frame)) if owner_key else float(frame)
-            entry = (getattr(self, "_timeline_keys", {}) or {}).get(int(round(float(lookup_frame))))
+            entry = (getattr(self, "_timeline_keys", {}) or {}).get(int(round(float(frame))))
         except Exception:
             entry = None
-        if not owner_key and isinstance(entry, dict):
-            state = entry.get("camera_state", None)
-            if isinstance(state, dict) and state:
-                applied = False
-                try:
-                    renderer = getattr(self, "_mgl_renderer", None) or self
-                    apply_state = getattr(renderer, "_mgl_apply_camera_state", None)
-                    if callable(apply_state):
-                        play_state = self._timeline_camera_state_for_playback(state)
-                        apply_state(play_state if isinstance(play_state, dict) else dict(state))
-                        applied = True
-                except Exception:
-                    applied = False
-                if applied:
-                    try:
-                        if not isinstance(state.get("fps_camera", None), dict) and bool(getattr(self, "_fly_mode_enabled", False)):
-                            self._timeline_apply_xyz_only(entry.get("xyz", None), entry.get("rxyz", None))
-                    except Exception:
-                        pass
-                    try:
-                        self.update()
-                    except Exception:
-                        pass
-                    self._timeline_refresh_coord_labels()
-                    return
+        # Curve axes must win over saved camera snapshots; otherwise keyed frames
+        # can jump to stale camera_state while the in-between frames follow curves.
         xyz_eval, rxyz_eval = self._timeline_eval_frame_values(int(frame))
         if xyz_eval is not None or rxyz_eval is not None:
             if xyz_eval is None:
                 xyz_eval = self._timeline_current_cam_xyz()
             if xyz_eval is not None:
+                try:
+                    self._timeline_scene_view_log(
+                        "frame_eval "
+                        f"frame={int(frame)} owner={str(owner or '')!r} "
+                        f"target={str(self._timeline_target_owner() or '')!r} "
+                        f"xyz={tuple(round(float(v), 4) for v in xyz_eval)} "
+                        f"rxyz={None if rxyz_eval is None else tuple(round(float(v), 4) for v in rxyz_eval)} "
+                        f"keys={len(getattr(self, '_timeline_keys', {}) or {})}",
+                        throttle_key=f"frame_eval:{str(owner or '')}:{int(frame)}",
+                        interval=0.05,
+                    )
+                except Exception:
+                    pass
+                try:
+                    self._timeline_camera_key_debug_log(
+                        "frame_eval_before_apply",
+                        owner=str(owner or self._timeline_target_owner() or ""),
+                        frame=int(frame),
+                        extra={
+                            "xyz_eval": xyz_eval,
+                            "rxyz_eval": rxyz_eval,
+                            "entry": entry,
+                            "owner_key": owner_key,
+                            "force": bool(force),
+                        },
+                    )
+                except Exception:
+                    pass
                 self._timeline_apply_xyz_only(xyz_eval, rxyz_eval)
                 try:
                     self.update()
@@ -4183,6 +4788,20 @@ class GraphGLTimelineModelMixin:
                 self._timeline_refresh_coord_labels()
                 return
         if not isinstance(entry, dict) or not self._timeline_entry_has_any_axis(entry):
+            try:
+                if owner_key or str(getattr(self, "_camera_select_mode", "default") or "default").strip().lower() != "default":
+                    self._timeline_camera_key_debug_log(
+                        "frame_apply_no_keyed_axes",
+                        owner=str(owner or self._timeline_target_owner() or ""),
+                        frame=int(frame),
+                        extra={
+                            "entry": entry,
+                            "owner_key": owner_key,
+                            "force": bool(force),
+                        },
+                    )
+            except Exception:
+                pass
             if bool(force):
                 try:
                     self.update()
@@ -4234,6 +4853,10 @@ class GraphGLTimelineModelMixin:
         self._timeline_sync_range_controls(keep_current_visible=True)
         self._timeline_apply_frame_if_keyed(frame, force=True)
         try:
+            self._timeline_apply_selected_camera_owner_frame(frame)
+        except Exception:
+            pass
+        try:
             self._timeline_apply_other_owner_frames(frame)
         except Exception:
             pass
@@ -4243,6 +4866,11 @@ class GraphGLTimelineModelMixin:
                 hook(int(frame), playing=False)
         except Exception:
             pass
+
+    def _timeline_on_end_frame_spin_changed(self, value: int) -> None:
+        if bool(getattr(self, "_timeline_ignore_ui", False)):
+            return
+        self._timeline_set_end_frame(int(value), save=True)
 
     def _timeline_on_fps_changed(self, value: float) -> None:
         if bool(getattr(self, "_timeline_ignore_ui", False)):
@@ -4283,6 +4911,10 @@ class GraphGLTimelineModelMixin:
         except Exception:
             pass
         self._timeline_apply_frame_if_keyed(frame, force=True)
+        try:
+            self._timeline_apply_selected_camera_owner_frame(frame)
+        except Exception:
+            pass
         allow_aux_updates = True
         slider = getattr(self, "_timeline_frame_slider", None)
         if slider is not None:
@@ -4299,12 +4931,6 @@ class GraphGLTimelineModelMixin:
             except Exception:
                 pass
         if not bool(allow_aux_updates):
-            try:
-                # Keep the viewed dropdown camera in lockstep while scrubbing even
-                # when outliner timeline ownership points to a different owner.
-                self._timeline_apply_selected_camera_owner_frame(frame)
-            except Exception:
-                pass
             return
         try:
             self._timeline_apply_other_owner_frames(frame)
@@ -4318,10 +4944,66 @@ class GraphGLTimelineModelMixin:
             pass
 
     def _timeline_on_set_key_clicked(self) -> None:
+        self._timeline_sync_key_owner_from_outliner()
+        locked_camera_owner = self._timeline_active_locked_camera_owner()
         try:
-            apply_locked = getattr(self, "_camera_selector_apply_fps_to_locked_owner", None)
-            if callable(apply_locked):
-                apply_locked(sync_ui=True)
+            self._timeline_camera_key_debug_log(
+                "set_key_begin",
+                owner=str(locked_camera_owner or self._timeline_target_owner() or ""),
+                frame=self._timeline_current_frame(),
+                extra={
+                    "locked_camera_owner": locked_camera_owner,
+                    "timeline_owner_before": str(getattr(self, "_timeline_owner_name", "") or ""),
+                },
+            )
+        except Exception:
+            pass
+        if locked_camera_owner:
+            try:
+                current_owner = str(getattr(self, "_timeline_owner_name", "") or "").strip()
+            except Exception:
+                current_owner = ""
+            if current_owner.lower() != str(locked_camera_owner).strip().lower():
+                try:
+                    set_ctx = getattr(self, "set_timeline_scene_context", None)
+                    if callable(set_ctx):
+                        project_path = None
+                        try:
+                            win = self.window()
+                            raw_path = str(getattr(win, "_current_path", "") or "").strip() if win is not None else ""
+                            if raw_path:
+                                project_path = raw_path
+                        except Exception:
+                            project_path = None
+                        set_ctx(
+                            scene_name=str(getattr(self, "_timeline_scene_name", "") or "").strip() or None,
+                            project_path=project_path,
+                            owner_name=locked_camera_owner,
+                            apply_current_frame=False,
+                            load_audio=False,
+                        )
+                    else:
+                        self._timeline_owner_name = str(locked_camera_owner).strip() or None
+                except Exception:
+                    try:
+                        self._timeline_owner_name = str(locked_camera_owner).strip() or None
+                    except Exception:
+                        pass
+        applied_locked_xform = False
+        if locked_camera_owner:
+            try:
+                apply_locked = getattr(self, "_camera_selector_apply_fps_to_locked_owner", None)
+                if callable(apply_locked):
+                    applied_locked_xform = bool(apply_locked(sync_ui=True))
+            except Exception:
+                applied_locked_xform = False
+        try:
+            self._timeline_camera_key_debug_log(
+                "set_key_after_apply_fps_to_owner",
+                owner=str(locked_camera_owner or self._timeline_target_owner() or ""),
+                frame=self._timeline_current_frame(),
+                extra={"applied_locked_xform": bool(applied_locked_xform)},
+            )
         except Exception:
             pass
         frame = self._timeline_current_frame()
@@ -4331,6 +5013,37 @@ class GraphGLTimelineModelMixin:
             xyz = (0.0, 0.0, 0.0)
         if rxyz is None:
             rxyz = (0.0, 0.0, 0.0)
+        try:
+            self._timeline_scene_view_log(
+                "set_key_capture "
+                f"frame={int(frame)} owner={str(self._timeline_target_owner() or '')!r} "
+                f"locked_owner={str(locked_camera_owner or '')!r} "
+                f"applied_locked_xform={bool(applied_locked_xform)} "
+                f"mode={str(getattr(self, '_camera_select_mode', 'default') or 'default')!r} "
+                f"fly={bool(getattr(self, '_fly_mode_enabled', False))} "
+                f"lock={bool(getattr(self, '_camera_select_lock_enabled', False))} "
+                f"fps_active={bool(getattr(self, '_fps_camera_active', False))} "
+                f"xyz={tuple(round(float(v), 4) for v in xyz)} "
+                f"rxyz={tuple(round(float(v), 4) for v in rxyz)} "
+                f"path={str(getattr(self, '_timeline_anim_path', '') or '')!r}",
+                throttle_key=f"set_key_capture:{str(locked_camera_owner or self._timeline_target_owner() or '')}:{int(frame)}",
+                interval=0.05,
+            )
+        except Exception:
+            pass
+        try:
+            self._timeline_camera_key_debug_log(
+                "set_key_capture_values",
+                owner=str(locked_camera_owner or self._timeline_target_owner() or ""),
+                frame=int(frame),
+                extra={
+                    "xyz": xyz,
+                    "rxyz": rxyz,
+                    "applied_locked_xform": bool(applied_locked_xform),
+                },
+            )
+        except Exception:
+            pass
         state = self._timeline_capture_camera_state()
         keys = getattr(self, "_timeline_keys", {}) or {}
         entry = keys.get(int(frame))
@@ -4357,9 +5070,52 @@ class GraphGLTimelineModelMixin:
             self._timeline_keys = keys
         except Exception:
             pass
+        try:
+            self._timeline_camera_key_debug_log(
+                "set_key_entry_written_memory",
+                owner=str(locked_camera_owner or self._timeline_target_owner() or ""),
+                frame=int(frame),
+                extra={"entry": entry, "keys_count": len(keys) if isinstance(keys, dict) else 0},
+            )
+        except Exception:
+            pass
         self._timeline_total_max = max(int(getattr(self, "_timeline_total_max", 240) or 240), int(frame))
         self._timeline_sync_range_controls(keep_current_visible=True, refresh_key_markers=True)
         self._timeline_save_to_disk()
+        try:
+            self._timeline_scene_view_log(
+                "set_key_saved "
+                f"frame={int(frame)} owner={str(self._timeline_target_owner() or '')!r} "
+                f"keys={len(getattr(self, '_timeline_keys', {}) or {})} "
+                f"path={str(getattr(self, '_timeline_anim_path', '') or '')!r}",
+                throttle_key=f"set_key_saved:{str(locked_camera_owner or self._timeline_target_owner() or '')}:{int(frame)}",
+                interval=0.05,
+            )
+        except Exception:
+            pass
+        try:
+            self._timeline_camera_key_debug_log(
+                "set_key_after_save",
+                owner=str(locked_camera_owner or self._timeline_target_owner() or ""),
+                frame=int(frame),
+                extra={"entry": entry},
+            )
+        except Exception:
+            pass
+        if locked_camera_owner:
+            try:
+                self._timeline_apply_owner_xyz_only(str(locked_camera_owner), xyz, rxyz=rxyz)
+            except Exception:
+                pass
+            try:
+                self._timeline_camera_key_debug_log(
+                    "set_key_after_reapply_locked_owner",
+                    owner=str(locked_camera_owner),
+                    frame=int(frame),
+                    extra={"xyz": xyz, "rxyz": rxyz},
+                )
+            except Exception:
+                pass
         self._timeline_refresh_coord_labels()
 
     def _timeline_on_delete_key_clicked(self) -> None:

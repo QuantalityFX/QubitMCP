@@ -139,7 +139,7 @@ class GraphGLTimelineIOMixin:
         except Exception:
             in_frame = None
         try:
-            raw_out = raw.get("out_frame", None)
+            raw_out = raw.get("out_frame", raw.get("end_frame", None))
             if raw_out is not None:
                 cand = int(raw_out)
                 if cand >= 0:
@@ -170,11 +170,20 @@ class GraphGLTimelineIOMixin:
                 if getattr(self, "_timeline_out_frame", None) is not None
                 else None
             ),
+            "end_frame": (
+                int(getattr(self, "_timeline_out_frame", 0))
+                if getattr(self, "_timeline_out_frame", None) is not None
+                else None
+            ),
             "loop_enabled": bool(getattr(self, "_timeline_loop_enabled", True)),
         }
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+            try:
+                self._timeline_owner_keys_cache = {}
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -498,6 +507,11 @@ class GraphGLTimelineIOMixin:
                 if getattr(self, "_timeline_out_frame", None) is not None
                 else None
             ),
+            "end_frame": (
+                int(getattr(self, "_timeline_out_frame", 0))
+                if getattr(self, "_timeline_out_frame", None) is not None
+                else None
+            ),
             "loop_enabled": bool(getattr(self, "_timeline_loop_enabled", True)),
             "material_live_mode": bool(getattr(self, "_timeline_material_live_mode", True)),
             "fx_instances_enabled": bool(getattr(self, "_timeline_fx_instances_enabled", True)),
@@ -717,6 +731,10 @@ class GraphGLTimelineIOMixin:
                 self._timeline_apply_frame_if_keyed(self._timeline_current_frame())
             except Exception:
                 pass
+            try:
+                self._timeline_apply_selected_camera_owner_frame(self._timeline_current_frame())
+            except Exception:
+                pass
 
     def set_timeline_scene_context(
         self,
@@ -760,6 +778,37 @@ class GraphGLTimelineIOMixin:
         self._timeline_range_cfg_path = range_cfg_path
         self._timeline_audio_scene_name = audio_scene_name
         self._timeline_audio_cfg_path = audio_cfg_path
+        try:
+            log_fn = getattr(self, "_timeline_scene_view_log", None)
+            if callable(log_fn):
+                log_fn(
+                    "timeline_context "
+                    f"scene={name!r} owner={owner!r} "
+                    f"apply_current_frame={bool(apply_current_frame)} "
+                    f"same_path={bool(same)} path={str(anim_path)!r}",
+                    throttle_key=f"timeline_context:{owner}:{name}",
+                    interval=0.05,
+                )
+        except Exception:
+            pass
+        try:
+            debug_fn = getattr(self, "_timeline_camera_key_debug_log", None)
+            if callable(debug_fn):
+                debug_fn(
+                    "timeline_context_set",
+                    owner=owner,
+                    frame=self._timeline_current_frame(),
+                    extra={
+                        "scene": name,
+                        "project_path": project_path,
+                        "apply_current_frame": bool(apply_current_frame),
+                        "load_audio": bool(load_audio),
+                        "same_path": bool(same),
+                        "anim_path": str(anim_path),
+                    },
+                )
+        except Exception:
+            pass
         # Range markers are scene-level settings; reload on every context switch
         # so owner/outliner timeline changes inherit the same in/out + loop state.
         self._timeline_range_load_from_disk()

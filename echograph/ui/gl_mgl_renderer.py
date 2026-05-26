@@ -16054,6 +16054,16 @@ class MGLRendererMixin:
         mesh_owner_names = set()
         try:
             for asset in assets or []:
+                if not isinstance(asset, dict):
+                    continue
+                kind = str(asset.get("kind") or "").strip().lower()
+                ext_hint = str(asset.get("ext") or "").strip().lower()
+                if kind in {"camera", "light"} or ext_hint in {".camera", ".light"}:
+                    continue
+                if bool(asset.get("wire_only")) or bool(asset.get("volume")):
+                    continue
+                if not bool(asset.get("visible", True)):
+                    continue
                 path_str = str(asset.get("path", "") or "").strip()
                 if not path_str:
                     continue
@@ -16464,8 +16474,6 @@ class MGLRendererMixin:
                                     piv[owner] = (cx, cy, cz)
                                 except Exception:
                                     pass
-                                bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, bmin, bmax)
-                                has_mesh_bounds = True
                             except Exception:
                                 pass
 
@@ -16507,8 +16515,6 @@ class MGLRendererMixin:
                             piv[owner] = (cx, cy, cz)
                         except Exception:
                             pass
-                        bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, bmin, bmax)
-                        has_mesh_bounds = True
                     except Exception:
                         pass
                     camera_item = self._mgl_add_wire_item_from_points(
@@ -16629,8 +16635,6 @@ class MGLRendererMixin:
                             self._mgl_scene_mesh_bounds_by_owner[owner] = (bmin.astype("f4"), bmax.astype("f4"))
                         except Exception:
                             pass
-                        bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, bmin, bmax)
-                        has_mesh_bounds = True
 
                     wire_item = None
                     if ext == ".obj":

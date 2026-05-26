@@ -3169,9 +3169,21 @@ class SceneAssemblyWidget(QtWidgets.QWidget):
 
 def augment_infocard_footer(card, footer_layout) -> bool:
     node = getattr(card, "_node_ref", None)
-    print("[SceneSpec] augment_infocard_footer called from:", __file__, flush=True)
     if not node:
         return False
+    node_debug = _scene_debug_enabled(node)
+    try:
+        card._scene_outliner_log_enabled = bool(node_debug)
+    except Exception:
+        pass
+    if node_debug:
+        print("[SceneSpec] augment_infocard_footer called from:", __file__, flush=True)
+
+    def _footer_debug_enabled() -> bool:
+        try:
+            return _scene_debug_enabled(getattr(card, "_node_ref", None) or node)
+        except Exception:
+            return False
 
     try:
         footer_layout.setContentsMargins(0, 0, 0, 0)
@@ -3235,9 +3247,9 @@ def augment_infocard_footer(card, footer_layout) -> bool:
         outliner.setMaximumHeight(900)
         layout.addWidget(outliner)
         card._scene_outliner_widget = outliner
-        card._scene_outliner_log_enabled = False
+        card._scene_outliner_log_enabled = bool(node_debug)
         def _outliner_log(msg: str) -> None:
-            if not getattr(card, "_scene_outliner_log_enabled", False):
+            if not _footer_debug_enabled():
                 return
             try:
                 root = Path(__file__).resolve().parents[2]
@@ -3794,7 +3806,56 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 win = card.window()
                 ctl = getattr(win, "_timeline_controller", None) if win is not None else None
                 if ctl is not None:
-                    ctl.sync_timeline_context()
+                    glv = getattr(win, "gl_view", None) if win is not None else None
+                    apply_current_frame = True
+                    if glv is not None and sel_kind == "camera":
+                        try:
+                            mode = str(getattr(glv, "_camera_select_mode", "default") or "default").strip()
+                            camera_live = (
+                                bool(getattr(glv, "_camera_select_lock_enabled", False))
+                                or bool(getattr(glv, "_fly_mode_enabled", False))
+                                or bool(getattr(glv, "_fps_camera_active", False))
+                            )
+                            if mode and mode.lower() == str(owner).strip().lower() and bool(camera_live):
+                                apply_current_frame = False
+                        except Exception:
+                            apply_current_frame = True
+                    try:
+                        log_fn = getattr(glv, "_timeline_scene_view_log", None) if glv is not None else None
+                        if callable(log_fn):
+                            log_fn(
+                                "outliner_select "
+                                f"owner={str(owner)!r} kind={sel_kind!r} "
+                                f"apply_current_frame={bool(apply_current_frame)} "
+                                f"camera_mode={str(getattr(glv, '_camera_select_mode', 'default') or 'default') if glv is not None else 'default'!r} "
+                                f"fly={bool(getattr(glv, '_fly_mode_enabled', False)) if glv is not None else False} "
+                                f"lock={bool(getattr(glv, '_camera_select_lock_enabled', False)) if glv is not None else False}",
+                                throttle_key=f"outliner_select:{str(owner).strip()}",
+                                interval=0.05,
+                            )
+                    except Exception:
+                        pass
+                    try:
+                        debug_fn = getattr(glv, "_timeline_camera_key_debug_log", None) if glv is not None else None
+                        if callable(debug_fn):
+                            debug_fn(
+                                "outliner_select",
+                                owner=str(owner),
+                                frame=glv._timeline_current_frame() if hasattr(glv, "_timeline_current_frame") else None,
+                                extra={
+                                    "kind": sel_kind,
+                                    "apply_current_frame": bool(apply_current_frame),
+                                    "camera_mode": str(getattr(glv, "_camera_select_mode", "default") or "default"),
+                                    "fly": bool(getattr(glv, "_fly_mode_enabled", False)),
+                                    "lock": bool(getattr(glv, "_camera_select_lock_enabled", False)),
+                                },
+                            )
+                    except Exception:
+                        pass
+                    ctl.sync_timeline_context(
+                        apply_current_frame=bool(apply_current_frame),
+                        load_audio=bool(apply_current_frame),
+                    )
             except Exception:
                 pass
             xform_panel.setEnabled(True)
@@ -3968,11 +4029,9 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             else:
                 hidden.add(name)
             # Log visibility changes for debugging (splat/mesh eye toggle)
-            try:
-                win = card.window()
-                glv = getattr(win, "gl_view", None) if win is not None else None
-                if glv is not None:
-                    glv._mgl_log(
+            if _footer_debug_enabled():
+                try:
+                    msg = (
                         "outliner: eye name="
                         + str(name)
                         + " visible="
@@ -3980,8 +4039,13 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                         + " hidden_count="
                         + str(len(hidden))
                     )
-            except Exception:
-                pass
+                    _outliner_log(msg)
+                    win = card.window()
+                    glv = getattr(win, "gl_view", None) if win is not None else None
+                    if glv is not None:
+                        glv._mgl_log(msg)
+                except Exception:
+                    pass
             win = card.window()
             handler = getattr(win, "set_scene_asset_visible", None) if win is not None else None
             if callable(handler):
