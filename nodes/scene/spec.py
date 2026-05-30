@@ -50,6 +50,15 @@ _FX_SPLAT_FX_KIND_ALIASES = {
     "splat glow",
     "splatglow",
 }
+_SPLAT_COLORIZE_KIND_ALIASES = {
+    "colorize",
+    "splat_colorize",
+    "splat colorize",
+    "fx_splat_colorize",
+    "fx splat colorize",
+    "gaussian_colorize",
+    "gaussian colorize",
+}
 _FX_MUSIC_EFFECTS_KIND_ALIASES = {
     "fx_music_effects",
     "fx music effects",
@@ -956,6 +965,7 @@ def _resolve_input_item(scene, node_item, port_names=None):
             kind in {"fx", "fx_trail"}
             or kind in _FX_SPLAT_PHYSICS_KIND_ALIASES
             or kind in _FX_SPLAT_FX_KIND_ALIASES
+            or kind in _SPLAT_COLORIZE_KIND_ALIASES
             or kind in _FX_MUSIC_EFFECTS_KIND_ALIASES
         ):
             try:
@@ -1194,6 +1204,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             "fx_trail",
             *_FX_SPLAT_PHYSICS_KIND_ALIASES,
             *_FX_SPLAT_FX_KIND_ALIASES,
+            *_SPLAT_COLORIZE_KIND_ALIASES,
         }
         depth = 0
         while item is not None and item not in visited and depth < 10:
@@ -1236,6 +1247,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             "fx_trail",
             *_FX_SPLAT_PHYSICS_KIND_ALIASES,
             *_FX_SPLAT_FX_KIND_ALIASES,
+            *_SPLAT_COLORIZE_KIND_ALIASES,
         }
         depth = 0
         while item is not None and item not in visited and depth < 12:
@@ -1928,6 +1940,44 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                         + f"audio={str(splat_fx.get('audio_path') or '')} "
                         + f"enabled={bool(splat_fx.get('enabled', True))} "
                         + f"glow={float(glow_cfg.get('intensity', 0.0) or 0.0):.3f}",
+                    )
+            continue
+        if kind in _SPLAT_COLORIZE_KIND_ALIASES:
+            try:
+                from nodes.fx import splat_colorize_spec as _splat_colorize_spec  # type: ignore
+
+                build_asset = getattr(_splat_colorize_spec, "build_splat_colorize_scene_asset", None)
+                outcome = build_asset(src_item) if callable(build_asset) else None
+                asset = getattr(outcome, "asset", None)
+            except Exception as exc:
+                asset = None
+                if _scene_debug_enabled(model):
+                    _scene_log(
+                        node_item,
+                        f"colorize asset build failed node={src_name or kind} err={exc!r}",
+                    )
+            if isinstance(asset, dict):
+                asset_owner = str(asset.get("node") or src_name or kind).strip()
+                saved_xform = _lookup_xform(xforms, asset_owner)
+                if not isinstance(saved_xform, dict) and asset_owner != src_name:
+                    saved_xform = _lookup_xform(xforms, src_name)
+                if isinstance(saved_xform, dict):
+                    asset["xform"] = dict(saved_xform)
+                asset["visible"] = asset_owner not in hidden
+                assets.append(asset)
+                path_key = str(asset.get("path") or "").strip()
+                if path_key:
+                    seen.add(path_key)
+                if dbg_collect:
+                    proxy = asset.get("render_proxy") if isinstance(asset.get("render_proxy"), dict) else {}
+                    colorize = proxy.get("splat_colorize") if isinstance(proxy.get("splat_colorize"), dict) else {}
+                    _scene_log(
+                        node_item,
+                        "colorize asset "
+                        + f"node={str(asset.get('node') or '')} "
+                        + f"path={str(asset.get('path') or '')} "
+                        + f"enabled={bool(colorize.get('enabled', True))} "
+                        + f"metric={str(colorize.get('metric') or '')}",
                     )
             continue
         if kind in _COPY_TO_POINTS_KIND_ALIASES:
@@ -3026,6 +3076,7 @@ class SceneAssemblyWidget(QtWidgets.QWidget):
                 or kind in _SKINNED_SPLAT_PROXY_KIND_ALIASES
                 or kind in _FX_SPLAT_PHYSICS_KIND_ALIASES
                 or kind in _FX_SPLAT_FX_KIND_ALIASES
+                or kind in _SPLAT_COLORIZE_KIND_ALIASES
                 or ext == ".ply"
             ):
                 splat_count += 1
@@ -4105,6 +4156,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                         or kind in _SKINNED_SPLAT_PROXY_KIND_ALIASES
                         or kind in _FX_SPLAT_PHYSICS_KIND_ALIASES
                         or kind in _FX_SPLAT_FX_KIND_ALIASES
+                        or kind in _SPLAT_COLORIZE_KIND_ALIASES
                     ) and not ext:
                         ext = ".ply"
                     rows.append({"node": name, "path": path, "kind": "mesh", "ext": ext, "_quick": True})

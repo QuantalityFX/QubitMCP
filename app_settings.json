@@ -2,10 +2,10 @@
   "save_layout": true,
   "panel_layout": {
     "timeline": true,
-    "audio": false,
+    "audio": true,
     "profiler": false
   },
-  "view_mode": "2d",
+  "view_mode": "split",
   "voice_audio_mode": "bilateral",
   "voice_mic_device_index": 1,
   "shadow_quality": "ultra",

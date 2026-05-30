@@ -41,6 +41,15 @@ _FX_SPLAT_FX_KIND_ALIASES = {
     "splat glow",
     "splatglow",
 }
+_SPLAT_COLORIZE_KIND_ALIASES = {
+    "colorize",
+    "splat_colorize",
+    "splat colorize",
+    "fx_splat_colorize",
+    "fx splat colorize",
+    "gaussian_colorize",
+    "gaussian colorize",
+}
 
 SPLAT_PHYSICS_NODE_W = 288
 SPLAT_PHYSICS_BODY_INSET_X = 8
@@ -543,6 +552,14 @@ def _source_asset_from_item(source_item) -> tuple[Optional[Dict[str, Any]], str]
             return getattr(outcome, "asset", None), str(getattr(outcome, "detail", "") or "")
         except Exception as exc:
             return None, f"FX Splat FX asset build failed: {exc}"
+    if kind in _SPLAT_COLORIZE_KIND_ALIASES:
+        try:
+            from nodes.fx import splat_colorize_spec as splat_colorize_spec  # type: ignore
+
+            outcome = splat_colorize_spec.build_splat_colorize_scene_asset(source_item)
+            return getattr(outcome, "asset", None), str(getattr(outcome, "detail", "") or "")
+        except Exception as exc:
+            return None, f"Colorize asset build failed: {exc}"
     if kind not in _SKINNED_SPLAT_PROXY_KIND_ALIASES:
         return None, f"Unsupported input node kind: {kind or '<none>'}."
     try:

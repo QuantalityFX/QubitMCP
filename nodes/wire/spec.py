@@ -51,6 +51,13 @@ _PASS_THROUGH_KINDS = {
     "music_effects",
     "music effects",
     "musiceffects",
+    "colorize",
+    "splat_colorize",
+    "splat colorize",
+    "fx_splat_colorize",
+    "fx splat colorize",
+    "gaussian_colorize",
+    "gaussian colorize",
 }
 
 _PLY_SCALAR_TYPES = {

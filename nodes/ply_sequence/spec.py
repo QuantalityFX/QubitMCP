@@ -43,6 +43,13 @@ _PASS_THROUGH_KINDS = {
     "splat_glow",
     "splat glow",
     "splatglow",
+    "colorize",
+    "splat_colorize",
+    "splat colorize",
+    "fx_splat_colorize",
+    "fx splat colorize",
+    "gaussian_colorize",
+    "gaussian colorize",
 }
 
 _PLY_SEQ_LOG_ENABLED = False

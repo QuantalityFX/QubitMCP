@@ -234,6 +234,8 @@ def _kind_label(kind: str) -> str:
     key = text.lower().replace(" ", "_")
     if key in ("fx", "fx_trail"):
         return "FX Bullet Time"
+    if key in ("colorize", "splat_colorize", "fx_splat_colorize", "gaussian_colorize"):
+        return "Colorize"
     if key in ("fx_music_effects", "music_effects", "musiceffects"):
         return "FX Music Visualizer"
     if key in ("gen-x-videomocap", "gen-x_video_mocap", "genx_video_mocap", "genx_videomocap", "gemx_video_mocap"):
@@ -318,7 +320,7 @@ def _kind_icon(kind: str) -> QtGui.QIcon:
         icon_pm = node_icons._texture_layer_icon() or node_icons._output_icon()
     elif key == "material":
         icon_pm = node_icons._material_node_icon() or node_icons._output_icon()
-    elif key in ("fx", "fx_trail", "fx_splat_physics", "fx splat physics", "splat_physics", "splat physics", "splatphysics", "fx_splat_fx", "fx splat fx", "splat_fx", "splat fx", "fx_splat_glow", "fx splat glow", "splat_glow", "splat glow", "splatglow", "fx_music_effects", "fx music effects", "music_effects", "music effects", "musiceffects"):
+    elif key in ("fx", "fx_trail", "fx_splat_physics", "fx splat physics", "splat_physics", "splat physics", "splatphysics", "fx_splat_fx", "fx splat fx", "splat_fx", "splat fx", "fx_splat_glow", "fx splat glow", "splat_glow", "splat glow", "splatglow", "colorize", "splat_colorize", "splat colorize", "fx_splat_colorize", "fx splat colorize", "gaussian_colorize", "gaussian colorize", "fx_music_effects", "fx music effects", "music_effects", "music effects", "musiceffects"):
         icon_pm = node_icons._fx_node_icon() or node_icons._output_icon()
     elif key == "transforms":
         icon_pm = node_icons._transforms_icon() or node_icons._output_icon()
@@ -384,7 +386,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
         self.kind_edit = QtWidgets.QComboBox()
         self.kind_edit.setEditable(True)
         self._kinds = [
-            "node","camera","light","directional_light","point_light","spot_light","area_light","import","fbx_import","mocap_import","GEN-X-VideoMocap","anim_retarget","skinned_splat_proxy","instance","copy_to_points","primitive","normals","uv_unwrap","texture","texture_pro","texture_layer","material","split_volume","transforms","fx","fx_splat_physics","fx_splat_fx","fx_music_effects","scene","render","video_player","post_process","sequence_to_mp4","export_fbx","html_preview","python","switch","output","local_server",
+            "node","camera","light","directional_light","point_light","spot_light","area_light","import","fbx_import","mocap_import","GEN-X-VideoMocap","anim_retarget","skinned_splat_proxy","instance","copy_to_points","primitive","normals","uv_unwrap","texture","texture_pro","texture_layer","material","split_volume","transforms","fx","fx_splat_physics","fx_splat_fx","colorize","fx_music_effects","scene","render","video_player","post_process","sequence_to_mp4","export_fbx","html_preview","python","switch","output","local_server",
             "gantt_chart","keyboard_sequence",
             "serial_com",
             "qubit_deck_controller",
@@ -445,7 +447,8 @@ class CreateNodeDialog(QtWidgets.QDialog):
             "fx": (4, 3),
             "fx_splat_physics": (5, 3),
             "fx_splat_fx": (6, 3),
-            "fx_music_effects": (7, 3),
+            "colorize": (7, 3),
+            "fx_music_effects": (8, 3),
         }
         occupied = set(forced_positions.values())
         next_cell = 0

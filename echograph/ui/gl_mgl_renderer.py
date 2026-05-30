@@ -2167,7 +2167,213 @@ class MGLRendererMixin:
             out[:limit, 0] = np.clip(base[:limit, 0], np.float32(0.0), np.float32(1.0)) * np.float32(intensity)
         return np.clip(out, np.float32(0.0), np.float32(4.0)).astype(np.float32, copy=False)
 
-    def _mgl_apply_splat_fx_to_splats(self, proxy: dict, splats: NDArray, frame: int) -> tuple[NDArray, NDArray]:
+    def _mgl_normalize_splat_colorize_config(self, raw) -> Optional[Dict[str, Any]]:
+        if not isinstance(raw, dict):
+            return None
+
+        def _bool(value, default: bool = False) -> bool:
+            if isinstance(value, str):
+                text = value.strip().lower()
+                if text in {"1", "true", "yes", "on", "y"}:
+                    return True
+                if text in {"0", "false", "no", "off", "n"}:
+                    return False
+            if value is None:
+                return bool(default)
+            return bool(value)
+
+        def _float(value, default: float, minimum: float, maximum: float) -> float:
+            try:
+                out = float(value)
+            except Exception:
+                out = float(default)
+            return max(float(minimum), min(float(maximum), float(out)))
+
+        metric = str(raw.get("metric") or "thickness").strip().lower()
+        if metric in {"thick", "feature", "feature_radius"}:
+            metric = "thickness"
+        elif metric in {"dense", "inverse_radius"}:
+            metric = "density"
+        elif metric not in {"thickness", "density", "radius", "area", "height_y"}:
+            metric = "thickness"
+
+        ramp = []
+        for row in list(raw.get("ramp") or []):
+            if not isinstance(row, dict):
+                continue
+            try:
+                pos = _float(row.get("position"), 0.0, 0.0, 1.0)
+                color = [float(v) for v in list(row.get("color") or [])[:3]]
+                if len(color) != 3:
+                    continue
+                ramp.append(
+                    {
+                        "position": float(pos),
+                        "color": [
+                            max(0.0, min(1.0, float(color[0]))),
+                            max(0.0, min(1.0, float(color[1]))),
+                            max(0.0, min(1.0, float(color[2]))),
+                        ],
+                    }
+                )
+            except Exception:
+                continue
+        if len(ramp) < 2:
+            ramp = [
+                {"position": 0.0, "color": [0.1137, 0.3059, 0.8471]},
+                {"position": 0.5, "color": [0.0784, 0.7216, 0.6510]},
+                {"position": 1.0, "color": [0.9608, 0.6196, 0.0431]},
+            ]
+        ramp.sort(key=lambda item: float(item.get("position", 0.0)))
+        if float(ramp[0].get("position", 0.0)) > 0.0:
+            ramp.insert(0, {"position": 0.0, "color": list(ramp[0].get("color") or [1.0, 1.0, 1.0])[:3]})
+        if float(ramp[-1].get("position", 1.0)) < 1.0:
+            ramp.append({"position": 1.0, "color": list(ramp[-1].get("color") or [1.0, 1.0, 1.0])[:3]})
+
+        normalize = raw.get("normalize") if isinstance(raw.get("normalize"), dict) else {}
+        low_pct = _float(normalize.get("low_percentile"), 2.0, 0.0, 99.0)
+        high_pct = _float(normalize.get("high_percentile"), 98.0, 1.0, 100.0)
+        if high_pct <= low_pct:
+            high_pct = min(100.0, low_pct + 1.0)
+        return {
+            "enabled": _bool(raw.get("enabled"), True),
+            "metric": metric,
+            "ramp": ramp,
+            "low_percentile": low_pct,
+            "high_percentile": high_pct,
+            "invert": _bool(normalize.get("invert"), False),
+            "gamma": _float(normalize.get("gamma"), 1.0, 0.05, 8.0),
+            "blend": _float(raw.get("blend"), 1.0, 0.0, 1.0),
+        }
+
+    def _mgl_splat_colorize_metric_values(self, proxy: dict, splats: NDArray, metric: str) -> Optional[NDArray]:
+        if np is None or not isinstance(proxy, dict):
+            return None
+
+        def _vector(name: str) -> Optional[NDArray]:
+            try:
+                arr = np.asarray(proxy.get(name), dtype="f4").reshape(-1)
+            except Exception:
+                return None
+            if int(arr.shape[0]) <= 0:
+                return None
+            return arr.astype(np.float32, copy=False)
+
+        values = None
+        if metric == "area":
+            values = _vector("source_triangle_area")
+        elif metric == "height_y":
+            try:
+                bind = np.asarray(proxy.get("bind_positions"), dtype="f4").reshape(-1, 3)
+                if int(bind.shape[0]) > 0:
+                    values = bind[:, 1].astype(np.float32, copy=False)
+            except Exception:
+                values = None
+        elif metric in {"thickness", "density"}:
+            values = _vector("source_feature_radius")
+            if values is None:
+                try:
+                    brs = np.asarray(proxy.get("bind_radius_scale"), dtype="f4").reshape(-1, 4)
+                    if int(brs.shape[0]) > 0:
+                        values = brs[:, 0].astype(np.float32, copy=False)
+                except Exception:
+                    values = None
+        elif metric == "radius":
+            try:
+                brs = np.asarray(proxy.get("bind_radius_scale"), dtype="f4").reshape(-1, 4)
+                if int(brs.shape[0]) > 0:
+                    values = brs[:, 0].astype(np.float32, copy=False)
+            except Exception:
+                values = None
+
+        if values is None:
+            try:
+                arr = np.asarray(splats, dtype="f4").reshape(-1, 15)
+                values = arr[:, 7].astype(np.float32, copy=False)
+            except Exception:
+                return None
+        if metric == "density":
+            values = np.float32(1.0) / np.maximum(values.astype(np.float32, copy=False), np.float32(1.0e-8))
+        return values.astype(np.float32, copy=False)
+
+    def _mgl_apply_splat_colorize_to_splats(self, proxy: dict, splats: NDArray) -> NDArray:
+        if np is None or not isinstance(proxy, dict):
+            return splats
+        render_proxy = proxy.get("render_proxy") if isinstance(proxy.get("render_proxy"), dict) else {}
+        cfg = self._mgl_normalize_splat_colorize_config(render_proxy.get("splat_colorize"))
+        if cfg is None or not bool(cfg.get("enabled", True)):
+            return splats
+        try:
+            out = np.asarray(splats, dtype="f4").reshape(-1, 15).astype(np.float32, copy=True)
+        except Exception:
+            return splats
+        count = int(out.shape[0])
+        if count <= 0:
+            return out
+        values = self._mgl_splat_colorize_metric_values(proxy, out, str(cfg.get("metric") or "thickness"))
+        if values is None:
+            return out
+        limit = min(count, int(values.shape[0]))
+        if limit <= 0:
+            return out
+        values = values[:limit].astype(np.float32, copy=False)
+        finite = np.isfinite(values)
+        if not np.any(finite):
+            return out
+        valid = values[finite]
+        try:
+            lo = float(np.percentile(valid, float(cfg.get("low_percentile", 2.0))))
+            hi = float(np.percentile(valid, float(cfg.get("high_percentile", 98.0))))
+        except Exception:
+            lo = float(np.min(valid))
+            hi = float(np.max(valid))
+        if not math.isfinite(lo) or not math.isfinite(hi) or hi <= lo + 1.0e-8:
+            lo = float(np.min(valid))
+            hi = float(np.max(valid))
+        if not math.isfinite(lo) or not math.isfinite(hi) or hi <= lo + 1.0e-8:
+            t = np.full((limit,), 0.5, dtype=np.float32)
+        else:
+            t = ((values - np.float32(lo)) / np.float32(hi - lo)).astype(np.float32, copy=False)
+            t = np.clip(t, np.float32(0.0), np.float32(1.0))
+        if bool(cfg.get("invert", False)):
+            t = np.float32(1.0) - t
+        try:
+            gamma = max(0.05, min(8.0, float(cfg.get("gamma", 1.0))))
+        except Exception:
+            gamma = 1.0
+        if abs(gamma - 1.0) > 1.0e-5:
+            t = np.power(t, np.float32(gamma)).astype(np.float32, copy=False)
+
+        ramp = list(cfg.get("ramp") or [])
+        positions = np.asarray([float(row.get("position", 0.0)) for row in ramp], dtype=np.float32)
+        colors = np.asarray([list(row.get("color") or [1.0, 1.0, 1.0])[:3] for row in ramp], dtype=np.float32)
+        if positions.ndim != 1 or colors.ndim != 2 or colors.shape[0] != positions.shape[0] or colors.shape[1] != 3:
+            return out
+        rgb = np.zeros((limit, 3), dtype=np.float32)
+        for channel in range(3):
+            rgb[:, channel] = np.interp(t, positions, colors[:, channel]).astype(np.float32, copy=False)
+        try:
+            blend = max(0.0, min(1.0, float(cfg.get("blend", 1.0))))
+        except Exception:
+            blend = 1.0
+        if blend >= 1.0 - 1.0e-6:
+            out[:limit, 3:6] = np.clip(rgb, 0.0, 1.0)
+        elif blend > 1.0e-6:
+            out[:limit, 3:6] = np.clip(
+                out[:limit, 3:6] * np.float32(1.0 - blend) + rgb * np.float32(blend),
+                0.0,
+                1.0,
+            )
+        return out.astype(np.float32, copy=False)
+
+    def _mgl_apply_splat_fx_to_splats(
+        self,
+        proxy: dict,
+        splats: NDArray,
+        frame: int,
+        *,
+        apply_colorize: bool = True,
+    ) -> tuple[NDArray, NDArray]:
         if np is None:
             return splats, splats
         try:
@@ -2177,6 +2383,8 @@ class MGLRendererMixin:
         count = int(out.shape[0])
         if count <= 0:
             return out, np.zeros((0, 1), dtype=np.float32)
+        if bool(apply_colorize):
+            out = self._mgl_apply_splat_colorize_to_splats(proxy, out)
         glow = np.zeros((count, 1), dtype=np.float32)
         music_values = self._mgl_splat_fx_music_values(proxy, out, int(frame))
         if music_values is not None and int(music_values.shape[0]) == count:
@@ -3213,6 +3421,14 @@ class MGLRendererMixin:
                     bind_radius_scale = np.asarray(skin["bind_radius_scale"], dtype=np.float32).reshape(-1, 4)
                 except Exception:
                     bind_radius_scale = splats[:, 7:11].astype(np.float32, copy=True)
+                try:
+                    source_triangle_area = np.asarray(skin["source_triangle_area"], dtype=np.float32).reshape(-1)
+                except Exception:
+                    source_triangle_area = np.zeros((0,), dtype=np.float32)
+                try:
+                    source_feature_radius = np.asarray(skin["source_feature_radius"], dtype=np.float32).reshape(-1)
+                except Exception:
+                    source_feature_radius = np.zeros((0,), dtype=np.float32)
 
             count = min(
                 int(splats.shape[0]),
@@ -3229,6 +3445,14 @@ class MGLRendererMixin:
             joint_weights = joint_weights[:count].astype(np.float32, copy=False)
             bind_quats = bind_quats[:count].astype(np.float32, copy=False)
             bind_radius_scale = bind_radius_scale[:count].astype(np.float32, copy=False)
+            if int(source_triangle_area.shape[0]) >= count:
+                source_triangle_area = source_triangle_area[:count].astype(np.float32, copy=False)
+            else:
+                source_triangle_area = np.zeros((0,), dtype=np.float32)
+            if int(source_feature_radius.shape[0]) >= count:
+                source_feature_radius = source_feature_radius[:count].astype(np.float32, copy=False)
+            else:
+                source_feature_radius = np.zeros((0,), dtype=np.float32)
             if joint_indices.ndim != 2 or joint_weights.ndim != 2 or joint_indices.shape != joint_weights.shape:
                 raise RuntimeError("skinned proxy joint index/weight arrays must be matching 2D arrays")
 
@@ -3256,6 +3480,8 @@ class MGLRendererMixin:
                 "bind_positions": bind_positions,
                 "bind_quats": bind_quats,
                 "bind_radius_scale": bind_radius_scale,
+                "source_triangle_area": source_triangle_area,
+                "source_feature_radius": source_feature_radius,
                 "bind_bounds": (bind_mins, bind_maxs),
                 "joint_indices": joint_indices,
                 "joint_weights": joint_weights,
@@ -3405,6 +3631,10 @@ class MGLRendererMixin:
                 current = base.astype(np.float32, copy=True)
                 current[:, 0:3] = deformed
                 try:
+                    current = self._mgl_apply_splat_colorize_to_splats(proxy, current)
+                except Exception:
+                    pass
+                try:
                     trail_splats = self._mgl_update_splat_trails(proxy, current, int(frame))
                     if getattr(trail_splats, "size", 0):
                         current = np.concatenate([current, trail_splats], axis=0).astype(np.float32, copy=False)
@@ -3418,7 +3648,12 @@ class MGLRendererMixin:
                     except Exception:
                         pass
                 try:
-                    current, glow_values = self._mgl_apply_splat_fx_to_splats(proxy, current, int(frame))
+                    current, glow_values = self._mgl_apply_splat_fx_to_splats(
+                        proxy,
+                        current,
+                        int(frame),
+                        apply_colorize=False,
+                    )
                     glow_map = getattr(self, "_mgl_scene_splat_glow_by_owner", None)
                     if not isinstance(glow_map, dict):
                         glow_map = {}

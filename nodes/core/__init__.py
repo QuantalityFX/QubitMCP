@@ -87,6 +87,7 @@ def register_defaults() -> None:
     register("copy_to_points", stripe_color="#06b6d4")
     register("fx_splat_physics", stripe_color="#84cc16")
     register("fx_splat_fx", stripe_color="#f472b6")
+    register("colorize", stripe_color="#22d3ee")
     register("fx_music_effects", stripe_color="#84cc16")
     register("html_preview", stripe_color="#f97316")
     register("image_collection", stripe_color="#22c55e")

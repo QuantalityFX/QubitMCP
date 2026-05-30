@@ -47,6 +47,8 @@ class SkinnedSplatProxyArrays:
     source_triangle_index: np.ndarray
     source_vertex_indices: np.ndarray
     source_barycentric: np.ndarray
+    source_triangle_area: np.ndarray
+    source_feature_radius: np.ndarray
     debug_color_rgba: np.ndarray
     mesh_names: Tuple[str, ...]
     joint_names: Tuple[str, ...]
@@ -157,12 +159,14 @@ def build_skinned_splat_proxy_arrays(
     normals = candidates["normals"][selected].astype("f4", copy=False)
     quats = _quats_from_z_to_normals(normals)
 
+    selected_areas = candidates["areas"][selected].astype("f4", copy=False)
+    selected_feature_radii = candidates["feature_radii"][selected].astype("f4", copy=False)
     radii = _sample_radii(
         settings,
         total_area=total_area,
         sample_count=sample_count,
-        selected_areas=candidates["areas"][selected],
-        selected_feature_radii=candidates["feature_radii"][selected],
+        selected_areas=selected_areas,
+        selected_feature_radii=selected_feature_radii,
     )
     scale3 = _normalized_axis_scale(float(settings.normal_axis_scale))
     scales = np.tile(scale3.reshape(1, 3), (sample_count, 1)).astype("f4", copy=False)
@@ -221,6 +225,8 @@ def build_skinned_splat_proxy_arrays(
         source_triangle_index=selected_triangle_indices,
         source_vertex_indices=selected_vertex_indices,
         source_barycentric=bary.astype("f4", copy=False),
+        source_triangle_area=selected_areas.astype("f4", copy=False),
+        source_feature_radius=selected_feature_radii.astype("f4", copy=False),
         debug_color_rgba=rgba,
         mesh_names=tuple(str(mesh.name) for mesh in mesh_list),
         joint_names=tuple(str(joint.name) for joint in skeleton.joints),
@@ -295,6 +301,8 @@ def write_skinned_splat_skin_npz(path: str | Path, arrays: SkinnedSplatProxyArra
         source_triangle_index=arrays.source_triangle_index.astype(np.int32, copy=False),
         source_vertex_indices=arrays.source_vertex_indices.astype(np.int32, copy=False),
         source_barycentric=arrays.source_barycentric.astype("f4", copy=False),
+        source_triangle_area=arrays.source_triangle_area.astype("f4", copy=False),
+        source_feature_radius=arrays.source_feature_radius.astype("f4", copy=False),
         debug_color_rgba=arrays.debug_color_rgba.astype("f4", copy=False),
     )
     return out_path
@@ -347,6 +355,8 @@ def build_skinned_splat_proxy(
             "splats": list(arrays.splats.shape),
             "joint_indices": list(arrays.joint_indices.shape),
             "joint_weights": list(arrays.joint_weights.shape),
+            "source_triangle_area": list(arrays.source_triangle_area.shape),
+            "source_feature_radius": list(arrays.source_feature_radius.shape),
         },
     }
     with manifest_path.open("w", encoding="utf-8") as handle:

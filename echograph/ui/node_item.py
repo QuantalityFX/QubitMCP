@@ -527,7 +527,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             except Exception:
                 pass
         # Ensure FX spec is registered even if the loader was skipped.
-        if (self.model.kind or "").strip().lower() in ("fx", "fx_trail", "fx_splat_physics", "fx splat physics", "splat_physics", "splat physics", "splatphysics", "fx_splat_fx", "fx splat fx", "splat_fx", "splat fx", "fx_splat_glow", "fx splat glow", "splat_glow", "splat glow", "splatglow", "fx_music_effects", "fx music effects", "music_effects", "music effects", "musiceffects"):
+        if (self.model.kind or "").strip().lower() in ("fx", "fx_trail", "fx_splat_physics", "fx splat physics", "splat_physics", "splat physics", "splatphysics", "fx_splat_fx", "fx splat fx", "splat_fx", "splat fx", "fx_splat_glow", "fx splat glow", "splat_glow", "splat glow", "splatglow", "colorize", "splat_colorize", "splat colorize", "fx_splat_colorize", "fx splat colorize", "gaussian_colorize", "gaussian colorize", "fx_music_effects", "fx music effects", "music_effects", "music effects", "musiceffects"):
             try:
                 from nodes import fx as _fx  # type: ignore
                 if hasattr(_fx, "register"):
@@ -935,7 +935,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
         kind = (self.model.kind or "").strip().lower()
         if kind in ("mnaterial", "material"):
             return "material"
-        if kind in ("fx", "fx_trail", "fx_splat_physics", "fx splat physics", "splat_physics", "splat physics", "splatphysics", "fx_splat_fx", "fx splat fx", "splat_fx", "splat fx", "fx_splat_glow", "fx splat glow", "splat_glow", "splat glow", "splatglow", "fx_music_effects", "fx music effects", "music_effects", "music effects", "musiceffects"):
+        if kind in ("fx", "fx_trail", "fx_splat_physics", "fx splat physics", "splat_physics", "splat physics", "splatphysics", "fx_splat_fx", "fx splat fx", "splat_fx", "splat fx", "fx_splat_glow", "fx splat glow", "splat_glow", "splat glow", "splatglow", "colorize", "splat_colorize", "splat colorize", "fx_splat_colorize", "fx splat colorize", "gaussian_colorize", "gaussian colorize", "fx_music_effects", "fx music effects", "music_effects", "music effects", "musiceffects"):
             return "fx"
         if kind in ("fbx_import", "fbx import", "fbximport"):
             return "fbx"
@@ -971,6 +971,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
             return "FX MUSIC VISUALIZER"
         if key in ("fx_splat_fx", "fx splat fx", "splat_fx", "splat fx", "fx_splat_glow", "fx splat glow", "splat_glow", "splat glow", "splatglow"):
             return "FX SPLAT GLOW"
+        if key in ("colorize", "splat_colorize", "splat colorize", "fx_splat_colorize", "fx splat colorize", "gaussian_colorize", "gaussian colorize"):
+            return "COLORIZE"
         if key in ("llm", "local_server", "local server", "localserver"):
             return "LOCAL_SERVER"
         if key in ("mediator_agent", "mediator agent", "medigator_agent", "medigator agent", "medigator", "mediator"):
@@ -2080,6 +2082,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 from nodes.fx import splat_fx_spec as _splat_fx_spec  # type: ignore
                 body_h = max(0, int(getattr(_splat_fx_spec, "SPLAT_FX_NODE_BODY_H", body_h)))
                 node_w = max(self._BASE_W, int(getattr(_splat_fx_spec, "SPLAT_FX_NODE_W", node_w)))
+            except Exception:
+                pass
+        elif kind in ("colorize", "splat_colorize", "splat colorize", "fx_splat_colorize", "fx splat colorize", "gaussian_colorize", "gaussian colorize"):
+            body_h = 246
+            node_w = max(self._BASE_W, 288)
+            try:
+                from nodes.fx import splat_colorize_spec as _splat_colorize_spec  # type: ignore
+                body_h = max(0, int(getattr(_splat_colorize_spec, "SPLAT_COLORIZE_NODE_BODY_H", body_h)))
+                node_w = max(self._BASE_W, int(getattr(_splat_colorize_spec, "SPLAT_COLORIZE_NODE_W", node_w)))
             except Exception:
                 pass
         elif kind in ("fx_music_effects", "fx music effects", "music_effects", "music effects", "musiceffects"):
@@ -3522,6 +3533,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
             "splat glow",
             "splatglow",
         }
+        splat_colorize_kinds = {
+            "colorize",
+            "splat_colorize",
+            "splat colorize",
+            "fx_splat_colorize",
+            "fx splat colorize",
+            "gaussian_colorize",
+            "gaussian colorize",
+        }
         music_effects_kinds = {
             "fx_music_effects",
             "fx music effects",
@@ -3678,6 +3698,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "fx_trail",
                 *splat_physics_kinds,
                 *splat_fx_kinds,
+                *splat_colorize_kinds,
                 *music_effects_kinds,
             }
             depth = 0
@@ -3715,6 +3736,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "fx_trail",
                 *splat_physics_kinds,
                 *splat_fx_kinds,
+                *splat_colorize_kinds,
             }
             depth = 0
             while item is not None and item not in visited and depth < 12:
@@ -3758,7 +3780,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                             edges = []
                     if edges:
                         return _trace(getattr(edges[0], "src", None), depth + 1, visited)
-                if kind in {"fx", "fx_trail"} or kind in splat_physics_kinds or kind in splat_fx_kinds or kind in music_effects_kinds:
+                if kind in {"fx", "fx_trail"} or kind in splat_physics_kinds or kind in splat_fx_kinds or kind in splat_colorize_kinds or kind in music_effects_kinds:
                     try:
                         edges = list(sc._ordered_in_edges(item))
                     except Exception:
@@ -4327,6 +4349,30 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         f"path={asset.get('path', '')!r}"
                     )
                 continue
+            if kind in splat_colorize_kinds:
+                try:
+                    from nodes.fx import splat_colorize_spec as _splat_colorize_spec  # type: ignore
+
+                    build_asset = getattr(_splat_colorize_spec, "build_splat_colorize_scene_asset", None)
+                    outcome = build_asset(src_item) if callable(build_asset) else None
+                    asset = getattr(outcome, "asset", None)
+                except Exception as exc:
+                    asset = None
+                    _scene_log(f"edge[{edge_idx}] colorize build failed node={src_name or kind} err={exc!r}")
+                if isinstance(asset, dict):
+                    asset_owner = str(asset.get("node") or src_name or kind).strip()
+                    xf = _lookup_xform(asset_owner)
+                    if not isinstance(xf, dict) and asset_owner != src_name:
+                        xf = _lookup_xform(src_name)
+                    if isinstance(xf, dict):
+                        asset["xform"] = dict(xf)
+                    asset["visible"] = asset_owner not in hidden
+                    assets.append(asset)
+                    _scene_log(
+                        f"edge[{edge_idx}] add colorize node={asset.get('node', '')!r} "
+                        f"path={asset.get('path', '')!r}"
+                    )
+                continue
             if kind in copy_to_points_kinds:
                 try:
                     from nodes.copy_to_points import spec as _copy_to_points_spec  # type: ignore
@@ -4885,6 +4931,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
             "splat_glow",
             "splat glow",
             "splatglow",
+            "colorize",
+            "splat_colorize",
+            "splat colorize",
+            "fx_splat_colorize",
+            "fx splat colorize",
+            "gaussian_colorize",
+            "gaussian colorize",
         }
 
         def _model_param(model, name: str) -> str:
@@ -6830,6 +6883,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "fx_splat_fx",
                 "fx_splat_glow",
                 "fx_music_effects",
+                "colorize",
+                "splat_colorize",
+                "fx_splat_colorize",
+                "gaussian_colorize",
                 "fx splat physics",
                 "fx splat fx",
                 "splat_fx",
@@ -7070,7 +7127,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 icon_pm = node_icons._texture_layer_icon() or node_icons._output_icon()
             elif kind_lower in ("mnaterial", "material"):
                 icon_pm = node_icons._material_node_icon() or node_icons._output_icon()
-            elif kind_lower in ("fx", "fx_trail", "fx_splat_physics", "fx splat physics", "splat_physics", "splat physics", "splatphysics", "fx_splat_fx", "fx splat fx", "splat_fx", "splat fx", "fx_splat_glow", "fx splat glow", "splat_glow", "splat glow", "splatglow", "fx_music_effects", "fx music effects", "music_effects", "music effects", "musiceffects"):
+            elif kind_lower in ("fx", "fx_trail", "fx_splat_physics", "fx splat physics", "splat_physics", "splat physics", "splatphysics", "fx_splat_fx", "fx splat fx", "splat_fx", "splat fx", "fx_splat_glow", "fx splat glow", "splat_glow", "splat glow", "splatglow", "colorize", "splat_colorize", "splat colorize", "fx_splat_colorize", "fx splat colorize", "gaussian_colorize", "gaussian colorize", "fx_music_effects", "fx music effects", "music_effects", "music effects", "musiceffects"):
                 icon_pm = node_icons._fx_node_icon() or node_icons._output_icon()
             elif kind_lower == "transforms":
                 icon_pm = node_icons._transforms_icon() or node_icons._output_icon()
@@ -7112,7 +7169,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     size = int(max(34, size * 0.792))
                 if kind_lower in ("texture_layer", "texture layer"):
                     size = int(max(36, size * 0.855))
-                if kind_lower in ("mnaterial", "material", "fx", "fx_trail", "fx_splat_physics", "fx splat physics", "splat_physics", "splat physics", "splatphysics", "fx_splat_fx", "fx splat fx", "splat_fx", "splat fx", "fx_splat_glow", "fx splat glow", "splat_glow", "splat glow", "splatglow", "fx_music_effects", "fx music effects", "music_effects", "music effects", "musiceffects"):
+                if kind_lower in ("mnaterial", "material", "fx", "fx_trail", "fx_splat_physics", "fx splat physics", "splat_physics", "splat physics", "splatphysics", "fx_splat_fx", "fx splat fx", "splat_fx", "splat fx", "fx_splat_glow", "fx splat glow", "splat_glow", "splat glow", "splatglow", "colorize", "splat_colorize", "splat colorize", "fx_splat_colorize", "fx splat colorize", "gaussian_colorize", "gaussian colorize", "fx_music_effects", "fx music effects", "music_effects", "music effects", "musiceffects"):
                     size = int(max(36, size * 0.88))
                 if kind_lower in ("chatbot", "chat bot", "chat_bot"):
                     size = int(size * 1.13)
