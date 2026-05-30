@@ -34,6 +34,7 @@ _DEFAULT_BAUD = 115200
 _DEFAULT_TIMEOUT_MS = 700
 _MIN_TIMEOUT_MS = 100
 _MAX_TIMEOUT_MS = 5000
+_MAX_PICO_HOLD_MS = 2000
 _PYSERIAL_REQUIREMENT = "pyserial==3.5"
 
 SERIAL_COM_BODY_W = 360
@@ -456,6 +457,14 @@ class PicoSerialSession:
             return False, f"Unexpected ping reply: {reply}"
         return True, reply
 
+    def capabilities(self) -> tuple[bool, str]:
+        ok, reply = self._request("CAPS")
+        if not ok:
+            return ok, reply
+        if not reply.upper().startswith("CAPS"):
+            return False, f"Unexpected capabilities reply: {reply}"
+        return True, reply
+
     def tap(self, key_text: str, hold_ms: int) -> tuple[bool, str]:
         clean_key = str(key_text or "").strip()
         if not clean_key:
@@ -488,6 +497,67 @@ class PicoSerialSession:
             return ok, reply
         if not reply.upper().startswith("OK"):
             return False, f"Unexpected release reply: {reply}"
+        return True, reply
+
+    def mouse_click(self, button: str, hold_ms: int) -> tuple[bool, str]:
+        clean_button = str(button or "left").strip().lower()
+        if clean_button not in {"left", "right", "middle"}:
+            return False, "Mouse button must be left, right, or middle."
+        if "|" in clean_button:
+            return False, "Mouse button cannot contain '|'."
+        try:
+            hold = max(0, int(hold_ms))
+        except Exception:
+            return False, "Mouse click hold time was invalid."
+        if hold > _MAX_PICO_HOLD_MS:
+            return False, f"Pico mouse click hold must be {_MAX_PICO_HOLD_MS} ms or less."
+        ok, reply = self._request(f"MOUSE_CLICK|{clean_button}|{hold}")
+        if not ok:
+            if "unknown command" in str(reply).lower():
+                return False, "Pico firmware does not support current-position mouse clicks. Flash the updated keyboard+mouse HID firmware."
+            return ok, reply
+        if not reply.upper().startswith("OK"):
+            return False, f"Unexpected mouse-click reply: {reply}"
+        return True, reply
+
+    def mouse_move_rel(self, dx: int, dy: int) -> tuple[bool, str]:
+        try:
+            x = int(dx)
+            y = int(dy)
+        except Exception:
+            return False, "Mouse move delta was invalid."
+        if x < -127 or x > 127 or y < -127 or y > 127:
+            return False, "Mouse move delta must be between -127 and 127."
+        ok, reply = self._request(f"MOUSE_MOVE_REL|{x}|{y}")
+        if not ok:
+            if "unknown command" in str(reply).lower():
+                return False, "Pico firmware does not support relative mouse movement. Flash the updated keyboard+mouse HID firmware."
+            return ok, reply
+        if not reply.upper().startswith("OK"):
+            return False, f"Unexpected mouse-move reply: {reply}"
+        return True, reply
+
+    def mouse_click_abs(self, abs_x: int, abs_y: int, button: str, hold_ms: int) -> tuple[bool, str]:
+        clean_button = str(button or "left").strip().lower()
+        if clean_button not in {"left", "right", "middle"}:
+            return False, "Mouse button must be left, right, or middle."
+        if "|" in clean_button:
+            return False, "Mouse button cannot contain '|'."
+        try:
+            x = max(0, min(32767, int(abs_x)))
+            y = max(0, min(32767, int(abs_y)))
+            hold = max(0, int(hold_ms))
+        except Exception:
+            return False, "Mouse click command had invalid numeric values."
+        if hold > _MAX_PICO_HOLD_MS:
+            return False, f"Pico mouse click hold must be {_MAX_PICO_HOLD_MS} ms or less."
+        ok, reply = self._request(f"MOUSE_CLICK_ABS|{x}|{y}|{clean_button}|{hold}")
+        if not ok:
+            if "unknown command" in str(reply).lower():
+                return False, "Pico firmware does not support mouse commands. Flash the updated keyboard+mouse HID firmware."
+            return ok, reply
+        if not reply.upper().startswith("OK"):
+            return False, f"Unexpected mouse-click reply: {reply}"
         return True, reply
 
 def open_pico_sessions(configs: list[SerialTargetConfig]) -> tuple[list[PicoSerialSession], str]:

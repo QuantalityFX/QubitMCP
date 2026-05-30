@@ -186,7 +186,7 @@ def build_timeline_panels_menu(
     timeline_layout.addWidget(profiler_toggle, 0)
 
     save_layout_btn = QtWidgets.QPushButton("Save Layout", timeline_panel)
-    save_layout_btn.setToolTip("Save current panel visibility as the app default layout")
+    save_layout_btn.setToolTip("Save current panel visibility and view mode as the app default layout")
     save_layout_btn.setFixedHeight(22)
     save_layout_btn.setCursor(QtCore.Qt.PointingHandCursor)
     save_layout_btn.setFlat(True)

@@ -157,6 +157,20 @@ def _normalize_panel_layout_preset(value, fallback=None) -> Dict[str, bool]:
     }
 
 
+def _normalize_view_mode_preset(value, fallback: str | None = "2d") -> str | None:
+    text = str(value or "").strip().lower()
+    text = text.replace("\\", "/").replace("_", " ").replace("-", " ")
+    text = " ".join(text.split())
+    compact = text.replace(" ", "")
+    if compact in {"2d", "2donly", "2dview"}:
+        return "2d"
+    if compact in {"3d", "3donly", "3dview"}:
+        return "3d"
+    if compact in {"split", "2d/3d", "2d+3d", "2d3d", "2dand3d", "both", "dual"}:
+        return "split"
+    return fallback
+
+
 def _normalize_voice_audio_mode(value, fallback: str = _VOICE_AUDIO_MODE_DEFAULT) -> str:
     text = str(value or "").strip().lower()
     if text in {"bilateral", "duplex", "full_duplex", "simultaneous"}:
@@ -306,6 +320,7 @@ def _load_app_settings() -> Dict[str, Any]:
     except Exception:
         raw = {}
     panel_layout = _normalize_panel_layout_preset(raw.get("panel_layout"), _DEFAULT_PANEL_LAYOUT_PRESET)
+    view_mode = _normalize_view_mode_preset(raw.get("view_mode"), "2d")
     save_layout = _coerce_bool(raw.get("save_layout"), True)
     voice_audio_mode = _normalize_voice_audio_mode(raw.get("voice_audio_mode"), _VOICE_AUDIO_MODE_DEFAULT)
     voice_mic_device_index = _normalize_voice_mic_device_index(
@@ -324,6 +339,7 @@ def _load_app_settings() -> Dict[str, Any]:
     return {
         "save_layout": bool(save_layout),
         "panel_layout": panel_layout,
+        "view_mode": view_mode or "2d",
         "voice_audio_mode": voice_audio_mode,
         "voice_mic_device_index": voice_mic_device_index,
         "shadow_quality": shadow_quality,
@@ -339,6 +355,7 @@ def _save_app_settings(settings: Dict[str, Any]) -> None:
     payload = {
         "save_layout": _coerce_bool((settings or {}).get("save_layout"), True),
         "panel_layout": _normalize_panel_layout_preset((settings or {}).get("panel_layout"), _DEFAULT_PANEL_LAYOUT_PRESET),
+        "view_mode": _normalize_view_mode_preset((settings or {}).get("view_mode"), "2d") or "2d",
         "voice_audio_mode": _normalize_voice_audio_mode((settings or {}).get("voice_audio_mode"), _VOICE_AUDIO_MODE_DEFAULT),
         "voice_mic_device_index": _normalize_voice_mic_device_index(
             (settings or {}).get("voice_mic_device_index"),
@@ -2589,6 +2606,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             app_settings.get("panel_layout"),
             _DEFAULT_PANEL_LAYOUT_PRESET,
         )
+        self._view_mode_master_preset = _normalize_view_mode_preset(
+            app_settings.get("view_mode"),
+            "2d",
+        ) or "2d"
         self._voice_audio_mode = _normalize_voice_audio_mode(
             app_settings.get("voice_audio_mode"),
             _VOICE_AUDIO_MODE_DEFAULT,
@@ -2691,6 +2712,12 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 self._apply_panel_layout_preset(
                     getattr(self, "_panel_layout_master_preset", None),
                     persist_global=False,
+                )
+                self._set_view_mode(
+                    _normalize_view_mode_preset(
+                        getattr(self, "_view_mode_master_preset", None),
+                        "2d",
+                    ) or "2d"
                 )
         except Exception:
             pass
@@ -3084,6 +3111,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         else:
             next_mode = "2d"
         self._set_view_mode(next_mode)
+        self._auto_save_current_view_mode_preset()
 
     def _set_view_mode(self, mode: str) -> None:
         mode = (mode or "2d").lower()
@@ -4934,7 +4962,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         save_layout_label = QtWidgets.QLabel("Auto Save Layout")
         self._save_layout_toggle = QtWidgets.QCheckBox()
         self._save_layout_toggle.setChecked(bool(getattr(self, "_save_layout_enabled", True)))
-        self._save_layout_toggle.setToolTip("Automatically save panel visibility changes as the global default layout")
+        self._save_layout_toggle.setToolTip("Automatically save panel visibility and view mode as the global default layout")
         self._save_layout_toggle.toggled.connect(self._on_save_layout_toggled)
         grid.addWidget(save_layout_label, 13, 0, 1, 1, QtCore.Qt.AlignVCenter)
         grid.addWidget(self._save_layout_toggle, 13, 1, 1, 1, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
@@ -5205,6 +5233,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 getattr(self, "_panel_layout_master_preset", None),
                 _DEFAULT_PANEL_LAYOUT_PRESET,
             ),
+            "view_mode": _normalize_view_mode_preset(
+                getattr(self, "_view_mode_master_preset", getattr(self, "_view_mode", "2d")),
+                "2d",
+            ) or "2d",
             "voice_audio_mode": _normalize_voice_audio_mode(
                 getattr(self, "_voice_audio_mode", _VOICE_AUDIO_MODE_DEFAULT),
                 _VOICE_AUDIO_MODE_DEFAULT,
@@ -5227,6 +5259,17 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             ),
         }
         _save_app_settings(payload)
+
+    def _current_layout_view_mode_preset(self) -> str:
+        return _normalize_view_mode_preset(getattr(self, "_view_mode", "2d"), "2d") or "2d"
+
+    def _auto_save_current_view_mode_preset(self) -> None:
+        if bool(getattr(self, "_suspend_panel_layout_persist", False)):
+            return
+        if not bool(getattr(self, "_save_layout_enabled", True)):
+            return
+        self._view_mode_master_preset = self._current_layout_view_mode_preset()
+        self._persist_app_layout_settings()
 
     def _voice_audio_mode_is_bilateral(self) -> bool:
         mode = _normalize_voice_audio_mode(
@@ -5350,16 +5393,19 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         current = self._current_panel_layout_preset()
         if bool(getattr(self, "_save_layout_enabled", True)):
             self._panel_layout_master_preset = dict(current)
+            self._view_mode_master_preset = self._current_layout_view_mode_preset()
         self._persist_app_layout_settings()
 
     def _on_save_layout_toggled(self, checked: bool) -> None:
         self._save_layout_enabled = bool(checked)
         if self._save_layout_enabled:
             self._panel_layout_master_preset = self._current_panel_layout_preset()
+            self._view_mode_master_preset = self._current_layout_view_mode_preset()
         self._persist_app_layout_settings()
 
     def _save_current_layout_as_global_preset(self) -> None:
         self._panel_layout_master_preset = self._current_panel_layout_preset()
+        self._view_mode_master_preset = self._current_layout_view_mode_preset()
         self._save_layout_enabled = True
         if hasattr(self, "_save_layout_toggle"):
             try:
@@ -5441,6 +5487,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
         if persist_global and bool(getattr(self, "_save_layout_enabled", True)):
             self._panel_layout_master_preset = dict(normalized)
+            self._view_mode_master_preset = self._current_layout_view_mode_preset()
             self._persist_app_layout_settings()
 
     @staticmethod
@@ -5453,6 +5500,16 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         if "timeline" not in raw and "audio" not in raw and "profiler" not in raw:
             return None
         return _normalize_panel_layout_preset(raw, _DEFAULT_PANEL_LAYOUT_PRESET)
+
+    @staticmethod
+    def _normalize_workflow_view_mode(value, fallback: str | None = None) -> str | None:
+        return _normalize_view_mode_preset(value, fallback)
+
+    @classmethod
+    def _workflow_view_mode_from_settings(cls, settings) -> str | None:
+        if not isinstance(settings, dict):
+            return None
+        return cls._normalize_workflow_view_mode(settings.get("view_mode"), None)
 
     @staticmethod
     def _workflow_scene_restore_name_from_settings(settings) -> str | None:
@@ -5474,6 +5531,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             settings = {}
         settings = dict(settings)
         settings["panel_layout"] = self._current_panel_layout_preset()
+        settings["view_mode"] = self._normalize_workflow_view_mode(
+            getattr(self, "_view_mode", "2d"),
+            "2d",
+        )
         settings["voice_audio_mode"] = _normalize_voice_audio_mode(
             getattr(self, "_voice_audio_mode", _VOICE_AUDIO_MODE_DEFAULT),
             _VOICE_AUDIO_MODE_DEFAULT,
@@ -5775,6 +5836,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._ambient_light_strength = _AMBIENT_LIGHT_STRENGTH_DEFAULT
         self._splat_log_enabled = False
         self._save_layout_enabled = True
+        self._panel_layout_master_preset = dict(_DEFAULT_PANEL_LAYOUT_PRESET)
+        self._view_mode_master_preset = "2d"
         self._voice_audio_mode = _VOICE_AUDIO_MODE_DEFAULT
         self._voice_mic_device_index = _VOICE_MIC_DEVICE_DEFAULT
         if hasattr(self, "_pan_base_slider"):
@@ -6303,6 +6366,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             pass
         try:
             self._set_view_mode(mode)
+            self._auto_save_current_view_mode_preset()
         except Exception:
             pass
 
@@ -6412,6 +6476,9 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         if not isinstance(settings, dict):
             settings = {}
         workflow_panel_layout = self._workflow_panel_layout_from_settings(settings)
+        workflow_view_mode = self._workflow_view_mode_from_settings(settings)
+        if workflow_view_mode is None and isinstance(data, dict):
+            workflow_view_mode = self._normalize_workflow_view_mode(data.get("view_mode"), None)
         workflow_scene_restore = self._workflow_scene_restore_name_from_settings(settings)
         try:
             pan_base = float(settings.get("pan_base", getattr(self, "_pan_base", 0.01)))
@@ -6613,6 +6680,11 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 )
         except Exception:
             pass
+        if workflow_view_mode is not None:
+            try:
+                self._set_view_mode(workflow_view_mode)
+            except Exception:
+                pass
         try:
             self._pending_workflow_scene_restore = str(workflow_scene_restore or "").strip()
         except Exception:
