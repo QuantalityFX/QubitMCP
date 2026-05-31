@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 
@@ -107,13 +109,49 @@ def axis_line_ray_param(axis_world, g0, ray_o, ray_d):
 
 
 def unwrap_deg(prev_deg, new_deg_wrapped):
-    d = float(new_deg_wrapped) - float(prev_deg)
+    prev = float(prev_deg)
     out = float(new_deg_wrapped)
+    if not (math.isfinite(prev) and math.isfinite(out)):
+        return out
+    d = out - prev
     if d > 180.0:
-        out -= 360.0
+        out -= 360.0 * math.ceil((d - 180.0) / 360.0)
     elif d < -180.0:
-        out += 360.0
+        out += 360.0 * math.ceil((-d - 180.0) / 360.0)
     return out
+
+
+def fps_scene_rot_from_forward(forward_xyz, previous_rot=None):
+    try:
+        fwd_v = np.array(forward_xyz, dtype=np.float32).reshape(3)
+        fn = float(np.linalg.norm(fwd_v))
+        if fn > 1.0e-6:
+            fwd_v = fwd_v / fn
+        else:
+            fwd_v = np.array([0.0, 0.0, -1.0], dtype=np.float32)
+    except Exception:
+        fwd_v = np.array([0.0, 0.0, -1.0], dtype=np.float32)
+
+    try:
+        pitch = math.degrees(math.asin(max(-1.0, min(1.0, float(fwd_v[1])))))
+        yaw = math.degrees(math.atan2(float(fwd_v[0]), float(-fwd_v[2])))
+    except Exception:
+        pitch = 0.0
+        yaw = 0.0
+
+    rx = float(-pitch)
+    ry = float(yaw)
+    rz = 0.0
+    if isinstance(previous_rot, (list, tuple)) and len(previous_rot) >= 3:
+        try:
+            return (
+                unwrap_deg(float(previous_rot[0]), rx),
+                unwrap_deg(float(previous_rot[1]), ry),
+                unwrap_deg(float(previous_rot[2]), rz),
+            )
+        except Exception:
+            pass
+    return (rx, ry, rz)
 
 
 def closest_unwrapped_euler(candidates, current_xyz):

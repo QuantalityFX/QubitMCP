@@ -13,6 +13,7 @@ except Exception:
 
 from echograph.qt_compat import QtCore, QtGui, QtWidgets
 from echograph.ui.fps_camera import FpsCamera
+from echograph.ui.gl_view_math import fps_scene_rot_from_forward as _gv_fps_scene_rot_from_forward
 
 
 class GraphGLTimelineModelMixin:
@@ -1621,15 +1622,16 @@ class GraphGLTimelineModelMixin:
         except Exception:
             fwd_v = np.array([0.0, 0.0, -1.0], dtype=np.float32)
         try:
-            pitch = math.degrees(math.asin(max(-1.0, min(1.0, float(fwd_v[1])))))
-            yaw = math.degrees(math.atan2(float(fwd_v[0]), float(-fwd_v[2])))
+            rot_from_fwd = getattr(self, "_camera_selector_scene_rot_from_fps_forward", None)
+            if callable(rot_from_fwd):
+                rot = rot_from_fwd(key, fwd_v, is_splat=bool(self._timeline_owner_is_splat(key)))
+            else:
+                rot = _gv_fps_scene_rot_from_forward(fwd_v)
         except Exception:
-            pitch = 0.0
-            yaw = 0.0
+            rot = _gv_fps_scene_rot_from_forward(fwd_v)
         return {
             "pos": (float(pos_v[0]), float(pos_v[1]), float(pos_v[2])),
-            # Scene camera xforms use the inverse pitch convention consumed by _build_scene_camera_pose.
-            "rot": (float(-pitch), float(yaw), 0.0),
+            "rot": (float(rot[0]), float(rot[1]), float(rot[2])),
         }
 
     def _timeline_active_locked_camera_owner(self) -> str:

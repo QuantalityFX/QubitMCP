@@ -51,12 +51,14 @@ from .gl_view_math import axis_proj_max_len as _gv_axis_proj_max_len
 from .gl_view_math import axis_line_ray_param as _gv_axis_line_ray_param
 from .gl_view_math import closest_unwrapped_euler as _gv_closest_unwrapped_euler
 from .gl_view_math import dist_pt_seg as _gv_dist_pt_seg
+from .gl_view_math import fps_scene_rot_from_forward as _gv_fps_scene_rot_from_forward
 from .gl_view_math import gizmo_screen_scale as _gv_gizmo_screen_scale
 from .gl_view_math import plane_hit as _gv_plane_hit
 from .gl_view_math import plane_normal_from_vm as _gv_plane_normal_from_vm
 from .gl_view_math import project_local as _gv_project_local
 from .gl_view_math import project_world as _gv_project_world
 from .gl_view_math import ray_from_screen as _gv_ray_from_screen
+from .gl_view_math import unwrap_deg as _gv_unwrap_deg
 from echograph.ui.fps_camera import FpsCamera
 from echograph.rigging.turntable import TurntableController
 from echograph.ui import actions
@@ -2547,6 +2549,38 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             return False
         return bool(self._camera_selector_sync_fps_from_owner_pose(owner))
 
+    def _camera_selector_owner_rot_for_unwrap(self, owner: str, *, is_splat: bool = False):
+        owner_key = str(owner or "").strip()
+        if not owner_key:
+            return None
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        get_xf = (
+            getattr(renderer, "_mgl_get_scene_splat_xform", None)
+            if bool(is_splat)
+            else getattr(renderer, "_mgl_get_scene_asset_xform", None)
+        )
+        if not callable(get_xf) and bool(is_splat):
+            get_xf = getattr(renderer, "_mgl_get_scene_asset_xform", None)
+        if not callable(get_xf):
+            return None
+        try:
+            xf = get_xf(owner_key) or {}
+        except Exception:
+            return None
+        if not isinstance(xf, dict):
+            return None
+        rot = xf.get("rot", None)
+        if not isinstance(rot, (list, tuple)) or len(rot) < 3:
+            return None
+        try:
+            return (float(rot[0]), float(rot[1]), float(rot[2]))
+        except Exception:
+            return None
+
+    def _camera_selector_scene_rot_from_fps_forward(self, owner: str, fwd_v, *, is_splat: bool = False):
+        prev_rot = self._camera_selector_owner_rot_for_unwrap(owner, is_splat=bool(is_splat))
+        return _gv_fps_scene_rot_from_forward(fwd_v, previous_rot=prev_rot)
+
     def _camera_selector_apply_fps_to_locked_owner(self, *, sync_ui: bool = False) -> bool:
         owner = self._camera_selector_locked_owner()
         if not owner:
@@ -2573,12 +2607,6 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 fwd_v = np.array([0.0, 0.0, -1.0], dtype=np.float32)
         except Exception:
             fwd_v = np.array([0.0, 0.0, -1.0], dtype=np.float32)
-        try:
-            pitch = math.degrees(math.asin(max(-1.0, min(1.0, float(fwd_v[1])))))
-            yaw = math.degrees(math.atan2(float(fwd_v[0]), float(-fwd_v[2])))
-        except Exception:
-            pitch = 0.0
-            yaw = 0.0
         is_splat = False
         try:
             splat_map = getattr(renderer, "_mgl_scene_splats", None)
@@ -2596,11 +2624,14 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         except Exception:
             is_splat = False
         try:
+            rot = self._camera_selector_scene_rot_from_fps_forward(owner, fwd_v, is_splat=bool(is_splat))
+        except Exception:
+            rot = _gv_fps_scene_rot_from_forward(fwd_v)
+        try:
             setf(
                 owner,
                 pos=(float(pos_v[0]), float(pos_v[1]), float(pos_v[2])),
-                # Match _build_scene_camera_pose inversion (pitch sign is flipped in scene xform convention).
-                rot=(float(-pitch), float(yaw), 0.0),
+                rot=rot,
                 apply_to_scene_models=not bool(is_splat),
                 use_splat_xform=bool(is_splat),
             )
@@ -2624,7 +2655,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                         "sync_ui": bool(sync_ui),
                         "is_splat": bool(is_splat),
                         "pos": (float(pos_v[0]), float(pos_v[1]), float(pos_v[2])),
-                        "rot": (float(-pitch), float(yaw), 0.0),
+                        "rot": tuple(float(v) for v in rot),
                     },
                 )
         except Exception:
@@ -6113,14 +6144,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         return e1 if s1 <= s2 else e2
 
     def _unwrap_deg(self, prev_deg: float, new_deg_wrapped: float) -> float:
-        # new_deg_wrapped is usually in [-180, 180]
-        # return an equivalent angle close to prev_deg (continuous)
-        d = new_deg_wrapped - prev_deg
-        if d > 180.0:
-            new_deg_wrapped -= 360.0
-        elif d < -180.0:
-            new_deg_wrapped += 360.0
-        return new_deg_wrapped
+        return _gv_unwrap_deg(prev_deg, new_deg_wrapped)
 
     def _dbgprint(self, enabled: bool, *a, **k) -> None:
         if enabled:
