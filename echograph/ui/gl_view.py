@@ -3142,10 +3142,28 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                             keys_map = file_keys
                         break
                 if isinstance(keys_map, dict) and keys_map:
+                    eval_frame = frame
+                    try:
+                        mapped = self._timeline_composition_source_frame(owner_key, frame)
+                    except Exception:
+                        mapped = None
+                    if mapped is not None:
+                        try:
+                            if self._timeline_owner_is_camera(owner_key):
+                                eval_frame = float(mapped)
+                            else:
+                                eval_frame = int(round(float(mapped)))
+                        except Exception:
+                            eval_frame = frame
+                    else:
+                        try:
+                            eval_frame = self._timeline_owner_key_eval_frame(owner_key, frame)
+                        except Exception:
+                            eval_frame = frame
                     xyz_eval, rxyz_eval = self._timeline_eval_frame_values_for_owner_keys(
                         owner_key,
                         keys_map,
-                        frame,
+                        eval_frame,
                     )
                     if not (xyz_eval is None and rxyz_eval is None):
                         if xyz_eval is None:

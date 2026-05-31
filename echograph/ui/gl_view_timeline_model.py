@@ -339,6 +339,11 @@ class GraphGLTimelineModelMixin:
         self._timeline_curve_selected = set()
         self._timeline_composition_blocks = blocks
         try:
+            if self._timeline_reconcile_camera_composition_speeds(blocks):
+                changed = True
+        except Exception:
+            pass
+        try:
             self._timeline_total_max = max(240, self._timeline_composition_max_frame())
         except Exception:
             self._timeline_total_max = 240
@@ -399,6 +404,45 @@ class GraphGLTimelineModelMixin:
             self._timeline_composition_blocks = blocks
         return blocks
 
+    def _timeline_ensure_composition_blocks_cached(self) -> None:
+        blocks = getattr(self, "_timeline_composition_blocks", None)
+        if isinstance(blocks, list) and blocks:
+            return
+        try:
+            path = getattr(self, "_timeline_composition_path", None)
+            if path is None:
+                path = self._timeline_composition_file_path()
+                self._timeline_composition_path = path
+        except Exception:
+            path = None
+        saved_blocks: List[Dict[str, object]] = []
+        if path is not None and Path(path).exists():
+            try:
+                raw = json.loads(Path(path).read_text(encoding="utf-8"))
+            except Exception:
+                raw = {}
+            if isinstance(raw, dict):
+                rows = raw.get("tracks", raw.get("blocks", [])) or []
+                if isinstance(rows, list):
+                    saved_blocks = [row for row in rows if isinstance(row, dict)]
+        try:
+            default_blocks = self._timeline_default_composition_blocks()
+            merged, _changed = self._timeline_merge_composition_blocks(saved_blocks, default_blocks)
+        except Exception:
+            merged = []
+            for raw in saved_blocks:
+                try:
+                    block = self._timeline_normalize_composition_block(raw)
+                except Exception:
+                    block = None
+                if isinstance(block, dict):
+                    merged.append(block)
+        self._timeline_composition_blocks = merged
+        try:
+            self._timeline_reconcile_camera_composition_speeds(merged)
+        except Exception:
+            pass
+
     def _timeline_composition_max_frame(self) -> int:
         max_frame = 0
         for block in self._timeline_composition_blocks_list():
@@ -434,7 +478,10 @@ class GraphGLTimelineModelMixin:
             clip_end = float(block.get("clip_end_frame", clip_start) or clip_start)
             source_start = float(block.get("source_start_frame", 0) or 0)
             source_end = float(block.get("source_end_frame", source_start) or source_start)
-            speed = self._timeline_normalize_speed_percent(block.get("speed_percent", 100.0)) / 100.0
+            speed_percent = self._timeline_camera_shared_speed_percent(owner, block=block)
+            if speed_percent is None:
+                speed_percent = self._timeline_normalize_speed_percent(block.get("speed_percent", 100.0))
+            speed = self._timeline_normalize_speed_percent(speed_percent) / 100.0
         except Exception:
             return None
         if clip_end < clip_start:
@@ -708,14 +755,10 @@ class GraphGLTimelineModelMixin:
             self._timeline_owner_speed_percent_by_owner = speeds
         return speeds
 
-    def _timeline_owner_speed_percent(self, owner: str | None = None) -> float:
-        key = str(owner or self._timeline_retime_owner() or "").strip()
+    def _timeline_owner_speed_map_value(self, owner: str | None) -> Optional[float]:
+        key = str(owner or "").strip()
         if not key:
-            return 100.0
-        if self._timeline_is_composition_mode():
-            block = self._timeline_find_composition_block(owner=key)
-            if isinstance(block, dict):
-                return self._timeline_normalize_speed_percent(block.get("speed_percent", 100.0))
+            return None
         speeds = self._timeline_owner_speed_map()
         raw = speeds.get(key, None)
         if raw is None:
@@ -727,6 +770,166 @@ class GraphGLTimelineModelMixin:
                         break
                 except Exception:
                     continue
+        if raw is None:
+            return None
+        return self._timeline_normalize_speed_percent(raw)
+
+    def _timeline_store_owner_speed_map_value(self, owner: str, percent: float) -> None:
+        key = str(owner or "").strip()
+        if not key:
+            return
+        value = self._timeline_normalize_speed_percent(percent)
+        speeds = self._timeline_owner_speed_map()
+        key_l = key.lower()
+        existing_keys = []
+        for maybe_key in list(speeds.keys()):
+            try:
+                if str(maybe_key).strip().lower() == key_l:
+                    existing_keys.append(maybe_key)
+            except Exception:
+                continue
+        if abs(float(value) - 100.0) <= 1.0e-6:
+            for maybe_key in existing_keys:
+                speeds.pop(maybe_key, None)
+        else:
+            store_key = str(existing_keys[0]) if existing_keys else key
+            for maybe_key in existing_keys[1:]:
+                speeds.pop(maybe_key, None)
+            speeds[store_key] = float(value)
+        self._timeline_owner_speed_percent_by_owner = speeds
+
+    def _timeline_camera_shared_speed_percent(
+        self,
+        owner: str | None,
+        *,
+        block: Optional[Dict[str, object]] = None,
+    ) -> Optional[float]:
+        key = str(owner or "").strip()
+        if not key:
+            return None
+        try:
+            if not self._timeline_owner_is_camera(key):
+                return None
+        except Exception:
+            return None
+        block_speed = None
+        if not isinstance(block, dict):
+            try:
+                block = self._timeline_find_composition_block(owner=key)
+            except Exception:
+                block = None
+        if not isinstance(block, dict):
+            try:
+                self._timeline_ensure_composition_blocks_cached()
+                block = self._timeline_find_composition_block(owner=key)
+            except Exception:
+                block = None
+        if isinstance(block, dict):
+            try:
+                block_speed = self._timeline_normalize_speed_percent(block.get("speed_percent", 100.0))
+            except Exception:
+                block_speed = None
+        owner_speed = self._timeline_owner_speed_map_value(key)
+        if block_speed is None and owner_speed is None:
+            return None
+        if block_speed is None:
+            return float(owner_speed if owner_speed is not None else 100.0)
+        if owner_speed is None:
+            return float(block_speed)
+        if abs(float(block_speed) - 100.0) <= 1.0e-6 and abs(float(owner_speed) - 100.0) > 1.0e-6:
+            return float(owner_speed)
+        return float(block_speed)
+
+    def _timeline_update_composition_block_speed(self, block: Dict[str, object], percent: float) -> None:
+        value = self._timeline_normalize_speed_percent(percent)
+        block["speed_percent"] = float(value)
+        try:
+            source_start = int(block.get("source_start_frame", 0) or 0)
+            duration = max(
+                1,
+                int(block.get("clip_end_frame", 0) or 0)
+                - int(block.get("clip_start_frame", 0) or 0),
+            )
+            block["source_end_frame"] = max(
+                source_start,
+                int(round(source_start + (duration * (float(value) / 100.0)))),
+            )
+        except Exception:
+            pass
+
+    def _timeline_sync_camera_speed_to_composition(self, owner: str, percent: float) -> bool:
+        key = str(owner or "").strip()
+        if not key:
+            return False
+        try:
+            if not self._timeline_owner_is_camera(key):
+                return False
+        except Exception:
+            return False
+        try:
+            block = self._timeline_find_composition_block(owner=key)
+        except Exception:
+            block = None
+        if not isinstance(block, dict):
+            try:
+                self._timeline_ensure_composition_blocks_cached()
+                block = self._timeline_find_composition_block(owner=key)
+            except Exception:
+                block = None
+        if not isinstance(block, dict):
+            return False
+        self._timeline_update_composition_block_speed(block, percent)
+        try:
+            self._timeline_save_composition()
+        except Exception:
+            pass
+        canvas = getattr(self, "_timeline_composition_canvas", None)
+        if canvas is not None:
+            try:
+                canvas.update()
+            except Exception:
+                pass
+        return True
+
+    def _timeline_reconcile_camera_composition_speeds(self, blocks: List[Dict[str, object]]) -> bool:
+        changed = False
+        for block in blocks or []:
+            if not isinstance(block, dict):
+                continue
+            owner = str(block.get("owner") or "").strip()
+            if not owner:
+                continue
+            try:
+                if not self._timeline_owner_is_camera(owner):
+                    continue
+            except Exception:
+                continue
+            shared = self._timeline_camera_shared_speed_percent(owner, block=block)
+            if shared is None:
+                continue
+            value = self._timeline_normalize_speed_percent(shared)
+            self._timeline_store_owner_speed_map_value(owner, value)
+            try:
+                current = self._timeline_normalize_speed_percent(block.get("speed_percent", 100.0))
+            except Exception:
+                current = 100.0
+            if abs(float(current) - float(value)) > 1.0e-6:
+                self._timeline_update_composition_block_speed(block, value)
+                changed = True
+        return bool(changed)
+
+    def _timeline_owner_speed_percent(self, owner: str | None = None) -> float:
+        key = str(owner or self._timeline_retime_owner() or "").strip()
+        if not key:
+            return 100.0
+        camera_speed = self._timeline_camera_shared_speed_percent(key)
+        if camera_speed is not None:
+            return self._timeline_normalize_speed_percent(camera_speed)
+        if self._timeline_is_composition_mode():
+            block = self._timeline_find_composition_block(owner=key)
+            if isinstance(block, dict):
+                return self._timeline_normalize_speed_percent(block.get("speed_percent", 100.0))
+        raw = self._timeline_owner_speed_map_value(key)
         if raw is None:
             return 100.0
         return self._timeline_normalize_speed_percent(raw)
@@ -870,13 +1073,11 @@ class GraphGLTimelineModelMixin:
         if self._timeline_is_composition_mode():
             block = self._timeline_find_composition_block(owner=key)
             if isinstance(block, dict):
-                block["speed_percent"] = float(value)
-                try:
-                    source_start = int(block.get("source_start_frame", 0) or 0)
-                    duration = max(1, int(block.get("clip_end_frame", 0) or 0) - int(block.get("clip_start_frame", 0) or 0))
-                    block["source_end_frame"] = max(source_start, int(round(source_start + (duration * (float(value) / 100.0)))))
-                except Exception:
-                    pass
+                self._timeline_update_composition_block_speed(block, float(value))
+                if self._timeline_owner_is_camera(key):
+                    self._timeline_store_owner_speed_map_value(key, float(value))
+                    if bool(sync_scene):
+                        self._timeline_sync_owner_speed_to_scene(key, float(value))
                 self._timeline_save_composition()
                 self._timeline_invalidate_owner_animation_cache(key)
                 canvas = getattr(self, "_timeline_composition_canvas", None)
@@ -895,26 +1096,13 @@ class GraphGLTimelineModelMixin:
                     except Exception:
                         pass
                 return float(value)
-        speeds = self._timeline_owner_speed_map()
-        key_l = key.lower()
-        existing_keys = []
-        for maybe_key in list(speeds.keys()):
-            try:
-                if str(maybe_key).strip().lower() == key_l:
-                    existing_keys.append(maybe_key)
-            except Exception:
-                continue
-        if abs(float(value) - 100.0) <= 1.0e-6:
-            for maybe_key in existing_keys:
-                speeds.pop(maybe_key, None)
-        else:
-            store_key = str(existing_keys[0]) if existing_keys else key
-            for maybe_key in existing_keys[1:]:
-                speeds.pop(maybe_key, None)
-            speeds[store_key] = float(value)
-        self._timeline_owner_speed_percent_by_owner = speeds
+        self._timeline_store_owner_speed_map_value(key, float(value))
         if bool(sync_scene):
             self._timeline_sync_owner_speed_to_scene(key, float(value))
+        try:
+            self._timeline_sync_camera_speed_to_composition(key, float(value))
+        except Exception:
+            pass
         self._timeline_invalidate_owner_animation_cache(key)
         if bool(sync_ui):
             self._timeline_refresh_speed_control()
@@ -1110,14 +1298,14 @@ class GraphGLTimelineModelMixin:
         self,
         owner: str,
         keys_map: Dict[int, Dict[str, object]],
-        frame: int,
+        frame: float,
     ) -> Tuple[Optional[Tuple[float, float, float]], Optional[Tuple[float, float, float]]]:
         old_owner = getattr(self, "_timeline_owner_name", None)
         old_keys = getattr(self, "_timeline_keys", None)
         try:
             self._timeline_owner_name = str(owner or "").strip() or None
             self._timeline_keys = keys_map if isinstance(keys_map, dict) else {}
-            return self._timeline_eval_frame_values(int(frame))
+            return self._timeline_eval_frame_values(float(frame))
         except Exception:
             return (None, None)
         finally:
@@ -1188,9 +1376,14 @@ class GraphGLTimelineModelMixin:
         mapped = self._timeline_composition_source_frame(owner, f)
         if mapped is not None:
             try:
-                eval_frame = int(round(float(mapped)))
+                if self._timeline_owner_is_camera(owner):
+                    eval_frame = float(mapped)
+                else:
+                    eval_frame = int(round(float(mapped)))
             except Exception:
                 eval_frame = f
+        else:
+            eval_frame = self._timeline_owner_key_eval_frame(owner, f)
         xyz_eval, rxyz_eval = self._timeline_eval_frame_values_for_owner_keys(owner, keys_map, eval_frame)
         if xyz_eval is None and rxyz_eval is None:
             return
@@ -1257,9 +1450,14 @@ class GraphGLTimelineModelMixin:
             mapped = self._timeline_composition_source_frame(owner, f)
             if mapped is not None:
                 try:
-                    eval_frame = int(round(float(mapped)))
+                    if self._timeline_owner_is_camera(owner):
+                        eval_frame = float(mapped)
+                    else:
+                        eval_frame = int(round(float(mapped)))
                 except Exception:
                     eval_frame = f
+            else:
+                eval_frame = self._timeline_owner_key_eval_frame(owner, f)
             xyz_eval, rxyz_eval = self._timeline_eval_frame_values_for_owner_keys(owner, keys_map, eval_frame)
             if xyz_eval is None and rxyz_eval is None:
                 continue
@@ -1328,6 +1526,51 @@ class GraphGLTimelineModelMixin:
         except Exception:
             pass
         return False
+
+    def _timeline_owner_is_camera(self, owner: str) -> bool:
+        key = str(owner or "").strip()
+        if not key:
+            return False
+        key_norm = self._timeline_owner_norm(key)
+        try:
+            block = self._timeline_find_composition_block(owner=key)
+            if isinstance(block, dict) and str(block.get("kind") or "").strip().lower() == "camera":
+                return True
+        except Exception:
+            pass
+        try:
+            for entry in getattr(self, "_timeline_scene_assets", []) or []:
+                if not isinstance(entry, dict):
+                    continue
+                owner_key = self._timeline_owner_norm(self._timeline_scene_asset_owner(entry))
+                if owner_key == key_norm and self._timeline_scene_asset_kind(entry) == "camera":
+                    return True
+        except Exception:
+            pass
+        try:
+            for entry in getattr(self, "_scene_camera_entries", []) or []:
+                if not isinstance(entry, dict):
+                    continue
+                owner_key = self._timeline_owner_norm(str(entry.get("owner") or ""))
+                if owner_key == key_norm:
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _timeline_owner_key_eval_frame(self, owner: str | None, frame: float) -> float:
+        try:
+            f = float(frame)
+        except Exception:
+            f = 0.0
+        if self._timeline_is_composition_mode():
+            return max(0.0, float(f))
+        try:
+            if owner and self._timeline_owner_is_camera(str(owner)):
+                return self._timeline_retimed_frame_for_owner(owner, f)
+        except Exception:
+            pass
+        return max(0.0, float(f))
 
     def _timeline_get_owner_xform(self, owner: str):
         key = str(owner or "").strip()
@@ -5509,13 +5752,14 @@ class GraphGLTimelineModelMixin:
                         return
                 except Exception:
                     pass
+        eval_frame = self._timeline_owner_key_eval_frame(owner, frame)
         try:
-            entry = (getattr(self, "_timeline_keys", {}) or {}).get(int(round(float(frame))))
+            entry = (getattr(self, "_timeline_keys", {}) or {}).get(int(round(float(eval_frame))))
         except Exception:
             entry = None
         # Curve axes must win over saved camera snapshots; otherwise keyed frames
         # can jump to stale camera_state while the in-between frames follow curves.
-        xyz_eval, rxyz_eval = self._timeline_eval_frame_values(int(frame))
+        xyz_eval, rxyz_eval = self._timeline_eval_frame_values(float(eval_frame))
         if xyz_eval is not None or rxyz_eval is not None:
             if xyz_eval is None:
                 xyz_eval = self._timeline_current_cam_xyz()
@@ -5543,6 +5787,7 @@ class GraphGLTimelineModelMixin:
                             "rxyz_eval": rxyz_eval,
                             "entry": entry,
                             "owner_key": owner_key,
+                            "source_frame": float(eval_frame),
                             "force": bool(force),
                         },
                     )
