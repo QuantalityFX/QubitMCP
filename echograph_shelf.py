@@ -455,7 +455,7 @@ class CommentGroup(QtWidgets.QGraphicsObject):
         self.setFlag(QtWidgets.QGraphicsItem.ItemSendsGeometryChanges, True)
         self.setAcceptHoverEvents(True)
         self._resize_mode = None
-        self._resize_start_pos = QtCore.QPointF()
+        self._resize_start_scene_pos = QtCore.QPointF()
         self._initial_rect = QtCore.QRectF(self._rect)
         self._initial_pos = QtCore.QPointF(self.pos())
         self._suspend_member_move = False
@@ -576,7 +576,7 @@ class CommentGroup(QtWidgets.QGraphicsObject):
             mode = self._hit_test_resize(e.pos())
             if mode:
                 self._resize_mode = mode
-                self._resize_start_pos = QtCore.QPointF(e.pos())
+                self._resize_start_scene_pos = QtCore.QPointF(e.scenePos())
                 self._initial_rect = QtCore.QRectF(self._rect)
                 self._initial_pos = QtCore.QPointF(self.pos())
                 e.accept()
@@ -643,7 +643,7 @@ class CommentGroup(QtWidgets.QGraphicsObject):
 
     def mouseMoveEvent(self, e: QtWidgets.QGraphicsSceneMouseEvent):
         if self._resize_mode:
-            self._apply_resize(e.pos())
+            self._apply_resize(e.scenePos())
             e.accept()
             return
         if self._dragging_header:
@@ -788,12 +788,13 @@ class CommentGroup(QtWidgets.QGraphicsObject):
             return QtCore.Qt.SizeBDiagCursor
         return None
 
-    def _apply_resize(self, pos: QtCore.QPointF):
+    def _apply_resize(self, scene_pos: QtCore.QPointF):
         if not self._resize_mode:
             return
         min_w, min_h = 160.0, 100.0
         rect = QtCore.QRectF(self._initial_rect)
-        pos_delta = pos - self._resize_start_pos
+        # Top/left resizing moves the item, so measure against fixed scene coords.
+        pos_delta = scene_pos - self._resize_start_scene_pos
         new_rect = QtCore.QRectF(rect)
         new_pos = QtCore.QPointF(self._initial_pos)
         mode = self._resize_mode
