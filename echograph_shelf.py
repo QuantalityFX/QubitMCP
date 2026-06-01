@@ -81,6 +81,7 @@ _VOICE_AUDIO_MODE_DEFAULT = _VOICE_AUDIO_MODE_TURN_TAKING
 _VOICE_MIC_DEVICE_DEFAULT = None
 _SHADOW_QUALITY_DEFAULT = "high"
 _AMBIENT_LIGHT_STRENGTH_DEFAULT = 0.10
+_SCENE_SKELETON_JOINT_NAMES_DEFAULT = False
 _SHADOW_QUALITY_LABELS = {
     "low": "Low",
     "medium": "Medium",
@@ -336,6 +337,10 @@ def _load_app_settings() -> Dict[str, Any]:
         raw.get("ambient_light_strength"),
         _AMBIENT_LIGHT_STRENGTH_DEFAULT,
     )
+    scene_skeleton_joint_names = _coerce_bool(
+        raw.get("scene_skeleton_joint_names"),
+        _SCENE_SKELETON_JOINT_NAMES_DEFAULT,
+    )
     return {
         "save_layout": bool(save_layout),
         "panel_layout": panel_layout,
@@ -348,6 +353,7 @@ def _load_app_settings() -> Dict[str, Any]:
         "two_sided_shadows": bool(two_sided_shadows),
         "ambient_light": bool(ambient_light),
         "ambient_light_strength": float(ambient_light_strength),
+        "scene_skeleton_joint_names": bool(scene_skeleton_joint_names),
     }
 
 
@@ -372,6 +378,10 @@ def _save_app_settings(settings: Dict[str, Any]) -> None:
         "ambient_light_strength": _normalize_ambient_light_strength(
             (settings or {}).get("ambient_light_strength"),
             _AMBIENT_LIGHT_STRENGTH_DEFAULT,
+        ),
+        "scene_skeleton_joint_names": _coerce_bool(
+            (settings or {}).get("scene_skeleton_joint_names"),
+            _SCENE_SKELETON_JOINT_NAMES_DEFAULT,
         ),
     }
     try:
@@ -2630,6 +2640,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._ambient_light_strength = _normalize_ambient_light_strength(
             app_settings.get("ambient_light_strength"),
             _AMBIENT_LIGHT_STRENGTH_DEFAULT,
+        )
+        self._scene_skeleton_joint_names_enabled = _coerce_bool(
+            app_settings.get("scene_skeleton_joint_names"),
+            _SCENE_SKELETON_JOINT_NAMES_DEFAULT,
         )
 
         central = QtWidgets.QWidget(self)
@@ -4960,13 +4974,30 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         grid.addWidget(splat_log_label, 12, 0, 1, 1, QtCore.Qt.AlignVCenter)
         grid.addWidget(self._splat_log_toggle, 12, 1, 1, 1, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
 
+        joint_names_label = QtWidgets.QLabel("Joint Names")
+        self._scene_skeleton_joint_names_toggle = QtWidgets.QCheckBox()
+        self._scene_skeleton_joint_names_toggle.setChecked(
+            bool(getattr(self, "_scene_skeleton_joint_names_enabled", _SCENE_SKELETON_JOINT_NAMES_DEFAULT))
+        )
+        self._scene_skeleton_joint_names_toggle.setToolTip("Show selected skeleton joint names in the 3D view")
+        self._scene_skeleton_joint_names_toggle.toggled.connect(self._on_scene_skeleton_joint_names_toggled)
+        grid.addWidget(joint_names_label, 13, 0, 1, 1, QtCore.Qt.AlignVCenter)
+        grid.addWidget(
+            self._scene_skeleton_joint_names_toggle,
+            13,
+            1,
+            1,
+            1,
+            QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
+        )
+
         save_layout_label = QtWidgets.QLabel("Auto Save Layout")
         self._save_layout_toggle = QtWidgets.QCheckBox()
         self._save_layout_toggle.setChecked(bool(getattr(self, "_save_layout_enabled", True)))
         self._save_layout_toggle.setToolTip("Automatically save panel visibility and view mode as the global default layout")
         self._save_layout_toggle.toggled.connect(self._on_save_layout_toggled)
-        grid.addWidget(save_layout_label, 13, 0, 1, 1, QtCore.Qt.AlignVCenter)
-        grid.addWidget(self._save_layout_toggle, 13, 1, 1, 1, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        grid.addWidget(save_layout_label, 14, 0, 1, 1, QtCore.Qt.AlignVCenter)
+        grid.addWidget(self._save_layout_toggle, 14, 1, 1, 1, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
 
         voice_audio_label = QtWidgets.QLabel("Turn-Taking Audio")
         self._voice_audio_toggle = QtWidgets.QCheckBox()
@@ -4975,8 +5006,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             "On = turn-taking (pause mic while another actor speaks). Off = bilateral mic+speaker."
         )
         self._voice_audio_toggle.toggled.connect(self._on_voice_audio_mode_toggled)
-        grid.addWidget(voice_audio_label, 14, 0, 1, 1, QtCore.Qt.AlignVCenter)
-        grid.addWidget(self._voice_audio_toggle, 14, 1, 1, 1, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        grid.addWidget(voice_audio_label, 15, 0, 1, 1, QtCore.Qt.AlignVCenter)
+        grid.addWidget(self._voice_audio_toggle, 15, 1, 1, 1, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
 
         mic_label = QtWidgets.QLabel("Microphone")
         self._voice_mic_combo = QtWidgets.QComboBox()
@@ -4986,8 +5017,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             "QComboBox QAbstractItemView{background:#0f1216;color:#e6edf3;selection-background-color:#1e3a8a;}"
         )
         self._voice_mic_combo.currentIndexChanged.connect(self._on_voice_microphone_changed)
-        grid.addWidget(mic_label, 15, 0, 1, 1, QtCore.Qt.AlignVCenter)
-        grid.addWidget(self._voice_mic_combo, 15, 1, 1, 2, QtCore.Qt.AlignVCenter)
+        grid.addWidget(mic_label, 16, 0, 1, 1, QtCore.Qt.AlignVCenter)
+        grid.addWidget(self._voice_mic_combo, 16, 1, 1, 2, QtCore.Qt.AlignVCenter)
         self._refresh_voice_microphone_options()
 
         panel_action = QtWidgets.QWidgetAction(settings_menu)
@@ -5257,6 +5288,9 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             "ambient_light_strength": _normalize_ambient_light_strength(
                 getattr(self, "_ambient_light_strength", _AMBIENT_LIGHT_STRENGTH_DEFAULT),
                 _AMBIENT_LIGHT_STRENGTH_DEFAULT,
+            ),
+            "scene_skeleton_joint_names": bool(
+                getattr(self, "_scene_skeleton_joint_names_enabled", _SCENE_SKELETON_JOINT_NAMES_DEFAULT)
             ),
         }
         _save_app_settings(payload)
@@ -5556,6 +5590,9 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             getattr(self, "_ambient_light_strength", _AMBIENT_LIGHT_STRENGTH_DEFAULT),
             _AMBIENT_LIGHT_STRENGTH_DEFAULT,
         )
+        settings["scene_skeleton_joint_names"] = bool(
+            getattr(self, "_scene_skeleton_joint_names_enabled", _SCENE_SKELETON_JOINT_NAMES_DEFAULT)
+        )
         data["settings"] = settings
 
     def _inject_scene_restore_into_workflow_data(self, data: Dict[str, Any]) -> None:
@@ -5836,6 +5873,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._ambient_light_enabled = True
         self._ambient_light_strength = _AMBIENT_LIGHT_STRENGTH_DEFAULT
         self._splat_log_enabled = False
+        self._scene_skeleton_joint_names_enabled = _SCENE_SKELETON_JOINT_NAMES_DEFAULT
         self._save_layout_enabled = True
         self._panel_layout_master_preset = dict(_DEFAULT_PANEL_LAYOUT_PRESET)
         self._view_mode_master_preset = "2d"
@@ -5919,6 +5957,13 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 self._splat_log_toggle.blockSignals(False)
             except Exception:
                 pass
+        if hasattr(self, "_scene_skeleton_joint_names_toggle"):
+            try:
+                self._scene_skeleton_joint_names_toggle.blockSignals(True)
+                self._scene_skeleton_joint_names_toggle.setChecked(bool(self._scene_skeleton_joint_names_enabled))
+                self._scene_skeleton_joint_names_toggle.blockSignals(False)
+            except Exception:
+                pass
         if hasattr(self, "_save_layout_toggle"):
             try:
                 self._save_layout_toggle.blockSignals(True)
@@ -5976,6 +6021,9 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             gv._mgl_zoom_pan_scale = float(getattr(self, "_gizmo_zoom_scale", 0.02))
             gv._mgl_pan_ref_zoom = None
             gv._mgl_splat_log = bool(getattr(self, "_splat_log_enabled", False))
+            gv._mgl_scene_skeleton_show_joint_names = bool(
+                getattr(self, "_scene_skeleton_joint_names_enabled", _SCENE_SKELETON_JOINT_NAMES_DEFAULT)
+            )
             fly_mult = float(getattr(self, "_fly_speed_mult", 1.0))
             if hasattr(gv, "_apply_fly_speed_multiplier"):
                 gv._apply_fly_speed_multiplier(fly_mult, sync_ui=False, sync_scene=False)
@@ -6031,6 +6079,9 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 settings["pan_boost"] = float(getattr(self, "_pan_boost", 10.0))
                 settings["gizmo_zoom_scale"] = float(getattr(self, "_gizmo_zoom_scale", 0.02))
                 settings["splat_log"] = bool(getattr(self, "_splat_log_enabled", False))
+                settings["scene_skeleton_joint_names"] = bool(
+                    getattr(self, "_scene_skeleton_joint_names_enabled", _SCENE_SKELETON_JOINT_NAMES_DEFAULT)
+                )
                 settings["fly_speed_mult"] = float(getattr(self, "_fly_speed_mult", 1.0))
                 settings["shadow_quality"] = _normalize_shadow_quality(
                     getattr(self, "_shadow_quality", _SHADOW_QUALITY_DEFAULT),
@@ -6213,6 +6264,17 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
     def _on_splat_log_toggled(self, checked: bool) -> None:
         self._splat_log_enabled = bool(checked)
         self._apply_pan_settings_to_gl_view()
+
+    def _on_scene_skeleton_joint_names_toggled(self, checked: bool) -> None:
+        self._scene_skeleton_joint_names_enabled = bool(checked)
+        self._apply_pan_settings_to_gl_view()
+        try:
+            gv = getattr(self, "gl_view", None)
+            if gv is not None:
+                gv.update()
+        except Exception:
+            pass
+        self._persist_app_layout_settings()
 
     def _on_shadow_quality_changed(self, index: int) -> None:
         combo = getattr(self, "_shadow_quality_combo", None)
@@ -6506,6 +6568,18 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         except Exception:
             splat_log = getattr(self, "_splat_log_enabled", False)
         try:
+            scene_skeleton_joint_names = _coerce_bool(
+                settings.get(
+                    "scene_skeleton_joint_names",
+                    getattr(self, "_scene_skeleton_joint_names_enabled", _SCENE_SKELETON_JOINT_NAMES_DEFAULT),
+                ),
+                _SCENE_SKELETON_JOINT_NAMES_DEFAULT,
+            )
+        except Exception:
+            scene_skeleton_joint_names = bool(
+                getattr(self, "_scene_skeleton_joint_names_enabled", _SCENE_SKELETON_JOINT_NAMES_DEFAULT)
+            )
+        try:
             shadow_quality = _normalize_shadow_quality(
                 settings.get("shadow_quality", getattr(self, "_shadow_quality", _SHADOW_QUALITY_DEFAULT)),
                 getattr(self, "_shadow_quality", _SHADOW_QUALITY_DEFAULT),
@@ -6567,6 +6641,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         self._gizmo_zoom_scale = gizmo_zoom
         self._fly_speed_mult = fly_speed
         self._splat_log_enabled = splat_log
+        self._scene_skeleton_joint_names_enabled = bool(scene_skeleton_joint_names)
         self._shadow_quality = shadow_quality
         self._cast_shadows_enabled = bool(cast_shadows)
         self._self_shadows_enabled = bool(self_shadows)
@@ -6599,6 +6674,10 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             self._splat_log_toggle.blockSignals(True)
             self._splat_log_toggle.setChecked(bool(splat_log))
             self._splat_log_toggle.blockSignals(False)
+        if hasattr(self, "_scene_skeleton_joint_names_toggle"):
+            self._scene_skeleton_joint_names_toggle.blockSignals(True)
+            self._scene_skeleton_joint_names_toggle.setChecked(bool(scene_skeleton_joint_names))
+            self._scene_skeleton_joint_names_toggle.blockSignals(False)
         if hasattr(self, "_shadow_quality_combo"):
             self._shadow_quality_combo.blockSignals(True)
             idx = self._shadow_quality_combo.findData(shadow_quality)

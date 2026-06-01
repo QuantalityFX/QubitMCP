@@ -548,7 +548,35 @@ class GraphGLTimelineIOMixin:
                 self._timeline_set_fx_proxy_enabled(bool(fx_proxy_enabled), save=False)
             except Exception:
                 self._timeline_fx_proxy_enabled = bool(fx_proxy_enabled)
+            try:
+                owner = str(getattr(self, "_timeline_owner_name", "") or "").strip()
+                if owner:
+                    renderer = getattr(self, "_mgl_renderer", None) or self
+                    map_fn = getattr(renderer, "_mgl_timeline_owner_keys_map", None)
+                    virtual_map = map_fn(owner) if callable(map_fn) else {}
+                    if isinstance(virtual_map, dict) and virtual_map:
+                        staged: Dict[int, Dict[str, object]] = {}
+                        for frame_raw, entry in virtual_map.items():
+                            try:
+                                frame = int(frame_raw)
+                            except Exception:
+                                continue
+                            if frame < 0 or not isinstance(entry, dict):
+                                continue
+                            staged[int(frame)] = dict(entry)
+                        if staged:
+                            self._timeline_keys = staged
+            except Exception:
+                pass
             self._timeline_total_max = max(240, int(self._timeline_current_frame()))
+            try:
+                if self._timeline_keys:
+                    self._timeline_total_max = max(
+                        int(self._timeline_total_max),
+                        max(int(k) for k in self._timeline_keys.keys()),
+                    )
+            except Exception:
+                pass
             self._timeline_sync_range_controls(keep_current_visible=True, refresh_key_markers=True)
             self._timeline_update_key_count_label()
             self._timeline_refresh_coord_labels()
@@ -678,6 +706,33 @@ class GraphGLTimelineIOMixin:
                     item["curve_handles"] = ch_out
             if item:
                 data[int(frame)] = item
+        owner_for_virtual = str(getattr(self, "_timeline_owner_name", "") or "").strip()
+        try:
+            renderer = getattr(self, "_mgl_renderer", None) or self
+            decode_fn = getattr(renderer, "_mgl_scene_skeleton_decode_joint_owner", None)
+            map_fn = getattr(renderer, "_mgl_timeline_owner_keys_map", None)
+            is_scene_joint_owner = bool(callable(decode_fn) and decode_fn(owner_for_virtual))
+            if is_scene_joint_owner and callable(map_fn):
+                virtual_map = map_fn(owner_for_virtual)
+                if isinstance(virtual_map, dict) and virtual_map:
+                    merged: Dict[int, Dict[str, object]] = {}
+                    for frame_raw, entry in virtual_map.items():
+                        try:
+                            frame = int(frame_raw)
+                        except Exception:
+                            continue
+                        if frame < 0 or not isinstance(entry, dict):
+                            continue
+                        merged[int(frame)] = dict(entry)
+                    for frame, entry in data.items():
+                        base = dict(merged.get(int(frame), {}) or {})
+                        base.update(dict(entry))
+                        base.pop("fbx_clip_key", None)
+                        base.pop("joint_key", None)
+                        merged[int(frame)] = base
+                    data = merged
+        except Exception:
+            pass
         if not data:
             owner = str(getattr(self, "_timeline_owner_name", "") or "").strip()
             if owner:

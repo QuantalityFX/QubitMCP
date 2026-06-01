@@ -67,6 +67,32 @@ _FX_MUSIC_EFFECTS_KIND_ALIASES = {
     "musiceffects",
 }
 _SCENE_COLLECT_CACHE_TTL_SEC = 8.0
+
+
+def _is_anim_retarget_kind(kind: str) -> bool:
+    key = str(kind or "").strip().lower()
+    return key in _ANIM_RETARGET_KIND_ALIASES or key == "anim_retarget_preview"
+
+
+def _asset_has_scene_skeleton(asset: dict, source_kind: str = "") -> bool:
+    if not isinstance(asset, dict):
+        return False
+    if bool(asset.get("has_skeleton", False)):
+        return True
+    if _is_anim_retarget_kind(source_kind or str(asset.get("kind") or "")):
+        return True
+    context = asset.get("fbx_rig_context")
+    if not isinstance(context, dict):
+        return False
+    if context.get("skeleton") is not None:
+        return True
+    if bool(context.get("retarget_result", False)):
+        return True
+    clip = context.get("clip")
+    try:
+        return clip is not None and bool(getattr(clip, "tracks", None))
+    except Exception:
+        return clip is not None
 _COPY_TO_POINTS_KIND_ALIASES = {
     "copy_to_points",
     "copy to points",
@@ -1506,7 +1532,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
         base_kind = (base_kind or "").strip().lower()
 
         def _generated_scene_asset_for_instance():
-            if base_item is None or base_kind not in _ANIM_RETARGET_KIND_ALIASES:
+            if base_item is None or not _is_anim_retarget_kind(base_kind):
                 return None
             try:
                 from nodes.anim_retarget import spec as _anim_retarget_spec  # type: ignore
@@ -1791,7 +1817,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
         src_name = (getattr(model, "name", "") or "").strip()
         kind = (getattr(model, "kind", "") or "").strip().lower()
         material_asset = None
-        if kind in _ANIM_RETARGET_KIND_ALIASES:
+        if _is_anim_retarget_kind(kind):
             try:
                 from nodes.anim_retarget import spec as _anim_retarget_spec  # type: ignore
 
@@ -1806,6 +1832,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                     )
             if isinstance(asset, dict):
                 asset_owner = str(asset.get("node") or src_name or kind).strip()
+                asset["kind"] = "anim_retarget"
                 saved_xform = _lookup_xform(xforms, asset_owner)
                 if not isinstance(saved_xform, dict) and asset_owner != src_name:
                     saved_xform = _lookup_xform(xforms, src_name)
@@ -3830,6 +3857,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             sel_kind = str(it.data(QtCore.Qt.UserRole + 1) or "").strip().lower()
             if not sel_kind:
                 sel_kind = "mesh"
+            is_skeleton_row = sel_kind == "skeleton"
             preserve_glv = None
             preserve_view_state = None
             if sel_kind == "camera":
@@ -3856,7 +3884,7 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             try:
                 win = card.window()
                 ctl = getattr(win, "_timeline_controller", None) if win is not None else None
-                if ctl is not None:
+                if ctl is not None and not bool(is_skeleton_row):
                     glv = getattr(win, "gl_view", None) if win is not None else None
                     apply_current_frame = True
                     if glv is not None and sel_kind == "camera":
@@ -3909,9 +3937,41 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                     )
             except Exception:
                 pass
-            xform_panel.setEnabled(True)
-            _load_xform_from_view(owner)
+            xform_panel.setEnabled(not bool(is_skeleton_row))
+            if not bool(is_skeleton_row):
+                _load_xform_from_view(owner)
             _update_row_highlight(it)
+
+            if bool(is_skeleton_row):
+                try:
+                    win = card.window()
+                    glv = getattr(win, "gl_view", None) if win is not None else None
+                    if glv is not None:
+                        renderer = getattr(glv, "_mgl_renderer", None) or glv
+                        log_skel = getattr(renderer, "_mgl_scene_skeleton_log", None)
+                        if callable(log_skel):
+                            log_skel("outliner_skeleton_select", owner=owner)
+                        show_skel = getattr(renderer, "_mgl_scene_skeleton_request_active", None)
+                        if callable(show_skel):
+                            show_skel(owner)
+                        try:
+                            glv._xform_gizmo_owner = None
+                            glv._xform_gizmo_owner_kind = None
+                            glv._xform_gizmo_pos_locked = False
+                        except Exception:
+                            pass
+                        try:
+                            if hasattr(glv, "set_scene_asset_uv_overlay"):
+                                glv.set_scene_asset_uv_overlay(None)
+                        except Exception:
+                            pass
+                        try:
+                            glv.update()
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                return
 
             if not _scene_is_active():
                 return
@@ -3921,6 +3981,10 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 win = card.window()
                 glv = getattr(win, "gl_view", None) if win is not None else None
                 if glv is not None:
+                    renderer = getattr(glv, "_mgl_renderer", None) or glv
+                    show_skel = getattr(renderer, "_mgl_scene_skeleton_request_active", None)
+                    if callable(show_skel):
+                        show_skel("")
                     glv._xform_gizmo_owner = owner
                     try:
                         refresh_speed = getattr(glv, "_timeline_refresh_speed_control", None)
@@ -4159,7 +4223,17 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                         or kind in _SPLAT_COLORIZE_KIND_ALIASES
                     ) and not ext:
                         ext = ".ply"
-                    rows.append({"node": name, "path": path, "kind": "mesh", "ext": ext, "_quick": True})
+                    asset_kind = "anim_retarget" if _is_anim_retarget_kind(kind) else "mesh"
+                    rows.append(
+                        {
+                            "node": name,
+                            "path": path,
+                            "kind": asset_kind,
+                            "ext": ext,
+                            "_quick": True,
+                            "has_skeleton": bool(_is_anim_retarget_kind(kind)),
+                        }
+                    )
             return rows
 
         def _outliner_alive() -> bool:
@@ -4187,6 +4261,14 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                         prev_owner = str(cur_item.data(QtCore.Qt.UserRole) or "").strip() or None
                 except Exception:
                     prev_owner = None
+            try:
+                prev_kind = str(getattr(card, "_scene_selected_kind", "") or "").strip().lower()
+                if not prev_kind:
+                    cur_item = outliner.currentItem()
+                    if cur_item is not None:
+                        prev_kind = str(cur_item.data(QtCore.Qt.UserRole + 1) or "").strip().lower()
+            except Exception:
+                prev_kind = ""
             try:
                 outliner.blockSignals(True)
             except Exception:
@@ -4258,7 +4340,22 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 if ext and ext not in SUPPORTED_EXTS:
                     continue
                 seen.add(name)
-                rows.append({"name": name, "path": path, "kind": "mesh"})
+                is_anim_retarget_asset = _is_anim_retarget_kind(kind)
+                has_skeleton = _asset_has_scene_skeleton(asset, kind)
+                row_kind = "anim_retarget" if is_anim_retarget_asset else "mesh"
+                rows.append({"name": name, "path": path, "kind": row_kind, "has_skeleton": bool(has_skeleton)})
+                if bool(has_skeleton):
+                    rows.append(
+                        {
+                            "name": name,
+                            "path": path,
+                            "kind": "skeleton",
+                            "display": "Skeleton",
+                            "indent": 1,
+                            "child": True,
+                            "parent": name,
+                        }
+                    )
 
             if not rows:
                 empty = QtWidgets.QListWidgetItem("(no connected imports, primitives, volumes, UV unwraps, textures, texture layers, texture pros, cameras, or lights)")
@@ -4272,9 +4369,17 @@ def augment_infocard_footer(card, footer_layout) -> bool:
 
             hidden = _hidden_set()
             row_widgets = []
+            visible_row_number = 0
             for idx, entry in enumerate(rows, start=1):
                 name = entry["name"]
-                visible = name not in hidden
+                owner_name = str(entry.get("owner") or entry.get("parent") or name).strip()
+                display_name = str(entry.get("display") or name).strip()
+                row_kind = str(entry.get("kind") or "mesh").strip().lower()
+                is_child = bool(entry.get("child")) or row_kind == "skeleton"
+                if not is_child:
+                    visible_row_number += 1
+                display_number = visible_row_number if not is_child else 0
+                visible = owner_name not in hidden
 
                 row_widget = QtWidgets.QWidget()
                 row_widget.setObjectName("SceneOutlinerRow")
@@ -4293,15 +4398,22 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 eye_btn = QtWidgets.QToolButton()
                 eye_btn.setAutoRaise(True)
                 eye_btn.setCheckable(True)
+                eye_btn.setEnabled(not is_child)
                 # Avoid firing toggled during list rebuild
                 try:
                     eye_btn.blockSignals(True)
                     eye_btn.setChecked(visible)
                 finally:
                     eye_btn.blockSignals(False)
-                eye_btn.setIcon(_eye_icon(visible))
-                eye_btn.setToolTip("Toggle visibility")
-                def _on_eye_clicked(checked, n=name, b=eye_btn):
+                eye_btn.setIcon(_eye_icon(visible) if not is_child else QtGui.QIcon())
+                eye_btn.setToolTip("Toggle visibility" if not is_child else "")
+                if is_child:
+                    try:
+                        eye_btn.setVisible(False)
+                        eye_btn.setFixedWidth(0)
+                    except Exception:
+                        pass
+                def _on_eye_clicked(checked, n=owner_name, b=eye_btn):
                     # Update the icon immediately; defer visibility side-effects to avoid re-entrancy.
                     try:
                         b.setIcon(_eye_icon(checked))
@@ -4327,21 +4439,32 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 eye_btn.clicked.connect(_on_eye_clicked)
                 row_layout.addWidget(eye_btn, 0)
 
-                idx_label = QtWidgets.QLabel(f"{idx}")
+                idx_label = QtWidgets.QLabel("  " if is_child else f"{display_number}")
                 idx_label.setStyleSheet("color:#94a3b8;background:transparent;")
                 row_layout.addWidget(idx_label, 0)
 
-                name_edit = QtWidgets.QLineEdit(name)
+                if is_child:
+                    indent_spacer = QtWidgets.QLabel("")
+                    indent_spacer.setFixedWidth(18)
+                    indent_spacer.setStyleSheet("background:transparent;")
+                    row_layout.addWidget(indent_spacer, 0)
+
+                name_edit = QtWidgets.QLineEdit(display_name)
                 name_edit.setReadOnly(True)
                 name_edit.setFrame(False)
                 name_edit.setMinimumWidth(0)
                 name_edit.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-                name_edit.setStyleSheet("QLineEdit{background:transparent;color:#e2e8f0;}")
+                name_edit.setStyleSheet(
+                    "QLineEdit{background:transparent;color:#94a3b8;}" if is_child
+                    else "QLineEdit{background:transparent;color:#e2e8f0;}"
+                )
                 name_edit.setFocusPolicy(QtCore.Qt.NoFocus)
                 name_edit.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
-                name_edit.setProperty("scene_node_name", name)
+                name_edit.setProperty("scene_node_name", owner_name)
 
                 def _start_edit(edit=name_edit):
+                    if bool(getattr(edit, "_scene_no_rename", False)):
+                        return
                     try:
                         prev = getattr(card, "_scene_outliner_editing", None)
                         if isinstance(prev, QtWidgets.QLineEdit) and prev is not edit and not prev.isReadOnly():
@@ -4373,6 +4496,8 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                 name_edit._scene_start_edit = lambda e=name_edit: _start_edit(e)
 
                 def _finish_edit(edit=name_edit, scn=scene):
+                    if bool(getattr(edit, "_scene_no_rename", False)):
+                        return
                     old_name = edit.property("scene_node_name") or ""
                     new_name = edit.text().strip()
                     edit.setReadOnly(True)
@@ -4396,13 +4521,19 @@ def augment_infocard_footer(card, footer_layout) -> bool:
 
                 name_edit.editingFinished.connect(_finish_edit)
                 name_edit._scene_finish_edit = lambda e=name_edit: _finish_edit(e)
+                if is_child:
+                    name_edit._scene_no_rename = True
                 row_layout.addWidget(name_edit, 1)
 
                 row_item = QtWidgets.QListWidgetItem()
-                row_item.setData(QtCore.Qt.UserRole, name)
+                row_item.setData(QtCore.Qt.UserRole, owner_name)
                 row_item.setData(QtCore.Qt.UserRole + 1, (entry.get("kind") or "mesh"))
+                if is_child:
+                    row_item.setData(QtCore.Qt.UserRole + 2, name)
                 if entry.get("path"):
                     row_item.setToolTip(entry["path"])
+                if is_child:
+                    row_item.setToolTip(f"Show skeleton for {owner_name}")
                 try:
                     vw = int(outliner.viewport().width())
                 except Exception:
@@ -4459,9 +4590,10 @@ def augment_infocard_footer(card, footer_layout) -> bool:
                     (row_widget, "row"),
                     (idx_label, "idx"),
                     (eye_btn, "eye"),
+                    *(([(indent_spacer, "indent")] if is_child else [])),
                 ):
                     try:
-                        filt = _RowSelectFilter(row_item, label, idx, name, name_edit)
+                        filt = _RowSelectFilter(row_item, label, display_number or idx, display_name, name_edit)
                         widget.installEventFilter(filt)
                         setattr(widget, "_row_select_filter", filt)
                     except Exception:
@@ -4474,12 +4606,14 @@ def augment_infocard_footer(card, footer_layout) -> bool:
             if prev_owner:
                 try:
                     prev_owner_l = str(prev_owner).strip().lower()
+                    prev_kind_l = str(prev_kind or "").strip().lower()
                     for i in range(outliner.count()):
                         it = outliner.item(i)
                         if it is None:
                             continue
                         item_owner = str(it.data(QtCore.Qt.UserRole) or "").strip().lower()
-                        if item_owner == prev_owner_l:
+                        item_kind = str(it.data(QtCore.Qt.UserRole + 1) or "").strip().lower()
+                        if item_owner == prev_owner_l and (not prev_kind_l or item_kind == prev_kind_l):
                             selected_row = i
                             break
                 except Exception:

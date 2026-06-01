@@ -152,6 +152,7 @@ class TimelineController:
             project_path = None
         owner_name = None
         card = None
+        skeleton_row_selected = False
         try:
             active_name = str(scene_name or "").strip()
             cards = getattr(win, "_card_by_node", None)
@@ -165,8 +166,10 @@ class TimelineController:
                             card = maybe
                             break
             if card is not None and bool(getattr(card, "_scene_outliner_user_selected", False)):
+                selected_kind = str(getattr(card, "_scene_selected_kind", "") or "").strip().lower()
+                skeleton_row_selected = selected_kind == "skeleton"
                 raw_owner = str(getattr(card, "_scene_selected_owner", "") or "").strip()
-                if raw_owner:
+                if raw_owner and not skeleton_row_selected:
                     owner_name = raw_owner
         except Exception:
             owner_name = None
@@ -176,12 +179,16 @@ class TimelineController:
                 outliner = getattr(card, "_scene_outliner_widget", None)
                 current_item = outliner.currentItem() if outliner is not None else None
                 if current_item is not None:
-                    raw_owner = str(current_item.data(QtCore.Qt.UserRole) or "").strip()
-                    if raw_owner:
-                        owner_name = raw_owner
+                    item_kind = str(current_item.data(QtCore.Qt.UserRole + 1) or "").strip().lower()
+                    if item_kind == "skeleton":
+                        skeleton_row_selected = True
+                    else:
+                        raw_owner = str(current_item.data(QtCore.Qt.UserRole) or "").strip()
+                        if raw_owner:
+                            owner_name = raw_owner
             except Exception:
                 pass
-        if preview_context is None and owner_name is None:
+        if preview_context is None and owner_name is None and not skeleton_row_selected:
             try:
                 raw_owner = str(getattr(gv, "_xform_gizmo_owner", "") or "").strip()
                 if raw_owner:

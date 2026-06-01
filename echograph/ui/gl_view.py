@@ -721,6 +721,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._mgl_wire_line_width = 1.0
         self._mgl_wire_edge_width = 2.0
         self._mgl_splat_log = False
+        self._mgl_scene_skeleton_show_joint_names = False
         self._mgl_uv_overlay_enabled = False
         self._mgl_uv_segments: List[Tuple[float, float, float, float]] = []
         self._mgl_uv_bounds: Optional[Tuple[float, float, float, float]] = None
@@ -1026,6 +1027,12 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 texture_seed = settings.get("timeline_texture_seed", None)
                 if texture_seed is not None:
                     self._apply_timeline_texture_seed(int(texture_seed), sync_ui=True, sync_scene=False)
+                scene_skeleton_joint_names = settings.get("scene_skeleton_joint_names", None)
+                if scene_skeleton_joint_names is not None:
+                    self._mgl_scene_skeleton_show_joint_names = _coerce_view_bool(
+                        scene_skeleton_joint_names,
+                        False,
+                    )
                 ambient_light = settings.get("ambient_light", None)
                 ambient_strength = settings.get("ambient_light_strength", None)
                 if ambient_light is not None or ambient_strength is not None:
@@ -5595,6 +5602,12 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         if self._use_moderngl and self._mgl_uv_overlay_enabled:
             self._draw_uv_overlay(painter)
         self._draw_axis_gizmo(painter)
+        draw_scene_skeleton = getattr(self, "_draw_scene_skeleton_qt_overlay", None)
+        if callable(draw_scene_skeleton):
+            try:
+                draw_scene_skeleton(painter)
+            except Exception:
+                pass
         if owns_painter:
             painter.end()
         if depth_disabled:

@@ -361,8 +361,24 @@ def _handle_mouse_retarget_viewport(self, e):
 def _handle_mouse_press_moderngl_retarget_joint(self, e, alt_pressed):
     if e.button() not in (QtCore.Qt.LeftButton, QtCore.Qt.RightButton) or bool(alt_pressed):
         return False
-    is_unlink_click = bool(e.button() == QtCore.Qt.RightButton)
     renderer = getattr(self, "_mgl_renderer", None) or self
+    try:
+        scene_skeleton_active = bool(str(getattr(renderer, "_mgl_scene_skeleton_active_owner", "") or "").strip())
+        if e.button() == QtCore.Qt.RightButton and scene_skeleton_active:
+            return False
+    except Exception:
+        pass
+    try:
+        nav_right_click = bool(e.button() == QtCore.Qt.RightButton) and (
+            bool(getattr(self, "_fly_mode_enabled", False))
+            or bool(getattr(self, "_camera_select_lock_enabled", False))
+            or bool(getattr(self, "_fps_nav_active", False))
+        )
+        if nav_right_click:
+            return False
+    except Exception:
+        pass
+    is_unlink_click = bool(e.button() == QtCore.Qt.RightButton)
     pick = getattr(renderer, "pick_retarget_joint_at", None)
     if not callable(pick):
         return False

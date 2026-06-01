@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, TYPE_CHECKING, Any, TypeAlias
@@ -71,6 +72,12 @@ GL_SCISSOR_TEST = 0x0C11
 
 _HAS_MGL = moderngl is not None and np is not None and Matrix44 is not None
 
+_SCENE_SKELETON_GREEN = (0.0, 1.0, 0.0, 0.95)
+_SCENE_SKELETON_SELECTED_YELLOW = (1.0, 0.86, 0.0, 1.0)
+_SCENE_SKELETON_HANDLE_RADIUS_SCALE = 1.92
+_SCENE_SKELETON_LINE_WIDTH_SCALE = 0.50
+_SCENE_SKELETON_SCREEN_HANDLE_RADIUS_SCALE = 3.0
+
 
 _THUMB_VERT = """
 #version 330
@@ -137,6 +144,12 @@ def _mgl_grid(size: float, steps: int) -> NDArray:
 
 
 class MGLRendererMixin:
+    def _mgl_timeline_fx_enabled(self) -> bool:
+        try:
+            return bool(getattr(self, "_timeline_fx_instances_enabled", True))
+        except Exception:
+            return True
+
     def _mgl_log(self, msg: str) -> None:
         try:
             if not bool(getattr(self, "_mgl_splat_log", True)):
@@ -194,6 +207,82 @@ class MGLRendererMixin:
         except Exception:
             pass
         self._mgl_fbx_joints_log(msg)
+
+    def _mgl_scene_skeleton_log_enabled(self) -> bool:
+        try:
+            if bool(os.environ.get("ECHOGRAPH_SCENE_DEBUG_VERBOSE")):
+                return True
+        except Exception:
+            pass
+        try:
+            win = self.window()
+        except Exception:
+            win = None
+        try:
+            scene_node = getattr(win, "_active_scene_node", None) if win is not None else None
+            for p in (getattr(scene_node, "params", None) or []):
+                if (p.get("name") or "").strip().lower() != "debug_log":
+                    continue
+                return str(p.get("value") or "").strip().lower() in {"1", "true", "yes", "on"}
+        except Exception:
+            pass
+        try:
+            for entry in list(getattr(self, "_timeline_scene_assets", None) or []):
+                if isinstance(entry, dict) and bool(entry.get("debug_log", False)):
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _mgl_scene_skeleton_log(self, event: str, **fields) -> None:
+        if not self._mgl_scene_skeleton_log_enabled():
+            return
+        try:
+            root = Path(__file__).resolve().parents[2]
+            log_dir = root / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            payload = {"ts": time.strftime("%Y-%m-%d %H:%M:%S"), "event": str(event)}
+            payload.update(fields)
+            with (log_dir / "scene_skeleton_debug.log").open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(payload, sort_keys=True, default=str) + "\n")
+        except Exception:
+            pass
+
+    def _mgl_scene_skeleton_log_throttled(self, key: str, event: str, interval: float = 0.5, **fields) -> None:
+        try:
+            store = getattr(self, "_mgl_scene_skeleton_log_times", None)
+            if not isinstance(store, dict):
+                store = {}
+                self._mgl_scene_skeleton_log_times = store
+            now = float(time.time())
+            last = float(store.get(str(key), 0.0) or 0.0)
+            if (now - last) < float(interval):
+                return
+            store[str(key)] = now
+        except Exception:
+            pass
+        self._mgl_scene_skeleton_log(event, **fields)
+
+    def _mgl_scene_skeleton_context_log_fields(self, context: dict | None) -> dict:
+        if not isinstance(context, dict):
+            return {"has_context": False, "has_skeleton": False, "joint_count": 0, "has_clip": False, "track_count": 0}
+        skeleton = context.get("skeleton")
+        clip = context.get("clip")
+        try:
+            joint_count = int(len(list(getattr(skeleton, "joints", []) or []))) if skeleton is not None else 0
+        except Exception:
+            joint_count = 0
+        try:
+            track_count = int(len(list(getattr(clip, "tracks", []) or []))) if clip is not None else 0
+        except Exception:
+            track_count = 0
+        return {
+            "has_context": True,
+            "has_skeleton": bool(skeleton is not None),
+            "joint_count": joint_count,
+            "has_clip": bool(clip is not None),
+            "track_count": track_count,
+        }
 
     def _mgl_retarget_log(self, event: str, **fields) -> None:
         try:
@@ -540,38 +629,54 @@ class MGLRendererMixin:
 
     def _mgl_scene_owner_fbx_rig_context(self, owner: str) -> Optional[dict]:
         scene = getattr(self, "_mgl_scene", None)
-        if scene is None:
-            return None
         owner_key = str(owner or "").strip()
         if not owner_key:
             return None
         owner_key_norm = owner_key.lower()
-        for tag in ("scene-model", "scene-wire", "scene-rig-joints", "model"):
-            try:
-                items = list(scene.iter_by_tag(tag))
-            except Exception:
-                items = []
-            for item in items:
-                payload = getattr(item, "payload", None) or {}
-                payload_owner = str(payload.get("owner") or "").strip()
-                if payload_owner and payload_owner.lower() != owner_key_norm:
-                    continue
-                context = payload.get("fbx_rig_context")
+        if scene is not None:
+            for tag in ("scene-model", "scene-wire", "scene-rig-joints", "model"):
+                try:
+                    items = list(scene.iter_by_tag(tag))
+                except Exception:
+                    items = []
+                for item in items:
+                    payload = getattr(item, "payload", None) or {}
+                    payload_owner = str(payload.get("owner") or "").strip()
+                    if payload_owner and payload_owner.lower() != owner_key_norm:
+                        continue
+                    context = payload.get("fbx_rig_context")
+                    if isinstance(context, dict):
+                        return context
+                    path_text = str(payload.get("path") or "").strip()
+                    if path_text.lower().endswith((".fbx", ".bvh")):
+                        try:
+                            context = self._mgl_fbx_rig_context_for_path(Path(path_text))
+                        except Exception:
+                            context = None
+                        if isinstance(context, dict):
+                            try:
+                                payload["fbx_rig_context"] = context
+                                item.payload = payload
+                            except Exception:
+                                pass
+                            return context
+        for asset in list(getattr(self, "_timeline_scene_assets", None) or []):
+            if not isinstance(asset, dict):
+                continue
+            asset_owner = str(asset.get("node") or asset.get("owner") or "").strip()
+            if asset_owner and asset_owner.lower() != owner_key_norm:
+                continue
+            context = asset.get("fbx_rig_context")
+            if isinstance(context, dict):
+                return context
+            path_text = str(asset.get("path") or "").strip()
+            if path_text.lower().endswith((".fbx", ".bvh")):
+                try:
+                    context = self._mgl_fbx_rig_context_for_path(Path(path_text))
+                except Exception:
+                    context = None
                 if isinstance(context, dict):
                     return context
-                path_text = str(payload.get("path") or "").strip()
-                if path_text.lower().endswith((".fbx", ".bvh")):
-                    try:
-                        context = self._mgl_fbx_rig_context_for_path(Path(path_text))
-                    except Exception:
-                        context = None
-                    if isinstance(context, dict):
-                        try:
-                            payload["fbx_rig_context"] = context
-                            item.payload = payload
-                        except Exception:
-                            pass
-                        return context
         return None
 
     def _mgl_fbx_clip_marker_keys_map(self, owner: str, context: dict) -> Dict[int, Dict[str, object]]:
@@ -682,6 +787,11 @@ class MGLRendererMixin:
             prefer_inverse_bind=bool(pose_mode in {"capture", "bind", "rest", "capture_pose"}),
         )
         owner = payload.get("owner")
+        if bool(payload.get("scene_skeleton_overlay", False)) and np is not None:
+            try:
+                line_points, _display_info = self._mgl_scene_skeleton_display_positions(str(owner or ""), line_points)
+            except Exception:
+                pass
         path_key = payload.get("path")
         color = payload.get("color")
         line_width = payload.get("line_width")
@@ -711,6 +821,9 @@ class MGLRendererMixin:
             new_payload["fbx_rig_context"] = context
             new_payload["_fbx_rig_frame"] = frame_key
             new_payload["fbx_rig_pose_mode"] = pose_mode
+            if bool(old_payload.get("scene_skeleton_overlay", False)):
+                new_payload["scene_skeleton_overlay"] = True
+                new_payload["ignore_owner_model"] = True
             if old_payload.get("model") is not None:
                 new_payload["model"] = old_payload.get("model")
             if color is not None:
@@ -2091,6 +2204,8 @@ class MGLRendererMixin:
     def _mgl_splat_fx_music_values(self, proxy: dict, splats: NDArray, frame: int) -> Optional[NDArray]:
         if np is None or not isinstance(proxy, dict):
             return None
+        if not self._mgl_timeline_fx_enabled():
+            return None
         render_proxy = proxy.get("render_proxy") if isinstance(proxy.get("render_proxy"), dict) else {}
         cfg = self._mgl_normalize_splat_fx_config(render_proxy.get("splat_fx"))
         if cfg is None or not bool(cfg.get("enabled", True)):
@@ -2149,6 +2264,8 @@ class MGLRendererMixin:
 
     def _mgl_splat_physics_glow_values(self, proxy: dict, count: int) -> Optional[NDArray]:
         if np is None or not isinstance(proxy, dict) or count <= 0:
+            return None
+        if not self._mgl_timeline_fx_enabled():
             return None
         config = proxy.get("splat_physics") if isinstance(proxy.get("splat_physics"), dict) else None
         if not isinstance(config, dict) or not bool(config.get("glow_enabled", False)):
@@ -2386,6 +2503,8 @@ class MGLRendererMixin:
         if bool(apply_colorize):
             out = self._mgl_apply_splat_colorize_to_splats(proxy, out)
         glow = np.zeros((count, 1), dtype=np.float32)
+        if not self._mgl_timeline_fx_enabled():
+            return out, glow
         music_values = self._mgl_splat_fx_music_values(proxy, out, int(frame))
         if music_values is not None and int(music_values.shape[0]) == count:
             glow = np.maximum(glow, music_values.astype(np.float32, copy=False))
@@ -2902,6 +3021,9 @@ class MGLRendererMixin:
     def _mgl_update_splat_trails(self, proxy: dict, source_splats: NDArray, frame: int) -> NDArray:
         if np is None or not isinstance(proxy, dict):
             return np.zeros((0, 15), dtype=np.float32) if np is not None else source_splats
+        if not self._mgl_timeline_fx_enabled():
+            self._mgl_clear_splat_trail_state(proxy)
+            return np.zeros((0, 15), dtype=np.float32)
         config = proxy.get("splat_physics")
         if not isinstance(config, dict):
             self._mgl_clear_splat_trail_state(proxy)
@@ -3127,10 +3249,10 @@ class MGLRendererMixin:
         return out.astype(np.float32, copy=False)
 
     def _mgl_apply_splat_physics(self, proxy: dict, target_positions: NDArray, frame: int) -> NDArray:
-        if np is None:
+        if np is None or not isinstance(proxy, dict):
             return target_positions
-        config = proxy.get("splat_physics") if isinstance(proxy, dict) else None
-        if not isinstance(config, dict) or not bool(config.get("enabled", True)):
+        config = proxy.get("splat_physics")
+        if not self._mgl_timeline_fx_enabled() or not isinstance(config, dict) or not bool(config.get("enabled", True)):
             proxy.pop("physics_positions", None)
             proxy.pop("physics_velocities", None)
             proxy.pop("physics_last_target", None)
@@ -3580,6 +3702,7 @@ class MGLRendererMixin:
 
         frame = self._mgl_timeline_frame_index()
         visibility = getattr(self, "_mgl_scene_visibility", {}) or {}
+        timeline_fx_enabled = bool(self._mgl_timeline_fx_enabled())
         changed = False
         for owner, proxy in list(proxies.items()):
             owner_key = str(owner or "").strip()
@@ -3601,6 +3724,7 @@ class MGLRendererMixin:
                 round(float(sample_seconds), 6),
                 _safe_clip_signature(clip),
                 id(skeleton),
+                bool(timeline_fx_enabled),
             )
             if not force and proxy.get("last_signature") == signature:
                 continue
@@ -4852,6 +4976,1373 @@ class MGLRendererMixin:
         except Exception:
             return 0.0
 
+    def _mgl_scene_skeleton_joint_owner_token(self, owner: str, joint_name: str) -> str:
+        owner_key = str(owner or "").strip()
+        joint_key = str(joint_name or "").strip()
+        if not owner_key or not joint_key:
+            return ""
+        return f"{owner_key}::skeleton_joint::{joint_key}"
+
+    def _mgl_scene_skeleton_decode_joint_owner(self, owner: str):
+        text = str(owner or "").strip()
+        marker = "::skeleton_joint::"
+        if marker not in text:
+            return None
+        asset_owner, joint_name = text.split(marker, 1)
+        asset_owner = asset_owner.strip()
+        joint_name = joint_name.strip()
+        if not asset_owner or not joint_name:
+            return None
+        return asset_owner, joint_name
+
+    def _mgl_scene_skeleton_joint_label(self, owner: str) -> str:
+        decoded = self._mgl_scene_skeleton_decode_joint_owner(owner)
+        if not decoded:
+            return str(owner or "").strip()
+        asset_owner, joint_name = decoded
+        return f"{asset_owner} / {joint_name}"
+
+    def _mgl_scene_skeleton_owner_payload(self, owner: str):
+        scene = getattr(self, "_mgl_scene", None)
+        owner_key = str(owner or "").strip()
+        if not owner_key:
+            self._mgl_scene_skeleton_log("owner_payload_skip", reason="empty_owner")
+            return None
+        self._mgl_scene_skeleton_log("owner_payload_start", owner=owner_key, scene_ready=bool(scene is not None))
+        owner_norm = owner_key.lower()
+        if scene is not None:
+            for tag in ("scene-model", "scene-wire", "scene-rig-joints", "model", "model-wire"):
+                try:
+                    items = list(scene.iter_by_tag(tag))
+                except Exception:
+                    items = []
+                for item in items:
+                    payload = getattr(item, "payload", None) or {}
+                    item_owner = str(payload.get("owner") or "").strip()
+                    if item_owner and item_owner.lower() != owner_norm:
+                        continue
+                    context = payload.get("fbx_rig_context")
+                    if isinstance(context, dict) and context.get("skeleton") is not None:
+                        self._mgl_scene_skeleton_log(
+                            "owner_payload_found_scene_item",
+                            owner=owner_key,
+                            tag=tag,
+                            item_name=str(getattr(item, "name", "") or ""),
+                            path=str(payload.get("path") or ""),
+                            visible=bool(getattr(item, "visible", True)),
+                            **self._mgl_scene_skeleton_context_log_fields(context),
+                        )
+                        return {
+                            "item": item,
+                            "payload": payload,
+                            "context": context,
+                            "path": str(payload.get("path") or "").strip(),
+                            "visible": bool(getattr(item, "visible", True)),
+                        }
+        for asset in list(getattr(self, "_timeline_scene_assets", None) or []):
+            if not isinstance(asset, dict):
+                continue
+            asset_owner = str(asset.get("node") or asset.get("owner") or "").strip()
+            if asset_owner and asset_owner.lower() != owner_norm:
+                continue
+            context = asset.get("fbx_rig_context")
+            if not isinstance(context, dict):
+                path_text = str(asset.get("path") or "").strip()
+                if path_text.lower().endswith((".fbx", ".bvh")):
+                    try:
+                        context = self._mgl_fbx_rig_context_for_path(Path(path_text))
+                    except Exception:
+                        context = None
+            if isinstance(context, dict) and context.get("skeleton") is not None:
+                self._mgl_scene_skeleton_log(
+                    "owner_payload_found_scene_asset",
+                    owner=owner_key,
+                    path=str(asset.get("path") or ""),
+                    visible=bool(asset.get("visible", True)),
+                    **self._mgl_scene_skeleton_context_log_fields(context),
+                )
+                return {
+                    "item": None,
+                    "payload": asset,
+                    "context": context,
+                    "path": str(asset.get("path") or "").strip(),
+                    "visible": bool(asset.get("visible", True)),
+                }
+        self._mgl_scene_skeleton_log_throttled(
+            f"owner_payload_missing:{owner_key.lower()}",
+            "owner_payload_missing",
+            interval=1.0,
+            owner=owner_key,
+            scene_ready=bool(scene is not None),
+            asset_count=int(len(list(getattr(self, "_timeline_scene_assets", None) or []))),
+        )
+        return None
+
+    def _mgl_scene_skeleton_remove_active_items(self, owner: str | None = None) -> None:
+        scene = getattr(self, "_mgl_scene", None)
+        owner_norm = str(owner or "").strip().lower()
+        if scene is not None:
+            try:
+                kept = []
+                for item in scene.items():
+                    tag = str(getattr(item, "tag", "") or "")
+                    payload = getattr(item, "payload", None) or {}
+                    is_scene_skeleton = bool(payload.get("scene_skeleton_overlay")) or tag == "scene-skeleton-handles"
+                    if not is_scene_skeleton:
+                        kept.append(item)
+                        continue
+                    item_owner = str(payload.get("owner") or "").strip().lower()
+                    if owner_norm and item_owner != owner_norm:
+                        kept.append(item)
+                        continue
+                    try:
+                        item.release()
+                    except Exception:
+                        pass
+                scene._items = kept
+            except Exception:
+                pass
+        try:
+            handles_by_owner = getattr(self, "_mgl_scene_skeleton_handles_by_owner", None)
+            if isinstance(handles_by_owner, dict):
+                if owner_norm:
+                    for key in list(handles_by_owner.keys()):
+                        if str(key or "").strip().lower() == owner_norm:
+                            handles_by_owner.pop(key, None)
+                else:
+                    handles_by_owner.clear()
+        except Exception:
+            pass
+        try:
+            frame_keys = getattr(self, "_mgl_scene_skeleton_handle_frame_keys", None)
+            if isinstance(frame_keys, dict):
+                if owner_norm:
+                    for key in list(frame_keys.keys()):
+                        if str(key or "").strip().lower() == owner_norm:
+                            frame_keys.pop(key, None)
+                else:
+                    frame_keys.clear()
+        except Exception:
+            pass
+
+    def _mgl_scene_skeleton_remove_handle_items(self, owner: str | None = None) -> None:
+        scene = getattr(self, "_mgl_scene", None)
+        if scene is None:
+            return
+        owner_norm = str(owner or "").strip().lower()
+        try:
+            kept = []
+            for item in scene.items():
+                tag = str(getattr(item, "tag", "") or "")
+                if tag != "scene-skeleton-handles":
+                    kept.append(item)
+                    continue
+                payload = getattr(item, "payload", None) or {}
+                item_owner = str(payload.get("owner") or "").strip().lower()
+                if owner_norm and item_owner != owner_norm:
+                    kept.append(item)
+                    continue
+                try:
+                    item.release()
+                except Exception:
+                    pass
+            scene._items = kept
+        except Exception:
+            pass
+
+    @staticmethod
+    def _mgl_scene_skeleton_quat_to_euler_deg(q) -> Tuple[float, float, float]:
+        try:
+            x, y, z, w = (float(q[0]), float(q[1]), float(q[2]), float(q[3]))
+        except Exception:
+            return (0.0, 0.0, 0.0)
+        n = math.sqrt((x * x) + (y * y) + (z * z) + (w * w))
+        if n <= 1.0e-12:
+            return (0.0, 0.0, 0.0)
+        x, y, z, w = x / n, y / n, z / n, w / n
+        sinr_cosp = 2.0 * ((w * x) + (y * z))
+        cosr_cosp = 1.0 - (2.0 * ((x * x) + (y * y)))
+        rx = math.atan2(sinr_cosp, cosr_cosp)
+        sinp = 2.0 * ((w * y) - (z * x))
+        ry = math.copysign(math.pi * 0.5, sinp) if abs(sinp) >= 1.0 else math.asin(sinp)
+        siny_cosp = 2.0 * ((w * z) + (x * y))
+        cosy_cosp = 1.0 - (2.0 * ((y * y) + (z * z)))
+        rz = math.atan2(siny_cosp, cosy_cosp)
+        return (math.degrees(rx), math.degrees(ry), math.degrees(rz))
+
+    @staticmethod
+    def _mgl_scene_skeleton_quat_from_euler_deg(rot_deg) -> Tuple[float, float, float, float]:
+        try:
+            rx = math.radians(float(rot_deg[0]))
+            ry = math.radians(float(rot_deg[1]))
+            rz = math.radians(float(rot_deg[2]))
+        except Exception:
+            return (0.0, 0.0, 0.0, 1.0)
+        cx, sx = math.cos(rx * 0.5), math.sin(rx * 0.5)
+        cy, sy = math.cos(ry * 0.5), math.sin(ry * 0.5)
+        cz, sz = math.cos(rz * 0.5), math.sin(rz * 0.5)
+        x = (sx * cy * cz) - (cx * sy * sz)
+        y = (cx * sy * cz) + (sx * cy * sz)
+        z = (cx * cy * sz) - (sx * sy * cz)
+        w = (cx * cy * cz) + (sx * sy * sz)
+        n = math.sqrt((x * x) + (y * y) + (z * z) + (w * w))
+        if n <= 1.0e-12:
+            return (0.0, 0.0, 0.0, 1.0)
+        return (x / n, y / n, z / n, w / n)
+
+    def _mgl_scene_skeleton_track_for_joint(self, context: dict, joint_name: str):
+        clip = context.get("clip") if isinstance(context, dict) else None
+        target = str(joint_name or "").strip()
+        if clip is None or not target:
+            return None
+        for track in list(getattr(clip, "tracks", []) or []):
+            if str(getattr(track, "joint_name", "") or "").strip() == target:
+                return track
+        return None
+
+    def _mgl_scene_skeleton_joint_values(self, owner: str, frame: int | float | None = None):
+        decoded = self._mgl_scene_skeleton_decode_joint_owner(owner)
+        if not decoded:
+            return None
+        asset_owner, joint_name = decoded
+        context = self._mgl_scene_owner_fbx_rig_context(asset_owner)
+        if not isinstance(context, dict):
+            return None
+        skeleton = context.get("skeleton")
+        clip = context.get("clip")
+        if skeleton is None:
+            return None
+        try:
+            joints = list(getattr(skeleton, "joints", []) or [])
+            joint_index = next(
+                idx for idx, joint in enumerate(joints)
+                if str(getattr(joint, "name", "") or "").strip() == joint_name
+            )
+        except Exception:
+            return None
+        try:
+            if frame is None:
+                sample_seconds = self._mgl_fbx_context_timeline_sample_seconds(context, asset_owner)
+            else:
+                fps = float(self._mgl_timeline_fps_value())
+                sample_seconds = float(frame) / max(1.0e-6, fps)
+                sample_seconds = clip_sample_time_from_timeline_seconds(clip, sample_seconds)
+            evaluation = evaluate_rig_at_time(
+                skeleton=skeleton,
+                clip=clip,
+                time_seconds=float(sample_seconds),
+                loop=bool(context.get("loop", True)),
+            )
+            local = list(getattr(evaluation, "local_transforms", []) or [])[joint_index]
+            xyz = tuple(float(v) for v in tuple(getattr(local, "translation", (0.0, 0.0, 0.0)))[:3])
+            rxyz = self._mgl_scene_skeleton_quat_to_euler_deg(getattr(local, "rotation", (0.0, 0.0, 0.0, 1.0)))
+            return xyz, rxyz
+        except Exception:
+            return None
+
+    def _mgl_scene_skeleton_joint_keys_map(self, owner: str):
+        decoded = self._mgl_scene_skeleton_decode_joint_owner(owner)
+        if not decoded:
+            return {}
+        asset_owner, joint_name = decoded
+        context = self._mgl_scene_owner_fbx_rig_context(asset_owner)
+        if not isinstance(context, dict):
+            return {}
+        clip = context.get("_scene_skeleton_original_clip") or context.get("clip")
+        if clip is None:
+            return {}
+        track = None
+        for row in list(getattr(clip, "tracks", []) or []):
+            if str(getattr(row, "joint_name", "") or "").strip() == joint_name:
+                track = row
+                break
+        if track is None:
+            return {}
+        try:
+            fps = float(self._mgl_timeline_fps_value())
+        except Exception:
+            fps = 24.0
+        fps = max(1.0e-6, float(fps))
+        try:
+            start_time = float(getattr(clip, "start_time", 0.0) or 0.0)
+        except Exception:
+            start_time = 0.0
+        keys_map: Dict[int, Dict[str, object]] = {}
+
+        def _entry_for_time(t: float):
+            frame = int(round((float(t) - start_time) * fps))
+            if frame < 0:
+                return None
+            return keys_map.setdefault(int(frame), {"fbx_clip_key": True, "joint_key": True, "axis_mask": [False] * 6})
+
+        for key in list(getattr(track, "translation_keys", []) or []):
+            entry = _entry_for_time(float(getattr(key, "time", start_time) or start_time))
+            if entry is None:
+                continue
+            try:
+                val = tuple(getattr(key, "value", (0.0, 0.0, 0.0)))
+                entry["xyz"] = [float(val[0]), float(val[1]), float(val[2])]
+                mask = list(entry.get("axis_mask") or [False] * 6)
+                mask[0] = mask[1] = mask[2] = True
+                entry["axis_mask"] = mask
+            except Exception:
+                continue
+        for key in list(getattr(track, "rotation_keys", []) or []):
+            entry = _entry_for_time(float(getattr(key, "time", start_time) or start_time))
+            if entry is None:
+                continue
+            try:
+                entry["rxyz"] = [
+                    float(v)
+                    for v in self._mgl_scene_skeleton_quat_to_euler_deg(
+                        getattr(key, "value", (0.0, 0.0, 0.0, 1.0))
+                    )
+                ]
+                mask = list(entry.get("axis_mask") or [False] * 6)
+                mask[3] = mask[4] = mask[5] = True
+                entry["axis_mask"] = mask
+            except Exception:
+                continue
+        return keys_map
+
+    def _mgl_scene_skeleton_invalidate_owner(self, owner: str) -> None:
+        owner_norm = str(owner or "").strip().lower()
+        scene = getattr(self, "_mgl_scene", None)
+        if scene is None or not owner_norm:
+            return
+        for tag in ("scene-model", "scene-wire", "scene-rig-joints", "scene-skeleton-handles"):
+            try:
+                items = list(scene.iter_by_tag(tag))
+            except Exception:
+                items = []
+            for item in items:
+                payload = getattr(item, "payload", None) or {}
+                item_owner = str(payload.get("owner") or "").strip().lower()
+                if item_owner != owner_norm:
+                    continue
+                for key in ("_fbx_rig_frame", "_fbx_skin_frame"):
+                    payload.pop(key, None)
+                try:
+                    item.payload = payload
+                except Exception:
+                    pass
+        frame_keys = getattr(self, "_mgl_scene_skeleton_handle_frame_keys", None)
+        if isinstance(frame_keys, dict):
+            frame_keys.pop(str(owner or "").strip(), None)
+
+    def _mgl_scene_skeleton_owner_uses_splat_xform(self, owner: str) -> bool:
+        owner_key = str(owner or "").strip()
+        if not owner_key:
+            return False
+        for attr in (
+            "_mgl_scene_splats",
+            "_mgl_scene_splats_world",
+            "_mgl_scene_splat_xforms_by_owner",
+            "_mgl_scene_splats_bounds_local",
+            "_mgl_scene_splat_bounds_by_owner",
+            "_mgl_scene_skinned_splat_proxies_by_owner",
+        ):
+            try:
+                data = getattr(self, attr, None)
+                if not isinstance(data, dict) or not data:
+                    continue
+                _matched_key, value = self._mgl_lookup_owner_entry(data, owner_key)
+                if value is not None:
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _mgl_scene_skeleton_display_xform(self, owner: str):
+        owner_key = str(owner or "").strip()
+        use_splat_xform = False
+        xform = {}
+        try:
+            use_splat_xform = self._mgl_scene_skeleton_owner_uses_splat_xform(owner_key)
+            xform = self._mgl_get_scene_splat_xform(owner_key) if use_splat_xform else self._mgl_get_scene_asset_xform(owner_key)
+        except Exception:
+            use_splat_xform = False
+            xform = {}
+        try:
+            sx, sy, sz = (xform or {}).get("scl", (1.0, 1.0, 1.0))
+            scale = (float(sx), float(sy), float(sz))
+        except Exception:
+            scale = (1.0, 1.0, 1.0)
+        try:
+            if not all(math.isfinite(float(v)) for v in scale):
+                scale = (1.0, 1.0, 1.0)
+        except Exception:
+            scale = (1.0, 1.0, 1.0)
+        return scale, xform, "splat" if use_splat_xform else "mesh"
+
+    def _mgl_scene_skeleton_display_positions(self, owner: str, positions):
+        if np is None:
+            return positions, {}
+        owner_key = str(owner or "").strip()
+        try:
+            rows = np.asarray(positions, dtype=np.float32).reshape(-1, 3)
+        except Exception:
+            return positions, {}
+        scale, xform, xform_kind = self._mgl_scene_skeleton_display_xform(owner_key)
+        try:
+            pos = tuple(float(v) for v in (xform or {}).get("pos", (0.0, 0.0, 0.0))[:3])
+        except Exception:
+            pos = (0.0, 0.0, 0.0)
+        try:
+            rot = tuple(float(v) for v in (xform or {}).get("rot", (0.0, 0.0, 0.0))[:3])
+        except Exception:
+            rot = (0.0, 0.0, 0.0)
+        try:
+            scl = tuple(float(v) for v in scale[:3])
+        except Exception:
+            scl = (1.0, 1.0, 1.0)
+
+        pivot = np.zeros(3, dtype=np.float32)
+        if xform_kind == "splat":
+            try:
+                piv_map = getattr(self, "_mgl_scene_pivot_local_by_owner", None)
+                piv_override = self._mgl_casefold_get(piv_map, owner_key)
+                if isinstance(piv_override, (list, tuple)) and len(piv_override) >= 3:
+                    pivot = np.array([float(piv_override[0]), float(piv_override[1]), float(piv_override[2])], dtype=np.float32)
+                else:
+                    bounds_local = getattr(self, "_mgl_scene_splats_bounds_local", None)
+                    _matched_key, bounds = self._mgl_lookup_owner_entry(bounds_local, owner_key)
+                    if bounds is not None:
+                        bmin, bmax = bounds
+                        bmin = np.asarray(bmin, dtype=np.float32).reshape(-1)[:3]
+                        bmax = np.asarray(bmax, dtype=np.float32).reshape(-1)[:3]
+                        if bmin.shape[0] >= 3 and bmax.shape[0] >= 3:
+                            pivot = ((bmin + bmax) * 0.5).astype(np.float32)
+                    else:
+                        pivot = rows.mean(axis=0).astype(np.float32)
+            except Exception:
+                try:
+                    pivot = rows.mean(axis=0).astype(np.float32)
+                except Exception:
+                    pivot = np.zeros(3, dtype=np.float32)
+
+        out = rows.astype(np.float32, copy=True)
+        if xform_kind == "splat":
+            try:
+                out = out - pivot[None, :]
+                out[:, 0] *= np.float32(scl[0])
+                out[:, 1] *= np.float32(scl[1])
+                out[:, 2] *= np.float32(scl[2])
+
+                rx, ry, rz = rot
+                if (rx != 0.0) or (ry != 0.0) or (rz != 0.0):
+                    def _quat_mul(a, b):
+                        ax, ay, az, aw = a
+                        bx, by, bz, bw = b
+                        return np.array(
+                            [
+                                aw * bx + ax * bw + ay * bz - az * by,
+                                aw * by - ax * bz + ay * bw + az * bx,
+                                aw * bz + ax * by - ay * bx + az * bw,
+                                aw * bw - ax * bx - ay * by - az * bz,
+                            ],
+                            dtype=np.float32,
+                        )
+
+                    def _quat_from_euler_deg(rx_deg, ry_deg, rz_deg):
+                        hx = math.radians(rx_deg) * 0.5
+                        hy = math.radians(ry_deg) * 0.5
+                        hz = math.radians(rz_deg) * 0.5
+                        sxv, cxv = math.sin(hx), math.cos(hx)
+                        syv, cyv = math.sin(hy), math.cos(hy)
+                        szv, czv = math.sin(hz), math.cos(hz)
+                        qx = np.array([sxv, 0.0, 0.0, cxv], dtype=np.float32)
+                        qy = np.array([0.0, syv, 0.0, cyv], dtype=np.float32)
+                        qz = np.array([0.0, 0.0, szv, czv], dtype=np.float32)
+                        return _quat_mul(_quat_mul(qz, qy), qx)
+
+                    qg = _quat_from_euler_deg(-float(rx), -float(ry), -float(rz))
+                    qv = np.array([float(qg[0]), float(qg[1]), float(qg[2])], dtype=np.float32)
+                    qw = float(qg[3])
+                    t = 2.0 * np.cross(qv[None, :], out)
+                    out = out + (qw * t) + np.cross(qv[None, :], t)
+
+                out = out + pivot[None, :] + np.asarray(pos, dtype=np.float32).reshape(1, 3)
+            except Exception:
+                out = rows.astype(np.float32, copy=True)
+        else:
+            try:
+                out[:, 0] *= np.float32(scl[0])
+                out[:, 1] *= np.float32(scl[1])
+                out[:, 2] *= np.float32(scl[2])
+            except Exception:
+                pass
+
+        info = {
+            "xform": xform,
+            "xform_kind": xform_kind,
+            "display_scale": [float(v) for v in scl],
+            "display_pos": [float(v) for v in pos],
+            "display_rot": [float(v) for v in rot],
+            "display_pivot": [float(v) for v in np.asarray(pivot, dtype=np.float32).reshape(-1)[:3]],
+            "display_transform": "splat_pivot_xform" if xform_kind == "splat" else "scale_only_no_translation",
+        }
+        return out, info
+
+    def _mgl_scene_skeleton_apply_timeline_keys(self, owner: str, keys_map: dict | None, fps: float | None = None) -> bool:
+        decoded = self._mgl_scene_skeleton_decode_joint_owner(owner)
+        if not decoded:
+            return False
+        asset_owner, joint_name = decoded
+        context = self._mgl_scene_owner_fbx_rig_context(asset_owner)
+        if not isinstance(context, dict):
+            return False
+        original_clip = context.get("_scene_skeleton_original_clip")
+        if original_clip is None:
+            original_clip = context.get("clip")
+        if original_clip is None:
+            return False
+        real_entries = {
+            int(frame): dict(entry)
+            for frame, entry in (keys_map or {}).items()
+            if isinstance(entry, dict) and not bool(entry.get("fbx_clip_key", False))
+        }
+        try:
+            from echograph.rigging.fbx_canonical import AnimationClip, JointAnimationTrack, QuatKeyframe, Vec3Keyframe
+        except Exception:
+            return False
+        try:
+            fps_value = float(fps if fps is not None else self._mgl_timeline_fps_value())
+        except Exception:
+            fps_value = 24.0
+        fps_value = max(1.0e-6, float(fps_value))
+        try:
+            start_time = float(getattr(original_clip, "start_time", 0.0) or 0.0)
+        except Exception:
+            start_time = 0.0
+        overrides = context.get("_scene_skeleton_joint_overrides")
+        if not isinstance(overrides, dict):
+            overrides = {}
+        else:
+            overrides = dict(overrides)
+        if real_entries:
+            overrides[joint_name] = real_entries
+        else:
+            overrides.pop(joint_name, None)
+        if not overrides:
+            context["_scene_skeleton_original_clip"] = original_clip
+            context["_scene_skeleton_joint_overrides"] = {}
+            context["clip"] = original_clip
+            self._mgl_scene_skeleton_invalidate_owner(asset_owner)
+            return True
+
+        def _build_track_for_joint(source_track, override_joint: str, override_entries: dict):
+            token = self._mgl_scene_skeleton_joint_owner_token(asset_owner, override_joint)
+            merged = dict(self._mgl_scene_skeleton_joint_keys_map(token))
+            for frame, entry in (override_entries or {}).items():
+                try:
+                    frame_i = int(frame)
+                except Exception:
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                base = dict(merged.get(frame_i, {}) or {})
+                base.update(dict(entry))
+                base.pop("fbx_clip_key", None)
+                base.pop("joint_key", None)
+                merged[frame_i] = base
+            translation_keys = []
+            rotation_keys = []
+            for frame in sorted(merged.keys()):
+                entry = merged.get(frame)
+                if not isinstance(entry, dict):
+                    continue
+                t = start_time + (float(frame) / fps_value)
+                xyz = entry.get("xyz")
+                if isinstance(xyz, (list, tuple)) and len(xyz) >= 3:
+                    try:
+                        translation_keys.append(
+                            Vec3Keyframe(
+                                time=float(t),
+                                value=(float(xyz[0]), float(xyz[1]), float(xyz[2])),
+                                interpolation="linear",
+                            )
+                        )
+                    except Exception:
+                        pass
+                rxyz = entry.get("rxyz")
+                if isinstance(rxyz, (list, tuple)) and len(rxyz) >= 3:
+                    try:
+                        rotation_keys.append(
+                            QuatKeyframe(
+                                time=float(t),
+                                value=self._mgl_scene_skeleton_quat_from_euler_deg(rxyz),
+                                interpolation="linear",
+                            )
+                        )
+                    except Exception:
+                        pass
+            if not translation_keys and not rotation_keys:
+                return None
+            return JointAnimationTrack(
+                joint_name=override_joint,
+                translation_keys=translation_keys,
+                rotation_keys=rotation_keys,
+                scale_keys=list(getattr(source_track, "scale_keys", []) or []) if source_track is not None else [],
+            )
+
+        tracks = []
+        replaced_overrides = set()
+        for track in list(getattr(original_clip, "tracks", []) or []):
+            track_joint = str(getattr(track, "joint_name", "") or "").strip()
+            if track_joint in overrides:
+                rebuilt = _build_track_for_joint(track, track_joint, overrides.get(track_joint) or {})
+                if rebuilt is not None:
+                    tracks.append(rebuilt)
+                    replaced_overrides.add(track_joint)
+                else:
+                    tracks.append(track)
+            else:
+                tracks.append(track)
+        for override_joint, override_entries in overrides.items():
+            if override_joint in replaced_overrides:
+                continue
+            rebuilt = _build_track_for_joint(None, str(override_joint), override_entries or {})
+            if rebuilt is not None:
+                tracks.append(rebuilt)
+        try:
+            override_clip = AnimationClip(
+                name=f"{getattr(original_clip, 'name', 'clip')}_{joint_name}_override",
+                start_time=float(getattr(original_clip, "start_time", 0.0) or 0.0),
+                end_time=float(getattr(original_clip, "end_time", 0.0) or 0.0),
+                sample_rate_hz=float(getattr(original_clip, "sample_rate_hz", fps_value) or fps_value),
+                tracks=tracks,
+                metadata=dict(getattr(original_clip, "metadata", {}) or {}),
+            )
+        except Exception:
+            return False
+        context["_scene_skeleton_original_clip"] = original_clip
+        context["_scene_skeleton_joint_overrides"] = overrides
+        context["clip"] = override_clip
+        self._mgl_scene_skeleton_invalidate_owner(asset_owner)
+        return True
+
+    def _mgl_scene_skeleton_rebuild_handle_mesh_for_owner(self, owner: str, handles: list) -> None:
+        scene = getattr(self, "_mgl_scene", None)
+        if scene is None:
+            self._mgl_scene_skeleton_log_throttled(
+                f"handle_mesh_skip_no_scene:{str(owner or '').strip().lower()}",
+                "handle_mesh_skip_no_scene",
+                interval=1.0,
+                owner=str(owner or "").strip(),
+                handle_count=int(len(list(handles or []))),
+            )
+            return
+        self._mgl_scene_skeleton_remove_handle_items(owner)
+        selected = str(getattr(self, "_mgl_scene_skeleton_selected_joint", "") or "").strip()
+        self._mgl_scene_skeleton_log(
+            "handle_mesh_skipped_screen_circles",
+            owner=str(owner or "").strip(),
+            handle_count=int(len(list(handles or []))),
+            selected_joint=selected,
+        )
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    def _mgl_scene_skeleton_update_owner_handles(self, owner: str, *, force: bool = False) -> bool:
+        owner_key = str(owner or "").strip()
+        if not owner_key:
+            self._mgl_scene_skeleton_log_throttled("handles_skip_empty_owner", "handles_skip", interval=1.0, reason="empty_owner")
+            return False
+        context = self._mgl_scene_owner_fbx_rig_context(owner_key)
+        if not isinstance(context, dict) or context.get("skeleton") is None:
+            self._mgl_scene_skeleton_log_throttled(
+                f"handles_skip_no_context:{owner_key.lower()}",
+                "handles_skip",
+                interval=1.0,
+                owner=owner_key,
+                reason="missing_rig_context_or_skeleton",
+                **self._mgl_scene_skeleton_context_log_fields(context),
+            )
+            return False
+        display_scale, xform, xform_kind = self._mgl_scene_skeleton_display_xform(owner_key)
+        def _sig_tuple(raw, default):
+            try:
+                vals = raw if raw is not None else default
+                return tuple(round(float(v), 6) for v in list(vals)[:3])
+            except Exception:
+                return tuple(round(float(v), 6) for v in default)
+
+        frame_index = self._mgl_timeline_frame_index()
+        frame_key = (
+            owner_key,
+            frame_index,
+            _safe_clip_signature(context.get("clip")),
+            str(getattr(self, "_mgl_scene_skeleton_selected_joint", "") or ""),
+            tuple(round(float(v), 6) for v in display_scale),
+            _sig_tuple((xform or {}).get("pos"), (0.0, 0.0, 0.0)),
+            _sig_tuple((xform or {}).get("rot"), (0.0, 0.0, 0.0)),
+            xform_kind,
+        )
+        frame_keys = getattr(self, "_mgl_scene_skeleton_handle_frame_keys", None)
+        if not isinstance(frame_keys, dict):
+            frame_keys = {}
+            self._mgl_scene_skeleton_handle_frame_keys = frame_keys
+        if not bool(force) and frame_keys.get(owner_key) == frame_key:
+            self._mgl_scene_skeleton_log_throttled(
+                f"handles_skip_same_frame:{owner_key.lower()}",
+                "handles_skip_same_frame",
+                interval=1.0,
+                owner=owner_key,
+                frame=int(frame_index),
+                selected_joint=str(getattr(self, "_mgl_scene_skeleton_selected_joint", "") or ""),
+            )
+            return False
+        positions = self._mgl_retarget_joint_positions_for_context(context, "source", owner_key)
+        if not positions:
+            self._mgl_scene_skeleton_log_throttled(
+                f"handles_skip_no_positions:{owner_key.lower()}",
+                "handles_skip",
+                interval=1.0,
+                owner=owner_key,
+                reason="no_joint_positions",
+                frame=int(frame_index),
+                force=bool(force),
+                **self._mgl_scene_skeleton_context_log_fields(context),
+            )
+            return False
+        try:
+            joints = list(getattr(context.get("skeleton"), "joints", []) or [])
+        except Exception:
+            joints = []
+        if not joints:
+            self._mgl_scene_skeleton_log_throttled(
+                f"handles_skip_no_joints:{owner_key.lower()}",
+                "handles_skip",
+                interval=1.0,
+                owner=owner_key,
+                reason="no_joints",
+                frame=int(frame_index),
+                position_count=int(len(list(positions or []))),
+                force=bool(force),
+            )
+            return False
+        display_info = {}
+        try:
+            display_rows, display_info = self._mgl_scene_skeleton_display_positions(owner_key, positions)
+            display_positions = [tuple(float(v) for v in row[:3]) for row in np.asarray(display_rows, dtype=np.float32).reshape(-1, 3)]
+        except Exception:
+            display_positions = []
+            for pos in list(positions or []):
+                try:
+                    display_positions.append((float(pos[0]), float(pos[1]), float(pos[2])))
+                except Exception:
+                    display_positions.append((0.0, 0.0, 0.0))
+            display_info = {}
+        extent = max(1.0, self._mgl_retarget_positions_diag(display_positions))
+        radius = max(
+            0.06,
+            min(120.0, float(extent) * 0.012 * _SCENE_SKELETON_HANDLE_RADIUS_SCALE),
+        )
+        handles = []
+        for idx in range(min(len(joints), len(display_positions))):
+            name = str(getattr(joints[idx], "name", "") or "").strip()
+            if not name:
+                continue
+            pos = display_positions[idx]
+            try:
+                px, py, pz = float(pos[0]), float(pos[1]), float(pos[2])
+            except Exception:
+                continue
+            handles.append(
+                {
+                    "role": "scene_skeleton",
+                    "name": name,
+                    "index": int(idx),
+                    "owner": owner_key,
+                    "position": (px, py, pz),
+                    "radius": float(radius),
+                    "pick_radius": max(float(radius) * 2.5, 0.25),
+                }
+            )
+        if not handles:
+            self._mgl_scene_skeleton_log_throttled(
+                f"handles_skip_no_handles:{owner_key.lower()}",
+                "handles_skip",
+                interval=1.0,
+                owner=owner_key,
+                reason="no_valid_handles",
+                frame=int(frame_index),
+                joint_count=int(len(joints)),
+                position_count=int(len(list(positions or []))),
+                force=bool(force),
+            )
+            return False
+        bounds_min = None
+        bounds_max = None
+        sample_positions = []
+        try:
+            arr = np.asarray([h.get("position", (0.0, 0.0, 0.0)) for h in handles], dtype=np.float32)
+            bounds_min = [round(float(v), 6) for v in arr.min(axis=0).tolist()]
+            bounds_max = [round(float(v), 6) for v in arr.max(axis=0).tolist()]
+            sample_positions = [[round(float(v), 6) for v in h.get("position", (0.0, 0.0, 0.0))] for h in handles[:3]]
+        except Exception:
+            pass
+        handles_by_owner = getattr(self, "_mgl_scene_skeleton_handles_by_owner", None)
+        if not isinstance(handles_by_owner, dict):
+            handles_by_owner = {}
+            self._mgl_scene_skeleton_handles_by_owner = handles_by_owner
+        handles_by_owner[owner_key] = handles
+        self._mgl_scene_skeleton_rebuild_handle_mesh_for_owner(owner_key, handles)
+        frame_keys[owner_key] = frame_key
+        self._mgl_scene_skeleton_log(
+            "handles_built",
+            owner=owner_key,
+            frame=int(frame_index),
+            force=bool(force),
+            joint_count=int(len(joints)),
+            position_count=int(len(list(positions or []))),
+            handle_count=int(len(handles)),
+            radius=float(radius),
+            selected_joint=str(getattr(self, "_mgl_scene_skeleton_selected_joint", "") or ""),
+            bounds_min=bounds_min,
+            bounds_max=bounds_max,
+            sample_positions=sample_positions,
+            xform=display_info.get("xform", xform),
+            xform_kind=str(display_info.get("xform_kind", xform_kind)),
+            display_scale=[round(float(v), 6) for v in (display_info.get("display_scale") or display_scale)],
+            display_pos=[round(float(v), 6) for v in (display_info.get("display_pos") or [])],
+            display_rot=[round(float(v), 6) for v in (display_info.get("display_rot") or [])],
+            display_pivot=[round(float(v), 6) for v in (display_info.get("display_pivot") or [])],
+            display_transform=str(display_info.get("display_transform") or "scale_only_no_translation"),
+        )
+        return True
+
+    def _mgl_scene_skeleton_refresh_dynamic_handles(self) -> None:
+        requested_owner = getattr(self, "_mgl_scene_skeleton_requested_owner", None)
+        if requested_owner is not None:
+            try:
+                delattr(self, "_mgl_scene_skeleton_requested_owner")
+            except Exception:
+                self._mgl_scene_skeleton_requested_owner = None
+            self._mgl_scene_skeleton_log(
+                "refresh_process_request",
+                owner=str(requested_owner or "").strip(),
+                active_owner=str(getattr(self, "_mgl_scene_skeleton_active_owner", "") or "").strip(),
+            )
+            self._mgl_scene_skeleton_set_active(str(requested_owner or ""))
+            return
+        owner = str(getattr(self, "_mgl_scene_skeleton_active_owner", "") or "").strip()
+        if owner:
+            failed_owner = str(getattr(self, "_mgl_scene_skeleton_failed_owner", "") or "").strip().lower()
+            if failed_owner and failed_owner == owner.lower():
+                self._mgl_scene_skeleton_log_throttled(
+                    f"refresh_skip_failed:{owner.lower()}",
+                    "refresh_skip_failed",
+                    interval=1.0,
+                    owner=owner,
+                )
+                return
+            try:
+                scene = getattr(self, "_mgl_scene", None)
+                has_overlay = False
+                has_handles = False
+                if scene is not None:
+                    for item in scene.iter_by_tag("scene-rig-joints"):
+                        payload = getattr(item, "payload", None) or {}
+                        if (
+                            bool(payload.get("scene_skeleton_overlay"))
+                            and str(payload.get("owner") or "").strip().lower() == owner.lower()
+                        ):
+                            has_overlay = True
+                            break
+                    if not has_overlay:
+                        for item in scene.iter_by_tag("scene-skeleton-handles"):
+                            payload = getattr(item, "payload", None) or {}
+                            if str(payload.get("owner") or "").strip().lower() == owner.lower():
+                                has_handles = True
+                                break
+                if not has_overlay and not has_handles:
+                    self._mgl_scene_skeleton_log_throttled(
+                        f"refresh_rebuild_missing:{owner.lower()}",
+                        "refresh_rebuild_missing",
+                        interval=1.0,
+                        owner=owner,
+                        scene_ready=bool(scene is not None),
+                        has_overlay=bool(has_overlay),
+                        has_handles=bool(has_handles),
+                    )
+                    self._mgl_scene_skeleton_set_active(owner)
+                    return
+            except Exception:
+                self._mgl_scene_skeleton_log_throttled(
+                    f"refresh_probe_error:{owner.lower()}",
+                    "refresh_probe_error",
+                    interval=1.0,
+                    owner=owner,
+                )
+            changed = self._mgl_scene_skeleton_update_owner_handles(owner)
+            if changed:
+                self._mgl_scene_skeleton_log("refresh_handles_updated", owner=owner)
+
+    def _mgl_scene_skeleton_request_active(self, owner: str) -> bool:
+        owner_key = str(owner or "").strip()
+        previous = str(getattr(self, "_mgl_scene_skeleton_active_owner", "") or "").strip()
+        self._mgl_scene_skeleton_log(
+            "request_active",
+            owner=owner_key,
+            previous=previous,
+        )
+        self._mgl_scene_skeleton_requested_owner = owner_key
+        self._mgl_scene_skeleton_failed_owner = ""
+        if not owner_key or previous.lower() != owner_key.lower():
+            self._mgl_scene_skeleton_selected_joint = ""
+        try:
+            self.update()
+        except Exception:
+            pass
+        return True
+
+    def _mgl_scene_skeleton_set_active(self, owner: str) -> bool:
+        owner_key = str(owner or "").strip()
+        previous = str(getattr(self, "_mgl_scene_skeleton_active_owner", "") or "").strip()
+        self._mgl_scene_skeleton_log(
+            "set_active_start",
+            owner=owner_key,
+            previous=previous,
+        )
+        if previous and previous.lower() != owner_key.lower():
+            self._mgl_scene_skeleton_remove_active_items(previous)
+        if not owner_key:
+            self._mgl_scene_skeleton_active_owner = ""
+            self._mgl_scene_skeleton_selected_joint = ""
+            self._mgl_scene_skeleton_remove_active_items(None)
+            self._mgl_scene_skeleton_log("set_active_clear", previous=previous)
+            return True
+        self._mgl_scene_skeleton_active_owner = owner_key
+        context_info = self._mgl_scene_skeleton_owner_payload(owner_key)
+        if not isinstance(context_info, dict):
+            self._mgl_scene_skeleton_failed_owner = owner_key
+            self._mgl_scene_skeleton_active_owner = ""
+            self._mgl_scene_skeleton_log("set_active_no_context", owner=owner_key)
+            return False
+        context = context_info.get("context")
+        path_text = str(context_info.get("path") or "").strip()
+        path = Path(path_text) if path_text else Path(f"{owner_key}.fbx")
+        scene = getattr(self, "_mgl_scene", None)
+        self._mgl_scene_skeleton_log(
+            "set_active_context",
+            owner=owner_key,
+            path=path_text,
+            visible=bool(context_info.get("visible", True)),
+            scene_ready=bool(scene is not None),
+            **self._mgl_scene_skeleton_context_log_fields(context),
+        )
+        self._mgl_scene_skeleton_remove_active_items(owner_key)
+        overlay_added = False
+        if scene is not None and isinstance(context, dict):
+            try:
+                overlay = self._mgl_add_fbx_joint_overlay_item(
+                    path,
+                    True,
+                    pose_mode="animated",
+                    owner=owner_key,
+                    path_key=path_text,
+                    rig_context=context,
+                )
+            except Exception as exc:
+                self._mgl_scene_skeleton_log(
+                    "set_active_overlay_error",
+                    owner=owner_key,
+                    path=path_text,
+                    error=repr(exc),
+                )
+                overlay = None
+            if overlay is not None:
+                payload = dict(getattr(overlay, "payload", None) or {})
+                payload["scene_skeleton_overlay"] = True
+                payload["ignore_owner_model"] = True
+                payload["color"] = tuple(_SCENE_SKELETON_GREEN)
+                try:
+                    payload["line_width"] = max(
+                        0.5,
+                        float(payload.get("line_width", 2.0) or 2.0) * _SCENE_SKELETON_LINE_WIDTH_SCALE,
+                    )
+                except Exception:
+                    payload["line_width"] = 1.0
+                try:
+                    payload["model"] = np.eye(4, dtype=np.float32)
+                except Exception:
+                    pass
+                overlay.payload = payload
+                overlay.order = 17
+                scene.add(overlay)
+                overlay_added = True
+        else:
+            self._mgl_scene_skeleton_log(
+                "set_active_overlay_skip",
+                owner=owner_key,
+                scene_ready=bool(scene is not None),
+                context_ready=bool(isinstance(context, dict)),
+            )
+        self._mgl_scene_skeleton_log(
+            "set_active_overlay",
+            owner=owner_key,
+            overlay_added=bool(overlay_added),
+        )
+        handles_added = self._mgl_scene_skeleton_update_owner_handles(owner_key, force=True)
+        if not overlay_added and not handles_added:
+            self._mgl_scene_skeleton_failed_owner = owner_key
+            self._mgl_scene_skeleton_active_owner = ""
+            self._mgl_scene_skeleton_log(
+                "set_active_failed",
+                owner=owner_key,
+                overlay_added=bool(overlay_added),
+                handles_added=bool(handles_added),
+            )
+            return False
+        self._mgl_scene_skeleton_log(
+            "set_active_done",
+            owner=owner_key,
+            overlay_added=bool(overlay_added),
+            handles_added=bool(handles_added),
+            active_owner=str(getattr(self, "_mgl_scene_skeleton_active_owner", "") or "").strip(),
+        )
+        return True
+
+    def _mgl_scene_skeleton_handle_click(self, handle: dict) -> bool:
+        if not isinstance(handle, dict):
+            self._mgl_scene_skeleton_log("handle_click_skip", reason="invalid_handle")
+            return False
+        owner = str(handle.get("owner") or "").strip()
+        joint_name = str(handle.get("name") or "").strip()
+        if not owner or not joint_name:
+            self._mgl_scene_skeleton_log(
+                "handle_click_skip",
+                reason="missing_owner_or_joint",
+                owner=owner,
+                joint=joint_name,
+            )
+            return False
+        self._mgl_scene_skeleton_active_owner = owner
+        self._mgl_scene_skeleton_selected_joint = joint_name
+        self._mgl_retarget_selected_joint = dict(handle)
+        frame_keys = getattr(self, "_mgl_scene_skeleton_handle_frame_keys", None)
+        if isinstance(frame_keys, dict):
+            frame_keys.pop(owner, None)
+        token = self._mgl_scene_skeleton_joint_owner_token(owner, joint_name)
+        self._mgl_scene_skeleton_log(
+            "handle_click",
+            owner=owner,
+            joint=joint_name,
+            token=token,
+            index=handle.get("index"),
+        )
+        try:
+            self._xform_gizmo_owner = None
+            self._xform_gizmo_owner_kind = None
+            pos = handle.get("position", (0.0, 0.0, 0.0))
+            self._xform_gizmo_pos = (float(pos[0]), float(pos[1]), float(pos[2]))
+            self._xform_gizmo_pos_locked = True
+        except Exception:
+            pass
+        try:
+            scene_name = str(getattr(self, "_timeline_scene_name", "") or "").strip() or None
+            set_ctx = getattr(self, "set_timeline_scene_context", None)
+            if callable(set_ctx) and token:
+                set_ctx(scene_name=scene_name, owner_name=token, apply_current_frame=False, load_audio=False)
+            elif token:
+                self._timeline_owner_name = token
+        except Exception:
+            try:
+                self._timeline_owner_name = token
+            except Exception:
+                pass
+        try:
+            self._timeline_update_target_label()
+            self._timeline_update_key_count_label()
+            self._timeline_update_key_markers()
+            self._timeline_refresh_coord_labels()
+        except Exception:
+            pass
+        try:
+            self.update()
+        except Exception:
+            pass
+        return True
+
+    def _mgl_scene_skeleton_qt_overlay_data(self) -> dict | None:
+        if np is None:
+            return None
+        owner = str(getattr(self, "_mgl_scene_skeleton_active_owner", "") or "").strip()
+        if not owner:
+            return None
+        handles_by_owner = getattr(self, "_mgl_scene_skeleton_handles_by_owner", None)
+        if not isinstance(handles_by_owner, dict) or not handles_by_owner:
+            return None
+        handles = None
+        for key, value in handles_by_owner.items():
+            try:
+                if str(key or "").strip().lower() == owner.lower() and isinstance(value, list):
+                    handles = value
+                    break
+            except Exception:
+                continue
+        if not handles:
+            return None
+        local_rows = []
+        for handle in list(handles or []):
+            try:
+                local_rows.append(handle.get("position", (0.0, 0.0, 0.0)))
+            except Exception:
+                local_rows.append((0.0, 0.0, 0.0))
+        try:
+            local_rows = np.asarray(local_rows, dtype=np.float32).reshape(-1, 3)
+        except Exception:
+            return None
+        if local_rows is None or getattr(local_rows, "size", 0) == 0:
+            return None
+        try:
+            pick_rows, _radius_scale = self._mgl_retarget_pick_positions_for_owner(owner, handles)
+        except Exception:
+            pick_rows = local_rows
+        try:
+            pick_rows = np.asarray(pick_rows, dtype=np.float32).reshape(-1, 3)
+        except Exception:
+            pick_rows = local_rows
+        if pick_rows is None or getattr(pick_rows, "size", 0) == 0:
+            pick_rows = local_rows
+        P = getattr(self, "_mgl_pick_proj", None)
+        V = getattr(self, "_mgl_pick_view", None)
+        M = getattr(self, "_mgl_pick_model", None)
+        if P is None or V is None or M is None:
+            return None
+        try:
+            view_proj = (np.asarray(P, dtype=np.float32) @ np.asarray(V, dtype=np.float32) @ np.asarray(M, dtype=np.float32)).astype(np.float32)
+        except Exception:
+            return None
+        owner_model = None
+        try:
+            owner_model, _owner_radius_scale = self._mgl_retarget_owner_model_for_pick(owner)
+            if owner_model is not None:
+                owner_model = np.asarray(owner_model, dtype=np.float32).reshape(4, 4)
+        except Exception:
+            owner_model = None
+        try:
+            dpr = float(self.devicePixelRatioF())
+        except Exception:
+            try:
+                dpr = float(self.devicePixelRatio())
+            except Exception:
+                dpr = 1.0
+        dpr = max(1.0e-6, float(dpr))
+        try:
+            widget_w = max(1.0, float(self.width()))
+            widget_h = max(1.0, float(self.height()))
+            viewport_w = widget_w * dpr
+            viewport_h = widget_h * dpr
+        except Exception:
+            return None
+        active = getattr(self, "_mgl_active_viewport_rect", None)
+        if not (isinstance(active, (list, tuple)) and len(active) >= 4):
+            try:
+                active = self._mgl_active_render_viewport()
+            except Exception:
+                active = None
+        try:
+            render_w, render_h = self._mgl_render_size()
+        except Exception:
+            render_w, render_h = int(viewport_w), int(viewport_h)
+        if not (isinstance(active, (list, tuple)) and len(active) >= 4):
+            active = (0, 0, int(render_w), int(render_h))
+        try:
+            scale_x = float(viewport_w) / max(1.0, float(render_w))
+            scale_y = float(viewport_h) / max(1.0, float(render_h))
+            ax = float(active[0]) * scale_x
+            ay = float(active[1]) * scale_y
+            aw = max(1.0, float(active[2]) * scale_x)
+            ah = max(1.0, float(active[3]) * scale_y)
+        except Exception:
+            ax, ay, aw, ah = 0.0, 0.0, viewport_w, viewport_h
+
+        def _range(vals):
+            if not vals:
+                return []
+            try:
+                return [round(float(min(vals)), 3), round(float(max(vals)), 3)]
+            except Exception:
+                return []
+
+        def _project_rows(rows, matrix, label: str, *, row_vector: bool = False):
+            try:
+                rows_np = np.asarray(rows, dtype=np.float32).reshape(-1, 3)
+                mat_np = np.asarray(matrix, dtype=np.float32).reshape(4, 4)
+            except Exception:
+                return None
+            projected_rows = []
+            xs = []
+            ys = []
+            zs = []
+            finite_count = 0
+            padding = 80.0
+            for idx, pos in enumerate(rows_np):
+                try:
+                    p = np.array([float(pos[0]), float(pos[1]), float(pos[2]), 1.0], dtype=np.float32)
+                    clip = (p @ mat_np) if row_vector else (mat_np @ p)
+                    w = float(clip[3])
+                    if abs(w) < 1.0e-8:
+                        projected_rows.append(None)
+                        continue
+                    ndc = clip[:3] / w
+                    if not np.all(np.isfinite(ndc)):
+                        projected_rows.append(None)
+                        continue
+                    finite_count += 1
+                    x_ndc = float(ndc[0])
+                    y_ndc = float(ndc[1])
+                    z_ndc = float(ndc[2])
+                    device_x = ax + ((x_ndc * 0.5 + 0.5) * aw)
+                    device_y = viewport_h - (ay + ((y_ndc * 0.5 + 0.5) * ah))
+                    x = float(device_x) / dpr
+                    y = float(device_y) / dpr
+                    xs.append(x)
+                    ys.append(y)
+                    zs.append(z_ndc)
+                    if x < -padding or x > widget_w + padding or y < -padding or y > widget_h + padding:
+                        projected_rows.append(None)
+                        continue
+                    handle = handles[idx] if idx < len(handles) and isinstance(handles[idx], dict) else {}
+                    projected_rows.append(
+                        {
+                            "x": x,
+                            "y": y,
+                            "z": z_ndc,
+                            "name": str(handle.get("name") or ""),
+                            "index": int(handle.get("index", idx) or idx),
+                        }
+                    )
+                except Exception:
+                    projected_rows.append(None)
+            visible_count = int(len([p for p in projected_rows if isinstance(p, dict)]))
+            return {
+                "label": str(label or ""),
+                "points": projected_rows,
+                "visible_count": visible_count,
+                "finite_count": int(finite_count),
+                "x_range": _range(xs),
+                "y_range": _range(ys),
+                "z_range": _range(zs),
+            }
+
+        candidates = []
+        for candidate in (
+            _project_rows(pick_rows, view_proj, "pick_world_col"),
+            _project_rows(pick_rows, view_proj.T, "pick_world_row", row_vector=True),
+        ):
+            if isinstance(candidate, dict):
+                candidates.append(candidate)
+        if owner_model is not None:
+            for candidate in (
+                _project_rows(local_rows, view_proj @ owner_model.T, "local_owner_col_t"),
+                _project_rows(local_rows, view_proj @ owner_model, "local_owner_col"),
+                _project_rows(local_rows, owner_model @ view_proj.T, "local_owner_row", row_vector=True),
+                _project_rows(local_rows, owner_model.T @ view_proj.T, "local_owner_row_t", row_vector=True),
+            ):
+                if isinstance(candidate, dict):
+                    candidates.append(candidate)
+        fallback = _project_rows(local_rows, view_proj, "local_col")
+        if isinstance(fallback, dict):
+            candidates.append(fallback)
+        if not candidates:
+            return None
+        best = max(candidates, key=lambda c: (int(c.get("visible_count", 0)), int(c.get("finite_count", 0))))
+        projected = list(best.get("points") or [])
+
+        lines = []
+        try:
+            context = self._mgl_scene_owner_fbx_rig_context(owner)
+            joints = list(getattr((context or {}).get("skeleton"), "joints", []) or []) if isinstance(context, dict) else []
+        except Exception:
+            joints = []
+        if joints:
+            for idx, joint in enumerate(joints):
+                try:
+                    parent = int(getattr(joint, "parent_index", -1))
+                except Exception:
+                    parent = -1
+                if parent < 0 or parent >= len(projected) or idx >= len(projected):
+                    continue
+                if projected[parent] is None or projected[idx] is None:
+                    continue
+                lines.append((int(parent), int(idx)))
+
+        visible_points = [p for p in projected if isinstance(p, dict)]
+        self._mgl_scene_skeleton_log_throttled(
+            f"qt_overlay_data:{owner.lower()}",
+            "qt_overlay_data",
+            interval=1.0,
+            owner=owner,
+            point_count=int(len(visible_points)),
+            line_count=int(len(lines)),
+            projection=str(best.get("label") or ""),
+            finite_count=int(best.get("finite_count", 0) or 0),
+            x_range=best.get("x_range") or [],
+            y_range=best.get("y_range") or [],
+            z_range=best.get("z_range") or [],
+            widget_size=[round(widget_w, 2), round(widget_h, 2)],
+        )
+        return {
+            "owner": owner,
+            "points": projected,
+            "lines": lines,
+            "selected": str(getattr(self, "_mgl_scene_skeleton_selected_joint", "") or "").strip(),
+        }
+
+    def _draw_scene_skeleton_qt_overlay(self, painter: QtGui.QPainter) -> None:
+        data = self._mgl_scene_skeleton_qt_overlay_data()
+        if not isinstance(data, dict):
+            return
+        points = list(data.get("points") or [])
+        lines = list(data.get("lines") or [])
+        if not points:
+            return
+        selected = str(data.get("selected") or "").strip()
+        try:
+            painter.save()
+        except Exception:
+            pass
+        try:
+            painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+            no_pen = QtGui.QPen()
+            no_pen.setStyle(QtCore.Qt.NoPen)
+            base_brush = QtGui.QBrush(QtGui.QColor(0, 255, 0, 215))
+            selected_brush = QtGui.QBrush(QtGui.QColor(255, 220, 0, 245))
+            font = painter.font()
+            try:
+                font.setPointSize(max(7, int(font.pointSize() or 9) - 1))
+                painter.setFont(font)
+            except Exception:
+                pass
+            label_pen = QtGui.QPen(QtGui.QColor(0, 255, 0, 220), 1.0)
+            selected_label_pen = QtGui.QPen(QtGui.QColor(255, 220, 0, 255), 1.0)
+            show_joint_names = bool(getattr(self, "_mgl_scene_skeleton_show_joint_names", False))
+            for point in points:
+                if not isinstance(point, dict):
+                    continue
+                x = float(point.get("x", 0.0))
+                y = float(point.get("y", 0.0))
+                name = str(point.get("name") or "")
+                is_selected = bool(selected and name == selected)
+                radius = (3.5 if is_selected else 2.45) * _SCENE_SKELETON_SCREEN_HANDLE_RADIUS_SCALE
+                painter.setPen(no_pen)
+                painter.setBrush(selected_brush if is_selected else base_brush)
+                painter.drawEllipse(QtCore.QPointF(x, y), radius, radius)
+                if show_joint_names and name:
+                    painter.setPen(selected_label_pen if is_selected else label_pen)
+                    painter.drawText(QtCore.QPointF(x + radius + 3.0, y - radius - 2.0), name)
+        finally:
+            try:
+                painter.restore()
+            except Exception:
+                pass
+
     def _mgl_retarget_inverse_bind_positions(self, skeleton):
         if np is None or skeleton is None:
             return []
@@ -5072,6 +6563,8 @@ class MGLRendererMixin:
     def _mgl_retarget_handle_constraint_click(self, handle: dict) -> bool:
         role = str(handle.get("role") or "").strip().lower()
         name = str(handle.get("name") or "").strip()
+        if role == "scene_skeleton":
+            return self._mgl_scene_skeleton_handle_click(handle)
         if role not in {"source", "target"} or not name:
             return False
         selected = getattr(self, "_mgl_retarget_selected_joint", None)
@@ -5129,6 +6622,8 @@ class MGLRendererMixin:
             return False
         role = str(handle.get("role") or "").strip().lower()
         name = str(handle.get("name") or "").strip()
+        if role == "scene_skeleton":
+            return self._mgl_scene_skeleton_handle_click(handle)
         if role not in {"source", "target"} or not name:
             return False
         pick_mode = self._mgl_retarget_pick_mode()
@@ -6022,15 +7517,18 @@ class MGLRendererMixin:
         model = None
         if scene is not None:
             try:
-                for item in scene.iter_by_tag("retarget-handles"):
-                    payload = getattr(item, "payload", None) or {}
-                    item_owner = str(payload.get("owner") or "").strip().lower()
-                    if item_owner != owner_key:
-                        continue
-                    raw_model = payload.get("model")
-                    if raw_model is not None:
-                        model = np.asarray(raw_model, dtype=np.float32).reshape(4, 4)
-                    break
+                for tag in ("retarget-handles", "scene-skeleton-handles"):
+                    for item in scene.iter_by_tag(tag):
+                        payload = getattr(item, "payload", None) or {}
+                        item_owner = str(payload.get("owner") or "").strip().lower()
+                        if item_owner != owner_key:
+                            continue
+                        raw_model = payload.get("model")
+                        if raw_model is not None:
+                            model = np.asarray(raw_model, dtype=np.float32).reshape(4, 4)
+                        break
+                    if model is not None:
+                        break
             except Exception:
                 model = None
         scale = 1.0
@@ -6057,6 +7555,14 @@ class MGLRendererMixin:
             positions = np.asarray(rows, dtype=np.float32).reshape(-1, 3)
         except Exception:
             positions = np.zeros((0, 3), dtype=np.float32)
+        try:
+            if any(
+                isinstance(handle, dict) and str(handle.get("role") or "").strip().lower() == "scene_skeleton"
+                for handle in list(handles or [])
+            ):
+                return positions, 1.0
+        except Exception:
+            pass
         model, radius_scale = self._mgl_retarget_owner_model_for_pick(owner)
         if model is None or positions.size == 0:
             return positions, radius_scale
@@ -6072,7 +7578,19 @@ class MGLRendererMixin:
             return positions, radius_scale
 
     def pick_retarget_joint_at(self, px: int, py: int, viewport_w: int, viewport_h: int, role: Optional[str] = None):
-        if np is None or not bool(getattr(self, "_mgl_retarget_preview_active", False)):
+        scene_handles_by_owner = getattr(self, "_mgl_scene_skeleton_handles_by_owner", None)
+        active_scene_owner = str(getattr(self, "_mgl_scene_skeleton_active_owner", "") or "").strip().lower()
+        if isinstance(scene_handles_by_owner, dict):
+            if active_scene_owner:
+                scene_handles_by_owner = {
+                    key: value
+                    for key, value in scene_handles_by_owner.items()
+                    if str(key or "").strip().lower() == active_scene_owner
+                }
+            else:
+                scene_handles_by_owner = {}
+        has_scene_handles = isinstance(scene_handles_by_owner, dict) and bool(scene_handles_by_owner)
+        if np is None or (not bool(getattr(self, "_mgl_retarget_preview_active", False)) and not has_scene_handles):
             return None
         ray = self._mgl_retarget_pick_ray(px, py, viewport_w, viewport_h)
         if ray is None:
@@ -6080,13 +7598,18 @@ class MGLRendererMixin:
         ray_o, ray_d = ray
         role_filter = str(role or "").strip().lower()
         handles_by_owner = getattr(self, "_mgl_retarget_joint_handles_by_owner", None)
-        if not isinstance(handles_by_owner, dict) or not handles_by_owner:
+        merged_handles_by_owner = {}
+        if isinstance(handles_by_owner, dict):
+            merged_handles_by_owner.update(handles_by_owner)
+        if isinstance(scene_handles_by_owner, dict):
+            merged_handles_by_owner.update(scene_handles_by_owner)
+        if not merged_handles_by_owner:
             return None
 
         best = None
         best_dist2 = 1.0e30
         best_t = 1.0e30
-        for owner, handles in handles_by_owner.items():
+        for owner, handles in merged_handles_by_owner.items():
             if not isinstance(handles, list) or not handles:
                 continue
             positions, radius_scale = self._mgl_retarget_pick_positions_for_owner(str(owner), handles)
@@ -6734,6 +8257,10 @@ class MGLRendererMixin:
         key = str(owner or "").strip()
         if not key:
             return {}
+        try:
+            decoded = self._mgl_scene_skeleton_decode_joint_owner(key)
+        except Exception:
+            decoded = None
         norm_fn = getattr(self, "_timeline_owner_norm", None)
         key_norm = norm_fn(key) if callable(norm_fn) else key.lower()
         current_owner = str(getattr(self, "_timeline_owner_name", "") or "").strip()
@@ -6746,6 +8273,8 @@ class MGLRendererMixin:
             and bool(current_keys)
         ):
             return current_keys
+        if decoded:
+            return self._mgl_scene_skeleton_joint_keys_map(key)
 
         owner_paths_fn = getattr(self, "_timeline_owner_file_paths", None)
         reader = getattr(self, "_timeline_read_owner_keys_file", None)
@@ -7600,7 +9129,7 @@ class MGLRendererMixin:
         active_owner = self._mgl_fx_pick_owner(payload) or target_owner
         payload["_fx_active_owner"] = active_owner
         live_pos = self._mgl_fx_current_owner_pos(active_owner)
-        allow_instances = bool(getattr(self, "_timeline_fx_instances_enabled", True))
+        allow_instances = bool(self._mgl_timeline_fx_enabled())
         show_proxy = bool(getattr(self, "_timeline_fx_proxy_enabled", True))
         instance_path = str(payload.get("instance_path") or "").strip() if allow_instances else ""
         stamp = (
@@ -8047,11 +9576,16 @@ class MGLRendererMixin:
                     "scene-light",
                     "retarget-handles",
                     "retarget-selection",
+                    "scene-skeleton-handles",
                 ):
                     for item in scene.iter_by_tag(tag):
                         payload = getattr(item, "payload", None) or {}
                         item_owner = str(payload.get("owner") or "").strip().lower()
                         if item_owner != owner_norm:
+                            continue
+                        if tag == "scene-skeleton-handles":
+                            continue
+                        if tag == "scene-rig-joints" and bool(payload.get("scene_skeleton_overlay", False)):
                             continue
                         payload["model"] = model
                         try:
@@ -8598,6 +10132,8 @@ class MGLRendererMixin:
         if self._mgl_ctx is None or self._mgl_prog is None:
             return
         payload = item.payload or {}
+        tag = str(getattr(item, "tag", "") or "")
+        scene_skeleton_handles = tag == "scene-skeleton-handles"
         if isinstance(payload.get("fbx_rig_context"), dict):
             self._mgl_refresh_fbx_rig_mesh_item(item)
             payload = item.payload or {}
@@ -8607,6 +10143,13 @@ class MGLRendererMixin:
         mesh_entry = payload.get("mesh_entry") if isinstance(payload.get("mesh_entry"), dict) else None
         vao = payload.get("vao")
         if not submeshes and vao is None:
+            if scene_skeleton_handles:
+                self._mgl_scene_skeleton_log(
+                    "draw_mesh_skip",
+                    owner=str(payload.get("owner") or ""),
+                    item=str(getattr(item, "name", "") or ""),
+                    reason="no_geometry",
+                )
             if payload.get("material") is not None:
                 self._mgl_material_log(
                     "renderer.draw.skip_no_geometry",
@@ -8720,6 +10263,17 @@ class MGLRendererMixin:
         use_vertex_color = bool(weight_debug or payload.get("use_vertex_color", False))
         material = self._mgl_normalize_material(payload.get("material"))
         is_transparent_material = (not weight_debug) and self._mgl_material_is_transparent(material)
+        if scene_skeleton_handles:
+            self._mgl_scene_skeleton_log_throttled(
+                f"draw_mesh_begin:{getattr(item, 'item_id', 0)}",
+                "draw_mesh_begin",
+                interval=1.0,
+                owner=str(payload.get("owner") or ""),
+                item=str(getattr(item, "name", "") or ""),
+                visible=bool(getattr(item, "visible", False)),
+                has_vao=bool(vao is not None),
+                use_vertex_color=bool(use_vertex_color),
+            )
         if material is not None:
             owner_key = str(owner or path_key or item.name or "scene-material")
             self._mgl_material_log_throttled(
@@ -8851,6 +10405,99 @@ class MGLRendererMixin:
                 self._mgl_prog["UseVertexColor"].value = 0
             except Exception:
                 pass
+
+        if scene_skeleton_handles and vao is not None:
+            prev_depth_mask = None
+            prev_depth_func = None
+            prev_depth_test = True
+            prev_wireframe = None
+            try:
+                prev_depth_test = bool(getattr(self._mgl_ctx, "depth_test", True))
+            except Exception:
+                prev_depth_test = True
+            try:
+                prev_depth_mask = getattr(self._mgl_ctx, "depth_mask", None)
+            except Exception:
+                prev_depth_mask = None
+            try:
+                prev_depth_func = getattr(self._mgl_ctx, "depth_func", None)
+            except Exception:
+                prev_depth_func = None
+            try:
+                prev_wireframe = bool(getattr(self._mgl_ctx, "wireframe", False))
+            except Exception:
+                prev_wireframe = False
+            try:
+                self._mgl_ctx.disable(moderngl.DEPTH_TEST | moderngl.CULL_FACE)
+            except Exception:
+                pass
+            try:
+                self._mgl_ctx.depth_mask = False
+            except Exception:
+                pass
+            try:
+                self._mgl_ctx.wireframe = False
+            except Exception:
+                pass
+            try:
+                self._mgl_prog["UseTexture"].value = 0
+                self._mgl_prog["UseVertexColor"].value = 1
+                self._mgl_prog["UseLighting"].value = 0
+                self._mgl_prog["UseMaterial"].value = 0
+                self._mgl_prog["Color"].value = tuple(payload.get("color") or (0.72, 0.82, 0.96, 1.0))
+                try:
+                    self._mgl_prog["UseProcedural"].value = 0
+                    self._mgl_prog["UseProceduralLayer"].value = 0
+                except Exception:
+                    pass
+                _render_entry(mesh_entry, vao)
+                self._mgl_scene_skeleton_log_throttled(
+                    f"draw_mesh_done:{getattr(item, 'item_id', 0)}",
+                    "draw_mesh_done",
+                    interval=1.0,
+                    owner=str(payload.get("owner") or ""),
+                    item=str(getattr(item, "name", "") or ""),
+                    depth="disabled",
+                )
+            except Exception as exc:
+                self._mgl_error = f"Scene mesh draw failed: {exc}"
+                self._mgl_scene_skeleton_log(
+                    "draw_mesh_error",
+                    owner=str(payload.get("owner") or ""),
+                    item=str(getattr(item, "name", "") or ""),
+                    error=repr(exc),
+                )
+            finally:
+                try:
+                    self._mgl_ctx.wireframe = prev_wireframe
+                except Exception:
+                    pass
+                if prev_depth_mask is not None:
+                    try:
+                        self._mgl_ctx.depth_mask = prev_depth_mask
+                    except Exception:
+                        pass
+                if prev_depth_func is not None:
+                    try:
+                        self._mgl_ctx.depth_func = prev_depth_func
+                    except Exception:
+                        pass
+                if prev_depth_test is not None:
+                    try:
+                        if prev_depth_test:
+                            self._mgl_ctx.enable(moderngl.DEPTH_TEST)
+                        else:
+                            self._mgl_ctx.disable(moderngl.DEPTH_TEST)
+                    except Exception:
+                        pass
+                try:
+                    if bool(getattr(self, "_mgl_cull_enabled", False)):
+                        self._mgl_ctx.enable(moderngl.CULL_FACE)
+                    else:
+                        self._mgl_ctx.disable(moderngl.CULL_FACE)
+                except Exception:
+                    pass
+            return
 
         prev_depth_mask_material = None
         if is_transparent_material:
@@ -9513,6 +11160,18 @@ class MGLRendererMixin:
             return
         payload = item.payload or {}
         tag = str(getattr(item, "tag", "") or "")
+        scene_skeleton_overlay = bool(tag == "scene-rig-joints" and payload.get("scene_skeleton_overlay", False))
+        if scene_skeleton_overlay:
+            self._mgl_scene_skeleton_log_throttled(
+                f"draw_wire_begin:{getattr(item, 'item_id', 0)}",
+                "draw_wire_begin",
+                interval=1.0,
+                owner=str(payload.get("owner") or ""),
+                item=str(getattr(item, "name", "") or ""),
+                visible=bool(getattr(item, "visible", False)),
+                has_vao=bool(payload.get("vao") is not None),
+                segments=int(payload.get("segment_count", 0) or 0),
+            )
         if tag == "scene-rig-joints":
             self._mgl_fbx_joints_log_throttled(
                 f"_mgl_fbx_draw_begin_{getattr(item, 'item_id', 0)}",
@@ -9528,6 +11187,8 @@ class MGLRendererMixin:
             payload = item.payload or {}
         vao = payload.get("vao")
         if vao is None:
+            if scene_skeleton_overlay:
+                self._mgl_scene_skeleton_log("draw_wire_skip", owner=str(payload.get("owner") or ""), reason="no_vao")
             if tag == "scene-rig-joints":
                 self._mgl_fbx_joints_log(
                     "draw skip reason=no_vao "
@@ -9603,6 +11264,62 @@ class MGLRendererMixin:
             self._mgl_ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
         except Exception:
             pass
+
+        if scene_skeleton_overlay:
+            try:
+                self._mgl_ctx.disable(moderngl.DEPTH_TEST | moderngl.CULL_FACE)
+            except Exception:
+                pass
+            try:
+                self._mgl_ctx.depth_mask = False
+            except Exception:
+                pass
+            color = _as_rgba(payload.get("color") or self._mgl_wire_color)
+            _apply_uniforms(color)
+            try:
+                _render()
+                self._mgl_scene_skeleton_log_throttled(
+                    f"draw_wire_done:{getattr(item, 'item_id', 0)}",
+                    "draw_wire_done",
+                    interval=1.0,
+                    owner=str(payload.get("owner") or ""),
+                    item=str(getattr(item, "name", "") or ""),
+                    depth="disabled",
+                )
+            except Exception as exc:
+                self._mgl_error = f"Scene wire draw failed: {exc}"
+                self._mgl_scene_skeleton_log(
+                    "draw_wire_error",
+                    owner=str(payload.get("owner") or ""),
+                    item=str(getattr(item, "name", "") or ""),
+                    error=repr(exc),
+                )
+            finally:
+                if prev_depth_mask is not None:
+                    try:
+                        self._mgl_ctx.depth_mask = prev_depth_mask
+                    except Exception:
+                        pass
+                if prev_depth_func is not None:
+                    try:
+                        self._mgl_ctx.depth_func = prev_depth_func
+                    except Exception:
+                        pass
+                try:
+                    if prev_depth_test:
+                        self._mgl_ctx.enable(moderngl.DEPTH_TEST)
+                    else:
+                        self._mgl_ctx.disable(moderngl.DEPTH_TEST)
+                except Exception:
+                    pass
+                try:
+                    if bool(getattr(self, "_mgl_cull_enabled", False)):
+                        self._mgl_ctx.enable(moderngl.CULL_FACE)
+                    else:
+                        self._mgl_ctx.disable(moderngl.CULL_FACE)
+                except Exception:
+                    pass
+            return
 
         if not is_volume and not xray:
             try:
@@ -13770,6 +15487,10 @@ class MGLRendererMixin:
             self._mgl_retarget_refresh_dynamic_handles()
         except Exception:
             pass
+        try:
+            self._mgl_scene_skeleton_refresh_dynamic_handles()
+        except Exception:
+            pass
 
         try:
             if self._mgl_update_skinned_splat_proxies():
@@ -13966,6 +15687,145 @@ class MGLRendererMixin:
                 except Exception:
                     pass
 
+    def _paint_mgl_draw_scene_skeleton_overlay_pass(self, *, mvp) -> None:
+        scene = getattr(self, "_mgl_scene", None)
+        if scene is None:
+            return
+        active_owner = str(getattr(self, "_mgl_scene_skeleton_active_owner", "") or "").strip().lower()
+        if not active_owner:
+            return
+        items = []
+        try:
+            for item in sorted(scene.items(), key=lambda it: int(getattr(it, "order", 0) or 0)):
+                if not bool(getattr(item, "visible", False)):
+                    continue
+                tag = str(getattr(item, "tag", "") or "")
+                payload = getattr(item, "payload", None) or {}
+                owner = str(payload.get("owner") or "").strip().lower()
+                if owner != active_owner:
+                    continue
+                if tag == "scene-skeleton-handles" or (
+                    tag == "scene-rig-joints" and bool(payload.get("scene_skeleton_overlay", False))
+                ):
+                    items.append(item)
+        except Exception:
+            items = []
+        if not items:
+            self._mgl_scene_skeleton_log_throttled(
+                f"post_splat_overlay_empty:{active_owner}",
+                "post_splat_overlay_empty",
+                interval=1.0,
+                owner=active_owner,
+            )
+            return
+
+        prev_depth_mask = None
+        prev_depth_func = None
+        prev_depth_test = True
+        prev_wireframe = None
+        prev_polygon_offset = None
+        try:
+            prev_depth_test = bool(getattr(self._mgl_ctx, "depth_test", True))
+        except Exception:
+            prev_depth_test = True
+        try:
+            prev_depth_mask = getattr(self._mgl_ctx, "depth_mask", None)
+        except Exception:
+            prev_depth_mask = None
+        try:
+            prev_depth_func = getattr(self._mgl_ctx, "depth_func", None)
+        except Exception:
+            prev_depth_func = None
+        try:
+            prev_wireframe = bool(getattr(self._mgl_ctx, "wireframe", False))
+        except Exception:
+            prev_wireframe = None
+        try:
+            prev_polygon_offset = getattr(self._mgl_ctx, "polygon_offset", None)
+        except Exception:
+            prev_polygon_offset = None
+
+        try:
+            self._mgl_ctx.enable(moderngl.BLEND)
+        except Exception:
+            pass
+        try:
+            self._mgl_ctx.disable(moderngl.DEPTH_TEST | moderngl.CULL_FACE)
+        except Exception:
+            pass
+        try:
+            self._mgl_ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
+        except Exception:
+            pass
+        try:
+            self._mgl_ctx.depth_mask = False
+        except Exception:
+            pass
+        try:
+            self._mgl_ctx.wireframe = False
+        except Exception:
+            pass
+        try:
+            self._mgl_ctx.polygon_offset = (0.0, 0.0)
+        except Exception:
+            pass
+
+        drawn = 0
+        try:
+            for item in items:
+                item.draw(self, mvp)
+                drawn += 1
+            self._mgl_scene_skeleton_log_throttled(
+                f"post_splat_overlay_draw:{active_owner}",
+                "post_splat_overlay_draw",
+                interval=1.0,
+                owner=active_owner,
+                item_count=int(drawn),
+                render_splats=bool(getattr(self, "_mgl_render_splats", False)),
+                splat_count=int(getattr(self, "_mgl_splat_count", 0) or 0),
+            )
+        except Exception as exc:
+            self._mgl_scene_skeleton_log(
+                "post_splat_overlay_error",
+                owner=active_owner,
+                error=repr(exc),
+            )
+        finally:
+            if prev_depth_mask is not None:
+                try:
+                    self._mgl_ctx.depth_mask = prev_depth_mask
+                except Exception:
+                    pass
+            if prev_depth_func is not None:
+                try:
+                    self._mgl_ctx.depth_func = prev_depth_func
+                except Exception:
+                    pass
+            if prev_wireframe is not None:
+                try:
+                    self._mgl_ctx.wireframe = prev_wireframe
+                except Exception:
+                    pass
+            if prev_polygon_offset is not None:
+                try:
+                    self._mgl_ctx.polygon_offset = prev_polygon_offset
+                except Exception:
+                    pass
+            try:
+                if prev_depth_test:
+                    self._mgl_ctx.enable(moderngl.DEPTH_TEST)
+                else:
+                    self._mgl_ctx.disable(moderngl.DEPTH_TEST)
+            except Exception:
+                pass
+            try:
+                if bool(getattr(self, "_mgl_cull_enabled", False)):
+                    self._mgl_ctx.enable(moderngl.CULL_FACE)
+                else:
+                    self._mgl_ctx.disable(moderngl.CULL_FACE)
+            except Exception:
+                pass
+
     def _paint_mgl(self) -> None:
         if getattr(self, "_render_paused", False):
             return
@@ -13990,6 +15850,7 @@ class MGLRendererMixin:
         self._paint_mgl_draw_splat_wireframe_pass(mvp=mvp)
         self._paint_mgl_draw_grid_pass(mvp=mvp)
         self._paint_mgl_draw_transparent_scene_pass(mvp=mvp)
+        self._paint_mgl_draw_scene_skeleton_overlay_pass(mvp=mvp)
 
 
 
@@ -16419,6 +18280,10 @@ class MGLRendererMixin:
         self._mgl_retarget_last_pick_mode = ""
         self._mgl_retarget_selection_dirty = False
         self._mgl_retarget_links_dirty = False
+        self._mgl_scene_skeleton_active_owner = str(getattr(self, "_mgl_scene_skeleton_active_owner", "") or "")
+        self._mgl_scene_skeleton_selected_joint = str(getattr(self, "_mgl_scene_skeleton_selected_joint", "") or "")
+        self._mgl_scene_skeleton_handles_by_owner = {}
+        self._mgl_scene_skeleton_handle_frame_keys = {}
         try:
             for entry in assets or []:
                 if not isinstance(entry, dict):

@@ -1447,6 +1447,20 @@ class GraphGLTimelineModelMixin:
         for owner, keys_map in pairs:
             if not owner or not isinstance(keys_map, dict) or not keys_map:
                 continue
+            try:
+                renderer = getattr(self, "_mgl_renderer", None) or self
+                decode_fn = getattr(renderer, "_mgl_scene_skeleton_decode_joint_owner", None)
+                apply_fn = getattr(renderer, "_mgl_scene_skeleton_apply_timeline_keys", None)
+                if callable(decode_fn) and decode_fn(owner):
+                    if callable(apply_fn):
+                        apply_fn(
+                            owner,
+                            keys_map,
+                            float(getattr(self, "_timeline_fps", 24.0) or 24.0),
+                        )
+                    continue
+            except Exception:
+                continue
             eval_frame = f
             mapped = self._timeline_composition_source_frame(owner, f)
             if mapped is not None:
@@ -1676,6 +1690,8 @@ class GraphGLTimelineModelMixin:
         if card is None:
             return ""
         try:
+            if str(getattr(card, "_scene_selected_kind", "") or "").strip().lower() == "skeleton":
+                return ""
             owner = str(getattr(card, "_scene_selected_owner", "") or "").strip()
             if owner and bool(getattr(card, "_scene_outliner_user_selected", False)):
                 return owner
@@ -1685,6 +1701,11 @@ class GraphGLTimelineModelMixin:
             outliner = getattr(card, "_scene_outliner_widget", None)
             current_item = outliner.currentItem() if outliner is not None else None
             if current_item is not None:
+                try:
+                    if str(current_item.data(QtCore.Qt.UserRole + 1) or "").strip().lower() == "skeleton":
+                        return ""
+                except Exception:
+                    pass
                 return str(current_item.data(QtCore.Qt.UserRole) or "").strip()
         except Exception:
             return ""
@@ -1741,6 +1762,18 @@ class GraphGLTimelineModelMixin:
     def _timeline_current_cam_xyz(self):
         owner = self._timeline_target_owner()
         if owner:
+            try:
+                renderer = getattr(self, "_mgl_renderer", None) or self
+                decode_fn = getattr(renderer, "_mgl_scene_skeleton_decode_joint_owner", None)
+                values_fn = getattr(renderer, "_mgl_scene_skeleton_joint_values", None)
+                if callable(decode_fn) and callable(values_fn) and decode_fn(owner):
+                    values = values_fn(owner)
+                    if isinstance(values, (list, tuple)) and len(values) >= 1:
+                        xyz = values[0]
+                        if isinstance(xyz, (list, tuple)) and len(xyz) >= 3:
+                            return (float(xyz[0]), float(xyz[1]), float(xyz[2]))
+            except Exception:
+                pass
             live_xf = self._timeline_live_locked_camera_xform(owner)
             if isinstance(live_xf, dict):
                 pos = live_xf.get("pos", None)
@@ -1784,6 +1817,18 @@ class GraphGLTimelineModelMixin:
     def _timeline_current_cam_rxyz(self):
         owner = self._timeline_target_owner()
         if owner:
+            try:
+                renderer = getattr(self, "_mgl_renderer", None) or self
+                decode_fn = getattr(renderer, "_mgl_scene_skeleton_decode_joint_owner", None)
+                values_fn = getattr(renderer, "_mgl_scene_skeleton_joint_values", None)
+                if callable(decode_fn) and callable(values_fn) and decode_fn(owner):
+                    values = values_fn(owner)
+                    if isinstance(values, (list, tuple)) and len(values) >= 2:
+                        rxyz = values[1]
+                        if isinstance(rxyz, (list, tuple)) and len(rxyz) >= 3:
+                            return (float(rxyz[0]), float(rxyz[1]), float(rxyz[2]))
+            except Exception:
+                pass
             live_xf = self._timeline_live_locked_camera_xform(owner)
             if isinstance(live_xf, dict):
                 rot = live_xf.get("rot", None)
@@ -2052,6 +2097,14 @@ class GraphGLTimelineModelMixin:
             return "Master Timeline"
         owner = self._timeline_target_owner()
         if owner:
+            try:
+                renderer = getattr(self, "_mgl_renderer", None) or self
+                label_fn = getattr(renderer, "_mgl_scene_skeleton_joint_label", None)
+                decode_fn = getattr(renderer, "_mgl_scene_skeleton_decode_joint_owner", None)
+                if callable(label_fn) and callable(decode_fn) and decode_fn(owner):
+                    return str(label_fn(owner) or owner)
+            except Exception:
+                pass
             return owner
         try:
             mode = str(getattr(self, "_camera_select_mode", "default") or "default").strip()
@@ -2269,6 +2322,8 @@ class GraphGLTimelineModelMixin:
             return
         if idx < 0 or idx > 5:
             return
+        entry.pop("fbx_clip_key", None)
+        entry.pop("joint_key", None)
         # Ensure edits on a single axis do not implicitly key other axes when
         # creating/patching sparse entries during curve dragging.
         raw_mask = entry.get("axis_mask", None)
@@ -4512,9 +4567,9 @@ class GraphGLTimelineModelMixin:
         try:
             proxy_enabled = bool(self._timeline_fx_proxy_is_enabled())
             if allow_instances:
-                tip = "FX instances enabled"
+                tip = "Timeline FX enabled"
             else:
-                tip = "FX instances disabled"
+                tip = "Timeline FX disabled"
             proxy_tip = "ON" if proxy_enabled else "OFF"
             btn.setToolTip(f"{tip} | Proxy Rings: {proxy_tip} (right-click to change)")
         except Exception:
@@ -5682,6 +5737,24 @@ class GraphGLTimelineModelMixin:
     def _timeline_apply_xyz_only(self, xyz, rxyz=None) -> None:
         owner = self._timeline_target_owner()
         if owner:
+            try:
+                renderer = getattr(self, "_mgl_renderer", None) or self
+                decode_fn = getattr(renderer, "_mgl_scene_skeleton_decode_joint_owner", None)
+                apply_fn = getattr(renderer, "_mgl_scene_skeleton_apply_timeline_keys", None)
+                if callable(decode_fn) and decode_fn(owner):
+                    if callable(apply_fn):
+                        apply_fn(
+                            owner,
+                            getattr(self, "_timeline_keys", {}) or {},
+                            float(getattr(self, "_timeline_fps", 24.0) or 24.0),
+                        )
+                    try:
+                        self.update()
+                    except Exception:
+                        pass
+                    return
+            except Exception:
+                return
             self._timeline_apply_owner_xyz_only(owner, xyz, rxyz=rxyz)
             return
         if np is None:

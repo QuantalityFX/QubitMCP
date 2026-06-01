@@ -3141,6 +3141,7 @@ def build_anim_retarget_scene_asset(
             "path": path_text,
             "texture": str(asset.get("texture") or ""),
             "node": base_name,
+            "kind": "anim_retarget",
             "ext": Path(path_text).suffix.lower() or ".fbx",
             "visible": True,
             "xform": {
