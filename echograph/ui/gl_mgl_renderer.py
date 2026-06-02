@@ -509,6 +509,7 @@ class MGLRendererMixin:
                         owner_key,
                         self._mgl_timeline_frame_index(),
                         self._mgl_timeline_fps_value(),
+                        allow_owner_key_mode=True,
                     )
                     if mapped is not None:
                         timeline_seconds = max(0.0, float(mapped))
@@ -4995,6 +4996,35 @@ class MGLRendererMixin:
             return None
         return asset_owner, joint_name
 
+    def _mgl_scene_skeleton_joint_world_position(self, owner: str):
+        decoded = self._mgl_scene_skeleton_decode_joint_owner(owner)
+        if not decoded:
+            return None
+        asset_owner, joint_name = decoded
+        asset_norm = str(asset_owner or "").strip().lower()
+        joint_norm = str(joint_name or "").strip().lower()
+        if not asset_norm or not joint_norm:
+            return None
+        handles_by_owner = getattr(self, "_mgl_scene_skeleton_handles_by_owner", None)
+        if not isinstance(handles_by_owner, dict):
+            return None
+        for key, handles in handles_by_owner.items():
+            try:
+                if str(key or "").strip().lower() != asset_norm or not isinstance(handles, list):
+                    continue
+                for handle in handles:
+                    if not isinstance(handle, dict):
+                        continue
+                    if str(handle.get("name") or "").strip().lower() != joint_norm:
+                        continue
+                    pos = handle.get("position", None)
+                    if pos is None:
+                        return None
+                    return (float(pos[0]), float(pos[1]), float(pos[2]))
+            except Exception:
+                continue
+        return None
+
     def _mgl_scene_skeleton_joint_label(self, owner: str) -> str:
         decoded = self._mgl_scene_skeleton_decode_joint_owner(owner)
         if not decoded:
@@ -5225,7 +5255,20 @@ class MGLRendererMixin:
                 sample_seconds = self._mgl_fbx_context_timeline_sample_seconds(context, asset_owner)
             else:
                 fps = float(self._mgl_timeline_fps_value())
-                sample_seconds = float(frame) / max(1.0e-6, fps)
+                source_frame = float(frame)
+                try:
+                    map_fn = getattr(self, "_timeline_owner_source_frame_from_timeline_frame", None)
+                    if callable(map_fn):
+                        mapped = map_fn(
+                            asset_owner,
+                            float(frame),
+                            allow_owner_key_mode=True,
+                        )
+                        if mapped is not None:
+                            source_frame = float(mapped)
+                except Exception:
+                    source_frame = float(frame)
+                sample_seconds = float(source_frame) / max(1.0e-6, fps)
                 sample_seconds = clip_sample_time_from_timeline_seconds(clip, sample_seconds)
             evaluation = evaluate_rig_at_time(
                 skeleton=skeleton,
@@ -5240,7 +5283,7 @@ class MGLRendererMixin:
         except Exception:
             return None
 
-    def _mgl_scene_skeleton_joint_keys_map(self, owner: str):
+    def _mgl_scene_skeleton_joint_keys_map(self, owner: str, *, timeline_space: bool = True):
         decoded = self._mgl_scene_skeleton_decode_joint_owner(owner)
         if not decoded:
             return {}
@@ -5269,11 +5312,35 @@ class MGLRendererMixin:
             start_time = 0.0
         keys_map: Dict[int, Dict[str, object]] = {}
 
+        def _timeline_frame_for_source_frame(source_frame: float) -> float:
+            if not bool(timeline_space):
+                return float(source_frame)
+            try:
+                map_fn = getattr(self, "_timeline_owner_timeline_frame_from_source_frame", None)
+                if callable(map_fn):
+                    mapped = map_fn(
+                        asset_owner,
+                        float(source_frame),
+                        allow_owner_key_mode=True,
+                    )
+                    if mapped is not None:
+                        return float(mapped)
+            except Exception:
+                pass
+            return float(source_frame)
+
         def _entry_for_time(t: float):
-            frame = int(round((float(t) - start_time) * fps))
+            source_frame = (float(t) - start_time) * fps
+            frame = int(round(_timeline_frame_for_source_frame(float(source_frame))))
             if frame < 0:
                 return None
-            return keys_map.setdefault(int(frame), {"fbx_clip_key": True, "joint_key": True, "axis_mask": [False] * 6})
+            entry = keys_map.setdefault(
+                int(frame),
+                {"fbx_clip_key": True, "joint_key": True, "axis_mask": [False] * 6},
+            )
+            if bool(timeline_space):
+                entry["source_frame"] = float(source_frame)
+            return entry
 
         for key in list(getattr(track, "translation_keys", []) or []):
             entry = _entry_for_time(float(getattr(key, "time", start_time) or start_time))
@@ -5304,6 +5371,9 @@ class MGLRendererMixin:
             except Exception:
                 continue
         return keys_map
+
+    def _mgl_scene_skeleton_joint_source_keys_map(self, owner: str):
+        return self._mgl_scene_skeleton_joint_keys_map(owner, timeline_space=False)
 
     def _mgl_scene_skeleton_invalidate_owner(self, owner: str) -> None:
         owner_norm = str(owner or "").strip().lower()
@@ -5497,7 +5567,7 @@ class MGLRendererMixin:
             original_clip = context.get("clip")
         if original_clip is None:
             return False
-        real_entries = {
+        authored_entries = {
             int(frame): dict(entry)
             for frame, entry in (keys_map or {}).items()
             if isinstance(entry, dict) and not bool(entry.get("fbx_clip_key", False))
@@ -5520,10 +5590,7 @@ class MGLRendererMixin:
             overrides = {}
         else:
             overrides = dict(overrides)
-        if real_entries:
-            overrides[joint_name] = real_entries
-        else:
-            overrides.pop(joint_name, None)
+        overrides[joint_name] = authored_entries
         if not overrides:
             context["_scene_skeleton_original_clip"] = original_clip
             context["_scene_skeleton_joint_overrides"] = {}
@@ -5531,9 +5598,37 @@ class MGLRendererMixin:
             self._mgl_scene_skeleton_invalidate_owner(asset_owner)
             return True
 
+        def _source_frame_for_entry(frame_i: int, entry: dict) -> Optional[float]:
+            if isinstance(entry, dict):
+                raw_source = entry.get("source_frame", None)
+                if raw_source is not None:
+                    try:
+                        value = float(raw_source)
+                        if math.isfinite(float(value)):
+                            return max(0.0, float(value))
+                    except Exception:
+                        pass
+            try:
+                map_fn = getattr(self, "_timeline_owner_source_frame_from_timeline_frame", None)
+                if callable(map_fn):
+                    mapped = map_fn(
+                        asset_owner,
+                        float(frame_i),
+                        allow_owner_key_mode=True,
+                    )
+                    if mapped is not None:
+                        value = float(mapped)
+                        if math.isfinite(float(value)):
+                            return max(0.0, float(value))
+            except Exception:
+                pass
+            try:
+                return max(0.0, float(frame_i))
+            except Exception:
+                return None
+
         def _build_track_for_joint(source_track, override_joint: str, override_entries: dict):
-            token = self._mgl_scene_skeleton_joint_owner_token(asset_owner, override_joint)
-            merged = dict(self._mgl_scene_skeleton_joint_keys_map(token))
+            merged = {}
             for frame, entry in (override_entries or {}).items():
                 try:
                     frame_i = int(frame)
@@ -5552,9 +5647,17 @@ class MGLRendererMixin:
                 entry = merged.get(frame)
                 if not isinstance(entry, dict):
                     continue
-                t = start_time + (float(frame) / fps_value)
+                source_frame = _source_frame_for_entry(int(frame), entry)
+                if source_frame is None:
+                    continue
+                t = start_time + (float(source_frame) / fps_value)
+                mask_raw = entry.get("axis_mask", None)
+                if isinstance(mask_raw, (list, tuple)) and len(mask_raw) >= 6:
+                    axis_mask = [bool(mask_raw[i]) for i in range(6)]
+                else:
+                    axis_mask = [True, True, True, True, True, True]
                 xyz = entry.get("xyz")
-                if isinstance(xyz, (list, tuple)) and len(xyz) >= 3:
+                if isinstance(xyz, (list, tuple)) and len(xyz) >= 3 and any(axis_mask[:3]):
                     try:
                         translation_keys.append(
                             Vec3Keyframe(
@@ -5566,7 +5669,7 @@ class MGLRendererMixin:
                     except Exception:
                         pass
                 rxyz = entry.get("rxyz")
-                if isinstance(rxyz, (list, tuple)) and len(rxyz) >= 3:
+                if isinstance(rxyz, (list, tuple)) and len(rxyz) >= 3 and any(axis_mask[3:6]):
                     try:
                         rotation_keys.append(
                             QuatKeyframe(
@@ -5594,9 +5697,7 @@ class MGLRendererMixin:
                 rebuilt = _build_track_for_joint(track, track_joint, overrides.get(track_joint) or {})
                 if rebuilt is not None:
                     tracks.append(rebuilt)
-                    replaced_overrides.add(track_joint)
-                else:
-                    tracks.append(track)
+                replaced_overrides.add(track_joint)
             else:
                 tracks.append(track)
         for override_joint, override_entries in overrides.items():
@@ -6036,11 +6137,14 @@ class MGLRendererMixin:
             index=handle.get("index"),
         )
         try:
-            self._xform_gizmo_owner = None
-            self._xform_gizmo_owner_kind = None
+            self._xform_gizmo_owner = token or None
+            self._xform_gizmo_owner_kind = "scene_skeleton_joint" if token else None
             pos = handle.get("position", (0.0, 0.0, 0.0))
             self._xform_gizmo_pos = (float(pos[0]), float(pos[1]), float(pos[2]))
             self._xform_gizmo_pos_locked = True
+            rot_cache = getattr(self, "_rot_owner_quat", None)
+            if isinstance(rot_cache, dict) and token:
+                rot_cache.pop(token, None)
         except Exception:
             pass
         try:
@@ -6060,6 +6164,7 @@ class MGLRendererMixin:
             self._timeline_update_key_count_label()
             self._timeline_update_key_markers()
             self._timeline_refresh_coord_labels()
+            self._timeline_refresh_speed_control()
         except Exception:
             pass
         try:
@@ -6320,9 +6425,7 @@ class MGLRendererMixin:
                 painter.setFont(font)
             except Exception:
                 pass
-            label_pen = QtGui.QPen(QtGui.QColor(0, 255, 0, 220), 1.0)
-            selected_label_pen = QtGui.QPen(QtGui.QColor(255, 220, 0, 255), 1.0)
-            show_joint_names = bool(getattr(self, "_mgl_scene_skeleton_show_joint_names", False))
+            selected_label_pen = QtGui.QPen(QtGui.QColor(255, 255, 255, 255), 1.0)
             for point in points:
                 if not isinstance(point, dict):
                     continue
@@ -6334,8 +6437,8 @@ class MGLRendererMixin:
                 painter.setPen(no_pen)
                 painter.setBrush(selected_brush if is_selected else base_brush)
                 painter.drawEllipse(QtCore.QPointF(x, y), radius, radius)
-                if show_joint_names and name:
-                    painter.setPen(selected_label_pen if is_selected else label_pen)
+                if is_selected and name:
+                    painter.setPen(selected_label_pen)
                     painter.drawText(QtCore.QPointF(x + radius + 3.0, y - radius - 2.0), name)
         finally:
             try:
@@ -8270,7 +8373,7 @@ class MGLRendererMixin:
             key_norm
             and current_norm == key_norm
             and isinstance(current_keys, dict)
-            and bool(current_keys)
+            and (bool(current_keys) or bool(decoded))
         ):
             return current_keys
         if decoded:

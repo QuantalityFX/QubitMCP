@@ -5959,6 +5959,31 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 return (float(rot[0]), float(rot[1]), float(rot[2])), False
         except Exception:
             pass
+        try:
+            decode_joint = getattr(renderer, "_mgl_scene_skeleton_decode_joint_owner", None)
+            values_fn = getattr(renderer, "_mgl_scene_skeleton_joint_values", None)
+            if callable(decode_joint) and callable(values_fn) and decode_joint(owner):
+                try:
+                    current_owner = str(getattr(self, "_timeline_owner_name", "") or "").strip()
+                    norm_fn = getattr(self, "_timeline_owner_norm", None)
+                    owner_norm = norm_fn(owner) if callable(norm_fn) else str(owner or "").strip().lower()
+                    current_norm = norm_fn(current_owner) if callable(norm_fn) else current_owner.lower()
+                    if owner_norm and owner_norm == current_norm:
+                        frame = int(self._timeline_current_frame())
+                        entry = (getattr(self, "_timeline_keys", {}) or {}).get(int(frame))
+                        if isinstance(entry, dict):
+                            rxyz = entry.get("rxyz", None)
+                            if isinstance(rxyz, (list, tuple)) and len(rxyz) >= 3:
+                                return (float(rxyz[0]), float(rxyz[1]), float(rxyz[2])), False
+                except Exception:
+                    pass
+                values = values_fn(owner)
+                if isinstance(values, (list, tuple)) and len(values) >= 2:
+                    rxyz = values[1]
+                    if isinstance(rxyz, (list, tuple)) and len(rxyz) >= 3:
+                        return (float(rxyz[0]), float(rxyz[1]), float(rxyz[2])), False
+        except Exception:
+            pass
         # detect splat
         is_splat = False
         try:
@@ -6011,6 +6036,30 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             pass
         return q0
 
+    def _refresh_scene_skeleton_joint_gizmo_after_rotation(self, renderer, owner: str, asset_owner: str) -> None:
+        try:
+            refresh_handles = getattr(renderer, "_mgl_scene_skeleton_update_owner_handles", None)
+            if callable(refresh_handles) and asset_owner:
+                refresh_handles(asset_owner, force=True)
+        except Exception:
+            pass
+        try:
+            joint_world = getattr(renderer, "_mgl_scene_skeleton_joint_world_position", None)
+            new_world = joint_world(owner) if callable(joint_world) else None
+            if new_world is not None:
+                self._xform_gizmo_pos = (
+                    float(new_world[0]),
+                    float(new_world[1]),
+                    float(new_world[2]),
+                )
+                self._xform_gizmo_pos_locked = True
+        except Exception:
+            pass
+        try:
+            self.update()
+        except Exception:
+            pass
+
     def _set_owner_rot_deg(self, owner: str, rot_deg, is_splat: bool) -> None:
         # Use the existing API that gl_view already uses for transforms.
         try:
@@ -6024,6 +6073,78 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                         (float(rot_deg[0]), float(rot_deg[1]), float(rot_deg[2])),
                         notify_scene=False,
                     )
+                    return
+            except Exception:
+                pass
+            try:
+                decode_joint = getattr(renderer, "_mgl_scene_skeleton_decode_joint_owner", None)
+                apply_joint_keys = getattr(renderer, "_mgl_scene_skeleton_apply_timeline_keys", None)
+                decoded = decode_joint(owner) if callable(decode_joint) else None
+                if decoded and callable(apply_joint_keys):
+                    asset_owner = str(decoded[0] or "").strip()
+                    try:
+                        frame = max(0, int(round(float(self._timeline_current_frame()))))
+                    except Exception:
+                        frame = 0
+                    keys = getattr(self, "_timeline_keys", None)
+                    if not isinstance(keys, dict):
+                        keys = {}
+                    entry = keys.get(int(frame))
+                    entry = dict(entry) if isinstance(entry, dict) else {}
+                    entry.pop("fbx_clip_key", None)
+                    entry.pop("joint_key", None)
+                    try:
+                        entry["rxyz"] = [float(rot_deg[0]), float(rot_deg[1]), float(rot_deg[2])]
+                    except Exception:
+                        entry["rxyz"] = [0.0, 0.0, 0.0]
+                    try:
+                        mask = self._timeline_entry_axis_mask(entry)
+                    except Exception:
+                        mask = [False, False, False, False, False, False]
+                    while len(mask) < 6:
+                        mask.append(False)
+                    mask[3] = mask[4] = mask[5] = True
+                    entry["axis_mask"] = mask[:6]
+                    try:
+                        map_fn = getattr(self, "_timeline_owner_source_frame_from_timeline_frame", None)
+                        mapped = (
+                            map_fn(asset_owner, float(frame), allow_owner_key_mode=True)
+                            if callable(map_fn) and asset_owner
+                            else float(frame)
+                        )
+                        if mapped is not None and math.isfinite(float(mapped)):
+                            entry["source_frame"] = max(0.0, float(mapped))
+                    except Exception:
+                        pass
+                    entry["camera_state"] = {}
+                    keys[int(frame)] = entry
+                    self._timeline_keys = keys
+                    try:
+                        self._timeline_scene_skeleton_dirty = True
+                    except Exception:
+                        pass
+                    try:
+                        self._timeline_total_max = max(
+                            int(getattr(self, "_timeline_total_max", 240) or 240),
+                            int(frame),
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        apply_joint_keys(
+                            owner,
+                            keys,
+                            float(getattr(self, "_timeline_fps", 24.0) or 24.0),
+                        )
+                    except Exception:
+                        pass
+                    self._refresh_scene_skeleton_joint_gizmo_after_rotation(renderer, owner, asset_owner)
+                    try:
+                        self._timeline_update_key_markers()
+                        self._timeline_update_key_count_label()
+                        self._timeline_refresh_coord_labels()
+                    except Exception:
+                        pass
                     return
             except Exception:
                 pass

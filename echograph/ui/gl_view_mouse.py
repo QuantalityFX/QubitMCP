@@ -328,9 +328,23 @@ def _handle_mouse_press_moderngl(self, e):
             alt_pressed = bool(e.modifiers() & QtCore.Qt.AltModifier)
         except Exception:
             alt_pressed = False
+        prefer_gizmo = False
+        try:
+            owner = str(getattr(self, "_xform_gizmo_owner", "") or "").strip()
+            owner_kind = str(getattr(self, "_xform_gizmo_owner_kind", "") or "").strip().lower()
+            if owner and owner_kind == "scene_skeleton_joint":
+                prefer_gizmo = True
+            elif owner:
+                renderer = getattr(self, "_mgl_renderer", None) or self
+                decode_joint = getattr(renderer, "_mgl_scene_skeleton_decode_joint_owner", None)
+                prefer_gizmo = bool(callable(decode_joint) and decode_joint(owner))
+        except Exception:
+            prefer_gizmo = False
+        if bool(prefer_gizmo) and self._handle_mouse_press_moderngl_left_gizmo(e):
+            return True
         if self._handle_mouse_press_moderngl_retarget_joint(e, alt_pressed):
             return True
-        if self._handle_mouse_press_moderngl_left_gizmo(e):
+        if (not bool(prefer_gizmo)) and self._handle_mouse_press_moderngl_left_gizmo(e):
             return True
         if self._handle_mouse_press_moderngl_left_orbit_start(e, alt_pressed):
             return True
@@ -3079,6 +3093,10 @@ def _handle_mouse_move_moderngl_rot_shared_axis_drag(self, e, mp, _rot_dbg):
             _rot_dbg=_rot_dbg,
         )
         if prepared is None:
+            try:
+                e.accept()
+            except Exception:
+                pass
             return True
         owner, qnew = prepared
         self._handle_mouse_move_moderngl_rot_shared_axis_apply(
@@ -3087,11 +3105,15 @@ def _handle_mouse_move_moderngl_rot_shared_axis_drag(self, e, mp, _rot_dbg):
             qnew=qnew,
             _rot_dbg=_rot_dbg,
         )
+        try:
+            e.accept()
+        except Exception:
+            pass
+        return True
 
     except Exception as ex:
         _rot_dbg("[ROT_SHARED_AXIS_MOVE_ERR] " + repr(ex))
         return False
-    return False
 
 def _handle_mouse_move_moderngl_rot_shared_axis_prepare(self, e, mp, rot_shared, _rot_dbg):
     if np is None:
@@ -4441,6 +4463,33 @@ def _handle_mouse_release_moderngl_commit_retarget_pose_if_needed(self, owner=No
         commit_pose = getattr(renderer, "_mgl_retarget_commit_target_pose_edit", None)
         if callable(is_pose_joint) and callable(commit_pose) and bool(is_pose_joint(owner)):
             commit_pose(notify_scene=True)
+            return True
+        decode_joint = getattr(renderer, "_mgl_scene_skeleton_decode_joint_owner", None)
+        apply_joint_keys = getattr(renderer, "_mgl_scene_skeleton_apply_timeline_keys", None)
+        if callable(decode_joint) and decode_joint(owner):
+            if callable(apply_joint_keys):
+                try:
+                    apply_joint_keys(
+                        owner,
+                        getattr(self, "_timeline_keys", {}) or {},
+                        float(getattr(self, "_timeline_fps", 24.0) or 24.0),
+                    )
+                except Exception:
+                    pass
+            if bool(getattr(self, "_timeline_scene_skeleton_dirty", False)):
+                try:
+                    self._timeline_save_to_disk()
+                except Exception:
+                    pass
+                try:
+                    self._timeline_scene_skeleton_dirty = False
+                except Exception:
+                    pass
+            try:
+                self._timeline_update_key_markers()
+                self._timeline_refresh_coord_labels()
+            except Exception:
+                pass
             return True
     except Exception:
         pass

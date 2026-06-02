@@ -416,10 +416,174 @@ class GraphGLTimelineIOMixin:
             pass
         return self._timeline_json_safe(state)
 
+    def _timeline_scene_joint_virtual_keys_map(self, owner: str) -> Dict[int, Dict[str, object]]:
+        owner_key = str(owner or "").strip()
+        if not owner_key:
+            return {}
+        try:
+            renderer = getattr(self, "_mgl_renderer", None) or self
+            decode_fn = getattr(renderer, "_mgl_scene_skeleton_decode_joint_owner", None)
+            map_fn = getattr(renderer, "_mgl_scene_skeleton_joint_keys_map", None)
+            if callable(decode_fn) and decode_fn(owner_key) and callable(map_fn):
+                virtual_map = map_fn(owner_key)
+                if isinstance(virtual_map, dict):
+                    return virtual_map
+        except Exception:
+            pass
+        return {}
+
+    def _timeline_scene_joint_source_keys_map(self, owner: str) -> Dict[int, Dict[str, object]]:
+        owner_key = str(owner or "").strip()
+        if not owner_key:
+            return {}
+        try:
+            renderer = getattr(self, "_mgl_renderer", None) or self
+            decode_fn = getattr(renderer, "_mgl_scene_skeleton_decode_joint_owner", None)
+            source_map_fn = getattr(renderer, "_mgl_scene_skeleton_joint_source_keys_map", None)
+            if callable(decode_fn) and decode_fn(owner_key) and callable(source_map_fn):
+                source_map = source_map_fn(owner_key)
+                if isinstance(source_map, dict):
+                    return source_map
+        except Exception:
+            pass
+        try:
+            renderer = getattr(self, "_mgl_renderer", None) or self
+            map_fn = getattr(renderer, "_mgl_scene_skeleton_joint_keys_map", None)
+            if callable(map_fn):
+                source_map = map_fn(owner_key, timeline_space=False)
+                if isinstance(source_map, dict):
+                    return source_map
+        except Exception:
+            pass
+        return {}
+
+    def _timeline_editable_scene_joint_keys(
+        self,
+        virtual_map: Dict[int, Dict[str, object]],
+    ) -> Dict[int, Dict[str, object]]:
+        staged: Dict[int, Dict[str, object]] = {}
+        for frame_raw, entry in (virtual_map or {}).items():
+            try:
+                frame = int(frame_raw)
+            except Exception:
+                continue
+            if frame < 0 or not isinstance(entry, dict):
+                continue
+            item = dict(entry)
+            item.pop("fbx_clip_key", None)
+            item.pop("joint_key", None)
+            staged[int(frame)] = item
+        return staged
+
+    def _timeline_migrate_scene_joint_keys_to_timeline_frames(
+        self,
+        owner: str,
+        data: Dict[int, Dict[str, object]],
+    ) -> tuple[Dict[int, Dict[str, object]], bool]:
+        owner_key = str(owner or "").strip()
+        if not owner_key or not isinstance(data, dict) or not data:
+            return (data if isinstance(data, dict) else {}, False)
+        try:
+            renderer = getattr(self, "_mgl_renderer", None) or self
+            decode_fn = getattr(renderer, "_mgl_scene_skeleton_decode_joint_owner", None)
+            decoded = decode_fn(owner_key) if callable(decode_fn) else None
+        except Exception:
+            decoded = None
+        if not decoded:
+            return (data, False)
+        asset_owner = str(decoded[0] or "").strip()
+        if not asset_owner:
+            return (data, False)
+        source_map = self._timeline_scene_joint_source_keys_map(owner_key)
+        source_frames = []
+        for frame_raw in (source_map or {}).keys():
+            try:
+                source_frames.append(int(frame_raw))
+            except Exception:
+                continue
+        if not source_frames:
+            return (data, False)
+        source_min = min(source_frames)
+        source_max = max(source_frames)
+        map_fn = getattr(self, "_timeline_owner_timeline_frame_from_source_frame", None)
+        if not callable(map_fn):
+            return (data, False)
+        out: Dict[int, Dict[str, object]] = {}
+        changed = False
+
+        def _merge_entry(dst_frame: int, incoming: Dict[str, object]) -> None:
+            existing = out.get(int(dst_frame))
+            if not isinstance(existing, dict):
+                out[int(dst_frame)] = incoming
+                return
+            merged = dict(existing)
+            old_mask = existing.get("axis_mask", None)
+            new_mask = incoming.get("axis_mask", None)
+            merged.update(dict(incoming))
+            if isinstance(old_mask, (list, tuple)) and isinstance(new_mask, (list, tuple)) and len(old_mask) >= 6 and len(new_mask) >= 6:
+                try:
+                    merged["axis_mask"] = [bool(old_mask[i]) or bool(new_mask[i]) for i in range(6)]
+                except Exception:
+                    pass
+            if (
+                "source_frame" in existing
+                and "source_frame" in incoming
+                and str(existing.get("source_frame")) != str(incoming.get("source_frame"))
+            ):
+                merged.pop("source_frame", None)
+            out[int(dst_frame)] = merged
+
+        for frame_raw, entry in data.items():
+            try:
+                frame = int(frame_raw)
+            except Exception:
+                continue
+            if frame < 0 or not isinstance(entry, dict):
+                continue
+            item = dict(entry)
+            dst = int(frame)
+            if int(source_min) <= int(frame) <= int(source_max):
+                try:
+                    mapped = map_fn(
+                        asset_owner,
+                        float(frame),
+                        allow_owner_key_mode=True,
+                    )
+                except Exception:
+                    mapped = None
+                if mapped is not None:
+                    try:
+                        dst = int(round(float(mapped)))
+                        item["source_frame"] = float(frame)
+                    except Exception:
+                        dst = int(frame)
+                if int(dst) != int(frame) or "source_frame" not in entry:
+                    changed = True
+            else:
+                if "source_frame" in item:
+                    item.pop("source_frame", None)
+                    changed = True
+            _merge_entry(int(dst), item)
+        return (out, bool(changed))
+
+    def _timeline_scene_joint_owner_is_active(self) -> bool:
+        owner = str(getattr(self, "_timeline_owner_name", "") or "").strip()
+        if not owner:
+            return False
+        try:
+            renderer = getattr(self, "_mgl_renderer", None) or self
+            decode_fn = getattr(renderer, "_mgl_scene_skeleton_decode_joint_owner", None)
+            if callable(decode_fn) and decode_fn(owner):
+                return True
+        except Exception:
+            pass
+        return bool(self._timeline_scene_joint_virtual_keys_map(owner))
+
     def _timeline_save_to_disk(self) -> None:
         path = getattr(self, "_timeline_anim_path", None)
         if path is None:
             return
+        scene_joint_active = self._timeline_scene_joint_owner_is_active()
         keys_out = []
         try:
             items = sorted((getattr(self, "_timeline_keys", {}) or {}).items(), key=lambda kv: int(kv[0]))
@@ -490,6 +654,15 @@ class GraphGLTimelineIOMixin:
                         continue
                 if ch_out:
                     row["curve_handles"] = ch_out
+            if bool(scene_joint_active):
+                source_frame = entry.get("source_frame", None)
+                if source_frame is not None:
+                    try:
+                        value = float(source_frame)
+                        if math.isfinite(float(value)):
+                            row["source_frame"] = float(value)
+                    except Exception:
+                        pass
             if len(row) <= 1:
                 continue
             keys_out.append(row)
@@ -518,9 +691,19 @@ class GraphGLTimelineIOMixin:
             "fx_proxy_enabled": bool(getattr(self, "_timeline_fx_proxy_enabled", True)),
             "keys": keys_out,
         }
+        if bool(getattr(self, "_timeline_scene_skeleton_fbx_seeded", False)) or bool(scene_joint_active):
+            payload["scene_skeleton_fbx_seeded"] = bool(
+                getattr(self, "_timeline_scene_skeleton_fbx_seeded", False)
+            )
+            if bool(scene_joint_active):
+                payload["scene_skeleton_frame_space"] = "timeline"
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+            try:
+                self._timeline_owner_keys_cache = {}
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -528,6 +711,8 @@ class GraphGLTimelineIOMixin:
         path = getattr(self, "_timeline_anim_path", None)
         self._timeline_keys = {}
         self._timeline_curve_selected = set()
+        self._timeline_scene_skeleton_fbx_seeded = False
+        self._timeline_scene_skeleton_frame_space = ""
         material_live_mode = True
         fx_instances_enabled = True
         fx_proxy_enabled = True
@@ -551,21 +736,17 @@ class GraphGLTimelineIOMixin:
             try:
                 owner = str(getattr(self, "_timeline_owner_name", "") or "").strip()
                 if owner:
-                    renderer = getattr(self, "_mgl_renderer", None) or self
-                    map_fn = getattr(renderer, "_mgl_timeline_owner_keys_map", None)
-                    virtual_map = map_fn(owner) if callable(map_fn) else {}
+                    virtual_map = self._timeline_scene_joint_virtual_keys_map(owner)
                     if isinstance(virtual_map, dict) and virtual_map:
-                        staged: Dict[int, Dict[str, object]] = {}
-                        for frame_raw, entry in virtual_map.items():
-                            try:
-                                frame = int(frame_raw)
-                            except Exception:
-                                continue
-                            if frame < 0 or not isinstance(entry, dict):
-                                continue
-                            staged[int(frame)] = dict(entry)
+                        staged = self._timeline_editable_scene_joint_keys(virtual_map)
                         if staged:
                             self._timeline_keys = staged
+                            self._timeline_scene_skeleton_fbx_seeded = True
+                            self._timeline_scene_skeleton_frame_space = "timeline"
+                            try:
+                                self._timeline_save_to_disk()
+                            except Exception:
+                                pass
             except Exception:
                 pass
             self._timeline_total_max = max(240, int(self._timeline_current_frame()))
@@ -599,6 +780,7 @@ class GraphGLTimelineIOMixin:
             raw = {}
         if not isinstance(raw, dict):
             raw = {}
+        self._timeline_scene_skeleton_fbx_seeded = bool(raw.get("scene_skeleton_fbx_seeded", False))
         def _bool_value(val, default: bool = True) -> bool:
             if isinstance(val, bool):
                 return bool(val)
@@ -704,61 +886,77 @@ class GraphGLTimelineIOMixin:
                         continue
                 if ch_out:
                     item["curve_handles"] = ch_out
+            source_frame = row.get("source_frame", None)
+            if source_frame is not None:
+                try:
+                    value = float(source_frame)
+                    if math.isfinite(float(value)):
+                        item["source_frame"] = float(value)
+                except Exception:
+                    pass
             if item:
                 data[int(frame)] = item
+        seeded_from_fbx = False
         owner_for_virtual = str(getattr(self, "_timeline_owner_name", "") or "").strip()
+        frame_space = str(raw.get("scene_skeleton_frame_space", "") or "").strip().lower()
+        self._timeline_scene_skeleton_frame_space = frame_space
         try:
-            renderer = getattr(self, "_mgl_renderer", None) or self
-            decode_fn = getattr(renderer, "_mgl_scene_skeleton_decode_joint_owner", None)
-            map_fn = getattr(renderer, "_mgl_timeline_owner_keys_map", None)
-            is_scene_joint_owner = bool(callable(decode_fn) and decode_fn(owner_for_virtual))
-            if is_scene_joint_owner and callable(map_fn):
-                virtual_map = map_fn(owner_for_virtual)
-                if isinstance(virtual_map, dict) and virtual_map:
-                    merged: Dict[int, Dict[str, object]] = {}
-                    for frame_raw, entry in virtual_map.items():
-                        try:
-                            frame = int(frame_raw)
-                        except Exception:
-                            continue
-                        if frame < 0 or not isinstance(entry, dict):
-                            continue
-                        merged[int(frame)] = dict(entry)
-                    for frame, entry in data.items():
-                        base = dict(merged.get(int(frame), {}) or {})
-                        base.update(dict(entry))
-                        base.pop("fbx_clip_key", None)
-                        base.pop("joint_key", None)
-                        merged[int(frame)] = base
-                    data = merged
+            if (
+                owner_for_virtual
+                and data
+                and frame_space not in {"timeline", "timeline_retimed"}
+                and not any("source_frame" in entry for entry in data.values() if isinstance(entry, dict))
+            ):
+                migrated, changed = self._timeline_migrate_scene_joint_keys_to_timeline_frames(
+                    owner_for_virtual,
+                    data,
+                )
+                if bool(changed):
+                    data = migrated
+                    self._timeline_scene_skeleton_fbx_seeded = True
+                    self._timeline_scene_skeleton_frame_space = "timeline"
+                    seeded_from_fbx = True
         except Exception:
             pass
-        if not data:
-            owner = str(getattr(self, "_timeline_owner_name", "") or "").strip()
-            if owner:
-                try:
-                    renderer = getattr(self, "_mgl_renderer", None) or self
-                    map_fn = getattr(renderer, "_mgl_timeline_owner_keys_map", None)
-                    if callable(map_fn):
-                        virtual_map = map_fn(owner)
-                    else:
-                        virtual_map = {}
-                except Exception:
-                    virtual_map = {}
-                if isinstance(virtual_map, dict) and virtual_map:
-                    staged: Dict[int, Dict[str, object]] = {}
-                    for frame_raw, entry in virtual_map.items():
-                        try:
-                            frame = int(frame_raw)
-                        except Exception:
-                            continue
-                        if frame < 0:
-                            continue
-                        if isinstance(entry, dict):
-                            staged[int(frame)] = dict(entry)
-                    if staged:
-                        data = staged
+        try:
+            virtual_map = self._timeline_scene_joint_virtual_keys_map(owner_for_virtual)
+            if (
+                isinstance(virtual_map, dict)
+                and virtual_map
+                and not bool(getattr(self, "_timeline_scene_skeleton_fbx_seeded", False))
+            ):
+                merged = self._timeline_editable_scene_joint_keys(virtual_map)
+                for frame, entry in data.items():
+                    if not isinstance(entry, dict):
+                        continue
+                    base = dict(merged.get(int(frame), {}) or {})
+                    base.update(dict(entry))
+                    base.pop("fbx_clip_key", None)
+                    base.pop("joint_key", None)
+                    merged[int(frame)] = base
+                data = merged
+                self._timeline_scene_skeleton_fbx_seeded = True
+                seeded_from_fbx = True
+        except Exception:
+            pass
         self._timeline_keys = data
+        try:
+            if (
+                owner_for_virtual
+                and any("source_frame" in entry for entry in data.values() if isinstance(entry, dict))
+            ):
+                reindex_fn = getattr(self, "_timeline_scene_joint_reindex_keys_for_speed", None)
+                if callable(reindex_fn) and bool(reindex_fn(owner_for_virtual)):
+                    data = getattr(self, "_timeline_keys", {}) or {}
+                    seeded_from_fbx = True
+                    self._timeline_scene_skeleton_frame_space = "timeline"
+        except Exception:
+            pass
+        if seeded_from_fbx:
+            try:
+                self._timeline_save_to_disk()
+            except Exception:
+                pass
         max_key = 0
         try:
             if data:

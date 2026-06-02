@@ -467,9 +467,19 @@ class GraphGLTimelineModelMixin:
                 return block
         return None
 
-    def _timeline_composition_source_frame(self, owner: str, scene_frame: float) -> Optional[float]:
-        if not self._timeline_is_composition_mode():
+    def _timeline_composition_source_frame(
+        self,
+        owner: str,
+        scene_frame: float,
+        *,
+        allow_owner_key_mode: bool = False,
+    ) -> Optional[float]:
+        if not bool(allow_owner_key_mode) and not self._timeline_is_composition_mode():
             return None
+        try:
+            self._timeline_ensure_composition_blocks_cached()
+        except Exception:
+            pass
         block = self._timeline_find_composition_block(owner=owner)
         if not isinstance(block, dict) or not bool(block.get("enabled", True)):
             return None
@@ -497,17 +507,285 @@ class GraphGLTimelineModelMixin:
         source = source_start + (local * max(0.01, speed))
         return max(source_start, min(source_end, float(source)))
 
+    def _timeline_composition_timeline_frame_for_source_frame(
+        self,
+        owner: str,
+        source_frame: float,
+        *,
+        allow_owner_key_mode: bool = False,
+    ) -> Optional[float]:
+        if not bool(allow_owner_key_mode) and not self._timeline_is_composition_mode():
+            return None
+        try:
+            self._timeline_ensure_composition_blocks_cached()
+        except Exception:
+            pass
+        block = self._timeline_find_composition_block(owner=owner)
+        if not isinstance(block, dict) or not bool(block.get("enabled", True)):
+            return None
+        try:
+            source = float(source_frame)
+            clip_start = float(block.get("clip_start_frame", 0) or 0)
+            clip_end = float(block.get("clip_end_frame", clip_start) or clip_start)
+            source_start = float(block.get("source_start_frame", 0) or 0)
+            source_end = float(block.get("source_end_frame", source_start) or source_start)
+            speed_percent = self._timeline_camera_shared_speed_percent(owner, block=block)
+            if speed_percent is None:
+                speed_percent = self._timeline_normalize_speed_percent(block.get("speed_percent", 100.0))
+            speed = self._timeline_normalize_speed_percent(speed_percent) / 100.0
+        except Exception:
+            return None
+        if clip_end < clip_start:
+            clip_end = clip_start
+        if source_end < source_start:
+            source_end = source_start
+        if source < source_start:
+            return clip_start if bool(block.get("hold_before", True)) else None
+        if source > source_end:
+            return clip_end if bool(block.get("hold_after", True)) else None
+        local = max(0.0, source - source_start)
+        frame = clip_start + (local / max(0.01, speed))
+        return max(clip_start, min(clip_end, float(frame)))
+
+    def _timeline_owner_source_frame_from_timeline_frame(
+        self,
+        owner: str | None,
+        frame: float,
+        *,
+        allow_owner_key_mode: bool = False,
+    ) -> Optional[float]:
+        try:
+            f = float(frame)
+        except Exception:
+            f = 0.0
+        key = str(owner or "").strip()
+        key = self._timeline_scene_joint_asset_owner(key) or key
+        if key:
+            mapped = self._timeline_composition_source_frame(
+                key,
+                f,
+                allow_owner_key_mode=bool(allow_owner_key_mode),
+            )
+            if mapped is not None:
+                return max(0.0, float(mapped))
+        if not key:
+            return max(0.0, float(f))
+        try:
+            return max(0.0, float(self._timeline_retimed_frame_for_owner(key, f)))
+        except Exception:
+            return max(0.0, float(f))
+
+    def _timeline_owner_timeline_frame_from_source_frame(
+        self,
+        owner: str | None,
+        source_frame: float,
+        *,
+        allow_owner_key_mode: bool = False,
+    ) -> Optional[float]:
+        try:
+            source = float(source_frame)
+        except Exception:
+            source = 0.0
+        key = str(owner or "").strip()
+        key = self._timeline_scene_joint_asset_owner(key) or key
+        if key:
+            mapped = self._timeline_composition_timeline_frame_for_source_frame(
+                key,
+                source,
+                allow_owner_key_mode=bool(allow_owner_key_mode),
+            )
+            if mapped is not None:
+                return max(0.0, float(mapped))
+        if not key:
+            return max(0.0, float(source))
+        try:
+            factor = float(self._timeline_owner_speed_factor(key))
+        except Exception:
+            factor = 1.0
+        factor = max(0.01, float(factor))
+        return max(0.0, float(source) / factor)
+
+    def _timeline_current_scene_joint_owner_for_asset(self, asset_owner: str | None) -> str:
+        asset_text = str(asset_owner or "").strip()
+        asset_key = str(self._timeline_scene_joint_asset_owner(asset_text) or asset_text).strip().lower()
+        if not asset_key:
+            return ""
+        owner = self._timeline_target_owner()
+        if not owner:
+            try:
+                owner = str(getattr(self, "_xform_gizmo_owner", "") or "").strip()
+            except Exception:
+                owner = ""
+        if not owner:
+            return ""
+        try:
+            if self._timeline_scene_joint_asset_owner(owner).lower() == asset_key:
+                return str(owner or "").strip()
+        except Exception:
+            pass
+        return ""
+
+    def _timeline_scene_joint_ensure_source_frames(
+        self,
+        owner: str,
+        *,
+        asset_owner: str | None = None,
+    ) -> bool:
+        owner_key = str(owner or "").strip()
+        asset_key = str(asset_owner or self._timeline_scene_joint_asset_owner(owner_key) or "").strip()
+        if not owner_key or not asset_key:
+            return False
+        keys = getattr(self, "_timeline_keys", None)
+        if not isinstance(keys, dict) or not keys:
+            return False
+        changed = False
+        map_fn = getattr(self, "_timeline_owner_source_frame_from_timeline_frame", None)
+        for frame_raw, entry in list(keys.items()):
+            if not isinstance(entry, dict):
+                continue
+            try:
+                frame = int(frame_raw)
+            except Exception:
+                continue
+            source = entry.get("source_frame", None)
+            valid = False
+            if source is not None:
+                try:
+                    valid = math.isfinite(float(source))
+                except Exception:
+                    valid = False
+            if valid:
+                continue
+            try:
+                mapped = (
+                    map_fn(asset_key, float(frame), allow_owner_key_mode=True)
+                    if callable(map_fn)
+                    else float(frame)
+                )
+                if mapped is None or not math.isfinite(float(mapped)):
+                    continue
+                item = dict(entry)
+                item["source_frame"] = max(0.0, float(mapped))
+                keys[int(frame)] = item
+                changed = True
+            except Exception:
+                continue
+        if changed:
+            self._timeline_keys = keys
+        return bool(changed)
+
+    def _timeline_scene_joint_reindex_keys_for_speed(
+        self,
+        owner: str,
+        *,
+        asset_owner: str | None = None,
+    ) -> bool:
+        owner_key = str(owner or "").strip()
+        asset_key = str(asset_owner or self._timeline_scene_joint_asset_owner(owner_key) or "").strip()
+        if not owner_key or not asset_key:
+            return False
+        keys = getattr(self, "_timeline_keys", None)
+        if not isinstance(keys, dict) or not keys:
+            return False
+        map_fn = getattr(self, "_timeline_owner_timeline_frame_from_source_frame", None)
+        if not callable(map_fn):
+            return False
+        out: Dict[int, Dict[str, object]] = {}
+        changed = False
+
+        def _merge(dst_frame: int, incoming: Dict[str, object]) -> None:
+            existing = out.get(int(dst_frame))
+            if not isinstance(existing, dict):
+                out[int(dst_frame)] = incoming
+                return
+            merged = dict(existing)
+            old_mask = existing.get("axis_mask", None)
+            new_mask = incoming.get("axis_mask", None)
+            merged.update(dict(incoming))
+            if (
+                isinstance(old_mask, (list, tuple))
+                and isinstance(new_mask, (list, tuple))
+                and len(old_mask) >= 6
+                and len(new_mask) >= 6
+            ):
+                try:
+                    merged["axis_mask"] = [bool(old_mask[i]) or bool(new_mask[i]) for i in range(6)]
+                except Exception:
+                    pass
+            out[int(dst_frame)] = merged
+
+        for frame_raw, entry in list(keys.items()):
+            if not isinstance(entry, dict):
+                continue
+            try:
+                frame = int(frame_raw)
+            except Exception:
+                continue
+            item = dict(entry)
+            source = item.get("source_frame", None)
+            try:
+                source_value = float(source)
+                if not math.isfinite(float(source_value)):
+                    raise ValueError("non-finite source frame")
+            except Exception:
+                try:
+                    source_value = float(
+                        self._timeline_owner_source_frame_from_timeline_frame(
+                            asset_key,
+                            float(frame),
+                            allow_owner_key_mode=True,
+                        )
+                    )
+                except Exception:
+                    source_value = float(frame)
+                item["source_frame"] = max(0.0, float(source_value))
+                changed = True
+            try:
+                mapped = map_fn(asset_key, float(source_value), allow_owner_key_mode=True)
+                dst = int(round(float(mapped if mapped is not None else source_value)))
+            except Exception:
+                dst = int(frame)
+            dst = max(0, int(dst))
+            if dst != int(frame):
+                changed = True
+            _merge(dst, item)
+        if not changed:
+            return False
+        self._timeline_keys = out
+        try:
+            self._timeline_total_max = max(
+                int(getattr(self, "_timeline_total_max", 240) or 240),
+                max(out.keys()) if out else 0,
+            )
+        except Exception:
+            pass
+        try:
+            self._timeline_sync_range_controls(keep_current_visible=True, refresh_key_markers=True)
+        except Exception:
+            pass
+        try:
+            self._timeline_refresh_coord_labels()
+        except Exception:
+            pass
+        return True
+
     def _timeline_composition_sample_seconds_for_owner(
         self,
         owner: str,
         scene_frame: int | float | None = None,
         fps: float | None = None,
+        *,
+        allow_owner_key_mode: bool = False,
     ) -> Optional[float]:
         try:
             frame = float(self._timeline_current_frame() if scene_frame is None else scene_frame)
         except Exception:
             frame = 0.0
-        source_frame = self._timeline_composition_source_frame(owner, frame)
+        source_frame = self._timeline_composition_source_frame(
+            owner,
+            frame,
+            allow_owner_key_mode=bool(allow_owner_key_mode),
+        )
         if source_frame is None:
             return None
         try:
@@ -723,6 +1001,20 @@ class GraphGLTimelineModelMixin:
             return mode
         return ""
 
+    def _timeline_scene_joint_asset_owner(self, owner: str | None) -> str:
+        key = str(owner or "").strip()
+        if not key:
+            return ""
+        try:
+            renderer = getattr(self, "_mgl_renderer", None) or self
+            decode_fn = getattr(renderer, "_mgl_scene_skeleton_decode_joint_owner", None)
+            decoded = decode_fn(key) if callable(decode_fn) else None
+            if decoded:
+                return str(decoded[0] or "").strip()
+        except Exception:
+            pass
+        return ""
+
     def _timeline_retime_owner(self) -> str:
         if self._timeline_is_composition_mode():
             try:
@@ -733,12 +1025,12 @@ class GraphGLTimelineModelMixin:
                 return owner
         owner = self._timeline_target_owner()
         if owner:
-            return owner
+            return self._timeline_scene_joint_asset_owner(owner) or owner
         try:
             owner = str(getattr(self, "_xform_gizmo_owner", "") or "").strip()
         except Exception:
             owner = ""
-        return owner
+        return self._timeline_scene_joint_asset_owner(owner) or owner
 
     def _timeline_normalize_speed_percent(self, value) -> float:
         try:
@@ -921,6 +1213,7 @@ class GraphGLTimelineModelMixin:
 
     def _timeline_owner_speed_percent(self, owner: str | None = None) -> float:
         key = str(owner or self._timeline_retime_owner() or "").strip()
+        key = self._timeline_scene_joint_asset_owner(key) or key
         if not key:
             return 100.0
         camera_speed = self._timeline_camera_shared_speed_percent(key)
@@ -1067,10 +1360,18 @@ class GraphGLTimelineModelMixin:
     ) -> float:
         key = str(owner or "").strip()
         value = self._timeline_normalize_speed_percent(percent)
+        key = self._timeline_scene_joint_asset_owner(key) or key
         if not key:
             if bool(sync_ui):
                 self._timeline_refresh_speed_control()
             return float(value)
+        scene_joint_owner = ""
+        try:
+            scene_joint_owner = self._timeline_current_scene_joint_owner_for_asset(key)
+            if scene_joint_owner:
+                self._timeline_scene_joint_ensure_source_frames(scene_joint_owner, asset_owner=key)
+        except Exception:
+            scene_joint_owner = ""
         if self._timeline_is_composition_mode():
             block = self._timeline_find_composition_block(owner=key)
             if isinstance(block, dict):
@@ -1098,6 +1399,17 @@ class GraphGLTimelineModelMixin:
                         pass
                 return float(value)
         self._timeline_store_owner_speed_map_value(key, float(value))
+        scene_joint_reindexed = False
+        if scene_joint_owner:
+            try:
+                scene_joint_reindexed = bool(
+                    self._timeline_scene_joint_reindex_keys_for_speed(
+                        scene_joint_owner,
+                        asset_owner=key,
+                    )
+                )
+            except Exception:
+                scene_joint_reindexed = False
         if bool(sync_scene):
             self._timeline_sync_owner_speed_to_scene(key, float(value))
         try:
@@ -1105,6 +1417,11 @@ class GraphGLTimelineModelMixin:
         except Exception:
             pass
         self._timeline_invalidate_owner_animation_cache(key)
+        if bool(scene_joint_reindexed):
+            try:
+                self._timeline_save_to_disk()
+            except Exception:
+                pass
         if bool(sync_ui):
             self._timeline_refresh_speed_control()
         if bool(apply_frame):
@@ -1219,6 +1536,14 @@ class GraphGLTimelineModelMixin:
                         continue
                 if ch_out:
                     item["curve_handles"] = ch_out
+            source_frame = row.get("source_frame", None)
+            if source_frame is not None:
+                try:
+                    value = float(source_frame)
+                    if math.isfinite(float(value)):
+                        item["source_frame"] = float(value)
+                except Exception:
+                    pass
             if item:
                 data[int(frame)] = item
         return data
@@ -2324,6 +2649,20 @@ class GraphGLTimelineModelMixin:
             return
         entry.pop("fbx_clip_key", None)
         entry.pop("joint_key", None)
+        try:
+            owner = self._timeline_target_owner()
+            asset_owner = self._timeline_scene_joint_asset_owner(owner)
+            if asset_owner and frame is not None:
+                map_fn = getattr(self, "_timeline_owner_source_frame_from_timeline_frame", None)
+                mapped = (
+                    map_fn(asset_owner, float(frame), allow_owner_key_mode=True)
+                    if callable(map_fn)
+                    else float(frame)
+                )
+                if mapped is not None and math.isfinite(float(mapped)):
+                    entry["source_frame"] = max(0.0, float(mapped))
+        except Exception:
+            pass
         # Ensure edits on a single axis do not implicitly key other axes when
         # creating/patching sparse entries during curve dragging.
         raw_mask = entry.get("axis_mask", None)
@@ -5890,6 +6229,24 @@ class GraphGLTimelineModelMixin:
                     )
             except Exception:
                 pass
+            try:
+                renderer = getattr(self, "_mgl_renderer", None) or self
+                decode_fn = getattr(renderer, "_mgl_scene_skeleton_decode_joint_owner", None)
+                apply_fn = getattr(renderer, "_mgl_scene_skeleton_apply_timeline_keys", None)
+                if owner and callable(decode_fn) and decode_fn(owner) and callable(apply_fn):
+                    apply_fn(
+                        owner,
+                        getattr(self, "_timeline_keys", {}) or {},
+                        float(getattr(self, "_timeline_fps", 24.0) or 24.0),
+                    )
+                    try:
+                        self.update()
+                    except Exception:
+                        pass
+                    self._timeline_refresh_coord_labels()
+                    return
+            except Exception:
+                pass
             if bool(force):
                 try:
                     self.update()
@@ -6195,6 +6552,14 @@ class GraphGLTimelineModelMixin:
             )
         except Exception:
             pass
+        try:
+            owner_for_apply = str(locked_camera_owner or self._timeline_target_owner() or "").strip()
+            renderer = getattr(self, "_mgl_renderer", None) or self
+            decode_fn = getattr(renderer, "_mgl_scene_skeleton_decode_joint_owner", None)
+            if owner_for_apply and callable(decode_fn) and decode_fn(owner_for_apply):
+                self._timeline_apply_frame_if_keyed(int(frame), force=True)
+        except Exception:
+            pass
         if locked_camera_owner:
             try:
                 self._timeline_apply_owner_xyz_only(str(locked_camera_owner), xyz, rxyz=rxyz)
@@ -6268,6 +6633,14 @@ class GraphGLTimelineModelMixin:
         self._timeline_sync_range_controls(keep_current_visible=True, refresh_key_markers=True)
         if deleted_any:
             self._timeline_save_to_disk()
+            try:
+                owner_for_apply = str(self._timeline_target_owner() or "").strip()
+                renderer = getattr(self, "_mgl_renderer", None) or self
+                decode_fn = getattr(renderer, "_mgl_scene_skeleton_decode_joint_owner", None)
+                if owner_for_apply and callable(decode_fn) and decode_fn(owner_for_apply):
+                    self._timeline_apply_frame_if_keyed(int(self._timeline_current_frame()), force=True)
+            except Exception:
+                pass
         self._timeline_refresh_coord_labels()
 
     def _timeline_delete_selected_keys(self) -> bool:

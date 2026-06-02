@@ -2,13 +2,13 @@
   "save_layout": true,
   "panel_layout": {
     "timeline": true,
-    "audio": false,
+    "audio": true,
     "profiler": false
   },
-  "view_mode": "split",
+  "view_mode": "2d",
   "voice_audio_mode": "bilateral",
-  "voice_mic_device_index": 1,
-  "shadow_quality": "ultra",
+  "voice_mic_device_index": 23,
+  "shadow_quality": "high",
   "cast_shadows": true,
   "self_shadows": true,
   "two_sided_shadows": true,
