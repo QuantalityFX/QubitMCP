@@ -4505,6 +4505,18 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 selected = str(getattr(self, "_camera_select_mode", "default") or "default").strip()
                 if selected and selected != "default":
                     self._select_scene_camera(selected)
+                elif bool(frame):
+                    entries = getattr(self, "_scene_camera_entries", None) or []
+                    if entries:
+                        owner = str((entries[0] or {}).get("owner") or "").strip()
+                        if owner:
+                            self._select_scene_camera(owner)
+                            try:
+                                mode = str(getattr(self, "_camera_select_mode", "default") or "default").strip().lower()
+                                if mode != "default" and not bool(getattr(self, "_fly_mode_enabled", False)):
+                                    self._on_fly_mode_toggled(True)
+                            except Exception:
+                                pass
             except Exception:
                 pass
             # Keep selection/gizmo stable across frame-refresh scene swaps (ply_sequence playback).

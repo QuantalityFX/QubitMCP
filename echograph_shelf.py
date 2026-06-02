@@ -4017,6 +4017,44 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             if not bool(frame):
                 return
 
+            def _sync_selected_scene_camera_view() -> None:
+                glv = getattr(self, "gl_view", None)
+                if glv is None:
+                    return
+                try:
+                    selected = str(getattr(glv, "_camera_select_mode", "default") or "default").strip()
+                except Exception:
+                    selected = "default"
+                if not selected or selected.lower() == "default":
+                    return
+                try:
+                    cur_frame = int(glv._timeline_current_frame()) if hasattr(glv, "_timeline_current_frame") else 0
+                except Exception:
+                    cur_frame = 0
+                try:
+                    apply_selected = getattr(glv, "_timeline_apply_selected_camera_owner_frame", None)
+                    if callable(apply_selected):
+                        apply_selected(cur_frame)
+                except Exception:
+                    pass
+                try:
+                    sync_from_owner = getattr(glv, "_timeline_sync_selected_camera_view_from_owner", None)
+                    if callable(sync_from_owner):
+                        sync_from_owner(
+                            selected,
+                            reason=f"scene_load_{reason}",
+                            frame=cur_frame,
+                        )
+                        return
+                except Exception:
+                    pass
+                try:
+                    sync_view = getattr(glv, "_sync_selected_scene_camera_view", None)
+                    if callable(sync_view):
+                        sync_view(selected)
+                except Exception:
+                    pass
+
             def _run_sync() -> None:
                 try:
                     _scene_log(f"open_scene_assets: sync_timeline_context {reason} begin")
@@ -4024,6 +4062,11 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                     _scene_log(f"open_scene_assets: sync_timeline_context {reason} done")
                 except Exception:
                     _scene_log("open_scene_assets: sync_timeline_context error\n" + traceback.format_exc())
+                for delay in (0, 120, 420):
+                    try:
+                        QtCore.QTimer.singleShot(delay, _sync_selected_scene_camera_view)
+                    except Exception:
+                        _sync_selected_scene_camera_view()
 
             try:
                 QtCore.QTimer.singleShot(0, _run_sync)
@@ -5765,6 +5808,9 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                         try:
                             if glv is None:
                                 return
+                            selected_camera = str(getattr(glv, "_camera_select_mode", "default") or "default").strip()
+                            if selected_camera and selected_camera.lower() != "default":
+                                return
                             if hasattr(glv, "_mgl_queue_camera_state"):
                                 glv._mgl_queue_camera_state(cam)
                             elif hasattr(glv, "_mgl_apply_camera_state"):
@@ -6797,6 +6843,16 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             deserialize_profile=deserialize_profile if isinstance(deserialize_profile, dict) else {},
         )
         self._workflow_load_in_progress = False
+        try:
+            restore_name = str(getattr(self, "_pending_workflow_scene_restore", "") or "").strip()
+            if restore_name:
+                self._restore_workflow_active_scene_deferred(
+                    restore_name,
+                    workflow_path=path,
+                    delay_ms=0,
+                )
+        except Exception:
+            pass
         return True
 
     def _open_graph(self):

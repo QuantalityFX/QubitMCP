@@ -4809,6 +4809,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         try:
                             if glv is None:
                                 return
+                            selected_camera = str(getattr(glv, "_camera_select_mode", "default") or "default").strip()
+                            if selected_camera and selected_camera.lower() != "default":
+                                return
                             if hasattr(glv, "_mgl_queue_camera_state"):
                                 glv._mgl_queue_camera_state(cam)
                             elif hasattr(glv, "_mgl_apply_camera_state"):
