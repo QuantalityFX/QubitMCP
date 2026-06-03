@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import math
 import tempfile
 import time
@@ -24,6 +25,7 @@ _TEXTURE_KINDS = {"texture", "texture_pro", "texture_layer"}
 _NORMALS_PROCESS_KINDS = {"normals", "normal", "smooth_normals", "smooth normals"}
 _GEOMETRY_PROCESS_KINDS = {"uv_unwrap"} | _NORMALS_PROCESS_KINDS
 _FBX_KIND_ALIASES = {"fbx_import", "fbx import", "fbximport"}
+_MODELER_KIND_ALIASES = {"modeler"}
 _ANIM_RETARGET_KIND_ALIASES = {"anim_retarget", "anim retarget", "animretarget", "retarget"}
 _SKINNED_SPLAT_PROXY_KIND_ALIASES = {
     "skinned_splat_proxy",
@@ -371,6 +373,32 @@ def _param_value(model, name: str) -> str:
         if (entry.get("name") or "").strip().lower() == key:
             return entry.get("value") or ""
     return ""
+
+
+def _json_name_list(raw) -> List[str]:
+    text = str(raw or "").strip()
+    if not text:
+        return []
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        parsed = None
+    if isinstance(parsed, (list, tuple, set)):
+        values = parsed
+    else:
+        values = [part.strip() for part in text.split(",")]
+    out: List[str] = []
+    seen = set()
+    for value in values:
+        name = str(value or "").strip()
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(name)
+    return out
 
 
 def _param_bool(model, name: str, default: bool = False) -> bool:
@@ -1018,6 +1046,28 @@ def _resolve_input_item(scene, node_item, port_names=None):
                 if chosen is None:
                     chosen = edges[0]
                 return _trace(getattr(chosen, "src", None), depth + 1, visited)
+        if kind in _MODELER_KIND_ALIASES:
+            path = _param_value(m, "path")
+            try:
+                edges = list(scene._ordered_in_edges(item))
+            except Exception:
+                try:
+                    edges = list(scene._in_edges(item))
+                except Exception:
+                    edges = []
+            chosen = None
+            for edge in edges:
+                name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
+                if (name or "").strip().lower() in {"mesh", "path", "source"}:
+                    chosen = edge
+                    break
+            if chosen is None and edges:
+                chosen = edges[0]
+            if chosen is not None:
+                _up_item, _up_kind, up_path = _trace(getattr(chosen, "src", None), depth + 1, visited)
+                if up_path:
+                    path = up_path
+            return item, kind, path
         if kind in _FBX_KIND_ALIASES:
             return item, kind, _fbx_import_resolved_rest_path(m)
         path = _param_value(m, "path")
@@ -1219,6 +1269,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             "normal",
             "smooth_normals",
             "smooth normals",
+            "modeler",
             "texture",
             "texture_pro",
             "texture_layer",
@@ -1261,6 +1312,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             "normal",
             "smooth_normals",
             "smooth normals",
+            "modeler",
             "texture",
             "texture_pro",
             "texture_layer",
@@ -1326,6 +1378,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             "normal",
             "smooth_normals",
             "smooth normals",
+            "modeler",
             "texture",
             "texture_pro",
             "texture_layer",
@@ -1506,7 +1559,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                 kind = (next_kind or "").strip().lower()
                 continue
 
-            if kind in _GEOMETRY_PROCESS_KINDS or kind == "transforms":
+            if kind in _GEOMETRY_PROCESS_KINDS or kind == "transforms" or kind in _MODELER_KIND_ALIASES:
                 next_item, next_kind, next_path = _resolve_input_item(scene, item)
                 if next_item is None or next_item is item:
                     break
@@ -2200,6 +2253,7 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             continue
 
         path = _param_value(model, "path")
+        modeler_hidden: List[str] = []
         fbx_rig_source_model = model if kind in _FBX_KIND_ALIASES else None
         mocap_rig_source_model = model if kind in _MOCAP_KIND_ALIASES else None
         if kind in _FBX_KIND_ALIASES:
@@ -2228,6 +2282,19 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
         material_model = model if kind in _MATERIAL_KINDS else None
         texture_model = model
         texture_kind = kind
+
+        if kind in _MODELER_KIND_ALIASES:
+            modeler_hidden = _json_name_list(_param_value(model, "hidden_submeshes"))
+            upstream_item, upstream_kind, upstream_path = _resolve_input_item(scene, src_item, {"mesh", "path", "source"})
+            upstream_model = getattr(upstream_item, "model", None) if upstream_item is not None else None
+            if upstream_path:
+                path = upstream_path
+            if (upstream_kind or "").strip().lower() in _FBX_KIND_ALIASES:
+                fbx_rig_source_model = upstream_model
+                fbx_rig_context = _fbx_import_rig_context(upstream_model)
+            elif (upstream_kind or "").strip().lower() in _MOCAP_KIND_ALIASES:
+                mocap_rig_source_model = upstream_model
+                fbx_rig_context = _mocap_import_rig_context(upstream_model)
 
         # If a texture node is in between, use the upstream model for owner/xform,
         # but keep the texture override from the texture node.
@@ -2513,6 +2580,28 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             except Exception:
                 pass
 
+        if (owner_kind or "").strip().lower() in _MODELER_KIND_ALIASES:
+            modeler_hidden = _json_name_list(_param_value(owner_model, "hidden_submeshes"))
+            try:
+                upstream_item, upstream_kind, upstream_path = _resolve_input_item(
+                    scene,
+                    owner_item,
+                    {"mesh", "path", "source"},
+                )
+            except Exception:
+                upstream_item, upstream_kind, upstream_path = None, "", ""
+            upstream_model = getattr(upstream_item, "model", None) if upstream_item is not None else None
+            if upstream_path:
+                path = upstream_path
+            if (upstream_kind or "").strip().lower() in _FBX_KIND_ALIASES:
+                fbx_rig_source_model = upstream_model
+                if fbx_rig_context is None:
+                    fbx_rig_context = _fbx_import_rig_context(upstream_model)
+            elif (upstream_kind or "").strip().lower() in _MOCAP_KIND_ALIASES:
+                mocap_rig_source_model = upstream_model
+                if fbx_rig_context is None:
+                    fbx_rig_context = _mocap_import_rig_context(upstream_model)
+
         if fbx_rig_source_model is None and (owner_kind or "").strip().lower() in _FBX_KIND_ALIASES:
             fbx_rig_source_model = owner_model
         if mocap_rig_source_model is None and (owner_kind or "").strip().lower() in _MOCAP_KIND_ALIASES:
@@ -2569,6 +2658,8 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                     )
             continue
         key = path.strip()
+        if modeler_hidden:
+            key = key + "::modeler_hidden::" + "|".join(sorted(name.lower() for name in modeler_hidden))
         if key in seen:
             if isinstance(fx_asset, dict) and node_name:
                 aliases = _fx_target_owner_aliases(scene, owner_item, owner_model, owner_kind)
@@ -2745,6 +2836,8 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
             entry["volume"] = is_volume
         if texture_provider is not None:
             entry["texture_provider"] = texture_provider
+        if modeler_hidden:
+            entry["hidden_submeshes"] = list(modeler_hidden)
         assets.append(entry)
         if kind in _MATERIAL_KINDS:
             if material_debug_on:

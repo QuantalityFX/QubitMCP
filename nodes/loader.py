@@ -164,6 +164,17 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Copy To Points plugin import failed:", e)
 
+    # 8.57) Modeler
+    try:
+        from nodes import modeler
+        if hasattr(modeler, "register"):
+            modeler.register()
+            _safe_probe("modeler")
+        else:
+            print("[EchoGraph] Modeler module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Modeler plugin import failed:", e)
+
     # 8.6) UV Unwrap
     try:
         from nodes import uv_unwrap

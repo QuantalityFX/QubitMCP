@@ -271,6 +271,12 @@ def _load_fbx_ascii_mesh_arrays(path: Path) -> MeshArrays:
 
     for match in geo_pattern.finditer(raw):
         mesh_label = f"mesh_{len(submeshes)}"
+        header = match.group(0)
+        name_match = re.search(r'Geometry\s*:\s*[^,]*,\s*"([^"]+)"\s*,\s*"Mesh"', header, re.IGNORECASE)
+        if name_match:
+            mesh_name = (name_match.group(1) or "").split("::")[-1].strip()
+            if mesh_name:
+                mesh_label = mesh_name
         brace_start = raw.find("{", match.end() - 1)
         if brace_start < 0:
             continue

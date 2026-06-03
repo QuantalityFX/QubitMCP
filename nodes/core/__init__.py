@@ -84,6 +84,7 @@ def register_defaults() -> None:
     register("GEN-X-VideoMocap", stripe_color="#14b8a6")
     register("anim_retarget", stripe_color="#ec4899")
     register("skinned_splat_proxy", stripe_color="#38bdf8")
+    register("modeler", stripe_color="#0ea5e9")
     register("copy_to_points", stripe_color="#06b6d4")
     register("fx_splat_physics", stripe_color="#84cc16")
     register("fx_splat_fx", stripe_color="#f472b6")
@@ -149,6 +150,14 @@ def register_defaults() -> None:
             _normals.register(core=sys.modules[__name__])
     except (Exception, SystemExit) as exc:  # pragma: no cover - optional plugin
         print("[EchoGraph] Normals auto-register failed:", exc)
+
+    # Auto-register Modeler so its outliner footer and mesh input are available early.
+    try:
+        from nodes import modeler as _modeler  # type: ignore
+        if hasattr(_modeler, "register"):
+            _modeler.register(core=sys.modules[__name__])
+    except (Exception, SystemExit) as exc:  # pragma: no cover - optional plugin
+        print("[EchoGraph] Modeler auto-register failed:", exc)
 
 
 def apply_spec_to_item(item: Any, kind: str | Spec, *, debug: bool = False) -> Any:

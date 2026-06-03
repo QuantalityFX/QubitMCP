@@ -3718,7 +3718,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             try:
                 active = getattr(self, "_active_scene_node", None)
                 active_kind = str(getattr(active, "kind", "") or "").strip().lower() if active is not None else ""
-                if scene_source_open or active_kind in {"scene", "scene_assembly", "scene_outliner"} or (bool(frame) and active is None):
+                if scene_source_open or active_kind in {"scene", "scene_assembly", "scene_outliner", "modeler"} or (bool(frame) and active is None):
                     self._active_scene_preview_context = None
             except Exception:
                 pass
@@ -3838,6 +3838,12 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 clean_entry["material"] = dict(entry.get("material") or {})
             if isinstance(entry.get("fbx_rig_context"), dict):
                 clean_entry["fbx_rig_context"] = dict(entry.get("fbx_rig_context") or {})
+            if "hidden_submeshes" in entry:
+                clean_entry["hidden_submeshes"] = [
+                    str(name).strip()
+                    for name in (entry.get("hidden_submeshes") or [])
+                    if str(name).strip()
+                ]
             if isinstance(entry.get("copy_to_points"), dict):
                 clean_entry["copy_to_points"] = dict(entry.get("copy_to_points") or {})
             if isinstance(entry.get("music_effects"), dict):
@@ -3969,6 +3975,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                         repr(dict(entry.get("copy_to_points") or {})),
                         repr(dict(entry.get("music_effects") or {})),
                         repr(dict(entry.get("preview_context") or {})),
+                        repr(list(entry.get("hidden_submeshes") or [])),
                         repr(dict(entry.get("light") or {})),
                         repr(entry.get("fov", None)),
                         repr(entry.get("aspect_width", None)),
@@ -5708,15 +5715,25 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         if not isinstance(item, NodeItem):
             return False
         kind = (getattr(getattr(item, "model", None), "kind", "") or "").strip().lower()
-        if kind not in {"scene", "scene_assembly", "scene_outliner"}:
-            return False
         assets = []
-        try:
-            collect = getattr(item, "_collect_scene_assets", None)
-            if callable(collect):
-                assets = list(collect() or [])
-        except Exception:
-            assets = []
+        if kind == "modeler":
+            try:
+                from nodes.modeler import spec as _modeler_spec  # type: ignore
+
+                collect = getattr(_modeler_spec, "_modeler_scene_assets", None)
+                if callable(collect):
+                    assets = list(collect(sc, item) or [])
+            except Exception:
+                assets = []
+        elif kind in {"scene", "scene_assembly", "scene_outliner"}:
+            try:
+                collect = getattr(item, "_collect_scene_assets", None)
+                if callable(collect):
+                    assets = list(collect() or [])
+            except Exception:
+                assets = []
+        else:
+            return False
         if not assets:
             return False
         try:
@@ -7322,21 +7339,33 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         if item is None:
             return
         assets = []
-        try:
-            collect = getattr(item, "_collect_scene_assets", None)
-            if callable(collect):
-                assets = list(collect() or [])
-        except Exception:
-            assets = []
-        if not assets:
+        model = getattr(item, "model", None)
+        kind = str(getattr(model, "kind", "") or "").strip().lower()
+        if kind == "modeler":
             try:
-                from nodes.scene import spec as _scene_spec  # type: ignore
+                from nodes.modeler import spec as _modeler_spec  # type: ignore
 
-                collect = getattr(_scene_spec, "_collect_assets", None)
+                collect = getattr(_modeler_spec, "_modeler_scene_assets", None)
                 if callable(collect):
-                    assets = list(collect(item) or [])
+                    assets = list(collect(getattr(self, "scene", None), item) or [])
             except Exception:
                 assets = []
+        else:
+            try:
+                collect = getattr(item, "_collect_scene_assets", None)
+                if callable(collect):
+                    assets = list(collect() or [])
+            except Exception:
+                assets = []
+            if not assets:
+                try:
+                    from nodes.scene import spec as _scene_spec  # type: ignore
+
+                    collect = getattr(_scene_spec, "_collect_assets", None)
+                    if callable(collect):
+                        assets = list(collect(item) or [])
+                except Exception:
+                    assets = []
         if not assets:
             return
         try:

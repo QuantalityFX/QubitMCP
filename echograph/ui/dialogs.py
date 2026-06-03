@@ -304,6 +304,8 @@ def _kind_icon(kind: str) -> QtGui.QIcon:
         icon_pm = node_icons._instance_icon() or node_icons._output_icon()
     elif key in ("copy_to_points", "copy to points", "copy_to_point", "copy to point", "copytopoints"):
         icon_pm = node_icons._instance_icon() or node_icons._primitive_icon() or node_icons._output_icon()
+    elif key == "modeler":
+        icon_pm = node_icons._uv_unwrap_icon() or node_icons._primitive_icon() or node_icons._output_icon()
     elif key == "primitive":
         icon_pm = node_icons._primitive_icon() or node_icons._output_icon()
     elif key == "html_preview":
@@ -386,7 +388,7 @@ class CreateNodeDialog(QtWidgets.QDialog):
         self.kind_edit = QtWidgets.QComboBox()
         self.kind_edit.setEditable(True)
         self._kinds = [
-            "node","camera","light","directional_light","point_light","spot_light","area_light","import","fbx_import","mocap_import","GEN-X-VideoMocap","anim_retarget","skinned_splat_proxy","instance","copy_to_points","primitive","normals","uv_unwrap","texture","texture_pro","texture_layer","material","split_volume","transforms","fx","fx_splat_physics","fx_splat_fx","colorize","fx_music_effects","scene","render","video_player","post_process","sequence_to_mp4","export_fbx","html_preview","python","switch","output","local_server",
+            "node","camera","light","directional_light","point_light","spot_light","area_light","import","fbx_import","mocap_import","GEN-X-VideoMocap","anim_retarget","skinned_splat_proxy","instance","copy_to_points","modeler","primitive","normals","uv_unwrap","texture","texture_pro","texture_layer","material","split_volume","transforms","fx","fx_splat_physics","fx_splat_fx","colorize","fx_music_effects","scene","render","video_player","post_process","sequence_to_mp4","export_fbx","html_preview","python","switch","output","local_server",
             "gantt_chart","keyboard_sequence",
             "serial_com",
             "qubit_deck_controller",

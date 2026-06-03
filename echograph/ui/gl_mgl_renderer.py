@@ -1895,7 +1895,7 @@ class MGLRendererMixin:
 
         entries: List[Dict[str, Any]] = []
         fallback_runtime_meshes: List[Dict[str, Any]] = []
-        for spec in specs:
+        for idx, spec in enumerate(specs):
             tri_points = np.asarray(spec["bind_tri_points"], dtype="f4").reshape(-1, 3)
             tri_normals = np.asarray(spec["bind_tri_normals"], dtype="f4").reshape(-1, 3)
             tri_uvs = np.zeros((tri_points.shape[0], 2), dtype="f4")
@@ -1906,6 +1906,7 @@ class MGLRendererMixin:
                 self._mgl_fbx_apply_weight_debug_colors(entry, spec, joint_count)
             entry["texture"] = fallback_texture
             entry["color"] = source_color
+            entry["name"] = str(spec.get("name", "") or "").strip() or f"mesh_{int(idx)}"
             entries.append(entry)
             if skinning_enabled:
                 spec_joint_indices = np.asarray(spec["joint_indices"], dtype=np.int32)
@@ -10243,6 +10244,21 @@ class MGLRendererMixin:
         self._mgl_refresh_music_effects_mesh_item(item)
         payload = item.payload or {}
         submeshes = payload.get("submeshes")
+        if submeshes:
+            try:
+                hidden_submeshes = {
+                    str(name).strip().lower()
+                    for name in (payload.get("hidden_submeshes") or [])
+                    if str(name).strip()
+                }
+                if hidden_submeshes:
+                    submeshes = [
+                        sub
+                        for sub in submeshes
+                        if str((sub or {}).get("name") or "").strip().lower() not in hidden_submeshes
+                    ]
+            except Exception:
+                submeshes = payload.get("submeshes")
         mesh_entry = payload.get("mesh_entry") if isinstance(payload.get("mesh_entry"), dict) else None
         vao = payload.get("vao")
         if not submeshes and vao is None:
@@ -11645,7 +11661,7 @@ class MGLRendererMixin:
         total_indices = 0
         if self._mgl_ctx is None or self._mgl_prog is None:
             return entries, combined_uvs, texture_paths, total_indices
-        for sub in submeshes:
+        for idx, sub in enumerate(submeshes):
             points = sub.points.astype("f4").reshape(-1, 3)
             normals = sub.normals.astype("f4").reshape(-1, 3)
             uvs = sub.uvs.astype("f4").reshape(-1, 2)
@@ -11683,6 +11699,7 @@ class MGLRendererMixin:
                         texture_paths.append("embedded")
 
             color = sub.base_color if sub.base_color is not None else self._mgl_mesh_color
+            sub_name = str(getattr(sub, "name", "") or "").strip() or f"mesh_{int(idx)}"
             entries.append(
                 {
                     "vao": vao,
@@ -11698,7 +11715,7 @@ class MGLRendererMixin:
                     "normals": normals,
                     "uvs": uvs,
                     "colors": colors,
-                    "name": str(getattr(sub, "name", "") or "").strip(),
+                    "name": sub_name,
                 }
             )
             total_indices += int(indices.size)
@@ -18707,6 +18724,12 @@ class MGLRendererMixin:
                 copy_to_points = asset.get("copy_to_points") if isinstance(asset.get("copy_to_points"), dict) else None
                 gpu_copy_instances = bool(copy_to_points.get("gpu_instances", False)) if isinstance(copy_to_points, dict) else False
                 music_effects = asset.get("music_effects") if isinstance(asset.get("music_effects"), dict) else None
+                hidden_submeshes = [
+                    str(name).strip()
+                    for name in (asset.get("hidden_submeshes") or [])
+                    if str(name).strip()
+                ]
+                hidden_submesh_keys = {name.lower() for name in hidden_submeshes}
                 proxy_type = str((render_proxy or {}).get("type") or "").strip().lower() if isinstance(render_proxy, dict) else ""
                 if isinstance(render_proxy, dict) and isinstance(music_effects, dict) and proxy_type in {"skinned_splat", "skinned_gaussian_splat"}:
                     render_proxy = dict(render_proxy)
@@ -19293,6 +19316,7 @@ class MGLRendererMixin:
                             "path": path_key,
                             "copy_to_points": copy_to_points,
                             "music_effects": music_effects,
+                            "hidden_submeshes": list(hidden_submeshes),
                             "fbx_rig_context": fbx_rig_context if isinstance(fbx_rig_context, dict) else None,
                             "fbx_bind_joints_only": bool(fbx_bind_joints_only),
                         },
@@ -19304,12 +19328,21 @@ class MGLRendererMixin:
                     total_indices += int(entry.get("count", 0))
                 else:
                     if mesh_arrays is not None and mesh_arrays.submeshes:
+                        source_submeshes = list(mesh_arrays.submeshes or [])
+                        if hidden_submesh_keys:
+                            render_submeshes = []
+                            for idx, sub in enumerate(source_submeshes):
+                                sub_name = str(getattr(sub, "name", "") or "").strip() or f"mesh_{int(idx)}"
+                                if sub_name.lower() not in hidden_submesh_keys:
+                                    render_submeshes.append(sub)
+                        else:
+                            render_submeshes = source_submeshes
                         original_override = self._mgl_texture_override
                         if texture_override is not None and not original_override:
                             self._mgl_texture_override = True
                         try:
                             entries, combined_uvs, _tex_paths, sub_count = self._mgl_build_submesh_entries(
-                                mesh_arrays.submeshes
+                                render_submeshes
                             )
                         finally:
                             self._mgl_texture_override = original_override
@@ -19357,6 +19390,7 @@ class MGLRendererMixin:
                                 "path": path_key,
                                 "copy_to_points": copy_to_points,
                                 "music_effects": music_effects,
+                                "hidden_submeshes": list(hidden_submeshes),
                                 "fbx_rig_context": fbx_rig_context if isinstance(fbx_rig_context, dict) else None,
                                 "fbx_bind_joints_only": bool(fbx_bind_joints_only),
                             },
@@ -19366,9 +19400,25 @@ class MGLRendererMixin:
                             tag="scene-model",
                         )
                         total_indices += int(sub_count)
-                        if mesh_arrays.points is not None and mesh_arrays.points.size:
-                            mins = mesh_arrays.points.min(axis=0)
-                            maxs = mesh_arrays.points.max(axis=0)
+                        bounds_points = mesh_arrays.points
+                        if hidden_submesh_keys and not render_submeshes:
+                            bounds_points = None
+                        if hidden_submesh_keys and render_submeshes:
+                            try:
+                                bounds_points = np.concatenate(
+                                    [
+                                        getattr(sub, "points").astype("f4").reshape(-1, 3)
+                                        for sub in render_submeshes
+                                        if getattr(sub, "points", None) is not None
+                                        and getattr(getattr(sub, "points", None), "size", 0)
+                                    ],
+                                    axis=0,
+                                )
+                            except Exception:
+                                bounds_points = mesh_arrays.points
+                        if bounds_points is not None and bounds_points.size:
+                            mins = bounds_points.min(axis=0)
+                            maxs = bounds_points.max(axis=0)
                             try:
                                 self._mgl_scene_bounds_by_owner[owner] = (mins.astype("f4"), maxs.astype("f4"))
                                 self._mgl_scene_mesh_bounds_by_owner[owner] = (mins.astype("f4"), maxs.astype("f4"))
@@ -19377,8 +19427,8 @@ class MGLRendererMixin:
                             if contribute_mesh_bounds and not gpu_copy_instances:
                                 bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, mins, maxs)
                                 has_mesh_bounds = True
-                        elif mesh_arrays.submeshes:
-                            for sub in mesh_arrays.submeshes:
+                        elif render_submeshes:
+                            for sub in render_submeshes:
                                 pts = getattr(sub, "points", None)
                                 if pts is None or not getattr(pts, "size", 0):
                                     continue
@@ -19393,7 +19443,7 @@ class MGLRendererMixin:
                                     bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, mins, maxs)
                                     has_mesh_bounds = True
                         wire_sets = []
-                        for sub in mesh_arrays.submeshes:
+                        for sub in render_submeshes:
                             sub_points = getattr(sub, "points", None)
                             if sub_points is None or not getattr(sub_points, "size", 0):
                                 continue
@@ -19458,6 +19508,7 @@ class MGLRendererMixin:
                                 "path": path_key,
                                 "copy_to_points": copy_to_points,
                                 "music_effects": music_effects,
+                                "hidden_submeshes": list(hidden_submeshes),
                                 "fbx_rig_context": fbx_rig_context if isinstance(fbx_rig_context, dict) else None,
                                 "fbx_bind_joints_only": bool(fbx_bind_joints_only),
                             },
@@ -19533,7 +19584,18 @@ class MGLRendererMixin:
                     if gpu_copy_instances:
                         wire_item = None
                     elif ext in (".obj", ".fbx"):
-                        if ext == ".obj":
+                        if ext == ".fbx" and hidden_submesh_keys and wire_points is not None and getattr(wire_points, "size", 0):
+                            wire_item = self._mgl_add_wire_item_from_points(
+                                name=f"{path.name}-wire",
+                                line_points=wire_points,
+                                visible=bool(self._mgl_wireframe) and visible and (not bool(fbx_bind_joints_only)),
+                                tag="scene-wire",
+                                owner=owner,
+                                path_key=path_key,
+                            )
+                        elif ext == ".fbx" and hidden_submesh_keys:
+                            wire_item = None
+                        elif ext == ".obj":
                             wire_item = self._mgl_add_obj_wire_item(
                                 path,
                                 bool(self._mgl_wireframe) and visible,

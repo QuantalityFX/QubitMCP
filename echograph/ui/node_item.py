@@ -478,6 +478,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     _copy_to_points.register()
             except Exception:
                 pass
+        # Ensure Modeler spec is registered even if the loader was skipped.
+        if (self.model.kind or "").strip().lower() == "modeler":
+            try:
+                from nodes import modeler as _modeler  # type: ignore
+                if hasattr(_modeler, "register"):
+                    _modeler.register()
+            except Exception:
+                pass
         # Ensure UV Unwrap spec is registered even if the loader was skipped.
         if (self.model.kind or "").strip().lower() == "uv_unwrap":
             try:
@@ -2021,6 +2029,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 node_w = max(node_w, int(getattr(_copy_to_points_spec, "COPY_TO_POINTS_NODE_W", node_w)))
             except Exception:
                 pass
+        elif kind == "modeler":
+            body_h = 82
+            try:
+                from nodes.modeler import spec as _modeler_spec  # type: ignore
+                body_h = max(body_h, int(getattr(_modeler_spec, "MODELER_NODE_BODY_H", body_h)))
+            except Exception:
+                pass
+            node_w = self._BASE_W
         elif kind in ("volume_selector", "split_volume"):
             # Match embedded VolumeSplitWidget height so buttons fit inside the frame.
             body_h = 120
@@ -3556,6 +3572,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             "copy to point",
             "copytopoints",
         }
+        modeler_kinds = {"modeler"}
         light_kinds = {
             "light",
             "scene_light",
@@ -3636,6 +3653,28 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     return (p.get("value") or "").strip()
             return ""
 
+        def _json_name_list(raw) -> list[str]:
+            text = str(raw or "").strip()
+            if not text:
+                return []
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                parsed = None
+            values = parsed if isinstance(parsed, (list, tuple, set)) else [part.strip() for part in text.split(",")]
+            out = []
+            seen_names = set()
+            for value in values:
+                name = str(value or "").strip()
+                if not name:
+                    continue
+                key_name = name.lower()
+                if key_name in seen_names:
+                    continue
+                seen_names.add(key_name)
+                out.append(name)
+            return out
+
         def _parse_vec3(val, default):
             try:
                 parts = [p.strip() for p in str(val or "").split(",")]
@@ -3689,6 +3728,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             pass_kinds = {
                 "switch",
                 "uv_unwrap",
+                "modeler",
                 "texture",
                 "texture_pro",
                 "texture_layer",
@@ -3726,6 +3766,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
             pass_kinds = {
                 "switch",
                 "uv_unwrap",
+                "modeler",
                 "texture",
                 "texture_pro",
                 "texture_layer",
@@ -3805,6 +3846,28 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         if chosen is None:
                             chosen = edges[0]
                         return _trace(getattr(chosen, "src", None), depth + 1, visited)
+                if kind in modeler_kinds:
+                    path = _param_val(m, "path")
+                    try:
+                        edges = list(sc._ordered_in_edges(item))
+                    except Exception:
+                        try:
+                            edges = list(sc._in_edges(item))
+                        except Exception:
+                            edges = []
+                    chosen = None
+                    for edge in edges:
+                        name = getattr(edge, "dst_port_name", None) or getattr(edge, "dst_label", None) or getattr(edge, "dst_name", None)
+                        if (name or "").strip().lower() in {"mesh", "path", "source"}:
+                            chosen = edge
+                            break
+                    if chosen is None and edges:
+                        chosen = edges[0]
+                    if chosen is not None:
+                        _up_item, _up_kind, upstream_path = _trace(getattr(chosen, "src", None), depth + 1, visited)
+                        if upstream_path:
+                            path = upstream_path
+                    return item, kind, path
                 path = ""
                 for p in (m.params or []):
                     if (p.get("name") or "").strip().lower() == "path":
@@ -4158,6 +4221,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     path = (p.get("value") or "").strip()
                     break
             kind = (getattr(model, "kind", "") or "").strip().lower()
+            modeler_hidden: list[str] = []
             model_name = src_name
             _scene_log(f"edge[{edge_idx}] kind={kind} name={model_name} path_param={path!r}")
             if kind in light_kinds:
@@ -4425,6 +4489,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
             owner_model = model
             owner_kind = kind
             fx_asset = None
+            if kind in modeler_kinds:
+                modeler_hidden = _json_name_list(_param_val(model, "hidden_submeshes"))
+                upstream_item, upstream_kind, upstream_path = _resolve_input_item(src_item, {"mesh", "path", "source"})
+                if upstream_path:
+                    path = upstream_path
             if kind in ("texture", "texture_pro", "texture_layer", "fx", "fx_trail"):
                 upstream_item, upstream_kind, upstream_path = _resolve_input_item(src_item)
                 if upstream_item is not None and getattr(upstream_item, "model", None) is not None:
@@ -4509,6 +4578,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     if not path and upstream_path:
                         path = upstream_path
 
+            if (owner_kind or "").strip().lower() in modeler_kinds:
+                modeler_hidden = _json_name_list(_param_val(owner_model, "hidden_submeshes"))
+                try:
+                    upstream_item, _up_kind, upstream_path = _resolve_input_item(owner_item, {"mesh", "path", "source"})
+                except Exception:
+                    upstream_path = ""
+                if upstream_path:
+                    path = upstream_path
+
             model_name = (getattr(owner_model, "name", "") or "").strip()
             if not path:
                 if kind in ("fx", "fx_trail"):
@@ -4527,7 +4605,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     )
                 _scene_log(f"edge[{edge_idx}] skip: unsupported ext={ext} path={path!r}")
                 continue
-            if path in seen:
+            seen_key = path
+            if modeler_hidden:
+                seen_key = seen_key + "::modeler_hidden::" + "|".join(sorted(name.lower() for name in modeler_hidden))
+            if seen_key in seen:
                 if isinstance(fx_asset, dict) and model_name:
                     aliases = _fx_target_owner_aliases(owner_item, owner_model, owner_kind)
                     fx_entry = dict(fx_asset)
@@ -4555,7 +4636,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     )
                 _scene_log(f"edge[{edge_idx}] skip: duplicate path={path!r}")
                 continue
-            seen.add(path)
+            seen.add(seen_key)
 
             # For fx/fx_trail, the mesh path comes from upstream, but texture/provider must also come from upstream.
             surface_model = model
@@ -4638,6 +4719,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 asset["xform_offset"] = True
             if texture_provider is not None:
                 asset["texture_provider"] = texture_provider
+            if modeler_hidden:
+                asset["hidden_submeshes"] = list(modeler_hidden)
             assets.append(asset)
             if isinstance(fx_asset, dict) and model_name:
                 aliases = _fx_target_owner_aliases(owner_item, owner_model, owner_kind)
@@ -6861,6 +6944,7 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "copy_to_point",
                 "copy to point",
                 "copytopoints",
+                "modeler",
                 "primitive",
                 "html_preview",
                 "html preview",
@@ -7118,6 +7202,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 icon_pm = node_icons._instance_icon() or node_icons._output_icon()
             elif kind_lower in ("copy_to_points", "copy to points", "copy_to_point", "copy to point", "copytopoints"):
                 icon_pm = node_icons._instance_icon() or node_icons._primitive_icon() or node_icons._output_icon()
+            elif kind_lower == "modeler":
+                icon_pm = node_icons._uv_unwrap_icon() or node_icons._primitive_icon() or node_icons._output_icon()
             elif kind_lower == "primitive":
                 icon_pm = node_icons._primitive_icon() or node_icons._output_icon()
             elif kind_lower in ("split_volume", "volume_selector"):
@@ -7167,6 +7253,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 if kind_lower in ("sequence_to_mp4", "sequence mp4", "sequence_to_video", "image_sequence_to_mp4"):
                     size = int(max(70, size * 1.65))
                 if kind_lower in ("uv_unwrap", "uv unwrap", "normals", "normal", "smooth_normals", "smooth normals"):
+                    size = int(max(34, size * 0.792))
+                if kind_lower == "modeler":
                     size = int(max(34, size * 0.792))
                 if kind_lower in ("texture", "texture_pro", "texture pro"):
                     size = int(max(34, size * 0.792))
