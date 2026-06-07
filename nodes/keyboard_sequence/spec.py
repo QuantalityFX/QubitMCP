@@ -1,3 +1,5 @@
+# This is an automation workflow that uses an Input Macro Sequencer to run timed keyboard and mouse actions.
+
 from __future__ import annotations
 
 import ctypes
@@ -21,6 +23,7 @@ _SEQUENCE_PARAM = "keyboard_sequence_data"
 _LEAD_IN_PARAM = "keyboard_lead_in_ms"
 _KEY_HOLD_PARAM = "keyboard_key_hold_ms"
 _INJECTION_MODE_PARAM = "keyboard_injection_mode"
+_DELAY_TAGS_PARAM = "keyboard_delay_tags"
 _HIDDEN_PARAM = "__ui_hidden_params"
 
 _DEFAULT_DELAY_MS = 250
@@ -32,6 +35,8 @@ _MAX_DELAY_MS = 600000
 _MAX_LEAD_IN_MS = 60000
 _MAX_KEY_HOLD_MS = 2000
 _MAX_ACTION_HOLD_MS = 600000
+_MAX_DELAY_TAGS = 64
+_MAX_DELAY_TAG_NAME_CHARS = 48
 _MIN_SCREEN_COORD = -200000
 _MAX_SCREEN_COORD = 200000
 _MIN_STEPS = 1
@@ -58,7 +63,7 @@ _LOOP_CONDITION_GTE = ">="
 _LOOP_CONDITION_LTE = "<="
 
 KEYBOARD_SEQUENCE_BODY_W = 980
-KEYBOARD_SEQUENCE_BODY_H = 318
+KEYBOARD_SEQUENCE_BODY_H = 356
 
 _INPUT_MOUSE = 0
 _INPUT_KEYBOARD = 1
@@ -456,6 +461,21 @@ def _coerce_int(value, default: int) -> int:
         return int(default)
 
 
+def _coerce_bool(value, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return bool(default)
+    if isinstance(value, (int, float)):
+        return bool(value)
+    token = _normalize_token(str(value))
+    if token in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if token in {"0", "false", "no", "off", "disabled"}:
+        return False
+    return bool(default)
+
+
 def _coerce_delay_ms(value) -> int:
     return max(_MIN_DELAY_MS, min(_MAX_DELAY_MS, _coerce_int(value, _DEFAULT_DELAY_MS)))
 
@@ -486,6 +506,72 @@ def _coerce_loop_number(value, default: int = 1) -> int:
 
 def _coerce_loop_count(value, default: int = 2) -> int:
     return max(_MIN_LOOP_COUNT, min(_MAX_LOOP_COUNT, _coerce_int(value, default)))
+
+
+def _normalize_delay_tag_name(value) -> str:
+    clean = re.sub(r"\s+", " ", str(value or "").strip())
+    if len(clean) > _MAX_DELAY_TAG_NAME_CHARS:
+        clean = clean[:_MAX_DELAY_TAG_NAME_CHARS].rstrip()
+    return clean
+
+
+def _delay_tag_entry(name: str, delay_ms: int) -> dict[str, object]:
+    return {"name": _normalize_delay_tag_name(name), "delay_ms": _coerce_delay_ms(delay_ms)}
+
+
+def _normalize_delay_tags(raw) -> list[dict[str, object]]:
+    if isinstance(raw, dict):
+        if _raw_has_value(raw, "name", "tag", "label", "id") and _raw_has_value(raw, "delay_ms", "delay", "ms", "value"):
+            raw = [raw]
+        elif isinstance(raw.get("delay_tags"), (list, tuple, dict)):
+            raw = raw.get("delay_tags")
+        elif isinstance(raw.get("tags"), (list, tuple, dict)):
+            raw = raw.get("tags")
+        else:
+            raw = [{"name": key, "delay_ms": value} for key, value in raw.items()]
+    if not isinstance(raw, (list, tuple)):
+        return []
+
+    tags: list[dict[str, object]] = []
+    index_by_key: dict[str, int] = {}
+    for entry in raw:
+        if isinstance(entry, dict):
+            name = _normalize_delay_tag_name(
+                entry.get("name", entry.get("tag", entry.get("label", entry.get("id", ""))))
+            )
+            delay_raw = entry.get("delay_ms", entry.get("delay", entry.get("ms", entry.get("value", _DEFAULT_DELAY_MS))))
+        elif isinstance(entry, (list, tuple)) and len(entry) >= 2:
+            name = _normalize_delay_tag_name(entry[0])
+            delay_raw = entry[1]
+        else:
+            continue
+        if not name:
+            continue
+        tag = _delay_tag_entry(name, _coerce_delay_ms(delay_raw))
+        key = _normalize_token(name)
+        if key in index_by_key:
+            tags[index_by_key[key]] = tag
+        elif len(tags) < _MAX_DELAY_TAGS:
+            index_by_key[key] = len(tags)
+            tags.append(tag)
+    return tags
+
+
+def _delay_tag_lookup(delay_tags: list[dict[str, object]] | None) -> dict[str, dict[str, object]]:
+    lookup: dict[str, dict[str, object]] = {}
+    for tag in _normalize_delay_tags(delay_tags):
+        name = _normalize_delay_tag_name(tag.get("name", ""))
+        if not name:
+            continue
+        lookup[_normalize_token(name)] = tag
+    return lookup
+
+
+def _delay_tag_delay_ms(delay_tags: list[dict[str, object]] | None, name: str) -> int | None:
+    tag = _delay_tag_lookup(delay_tags).get(_normalize_token(name))
+    if not tag:
+        return None
+    return _coerce_delay_ms(tag.get("delay_ms", _DEFAULT_DELAY_MS))
 
 
 def _normalize_action_type(raw) -> str:
@@ -564,6 +650,78 @@ def _raw_text_value(raw: dict, *names: str, default: str = "") -> str:
         if name in raw and raw.get(name) is not None:
             return str(raw.get(name))
     return str(default or "")
+
+
+def _delay_tag_name_from_raw(raw: dict) -> str:
+    return _normalize_delay_tag_name(
+        _raw_first_value(raw, "delay_tag", "delay_tag_name", "delay_tag_id", default="")
+    )
+
+
+def _with_delay_tag_reference(step: dict[str, object], raw: dict) -> dict[str, object]:
+    if not isinstance(step, dict) or not isinstance(raw, dict):
+        return step
+    name = _delay_tag_name_from_raw(raw)
+    if not name:
+        return step
+    enabled_raw = _raw_first_value(raw, "delay_tag_enabled", "use_delay_tag", default=None)
+    if not _coerce_bool(enabled_raw, default=True):
+        return step
+    step["delay_tag_enabled"] = True
+    step["delay_tag"] = name
+    return step
+
+
+def _step_delay_tag_name(step: dict[str, object]) -> str:
+    if not isinstance(step, dict):
+        return ""
+    name = _delay_tag_name_from_raw(step)
+    if not name:
+        return ""
+    if _raw_has_value(step, "delay_tag_enabled", "use_delay_tag"):
+        enabled = _coerce_bool(
+            _raw_first_value(step, "delay_tag_enabled", "use_delay_tag", default=True),
+            default=True,
+        )
+        if not enabled:
+            return ""
+    return name
+
+
+def _step_delay_ms(step: dict[str, object], delay_tags: list[dict[str, object]] | None = None) -> int:
+    tag_name = _step_delay_tag_name(step)
+    if tag_name:
+        tag_delay = _delay_tag_delay_ms(delay_tags, tag_name)
+        if tag_delay is not None:
+            return tag_delay
+    return _coerce_delay_ms(step.get("delay_ms", _DEFAULT_DELAY_MS) if isinstance(step, dict) else _DEFAULT_DELAY_MS)
+
+
+def _refresh_step_delay_tag_values(
+    steps: list[dict[str, object]],
+    delay_tags: list[dict[str, object]],
+    *,
+    drop_missing: bool = False,
+) -> list[dict[str, object]]:
+    lookup = _delay_tag_lookup(delay_tags)
+    refreshed: list[dict[str, object]] = []
+    for raw_step in list(steps or []):
+        step = dict(raw_step or {})
+        name = _step_delay_tag_name(step)
+        if name:
+            tag = lookup.get(_normalize_token(name))
+            if tag is not None:
+                step["delay_ms"] = _coerce_delay_ms(tag.get("delay_ms", _DEFAULT_DELAY_MS))
+                step["delay_tag_enabled"] = True
+                step["delay_tag"] = _normalize_delay_tag_name(tag.get("name", name))
+            elif drop_missing:
+                step.pop("delay_tag_enabled", None)
+                step.pop("use_delay_tag", None)
+                step.pop("delay_tag", None)
+                step.pop("delay_tag_name", None)
+                step.pop("delay_tag_id", None)
+        refreshed.append(step)
+    return refreshed
 
 
 def _text_preview(text: str, *, limit: int = 42) -> str:
@@ -1407,7 +1565,7 @@ def _normalize_step(raw, index: int) -> dict[str, object] | None:
                 step["coord_mode"] = _CLICK_COORD_WINDOW
             else:
                 step["coord_mode"] = _CLICK_COORD_SCREEN
-            return step
+            return _with_delay_tag_reference(step, raw)
 
         if action_type == _ACTION_TYPE_TEXT:
             text_source = _normalize_text_source(raw.get("text_source", raw.get("text_mode", "")))
@@ -1423,17 +1581,18 @@ def _normalize_step(raw, index: int) -> dict[str, object] | None:
             if text_source == _TEXT_SOURCE_LOOP_TABLE:
                 step["text_source"] = _TEXT_SOURCE_LOOP_TABLE
                 step["loop_text_rows"] = text_rows
-            return step
+            return _with_delay_tag_reference(step, raw)
 
         if _action_uses_loop_settings(action_type):
             loop_number = _coerce_loop_number(raw.get("loop_number", raw.get("loop_id", raw.get("loop", 1))), 1)
-            return {
+            step = {
                 "action": action,
                 "type": action_type,
                 "loop_number": loop_number,
                 "loop_count": _coerce_loop_count(raw.get("loop_count", raw.get("iterations", raw.get("repeat_count", 2))), 2),
                 "delay_ms": delay_ms,
             }
+            return _with_delay_tag_reference(step, raw)
 
         key = str(raw.get("key", raw.get("hotkey", "")) or "").strip()
         step = {"action": action, "type": _ACTION_TYPE_KEY, "key": key, "delay_ms": delay_ms}
@@ -1447,7 +1606,7 @@ def _normalize_step(raw, index: int) -> dict[str, object] | None:
             step["loop_condition_enabled"] = True
             step["loop_condition_operator"] = _key_loop_condition_operator(raw)
             step["loop_condition_iteration"] = loop_condition
-        return step
+        return _with_delay_tag_reference(step, raw)
     if isinstance(raw, str):
         action = _default_action_label(_ACTION_TYPE_KEY)
         key = raw.strip()
@@ -1591,6 +1750,36 @@ def _write_injection_mode(node_item, value: str, *, notify_scene: bool = True) -
     return clean
 
 
+def _read_delay_tags(node_item) -> list[dict[str, object]]:
+    model = getattr(node_item, "model", None)
+    if model is None:
+        return []
+    raw = _param_value(model, _DELAY_TAGS_PARAM).strip()
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return []
+    return _normalize_delay_tags(parsed)
+
+
+def _write_delay_tags(
+    node_item,
+    delay_tags: list[dict[str, object]],
+    *,
+    notify_scene: bool = True,
+) -> list[dict[str, object]]:
+    clean = _normalize_delay_tags(delay_tags)
+    _set_param_value(
+        node_item,
+        _DELAY_TAGS_PARAM,
+        json.dumps(clean, separators=(",", ":")),
+        notify_scene=notify_scene,
+    )
+    return clean
+
+
 def _dialog_parent(node_item):
     scene = None
     try:
@@ -1654,13 +1843,17 @@ def _preset_payload(
     lead_in_ms: int,
     key_hold_ms: int,
     injection_mode: str,
+    delay_tags: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
+    clean_tags = _normalize_delay_tags(delay_tags)
+    clean_steps = _refresh_step_delay_tag_values(_normalize_sequence(steps), clean_tags)
     return {
         "version": _PRESET_VERSION,
         "lead_in_ms": _coerce_lead_in_ms(lead_in_ms),
         "key_hold_ms": _coerce_key_hold_ms(key_hold_ms),
         "injection_mode": _normalize_injection_mode(injection_mode),
-        "actions": _normalize_sequence(steps),
+        "delay_tags": clean_tags,
+        "actions": clean_steps,
     }
 
 
@@ -1679,6 +1872,7 @@ def _normalize_preset_payload(raw) -> tuple[dict[str, object] | None, str]:
         raw.get("lead_in_ms", raw.get("lead_in", _DEFAULT_LEAD_IN_MS)),
         raw.get("key_hold_ms", raw.get("key_hold", _DEFAULT_KEY_HOLD_MS)),
         raw.get("injection_mode", raw.get("input_mode", _MODE_VK)),
+        raw.get("delay_tags", raw.get("delayTags", raw.get("tags", []))),
     )
     return payload, ""
 
@@ -2599,9 +2793,13 @@ class _ActionEditDialog(QtWidgets.QDialog):
         loop_text_rows: list[dict[str, object]] | None = None,
         loop_number: int = 1,
         loop_count: int = 2,
+        delay_tags: list[dict[str, object]] | None = None,
+        delay_tag_enabled: bool = False,
+        delay_tag_name: str = "",
         parent=None,
     ):
         super().__init__(parent)
+        self._delay_tags = _normalize_delay_tags(delay_tags)
         self._click_has_point = click_x is not None and click_y is not None
         self._click_screen = _normalize_screen_metadata(click_screen)
         self._click_window = _normalize_window_metadata(click_window)
@@ -2662,7 +2860,25 @@ class _ActionEditDialog(QtWidgets.QDialog):
         delay_form.setContentsMargins(0, 0, 0, 0)
         delay_form.setSpacing(6)
         delay_form.addRow("Delay After", self._delay_spin)
+        delay_tag_row = QtWidgets.QWidget(self)
+        delay_tag_layout = QtWidgets.QHBoxLayout(delay_tag_row)
+        delay_tag_layout.setContentsMargins(0, 0, 0, 0)
+        delay_tag_layout.setSpacing(6)
+        self._delay_tag_check = QtWidgets.QCheckBox("Use delay tag")
+        self._delay_tag_combo = QtWidgets.QComboBox()
+        self._delay_tag_combo.setMinimumWidth(190)
+        self._populate_delay_tag_combo(delay_tag_name)
+        has_delay_tag = bool(_normalize_delay_tag_name(delay_tag_name))
+        self._delay_tag_check.setChecked(bool(delay_tag_enabled and has_delay_tag and self._delay_tag_combo.count() > 0))
+        self._delay_tag_check.setEnabled(self._delay_tag_combo.count() > 0)
+        self._delay_tag_combo.setEnabled(self._delay_tag_check.isChecked())
+        self._delay_tag_check.toggled.connect(self._on_delay_tag_toggled)
+        self._delay_tag_combo.currentIndexChanged.connect(lambda _idx: self._on_delay_tag_changed())
+        delay_tag_layout.addWidget(self._delay_tag_check, 0)
+        delay_tag_layout.addWidget(self._delay_tag_combo, 1)
+        delay_form.addRow("Delay Tag", delay_tag_row)
         layout.addLayout(delay_form, 0)
+        self._on_delay_tag_toggled(self._delay_tag_check.isChecked())
 
         hint = QtWidgets.QLabel(
             "Key actions send keyboard input. Text writes literal text. Click and Hover capture a target. Loop blocks repeat actions between matching numbers."
@@ -2685,6 +2901,57 @@ class _ActionEditDialog(QtWidgets.QDialog):
         self._on_type_changed(self._type_combo.currentIndex())
         self._update_click_status()
         QtCore.QTimer.singleShot(0, self._focus_initial_field)
+
+    def _populate_delay_tag_combo(self, current_name: str = ""):
+        current = _normalize_delay_tag_name(current_name)
+        selected_idx = -1
+        self._delay_tag_combo.clear()
+        for tag in self._delay_tags:
+            name = _normalize_delay_tag_name(tag.get("name", ""))
+            if not name:
+                continue
+            delay_ms = _coerce_delay_ms(tag.get("delay_ms", _DEFAULT_DELAY_MS))
+            self._delay_tag_combo.addItem(f"{name} - {delay_ms} ms", name)
+            if current and _normalize_token(name) == _normalize_token(current):
+                selected_idx = self._delay_tag_combo.count() - 1
+        if current and selected_idx < 0:
+            self._delay_tag_combo.addItem(f"{current} - missing", current)
+            selected_idx = self._delay_tag_combo.count() - 1
+        if selected_idx >= 0:
+            self._delay_tag_combo.setCurrentIndex(selected_idx)
+
+    def _selected_delay_tag_name(self) -> str:
+        return _normalize_delay_tag_name(self._delay_tag_combo.currentData())
+
+    def _on_delay_tag_toggled(self, checked: bool):
+        enabled = bool(checked and self._delay_tag_combo.count() > 0)
+        self._delay_tag_combo.setEnabled(enabled)
+        self._delay_spin.setEnabled(not enabled)
+        if enabled:
+            self._on_delay_tag_changed()
+
+    def _on_delay_tag_changed(self):
+        if not self._delay_tag_check.isChecked():
+            return
+        tag_delay = _delay_tag_delay_ms(self._delay_tags, self._selected_delay_tag_name())
+        if tag_delay is not None:
+            self._delay_spin.setValue(int(tag_delay))
+
+    def _delay_payload(self) -> dict[str, object]:
+        delay_ms = _coerce_delay_ms(self._delay_spin.value())
+        if not self._delay_tag_check.isChecked():
+            return {"delay_ms": delay_ms}
+        tag_name = self._selected_delay_tag_name()
+        if not tag_name:
+            return {"delay_ms": delay_ms}
+        tag_delay = _delay_tag_delay_ms(self._delay_tags, tag_name)
+        if tag_delay is not None:
+            delay_ms = tag_delay
+        return {
+            "delay_ms": delay_ms,
+            "delay_tag_enabled": True,
+            "delay_tag": tag_name,
+        }
 
     def _build_key_page(
         self,
@@ -3106,11 +3373,15 @@ class _ActionEditDialog(QtWidgets.QDialog):
             elif self._text_edit.toPlainText() == "":
                 QtWidgets.QMessageBox.warning(self, "Keyboard Sequence", "Enter text before saving this action.")
                 return
+        if self._delay_tag_check.isChecked() and not self._selected_delay_tag_name():
+            QtWidgets.QMessageBox.warning(self, "Keyboard Sequence", "Choose a delay tag or turn off Use delay tag.")
+            return
         super().accept()
 
     def values(self) -> dict[str, object]:
         action = str(self._action_edit.text() or "").strip()
-        delay_ms = _coerce_delay_ms(self._delay_spin.value())
+        delay_payload = self._delay_payload()
+        delay_ms = _coerce_delay_ms(delay_payload.get("delay_ms", _DEFAULT_DELAY_MS))
         if _action_uses_pointer_target(self._current_action_type()):
             action_type = self._current_action_type()
             step: dict[str, object] = {
@@ -3119,6 +3390,7 @@ class _ActionEditDialog(QtWidgets.QDialog):
                 "delay_ms": delay_ms,
                 "coord_mode": self._current_click_coord_mode(),
             }
+            step.update(delay_payload)
             if action_type == _ACTION_TYPE_CLICK:
                 step["button"] = _normalize_mouse_button(self._click_button_combo.currentData())
                 step["click_ms"] = _coerce_click_ms(self._click_ms_spin.value())
@@ -3138,19 +3410,22 @@ class _ActionEditDialog(QtWidgets.QDialog):
                 "text": self._text_edit.toPlainText(),
                 "delay_ms": delay_ms,
             }
+            step.update(delay_payload)
             if self._text_list_check.isChecked():
                 step["text_source"] = _TEXT_SOURCE_LOOP_TABLE
                 step["loop_text_rows"] = self._loop_text_rows_from_table()
             return step
 
         if _action_uses_loop_settings(self._current_action_type()):
-            return {
+            step = {
                 "action": action,
                 "type": self._current_action_type(),
                 "loop_number": _coerce_loop_number(self._loop_number_spin.value(), 1),
                 "loop_count": _coerce_loop_count(self._loop_count_spin.value(), 2),
                 "delay_ms": delay_ms,
             }
+            step.update(delay_payload)
+            return step
 
         hold = bool(self._hold_check.isChecked())
         step = {
@@ -3159,6 +3434,7 @@ class _ActionEditDialog(QtWidgets.QDialog):
             "key": str(self._key_edit.text() or "").strip(),
             "delay_ms": delay_ms,
         }
+        step.update(delay_payload)
         if hold:
             step["hold"] = True
             step["hold_ms"] = _coerce_action_hold_ms(self._hold_spin.value())
@@ -3170,11 +3446,19 @@ class _ActionEditDialog(QtWidgets.QDialog):
 
 
 class _DelayEditDialog(QtWidgets.QDialog):
-    def __init__(self, delay_ms: int, parent=None):
+    def __init__(
+        self,
+        delay_ms: int,
+        delay_tags: list[dict[str, object]] | None = None,
+        delay_tag_enabled: bool = False,
+        delay_tag_name: str = "",
+        parent=None,
+    ):
         super().__init__(parent)
+        self._delay_tags = _normalize_delay_tags(delay_tags)
         self.setWindowTitle("Edit Delay")
         self.setModal(True)
-        self.resize(360, 132)
+        self.resize(430, 164)
         _apply_dialog_style(self, parent)
 
         layout = QtWidgets.QVBoxLayout(self)
@@ -3191,7 +3475,26 @@ class _DelayEditDialog(QtWidgets.QDialog):
         self._delay_spin.setSuffix(" ms")
         self._delay_spin.setValue(int(_coerce_delay_ms(delay_ms)))
         form.addRow("Delay", self._delay_spin)
+
+        delay_tag_row = QtWidgets.QWidget(self)
+        delay_tag_layout = QtWidgets.QHBoxLayout(delay_tag_row)
+        delay_tag_layout.setContentsMargins(0, 0, 0, 0)
+        delay_tag_layout.setSpacing(6)
+        self._delay_tag_check = QtWidgets.QCheckBox("Use delay tag")
+        self._delay_tag_combo = QtWidgets.QComboBox()
+        self._delay_tag_combo.setMinimumWidth(190)
+        self._populate_delay_tag_combo(delay_tag_name)
+        has_delay_tag = bool(_normalize_delay_tag_name(delay_tag_name))
+        self._delay_tag_check.setChecked(bool(delay_tag_enabled and has_delay_tag and self._delay_tag_combo.count() > 0))
+        self._delay_tag_check.setEnabled(self._delay_tag_combo.count() > 0)
+        self._delay_tag_combo.setEnabled(self._delay_tag_check.isChecked())
+        self._delay_tag_check.toggled.connect(self._on_delay_tag_toggled)
+        self._delay_tag_combo.currentIndexChanged.connect(lambda _idx: self._on_delay_tag_changed())
+        delay_tag_layout.addWidget(self._delay_tag_check, 0)
+        delay_tag_layout.addWidget(self._delay_tag_combo, 1)
+        form.addRow("Delay Tag", delay_tag_row)
         layout.addLayout(form, 0)
+        self._on_delay_tag_toggled(self._delay_tag_check.isChecked())
 
         hint = QtWidgets.QLabel("Delay after this action before the next action starts.")
         hint.setWordWrap(True)
@@ -3205,8 +3508,191 @@ class _DelayEditDialog(QtWidgets.QDialog):
 
         QtCore.QTimer.singleShot(0, self._delay_spin.setFocus)
 
+    def _populate_delay_tag_combo(self, current_name: str = ""):
+        current = _normalize_delay_tag_name(current_name)
+        selected_idx = -1
+        self._delay_tag_combo.clear()
+        for tag in self._delay_tags:
+            name = _normalize_delay_tag_name(tag.get("name", ""))
+            if not name:
+                continue
+            delay_ms = _coerce_delay_ms(tag.get("delay_ms", _DEFAULT_DELAY_MS))
+            self._delay_tag_combo.addItem(f"{name} - {delay_ms} ms", name)
+            if current and _normalize_token(name) == _normalize_token(current):
+                selected_idx = self._delay_tag_combo.count() - 1
+        if current and selected_idx < 0:
+            self._delay_tag_combo.addItem(f"{current} - missing", current)
+            selected_idx = self._delay_tag_combo.count() - 1
+        if selected_idx >= 0:
+            self._delay_tag_combo.setCurrentIndex(selected_idx)
+
+    def _selected_delay_tag_name(self) -> str:
+        return _normalize_delay_tag_name(self._delay_tag_combo.currentData())
+
+    def _on_delay_tag_toggled(self, checked: bool):
+        enabled = bool(checked and self._delay_tag_combo.count() > 0)
+        self._delay_tag_combo.setEnabled(enabled)
+        self._delay_spin.setEnabled(not enabled)
+        if enabled:
+            self._on_delay_tag_changed()
+
+    def _on_delay_tag_changed(self):
+        if not self._delay_tag_check.isChecked():
+            return
+        tag_delay = _delay_tag_delay_ms(self._delay_tags, self._selected_delay_tag_name())
+        if tag_delay is not None:
+            self._delay_spin.setValue(int(tag_delay))
+
+    def accept(self):
+        if self._delay_tag_check.isChecked() and not self._selected_delay_tag_name():
+            QtWidgets.QMessageBox.warning(self, "Keyboard Sequence", "Choose a delay tag or turn off Use delay tag.")
+            return
+        super().accept()
+
+    def values(self) -> dict[str, object]:
+        delay_ms = _coerce_delay_ms(self._delay_spin.value())
+        if not self._delay_tag_check.isChecked():
+            return {"delay_ms": delay_ms}
+        tag_name = self._selected_delay_tag_name()
+        if not tag_name:
+            return {"delay_ms": delay_ms}
+        tag_delay = _delay_tag_delay_ms(self._delay_tags, tag_name)
+        if tag_delay is not None:
+            delay_ms = tag_delay
+        return {
+            "delay_ms": delay_ms,
+            "delay_tag_enabled": True,
+            "delay_tag": tag_name,
+        }
+
     def value(self) -> int:
         return _coerce_delay_ms(self._delay_spin.value())
+
+
+class _DelayTagsDialog(QtWidgets.QDialog):
+    def __init__(self, delay_tags: list[dict[str, object]] | None = None, parent=None):
+        super().__init__(parent)
+        self._tags = _normalize_delay_tags(delay_tags)
+        self.setWindowTitle("Delay Tags")
+        self.setModal(True)
+        self.resize(460, 300)
+        _apply_dialog_style(self, parent)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(8)
+
+        self._table = QtWidgets.QTableWidget(0, 2, self)
+        self._table.setHorizontalHeaderLabels(["Tag", "Delay"])
+        self._table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self._table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self._table.setAlternatingRowColors(True)
+        self._table.verticalHeader().setVisible(False)
+        self._table.setMinimumHeight(170)
+        header = self._table.horizontalHeader()
+        header.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
+        layout.addWidget(self._table, 1)
+
+        table_buttons = QtWidgets.QHBoxLayout()
+        table_buttons.setContentsMargins(0, 0, 0, 0)
+        table_buttons.setSpacing(6)
+        self._add_btn = QtWidgets.QPushButton("Add Tag")
+        self._remove_btn = QtWidgets.QPushButton("Remove Tag")
+        self._add_btn.clicked.connect(self._add_tag_row)
+        self._remove_btn.clicked.connect(self._remove_tag_row)
+        table_buttons.addWidget(self._add_btn, 0)
+        table_buttons.addWidget(self._remove_btn, 0)
+        table_buttons.addStretch(1)
+        layout.addLayout(table_buttons, 0)
+
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons, 0)
+
+        for tag in self._tags:
+            self._insert_tag_row(str(tag.get("name", "") or ""), _coerce_delay_ms(tag.get("delay_ms", _DEFAULT_DELAY_MS)))
+        if self._table.rowCount() <= 0:
+            self._insert_tag_row(self._next_tag_name(), _DEFAULT_DELAY_MS)
+        QtCore.QTimer.singleShot(0, self._focus_initial_cell)
+
+    def _next_tag_name(self) -> str:
+        used = {_normalize_token(str(tag.get("name", "") or "")) for tag in self._tags}
+        for index in range(1, _MAX_DELAY_TAGS + 1):
+            name = f"Delay {index}"
+            if _normalize_token(name) not in used:
+                return name
+        return "Delay"
+
+    def _insert_tag_row(self, name: str = "", delay_ms: int = _DEFAULT_DELAY_MS):
+        if self._table.rowCount() >= _MAX_DELAY_TAGS:
+            return
+        row = self._table.rowCount()
+        self._table.insertRow(row)
+        name_item = QtWidgets.QTableWidgetItem(_normalize_delay_tag_name(name))
+        name_item.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEditable)
+        self._table.setItem(row, 0, name_item)
+        delay_spin = QtWidgets.QSpinBox(self._table)
+        delay_spin.setRange(int(_MIN_DELAY_MS), int(_MAX_DELAY_MS))
+        delay_spin.setSingleStep(50)
+        delay_spin.setSuffix(" ms")
+        delay_spin.setValue(_coerce_delay_ms(delay_ms))
+        self._table.setCellWidget(row, 1, delay_spin)
+        self._table.selectRow(row)
+
+    def _add_tag_row(self):
+        if self._table.rowCount() >= _MAX_DELAY_TAGS:
+            return
+        current_tags, _error = self._tags_from_table(validate=False)
+        self._tags = current_tags
+        self._insert_tag_row(self._next_tag_name(), _DEFAULT_DELAY_MS)
+
+    def _remove_tag_row(self):
+        row = self._table.currentRow()
+        if row < 0:
+            row = self._table.rowCount() - 1
+        if row >= 0:
+            self._table.removeRow(row)
+
+    def _focus_initial_cell(self):
+        if self._table.rowCount() > 0:
+            self._table.setCurrentCell(0, 0)
+            self._table.editItem(self._table.item(0, 0))
+
+    def _tags_from_table(self, *, validate: bool) -> tuple[list[dict[str, object]], str]:
+        tags: list[dict[str, object]] = []
+        seen: set[str] = set()
+        for row in range(self._table.rowCount()):
+            name_item = self._table.item(row, 0)
+            name = _normalize_delay_tag_name(name_item.text() if name_item is not None else "")
+            if not name:
+                if validate:
+                    return [], "Delay tag names cannot be blank."
+                continue
+            key = _normalize_token(name)
+            if key in seen:
+                return [], f"Delay tag '{name}' is already defined."
+            seen.add(key)
+            delay_widget = self._table.cellWidget(row, 1)
+            if isinstance(delay_widget, QtWidgets.QSpinBox):
+                delay_ms = _coerce_delay_ms(delay_widget.value())
+            else:
+                delay_item = self._table.item(row, 1)
+                delay_ms = _coerce_delay_ms(delay_item.text() if delay_item is not None else _DEFAULT_DELAY_MS)
+            tags.append(_delay_tag_entry(name, delay_ms))
+        return tags, ""
+
+    def accept(self):
+        tags, error = self._tags_from_table(validate=True)
+        if error:
+            QtWidgets.QMessageBox.warning(self, "Keyboard Sequence", error)
+            return
+        self._tags = tags
+        super().accept()
+
+    def values(self) -> list[dict[str, object]]:
+        return _normalize_delay_tags(self._tags)
 
 
 class _PlaybackSignals(QtCore.QObject):
@@ -3366,6 +3852,7 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
         self._lead_in_ms = _read_lead_in_ms(node_item)
         self._key_hold_ms = _read_key_hold_ms(node_item)
         self._injection_mode = _read_injection_mode(node_item)
+        self._delay_tags = _read_delay_tags(node_item)
         self._selected_action_for_insert: int | None = None
         self._loop_icon = QtGui.QIcon()
         loop_icon_path = Path(__file__).resolve().parents[2] / "icons" / "LoopArrows_Icon_s.png"
@@ -3427,6 +3914,11 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
         self._loop_btn.setToolTip("Create loop start/end blocks around the selected action, or at the end.")
         self._loop_btn.clicked.connect(self._on_make_loop)
         button_row.addWidget(self._loop_btn, 0)
+
+        self._delay_tags_btn = QtWidgets.QPushButton("Add Delay Tag")
+        self._delay_tags_btn.setToolTip("Add or edit named delay values used by action delay cells.")
+        self._delay_tags_btn.clicked.connect(self._on_manage_delay_tags)
+        button_row.addWidget(self._delay_tags_btn, 0)
 
         self._remove_btn = QtWidgets.QPushButton("Remove Action")
         self._remove_btn.clicked.connect(self._on_remove_action)
@@ -3600,9 +4092,13 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
             latest_lead = _read_lead_in_ms(self._node_item)
             latest_key_hold = _read_key_hold_ms(self._node_item)
             latest_mode = _read_injection_mode(self._node_item)
+            latest_delay_tags = _read_delay_tags(self._node_item)
             if latest_steps != self._steps:
                 self._steps = latest_steps
                 self._clamp_selected_action_for_insert()
+                self._rebuild_table()
+            if latest_delay_tags != self._delay_tags:
+                self._delay_tags = latest_delay_tags
                 self._rebuild_table()
             if latest_lead != self._lead_in_ms:
                 self._lead_in_ms = latest_lead
@@ -3667,6 +4163,7 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
         self._add_btn.setEnabled(not self._running)
         self._insert_btn.setEnabled(not self._running and self._selected_action_for_insert is not None)
         self._loop_btn.setEnabled(not self._running)
+        self._delay_tags_btn.setEnabled(not self._running)
         self._remove_btn.setEnabled(not self._running)
         self._lead_in_spin.setEnabled(not self._running)
         self._key_hold_spin.setEnabled(not self._running)
@@ -3677,8 +4174,37 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
         self._update_insert_button_state()
 
     def _persist_steps(self, notify_scene: bool = True):
+        self._steps = _refresh_step_delay_tag_values(self._steps, self._delay_tags)
         self._steps = _write_sequence(self._node_item, self._steps, notify_scene=notify_scene)
         self._clamp_selected_action_for_insert()
+
+    def _persist_delay_tags(self, delay_tags: list[dict[str, object]], *, notify_scene: bool = True):
+        self._delay_tags = _write_delay_tags(self._node_item, delay_tags, notify_scene=False)
+        self._steps = _refresh_step_delay_tag_values(self._steps, self._delay_tags, drop_missing=True)
+        self._persist_steps(notify_scene=False)
+        if notify_scene:
+            _notify_node_params_changed(self._node_item)
+
+    def _on_manage_delay_tags(self):
+        if self._running:
+            return
+        parent = _dialog_parent(self._node_item) or self
+        dialog = _DelayTagsDialog(self._delay_tags, parent)
+        try:
+            cursor = QtGui.QCursor.pos()
+            dialog.move(cursor + QtCore.QPoint(12, 12))
+        except Exception:
+            pass
+        try:
+            result = dialog.exec()
+        except Exception:
+            result = dialog.exec_()
+        if result != QtWidgets.QDialog.Accepted:
+            return
+        previous_count = len(self._delay_tags)
+        self._persist_delay_tags(dialog.values(), notify_scene=True)
+        self._rebuild_table()
+        self._set_status(f"Delay tags updated: {previous_count} -> {len(self._delay_tags)}.")
 
     def _selected_action_index(self) -> int:
         self._clamp_selected_action_for_insert()
@@ -3837,6 +4363,7 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
         _write_lead_in_ms(self._node_item, payload.get("lead_in_ms", _DEFAULT_LEAD_IN_MS), notify_scene=False)
         _write_key_hold_ms(self._node_item, payload.get("key_hold_ms", _DEFAULT_KEY_HOLD_MS), notify_scene=False)
         _write_injection_mode(self._node_item, str(payload.get("injection_mode", _MODE_VK)), notify_scene=False)
+        _write_delay_tags(self._node_item, list(payload.get("delay_tags") or []), notify_scene=False)
         _write_sequence(self._node_item, list(payload.get("actions") or []), notify_scene=False)
         self._sync_from_model()
         _notify_node_params_changed(self._node_item)
@@ -3897,6 +4424,7 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
             self._lead_in_ms,
             self._key_hold_ms,
             self._injection_mode,
+            self._delay_tags,
         )
         try:
             target.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -3904,6 +4432,17 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
             QtWidgets.QMessageBox.critical(self, "Keyboard Sequence", f"Could not save preset:\n{exc}")
             return
         self._set_status(f"Saved preset: {target.name}")
+
+    def _delay_tags_timeline_text(self) -> str:
+        tags = _normalize_delay_tags(self._delay_tags)
+        if not tags:
+            return "Delay Tags: none"
+        parts = [
+            f"{str(tag.get('name', '') or '').strip()} ({_coerce_delay_ms(tag.get('delay_ms', _DEFAULT_DELAY_MS))} ms)"
+            for tag in tags
+            if str(tag.get("name", "") or "").strip()
+        ]
+        return "Delay Tags: " + "   |   ".join(parts) if parts else "Delay Tags: none"
 
     def _rebuild_table(self):
         steps = list(self._steps or [])
@@ -3915,7 +4454,11 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
         col_count = max(1, (len(steps) * 2) - 1)
         self._table.blockSignals(True)
         try:
-            self._table.setRowCount(1)
+            try:
+                self._table.clearSpans()
+            except Exception:
+                pass
+            self._table.setRowCount(2)
             self._table.setColumnCount(col_count)
             for col in range(col_count):
                 header_item = QtWidgets.QTableWidgetItem()
@@ -3928,6 +4471,7 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
                     self._table.setColumnWidth(col, 102)
                 self._table.setHorizontalHeaderItem(col, header_item)
             self._table.setRowHeight(0, 78)
+            self._table.setRowHeight(1, 34)
 
             for col in range(col_count):
                 item = QtWidgets.QTableWidgetItem()
@@ -3995,18 +4539,40 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
                     item.setForeground(QtGui.QColor("#e2e8f0"))
                 else:
                     step_index = col // 2
-                    delay_ms = _coerce_delay_ms(steps[step_index].get("delay_ms", _DEFAULT_DELAY_MS))
-                    item.setText(f"{delay_ms} ms")
-                    item.setBackground(QtGui.QColor("#1f2937"))
+                    tag_name = _step_delay_tag_name(steps[step_index])
+                    delay_ms = _step_delay_ms(steps[step_index], self._delay_tags)
+                    if tag_name:
+                        item.setText(f"{tag_name}\n{delay_ms} ms")
+                        if _delay_tag_delay_ms(self._delay_tags, tag_name) is None:
+                            item.setBackground(QtGui.QColor("#4a1f2a"))
+                        else:
+                            item.setBackground(QtGui.QColor("#1f3f35"))
+                    else:
+                        item.setText(f"{delay_ms} ms")
+                        item.setBackground(QtGui.QColor("#1f2937"))
                     item.setForeground(QtGui.QColor("#cbd5e1"))
                 self._table.setItem(0, col, item)
+
+            tag_item = QtWidgets.QTableWidgetItem(self._delay_tags_timeline_text())
+            tag_item.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable)
+            tag_item.setTextAlignment(QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft)
+            tag_item.setBackground(QtGui.QColor("#101923"))
+            tag_item.setForeground(QtGui.QColor("#cbd5e1"))
+            self._table.setItem(1, 0, tag_item)
+            if col_count > 1:
+                self._table.setSpan(1, 0, 1, col_count)
         finally:
             self._table.blockSignals(False)
         self._restore_selected_action_visuals()
         self._update_insert_button_state()
 
     def _on_table_cell_clicked(self, row: int, col: int):
-        if self._running or row != 0:
+        if self._running:
+            return
+        if row == 1:
+            self._on_manage_delay_tags()
+            return
+        if row != 0:
             return
         if col % 2 == 0:
             self._edit_action_cell(col // 2)
@@ -4033,7 +4599,12 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
         if self._running:
             return
         index = self._table.indexAt(pos)
-        if not index.isValid() or int(index.row()) != 0 or int(index.column()) % 2 != 0:
+        if not index.isValid():
+            return
+        if int(index.row()) == 1:
+            self._on_manage_delay_tags()
+            return
+        if int(index.row()) != 0 or int(index.column()) % 2 != 0:
             return
         selected_index = int(index.column()) // 2
         self._select_action_for_insert(selected_index)
@@ -4074,7 +4645,9 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
         initial_type = _normalize_action_type(step.get("type", _ACTION_TYPE_KEY))
         initial_action = str(step.get("action") or "").strip() or _default_action_label(initial_type)
         initial_key = str(step.get("key") or "").strip()
-        initial_delay = _coerce_delay_ms(step.get("delay_ms", _DEFAULT_DELAY_MS))
+        initial_delay = _step_delay_ms(step, self._delay_tags)
+        initial_delay_tag_name = _step_delay_tag_name(step)
+        initial_delay_tag_enabled = bool(initial_delay_tag_name)
         initial_hold = bool(step.get("hold")) or "hold_ms" in step
         initial_hold_ms = _coerce_action_hold_ms(step.get("hold_ms")) if "hold_ms" in step else None
         initial_key_loop_condition = _key_loop_condition_iteration(step)
@@ -4116,6 +4689,9 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
             initial_loop_text_rows,
             initial_loop_number,
             initial_loop_count,
+            self._delay_tags,
+            initial_delay_tag_enabled,
+            initial_delay_tag_name,
             parent,
         )
         self._position_action_dialog(dialog, index)
@@ -4180,9 +4756,16 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
         if not (0 <= index < len(self._steps)):
             return
         step = dict(self._steps[index] or {})
-        current_delay = _coerce_delay_ms(step.get("delay_ms", _DEFAULT_DELAY_MS))
+        current_delay = _step_delay_ms(step, self._delay_tags)
+        current_delay_tag_name = _step_delay_tag_name(step)
         parent = _dialog_parent(self._node_item) or self
-        dialog = _DelayEditDialog(current_delay, parent)
+        dialog = _DelayEditDialog(
+            current_delay,
+            self._delay_tags,
+            bool(current_delay_tag_name),
+            current_delay_tag_name,
+            parent,
+        )
         self._position_table_dialog(dialog, (max(0, int(index)) * 2) + 1)
         try:
             result = dialog.exec()
@@ -4190,7 +4773,10 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
             result = dialog.exec_()
         if result != QtWidgets.QDialog.Accepted:
             return
-        step["delay_ms"] = dialog.value()
+        for key in ("delay_tag_enabled", "use_delay_tag", "delay_tag", "delay_tag_name", "delay_tag_id"):
+            step.pop(key, None)
+        delay_values = dialog.values()
+        step.update(delay_values)
         self._steps[index] = step
         self._persist_steps(notify_scene=True)
         self._rebuild_table()
@@ -4210,7 +4796,7 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
                     "type": action_type,
                     "x": _coerce_screen_coord(_raw_first_value(step, "x", "screen_x", default=0)),
                     "y": _coerce_screen_coord(_raw_first_value(step, "y", "screen_y", default=0)),
-                    "delay_ms": _coerce_delay_ms(step.get("delay_ms", _DEFAULT_DELAY_MS)),
+                    "delay_ms": _step_delay_ms(step, self._delay_tags),
                     "coord_mode": _normalize_click_coord_mode(step.get("coord_mode", _CLICK_COORD_WINDOW if _normalize_window_metadata(step.get("window")) is not None else _CLICK_COORD_SCREEN)),
                 }
                 if action_type == _ACTION_TYPE_CLICK:
@@ -4236,7 +4822,7 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
                                 "text": text_value,
                                 "text_source": _TEXT_SOURCE_LOOP_TABLE,
                                 "loop_text_rows": text_rows,
-                                "delay_ms": _coerce_delay_ms(step.get("delay_ms", _DEFAULT_DELAY_MS)),
+                                "delay_ms": _step_delay_ms(step, self._delay_tags),
                             }
                         )
                 elif text_value != "":
@@ -4246,7 +4832,7 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
                             "action": action,
                             "type": _ACTION_TYPE_TEXT,
                             "text": text_value,
-                            "delay_ms": _coerce_delay_ms(step.get("delay_ms", _DEFAULT_DELAY_MS)),
+                            "delay_ms": _step_delay_ms(step, self._delay_tags),
                         }
                     )
                 continue
@@ -4259,7 +4845,7 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
                         "type": action_type,
                         "loop_number": _coerce_loop_number(step.get("loop_number", 1), 1),
                         "loop_count": _coerce_loop_count(step.get("loop_count", 2), 2),
-                        "delay_ms": _coerce_delay_ms(step.get("delay_ms", _DEFAULT_DELAY_MS)),
+                        "delay_ms": _step_delay_ms(step, self._delay_tags),
                     }
                 )
                 continue
@@ -4272,7 +4858,7 @@ class KeyboardSequenceWidget(QtWidgets.QFrame):
                         "action": action,
                         "type": _ACTION_TYPE_KEY,
                         "key": key_text,
-                        "delay_ms": _coerce_delay_ms(step.get("delay_ms", _DEFAULT_DELAY_MS)),
+                        "delay_ms": _step_delay_ms(step, self._delay_tags),
                     }
                 )
                 if bool(step.get("hold")):
@@ -4660,9 +5246,10 @@ def build_ports(node_item) -> None:
     _ensure_param(node_item, _LEAD_IN_PARAM, str(_DEFAULT_LEAD_IN_MS))
     _ensure_param(node_item, _KEY_HOLD_PARAM, str(_DEFAULT_KEY_HOLD_MS))
     _ensure_param(node_item, _INJECTION_MODE_PARAM, _MODE_VK)
+    _ensure_param(node_item, _DELAY_TAGS_PARAM, "[]")
     _ensure_hidden_params(
         getattr(node_item, "model", None),
-        [_SEQUENCE_PARAM, _LEAD_IN_PARAM, _KEY_HOLD_PARAM, _INJECTION_MODE_PARAM],
+        [_SEQUENCE_PARAM, _LEAD_IN_PARAM, _KEY_HOLD_PARAM, _INJECTION_MODE_PARAM, _DELAY_TAGS_PARAM],
     )
 
 

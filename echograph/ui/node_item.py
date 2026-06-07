@@ -1970,6 +1970,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
         elif kind in ("keyboard_sequence", "keyboard sequence", "keyboard_scheduler", "keyboard scheduler"):
             body_h = 318
             node_w = max(self._BASE_W, 980)
+            try:
+                from nodes.keyboard_sequence import spec as _keyboard_sequence_spec  # type: ignore
+                body_h = max(body_h, int(getattr(_keyboard_sequence_spec, "KEYBOARD_SEQUENCE_BODY_H", body_h)))
+                node_w = max(node_w, int(getattr(_keyboard_sequence_spec, "KEYBOARD_SEQUENCE_BODY_W", node_w)))
+            except Exception:
+                pass
         elif kind in ("serial_com", "serial com", "serial_port", "serial port"):
             body_h = 124
             node_w = max(self._BASE_W, 360)
