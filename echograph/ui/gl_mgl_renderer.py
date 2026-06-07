@@ -8236,6 +8236,154 @@ class MGLRendererMixin:
         z = np.array([0.0, 0.0, 0.0], dtype=np.float32)
         return (z, z)
 
+    def _mgl_transform_owner_local_points_world(self, owner: str, topo: dict, local_points):
+        if np is None:
+            return None
+        try:
+            pts = np.asarray(local_points, dtype=np.float32).reshape(-1, 3)
+        except Exception:
+            return None
+        if pts.size == 0:
+            return None
+        try:
+            model = self._mgl_scene_model_matrix_for_owner(
+                owner,
+                topo.get("bounds_min") if isinstance(topo, dict) else None,
+                topo.get("bounds_max") if isinstance(topo, dict) else None,
+            )
+        except Exception:
+            model = None
+        if model is None:
+            return pts.astype(np.float32, copy=False)
+        try:
+            model_np = np.asarray(model, dtype=np.float32).reshape(4, 4)
+        except Exception:
+            return pts.astype(np.float32, copy=False)
+        try:
+            pts_h = np.concatenate(
+                (pts.astype(np.float32, copy=False), np.ones((pts.shape[0], 1), dtype=np.float32)),
+                axis=1,
+            )
+            world = pts_h @ model_np
+            w = world[:, 3]
+            world_xyz = world[:, :3].astype(np.float32, copy=True)
+            mask = np.abs(w) > 1.0e-8
+            if bool(np.any(mask)):
+                world_xyz[mask] = world_xyz[mask] / w[mask, None]
+            finite = np.all(np.isfinite(world_xyz), axis=1)
+            if not bool(np.any(finite)):
+                return None
+            return world_xyz[finite].astype(np.float32, copy=False)
+        except Exception:
+            return pts.astype(np.float32, copy=False)
+
+    def get_mesh_selection_bounds(self, elems=None):
+        if np is None:
+            return (None, None)
+        if elems is None:
+            selected_many = getattr(self, "_mesh_select_selected_many", None)
+            if isinstance(selected_many, (list, tuple)) and selected_many:
+                elems = list(selected_many)
+            else:
+                selected = getattr(self, "_mesh_select_selected", None)
+                elems = [selected] if isinstance(selected, dict) else []
+        if not isinstance(elems, (list, tuple)):
+            return (None, None)
+
+        bounds_points = []
+        seen = set()
+        for elem in elems:
+            if not isinstance(elem, dict):
+                continue
+            mode = str(elem.get("mode") or "").strip().lower()
+            owner = str(elem.get("owner") or "").strip()
+            if not owner:
+                continue
+            key = None
+            try:
+                key_fn = getattr(self, "_mesh_element_key", None)
+                if callable(key_fn):
+                    key = key_fn(elem)
+            except Exception:
+                key = None
+            if key is not None and key in seen:
+                continue
+            if key is not None:
+                seen.add(key)
+
+            if mode == "object":
+                try:
+                    bmin, bmax = self.get_scene_owner_bounds(owner)
+                    if bmin is not None and bmax is not None:
+                        arr = np.asarray([bmin, bmax], dtype=np.float32).reshape(2, 3)
+                        if bool(np.all(np.isfinite(arr))):
+                            bounds_points.append(arr)
+                            continue
+                except Exception:
+                    pass
+
+            topo = self._mgl_mesh_topology_for_owner(owner)
+            if not isinstance(topo, dict):
+                continue
+            try:
+                points = np.asarray(topo.get("points"), dtype=np.float32).reshape(-1, 3)
+            except Exception:
+                continue
+            if points.size == 0:
+                continue
+            local = None
+            if mode == "point":
+                try:
+                    idx = int(elem.get("vertex_index"))
+                    if 0 <= idx < points.shape[0]:
+                        local = points[idx : idx + 1]
+                except Exception:
+                    local = None
+            elif mode == "edge":
+                try:
+                    edge = elem.get("edge")
+                    a = int(edge[0])
+                    b = int(edge[1])
+                    if 0 <= a < points.shape[0] and 0 <= b < points.shape[0]:
+                        local = points[[a, b]]
+                except Exception:
+                    local = None
+            elif mode == "face":
+                try:
+                    triangles = np.asarray(topo.get("triangles"), dtype=np.int64).reshape(-1, 3)
+                    face_index = int(elem.get("face_index"))
+                    if face_index < 0 or face_index >= triangles.shape[0]:
+                        raise IndexError("face index out of range")
+                    tri = triangles[face_index]
+                except Exception:
+                    try:
+                        tri = np.asarray(elem.get("indices"), dtype=np.int64).reshape(-1)[:3]
+                    except Exception:
+                        tri = None
+                try:
+                    tri = np.asarray(tri, dtype=np.int64).reshape(-1)[:3]
+                    if tri.size >= 3 and bool(np.all((tri >= 0) & (tri < points.shape[0]))):
+                        local = points[tri]
+                except Exception:
+                    local = None
+            if local is None:
+                continue
+            world = self._mgl_transform_owner_local_points_world(owner, topo, local)
+            if world is not None and getattr(world, "size", 0):
+                bounds_points.append(np.asarray(world, dtype=np.float32).reshape(-1, 3))
+
+        if not bounds_points:
+            return (None, None)
+        try:
+            all_points = np.concatenate(bounds_points, axis=0).astype(np.float32, copy=False)
+            finite = np.all(np.isfinite(all_points), axis=1)
+            if not bool(np.any(finite)):
+                return (None, None)
+            all_points = all_points[finite]
+            return (all_points.min(axis=0).astype(np.float32), all_points.max(axis=0).astype(np.float32))
+        except Exception:
+            return (None, None)
+
     def _mgl_set_scene_item_visibility(self, key: str, visible: bool) -> None:
         scene = getattr(self, "_mgl_scene", None)
         if scene is None or not key:

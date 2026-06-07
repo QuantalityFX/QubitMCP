@@ -4152,6 +4152,12 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
     def _on_frame_clicked(self) -> None:
         if self._use_moderngl:
             try:
+                if self._frame_selected_mesh_elements():
+                    self.update()
+                    return
+            except Exception:
+                pass
+            try:
                 if self._frame_selected_owner():
                     self.update()
                     return
@@ -4166,6 +4172,66 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             return
         self._reset_camera()
         self.update()
+
+    def _frame_mgl_bounds(self, mins, maxs) -> bool:
+        if np is None:
+            return False
+        try:
+            renderer = getattr(self, "_mgl_renderer", None) or self
+            mins = np.asarray(mins, dtype=np.float32).reshape(-1)[:3]
+            maxs = np.asarray(maxs, dtype=np.float32).reshape(-1)[:3]
+            if mins.shape[0] < 3 or maxs.shape[0] < 3:
+                return False
+            if not bool(np.all(np.isfinite(mins)) and np.all(np.isfinite(maxs))):
+                return False
+            bmin = np.minimum(mins, maxs)
+            bmax = np.maximum(mins, maxs)
+            center = (bmin + bmax) * 0.5
+            extent = (bmax - bmin) * 0.5
+            radius = float(max(float(extent[0]), float(extent[1]), float(extent[2])))
+            if radius <= 1e-6:
+                radius = 0.5
+            inv_scale = 1.0
+            try:
+                arc = getattr(renderer, "_mgl_arcball", None)
+                if arc is not None and hasattr(arc, "Transform"):
+                    t = np.array(arc.Transform, dtype=np.float32)
+                    if t.shape == (4, 4):
+                        sx = float(np.linalg.norm(t[0, :3]))
+                        sy = float(np.linalg.norm(t[1, :3]))
+                        sz = float(np.linalg.norm(t[2, :3]))
+                        s_avg = (sx + sy + sz) / 3.0
+                        if s_avg > 1e-6:
+                            inv_scale = s_avg
+            except Exception:
+                inv_scale = 1.0
+            fov = float(getattr(renderer, "_mgl_fov", 60.0))
+            dist = (radius * inv_scale) / max(1e-6, math.tan(math.radians(fov * 0.5)))
+            base_zoom = max(0.1, float(dist) * 1.2)
+            try:
+                renderer._mgl_center = center.astype("f4")
+            except Exception:
+                renderer._mgl_center = center
+            try:
+                renderer._mgl_camera_zoom = float(base_zoom) * max(0.01, float(getattr(renderer, "_mgl_scale_multiplier", 1.0)))
+            except Exception:
+                renderer._mgl_camera_zoom = float(base_zoom)
+            return True
+        except Exception:
+            return False
+
+    def _frame_selected_mesh_elements(self) -> bool:
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        get_bounds = getattr(renderer, "get_mesh_selection_bounds", None)
+        if not callable(get_bounds):
+            return False
+        try:
+            b = get_bounds()
+        except Exception:
+            return False
+        if not (isinstance(b, (list, tuple)) and len(b) >= 2):
+            return False
+        return self._frame_mgl_bounds(b[0], b[1])
 
     def _frame_selected_owner(self) -> bool:
         owner = getattr(self, "_xform_gizmo_owner", None)
@@ -4208,37 +4274,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         if mins is None or maxs is None:
             return False
 
-        center = (mins + maxs) * 0.5
-        extent = (maxs - mins) * 0.5
-        radius = float(max(extent[0], extent[1], extent[2]))
-        if radius <= 1e-6:
-            radius = 0.5
-        inv_scale = 1.0
-        try:
-            arc = getattr(renderer, "_mgl_arcball", None)
-            if arc is not None and np is not None and hasattr(arc, "Transform"):
-                t = np.array(arc.Transform, dtype=np.float32)
-                if t.shape == (4, 4):
-                    sx = float(np.linalg.norm(t[0, :3]))
-                    sy = float(np.linalg.norm(t[1, :3]))
-                    sz = float(np.linalg.norm(t[2, :3]))
-                    s_avg = (sx + sy + sz) / 3.0
-                    if s_avg > 1e-6:
-                        inv_scale = s_avg
-        except Exception:
-            inv_scale = 1.0
-        fov = float(getattr(renderer, "_mgl_fov", 60.0))
-        dist = (radius * inv_scale) / max(1e-6, math.tan(math.radians(fov * 0.5)))
-        base_zoom = max(0.1, float(dist) * 1.2)
-        try:
-            renderer._mgl_center = center.astype("f4")
-        except Exception:
-            renderer._mgl_center = center
-        try:
-            renderer._mgl_camera_zoom = float(base_zoom) * max(0.01, float(getattr(renderer, "_mgl_scale_multiplier", 1.0)))
-        except Exception:
-            renderer._mgl_camera_zoom = float(base_zoom)
-        return True
+        return self._frame_mgl_bounds(mins, maxs)
 
     def _on_snapgrab_clicked(self) -> None:
         paused = False
@@ -7488,13 +7524,15 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 return False
 
         try:
+            frame_seq = hotkeys_config.keyseq("gl_frame", "F")
             wire_seq = hotkeys_config.keyseq("gl_wireframe_toggle", "H")
             grid_seq = hotkeys_config.keyseq("gl_grid_toggle", "G")
         except Exception:
+            frame_seq = "F"
             wire_seq = "H"
             grid_seq = "G"
 
-        if not (_matches_hotkey(wire_seq) or _matches_hotkey(grid_seq)):
+        if not (_matches_hotkey(frame_seq) or _matches_hotkey(wire_seq) or _matches_hotkey(grid_seq)):
             return False
 
         try:
@@ -7503,7 +7541,12 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         except Exception:
             pass
 
-        if _matches_hotkey(wire_seq):
+        if _matches_hotkey(frame_seq):
+            try:
+                self._on_frame_clicked()
+            except Exception:
+                pass
+        elif _matches_hotkey(wire_seq):
             try:
                 toggle = getattr(self, "_mgl_wireframe_toggle", None)
                 if toggle is not None:
