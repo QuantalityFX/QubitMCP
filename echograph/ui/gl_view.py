@@ -682,6 +682,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._mgl_scene_splats_bounds_local: Dict[str, NDArray] = {}
         self._mgl_scene_splat_bounds_by_owner: Dict[str, NDArray] = {}
         self._mgl_scene_mesh_bounds_by_owner: Dict[str, NDArray] = {}
+        self._mgl_scene_mesh_topology_by_owner: Dict[str, Dict[str, object]] = {}
         self._mgl_scene_pivot_local_by_owner: Dict[str, Tuple[float, float, float]] = {}
         self._mgl_scene_uvs_by_owner: Dict[str, NDArray] = {}
         self._mgl_scene_splat_xforms_by_owner: Dict[str, Dict[str, Tuple[float, float, float]]] = {}
@@ -814,6 +815,22 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._cam_select_lock_icon_unlocked = None
         self._grid_icon_on = None
         self._grid_icon_off = None
+        self._mesh_select_icons: Dict[str, QtGui.QIcon] = {}
+        self._mesh_select_buttons: Dict[str, QtWidgets.QToolButton] = {}
+        self._mesh_select_button_frames: Dict[str, QtWidgets.QFrame] = {}
+        self._mesh_select_mode = ""
+        self._mesh_select_selected = None
+        self._mesh_select_selected_many = []
+        self._mesh_select_hover = None
+        self._mesh_select_selected_color = (1.0, 0.48, 0.0, 0.92)
+        self._mesh_select_hover_color = (0.0, 0.72, 1.0, 0.74)
+        self._mesh_box_select_icon = None
+        self._mesh_box_select_btn = None
+        self._mesh_box_select_btn_frame = None
+        self._mesh_box_select_menu = None
+        self._mesh_box_select_enabled = False
+        self._mesh_box_select_drag = None
+        self._mesh_box_select_face_policy = "front_back"
         self._zoom_mode_icon_on = None
         self._zoom_mode_icon_off = None
         self._fly_mode_icon_on = None
@@ -998,6 +1015,8 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._build_scale_controls()
         self._build_debug_toggle_button()
         self._build_debug_copy_button()
+        self._build_mesh_selection_buttons()
+        self._build_mesh_box_select_button()
         self._build_camera_orbit_button()
         self._build_fly_mode_button()
         self._build_grid_button()
@@ -1114,6 +1133,26 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             y += self._side_btn_size + self._side_btn_gap
         elif snap_btn is not None:
             snap_btn.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
+            y += self._side_btn_size + self._side_btn_gap
+        try:
+            for mode in ("object", "point", "edge", "face"):
+                frame = (getattr(self, "_mesh_select_button_frames", None) or {}).get(mode)
+                btn = (getattr(self, "_mesh_select_buttons", None) or {}).get(mode)
+                if frame is not None:
+                    frame.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
+                    y += self._side_btn_size + self._side_btn_gap
+                elif btn is not None:
+                    btn.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
+                    y += self._side_btn_size + self._side_btn_gap
+        except Exception:
+            pass
+        box_frame = getattr(self, "_mesh_box_select_btn_frame", None)
+        box_btn = getattr(self, "_mesh_box_select_btn", None)
+        if box_frame is not None:
+            box_frame.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
+            y += self._side_btn_size + self._side_btn_gap
+        elif box_btn is not None:
+            box_btn.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
             y += self._side_btn_size + self._side_btn_gap
         grid_frame = getattr(self, "_grid_btn_frame", None)
         grid_btn = getattr(self, "_grid_btn", None)
@@ -1638,6 +1677,424 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             self._controls = None
             self._controls_h = 0
 
+
+    def _mesh_selection_mode_specs(self) -> Tuple[Tuple[str, str, str], ...]:
+        return (
+            ("object", "Object Select", "ObjectSelect_Icon.png"),
+            ("point", "Point Select", "PointSelect_Icon.png"),
+            ("edge", "Edge Select", "EdgeSelect_Icon.png"),
+            ("face", "Face Select", "FaceSelect_Icon.png"),
+        )
+
+    def _build_mesh_selection_buttons(self) -> None:
+        try:
+            self._load_mesh_selection_icons()
+            buttons: Dict[str, QtWidgets.QToolButton] = {}
+            frames: Dict[str, QtWidgets.QFrame] = {}
+            for mode, tip, _icon_name in self._mesh_selection_mode_specs():
+                btn = QtWidgets.QToolButton(self)
+                btn.setCursor(QtCore.Qt.PointingHandCursor)
+                btn.setCheckable(True)
+                btn.setToolTip(tip)
+                btn.setIconSize(QtCore.QSize(self._side_btn_icon, self._side_btn_icon))
+                btn.setFixedSize(self._side_btn_size, self._side_btn_size)
+                icon = self._mesh_select_icons.get(mode)
+                if icon is not None:
+                    btn.setIcon(icon)
+                else:
+                    btn.setText(mode[:1].upper())
+                btn.clicked.connect(lambda checked=False, m=mode: self._on_mesh_selection_mode_clicked(m))
+                self._apply_side_icon_style(btn, active=False)
+                frame_attr = f"_mesh_select_{mode}_btn_frame"
+                frame = self._wrap_side_button(btn, frame_attr)
+                buttons[mode] = btn
+                if frame is not None:
+                    frames[mode] = frame
+                btn.show()
+            self._mesh_select_buttons = buttons
+            self._mesh_select_button_frames = frames
+            self._update_mesh_selection_buttons()
+        except Exception:
+            self._mesh_select_buttons = {}
+            self._mesh_select_button_frames = {}
+
+    def _load_mesh_selection_icons(self) -> None:
+        if getattr(self, "_mesh_select_icons", None):
+            return
+        icons: Dict[str, QtGui.QIcon] = {}
+        try:
+            root = Path(__file__).resolve().parents[2]
+            for mode, _tip, icon_name in self._mesh_selection_mode_specs():
+                path = root / "icons" / icon_name
+                if path.exists():
+                    icons[mode] = QtGui.QIcon(str(path))
+        except Exception:
+            icons = {}
+        self._mesh_select_icons = icons
+
+    def _update_mesh_selection_buttons(self) -> None:
+        mode_current = str(getattr(self, "_mesh_select_mode", "") or "").strip().lower()
+        for mode, tip, _icon_name in self._mesh_selection_mode_specs():
+            btn = (getattr(self, "_mesh_select_buttons", None) or {}).get(mode)
+            if btn is None:
+                continue
+            active = mode_current == mode
+            try:
+                btn.blockSignals(True)
+                btn.setChecked(active)
+            finally:
+                try:
+                    btn.blockSignals(False)
+                except Exception:
+                    pass
+            btn.setToolTip(f"{tip}: {'On' if active else 'Off'}")
+            self._apply_side_icon_style(btn, active=active)
+
+    def _build_mesh_box_select_button(self) -> None:
+        try:
+            btn = QtWidgets.QToolButton(self)
+            btn.setCursor(QtCore.Qt.PointingHandCursor)
+            btn.setCheckable(True)
+            btn.setIconSize(QtCore.QSize(self._side_btn_icon, self._side_btn_icon))
+            btn.setFixedSize(self._side_btn_size, self._side_btn_size)
+            self._load_mesh_box_select_icon()
+            icon = getattr(self, "_mesh_box_select_icon", None)
+            if icon is not None:
+                btn.setIcon(icon)
+            else:
+                btn.setText("[]")
+            btn.clicked.connect(self._on_mesh_box_select_clicked)
+            try:
+                btn.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+                btn.customContextMenuRequested.connect(lambda _pos=None, b=btn: self._show_mesh_box_select_menu(b))
+            except Exception:
+                pass
+            self._mesh_box_select_btn = btn
+            self._mesh_box_select_btn_frame = self._wrap_side_button(btn, "_mesh_box_select_btn_frame")
+            self._update_mesh_box_select_button()
+            btn.show()
+        except Exception:
+            self._mesh_box_select_btn = None
+            self._mesh_box_select_btn_frame = None
+
+    def _load_mesh_box_select_icon(self) -> None:
+        if getattr(self, "_mesh_box_select_icon", None) is not None:
+            return
+        try:
+            path = Path(__file__).resolve().parents[2] / "icons" / "MouseCursor_icon.png"
+            if path.exists():
+                self._mesh_box_select_icon = QtGui.QIcon(str(path))
+        except Exception:
+            self._mesh_box_select_icon = None
+
+    def _mesh_box_select_policy_label(self) -> str:
+        policy = str(getattr(self, "_mesh_box_select_face_policy", "front_back") or "front_back").strip().lower()
+        if policy == "front":
+            return "front faces only"
+        if policy == "back":
+            return "back faces only"
+        return "front and back faces"
+
+    def _update_mesh_box_select_button(self) -> None:
+        btn = getattr(self, "_mesh_box_select_btn", None)
+        if btn is None:
+            return
+        active = bool(getattr(self, "_mesh_box_select_enabled", False))
+        try:
+            btn.blockSignals(True)
+            btn.setChecked(active)
+        finally:
+            try:
+                btn.blockSignals(False)
+            except Exception:
+                pass
+        btn.setToolTip(f"Box Select: {'On' if active else 'Off'} ({self._mesh_box_select_policy_label()})")
+        self._apply_side_icon_style(btn, active=active)
+
+    def _on_mesh_box_select_clicked(self, checked: bool = False) -> None:
+        self._mesh_box_select_enabled = bool(checked)
+        self._mesh_box_select_drag = None
+        self._update_mesh_box_select_button()
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    def _set_mesh_box_select_face_policy(self, policy: str) -> None:
+        policy = str(policy or "").strip().lower()
+        if policy not in {"front_back", "front", "back"}:
+            policy = "front_back"
+        self._mesh_box_select_face_policy = policy
+        self._update_mesh_box_select_button()
+
+    def _show_mesh_box_select_menu(self, btn: QtWidgets.QToolButton | None = None) -> None:
+        try:
+            menu = QtWidgets.QMenu(self)
+            menu.setObjectName("GLMeshBoxSelectMenu")
+            action_cls = getattr(QtGui, "QAction", None) or getattr(QtWidgets, "QAction", None)
+            group_cls = getattr(QtGui, "QActionGroup", None) or getattr(QtWidgets, "QActionGroup", None)
+            group = group_cls(menu) if group_cls is not None else None
+            if group is not None:
+                group.setExclusive(True)
+            current = str(getattr(self, "_mesh_box_select_face_policy", "front_back") or "front_back").strip().lower()
+            specs = (
+                ("front_back", "Select Front and Back Faces"),
+                ("back", "Select Back Faces Only"),
+                ("front", "Select Front Faces Only"),
+            )
+            for policy, label in specs:
+                action = action_cls(label, menu) if action_cls is not None else menu.addAction(label)
+                action.setCheckable(True)
+                action.setChecked(current == policy)
+                if group is not None:
+                    group.addAction(action)
+                action.triggered.connect(lambda _checked=False, p=policy: self._set_mesh_box_select_face_policy(p))
+                if action_cls is not None:
+                    menu.addAction(action)
+            try:
+                menu.setStyleSheet(
+                    "QMenu{background:#22272c;color:#e5e7eb;border:1px solid #3f4750;padding:4px;}"
+                    "QMenu::item{padding:5px 18px 5px 8px;}"
+                    "QMenu::item:selected{background:#3a4046;}"
+                    "QMenu::indicator{width:12px;height:12px;}"
+                )
+            except Exception:
+                pass
+            anchor = getattr(self, "_mesh_box_select_btn_frame", None) or btn or getattr(self, "_mesh_box_select_btn", None)
+            if anchor is not None:
+                pos = anchor.mapToGlobal(QtCore.QPoint(int(anchor.width()) + 4, 0))
+            else:
+                pos = QtGui.QCursor.pos()
+            self._mesh_box_select_menu = menu
+            try:
+                menu.aboutToHide.connect(lambda: setattr(self, "_mesh_box_select_menu", None))
+            except Exception:
+                pass
+            menu.popup(pos)
+        except Exception:
+            pass
+
+    def _on_mesh_selection_mode_clicked(self, mode: str) -> None:
+        mode = str(mode or "").strip().lower()
+        valid = {spec[0] for spec in self._mesh_selection_mode_specs()}
+        if mode not in valid:
+            mode = ""
+        current = str(getattr(self, "_mesh_select_mode", "") or "").strip().lower()
+        self._mesh_select_mode = "" if current == mode else mode
+        self._mesh_select_hover = None
+        self._mesh_select_selected = None
+        self._mesh_select_selected_many = []
+        self._mesh_box_select_drag = None
+        self._update_mesh_selection_buttons()
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    def _mesh_selection_mode_active(self) -> bool:
+        mode = str(getattr(self, "_mesh_select_mode", "") or "").strip().lower()
+        return mode in {spec[0] for spec in self._mesh_selection_mode_specs()}
+
+    def _mesh_element_key(self, elem) -> Optional[Tuple[object, ...]]:
+        if not isinstance(elem, dict):
+            return None
+        mode = str(elem.get("mode") or "").strip().lower()
+        owner = str(elem.get("owner") or "").strip().lower()
+        if not mode or not owner:
+            return None
+        if mode == "object":
+            return (mode, owner)
+        if mode == "point":
+            try:
+                return (mode, owner, int(elem.get("vertex_index")))
+            except Exception:
+                return None
+        if mode == "edge":
+            edge = elem.get("edge")
+            if isinstance(edge, (list, tuple)) and len(edge) >= 2:
+                try:
+                    a = int(edge[0])
+                    b = int(edge[1])
+                    return (mode, owner, min(a, b), max(a, b))
+                except Exception:
+                    return None
+            return None
+        if mode == "face":
+            try:
+                return (mode, owner, int(elem.get("face_index")))
+            except Exception:
+                return None
+        return None
+
+    def _set_mesh_element_selection(self, elem) -> None:
+        next_elem = dict(elem) if isinstance(elem, dict) else None
+        old_key = self._mesh_element_key(getattr(self, "_mesh_select_selected", None))
+        new_key = self._mesh_element_key(next_elem)
+        self._mesh_select_selected = next_elem
+        self._mesh_select_selected_many = [next_elem] if isinstance(next_elem, dict) else []
+        if self._mesh_element_key(getattr(self, "_mesh_select_hover", None)) == new_key:
+            self._mesh_select_hover = None
+        if old_key != new_key:
+            try:
+                self.update()
+            except Exception:
+                pass
+
+    def _mesh_selected_element_keys(self) -> set:
+        keys = set()
+        many = getattr(self, "_mesh_select_selected_many", None)
+        if isinstance(many, (list, tuple)):
+            for elem in many:
+                key = self._mesh_element_key(elem)
+                if key is not None:
+                    keys.add(key)
+        else:
+            key = self._mesh_element_key(getattr(self, "_mesh_select_selected", None))
+            if key is not None:
+                keys.add(key)
+        return keys
+
+    def _set_mesh_element_selection_many(self, elems) -> None:
+        clean = []
+        seen = set()
+        if isinstance(elems, (list, tuple)):
+            for elem in elems:
+                if not isinstance(elem, dict):
+                    continue
+                key = self._mesh_element_key(elem)
+                if key is None or key in seen:
+                    continue
+                clean.append(dict(elem))
+                seen.add(key)
+        old_keys = self._mesh_selected_element_keys()
+        new_keys = set(seen)
+        self._mesh_select_selected_many = clean
+        self._mesh_select_selected = dict(clean[0]) if clean else None
+        hover_key = self._mesh_element_key(getattr(self, "_mesh_select_hover", None))
+        if hover_key in new_keys:
+            self._mesh_select_hover = None
+        if old_keys != new_keys:
+            try:
+                self.update()
+            except Exception:
+                pass
+
+    def _set_mesh_element_hover(self, elem) -> None:
+        next_elem = dict(elem) if isinstance(elem, dict) else None
+        if self._mesh_element_key(next_elem) in self._mesh_selected_element_keys():
+            next_elem = None
+        old_key = self._mesh_element_key(getattr(self, "_mesh_select_hover", None))
+        new_key = self._mesh_element_key(next_elem)
+        self._mesh_select_hover = next_elem
+        if old_key != new_key:
+            try:
+                self.update()
+            except Exception:
+                pass
+
+    def _clear_mesh_element_selection(self) -> None:
+        had_state = bool(
+            getattr(self, "_mesh_select_selected", None)
+            or getattr(self, "_mesh_select_hover", None)
+            or getattr(self, "_mesh_select_selected_many", None)
+            or getattr(self, "_mesh_box_select_drag", None)
+        )
+        self._mesh_select_selected = None
+        self._mesh_select_selected_many = []
+        self._mesh_select_hover = None
+        self._mesh_box_select_drag = None
+        if had_state:
+            try:
+                self.update()
+            except Exception:
+                pass
+
+    def _mesh_selection_event_viewport(self, e) -> Tuple[int, int, int, int]:
+        dpr = 1.0
+        try:
+            dpr = float(self.devicePixelRatioF())
+        except Exception:
+            try:
+                dpr = float(self.devicePixelRatio())
+            except Exception:
+                dpr = 1.0
+        try:
+            pos = e.position() if hasattr(e, "position") else QtCore.QPointF(e.x(), e.y())
+            x = float(pos.x())
+            y = float(pos.y())
+        except Exception:
+            x = float(e.x())
+            y = float(e.y())
+        return (
+            int(x * dpr),
+            int(y * dpr),
+            int(float(self.width()) * dpr),
+            int(float(self.height()) * dpr),
+        )
+
+    def _mesh_box_selection_drag_rect(self):
+        drag = getattr(self, "_mesh_box_select_drag", None)
+        if not isinstance(drag, dict):
+            return None
+        start = drag.get("start")
+        current = drag.get("current")
+        if start is None or current is None:
+            return None
+        try:
+            rect = QtCore.QRectF(QtCore.QPointF(start), QtCore.QPointF(current)).normalized()
+        except Exception:
+            return None
+        if rect.width() < 1.0 or rect.height() < 1.0:
+            return None
+        return rect
+
+    def _draw_mesh_box_selection_qt_overlay(self, painter: QtGui.QPainter) -> None:
+        rect = self._mesh_box_selection_drag_rect()
+        if rect is None:
+            return
+        try:
+            painter.save()
+        except Exception:
+            pass
+        try:
+            painter.setRenderHint(QtGui.QPainter.Antialiasing, False)
+            fill = QtGui.QColor(0, 115, 255, 34)
+            outline = QtGui.QColor(0, 172, 255, 210)
+            painter.setBrush(QtGui.QBrush(fill))
+            painter.setPen(QtGui.QPen(outline, 1.0, QtCore.Qt.SolidLine))
+            painter.drawRect(rect)
+        finally:
+            try:
+                painter.restore()
+            except Exception:
+                pass
+
+    def _update_mesh_element_hover_from_event(self, e) -> None:
+        mode = str(getattr(self, "_mesh_select_mode", "") or "").strip().lower()
+        if mode not in {spec[0] for spec in self._mesh_selection_mode_specs()}:
+            self._set_mesh_element_hover(None)
+            return
+        try:
+            if bool(e.buttons()):
+                self._set_mesh_element_hover(None)
+                return
+        except Exception:
+            pass
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        picker = getattr(renderer, "pick_mesh_element_at", None)
+        if not callable(picker):
+            self._set_mesh_element_hover(None)
+            return
+        try:
+            px, py, vw, vh = self._mesh_selection_event_viewport(e)
+            elem = picker(px, py, vw, vh, mode=mode)
+        except Exception:
+            elem = None
+        self._set_mesh_element_hover(elem if isinstance(elem, dict) else None)
+        try:
+            self.setCursor(QtCore.Qt.CrossCursor if isinstance(elem, dict) else QtCore.Qt.ArrowCursor)
+        except Exception:
+            pass
 
 
     def _on_fly_speed_mult_changed(self, value: int | None = None) -> None:
@@ -5614,6 +6071,16 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         if self._use_moderngl and self._mgl_uv_overlay_enabled:
             self._draw_uv_overlay(painter)
         self._draw_axis_gizmo(painter)
+        try:
+            self._draw_mesh_box_selection_qt_overlay(painter)
+        except Exception:
+            pass
+        draw_mesh_selection = getattr(self, "_draw_mesh_selection_qt_overlay", None)
+        if callable(draw_mesh_selection):
+            try:
+                draw_mesh_selection(painter)
+            except Exception:
+                pass
         draw_scene_skeleton = getattr(self, "_draw_scene_skeleton_qt_overlay", None)
         if callable(draw_scene_skeleton):
             try:

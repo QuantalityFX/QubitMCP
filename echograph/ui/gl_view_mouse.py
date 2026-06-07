@@ -25,6 +25,9 @@ _MOUSE_METHOD_NAMES = [
     'mousePressEvent',
     '_handle_mouse_press_moderngl',
     '_handle_mouse_retarget_viewport',
+    '_mesh_box_select_event_pos',
+    '_mesh_box_select_active_mode',
+    '_handle_mouse_press_moderngl_mesh_box_select_start',
     '_handle_mouse_press_moderngl_retarget_joint',
     '_handle_mouse_press_moderngl_left_gizmo',
     '_handle_mouse_press_moderngl_left_gizmo_build_context',
@@ -142,6 +145,7 @@ _MOUSE_METHOD_NAMES = [
     'mouseMoveEvent',
     '_handle_mouse_move_moderngl',
     '_handle_mouse_move_moderngl_retarget_drag',
+    '_handle_mouse_move_moderngl_mesh_box_select_drag',
     '_handle_mouse_move_moderngl_fps_nav',
     '_handle_mouse_move_moderngl_fps_nav_active',
     '_handle_mouse_move_moderngl_fps_nav_fly_look',
@@ -226,6 +230,8 @@ _MOUSE_METHOD_NAMES = [
     '_handle_mouse_release_rot_shared_axis',
     '_handle_mouse_release_moderngl',
     '_handle_mouse_release_moderngl_retarget_drag',
+    '_handle_mouse_release_moderngl_mesh_box_select',
+    '_handle_mouse_release_moderngl_mesh_box_select_apply',
     '_handle_mouse_release_moderngl_right_button_nav',
     '_handle_mouse_release_moderngl_end_xform_drag',
     '_handle_mouse_release_moderngl_commit_retarget_pose_if_needed',
@@ -328,24 +334,33 @@ def _handle_mouse_press_moderngl(self, e):
             alt_pressed = bool(e.modifiers() & QtCore.Qt.AltModifier)
         except Exception:
             alt_pressed = False
-        prefer_gizmo = False
+        mesh_element_mode = False
         try:
-            owner = str(getattr(self, "_xform_gizmo_owner", "") or "").strip()
-            owner_kind = str(getattr(self, "_xform_gizmo_owner_kind", "") or "").strip().lower()
-            if owner and owner_kind == "scene_skeleton_joint":
-                prefer_gizmo = True
-            elif owner:
-                renderer = getattr(self, "_mgl_renderer", None) or self
-                decode_joint = getattr(renderer, "_mgl_scene_skeleton_decode_joint_owner", None)
-                prefer_gizmo = bool(callable(decode_joint) and decode_joint(owner))
+            mode = str(getattr(self, "_mesh_select_mode", "") or "").strip().lower()
+            mesh_element_mode = mode in {"object", "point", "edge", "face"}
         except Exception:
-            prefer_gizmo = False
-        if bool(prefer_gizmo) and self._handle_mouse_press_moderngl_left_gizmo(e):
+            mesh_element_mode = False
+        if self._handle_mouse_press_moderngl_mesh_box_select_start(e, alt_pressed):
             return True
-        if self._handle_mouse_press_moderngl_retarget_joint(e, alt_pressed):
-            return True
-        if (not bool(prefer_gizmo)) and self._handle_mouse_press_moderngl_left_gizmo(e):
-            return True
+        prefer_gizmo = False
+        if not mesh_element_mode:
+            try:
+                owner = str(getattr(self, "_xform_gizmo_owner", "") or "").strip()
+                owner_kind = str(getattr(self, "_xform_gizmo_owner_kind", "") or "").strip().lower()
+                if owner and owner_kind == "scene_skeleton_joint":
+                    prefer_gizmo = True
+                elif owner:
+                    renderer = getattr(self, "_mgl_renderer", None) or self
+                    decode_joint = getattr(renderer, "_mgl_scene_skeleton_decode_joint_owner", None)
+                    prefer_gizmo = bool(callable(decode_joint) and decode_joint(owner))
+            except Exception:
+                prefer_gizmo = False
+            if bool(prefer_gizmo) and self._handle_mouse_press_moderngl_left_gizmo(e):
+                return True
+            if self._handle_mouse_press_moderngl_retarget_joint(e, alt_pressed):
+                return True
+            if (not bool(prefer_gizmo)) and self._handle_mouse_press_moderngl_left_gizmo(e):
+                return True
         if self._handle_mouse_press_moderngl_left_orbit_start(e, alt_pressed):
             return True
         if self._handle_mouse_press_moderngl_left_pick_start(e, alt_pressed):
@@ -371,6 +386,54 @@ def _handle_mouse_retarget_viewport(self, e):
         int(float(self.width()) * dpr),
         int(float(self.height()) * dpr),
     )
+
+def _mesh_box_select_event_pos(self, e):
+    try:
+        return QtCore.QPointF(e.position())
+    except Exception:
+        try:
+            return QtCore.QPointF(float(e.x()), float(e.y()))
+        except Exception:
+            return QtCore.QPointF(0.0, 0.0)
+
+def _mesh_box_select_active_mode(self) -> str:
+    if not bool(getattr(self, "_mesh_box_select_enabled", False)):
+        return ""
+    mode = str(getattr(self, "_mesh_select_mode", "") or "").strip().lower()
+    if mode in {"point", "edge", "face"}:
+        return mode
+    return ""
+
+def _handle_mouse_press_moderngl_mesh_box_select_start(self, e, alt_pressed):
+    if bool(alt_pressed):
+        return False
+    if e.button() != QtCore.Qt.LeftButton:
+        return False
+    mode = self._mesh_box_select_active_mode()
+    if not mode:
+        return False
+    pos = self._mesh_box_select_event_pos(e)
+    self._mesh_box_select_drag = {
+        "mode": mode,
+        "start": QtCore.QPointF(pos),
+        "current": QtCore.QPointF(pos),
+        "active": False,
+    }
+    self._mgl_pick_press_pos = e.pos()
+    try:
+        self._set_mesh_element_hover(None)
+    except Exception:
+        pass
+    try:
+        self.setCursor(QtCore.Qt.CrossCursor)
+    except Exception:
+        pass
+    try:
+        self.update()
+    except Exception:
+        pass
+    e.accept()
+    return True
 
 def _handle_mouse_press_moderngl_retarget_joint(self, e, alt_pressed):
     if e.button() not in (QtCore.Qt.LeftButton, QtCore.Qt.RightButton) or bool(alt_pressed):
@@ -2688,6 +2751,14 @@ def _handle_mouse_move_moderngl(self, e, _rot_dbg):
         if self._handle_mouse_move_moderngl_retarget_drag(e):
             return True
 
+        if self._handle_mouse_move_moderngl_mesh_box_select_drag(e):
+            return True
+
+        try:
+            self._update_mesh_element_hover_from_event(e)
+        except Exception:
+            pass
+
         self._log_mouse_move_rot_shared_state(_rot_dbg)
         self._update_mouse_move_xform_hover()
 
@@ -2726,6 +2797,40 @@ def _handle_mouse_move_moderngl_retarget_drag(self, e):
             drag["target_hover"] = pick(px, py, vw, vh, role="target")
         except Exception:
             drag["target_hover"] = None
+    try:
+        self.setCursor(QtCore.Qt.CrossCursor)
+    except Exception:
+        pass
+    try:
+        self.update()
+    except Exception:
+        pass
+    e.accept()
+    return True
+
+def _handle_mouse_move_moderngl_mesh_box_select_drag(self, e):
+    drag = getattr(self, "_mesh_box_select_drag", None)
+    if not isinstance(drag, dict):
+        return False
+    try:
+        if not bool(e.buttons() & QtCore.Qt.LeftButton):
+            return False
+    except Exception:
+        return False
+    pos = self._mesh_box_select_event_pos(e)
+    drag["current"] = QtCore.QPointF(pos)
+    try:
+        start = drag.get("start")
+        dx = abs(float(pos.x()) - float(start.x()))
+        dy = abs(float(pos.y()) - float(start.y()))
+        drag["active"] = bool(dx > 3.0 or dy > 3.0)
+    except Exception:
+        drag["active"] = True
+    self._mesh_box_select_drag = drag
+    try:
+        self._set_mesh_element_hover(None)
+    except Exception:
+        pass
     try:
         self.setCursor(QtCore.Qt.CrossCursor)
     except Exception:
@@ -4334,6 +4439,9 @@ def _handle_mouse_release_moderngl(self, e):
         if self._handle_mouse_release_moderngl_end_xform_drag(e):
             return True
 
+        if self._handle_mouse_release_moderngl_mesh_box_select(e):
+            return True
+
         # --- 2) Normal click-pick (only if it was a click, not a drag) ---
         self._handle_mouse_release_moderngl_click_pick(e)
 
@@ -4400,6 +4508,104 @@ def _handle_mouse_release_moderngl_retarget_drag(self, e):
         pass
     e.accept()
     return True
+
+def _handle_mouse_release_moderngl_mesh_box_select(self, e):
+    drag = getattr(self, "_mesh_box_select_drag", None)
+    if not isinstance(drag, dict):
+        return False
+    if e.button() != QtCore.Qt.LeftButton:
+        return False
+    start = drag.get("start")
+    current = self._mesh_box_select_event_pos(e)
+    try:
+        dx = abs(float(current.x()) - float(start.x()))
+        dy = abs(float(current.y()) - float(start.y()))
+    except Exception:
+        dx = dy = 0.0
+    self._mesh_box_select_drag = None
+    try:
+        self.update()
+    except Exception:
+        pass
+    if dx <= 8.0 and dy <= 8.0:
+        return False
+    self._handle_mouse_release_moderngl_mesh_box_select_apply(
+        start=start,
+        current=current,
+        mode=str(drag.get("mode") or self._mesh_box_select_active_mode() or "").strip().lower(),
+    )
+    try:
+        self._mgl_pick_press_pos = None
+    except Exception:
+        pass
+    try:
+        self.setCursor(QtCore.Qt.ArrowCursor)
+    except Exception:
+        pass
+    try:
+        if QtWidgets.QApplication.mouseGrabber() is self:
+            self.releaseMouse()
+    except Exception:
+        pass
+    e.accept()
+    return True
+
+def _handle_mouse_release_moderngl_mesh_box_select_apply(self, *, start, current, mode: str):
+    if mode not in {"point", "edge", "face"}:
+        return
+    renderer = getattr(self, "_mgl_renderer", None) or self
+    selector = getattr(renderer, "pick_mesh_elements_in_rect", None)
+    elems = []
+    if callable(selector):
+        try:
+            dpr = self._handle_mouse_release_moderngl_click_pick_dpr()
+            x0 = int(float(start.x()) * dpr)
+            y0 = int(float(start.y()) * dpr)
+            x1 = int(float(current.x()) * dpr)
+            y1 = int(float(current.y()) * dpr)
+            vw = int(float(self.width()) * dpr)
+            vh = int(float(self.height()) * dpr)
+            elems = selector(
+                x0,
+                y0,
+                x1,
+                y1,
+                vw,
+                vh,
+                mode=mode,
+                face_policy=str(getattr(self, "_mesh_box_select_face_policy", "front_back") or "front_back"),
+            )
+        except Exception:
+            elems = []
+    if isinstance(elems, tuple):
+        elems = list(elems)
+    if not isinstance(elems, list):
+        elems = []
+    try:
+        self._set_mesh_element_selection_many(elems)
+        self._set_mesh_element_hover(None)
+    except Exception:
+        pass
+    owners = []
+    seen = set()
+    for elem in elems:
+        if not isinstance(elem, dict):
+            continue
+        owner = str(elem.get("owner") or "").strip()
+        owner_l = owner.lower()
+        if owner and owner_l not in seen:
+            seen.add(owner_l)
+            owners.append(owner)
+    if len(owners) == 1:
+        try:
+            self._handle_mouse_release_moderngl_pick_owner(owners[0], renderer)
+        except Exception:
+            pass
+    else:
+        try:
+            self.update()
+        except Exception:
+            pass
 
 def _handle_mouse_release_moderngl_right_button_nav(self):
     try:
@@ -4556,10 +4762,19 @@ def _handle_mouse_release_moderngl_click_pick(self, e):
         if not self._handle_mouse_release_moderngl_click_pick_is_click(e):
             return
         renderer = getattr(self, "_mgl_renderer", None) or self
+        try:
+            self._mgl_mesh_element_click_handled = False
+        except Exception:
+            pass
         owner = self._handle_mouse_release_moderngl_click_pick_owner(
             e=e,
             renderer=renderer,
         )
+        try:
+            if bool(getattr(self, "_mgl_mesh_element_click_handled", False)):
+                return
+        except Exception:
+            pass
         self._handle_mouse_release_moderngl_click_pick_apply(owner=owner, renderer=renderer)
     except Exception:
         pass
@@ -4578,6 +4793,36 @@ def _handle_mouse_release_moderngl_click_pick_owner(self, *, e, renderer):
         return None
 
     px, py, vw, vh = self._handle_mouse_release_moderngl_click_pick_viewport(e=e)
+    mode = str(getattr(self, "_mesh_select_mode", "") or "").strip().lower()
+    if mode in {"object", "point", "edge", "face"}:
+        pick_elem = getattr(renderer, "pick_mesh_element_at", None)
+        elem = None
+        if callable(pick_elem):
+            try:
+                elem = pick_elem(px, py, vw, vh, mode=mode)
+            except Exception:
+                elem = None
+        if isinstance(elem, dict):
+            try:
+                self._set_mesh_element_selection(elem)
+                self._set_mesh_element_hover(None)
+            except Exception:
+                pass
+            owner = str(elem.get("owner") or "").strip()
+            if mode == "object":
+                return owner or None
+            if owner:
+                try:
+                    self._mgl_mesh_element_click_handled = True
+                except Exception:
+                    pass
+                self._handle_mouse_release_moderngl_pick_owner(owner, renderer)
+                return None
+        try:
+            self._clear_mesh_element_selection()
+        except Exception:
+            pass
+        return None
     pick_hit = getattr(renderer, "pick_hit_at", None)
     if callable(pick_hit):
         owner, _hit = pick_hit(px, py, vw, vh)
@@ -4642,6 +4887,11 @@ def _handle_mouse_release_moderngl_pick_owner_select(self, *, owner, renderer):
         self._xform_gizmo_owner_kind = kind
     except Exception:
         self._xform_gizmo_owner_kind = None
+    try:
+        if str(getattr(self, "_mesh_select_mode", "") or "").strip().lower() == "object":
+            self._set_mesh_element_selection({"mode": "object", "owner": owner})
+    except Exception:
+        pass
 
 def _handle_mouse_release_moderngl_pick_owner_place_gizmo(self, *, owner, renderer):
     try:
@@ -4788,6 +5038,10 @@ def _handle_mouse_release_moderngl_pick_empty(self):
     # Clicked empty space: clear selection + hide gizmo
     try:
         self._mgl_log("scene: click empty -> clear selection")
+    except Exception:
+        pass
+    try:
+        self._clear_mesh_element_selection()
     except Exception:
         pass
 
