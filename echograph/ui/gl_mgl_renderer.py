@@ -8384,6 +8384,130 @@ class MGLRendererMixin:
         except Exception:
             return (None, None)
 
+    def get_mesh_selection_center(self, elems=None):
+        if np is None:
+            return None
+        if elems is None:
+            selected_many = getattr(self, "_mesh_select_selected_many", None)
+            if isinstance(selected_many, (list, tuple)) and selected_many:
+                elems = list(selected_many)
+            else:
+                selected = getattr(self, "_mesh_select_selected", None)
+                elems = [selected] if isinstance(selected, dict) else []
+        if not isinstance(elems, (list, tuple)):
+            return None
+
+        clean = []
+        seen = set()
+        for elem in elems:
+            if not isinstance(elem, dict):
+                continue
+            key = None
+            try:
+                key_fn = getattr(self, "_mesh_element_key", None)
+                if callable(key_fn):
+                    key = key_fn(elem)
+            except Exception:
+                key = None
+            if key is not None and key in seen:
+                continue
+            if key is not None:
+                seen.add(key)
+            clean.append(elem)
+        if not clean:
+            return None
+
+        if len(clean) != 1:
+            try:
+                bmin, bmax = self.get_mesh_selection_bounds(clean)
+                if bmin is None or bmax is None:
+                    return None
+                bmin = np.asarray(bmin, dtype=np.float32).reshape(-1)[:3]
+                bmax = np.asarray(bmax, dtype=np.float32).reshape(-1)[:3]
+                if bmin.shape[0] < 3 or bmax.shape[0] < 3:
+                    return None
+                center = (np.minimum(bmin, bmax) + np.maximum(bmin, bmax)) * 0.5
+                if not bool(np.all(np.isfinite(center))):
+                    return None
+                return center.astype(np.float32, copy=False)
+            except Exception:
+                return None
+
+        elem = clean[0]
+        mode = str(elem.get("mode") or "").strip().lower()
+        owner = str(elem.get("owner") or "").strip()
+        if not owner:
+            return None
+        if mode == "object":
+            try:
+                bmin, bmax = self.get_scene_owner_bounds(owner)
+                if bmin is None or bmax is None:
+                    return None
+                bmin = np.asarray(bmin, dtype=np.float32).reshape(-1)[:3]
+                bmax = np.asarray(bmax, dtype=np.float32).reshape(-1)[:3]
+                center = (np.minimum(bmin, bmax) + np.maximum(bmin, bmax)) * 0.5
+                if bool(np.all(np.isfinite(center))):
+                    return center.astype(np.float32, copy=False)
+            except Exception:
+                return None
+
+        topo = self._mgl_mesh_topology_for_owner(owner)
+        if not isinstance(topo, dict):
+            return None
+        try:
+            points = np.asarray(topo.get("points"), dtype=np.float32).reshape(-1, 3)
+        except Exception:
+            return None
+        if points.size == 0:
+            return None
+        local = None
+        if mode == "point":
+            try:
+                idx = int(elem.get("vertex_index"))
+                if 0 <= idx < points.shape[0]:
+                    local = points[idx : idx + 1]
+            except Exception:
+                local = None
+        elif mode == "edge":
+            try:
+                edge = elem.get("edge")
+                a = int(edge[0])
+                b = int(edge[1])
+                if 0 <= a < points.shape[0] and 0 <= b < points.shape[0]:
+                    local = points[[a, b]]
+            except Exception:
+                local = None
+        elif mode == "face":
+            try:
+                triangles = np.asarray(topo.get("triangles"), dtype=np.int64).reshape(-1, 3)
+                face_index = int(elem.get("face_index"))
+                if face_index < 0 or face_index >= triangles.shape[0]:
+                    raise IndexError("face index out of range")
+                tri = triangles[face_index]
+            except Exception:
+                try:
+                    tri = np.asarray(elem.get("indices"), dtype=np.int64).reshape(-1)[:3]
+                except Exception:
+                    tri = None
+            try:
+                tri = np.asarray(tri, dtype=np.int64).reshape(-1)[:3]
+                if tri.size >= 3 and bool(np.all((tri >= 0) & (tri < points.shape[0]))):
+                    local = points[tri]
+            except Exception:
+                local = None
+        if local is None:
+            return None
+        world = self._mgl_transform_owner_local_points_world(owner, topo, local)
+        if world is None or not getattr(world, "size", 0):
+            return None
+        try:
+            center = np.asarray(world, dtype=np.float32).reshape(-1, 3).mean(axis=0)
+            if not bool(np.all(np.isfinite(center))):
+                return None
+            return center.astype(np.float32, copy=False)
+        except Exception:
+            return None
+
     def _mgl_set_scene_item_visibility(self, key: str, visible: bool) -> None:
         scene = getattr(self, "_mgl_scene", None)
         if scene is None or not key:

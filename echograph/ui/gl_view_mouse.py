@@ -4863,6 +4863,10 @@ def _handle_mouse_release_moderngl_pick_owner(self, owner, renderer):
         self._xform_gizmo_pos_locked = False
     except Exception:
         pass
+    try:
+        self._sync_mesh_selection_gizmo_to_selection()
+    except Exception:
+        pass
 
     self.update()
 

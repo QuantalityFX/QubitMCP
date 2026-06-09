@@ -1934,6 +1934,10 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._mesh_select_selected_many = [next_elem] if isinstance(next_elem, dict) else []
         if self._mesh_element_key(getattr(self, "_mesh_select_hover", None)) == new_key:
             self._mesh_select_hover = None
+        try:
+            self._sync_mesh_selection_gizmo_to_selection()
+        except Exception:
+            pass
         if old_key != new_key:
             try:
                 self.update()
@@ -1973,11 +1977,64 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         hover_key = self._mesh_element_key(getattr(self, "_mesh_select_hover", None))
         if hover_key in new_keys:
             self._mesh_select_hover = None
+        try:
+            self._sync_mesh_selection_gizmo_to_selection()
+        except Exception:
+            pass
         if old_keys != new_keys:
             try:
                 self.update()
             except Exception:
                 pass
+
+    def _mesh_selected_elements(self) -> List[dict]:
+        many = getattr(self, "_mesh_select_selected_many", None)
+        if isinstance(many, (list, tuple)) and many:
+            return [dict(elem) for elem in many if isinstance(elem, dict)]
+        selected = getattr(self, "_mesh_select_selected", None)
+        return [dict(selected)] if isinstance(selected, dict) else []
+
+    def _sync_mesh_selection_gizmo_to_selection(self) -> bool:
+        elems = self._mesh_selected_elements()
+        if not elems:
+            return False
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        get_center = getattr(renderer, "get_mesh_selection_center", None)
+        if not callable(get_center):
+            return False
+        try:
+            center = get_center(elems)
+        except Exception:
+            center = None
+        if center is None:
+            return False
+        try:
+            center = np.asarray(center, dtype=np.float32).reshape(-1)[:3]
+            if center.shape[0] < 3 or not bool(np.all(np.isfinite(center))):
+                return False
+        except Exception:
+            return False
+
+        owners = []
+        seen = set()
+        for elem in elems:
+            owner = str(elem.get("owner") or "").strip()
+            owner_l = owner.lower()
+            if owner and owner_l not in seen:
+                seen.add(owner_l)
+                owners.append(owner)
+        if owners:
+            current = str(getattr(self, "_xform_gizmo_owner", "") or "").strip()
+            current_l = current.lower()
+            if current_l not in seen:
+                self._xform_gizmo_owner = owners[0]
+            try:
+                self._xform_gizmo_owner_kind = "mesh"
+            except Exception:
+                pass
+        self._xform_gizmo_pos = (float(center[0]), float(center[1]), float(center[2]))
+        self._xform_gizmo_pos_locked = True
+        return True
 
     def _set_mesh_element_hover(self, elem) -> None:
         next_elem = dict(elem) if isinstance(elem, dict) else None
