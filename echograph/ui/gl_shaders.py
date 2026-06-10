@@ -828,6 +828,33 @@ void main() {
 }
 """,
 
+    "overlay_point_vertex": """
+#version 330
+uniform mat4 Mvp;
+uniform float PointSize;
+in vec3 in_position;
+in vec4 in_color;
+out vec4 v_color;
+void main() {
+    gl_Position = Mvp * vec4(in_position, 1.0);
+    gl_PointSize = PointSize;
+    v_color = in_color;
+}
+""",
+
+    "overlay_point_fragment": """
+#version 330
+in vec4 v_color;
+out vec4 f_color;
+void main() {
+    vec2 p = gl_PointCoord * 2.0 - 1.0;
+    float r2 = dot(p, p);
+    if (r2 > 1.0) discard;
+    float edge = 1.0 - smoothstep(0.72, 1.0, r2);
+    f_color = vec4(v_color.rgb, v_color.a * edge);
+}
+""",
+
     "splat_vertex": """
 #version 330
 uniform mat4 Mvp;

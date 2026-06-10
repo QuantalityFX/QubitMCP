@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 from typing import Any, Optional
+from echograph.services.profiler import profile_scope
 
 try:
     import numpy as np
@@ -41,7 +42,8 @@ def paint_gl(view: Any) -> None:
 
     # ModernGL path (keep clean)
     if getattr(view, "_use_moderngl", False):
-        view._paint_mgl()
+        with profile_scope("render.3d.paint_helper.mgl"):
+            view._paint_mgl()
 
         # Make sure we're drawing into the visible Qt FBO
         try:
@@ -234,6 +236,13 @@ def paint_gl(view: Any) -> None:
                             hover_p1 = None
                             center = None
                             axis_proj = {}
+                            suppress_hover_pick = False
+                            try:
+                                suppress_hover_pick = bool(QtGui.QGuiApplication.mouseButtons()) and not bool(
+                                    getattr(view, "_xform_dragging", False)
+                                )
+                            except Exception:
+                                suppress_hover_pick = False
 
                             def project_local(x, y, z):
                                 r3 = mvp.row(3)
@@ -266,19 +275,28 @@ def paint_gl(view: Any) -> None:
                                 dy = py2 - cy
                                 return (dx * dx + dy * dy) ** 0.5
 
-                            if isinstance(mouse_px, QtCore.QPointF):
-                                center = project_local(0.0, 0.0, 0.0)
-                                if center is not None:
-                                    axis_len = 1.0
-                                    line_end = axis_len - 0.18
-                                    cube_size = 0.12
-                                    axis_end = line_end + (cube_size * 0.5) if mode == "scale" else line_end
+                            center = project_local(0.0, 0.0, 0.0)
+                            if center is not None:
+                                axis_len = 1.0
+                                line_end = axis_len - 0.18
+                                cube_size = 0.12
+                                axis_end = line_end + (cube_size * 0.5) if mode == "scale" else line_end
 
-                                    axis_proj = {
-                                        "x": project_local(axis_end, 0.0, 0.0),
-                                        "y": project_local(0.0, axis_end, 0.0),
-                                        "z": project_local(0.0, 0.0, axis_end),
-                                    }
+                                axis_proj = {
+                                    "x": project_local(axis_end, 0.0, 0.0),
+                                    "y": project_local(0.0, axis_end, 0.0),
+                                    "z": project_local(0.0, 0.0, axis_end),
+                                }
+
+                            try:
+                                setattr(view, "_xform_overlay_mode", mode)
+                                setattr(view, "_xform_overlay_center_px", center)
+                                setattr(view, "_xform_overlay_axis_proj", dict(axis_proj) if axis_proj else None)
+                            except Exception:
+                                pass
+
+                            if isinstance(mouse_px, QtCore.QPointF) and not suppress_hover_pick:
+                                if center is not None:
 
                                     dx0 = float(mouse_px.x()) - float(center.x())
                                     dy0 = float(mouse_px.y()) - float(center.y())
@@ -331,105 +349,6 @@ def paint_gl(view: Any) -> None:
                             else:
                                 setattr(view, "_xform_hover_axis_proj", None)
 
-                            if (
-                                gizmo_visible
-                                and (
-                                    (hover_axis and center is not None and hover_p1 is not None)
-                                    or (hover_center and center is not None)
-                                )
-                            ):
-                                painter = QtGui.QPainter(view)
-                                if painter.isActive():
-                                    painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
-
-                                    col_map = {
-                                        "x": QtGui.QColor(255, 90, 90),
-                                        "y": QtGui.QColor(90, 255, 90),
-                                        "z": QtGui.QColor(90, 160, 255),
-                                    }
-
-                                    def draw_line(p0, p1, base_col):
-                                        for width, alpha in ((8, 25), (5, 60)):
-                                            c = QtGui.QColor(base_col)
-                                            c.setAlpha(int(alpha))
-                                            pen = QtGui.QPen(c)
-                                            pen.setWidth(int(width))
-                                            pen.setCapStyle(QtCore.Qt.RoundCap)
-                                            pen.setJoinStyle(QtCore.Qt.RoundJoin)
-                                            painter.setPen(pen)
-                                            painter.drawLine(p0, p1)
-
-                                        pen = QtGui.QPen(base_col)
-                                        pen.setWidth(3)
-                                        pen.setCapStyle(QtCore.Qt.RoundCap)
-                                        pen.setJoinStyle(QtCore.Qt.RoundJoin)
-                                        painter.setPen(pen)
-                                        painter.drawLine(p0, p1)
-
-                                    def draw_cube_marker(pt, size, base_col, outline_col):
-                                        half = size * 0.5
-                                        rect = QtCore.QRectF(
-                                            float(pt.x() - half),
-                                            float(pt.y() - half),
-                                            float(size),
-                                            float(size),
-                                        )
-                                        painter.setPen(QtGui.QPen(outline_col))
-                                        painter.setBrush(base_col)
-                                        painter.drawRect(rect)
-                                        inner = rect.adjusted(2.0, 2.0, -2.0, -2.0)
-                                        painter.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 120)))
-                                        painter.setBrush(QtCore.Qt.NoBrush)
-                                        painter.drawRect(inner)
-
-                                    if mode == "scale" and hover_center and center is not None and axis_proj:
-                                        # highlight all axes + all cubes when center is hovered
-                                        for name, p1 in axis_proj.items():
-                                            if p1 is None:
-                                                continue
-                                            base_col = col_map.get(name, QtGui.QColor(255, 255, 255))
-                                            draw_line(center, p1, base_col)
-                                            draw_cube_marker(
-                                                p1,
-                                                10.0,
-                                                QtGui.QColor(base_col.red(), base_col.green(), base_col.blue(), 80),
-                                                QtGui.QColor(base_col.red(), base_col.green(), base_col.blue(), 200),
-                                            )
-                                        draw_cube_marker(
-                                            center,
-                                            12.0,
-                                            QtGui.QColor(180, 90, 210, 110),
-                                            QtGui.QColor(230, 200, 255, 200),
-                                        )
-                                    else:
-                                        if hover_axis and center is not None and hover_p1 is not None:
-                                            base_col = col_map.get(hover_axis, QtGui.QColor(255, 255, 255))
-                                            draw_line(center, hover_p1, base_col)
-                                            if mode == "scale":
-                                                draw_cube_marker(
-                                                    hover_p1,
-                                                    10.0,
-                                                    QtGui.QColor(base_col.red(), base_col.green(), base_col.blue(), 80),
-                                                    QtGui.QColor(base_col.red(), base_col.green(), base_col.blue(), 200),
-                                                )
-
-                                        if hover_center and center is not None:
-                                            if mode == "translate":
-                                                draw_cube_marker(
-                                                    center,
-                                                    14.0,
-                                                    QtGui.QColor(180, 90, 210, 110),
-                                                    QtGui.QColor(230, 200, 255, 220),
-                                                )
-                                            else:
-                                                draw_cube_marker(
-                                                    center,
-                                                    10.0,
-                                                    QtGui.QColor(180, 90, 210, 90),
-                                                    QtGui.QColor(230, 200, 255, 200),
-                                                )
-
-                                    painter.end()
                         else:
                             setattr(view, "_xform_hover_axis", None)
                             setattr(view, "_xform_hover_center", False)

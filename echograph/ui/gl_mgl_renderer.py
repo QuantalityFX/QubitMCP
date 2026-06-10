@@ -55,6 +55,7 @@ from .gl_scene import MGLSceneItem
 from .gl_shaders import SHADERS
 from .gl_types import MeshArrays, SubMeshData
 from echograph.material_debug import material_debug_log as _material_debug_log
+from echograph.services.profiler import profile_scope
 from echograph.rigging.fbx_stage3_ingest import ingest_fbx_bind_data
 from echograph.rigging.fbx_stage4_animation import ingest_fbx_animation_data
 from echograph.rigging.bvh_ingest import ingest_bvh_animation_data
@@ -99,6 +100,24 @@ void main() {
     v_world_pos = vec3(0.0, 0.0, 0.0);
     v_color = vec4(1.0);
     v_shadow_pos = vec4(0.0, 0.0, 0.0, 1.0);
+}
+"""
+
+_MESH_SELECTION_OUTLINE_VERT = """
+#version 330
+uniform mat4 Mvp;
+in vec3 in_position;
+void main() {
+    gl_Position = Mvp * vec4(in_position, 1.0);
+}
+"""
+
+_MESH_SELECTION_OUTLINE_FRAG = """
+#version 330
+uniform vec4 Color;
+out vec4 f_color;
+void main() {
+    f_color = Color;
 }
 """
 
@@ -6597,13 +6616,25 @@ class MGLRendererMixin:
     def _draw_mesh_selection_qt_overlay(self, painter: QtGui.QPainter) -> None:
         hover_color = getattr(self, "_mesh_select_hover_color", (0.0, 0.72, 1.0, 0.74))
         selected_color = getattr(self, "_mesh_select_selected_color", (1.0, 0.48, 0.0, 0.92))
+        points_drawn_in_mgl = bool(
+            getattr(self, "_mesh_selection_points_drawn_in_mgl", False)
+            and getattr(self, "_mesh_selection_skip_qt_selected_points", False)
+        )
+        selected_point_sets = getattr(self, "_mesh_select_selected_point_index_sets_by_owner", None)
+        if not isinstance(selected_point_sets, dict):
+            selected_point_sets = {}
         entries = []
         selected_many = getattr(self, "_mesh_select_selected_many", None)
         selected_keys = set()
         key_fn = getattr(self, "_mesh_element_key", None)
+        cached_selected_point_groups = getattr(self, "_mesh_select_selected_point_indices_by_owner", None)
+        cached_selected_point_ids = isinstance(cached_selected_point_groups, dict) and bool(cached_selected_point_groups)
         if isinstance(selected_many, (list, tuple)) and selected_many:
             for elem in selected_many:
                 if not isinstance(elem, dict):
+                    continue
+                elem_mode = str(elem.get("mode") or "").strip().lower()
+                if elem_mode == "point" and (points_drawn_in_mgl or cached_selected_point_ids):
                     continue
                 if callable(key_fn):
                     try:
@@ -6617,6 +6648,10 @@ class MGLRendererMixin:
                 entries.append((elem, selected_color, 3.8))
         else:
             selected = getattr(self, "_mesh_select_selected", None)
+            if isinstance(selected, dict):
+                elem_mode = str(selected.get("mode") or "").strip().lower()
+                if points_drawn_in_mgl and elem_mode == "point":
+                    selected = None
             if isinstance(selected, dict):
                 if callable(key_fn):
                     try:
@@ -6635,15 +6670,101 @@ class MGLRendererMixin:
                 except Exception:
                     hover_selected = False
             if not hover_selected:
+                try:
+                    if str(hover.get("mode") or "").strip().lower() == "point":
+                        owner_l = str(hover.get("owner") or "").strip().lower()
+                        idx = int(hover.get("vertex_index"))
+                        point_set = selected_point_sets.get(owner_l)
+                        hover_selected = isinstance(point_set, set) and idx in point_set
+                except Exception:
+                    pass
+            if not hover_selected:
                 entries.insert(0, (hover, hover_color, 3.2))
         point_entries = []
+        point_groups = {}
+        if cached_selected_point_ids and not points_drawn_in_mgl:
+            try:
+                selected_color_key = tuple(float(v) for v in selected_color)
+            except Exception:
+                selected_color_key = (1.0, 0.48, 0.0, 0.92)
+            for owner, indices in cached_selected_point_groups.items():
+                owner_s = str(owner or "").strip()
+                if not owner_s or indices is None:
+                    continue
+                try:
+                    idx_list = [int(idx) for idx in indices]
+                except Exception:
+                    idx_list = []
+                if idx_list:
+                    point_groups.setdefault((owner_s, selected_color_key, 3.8), []).extend(idx_list)
         for elem, color, radius in entries:
             if not isinstance(elem, dict) or str(elem.get("mode") or "").strip().lower() != "point":
                 continue
-            pos = self._mesh_selection_point_screen_pos(elem)
-            if pos is None:
+            owner = str(elem.get("owner") or "").strip()
+            if not owner:
                 continue
-            point_entries.append((pos, color, float(radius)))
+            try:
+                idx = int(elem.get("vertex_index"))
+            except Exception:
+                continue
+            group_key = (owner, tuple(float(v) for v in color), float(radius))
+            point_groups.setdefault(group_key, []).append(idx)
+        if point_groups:
+            try:
+                dpr = float(self.devicePixelRatioF())
+            except Exception:
+                try:
+                    dpr = float(self.devicePixelRatio())
+                except Exception:
+                    dpr = 1.0
+            dpr = max(1.0e-6, float(dpr))
+            try:
+                viewport_w = int(float(self.width()) * dpr)
+                viewport_h = int(float(self.height()) * dpr)
+            except Exception:
+                viewport_w = viewport_h = 0
+            projected_by_owner = {}
+            if viewport_w > 0 and viewport_h > 0:
+                for (owner, color, radius), indices in point_groups.items():
+                    topo = self._mgl_mesh_topology_for_owner(owner)
+                    if not isinstance(topo, dict):
+                        continue
+                    projected = projected_by_owner.get(owner)
+                    if projected is None:
+                        projected = self._mgl_project_owner_points_device(owner, topo, viewport_w, viewport_h)
+                        projected_by_owner[owner] = projected if isinstance(projected, dict) else False
+                    if not isinstance(projected, dict):
+                        continue
+                    try:
+                        valid = np.asarray(projected.get("valid"), dtype=bool).reshape(-1)
+                        xs = np.asarray(projected.get("x"), dtype=np.float32).reshape(-1)
+                        ys = np.asarray(projected.get("y"), dtype=np.float32).reshape(-1)
+                        idx_arr = np.asarray(indices, dtype=np.int64).reshape(-1)
+                        if idx_arr.size <= 0:
+                            continue
+                        in_range = (idx_arr >= 0) & (idx_arr < valid.size) & (idx_arr < xs.size) & (idx_arr < ys.size)
+                        if not bool(np.any(in_range)):
+                            continue
+                        idx_arr = idx_arr[in_range]
+                        try:
+                            finite = np.asarray(projected.get("finite"), dtype=bool).reshape(-1)
+                            screen_valid = (
+                                (idx_arr < finite.size)
+                                & finite[idx_arr]
+                                & (xs[idx_arr] >= -24.0)
+                                & (xs[idx_arr] <= float(viewport_w) + 24.0)
+                                & (ys[idx_arr] >= -24.0)
+                                & (ys[idx_arr] <= float(viewport_h) + 24.0)
+                            )
+                            idx_arr = idx_arr[screen_valid]
+                        except Exception:
+                            idx_arr = idx_arr[valid[idx_arr]]
+                        if idx_arr.size <= 0:
+                            continue
+                        for x, y in zip(xs[idx_arr], ys[idx_arr]):
+                            point_entries.append(((float(x) / dpr, float(y) / dpr), color, float(radius)))
+                    except Exception:
+                        continue
         if not point_entries:
             return
         try:
@@ -6652,6 +6773,8 @@ class MGLRendererMixin:
             pass
         try:
             painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+            grouped_points = {}
+            chunk_size = 4096
             for (x, y), color, radius in point_entries:
                 try:
                     r = max(2.0, float(radius))
@@ -6665,20 +6788,63 @@ class MGLRendererMixin:
                 except Exception:
                     qcolor = QtGui.QColor(255, 122, 0, 235)
                     r = 3.8
-                outline = QtGui.QColor(0, 0, 0, 190)
-                glow = QtGui.QColor(qcolor)
-                glow.setAlpha(max(35, min(110, int(qcolor.alpha() * 0.36))))
-                painter.setPen(QtCore.Qt.NoPen)
-                painter.setBrush(QtGui.QBrush(glow))
-                painter.drawEllipse(QtCore.QPointF(float(x), float(y)), r + 1.8, r + 1.8)
-                pen = QtGui.QPen(outline, 1.25)
-                painter.setPen(pen)
-                painter.setBrush(QtGui.QBrush(qcolor))
-                painter.drawEllipse(QtCore.QPointF(float(x), float(y)), r, r)
-                highlight = QtGui.QColor(255, 255, 255, 120)
-                painter.setPen(QtGui.QPen(highlight, 0.75))
-                painter.setBrush(QtCore.Qt.NoBrush)
-                painter.drawEllipse(QtCore.QPointF(float(x) - r * 0.22, float(y) - r * 0.22), r * 0.45, r * 0.45)
+                point_key = (qcolor.rgba(), float(r))
+                group = grouped_points.get(point_key)
+                if group is None:
+                    group = {"color": qcolor, "radius": float(r), "points": []}
+                    grouped_points[point_key] = group
+                group["points"].append(QtCore.QPointF(float(x), float(y)))
+            stamp_cache = getattr(self, "_mesh_selection_point_stamp_cache", None)
+            if not isinstance(stamp_cache, dict):
+                stamp_cache = {}
+                self._mesh_selection_point_stamp_cache = stamp_cache
+            if len(stamp_cache) > 64:
+                stamp_cache.clear()
+
+            def _stamp_for(qcolor: QtGui.QColor, radius: float) -> QtGui.QPixmap:
+                try:
+                    r = max(1.0, float(radius))
+                except Exception:
+                    r = 3.8
+                key = (int(qcolor.rgba()), int(round(r * 100.0)))
+                pix = stamp_cache.get(key)
+                if isinstance(pix, QtGui.QPixmap) and not pix.isNull():
+                    return pix
+                size = max(4, int(math.ceil((r * 2.0) + 3.0)))
+                pix = QtGui.QPixmap(size, size)
+                pix.fill(QtCore.Qt.transparent)
+                sp = QtGui.QPainter(pix)
+                try:
+                    sp.setRenderHint(QtGui.QPainter.Antialiasing, True)
+                    sp.setPen(QtCore.Qt.NoPen)
+                    sp.setBrush(QtGui.QBrush(qcolor))
+                    pad = 1.0
+                    sp.drawEllipse(QtCore.QRectF(pad, pad, float(size) - (pad * 2.0), float(size) - (pad * 2.0)))
+                finally:
+                    sp.end()
+                stamp_cache[key] = pix
+                return pix
+
+            for group in grouped_points.values():
+                qcolor = group.get("color")
+                if not isinstance(qcolor, QtGui.QColor):
+                    continue
+                try:
+                    radius = max(1.0, float(group.get("radius", 3.8)))
+                except Exception:
+                    radius = 3.8
+                pix = _stamp_for(qcolor, radius)
+                if pix.isNull():
+                    continue
+                half_w = float(pix.width()) * 0.5
+                half_h = float(pix.height()) * 0.5
+                points = group.get("points", [])
+                for start in range(0, len(points), chunk_size):
+                    chunk = points[start : start + chunk_size]
+                    if not chunk:
+                        continue
+                    for pt in chunk:
+                        painter.drawPixmap(QtCore.QPointF(float(pt.x()) - half_w, float(pt.y()) - half_h), pix)
         finally:
             try:
                 painter.restore()
@@ -8236,6 +8402,29 @@ class MGLRendererMixin:
         z = np.array([0.0, 0.0, 0.0], dtype=np.float32)
         return (z, z)
 
+    def get_scene_owner_selection_bounds(self, owner: str):
+        key = str(owner or "").strip()
+        if not key or np is None:
+            return self.get_scene_owner_bounds(owner)
+        topo = self._mgl_mesh_topology_for_owner(key)
+        if isinstance(topo, dict):
+            try:
+                points = np.asarray(topo.get("points"), dtype=np.float32).reshape(-1, 3)
+            except Exception:
+                points = None
+            if points is not None and points.size:
+                try:
+                    world = self._mgl_transform_owner_local_points_world(key, topo, points)
+                    if world is not None and getattr(world, "size", 0):
+                        world = np.asarray(world, dtype=np.float32).reshape(-1, 3)
+                        finite = np.all(np.isfinite(world), axis=1)
+                        if bool(np.any(finite)):
+                            world = world[finite]
+                            return (world.min(axis=0).astype(np.float32), world.max(axis=0).astype(np.float32))
+                except Exception:
+                    pass
+        return self.get_scene_owner_bounds(key)
+
     def _mgl_transform_owner_local_points_world(self, owner: str, topo: dict, local_points):
         if np is None:
             return None
@@ -8280,6 +8469,7 @@ class MGLRendererMixin:
     def get_mesh_selection_bounds(self, elems=None):
         if np is None:
             return (None, None)
+        current_selection = elems is None
         if elems is None:
             selected_many = getattr(self, "_mesh_select_selected_many", None)
             if isinstance(selected_many, (list, tuple)) and selected_many:
@@ -8291,6 +8481,74 @@ class MGLRendererMixin:
             return (None, None)
 
         bounds_points = []
+        remaining_elems = []
+        point_groups = {}
+        cached_groups = getattr(self, "_mesh_select_selected_point_indices_by_owner", None)
+        use_cached_groups = False
+        cached_count = 0
+        if isinstance(cached_groups, dict) and cached_groups:
+            try:
+                cached_count = sum(len(indices) for indices in cached_groups.values() if indices is not None)
+                selected_many = getattr(self, "_mesh_select_selected_many", None)
+                use_cached_groups = bool(
+                    current_selection
+                    or (
+                        isinstance(selected_many, (list, tuple))
+                        and int(len(elems)) == int(len(selected_many))
+                        and int(cached_count) <= int(len(elems))
+                    )
+                )
+            except Exception:
+                use_cached_groups = False
+        if use_cached_groups:
+            for owner, indices in cached_groups.items():
+                try:
+                    idx_arr = [int(idx) for idx in indices]
+                except Exception:
+                    idx_arr = []
+                if idx_arr:
+                    point_groups[str(owner)] = set(idx_arr)
+            if int(cached_count) != int(len(elems)):
+                for elem in elems:
+                    if not isinstance(elem, dict):
+                        continue
+                    if str(elem.get("mode") or "").strip().lower() != "point":
+                        remaining_elems.append(elem)
+        else:
+            for elem in elems:
+                if not isinstance(elem, dict):
+                    continue
+                mode = str(elem.get("mode") or "").strip().lower()
+                if mode != "point":
+                    remaining_elems.append(elem)
+                    continue
+                owner = str(elem.get("owner") or "").strip()
+                if not owner:
+                    continue
+                try:
+                    idx = int(elem.get("vertex_index"))
+                except Exception:
+                    continue
+                group = point_groups.setdefault(owner, set())
+                group.add(idx)
+        for owner, indices in point_groups.items():
+            topo = self._mgl_mesh_topology_for_owner(owner)
+            if not isinstance(topo, dict):
+                continue
+            try:
+                points = np.asarray(topo.get("points"), dtype=np.float32).reshape(-1, 3)
+                idx_arr = np.asarray(sorted(indices), dtype=np.int64).reshape(-1)
+                if idx_arr.size <= 0 or points.shape[0] <= 0:
+                    continue
+                idx_arr = idx_arr[(idx_arr >= 0) & (idx_arr < points.shape[0])]
+                if idx_arr.size <= 0:
+                    continue
+                world = self._mgl_transform_owner_local_points_world(owner, topo, points[idx_arr])
+                if world is not None and getattr(world, "size", 0):
+                    bounds_points.append(np.asarray(world, dtype=np.float32).reshape(-1, 3))
+            except Exception:
+                continue
+        elems = remaining_elems
         seen = set()
         for elem in elems:
             if not isinstance(elem, dict):
@@ -8313,7 +8571,11 @@ class MGLRendererMixin:
 
             if mode == "object":
                 try:
-                    bmin, bmax = self.get_scene_owner_bounds(owner)
+                    get_object_bounds = getattr(self, "get_scene_owner_selection_bounds", None)
+                    if callable(get_object_bounds):
+                        bmin, bmax = get_object_bounds(owner)
+                    else:
+                        bmin, bmax = self.get_scene_owner_bounds(owner)
                     if bmin is not None and bmax is not None:
                         arr = np.asarray([bmin, bmax], dtype=np.float32).reshape(2, 3)
                         if bool(np.all(np.isfinite(arr))):
@@ -8397,6 +8659,25 @@ class MGLRendererMixin:
         if not isinstance(elems, (list, tuple)):
             return None
 
+        cached_groups = getattr(self, "_mesh_select_selected_point_indices_by_owner", None)
+        if isinstance(cached_groups, dict) and cached_groups:
+            try:
+                cached_count = sum(len(indices) for indices in cached_groups.values() if indices is not None)
+            except Exception:
+                cached_count = 0
+            if cached_count > 0 and int(cached_count) == int(len(elems)):
+                try:
+                    bmin, bmax = self.get_mesh_selection_bounds(elems)
+                    if bmin is None or bmax is None:
+                        return None
+                    bmin = np.asarray(bmin, dtype=np.float32).reshape(-1)[:3]
+                    bmax = np.asarray(bmax, dtype=np.float32).reshape(-1)[:3]
+                    center = (np.minimum(bmin, bmax) + np.maximum(bmin, bmax)) * 0.5
+                    if bool(np.all(np.isfinite(center))):
+                        return center.astype(np.float32, copy=False)
+                except Exception:
+                    pass
+
         clean = []
         seen = set()
         for elem in elems:
@@ -8440,7 +8721,11 @@ class MGLRendererMixin:
             return None
         if mode == "object":
             try:
-                bmin, bmax = self.get_scene_owner_bounds(owner)
+                get_object_bounds = getattr(self, "get_scene_owner_selection_bounds", None)
+                if callable(get_object_bounds):
+                    bmin, bmax = get_object_bounds(owner)
+                else:
+                    bmin, bmax = self.get_scene_owner_bounds(owner)
                 if bmin is None or bmax is None:
                     return None
                 bmin = np.asarray(bmin, dtype=np.float32).reshape(-1)[:3]
@@ -12720,6 +13005,22 @@ class MGLRendererMixin:
     ):
         if np is None:
             return None
+        cache_key = None
+        try:
+            active_key = tuple(getattr(self, "_mgl_active_viewport_rect", ()) or ())
+            cache_key = (
+                int(getattr(self, "_mgl_frame_id", 0) or 0),
+                str(owner or "").strip().lower(),
+                id(topo),
+                int(viewport_w),
+                int(viewport_h),
+                active_key,
+            )
+            cache = getattr(self, "_mgl_project_points_cache", None)
+            if isinstance(cache, dict) and cache_key in cache:
+                return cache.get(cache_key)
+        except Exception:
+            cache_key = None
         try:
             points = np.asarray(topo.get("points"), dtype=np.float32).reshape(-1, 3)
         except Exception:
@@ -12782,6 +13083,7 @@ class MGLRendererMixin:
                     "y": ys.astype(np.float32, copy=False),
                     "z": ndc[:, 2].astype(np.float32, copy=False),
                     "valid": in_view,
+                    "finite": finite,
                     "visible_count": int(np.count_nonzero(in_view)),
                     "finite_count": int(np.count_nonzero(finite)),
                 }
@@ -12803,7 +13105,17 @@ class MGLRendererMixin:
             candidates.append(fallback)
         if not candidates:
             return None
-        return max(candidates, key=lambda item: (int(item.get("visible_count", 0)), int(item.get("finite_count", 0))))
+        result = max(candidates, key=lambda item: (int(item.get("visible_count", 0)), int(item.get("finite_count", 0))))
+        if cache_key is not None:
+            try:
+                cache = getattr(self, "_mgl_project_points_cache", None)
+                if not isinstance(cache, dict):
+                    cache = {}
+                    self._mgl_project_points_cache = cache
+                cache[cache_key] = result
+            except Exception:
+                pass
+        return result
 
     def _mgl_pick_projected_point_for_owners(
         self,
@@ -16686,6 +16998,10 @@ class MGLRendererMixin:
         frame_id = int(getattr(self, "_mgl_frame_id", 0) or 0) + 1
         self._mgl_frame_id = frame_id
         try:
+            self._mgl_project_points_cache = {}
+        except Exception:
+            pass
+        try:
             if not math.isfinite(dt) or dt < 0.0:
                 dt = 0.0
         except Exception:
@@ -17423,7 +17739,10 @@ class MGLRendererMixin:
         mvp_to_use, model_np = self._mgl_overlay_mvp_for_owner(owner, mvp)
         vao = vbo = nbo = tbo = cbo = ibo = None
         prev_depth_mask = prev_depth_func = prev_wireframe = prev_polygon_offset = None
+        prev_depth_test = True
+        polygon_offset_enabled = False
         try:
+            prev_depth_test = bool(getattr(self._mgl_ctx, "depth_test", True))
             prev_depth_mask = getattr(self._mgl_ctx, "depth_mask", None)
             prev_depth_func = getattr(self._mgl_ctx, "depth_func", None)
             prev_wireframe = bool(getattr(self._mgl_ctx, "wireframe", False))
@@ -17446,9 +17765,22 @@ class MGLRendererMixin:
                 self._mgl_ctx.depth_mask = False
                 self._mgl_ctx.depth_func = "<="
                 self._mgl_ctx.wireframe = False
-                self._mgl_ctx.polygon_offset = (-1.0, -1.0)
+                self._mgl_ctx.polygon_offset = (-2.0, -2.0)
             except Exception:
                 pass
+            try:
+                gl = getattr(self, "_gl", None)
+                if gl is not None:
+                    gl.glEnable(0x8037)  # GL_POLYGON_OFFSET_FILL
+                    gl.glPolygonOffset(-2.0, -2.0)
+                    polygon_offset_enabled = True
+            except Exception:
+                polygon_offset_enabled = False
+            if not polygon_offset_enabled:
+                try:
+                    self._mgl_ctx.disable(moderngl.DEPTH_TEST)
+                except Exception:
+                    pass
             try:
                 self._mgl_ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
             except Exception:
@@ -17459,7 +17791,13 @@ class MGLRendererMixin:
                     self._mgl_prog["Model"].write(model_np.astype("f4").tobytes())
                 except Exception:
                     pass
-            self._mgl_prog["Color"].value = tuple(float(v) for v in color)
+            face_color = (
+                float(color[0]),
+                float(color[1]),
+                float(color[2]),
+                min(0.32, max(0.14, float(color[3]) * 0.34)),
+            )
+            self._mgl_prog["Color"].value = face_color
             for uniform_name, value in (
                 ("UseTexture", 0),
                 ("UseVertexColor", 0),
@@ -17476,16 +17814,16 @@ class MGLRendererMixin:
                 except Exception:
                     pass
             vao.render()
-            self._mgl_draw_mesh_overlay_lines(
-                owner,
-                np.asarray([face_points[0], face_points[1], face_points[1], face_points[2], face_points[2], face_points[0]], dtype="f4"),
-                (float(color[0]), float(color[1]), float(color[2]), min(1.0, float(color[3]) + 0.1)),
-                mvp,
-                3.0,
-            )
         except Exception as exc:
             self._mgl_error = f"Mesh selection face draw failed: {exc}"
         finally:
+            if polygon_offset_enabled:
+                try:
+                    gl = getattr(self, "_gl", None)
+                    if gl is not None:
+                        gl.glDisable(0x8037)  # GL_POLYGON_OFFSET_FILL
+                except Exception:
+                    pass
             if prev_depth_mask is not None:
                 try:
                     self._mgl_ctx.depth_mask = prev_depth_mask
@@ -17496,6 +17834,13 @@ class MGLRendererMixin:
                     self._mgl_ctx.depth_func = prev_depth_func
                 except Exception:
                     pass
+            try:
+                if prev_depth_test:
+                    self._mgl_ctx.enable(moderngl.DEPTH_TEST)
+                else:
+                    self._mgl_ctx.disable(moderngl.DEPTH_TEST)
+            except Exception:
+                pass
             if prev_wireframe is not None:
                 try:
                     self._mgl_ctx.wireframe = prev_wireframe
@@ -17513,10 +17858,543 @@ class MGLRendererMixin:
                     except Exception:
                         pass
 
+    def _mgl_draw_mesh_overlay_object_faces(self, owner: str, topo: dict, color, mvp) -> bool:
+        if self._mgl_ctx is None or self._mgl_prog is None or np is None:
+            return False
+        if not isinstance(topo, dict):
+            return False
+        try:
+            points = np.asarray(topo.get("points"), dtype="f4").reshape(-1, 3)
+            triangles = np.asarray(topo.get("triangles"), dtype=np.int64).reshape(-1, 3)
+        except Exception:
+            return False
+        if points.size == 0 or triangles.size == 0:
+            return False
+        try:
+            valid = np.all((triangles >= 0) & (triangles < points.shape[0]), axis=1)
+            triangles = triangles[valid]
+        except Exception:
+            return False
+        if triangles.size == 0:
+            return False
+        try:
+            indices = triangles.astype("u4", copy=False).reshape(-1)
+            normals = np.zeros((points.shape[0], 3), dtype="f4")
+            normals[:, 2] = 1.0
+            uvs = np.zeros((points.shape[0], 2), dtype="f4")
+            colors = np.ones((points.shape[0], 4), dtype="f4")
+        except Exception:
+            return False
+
+        mvp_to_use, model_np = self._mgl_overlay_mvp_for_owner(owner, mvp)
+        vao = vbo = nbo = tbo = cbo = ibo = None
+        prev_depth_mask = prev_depth_func = prev_wireframe = prev_polygon_offset = None
+        prev_depth_test = True
+        polygon_offset_enabled = False
+        try:
+            prev_depth_test = bool(getattr(self._mgl_ctx, "depth_test", True))
+            prev_depth_mask = getattr(self._mgl_ctx, "depth_mask", None)
+            prev_depth_func = getattr(self._mgl_ctx, "depth_func", None)
+            prev_wireframe = bool(getattr(self._mgl_ctx, "wireframe", False))
+            prev_polygon_offset = getattr(self._mgl_ctx, "polygon_offset", None)
+        except Exception:
+            pass
+        try:
+            vbo = self._mgl_ctx.buffer(points.astype("f4", copy=False).tobytes())
+            nbo = self._mgl_ctx.buffer(normals.tobytes())
+            tbo = self._mgl_ctx.buffer(uvs.tobytes())
+            cbo = self._mgl_ctx.buffer(colors.tobytes())
+            ibo = self._mgl_ctx.buffer(indices.tobytes())
+            vao = self._mgl_ctx.vertex_array(self._mgl_prog, self._mgl_mesh_vao_content(vbo, nbo, tbo, cbo), ibo, 4)
+            self._mgl_ctx.enable(moderngl.BLEND | moderngl.DEPTH_TEST)
+            try:
+                self._mgl_ctx.disable(moderngl.CULL_FACE)
+            except Exception:
+                pass
+            try:
+                self._mgl_ctx.depth_mask = False
+                self._mgl_ctx.depth_func = "<="
+                self._mgl_ctx.wireframe = False
+                self._mgl_ctx.polygon_offset = (-2.0, -2.0)
+            except Exception:
+                pass
+            try:
+                gl = getattr(self, "_gl", None)
+                if gl is not None:
+                    gl.glEnable(0x8037)  # GL_POLYGON_OFFSET_FILL
+                    gl.glPolygonOffset(-2.0, -2.0)
+                    polygon_offset_enabled = True
+            except Exception:
+                polygon_offset_enabled = False
+            if not polygon_offset_enabled:
+                try:
+                    self._mgl_ctx.disable(moderngl.DEPTH_TEST)
+                except Exception:
+                    pass
+            try:
+                self._mgl_ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
+            except Exception:
+                pass
+            self._mgl_prog["Mvp"].write(mvp_to_use.astype("f4").tobytes())
+            if model_np is not None:
+                try:
+                    self._mgl_prog["Model"].write(model_np.astype("f4").tobytes())
+                except Exception:
+                    pass
+            face_color = (
+                float(color[0]),
+                float(color[1]),
+                float(color[2]),
+                min(0.32, max(0.14, float(color[3]) * 0.34)),
+            )
+            self._mgl_prog["Color"].value = face_color
+            for uniform_name, value in (
+                ("UseTexture", 0),
+                ("UseVertexColor", 0),
+                ("UseLighting", 0),
+                ("UseMaterial", 0),
+                ("UseSceneRefraction", 0),
+                ("UseShadows", 0),
+                ("UseProcedural", 0),
+                ("UseProceduralLayer", 0),
+                ("UseVolumeMask", 0),
+                ("UseInstancing", 0),
+            ):
+                try:
+                    self._mgl_prog[uniform_name].value = value
+                except Exception:
+                    pass
+            vao.render()
+            return True
+        except Exception as exc:
+            self._mgl_error = f"Mesh selection object face draw failed: {exc}"
+            return False
+        finally:
+            if polygon_offset_enabled:
+                try:
+                    gl = getattr(self, "_gl", None)
+                    if gl is not None:
+                        gl.glDisable(0x8037)  # GL_POLYGON_OFFSET_FILL
+                except Exception:
+                    pass
+            if prev_depth_mask is not None:
+                try:
+                    self._mgl_ctx.depth_mask = prev_depth_mask
+                except Exception:
+                    pass
+            if prev_depth_func is not None:
+                try:
+                    self._mgl_ctx.depth_func = prev_depth_func
+                except Exception:
+                    pass
+            try:
+                if prev_depth_test:
+                    self._mgl_ctx.enable(moderngl.DEPTH_TEST)
+                else:
+                    self._mgl_ctx.disable(moderngl.DEPTH_TEST)
+            except Exception:
+                pass
+            if prev_wireframe is not None:
+                try:
+                    self._mgl_ctx.wireframe = prev_wireframe
+                except Exception:
+                    pass
+            if prev_polygon_offset is not None:
+                try:
+                    self._mgl_ctx.polygon_offset = prev_polygon_offset
+                except Exception:
+                    pass
+            for res in (vao, ibo, cbo, tbo, nbo, vbo):
+                if res is not None:
+                    try:
+                        res.release()
+                    except Exception:
+                        pass
+
+    def _mgl_draw_mesh_overlay_object_outline_hull(self, owner: str, topo: dict, color, mvp) -> bool:
+        prog = getattr(self, "_mgl_selection_outline_prog", None)
+        if self._mgl_ctx is None or prog is None or np is None or not isinstance(topo, dict):
+            return False
+        raw_gl = getattr(self, "_gl", None)
+        if raw_gl is None or not hasattr(raw_gl, "glCullFace"):
+            return False
+        try:
+            points = np.asarray(topo.get("points"), dtype="f4").reshape(-1, 3)
+            triangles = np.asarray(topo.get("triangles"), dtype=np.int64).reshape(-1, 3)
+        except Exception:
+            return False
+        if points.size == 0 or triangles.size == 0:
+            return False
+        try:
+            valid = np.all((triangles >= 0) & (triangles < points.shape[0]), axis=1)
+            triangles = triangles[valid]
+        except Exception:
+            return False
+        if triangles.size == 0:
+            return False
+
+        try:
+            tri_points = points[triangles]
+            tri_normals = np.cross(tri_points[:, 1] - tri_points[:, 0], tri_points[:, 2] - tri_points[:, 0])
+            tri_lengths = np.linalg.norm(tri_normals, axis=1)
+            valid_normals = tri_lengths > 1.0e-10
+            tri_normals[valid_normals] = tri_normals[valid_normals] / tri_lengths[valid_normals, None]
+            tri_normals[~valid_normals] = 0.0
+            normals = np.zeros_like(points, dtype="f4")
+            np.add.at(normals, triangles[:, 0], tri_normals)
+            np.add.at(normals, triangles[:, 1], tri_normals)
+            np.add.at(normals, triangles[:, 2], tri_normals)
+            center = (points.min(axis=0) + points.max(axis=0)) * 0.5
+            radial = points - center.reshape(1, 3)
+            radial_len = np.linalg.norm(radial, axis=1)
+            radial_ok = radial_len > 1.0e-10
+            radial[radial_ok] = radial[radial_ok] / radial_len[radial_ok, None]
+            radial[~radial_ok] = np.array([0.0, 0.0, 1.0], dtype="f4")
+            normal_len = np.linalg.norm(normals, axis=1)
+            normal_ok = normal_len > 1.0e-10
+            normals[normal_ok] = normals[normal_ok] / normal_len[normal_ok, None]
+            normals[~normal_ok] = radial[~normal_ok]
+            try:
+                inward = np.einsum("ij,ij->i", normals, radial) < 0.0
+                normals[inward] *= -1.0
+            except Exception:
+                pass
+            ext = points.max(axis=0) - points.min(axis=0)
+            radius = max(1.0e-6, float(np.linalg.norm(ext) * 0.5))
+            amount = max(radius * 0.008, 5.0e-5)
+            inflated = (points + (normals * float(amount))).astype("f4", copy=False)
+            indices = triangles.astype("u4", copy=False).reshape(-1)
+        except Exception:
+            return False
+
+        mvp_to_use, _model_np = self._mgl_overlay_mvp_for_owner(owner, mvp)
+        vbo = ibo = vao = None
+        prev_depth_mask = prev_depth_func = None
+        prev_wireframe = None
+        cull_enabled = bool(getattr(self, "_mgl_cull_enabled", False))
+        try:
+            prev_depth_mask = getattr(self._mgl_ctx, "depth_mask", None)
+        except Exception:
+            prev_depth_mask = None
+        try:
+            prev_depth_func = getattr(self._mgl_ctx, "depth_func", None)
+        except Exception:
+            prev_depth_func = None
+        try:
+            prev_wireframe = bool(getattr(self._mgl_ctx, "wireframe", False))
+        except Exception:
+            prev_wireframe = None
+
+        try:
+            vbo = self._mgl_ctx.buffer(inflated.tobytes())
+            ibo = self._mgl_ctx.buffer(indices.tobytes())
+            vao = self._mgl_ctx.vertex_array(prog, [(vbo, "3f", "in_position")], ibo)
+            self._mgl_ctx.enable(moderngl.BLEND | moderngl.DEPTH_TEST | moderngl.CULL_FACE)
+            try:
+                self._mgl_ctx.depth_mask = False
+                self._mgl_ctx.depth_func = "<="
+                self._mgl_ctx.wireframe = False
+                self._mgl_ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
+            except Exception:
+                pass
+            try:
+                raw_gl.glCullFace(0x0404)  # GL_FRONT
+            except Exception:
+                return False
+            prog["Mvp"].write(mvp_to_use.astype("f4").tobytes())
+            try:
+                outline_color = (
+                    1.0,
+                    0.86,
+                    0.0,
+                    min(0.94, max(0.74, float(color[3]) * 0.95)),
+                )
+            except Exception:
+                outline_color = (1.0, 0.86, 0.0, 0.86)
+            prog["Color"].value = outline_color
+            vao.render()
+            return True
+        except Exception as exc:
+            self._mgl_error = f"Mesh selection outline draw failed: {exc}"
+            return False
+        finally:
+            try:
+                raw_gl.glCullFace(0x0405)  # GL_BACK
+            except Exception:
+                pass
+            if prev_depth_mask is not None:
+                try:
+                    self._mgl_ctx.depth_mask = prev_depth_mask
+                except Exception:
+                    pass
+            if prev_depth_func is not None:
+                try:
+                    self._mgl_ctx.depth_func = prev_depth_func
+                except Exception:
+                    pass
+            if prev_wireframe is not None:
+                try:
+                    self._mgl_ctx.wireframe = prev_wireframe
+                except Exception:
+                    pass
+            try:
+                if cull_enabled:
+                    self._mgl_ctx.enable(moderngl.CULL_FACE)
+                else:
+                    self._mgl_ctx.disable(moderngl.CULL_FACE)
+            except Exception:
+                pass
+            for res in (vao, ibo, vbo):
+                if res is not None:
+                    try:
+                        res.release()
+                    except Exception:
+                        pass
+
+    def _mgl_mesh_overlay_object_silhouette_lines(self, owner: str, topo: dict):
+        if np is None or not isinstance(topo, dict):
+            return None
+        try:
+            points = np.asarray(topo.get("points"), dtype="f4").reshape(-1, 3)
+            triangles = np.asarray(topo.get("triangles"), dtype=np.int64).reshape(-1, 3)
+        except Exception:
+            return None
+        if points.size == 0 or triangles.size == 0:
+            return None
+        try:
+            valid = np.all((triangles >= 0) & (triangles < points.shape[0]), axis=1)
+            triangles = triangles[valid]
+        except Exception:
+            return None
+        if triangles.size == 0:
+            return None
+        cam_world = getattr(self, "_mgl_cam_world", None)
+        try:
+            cam_world = np.asarray(cam_world, dtype=np.float32).reshape(-1)[:3]
+            if cam_world.shape[0] < 3 or not bool(np.all(np.isfinite(cam_world))):
+                return None
+        except Exception:
+            return None
+        try:
+            bmin = np.asarray(topo.get("bounds_min"), dtype=np.float32).reshape(-1)[:3]
+            bmax = np.asarray(topo.get("bounds_max"), dtype=np.float32).reshape(-1)[:3]
+        except Exception:
+            bmin = points.min(axis=0)
+            bmax = points.max(axis=0)
+        try:
+            model = self._mgl_scene_model_matrix_for_owner(owner, bmin, bmax)
+            if model is None:
+                model = np.eye(4, dtype=np.float32)
+            inv_model = np.linalg.inv(np.asarray(model, dtype=np.float32).reshape(4, 4))
+            cam_local4 = np.array([cam_world[0], cam_world[1], cam_world[2], 1.0], dtype=np.float32) @ inv_model
+            if abs(float(cam_local4[3])) > 1.0e-8:
+                cam_local = (cam_local4[:3] / float(cam_local4[3])).astype(np.float32)
+            else:
+                cam_local = cam_local4[:3].astype(np.float32)
+        except Exception:
+            return None
+        try:
+            v0 = points[triangles[:, 0]]
+            v1 = points[triangles[:, 1]]
+            v2 = points[triangles[:, 2]]
+            normals = np.cross(v1 - v0, v2 - v0)
+            lengths = np.linalg.norm(normals, axis=1)
+            valid_normals = lengths > 1.0e-10
+            if not bool(np.any(valid_normals)):
+                return None
+            centers = (v0 + v1 + v2) / 3.0
+            view = cam_local.reshape(1, 3) - centers
+            facing = np.einsum("ij,ij->i", normals, view) >= 0.0
+        except Exception:
+            return None
+
+        edge_map = {}
+        lines: List[NDArray] = []
+        for face_index, tri in enumerate(triangles):
+            try:
+                if not bool(valid_normals[face_index]):
+                    continue
+                front = bool(facing[face_index])
+                a, b, c = int(tri[0]), int(tri[1]), int(tri[2])
+            except Exception:
+                continue
+            for e0, e1 in ((a, b), (b, c), (c, a)):
+                if e0 == e1:
+                    continue
+                key = (e0, e1) if e0 < e1 else (e1, e0)
+                entry = edge_map.get(key)
+                if entry is None:
+                    edge_map[key] = [front, e0, e1, 1, False]
+                    continue
+                try:
+                    if (not bool(entry[4])) and bool(entry[0]) != front:
+                        lines.append(points[e0])
+                        lines.append(points[e1])
+                        entry[4] = True
+                    entry[3] = int(entry[3]) + 1
+                except Exception:
+                    pass
+        for entry in edge_map.values():
+            try:
+                if int(entry[3]) == 1 and not bool(entry[4]):
+                    lines.append(points[int(entry[1])])
+                    lines.append(points[int(entry[2])])
+            except Exception:
+                continue
+        if not lines:
+            return None
+        try:
+            return np.asarray(lines, dtype="f4").reshape(-1, 3)
+        except Exception:
+            return None
+
+    def _mgl_selected_point_groups(self, selected_many=None, selected=None) -> Dict[str, object]:
+        cached = getattr(self, "_mesh_select_selected_point_indices_by_owner", None)
+        if isinstance(cached, dict) and cached:
+            return {
+                str(owner): indices
+                for owner, indices in cached.items()
+                if str(owner).strip() and indices is not None
+            }
+        elems = []
+        if isinstance(selected_many, (list, tuple)) and selected_many:
+            elems = list(selected_many)
+        elif isinstance(selected, dict):
+            elems = [selected]
+        groups: Dict[str, set] = {}
+        owner_names: Dict[str, str] = {}
+        for elem in elems:
+            if not isinstance(elem, dict):
+                continue
+            if str(elem.get("mode") or "").strip().lower() != "point":
+                continue
+            owner = str(elem.get("owner") or "").strip()
+            if not owner:
+                continue
+            try:
+                idx = int(elem.get("vertex_index"))
+            except Exception:
+                continue
+            owner_key = owner.lower()
+            display_owner = owner_names.setdefault(owner_key, owner)
+            groups.setdefault(display_owner, set()).add(idx)
+        return {owner: tuple(sorted(indices)) for owner, indices in groups.items() if indices}
+
+    def _mgl_draw_mesh_overlay_points(self, owner: str, indices, color, mvp, point_size: float) -> bool:
+        if self._mgl_ctx is None or getattr(self, "_mgl_overlay_point_prog", None) is None or np is None:
+            return False
+        owner = str(owner or "").strip()
+        if not owner:
+            return False
+        topo = self._mgl_mesh_topology_for_owner(owner)
+        if not isinstance(topo, dict):
+            return False
+        try:
+            points = np.asarray(topo.get("points"), dtype="f4").reshape(-1, 3)
+            idx_arr = np.asarray(list(indices), dtype=np.int64).reshape(-1)
+        except Exception:
+            return False
+        if points.shape[0] <= 0 or idx_arr.size <= 0:
+            return False
+        try:
+            idx_arr = idx_arr[(idx_arr >= 0) & (idx_arr < points.shape[0])]
+        except Exception:
+            return False
+        if idx_arr.size <= 0:
+            return False
+        try:
+            point_data = points[idx_arr].astype("f4", copy=False)
+            rgba = np.asarray(tuple(float(v) for v in color[:4]), dtype="f4").reshape(1, 4)
+            color_data = np.repeat(rgba, point_data.shape[0], axis=0)
+            verts = np.concatenate((point_data, color_data), axis=1).astype("f4", copy=False)
+        except Exception:
+            return False
+        mvp_to_use, _model_np = self._mgl_overlay_mvp_for_owner(owner, mvp)
+        vbo = vao = None
+        prev_depth_mask = prev_depth_func = None
+        prev_depth_test = True
+        prev_cull = bool(getattr(self, "_mgl_cull_enabled", False))
+        try:
+            prev_depth_test = bool(getattr(self._mgl_ctx, "depth_test", True))
+        except Exception:
+            prev_depth_test = True
+        try:
+            prev_depth_mask = getattr(self._mgl_ctx, "depth_mask", None)
+        except Exception:
+            prev_depth_mask = None
+        try:
+            prev_depth_func = getattr(self._mgl_ctx, "depth_func", None)
+        except Exception:
+            prev_depth_func = None
+        try:
+            vbo = self._mgl_ctx.buffer(verts.tobytes())
+            vao = self._mgl_ctx.vertex_array(
+                self._mgl_overlay_point_prog,
+                [(vbo, "3f 4f", "in_position", "in_color")],
+            )
+            try:
+                self._mgl_ctx.enable(moderngl.BLEND | moderngl.PROGRAM_POINT_SIZE)
+            except Exception:
+                self._mgl_ctx.enable(moderngl.BLEND)
+            try:
+                self._mgl_ctx.disable(moderngl.DEPTH_TEST | moderngl.CULL_FACE)
+            except Exception:
+                pass
+            try:
+                self._mgl_ctx.depth_mask = False
+                self._mgl_ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
+            except Exception:
+                pass
+            self._mgl_overlay_point_prog["Mvp"].write(np.asarray(mvp_to_use, dtype="f4").tobytes())
+            self._mgl_overlay_point_prog["PointSize"].value = float(max(1.0, point_size))
+            vao.render(moderngl.POINTS)
+            return True
+        except Exception as exc:
+            self._mgl_error = f"Mesh selection point draw failed: {exc}"
+            return False
+        finally:
+            if prev_depth_mask is not None:
+                try:
+                    self._mgl_ctx.depth_mask = prev_depth_mask
+                except Exception:
+                    pass
+            if prev_depth_func is not None:
+                try:
+                    self._mgl_ctx.depth_func = prev_depth_func
+                except Exception:
+                    pass
+            try:
+                if prev_depth_test:
+                    self._mgl_ctx.enable(moderngl.DEPTH_TEST)
+                else:
+                    self._mgl_ctx.disable(moderngl.DEPTH_TEST)
+            except Exception:
+                pass
+            try:
+                if prev_cull:
+                    self._mgl_ctx.enable(moderngl.CULL_FACE)
+                else:
+                    self._mgl_ctx.disable(moderngl.CULL_FACE)
+            except Exception:
+                pass
+            for res in (vao, vbo):
+                if res is not None:
+                    try:
+                        res.release()
+                    except Exception:
+                        pass
+
     def _mgl_draw_mesh_overlay_point(self, elem: dict, color, mvp) -> None:
-        # Point handles are drawn in the Qt overlay so their apparent size stays
-        # constant as the camera zoom changes.
-        return
+        if not bool(getattr(self, "_mesh_selection_use_mgl_point_overlay", False)):
+            return
+        if not isinstance(elem, dict):
+            return
+        try:
+            owner = str(elem.get("owner") or "").strip()
+            idx = int(elem.get("vertex_index"))
+        except Exception:
+            return
+        self._mgl_draw_mesh_overlay_points(owner, (idx,), color, mvp, 7.0)
 
     def _mgl_draw_mesh_overlay_edge(self, elem: dict, color, mvp) -> None:
         owner = str(elem.get("owner") or "").strip()
@@ -17553,13 +18431,8 @@ class MGLRendererMixin:
         topo = self._mgl_mesh_topology_for_owner(owner)
         if not isinstance(topo, dict):
             return
-        line_points = topo.get("wire_points")
-        try:
-            if line_points is None or not getattr(line_points, "size", 0):
-                line_points = self._mgl_bbox_wire_points_for_topology(topo)
-        except Exception:
-            line_points = self._mgl_bbox_wire_points_for_topology(topo)
-        self._mgl_draw_mesh_overlay_lines(owner, line_points, color, mvp, 3.0)
+        self._mgl_draw_mesh_overlay_object_faces(owner, topo, color, mvp)
+        self._mgl_draw_mesh_overlay_object_outline_hull(owner, topo, color, mvp)
 
     def _mgl_draw_mesh_overlay_element(self, elem, color, mvp) -> None:
         if not isinstance(elem, dict):
@@ -17575,15 +18448,25 @@ class MGLRendererMixin:
             self._mgl_draw_mesh_overlay_face(elem, color, mvp)
 
     def _paint_mgl_draw_mesh_selection_overlay_pass(self, *, mvp) -> None:
+        try:
+            self._mesh_selection_points_drawn_in_mgl = False
+        except Exception:
+            pass
         selected = getattr(self, "_mesh_select_selected", None)
         selected_many = getattr(self, "_mesh_select_selected_many", None)
         hover = getattr(self, "_mesh_select_hover", None)
         selected_elems = []
+        selected_point_groups = self._mgl_selected_point_groups(selected_many=selected_many, selected=selected)
+        selected_point_sets = getattr(self, "_mesh_select_selected_point_index_sets_by_owner", None)
+        if not isinstance(selected_point_sets, dict):
+            selected_point_sets = {}
         selected_keys = set()
         key_fn = getattr(self, "_mesh_element_key", None)
         if isinstance(selected_many, (list, tuple)) and selected_many:
             for elem in selected_many:
                 if not isinstance(elem, dict):
+                    continue
+                if str(elem.get("mode") or "").strip().lower() == "point":
                     continue
                 if callable(key_fn):
                     try:
@@ -17595,7 +18478,7 @@ class MGLRendererMixin:
                     except Exception:
                         pass
                 selected_elems.append(elem)
-        elif isinstance(selected, dict):
+        elif isinstance(selected, dict) and str(selected.get("mode") or "").strip().lower() != "point":
             if callable(key_fn):
                 try:
                     key = key_fn(selected)
@@ -17604,20 +18487,39 @@ class MGLRendererMixin:
                 except Exception:
                     pass
             selected_elems.append(selected)
-        if not selected_elems and not isinstance(hover, dict):
+        if not selected_elems and not selected_point_groups and not isinstance(hover, dict):
             return
         hover_color = getattr(self, "_mesh_select_hover_color", (0.0, 0.72, 1.0, 0.74))
         selected_color = getattr(self, "_mesh_select_selected_color", (1.0, 0.48, 0.0, 0.92))
         try:
             if isinstance(hover, dict):
                 hover_selected = False
-                if callable(key_fn):
+                hover_mode = str(hover.get("mode") or "").strip().lower()
+                if hover_mode == "point":
+                    try:
+                        owner_l = str(hover.get("owner") or "").strip().lower()
+                        idx = int(hover.get("vertex_index"))
+                        point_set = selected_point_sets.get(owner_l)
+                        hover_selected = isinstance(point_set, set) and idx in point_set
+                    except Exception:
+                        hover_selected = False
+                elif callable(key_fn):
                     try:
                         hover_selected = key_fn(hover) in selected_keys
                     except Exception:
                         hover_selected = False
                 if not hover_selected:
                     self._mgl_draw_mesh_overlay_element(hover, hover_color, mvp)
+            points_drawn = False
+            if bool(getattr(self, "_mesh_selection_use_mgl_point_overlay", False)):
+                for owner, indices in selected_point_groups.items():
+                    if self._mgl_draw_mesh_overlay_points(owner, indices, selected_color, mvp, 7.6):
+                        points_drawn = True
+            if points_drawn:
+                try:
+                    self._mesh_selection_points_drawn_in_mgl = True
+                except Exception:
+                    pass
             for elem in selected_elems:
                 self._mgl_draw_mesh_overlay_element(elem, selected_color, mvp)
         finally:
@@ -17769,31 +18671,44 @@ class MGLRendererMixin:
                 pass
 
     def _paint_mgl(self) -> None:
-        if getattr(self, "_render_paused", False):
-            return
-        self._paint_mgl_update_frame_timing()
+        with profile_scope("render.3d.mgl"):
+            if getattr(self, "_render_paused", False):
+                return
+            self._paint_mgl_update_frame_timing()
 
-        dbg = bool(getattr(self, "_mgl_debug", False))
-        self._dbgprint(dbg, "[MGL] ENTER _paint_mgl", flush=True)
+            dbg = bool(getattr(self, "_mgl_debug", False))
+            self._dbgprint(dbg, "[MGL] ENTER _paint_mgl", flush=True)
 
-        if not self._paint_mgl_prepare_framebuffer(dbg=dbg):
-            return
-        if not self._paint_mgl_setup_context_state(dbg=dbg):
-            return
+            with profile_scope("render.3d.mgl.prepare_framebuffer"):
+                prepared = self._paint_mgl_prepare_framebuffer(dbg=dbg)
+            if not prepared:
+                return
+            with profile_scope("render.3d.mgl.setup_context"):
+                context_ready = self._paint_mgl_setup_context_state(dbg=dbg)
+            if not context_ready:
+                return
 
-        proj, lookat, transform, mvp = self._paint_mgl_build_matrices(dbg=dbg)
-        self._paint_mgl_apply_scene_visibility_and_upload(mvp=mvp)
+            with profile_scope("render.3d.mgl.build_matrices"):
+                proj, lookat, transform, mvp = self._paint_mgl_build_matrices(dbg=dbg)
+            with profile_scope("render.3d.mgl.scene_visibility_upload"):
+                self._paint_mgl_apply_scene_visibility_and_upload(mvp=mvp)
 
-        self._paint_mgl_draw_splats_pass(
-            proj=proj,
-            lookat=lookat,
-            transform=transform,
-        )
-        self._paint_mgl_draw_splat_wireframe_pass(mvp=mvp)
-        self._paint_mgl_draw_grid_pass(mvp=mvp)
-        self._paint_mgl_draw_transparent_scene_pass(mvp=mvp)
-        self._paint_mgl_draw_mesh_selection_overlay_pass(mvp=mvp)
-        self._paint_mgl_draw_scene_skeleton_overlay_pass(mvp=mvp)
+            with profile_scope("render.3d.mgl.draw_splats"):
+                self._paint_mgl_draw_splats_pass(
+                    proj=proj,
+                    lookat=lookat,
+                    transform=transform,
+                )
+            with profile_scope("render.3d.mgl.draw_splat_wireframe"):
+                self._paint_mgl_draw_splat_wireframe_pass(mvp=mvp)
+            with profile_scope("render.3d.mgl.draw_grid"):
+                self._paint_mgl_draw_grid_pass(mvp=mvp)
+            with profile_scope("render.3d.mgl.draw_transparent_scene"):
+                self._paint_mgl_draw_transparent_scene_pass(mvp=mvp)
+            with profile_scope("render.3d.mgl.mesh_selection_overlay"):
+                self._paint_mgl_draw_mesh_selection_overlay_pass(mvp=mvp)
+            with profile_scope("render.3d.mgl.scene_skeleton_overlay"):
+                self._paint_mgl_draw_scene_skeleton_overlay_pass(mvp=mvp)
 
 
 
@@ -18710,12 +19625,22 @@ class MGLRendererMixin:
             grid_fragment = SHADERS["grid_fragment"]
             wire_vertex = SHADERS["wire_vertex"]
             wire_fragment = SHADERS["wire_fragment"]
+            overlay_point_vertex = SHADERS["overlay_point_vertex"]
+            overlay_point_fragment = SHADERS["overlay_point_fragment"]
             shadow_vertex = SHADERS["shadow_vertex"]
             shadow_fragment = SHADERS["shadow_fragment"]
 
             self._mgl_prog = self._mgl_ctx.program(vertex_shader=mesh_vertex, fragment_shader=mesh_fragment)
             self._mgl_grid_prog = self._mgl_ctx.program(vertex_shader=grid_vertex, fragment_shader=grid_fragment)
             self._mgl_wire_prog = self._mgl_ctx.program(vertex_shader=wire_vertex, fragment_shader=wire_fragment)
+            self._mgl_overlay_point_prog = self._mgl_ctx.program(
+                vertex_shader=overlay_point_vertex,
+                fragment_shader=overlay_point_fragment,
+            )
+            self._mgl_selection_outline_prog = self._mgl_ctx.program(
+                vertex_shader=_MESH_SELECTION_OUTLINE_VERT,
+                fragment_shader=_MESH_SELECTION_OUTLINE_FRAG,
+            )
             self._mgl_shadow_prog = self._mgl_ctx.program(vertex_shader=shadow_vertex, fragment_shader=shadow_fragment)
             try:
                 self._mgl_prog["Light"].value = (1.0, 1.0, 1.0)

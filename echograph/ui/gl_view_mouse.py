@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 # Mouse interaction methods extracted from gl_view.py to reduce GraphGLView size.
+from echograph.services.profiler import profile_scope
+
 _GV_MODULE = None
 
 
@@ -153,6 +155,8 @@ _MOUSE_METHOD_NAMES = [
     '_handle_mouse_move_moderngl_fps_nav_global_pos',
     '_handle_mouse_move_moderngl_fps_nav_drag_look',
     '_handle_mouse_move_moderngl_fps_nav_finish',
+    '_handle_mouse_move_moderngl_clear_hover_for_drag',
+    '_handle_mouse_move_moderngl_navigation_drag',
     '_log_mouse_move_rot_shared_state',
     '_update_mouse_move_xform_hover',
     '_handle_mouse_move_moderngl_rot_shared_view_drag',
@@ -2711,6 +2715,10 @@ def _handle_mouse_press_legacy_right(self, e):
     return False
 
 def mouseMoveEvent(self, e):
+    with profile_scope("input.mouse_move"):
+        return _mouse_move_event_impl(self, e)
+
+def _mouse_move_event_impl(self, e):
     def _rot_dbg(msg: str) -> None:
         try:
             fn = getattr(self, "_mgl_log", None)
@@ -2723,16 +2731,21 @@ def mouseMoveEvent(self, e):
                 print(msg, flush=True)
             except Exception:
                 pass
-    if self._handle_mouse_move_moderngl(e, _rot_dbg):
-        return
-    if self._handle_mouse_move_example_pipeline(e):
-        return
-    if self._handle_mouse_move_legacy_orbit(e):
-        return
-    if self._handle_mouse_move_legacy_pan(e):
-        return
-    if self._handle_mouse_move_legacy_dolly(e):
-        return
+    with profile_scope("input.mouse_move.moderngl"):
+        if self._handle_mouse_move_moderngl(e, _rot_dbg):
+            return
+    with profile_scope("input.mouse_move.example"):
+        if self._handle_mouse_move_example_pipeline(e):
+            return
+    with profile_scope("input.mouse_move.legacy_orbit"):
+        if self._handle_mouse_move_legacy_orbit(e):
+            return
+    with profile_scope("input.mouse_move.legacy_pan"):
+        if self._handle_mouse_move_legacy_pan(e):
+            return
+    with profile_scope("input.mouse_move.legacy_dolly"):
+        if self._handle_mouse_move_legacy_dolly(e):
+            return
     _graph_gl_view_super(self).mouseMoveEvent(e)
 
 def _handle_mouse_move_moderngl(self, e, _rot_dbg):
@@ -2746,6 +2759,7 @@ def _handle_mouse_move_moderngl(self, e, _rot_dbg):
             mp = None
 
         if self._handle_mouse_move_moderngl_fps_nav(e):
+            self._handle_mouse_move_moderngl_clear_hover_for_drag()
             return True
 
         if self._handle_mouse_move_moderngl_retarget_drag(e):
@@ -2754,13 +2768,7 @@ def _handle_mouse_move_moderngl(self, e, _rot_dbg):
         if self._handle_mouse_move_moderngl_mesh_box_select_drag(e):
             return True
 
-        try:
-            self._update_mesh_element_hover_from_event(e)
-        except Exception:
-            pass
-
         self._log_mouse_move_rot_shared_state(_rot_dbg)
-        self._update_mouse_move_xform_hover()
 
         if self._handle_mouse_move_moderngl_rot_shared_view_drag(e, _rot_dbg):
             return True
@@ -2771,18 +2779,22 @@ def _handle_mouse_move_moderngl(self, e, _rot_dbg):
         if self._handle_mouse_move_moderngl_rot_shared_axis_drag(e, mp, _rot_dbg):
             return True
 
-
         if self._handle_mouse_move_moderngl_xform_drag(e):
             return True
 
-        if self._handle_mouse_move_moderngl_arcball_drag(e):
-            return True
+        with profile_scope("input.navigation_drag"):
+            if self._handle_mouse_move_moderngl_navigation_drag(e):
+                self._handle_mouse_move_moderngl_clear_hover_for_drag()
+                return True
 
-        if self._handle_mouse_move_moderngl_pan_drag(e):
-            return True
+        try:
+            with profile_scope("input.mesh_hover_pick"):
+                self._update_mesh_element_hover_from_event(e)
+        except Exception:
+            pass
 
-        if self._handle_mouse_move_moderngl_zoom_drag(e):
-            return True
+        with profile_scope("input.gizmo_hover_update"):
+            self._update_mouse_move_xform_hover()
     return False
 
 def _handle_mouse_move_moderngl_retarget_drag(self, e):
@@ -2915,6 +2927,32 @@ def _handle_mouse_move_moderngl_fps_nav_finish(self, e):
     except Exception:
         pass
     e.accept()
+
+def _handle_mouse_move_moderngl_clear_hover_for_drag(self):
+    try:
+        if getattr(self, "_mesh_select_hover", None) is not None:
+            self._set_mesh_element_hover(None)
+    except Exception:
+        pass
+    try:
+        self._xform_hover_axis = None
+        self._xform_hover_center = False
+        self._xform_hover_center_px = None
+        self._xform_hover_axis_proj = None
+    except Exception:
+        pass
+
+def _handle_mouse_move_moderngl_navigation_drag(self, e):
+    handled = False
+    if self._handle_mouse_move_moderngl_arcball_drag(e):
+        handled = True
+    elif self._handle_mouse_move_moderngl_pan_drag(e):
+        handled = True
+    elif self._handle_mouse_move_moderngl_zoom_drag(e):
+        handled = True
+    if handled:
+        return True
+    return False
 
 def _log_mouse_move_rot_shared_state(self, _rot_dbg):
     # light state dump, throttled
@@ -4756,6 +4794,10 @@ def _handle_mouse_release_moderngl_release_mouse_grab(self):
         pass
 
 def _handle_mouse_release_moderngl_click_pick(self, e):
+    with profile_scope("input.click_pick"):
+        return _handle_mouse_release_moderngl_click_pick_impl(self, e)
+
+def _handle_mouse_release_moderngl_click_pick_impl(self, e):
     if e.button() != QtCore.Qt.LeftButton:
         return
     try:
@@ -4799,7 +4841,8 @@ def _handle_mouse_release_moderngl_click_pick_owner(self, *, e, renderer):
         elem = None
         if callable(pick_elem):
             try:
-                elem = pick_elem(px, py, vw, vh, mode=mode)
+                with profile_scope("input.click_pick.mesh_element"):
+                    elem = pick_elem(px, py, vw, vh, mode=mode)
             except Exception:
                 elem = None
         if isinstance(elem, dict):
@@ -4825,9 +4868,11 @@ def _handle_mouse_release_moderngl_click_pick_owner(self, *, e, renderer):
         return None
     pick_hit = getattr(renderer, "pick_hit_at", None)
     if callable(pick_hit):
-        owner, _hit = pick_hit(px, py, vw, vh)
+        with profile_scope("input.click_pick.scene_hit"):
+            owner, _hit = pick_hit(px, py, vw, vh)
         return owner
-    return pick(px, py, vw, vh)
+    with profile_scope("input.click_pick.owner"):
+        return pick(px, py, vw, vh)
 
 def _handle_mouse_release_moderngl_click_pick_viewport(self, *, e):
     dpr = self._handle_mouse_release_moderngl_click_pick_dpr()
@@ -4855,8 +4900,10 @@ def _handle_mouse_release_moderngl_click_pick_apply(self, *, owner, renderer):
         self._handle_mouse_release_moderngl_pick_empty()
 
 def _handle_mouse_release_moderngl_pick_owner(self, owner, renderer):
-    self._handle_mouse_release_moderngl_pick_owner_select(owner=owner, renderer=renderer)
-    self._handle_mouse_release_moderngl_pick_owner_place_gizmo(owner=owner, renderer=renderer)
+    with profile_scope("input.click_pick.select_owner"):
+        self._handle_mouse_release_moderngl_pick_owner_select(owner=owner, renderer=renderer)
+    with profile_scope("input.click_pick.place_gizmo"):
+        self._handle_mouse_release_moderngl_pick_owner_place_gizmo(owner=owner, renderer=renderer)
 
     # Allow outliner edits to reposition the gizmo after selection.
     try:
@@ -4864,7 +4911,8 @@ def _handle_mouse_release_moderngl_pick_owner(self, owner, renderer):
     except Exception:
         pass
     try:
-        self._sync_mesh_selection_gizmo_to_selection()
+        with profile_scope("input.click_pick.sync_mesh_gizmo"):
+            self._sync_mesh_selection_gizmo_to_selection()
     except Exception:
         pass
 

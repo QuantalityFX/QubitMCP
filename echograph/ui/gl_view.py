@@ -821,6 +821,8 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._mesh_select_mode = ""
         self._mesh_select_selected = None
         self._mesh_select_selected_many = []
+        self._mesh_select_selected_point_indices_by_owner = {}
+        self._mesh_select_selected_point_index_sets_by_owner = {}
         self._mesh_select_hover = None
         self._mesh_select_selected_color = (1.0, 0.48, 0.0, 0.92)
         self._mesh_select_hover_color = (0.0, 0.72, 1.0, 0.74)
@@ -1517,8 +1519,10 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 self._gl.glActiveTexture(0x84C0)  # GL_TEXTURE0
             except Exception:
                 pass
-        self._draw_overlay()
-        self._draw_rotate_shared_overlay()
+        with profile_scope("render.3d.qt_overlay"):
+            self._draw_overlay()
+        with profile_scope("render.3d.rotate_gizmo_overlay"):
+            self._draw_rotate_shared_overlay()
 
     def refresh_from_scene(self) -> None:
         if self._render_scene_plane:
@@ -1704,7 +1708,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 else:
                     btn.setText(mode[:1].upper())
                 btn.clicked.connect(lambda checked=False, m=mode: self._on_mesh_selection_mode_clicked(m))
-                self._apply_side_icon_style(btn, active=False)
+                self._apply_selection_tool_icon_style(btn, active=False)
                 frame_attr = f"_mesh_select_{mode}_btn_frame"
                 frame = self._wrap_side_button(btn, frame_attr)
                 buttons[mode] = btn
@@ -1748,7 +1752,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 except Exception:
                     pass
             btn.setToolTip(f"{tip}: {'On' if active else 'Off'}")
-            self._apply_side_icon_style(btn, active=active)
+            self._apply_selection_tool_icon_style(btn, active=active)
 
     def _build_mesh_box_select_button(self) -> None:
         try:
@@ -1809,7 +1813,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             except Exception:
                 pass
         btn.setToolTip(f"Box Select: {'On' if active else 'Off'} ({self._mesh_box_select_policy_label()})")
-        self._apply_side_icon_style(btn, active=active)
+        self._apply_selection_tool_icon_style(btn, active=active)
 
     def _on_mesh_box_select_clicked(self, checked: bool = False) -> None:
         self._mesh_box_select_enabled = bool(checked)
@@ -1884,6 +1888,8 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._mesh_select_hover = None
         self._mesh_select_selected = None
         self._mesh_select_selected_many = []
+        self._mesh_select_selected_point_indices_by_owner = {}
+        self._mesh_select_selected_point_index_sets_by_owner = {}
         self._mesh_box_select_drag = None
         self._update_mesh_selection_buttons()
         try:
@@ -1926,12 +1932,41 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 return None
         return None
 
+    def _cache_mesh_selected_point_groups(self, elems) -> None:
+        groups = {}
+        index_sets = {}
+        owner_names = {}
+        if isinstance(elems, (list, tuple)):
+            for elem in elems:
+                if not isinstance(elem, dict):
+                    continue
+                if str(elem.get("mode") or "").strip().lower() != "point":
+                    continue
+                owner = str(elem.get("owner") or "").strip()
+                if not owner:
+                    continue
+                try:
+                    idx = int(elem.get("vertex_index"))
+                except Exception:
+                    continue
+                owner_key = owner.lower()
+                display_owner = owner_names.setdefault(owner_key, owner)
+                groups.setdefault(display_owner, set()).add(idx)
+                index_sets.setdefault(owner_key, set()).add(idx)
+        self._mesh_select_selected_point_indices_by_owner = {
+            owner: tuple(sorted(indices)) for owner, indices in groups.items() if indices
+        }
+        self._mesh_select_selected_point_index_sets_by_owner = {
+            owner_key: set(indices) for owner_key, indices in index_sets.items() if indices
+        }
+
     def _set_mesh_element_selection(self, elem) -> None:
         next_elem = dict(elem) if isinstance(elem, dict) else None
         old_key = self._mesh_element_key(getattr(self, "_mesh_select_selected", None))
         new_key = self._mesh_element_key(next_elem)
         self._mesh_select_selected = next_elem
         self._mesh_select_selected_many = [next_elem] if isinstance(next_elem, dict) else []
+        self._cache_mesh_selected_point_groups(self._mesh_select_selected_many)
         if self._mesh_element_key(getattr(self, "_mesh_select_hover", None)) == new_key:
             self._mesh_select_hover = None
         try:
@@ -1958,6 +1993,23 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 keys.add(key)
         return keys
 
+    def _mesh_element_is_selected(self, elem) -> bool:
+        if not isinstance(elem, dict):
+            return False
+        if str(elem.get("mode") or "").strip().lower() == "point":
+            try:
+                owner_l = str(elem.get("owner") or "").strip().lower()
+                idx = int(elem.get("vertex_index"))
+                point_sets = getattr(self, "_mesh_select_selected_point_index_sets_by_owner", None)
+                if isinstance(point_sets, dict):
+                    point_set = point_sets.get(owner_l)
+                    if isinstance(point_set, set):
+                        return idx in point_set
+            except Exception:
+                return False
+        key = self._mesh_element_key(elem)
+        return key is not None and key in self._mesh_selected_element_keys()
+
     def _set_mesh_element_selection_many(self, elems) -> None:
         clean = []
         seen = set()
@@ -1974,6 +2026,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         new_keys = set(seen)
         self._mesh_select_selected_many = clean
         self._mesh_select_selected = dict(clean[0]) if clean else None
+        self._cache_mesh_selected_point_groups(clean)
         hover_key = self._mesh_element_key(getattr(self, "_mesh_select_hover", None))
         if hover_key in new_keys:
             self._mesh_select_hover = None
@@ -1995,15 +2048,36 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         return [dict(selected)] if isinstance(selected, dict) else []
 
     def _sync_mesh_selection_gizmo_to_selection(self) -> bool:
-        elems = self._mesh_selected_elements()
-        if not elems:
+        try:
+            object_owner = self._selected_mesh_object_owner()
+        except Exception:
+            object_owner = ""
+        if object_owner:
+            return self._set_object_selection_gizmo_center(object_owner)
+
+        point_groups = getattr(self, "_mesh_select_selected_point_indices_by_owner", None)
+        selected_many = getattr(self, "_mesh_select_selected_many", None)
+        use_point_group_fast_path = False
+        if isinstance(point_groups, dict) and point_groups and isinstance(selected_many, (list, tuple)):
+            try:
+                point_count = sum(len(indices) for indices in point_groups.values() if indices is not None)
+                use_point_group_fast_path = int(point_count) > 0 and int(point_count) == int(len(selected_many))
+            except Exception:
+                use_point_group_fast_path = False
+        if use_point_group_fast_path:
+            elems = None
+        else:
+            elems = self._mesh_selected_elements()
+            if not elems:
+                return False
+        if elems is None and not point_groups:
             return False
         renderer = getattr(self, "_mgl_renderer", None) or self
         get_center = getattr(renderer, "get_mesh_selection_center", None)
         if not callable(get_center):
             return False
         try:
-            center = get_center(elems)
+            center = get_center(elems) if elems is not None else get_center()
         except Exception:
             center = None
         if center is None:
@@ -2017,12 +2091,20 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
 
         owners = []
         seen = set()
-        for elem in elems:
-            owner = str(elem.get("owner") or "").strip()
-            owner_l = owner.lower()
-            if owner and owner_l not in seen:
-                seen.add(owner_l)
-                owners.append(owner)
+        if use_point_group_fast_path:
+            for owner in point_groups.keys():
+                owner = str(owner or "").strip()
+                owner_l = owner.lower()
+                if owner and owner_l not in seen:
+                    seen.add(owner_l)
+                    owners.append(owner)
+        else:
+            for elem in elems:
+                owner = str(elem.get("owner") or "").strip()
+                owner_l = owner.lower()
+                if owner and owner_l not in seen:
+                    seen.add(owner_l)
+                    owners.append(owner)
         if owners:
             current = str(getattr(self, "_xform_gizmo_owner", "") or "").strip()
             current_l = current.lower()
@@ -2038,7 +2120,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
 
     def _set_mesh_element_hover(self, elem) -> None:
         next_elem = dict(elem) if isinstance(elem, dict) else None
-        if self._mesh_element_key(next_elem) in self._mesh_selected_element_keys():
+        if self._mesh_element_is_selected(next_elem):
             next_elem = None
         old_key = self._mesh_element_key(getattr(self, "_mesh_select_hover", None))
         new_key = self._mesh_element_key(next_elem)
@@ -2058,6 +2140,8 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         )
         self._mesh_select_selected = None
         self._mesh_select_selected_many = []
+        self._mesh_select_selected_point_indices_by_owner = {}
+        self._mesh_select_selected_point_index_sets_by_owner = {}
         self._mesh_select_hover = None
         self._mesh_box_select_drag = None
         if had_state:
@@ -2135,6 +2219,14 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             if bool(e.buttons()):
                 self._set_mesh_element_hover(None)
                 return
+        except Exception:
+            pass
+        try:
+            now = time.perf_counter()
+            last = float(getattr(self, "_mesh_hover_pick_last_t", 0.0) or 0.0)
+            if (now - last) < 0.033:
+                return
+            self._mesh_hover_pick_last_t = now
         except Exception:
             pass
         renderer = getattr(self, "_mgl_renderer", None) or self
@@ -2785,6 +2877,47 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             "QToolButton:checked:hover{background:%s;}"
             % (bg, hover, pressed, bg, hover)
         )
+        try:
+            frame = btn.parentWidget()
+            if frame is not None and str(frame.objectName()) == "GLSideIconFrame":
+                frame.setStyleSheet(
+                    "QFrame#GLSideIconFrame{background:#555b61;border:1px solid #0f1418;border-radius:4px;}"
+                )
+                tip = str(btn.toolTip() or "")
+                if tip:
+                    frame.setToolTip(tip)
+        except Exception:
+            pass
+
+    def _apply_selection_tool_icon_style(self, btn: QtWidgets.QToolButton | None, active: bool = False) -> None:
+        if btn is None:
+            return
+        if not active:
+            self._apply_side_icon_style(btn, active=False)
+            return
+        bg = "#2c5f86"
+        hover = "#3675a4"
+        pressed = "#244d6d"
+        btn.setStyleSheet(
+            "QToolButton{background:%s;border:0px;"
+            "color:#e8f3ff;padding:0px;border-radius:3px;font-size:10px;}"
+            "QToolButton:hover{background:%s;}"
+            "QToolButton:pressed{background:%s;}"
+            "QToolButton:checked{background:%s;}"
+            "QToolButton:checked:hover{background:%s;}"
+            % (bg, hover, pressed, bg, hover)
+        )
+        try:
+            frame = btn.parentWidget()
+            if frame is not None and str(frame.objectName()) == "GLSideIconFrame":
+                frame.setStyleSheet(
+                    "QFrame#GLSideIconFrame{background:#4b6c84;border:1px solid #0f1418;border-radius:4px;}"
+                )
+                tip = str(btn.toolTip() or "")
+                if tip:
+                    frame.setToolTip(tip)
+        except Exception:
+            pass
 
     def _wrap_side_button(
         self,
@@ -2804,6 +2937,12 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         frame.setStyleSheet(
             "QFrame#GLSideIconFrame{background:#555b61;border:1px solid #0f1418;border-radius:4px;}"
         )
+        try:
+            tip = str(btn.toolTip() or "")
+            if tip:
+                frame.setToolTip(tip)
+        except Exception:
+            pass
         inner = max(1, int(self._side_btn_size - (2 * self._side_btn_inner_pad)))
         icon = min(self._side_btn_icon, inner)
         btn.setParent(frame)
@@ -4209,6 +4348,12 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
     def _on_frame_clicked(self) -> None:
         if self._use_moderngl:
             try:
+                if self._frame_selected_object_selection():
+                    self.update()
+                    return
+            except Exception:
+                pass
+            try:
                 if self._frame_selected_mesh_elements():
                     self.update()
                     return
@@ -4277,23 +4422,139 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         except Exception:
             return False
 
+    def _selected_mesh_object_owner(self) -> str:
+        try:
+            elems = self._mesh_selected_elements()
+        except Exception:
+            elems = []
+        if isinstance(elems, (list, tuple)):
+            for elem in elems:
+                if not isinstance(elem, dict):
+                    continue
+                if str(elem.get("mode") or "").strip().lower() != "object":
+                    continue
+                owner = str(elem.get("owner") or "").strip()
+                if owner:
+                    return owner
+        try:
+            if str(getattr(self, "_mesh_select_mode", "") or "").strip().lower() == "object":
+                owner = str(getattr(self, "_xform_gizmo_owner", "") or "").strip()
+                if owner:
+                    return owner
+        except Exception:
+            pass
+        return ""
+
+    def _scene_owner_selection_bounds(self, owner: str):
+        owner = str(owner or "").strip()
+        if not owner or np is None:
+            return (None, None)
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        get_bounds = getattr(renderer, "get_scene_owner_selection_bounds", None)
+        if not callable(get_bounds):
+            get_bounds = getattr(renderer, "get_scene_owner_bounds", None)
+        if not callable(get_bounds):
+            return (None, None)
+        try:
+            bounds = get_bounds(owner)
+        except Exception:
+            return (None, None)
+        if not (isinstance(bounds, (list, tuple)) and len(bounds) >= 2):
+            return (None, None)
+        try:
+            bmin = np.asarray(bounds[0], dtype=np.float32).reshape(-1)[:3]
+            bmax = np.asarray(bounds[1], dtype=np.float32).reshape(-1)[:3]
+            if bmin.shape[0] < 3 or bmax.shape[0] < 3:
+                return (None, None)
+            if not bool(np.all(np.isfinite(bmin)) and np.all(np.isfinite(bmax))):
+                return (None, None)
+            return (np.minimum(bmin, bmax), np.maximum(bmin, bmax))
+        except Exception:
+            return (None, None)
+
+    def _scene_owner_selection_center(self, owner: str):
+        bmin, bmax = self._scene_owner_selection_bounds(owner)
+        if bmin is None or bmax is None:
+            return None
+        try:
+            center = (np.asarray(bmin, dtype=np.float32).reshape(-1)[:3] + np.asarray(bmax, dtype=np.float32).reshape(-1)[:3]) * 0.5
+            if center.shape[0] < 3 or not bool(np.all(np.isfinite(center))):
+                return None
+            return center.astype(np.float32, copy=False)
+        except Exception:
+            return None
+
+    def _set_object_selection_gizmo_center(self, owner: str) -> bool:
+        owner = str(owner or "").strip()
+        if not owner:
+            return False
+        center = self._scene_owner_selection_center(owner)
+        if center is None:
+            return False
+        self._xform_gizmo_owner = owner
+        try:
+            renderer = getattr(self, "_mgl_renderer", None) or self
+            splat_map = getattr(renderer, "_mgl_scene_splats", None)
+            is_splat = isinstance(splat_map, dict) and owner in splat_map
+            self._xform_gizmo_owner_kind = "splat" if is_splat else "mesh"
+        except Exception:
+            self._xform_gizmo_owner_kind = "mesh"
+        self._xform_gizmo_pos = (float(center[0]), float(center[1]), float(center[2]))
+        self._xform_gizmo_pos_locked = True
+        return True
+
+    def _frame_selected_object_selection(self) -> bool:
+        owner = self._selected_mesh_object_owner()
+        if not owner:
+            return False
+        bmin, bmax = self._scene_owner_selection_bounds(owner)
+        if bmin is None or bmax is None:
+            return False
+        try:
+            self._set_object_selection_gizmo_center(owner)
+        except Exception:
+            pass
+        return self._frame_mgl_bounds(bmin, bmax)
+
     def _frame_selected_mesh_elements(self) -> bool:
         renderer = getattr(self, "_mgl_renderer", None) or self
         get_bounds = getattr(renderer, "get_mesh_selection_bounds", None)
         if not callable(get_bounds):
             return False
         try:
-            b = get_bounds()
+            elems = self._mesh_selected_elements()
+        except Exception:
+            elems = []
+        filtered_elems = None
+        if isinstance(elems, (list, tuple)) and elems:
+            filtered_elems = [
+                elem
+                for elem in elems
+                if isinstance(elem, dict) and str(elem.get("mode") or "").strip().lower() != "object"
+            ]
+            if len(filtered_elems) != len(elems) and not filtered_elems:
+                return False
+        try:
+            b = get_bounds(filtered_elems) if filtered_elems is not None else get_bounds()
         except Exception:
             return False
         if not (isinstance(b, (list, tuple)) and len(b) >= 2):
             return False
         return self._frame_mgl_bounds(b[0], b[1])
 
-    def _frame_selected_owner(self) -> bool:
-        owner = getattr(self, "_xform_gizmo_owner", None)
+    def _frame_selected_owner(self, owner=None) -> bool:
+        if owner is None:
+            owner = getattr(self, "_xform_gizmo_owner", None)
         if not owner:
             return False
+        if str(getattr(self, "_mesh_select_mode", "") or "").strip().lower() == "object":
+            bmin, bmax = self._scene_owner_selection_bounds(owner)
+            if bmin is not None and bmax is not None:
+                try:
+                    self._set_object_selection_gizmo_center(str(owner))
+                except Exception:
+                    pass
+                return self._frame_mgl_bounds(bmin, bmax)
         renderer = getattr(self, "_mgl_renderer", None) or self
         get_bounds = getattr(renderer, "get_scene_owner_bounds", None)
         if not callable(get_bounds):
@@ -6171,7 +6432,8 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         draw_mesh_selection = getattr(self, "_draw_mesh_selection_qt_overlay", None)
         if callable(draw_mesh_selection):
             try:
-                draw_mesh_selection(painter)
+                with profile_scope("render.3d.qt_overlay.mesh_selection"):
+                    draw_mesh_selection(painter)
             except Exception:
                 pass
         draw_scene_skeleton = getattr(self, "_draw_scene_skeleton_qt_overlay", None)
@@ -6180,11 +6442,130 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 draw_scene_skeleton(painter)
             except Exception:
                 pass
+        try:
+            self._draw_xform_gizmo_top_overlay(painter)
+        except Exception:
+            pass
         if owns_painter:
             painter.end()
         if depth_disabled:
             try:
                 self._gl.glEnable(GL_DEPTH_TEST)
+            except Exception:
+                pass
+
+    def _draw_xform_gizmo_top_overlay(self, painter: QtGui.QPainter) -> None:
+        if not bool(getattr(self, "_mgl_gizmo_visible", True)):
+            return
+        mode = str(getattr(self, "_xform_overlay_mode", getattr(self, "_xform_gizmo_mode", "translate")) or "translate")
+        if mode not in ("translate", "scale"):
+            return
+        center = getattr(self, "_xform_overlay_center_px", None)
+        axis_proj = getattr(self, "_xform_overlay_axis_proj", None)
+        if not isinstance(center, QtCore.QPointF) or not isinstance(axis_proj, dict):
+            return
+        try:
+            painter.save()
+        except Exception:
+            pass
+        try:
+            painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+            colors = {
+                "x": QtGui.QColor(255, 82, 82, 245),
+                "y": QtGui.QColor(82, 255, 120, 245),
+                "z": QtGui.QColor(82, 156, 255, 245),
+            }
+            for axis in ("x", "y", "z"):
+                end = axis_proj.get(axis)
+                if not isinstance(end, QtCore.QPointF):
+                    continue
+                color = colors.get(axis, QtGui.QColor(255, 255, 255, 245))
+                pen = QtGui.QPen(color, 2.4, QtCore.Qt.SolidLine, QtCore.Qt.RoundCap, QtCore.Qt.RoundJoin)
+                painter.setPen(pen)
+                painter.drawLine(center, end)
+                if mode == "scale":
+                    size = 8.0
+                    rect = QtCore.QRectF(float(end.x()) - size * 0.5, float(end.y()) - size * 0.5, size, size)
+                    painter.setPen(QtGui.QPen(color, 1.2))
+                    painter.setBrush(QtGui.QBrush(color))
+                    painter.drawRect(rect)
+            center_size = 9.0 if mode == "scale" else 12.0
+            center_rect = QtCore.QRectF(
+                float(center.x()) - center_size * 0.5,
+                float(center.y()) - center_size * 0.5,
+                center_size,
+                center_size,
+            )
+            painter.setPen(QtGui.QPen(QtGui.QColor(190, 110, 230, 235), 1.2))
+            painter.setBrush(QtGui.QBrush(QtGui.QColor(190, 110, 230, 235)))
+            painter.drawRect(center_rect)
+
+            hover_axis = str(getattr(self, "_xform_hover_axis", "") or "").strip().lower()
+            hover_center = bool(getattr(self, "_xform_hover_center", False))
+            hover_line = getattr(self, "_xform_hover_axis_proj", None)
+
+            def draw_hover_line(p0: QtCore.QPointF, p1: QtCore.QPointF, base_col: QtGui.QColor) -> None:
+                for width, alpha in ((8, 35), (5, 80)):
+                    glow = QtGui.QColor(base_col)
+                    glow.setAlpha(int(alpha))
+                    pen = QtGui.QPen(glow, float(width), QtCore.Qt.SolidLine, QtCore.Qt.RoundCap, QtCore.Qt.RoundJoin)
+                    painter.setPen(pen)
+                    painter.drawLine(p0, p1)
+                painter.setPen(QtGui.QPen(base_col, 3.2, QtCore.Qt.SolidLine, QtCore.Qt.RoundCap, QtCore.Qt.RoundJoin))
+                painter.drawLine(p0, p1)
+
+            def draw_hover_marker(pt: QtCore.QPointF, size: float, fill: QtGui.QColor, outline: QtGui.QColor) -> None:
+                half = float(size) * 0.5
+                rect = QtCore.QRectF(float(pt.x()) - half, float(pt.y()) - half, float(size), float(size))
+                painter.setPen(QtGui.QPen(outline, 1.4))
+                painter.setBrush(QtGui.QBrush(fill))
+                painter.drawRect(rect)
+                painter.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 130), 0.9))
+                painter.setBrush(QtCore.Qt.NoBrush)
+                painter.drawRect(rect.adjusted(2.0, 2.0, -2.0, -2.0))
+
+            if mode == "scale" and hover_center:
+                for axis in ("x", "y", "z"):
+                    end = axis_proj.get(axis)
+                    if not isinstance(end, QtCore.QPointF):
+                        continue
+                    color = colors.get(axis, QtGui.QColor(255, 255, 255, 245))
+                    draw_hover_line(center, end, color)
+                    draw_hover_marker(
+                        end,
+                        10.0,
+                        QtGui.QColor(color.red(), color.green(), color.blue(), 90),
+                        QtGui.QColor(color.red(), color.green(), color.blue(), 220),
+                    )
+                draw_hover_marker(
+                    center,
+                    12.0,
+                    QtGui.QColor(190, 110, 230, 120),
+                    QtGui.QColor(235, 210, 255, 230),
+                )
+            else:
+                if hover_axis in colors and isinstance(hover_line, tuple) and len(hover_line) == 2:
+                    p0, p1 = hover_line
+                    if isinstance(p0, QtCore.QPointF) and isinstance(p1, QtCore.QPointF):
+                        color = colors.get(hover_axis, QtGui.QColor(255, 255, 255, 245))
+                        draw_hover_line(p0, p1, color)
+                        if mode == "scale":
+                            draw_hover_marker(
+                                p1,
+                                10.0,
+                                QtGui.QColor(color.red(), color.green(), color.blue(), 90),
+                                QtGui.QColor(color.red(), color.green(), color.blue(), 220),
+                            )
+                if hover_center:
+                    draw_hover_marker(
+                        center,
+                        14.0 if mode == "translate" else 10.0,
+                        QtGui.QColor(190, 110, 230, 120),
+                        QtGui.QColor(235, 210, 255, 230),
+                    )
+        finally:
+            try:
+                painter.restore()
             except Exception:
                 pass
 
@@ -6461,8 +6842,15 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         # Hover picking (same usage pattern as gizmo_viewport_smoketest.py)
         mouse_px = getattr(self, "_rot_shared_mouse_px", None)
         hit = None
+        suppress_hover_pick = False
+        try:
+            suppress_hover_pick = bool(QtWidgets.QApplication.mouseButtons()) and not bool(
+                getattr(getattr(rot_shared, "drag_axis", None), "active", False)
+            )
+        except Exception:
+            suppress_hover_pick = False
 
-        if mouse_px is not None and (not rot_shared.drag_axis.active):
+        if mouse_px is not None and (not suppress_hover_pick) and (not rot_shared.drag_axis.active):
             band = max(12.0, float(rot_shared.xyz_ring_radius_px()) * 0.14)
             hit = rot_shared.pick_axis_2d(
                 widget=self,
@@ -6492,7 +6880,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
 
         # Center disc hover zone (only when not on rings)
         hover_center = False
-        if mouse_px is not None and (hover_axis is None) and (not hover_view):
+        if mouse_px is not None and (not suppress_hover_pick) and (hover_axis is None) and (not hover_view):
             mx = float(mouse_px.x())
             my = float(mouse_px.y())
             cx = float(center.x())
