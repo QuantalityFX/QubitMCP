@@ -70,6 +70,8 @@ from echograph.rigging.fbx_stage7_timeline import (
 GL_COLOR_BUFFER_BIT = 0x00004000
 GL_DEPTH_BUFFER_BIT = 0x00000100
 GL_SCISSOR_TEST = 0x0C11
+GL_PROGRAM_POINT_SIZE = 0x8642
+GL_POINT_SPRITE = 0x8861
 
 _HAS_MGL = moderngl is not None and np is not None and Matrix44 is not None
 
@@ -4669,6 +4671,10 @@ class MGLRendererMixin:
         self._mgl_grid_model_count = 0
 
     def _mgl_clear_scene_models(self) -> None:
+        try:
+            self._mgl_clear_mesh_selection_overlay_cache()
+        except Exception:
+            pass
         scene = getattr(self, "_mgl_scene", None)
         if scene is None:
             return
@@ -4873,6 +4879,33 @@ class MGLRendererMixin:
             scene._items = kept
         except Exception:
             pass
+
+    def _mgl_release_mesh_selection_cache_entry(self, entry) -> None:
+        if not isinstance(entry, dict):
+            return
+        seen = set()
+        for res in list(entry.get("resources") or []):
+            if res is None:
+                continue
+            rid = id(res)
+            if rid in seen:
+                continue
+            seen.add(rid)
+            if hasattr(res, "release"):
+                try:
+                    res.release()
+                except Exception:
+                    pass
+
+    def _mgl_clear_mesh_selection_overlay_cache(self) -> None:
+        cache = getattr(self, "_mesh_selection_overlay_cache", None)
+        if isinstance(cache, dict):
+            for key in ("points", "edges", "faces", "object_faces", "object_outlines"):
+                entries = cache.get(key)
+                if isinstance(entries, (list, tuple)):
+                    for entry in entries:
+                        self._mgl_release_mesh_selection_cache_entry(entry)
+        self._mesh_selection_overlay_cache = None
 
     def _mgl_retarget_build_sphere_item(
         self,
@@ -6629,28 +6662,16 @@ class MGLRendererMixin:
         key_fn = getattr(self, "_mesh_element_key", None)
         cached_selected_point_groups = getattr(self, "_mesh_select_selected_point_indices_by_owner", None)
         cached_selected_point_ids = isinstance(cached_selected_point_groups, dict) and bool(cached_selected_point_groups)
-        if isinstance(selected_many, (list, tuple)) and selected_many:
-            for elem in selected_many:
-                if not isinstance(elem, dict):
-                    continue
-                elem_mode = str(elem.get("mode") or "").strip().lower()
-                if elem_mode == "point" and (points_drawn_in_mgl or cached_selected_point_ids):
-                    continue
-                if callable(key_fn):
-                    try:
-                        key = key_fn(elem)
-                        if key is not None and key in selected_keys:
-                            continue
-                        if key is not None:
-                            selected_keys.add(key)
-                    except Exception:
-                        pass
-                entries.append((elem, selected_color, 3.8))
-        else:
+        overlay_cache = getattr(self, "_mesh_selection_overlay_cache", None)
+        if isinstance(overlay_cache, dict):
+            cache_keys = overlay_cache.get("selected_keys")
+            if isinstance(cache_keys, set):
+                selected_keys.update(cache_keys)
+        if not (isinstance(selected_many, (list, tuple)) and selected_many):
             selected = getattr(self, "_mesh_select_selected", None)
             if isinstance(selected, dict):
                 elem_mode = str(selected.get("mode") or "").strip().lower()
-                if points_drawn_in_mgl and elem_mode == "point":
+                if elem_mode != "point" or points_drawn_in_mgl or cached_selected_point_ids:
                     selected = None
             if isinstance(selected, dict):
                 if callable(key_fn):
@@ -18313,6 +18334,8 @@ class MGLRendererMixin:
         vbo = vao = None
         prev_depth_mask = prev_depth_func = None
         prev_depth_test = True
+        prev_program_point_size = None
+        program_point_size_enabled = False
         prev_cull = bool(getattr(self, "_mgl_cull_enabled", False))
         try:
             prev_depth_test = bool(getattr(self._mgl_ctx, "depth_test", True))
@@ -18332,6 +18355,7 @@ class MGLRendererMixin:
                 self._mgl_overlay_point_prog,
                 [(vbo, "3f 4f", "in_position", "in_color")],
             )
+            prev_program_point_size, program_point_size_enabled = self._mgl_enable_mesh_selection_program_point_size()
             try:
                 self._mgl_ctx.enable(moderngl.BLEND | moderngl.PROGRAM_POINT_SIZE)
             except Exception:
@@ -18347,6 +18371,12 @@ class MGLRendererMixin:
                 pass
             self._mgl_overlay_point_prog["Mvp"].write(np.asarray(mvp_to_use, dtype="f4").tobytes())
             self._mgl_overlay_point_prog["PointSize"].value = float(max(1.0, point_size))
+            try:
+                self._mgl_ctx.point_size = float(max(1.0, point_size))
+            except Exception:
+                pass
+            if not program_point_size_enabled:
+                return False
             vao.render(moderngl.POINTS)
             return True
         except Exception as exc:
@@ -18377,6 +18407,7 @@ class MGLRendererMixin:
                     self._mgl_ctx.disable(moderngl.CULL_FACE)
             except Exception:
                 pass
+            self._mgl_restore_mesh_selection_program_point_size(prev_program_point_size)
             for res in (vao, vbo):
                 if res is not None:
                     try:
@@ -18385,7 +18416,7 @@ class MGLRendererMixin:
                         pass
 
     def _mgl_draw_mesh_overlay_point(self, elem: dict, color, mvp) -> None:
-        if not bool(getattr(self, "_mesh_selection_use_mgl_point_overlay", False)):
+        if not bool(getattr(self, "_mesh_selection_use_mgl_point_overlay", True)):
             return
         if not isinstance(elem, dict):
             return
@@ -18434,6 +18465,903 @@ class MGLRendererMixin:
         self._mgl_draw_mesh_overlay_object_faces(owner, topo, color, mvp)
         self._mgl_draw_mesh_overlay_object_outline_hull(owner, topo, color, mvp)
 
+    def _mgl_mesh_selection_color_key(self, color) -> Tuple[float, float, float, float]:
+        try:
+            vals = tuple(float(v) for v in tuple(color)[:4])
+        except Exception:
+            vals = (1.0, 0.48, 0.0, 0.92)
+        if len(vals) < 4:
+            vals = tuple(list(vals) + [1.0] * (4 - len(vals)))
+        return tuple(round(float(v), 6) for v in vals[:4])  # type: ignore[return-value]
+
+    def _mgl_enable_mesh_selection_program_point_size(self):
+        raw_gl = getattr(self, "_gl", None)
+        previous = {"program_point_size": None, "point_sprite": None}
+        if raw_gl is not None and hasattr(raw_gl, "glIsEnabled"):
+            try:
+                previous["program_point_size"] = bool(raw_gl.glIsEnabled(GL_PROGRAM_POINT_SIZE))
+            except Exception:
+                pass
+            try:
+                previous["point_sprite"] = bool(raw_gl.glIsEnabled(GL_POINT_SPRITE))
+            except Exception:
+                pass
+        enabled = False
+        try:
+            point_size_flag = getattr(moderngl, "PROGRAM_POINT_SIZE", None)
+            if point_size_flag is not None:
+                self._mgl_ctx.enable(point_size_flag)
+                enabled = True
+        except Exception:
+            pass
+        if raw_gl is not None and hasattr(raw_gl, "glEnable"):
+            try:
+                raw_gl.glEnable(GL_PROGRAM_POINT_SIZE)
+                enabled = True
+            except Exception:
+                pass
+            try:
+                raw_gl.glEnable(GL_POINT_SPRITE)
+            except Exception:
+                pass
+        return previous, enabled
+
+    def _mgl_restore_mesh_selection_program_point_size(self, previous) -> None:
+        if previous is None:
+            return
+        raw_gl = getattr(self, "_gl", None)
+        if raw_gl is None:
+            return
+        try:
+            if isinstance(previous, dict):
+                prev_program = previous.get("program_point_size")
+                prev_sprite = previous.get("point_sprite")
+            else:
+                prev_program = bool(previous)
+                prev_sprite = None
+            if prev_program is True:
+                raw_gl.glEnable(GL_PROGRAM_POINT_SIZE)
+            elif prev_program is False and hasattr(raw_gl, "glDisable"):
+                raw_gl.glDisable(GL_PROGRAM_POINT_SIZE)
+            if prev_sprite is True:
+                raw_gl.glEnable(GL_POINT_SPRITE)
+            elif prev_sprite is False and hasattr(raw_gl, "glDisable"):
+                raw_gl.glDisable(GL_POINT_SPRITE)
+        except Exception:
+            pass
+
+    def _mgl_mesh_selection_cache_source_key(
+        self,
+        *,
+        selected,
+        selected_many,
+        selected_color,
+        use_point_overlay: bool,
+    ):
+        many_key = (0, 0)
+        if isinstance(selected_many, (list, tuple)) and selected_many:
+            try:
+                many_key = (id(selected_many), int(len(selected_many)))
+            except Exception:
+                many_key = (id(selected_many), 0)
+        selected_key = id(selected) if isinstance(selected, dict) else 0
+        point_groups = getattr(self, "_mesh_select_selected_point_indices_by_owner", None)
+        point_sets = getattr(self, "_mesh_select_selected_point_index_sets_by_owner", None)
+        return (
+            many_key,
+            selected_key,
+            id(point_groups) if isinstance(point_groups, dict) else 0,
+            id(point_sets) if isinstance(point_sets, dict) else 0,
+            bool(use_point_overlay),
+            self._mgl_mesh_selection_color_key(selected_color),
+        )
+
+    def _mgl_build_cached_mesh_selection_points(self, owner: str, indices, color) -> Optional[dict]:
+        if self._mgl_ctx is None or getattr(self, "_mgl_overlay_point_prog", None) is None or np is None:
+            return None
+        owner = str(owner or "").strip()
+        if not owner:
+            return None
+        topo = self._mgl_mesh_topology_for_owner(owner)
+        if not isinstance(topo, dict):
+            return None
+        try:
+            points = np.asarray(topo.get("points"), dtype="f4").reshape(-1, 3)
+            idx_arr = np.asarray(list(indices), dtype=np.int64).reshape(-1)
+        except Exception:
+            return None
+        if points.shape[0] <= 0 or idx_arr.size <= 0:
+            return None
+        try:
+            idx_arr = np.unique(idx_arr[(idx_arr >= 0) & (idx_arr < points.shape[0])])
+        except Exception:
+            return None
+        if idx_arr.size <= 0:
+            return None
+        vbo = vao = None
+        try:
+            point_data = points[idx_arr].astype("f4", copy=False)
+            rgba = np.asarray(self._mgl_mesh_selection_color_key(color), dtype="f4").reshape(1, 4)
+            color_data = np.repeat(rgba, point_data.shape[0], axis=0)
+            verts = np.concatenate((point_data, color_data), axis=1).astype("f4", copy=False)
+            vbo = self._mgl_ctx.buffer(verts.tobytes())
+            vao = self._mgl_ctx.vertex_array(
+                self._mgl_overlay_point_prog,
+                [(vbo, "3f 4f", "in_position", "in_color")],
+            )
+            return {
+                "owner": owner,
+                "vao": vao,
+                "vbo": vbo,
+                "count": int(idx_arr.size),
+                "resources": [vao, vbo],
+            }
+        except Exception as exc:
+            self._mgl_error = f"Mesh selection point cache failed: {exc}"
+            for res in (vao, vbo):
+                if res is not None:
+                    try:
+                        res.release()
+                    except Exception:
+                        pass
+            return None
+
+    def _mgl_build_cached_mesh_selection_edges(self, owner: str, edges) -> Optional[dict]:
+        if self._mgl_ctx is None or self._mgl_wire_prog is None or np is None:
+            return None
+        owner = str(owner or "").strip()
+        if not owner:
+            return None
+        topo = self._mgl_mesh_topology_for_owner(owner)
+        if not isinstance(topo, dict):
+            return None
+        try:
+            points = np.asarray(topo.get("points"), dtype="f4").reshape(-1, 3)
+        except Exception:
+            return None
+        if points.shape[0] <= 0:
+            return None
+        line_points = []
+        for edge in sorted(list(edges or [])):
+            try:
+                a, b = int(edge[0]), int(edge[1])
+                if a == b or a < 0 or b < 0 or a >= points.shape[0] or b >= points.shape[0]:
+                    continue
+                line_points.append(points[a])
+                line_points.append(points[b])
+            except Exception:
+                continue
+        if not line_points:
+            return None
+        verts = self._mgl_wide_line_vertices(np.asarray(line_points, dtype="f4").reshape(-1, 3))
+        if verts is None or getattr(verts, "size", 0) == 0:
+            return None
+        vbo = vao = None
+        try:
+            vbo = self._mgl_ctx.buffer(verts.astype("f4", copy=False).tobytes())
+            vao = self._mgl_ctx.vertex_array(
+                self._mgl_wire_prog,
+                [(vbo, "3f 3f 3f 1f", "in_pos", "in_start", "in_end", "in_side")],
+            )
+            return {
+                "owner": owner,
+                "vao": vao,
+                "vbo": vbo,
+                "count": int(verts.shape[0]),
+                "resources": [vao, vbo],
+            }
+        except Exception as exc:
+            self._mgl_error = f"Mesh selection edge cache failed: {exc}"
+            for res in (vao, vbo):
+                if res is not None:
+                    try:
+                        res.release()
+                    except Exception:
+                        pass
+            return None
+
+    def _mgl_build_cached_mesh_selection_faces(self, owner: str, face_indices) -> Optional[dict]:
+        if self._mgl_ctx is None or self._mgl_prog is None or np is None:
+            return None
+        owner = str(owner or "").strip()
+        if not owner:
+            return None
+        topo = self._mgl_mesh_topology_for_owner(owner)
+        if not isinstance(topo, dict):
+            return None
+        try:
+            points = np.asarray(topo.get("points"), dtype="f4").reshape(-1, 3)
+            triangles = np.asarray(topo.get("triangles"), dtype=np.int64).reshape(-1, 3)
+            idx_arr = np.asarray(sorted({int(idx) for idx in face_indices}), dtype=np.int64).reshape(-1)
+        except Exception:
+            return None
+        if points.shape[0] <= 0 or triangles.shape[0] <= 0 or idx_arr.size <= 0:
+            return None
+        try:
+            idx_arr = idx_arr[(idx_arr >= 0) & (idx_arr < triangles.shape[0])]
+            tris = triangles[idx_arr]
+            valid = np.all((tris >= 0) & (tris < points.shape[0]), axis=1)
+            tris = tris[valid]
+        except Exception:
+            return None
+        if tris.size == 0:
+            return None
+        vao = vbo = nbo = tbo = cbo = ibo = None
+        try:
+            tri_points = points[tris].astype("f4", copy=False)
+            face_points = tri_points.reshape(-1, 3).astype("f4", copy=False)
+            normals_face = np.cross(tri_points[:, 1] - tri_points[:, 0], tri_points[:, 2] - tri_points[:, 0])
+            lengths = np.linalg.norm(normals_face, axis=1)
+            ok = lengths > 1.0e-10
+            normals_face[ok] = normals_face[ok] / lengths[ok, None]
+            normals_face[~ok] = np.array([0.0, 0.0, 1.0], dtype="f4")
+            normals = np.repeat(normals_face.reshape(-1, 1, 3), 3, axis=1).reshape(-1, 3).astype("f4")
+            uvs = np.zeros((face_points.shape[0], 2), dtype="f4")
+            colors = np.ones((face_points.shape[0], 4), dtype="f4")
+            indices = np.arange(face_points.shape[0], dtype="u4")
+            vbo = self._mgl_ctx.buffer(face_points.tobytes())
+            nbo = self._mgl_ctx.buffer(normals.tobytes())
+            tbo = self._mgl_ctx.buffer(uvs.tobytes())
+            cbo = self._mgl_ctx.buffer(colors.tobytes())
+            ibo = self._mgl_ctx.buffer(indices.tobytes())
+            vao = self._mgl_ctx.vertex_array(self._mgl_prog, self._mgl_mesh_vao_content(vbo, nbo, tbo, cbo), ibo, 4)
+            return {
+                "owner": owner,
+                "vao": vao,
+                "count": int(indices.size),
+                "resources": [vao, ibo, cbo, tbo, nbo, vbo],
+            }
+        except Exception as exc:
+            self._mgl_error = f"Mesh selection face cache failed: {exc}"
+            for res in (vao, ibo, cbo, tbo, nbo, vbo):
+                if res is not None:
+                    try:
+                        res.release()
+                    except Exception:
+                        pass
+            return None
+
+    def _mgl_build_cached_mesh_selection_object_faces(self, owner: str) -> Optional[dict]:
+        if self._mgl_ctx is None or self._mgl_prog is None or np is None:
+            return None
+        owner = str(owner or "").strip()
+        if not owner:
+            return None
+        topo = self._mgl_mesh_topology_for_owner(owner)
+        if not isinstance(topo, dict):
+            return None
+        try:
+            points = np.asarray(topo.get("points"), dtype="f4").reshape(-1, 3)
+            triangles = np.asarray(topo.get("triangles"), dtype=np.int64).reshape(-1, 3)
+        except Exception:
+            return None
+        if points.size == 0 or triangles.size == 0:
+            return None
+        try:
+            valid = np.all((triangles >= 0) & (triangles < points.shape[0]), axis=1)
+            triangles = triangles[valid]
+        except Exception:
+            return None
+        if triangles.size == 0:
+            return None
+        vao = vbo = nbo = tbo = cbo = ibo = None
+        try:
+            indices = triangles.astype("u4", copy=False).reshape(-1)
+            normals = np.zeros((points.shape[0], 3), dtype="f4")
+            normals[:, 2] = 1.0
+            uvs = np.zeros((points.shape[0], 2), dtype="f4")
+            colors = np.ones((points.shape[0], 4), dtype="f4")
+            vbo = self._mgl_ctx.buffer(points.astype("f4", copy=False).tobytes())
+            nbo = self._mgl_ctx.buffer(normals.tobytes())
+            tbo = self._mgl_ctx.buffer(uvs.tobytes())
+            cbo = self._mgl_ctx.buffer(colors.tobytes())
+            ibo = self._mgl_ctx.buffer(indices.tobytes())
+            vao = self._mgl_ctx.vertex_array(self._mgl_prog, self._mgl_mesh_vao_content(vbo, nbo, tbo, cbo), ibo, 4)
+            return {
+                "owner": owner,
+                "vao": vao,
+                "count": int(indices.size),
+                "resources": [vao, ibo, cbo, tbo, nbo, vbo],
+            }
+        except Exception as exc:
+            self._mgl_error = f"Mesh selection object face cache failed: {exc}"
+            for res in (vao, ibo, cbo, tbo, nbo, vbo):
+                if res is not None:
+                    try:
+                        res.release()
+                    except Exception:
+                        pass
+            return None
+
+    def _mgl_build_cached_mesh_selection_object_outline(self, owner: str) -> Optional[dict]:
+        prog = getattr(self, "_mgl_selection_outline_prog", None)
+        raw_gl = getattr(self, "_gl", None)
+        if self._mgl_ctx is None or prog is None or raw_gl is None or np is None:
+            return None
+        owner = str(owner or "").strip()
+        if not owner:
+            return None
+        topo = self._mgl_mesh_topology_for_owner(owner)
+        if not isinstance(topo, dict):
+            return None
+        try:
+            points = np.asarray(topo.get("points"), dtype="f4").reshape(-1, 3)
+            triangles = np.asarray(topo.get("triangles"), dtype=np.int64).reshape(-1, 3)
+        except Exception:
+            return None
+        if points.size == 0 or triangles.size == 0:
+            return None
+        try:
+            valid = np.all((triangles >= 0) & (triangles < points.shape[0]), axis=1)
+            triangles = triangles[valid]
+        except Exception:
+            return None
+        if triangles.size == 0:
+            return None
+        vao = vbo = ibo = None
+        try:
+            tri_points = points[triangles]
+            tri_normals = np.cross(tri_points[:, 1] - tri_points[:, 0], tri_points[:, 2] - tri_points[:, 0])
+            tri_lengths = np.linalg.norm(tri_normals, axis=1)
+            valid_normals = tri_lengths > 1.0e-10
+            tri_normals[valid_normals] = tri_normals[valid_normals] / tri_lengths[valid_normals, None]
+            tri_normals[~valid_normals] = 0.0
+            normals = np.zeros_like(points, dtype="f4")
+            np.add.at(normals, triangles[:, 0], tri_normals)
+            np.add.at(normals, triangles[:, 1], tri_normals)
+            np.add.at(normals, triangles[:, 2], tri_normals)
+            center = (points.min(axis=0) + points.max(axis=0)) * 0.5
+            radial = points - center.reshape(1, 3)
+            radial_len = np.linalg.norm(radial, axis=1)
+            radial_ok = radial_len > 1.0e-10
+            radial[radial_ok] = radial[radial_ok] / radial_len[radial_ok, None]
+            radial[~radial_ok] = np.array([0.0, 0.0, 1.0], dtype="f4")
+            normal_len = np.linalg.norm(normals, axis=1)
+            normal_ok = normal_len > 1.0e-10
+            normals[normal_ok] = normals[normal_ok] / normal_len[normal_ok, None]
+            normals[~normal_ok] = radial[~normal_ok]
+            try:
+                inward = np.einsum("ij,ij->i", normals, radial) < 0.0
+                normals[inward] *= -1.0
+            except Exception:
+                pass
+            ext = points.max(axis=0) - points.min(axis=0)
+            radius = max(1.0e-6, float(np.linalg.norm(ext) * 0.5))
+            amount = max(radius * 0.008, 5.0e-5)
+            inflated = (points + (normals * float(amount))).astype("f4", copy=False)
+            indices = triangles.astype("u4", copy=False).reshape(-1)
+            vbo = self._mgl_ctx.buffer(inflated.tobytes())
+            ibo = self._mgl_ctx.buffer(indices.tobytes())
+            vao = self._mgl_ctx.vertex_array(prog, [(vbo, "3f", "in_position")], ibo)
+            return {
+                "owner": owner,
+                "vao": vao,
+                "count": int(indices.size),
+                "resources": [vao, ibo, vbo],
+            }
+        except Exception as exc:
+            self._mgl_error = f"Mesh selection outline cache failed: {exc}"
+            for res in (vao, ibo, vbo):
+                if res is not None:
+                    try:
+                        res.release()
+                    except Exception:
+                        pass
+            return None
+
+    def _mgl_selection_overlay_elem_key(self, elem) -> Optional[Tuple[object, ...]]:
+        if not isinstance(elem, dict):
+            return None
+        mode = str(elem.get("mode") or "").strip().lower()
+        owner = str(elem.get("owner") or "").strip().lower()
+        if not mode or not owner:
+            return None
+        if mode == "object":
+            return (mode, owner)
+        if mode == "edge":
+            edge = elem.get("edge")
+            if isinstance(edge, (list, tuple)) and len(edge) >= 2:
+                try:
+                    a, b = int(edge[0]), int(edge[1])
+                    return (mode, owner, min(a, b), max(a, b))
+                except Exception:
+                    return None
+        if mode == "face":
+            try:
+                return (mode, owner, int(elem.get("face_index")))
+            except Exception:
+                return None
+        return None
+
+    def _mgl_build_mesh_selection_overlay_cache(
+        self,
+        *,
+        selected,
+        selected_many,
+        selected_color,
+        use_point_overlay: bool,
+        source_key,
+    ) -> dict:
+        selected_elems: List[dict] = []
+        selected_keys = set()
+        key_fn = getattr(self, "_mesh_element_key", None)
+        if isinstance(selected_many, (list, tuple)) and selected_many:
+            for elem in selected_many:
+                if not isinstance(elem, dict):
+                    continue
+                if str(elem.get("mode") or "").strip().lower() == "point":
+                    continue
+                key = None
+                if callable(key_fn):
+                    try:
+                        key = key_fn(elem)
+                    except Exception:
+                        key = None
+                if key is None:
+                    key = self._mgl_selection_overlay_elem_key(elem)
+                if key is not None and key in selected_keys:
+                    continue
+                if key is not None:
+                    selected_keys.add(key)
+                selected_elems.append(elem)
+        elif isinstance(selected, dict) and str(selected.get("mode") or "").strip().lower() != "point":
+            key = None
+            if callable(key_fn):
+                try:
+                    key = key_fn(selected)
+                except Exception:
+                    key = None
+            if key is None:
+                key = self._mgl_selection_overlay_elem_key(selected)
+            if key is not None:
+                selected_keys.add(key)
+            selected_elems.append(selected)
+
+        selected_point_groups = self._mgl_selected_point_groups(selected_many=selected_many, selected=selected) if use_point_overlay else {}
+        selected_point_sets = getattr(self, "_mesh_select_selected_point_index_sets_by_owner", None)
+        if not isinstance(selected_point_sets, dict):
+            selected_point_sets = {}
+
+        cache = {
+            "source_key": source_key,
+            "points": [],
+            "edges": [],
+            "faces": [],
+            "object_faces": [],
+            "object_outlines": [],
+            "selected_keys": selected_keys,
+            "selected_point_sets": selected_point_sets,
+            "has_selection": False,
+        }
+
+        if use_point_overlay and isinstance(selected_point_groups, dict):
+            for owner, indices in sorted(selected_point_groups.items(), key=lambda it: str(it[0]).lower()):
+                entry = self._mgl_build_cached_mesh_selection_points(owner, indices, selected_color)
+                if isinstance(entry, dict):
+                    cache["points"].append(entry)
+
+        edge_groups: Dict[str, set] = {}
+        face_groups: Dict[str, set] = {}
+        object_owners: Dict[str, str] = {}
+        for elem in selected_elems:
+            mode = str(elem.get("mode") or "").strip().lower()
+            owner = str(elem.get("owner") or "").strip()
+            if not owner:
+                continue
+            owner_key = owner.lower()
+            if mode == "object":
+                object_owners.setdefault(owner_key, owner)
+            elif mode == "edge":
+                edge = elem.get("edge")
+                if isinstance(edge, (list, tuple)) and len(edge) >= 2:
+                    try:
+                        a, b = int(edge[0]), int(edge[1])
+                        edge_groups.setdefault(owner, set()).add((min(a, b), max(a, b)))
+                    except Exception:
+                        pass
+            elif mode == "face":
+                try:
+                    face_groups.setdefault(owner, set()).add(int(elem.get("face_index")))
+                except Exception:
+                    pass
+
+        for owner in sorted(face_groups.keys(), key=str.lower):
+            entry = self._mgl_build_cached_mesh_selection_faces(owner, face_groups.get(owner))
+            if isinstance(entry, dict):
+                cache["faces"].append(entry)
+        for owner in sorted(edge_groups.keys(), key=str.lower):
+            entry = self._mgl_build_cached_mesh_selection_edges(owner, edge_groups.get(owner))
+            if isinstance(entry, dict):
+                cache["edges"].append(entry)
+        for owner in sorted(object_owners.values(), key=str.lower):
+            entry = self._mgl_build_cached_mesh_selection_object_faces(owner)
+            if isinstance(entry, dict):
+                cache["object_faces"].append(entry)
+            outline = self._mgl_build_cached_mesh_selection_object_outline(owner)
+            if isinstance(outline, dict):
+                cache["object_outlines"].append(outline)
+
+        cache["has_selection"] = any(
+            bool(cache.get(key)) for key in ("points", "edges", "faces", "object_faces", "object_outlines")
+        )
+        return cache
+
+    def _mgl_get_mesh_selection_overlay_cache(
+        self,
+        *,
+        selected,
+        selected_many,
+        selected_color,
+        use_point_overlay: bool,
+    ) -> dict:
+        source_key = self._mgl_mesh_selection_cache_source_key(
+            selected=selected,
+            selected_many=selected_many,
+            selected_color=selected_color,
+            use_point_overlay=bool(use_point_overlay),
+        )
+        cache = getattr(self, "_mesh_selection_overlay_cache", None)
+        if isinstance(cache, dict) and cache.get("source_key") == source_key:
+            return cache
+        try:
+            self._mgl_clear_mesh_selection_overlay_cache()
+        except Exception:
+            pass
+        cache = self._mgl_build_mesh_selection_overlay_cache(
+            selected=selected,
+            selected_many=selected_many,
+            selected_color=selected_color,
+            use_point_overlay=bool(use_point_overlay),
+            source_key=source_key,
+        )
+        self._mesh_selection_overlay_cache = cache
+        return cache
+
+    def _mgl_draw_cached_mesh_selection_points(self, entries, mvp, point_size: float) -> bool:
+        if self._mgl_ctx is None or getattr(self, "_mgl_overlay_point_prog", None) is None or not entries:
+            return False
+        prev_depth_mask = prev_depth_func = None
+        prev_depth_test = True
+        prev_program_point_size = None
+        program_point_size_enabled = False
+        prev_cull = bool(getattr(self, "_mgl_cull_enabled", False))
+        try:
+            prev_depth_test = bool(getattr(self._mgl_ctx, "depth_test", True))
+        except Exception:
+            prev_depth_test = True
+        try:
+            prev_depth_mask = getattr(self._mgl_ctx, "depth_mask", None)
+        except Exception:
+            prev_depth_mask = None
+        try:
+            prev_depth_func = getattr(self._mgl_ctx, "depth_func", None)
+        except Exception:
+            prev_depth_func = None
+        drawn = False
+        try:
+            prev_program_point_size, program_point_size_enabled = self._mgl_enable_mesh_selection_program_point_size()
+            try:
+                self._mgl_ctx.enable(moderngl.BLEND | moderngl.PROGRAM_POINT_SIZE)
+            except Exception:
+                self._mgl_ctx.enable(moderngl.BLEND)
+            try:
+                self._mgl_ctx.disable(moderngl.DEPTH_TEST | moderngl.CULL_FACE)
+            except Exception:
+                pass
+            try:
+                self._mgl_ctx.depth_mask = False
+                self._mgl_ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
+            except Exception:
+                pass
+            self._mgl_overlay_point_prog["PointSize"].value = float(max(1.0, point_size))
+            try:
+                self._mgl_ctx.point_size = float(max(1.0, point_size))
+            except Exception:
+                pass
+            if not program_point_size_enabled:
+                return False
+            for entry in list(entries or []):
+                vao = entry.get("vao") if isinstance(entry, dict) else None
+                owner = str(entry.get("owner") or "").strip() if isinstance(entry, dict) else ""
+                if vao is None or not owner:
+                    continue
+                mvp_to_use, _model_np = self._mgl_overlay_mvp_for_owner(owner, mvp)
+                self._mgl_overlay_point_prog["Mvp"].write(np.asarray(mvp_to_use, dtype="f4").tobytes())
+                vao.render(moderngl.POINTS)
+                drawn = True
+        except Exception as exc:
+            self._mgl_error = f"Mesh selection cached point draw failed: {exc}"
+        finally:
+            if prev_depth_mask is not None:
+                try:
+                    self._mgl_ctx.depth_mask = prev_depth_mask
+                except Exception:
+                    pass
+            if prev_depth_func is not None:
+                try:
+                    self._mgl_ctx.depth_func = prev_depth_func
+                except Exception:
+                    pass
+            try:
+                if prev_depth_test:
+                    self._mgl_ctx.enable(moderngl.DEPTH_TEST)
+                else:
+                    self._mgl_ctx.disable(moderngl.DEPTH_TEST)
+            except Exception:
+                pass
+            try:
+                if prev_cull:
+                    self._mgl_ctx.enable(moderngl.CULL_FACE)
+                else:
+                    self._mgl_ctx.disable(moderngl.CULL_FACE)
+            except Exception:
+                pass
+            self._mgl_restore_mesh_selection_program_point_size(prev_program_point_size)
+        return drawn
+
+    def _mgl_draw_cached_mesh_selection_lines(self, entries, color, mvp, line_width: float) -> bool:
+        if self._mgl_ctx is None or self._mgl_wire_prog is None or not entries:
+            return False
+        prev_depth_mask = prev_depth_func = prev_line_width = None
+        try:
+            prev_depth_mask = getattr(self._mgl_ctx, "depth_mask", None)
+            prev_depth_func = getattr(self._mgl_ctx, "depth_func", None)
+            prev_line_width = getattr(self._mgl_ctx, "line_width", None)
+        except Exception:
+            pass
+        drawn = False
+        try:
+            self._mgl_ctx.enable(moderngl.BLEND | moderngl.DEPTH_TEST)
+            try:
+                self._mgl_ctx.disable(moderngl.CULL_FACE)
+            except Exception:
+                pass
+            try:
+                self._mgl_ctx.depth_mask = False
+                self._mgl_ctx.depth_func = "<="
+                self._mgl_ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
+            except Exception:
+                pass
+            self._mgl_wire_prog["Color"].value = tuple(float(v) for v in color)
+            self._mgl_wire_prog["Viewport"].value = (float(max(1, self.width())), float(max(1, self.height())))
+            self._mgl_wire_prog["LineWidth"].value = float(line_width)
+            for entry in list(entries or []):
+                vao = entry.get("vao") if isinstance(entry, dict) else None
+                owner = str(entry.get("owner") or "").strip() if isinstance(entry, dict) else ""
+                if vao is None or not owner:
+                    continue
+                mvp_to_use, _model_np = self._mgl_overlay_mvp_for_owner(owner, mvp)
+                self._mgl_wire_prog["Mvp"].write(mvp_to_use.astype("f4").tobytes())
+                vao.render(moderngl.TRIANGLES)
+                drawn = True
+        except Exception as exc:
+            self._mgl_error = f"Mesh selection cached line draw failed: {exc}"
+        finally:
+            if prev_depth_mask is not None:
+                try:
+                    self._mgl_ctx.depth_mask = prev_depth_mask
+                except Exception:
+                    pass
+            if prev_depth_func is not None:
+                try:
+                    self._mgl_ctx.depth_func = prev_depth_func
+                except Exception:
+                    pass
+            if prev_line_width is not None:
+                try:
+                    self._mgl_ctx.line_width = prev_line_width
+                except Exception:
+                    pass
+        return drawn
+
+    def _mgl_draw_cached_mesh_selection_faces(self, entries, color, mvp) -> bool:
+        if self._mgl_ctx is None or self._mgl_prog is None or not entries:
+            return False
+        prev_depth_mask = prev_depth_func = prev_wireframe = prev_polygon_offset = None
+        prev_depth_test = True
+        polygon_offset_enabled = False
+        try:
+            prev_depth_test = bool(getattr(self._mgl_ctx, "depth_test", True))
+            prev_depth_mask = getattr(self._mgl_ctx, "depth_mask", None)
+            prev_depth_func = getattr(self._mgl_ctx, "depth_func", None)
+            prev_wireframe = bool(getattr(self._mgl_ctx, "wireframe", False))
+            prev_polygon_offset = getattr(self._mgl_ctx, "polygon_offset", None)
+        except Exception:
+            pass
+        drawn = False
+        try:
+            self._mgl_ctx.enable(moderngl.BLEND | moderngl.DEPTH_TEST)
+            try:
+                self._mgl_ctx.disable(moderngl.CULL_FACE)
+            except Exception:
+                pass
+            try:
+                self._mgl_ctx.depth_mask = False
+                self._mgl_ctx.depth_func = "<="
+                self._mgl_ctx.wireframe = False
+                self._mgl_ctx.polygon_offset = (-2.0, -2.0)
+            except Exception:
+                pass
+            try:
+                gl = getattr(self, "_gl", None)
+                if gl is not None:
+                    gl.glEnable(0x8037)  # GL_POLYGON_OFFSET_FILL
+                    gl.glPolygonOffset(-2.0, -2.0)
+                    polygon_offset_enabled = True
+            except Exception:
+                polygon_offset_enabled = False
+            if not polygon_offset_enabled:
+                try:
+                    self._mgl_ctx.disable(moderngl.DEPTH_TEST)
+                except Exception:
+                    pass
+            try:
+                self._mgl_ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
+            except Exception:
+                pass
+            face_color = (
+                float(color[0]),
+                float(color[1]),
+                float(color[2]),
+                min(0.32, max(0.14, float(color[3]) * 0.34)),
+            )
+            self._mgl_prog["Color"].value = face_color
+            for uniform_name, value in (
+                ("UseTexture", 0),
+                ("UseVertexColor", 0),
+                ("UseLighting", 0),
+                ("UseMaterial", 0),
+                ("UseSceneRefraction", 0),
+                ("UseShadows", 0),
+                ("UseProcedural", 0),
+                ("UseProceduralLayer", 0),
+                ("UseVolumeMask", 0),
+                ("UseInstancing", 0),
+            ):
+                try:
+                    self._mgl_prog[uniform_name].value = value
+                except Exception:
+                    pass
+            for entry in list(entries or []):
+                vao = entry.get("vao") if isinstance(entry, dict) else None
+                owner = str(entry.get("owner") or "").strip() if isinstance(entry, dict) else ""
+                if vao is None or not owner:
+                    continue
+                mvp_to_use, model_np = self._mgl_overlay_mvp_for_owner(owner, mvp)
+                self._mgl_prog["Mvp"].write(mvp_to_use.astype("f4").tobytes())
+                if model_np is not None:
+                    try:
+                        self._mgl_prog["Model"].write(model_np.astype("f4").tobytes())
+                    except Exception:
+                        pass
+                vao.render()
+                drawn = True
+        except Exception as exc:
+            self._mgl_error = f"Mesh selection cached face draw failed: {exc}"
+        finally:
+            if polygon_offset_enabled:
+                try:
+                    gl = getattr(self, "_gl", None)
+                    if gl is not None:
+                        gl.glDisable(0x8037)  # GL_POLYGON_OFFSET_FILL
+                except Exception:
+                    pass
+            if prev_depth_mask is not None:
+                try:
+                    self._mgl_ctx.depth_mask = prev_depth_mask
+                except Exception:
+                    pass
+            if prev_depth_func is not None:
+                try:
+                    self._mgl_ctx.depth_func = prev_depth_func
+                except Exception:
+                    pass
+            try:
+                if prev_depth_test:
+                    self._mgl_ctx.enable(moderngl.DEPTH_TEST)
+                else:
+                    self._mgl_ctx.disable(moderngl.DEPTH_TEST)
+            except Exception:
+                pass
+            if prev_wireframe is not None:
+                try:
+                    self._mgl_ctx.wireframe = prev_wireframe
+                except Exception:
+                    pass
+            if prev_polygon_offset is not None:
+                try:
+                    self._mgl_ctx.polygon_offset = prev_polygon_offset
+                except Exception:
+                    pass
+        return drawn
+
+    def _mgl_draw_cached_mesh_selection_outlines(self, entries, color, mvp) -> bool:
+        prog = getattr(self, "_mgl_selection_outline_prog", None)
+        raw_gl = getattr(self, "_gl", None)
+        if self._mgl_ctx is None or prog is None or raw_gl is None or not entries:
+            return False
+        prev_depth_mask = prev_depth_func = None
+        prev_wireframe = None
+        cull_enabled = bool(getattr(self, "_mgl_cull_enabled", False))
+        try:
+            prev_depth_mask = getattr(self._mgl_ctx, "depth_mask", None)
+            prev_depth_func = getattr(self._mgl_ctx, "depth_func", None)
+            prev_wireframe = bool(getattr(self._mgl_ctx, "wireframe", False))
+        except Exception:
+            pass
+        drawn = False
+        try:
+            self._mgl_ctx.enable(moderngl.BLEND | moderngl.DEPTH_TEST | moderngl.CULL_FACE)
+            try:
+                self._mgl_ctx.depth_mask = False
+                self._mgl_ctx.depth_func = "<="
+                self._mgl_ctx.wireframe = False
+                self._mgl_ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
+            except Exception:
+                pass
+            try:
+                raw_gl.glCullFace(0x0404)  # GL_FRONT
+            except Exception:
+                return False
+            try:
+                outline_color = (
+                    1.0,
+                    0.86,
+                    0.0,
+                    min(0.94, max(0.74, float(color[3]) * 0.95)),
+                )
+            except Exception:
+                outline_color = (1.0, 0.86, 0.0, 0.86)
+            prog["Color"].value = outline_color
+            for entry in list(entries or []):
+                vao = entry.get("vao") if isinstance(entry, dict) else None
+                owner = str(entry.get("owner") or "").strip() if isinstance(entry, dict) else ""
+                if vao is None or not owner:
+                    continue
+                mvp_to_use, _model_np = self._mgl_overlay_mvp_for_owner(owner, mvp)
+                prog["Mvp"].write(mvp_to_use.astype("f4").tobytes())
+                vao.render()
+                drawn = True
+        except Exception as exc:
+            self._mgl_error = f"Mesh selection cached outline draw failed: {exc}"
+        finally:
+            try:
+                raw_gl.glCullFace(0x0405)  # GL_BACK
+            except Exception:
+                pass
+            if prev_depth_mask is not None:
+                try:
+                    self._mgl_ctx.depth_mask = prev_depth_mask
+                except Exception:
+                    pass
+            if prev_depth_func is not None:
+                try:
+                    self._mgl_ctx.depth_func = prev_depth_func
+                except Exception:
+                    pass
+            if prev_wireframe is not None:
+                try:
+                    self._mgl_ctx.wireframe = prev_wireframe
+                except Exception:
+                    pass
+            try:
+                if cull_enabled:
+                    self._mgl_ctx.enable(moderngl.CULL_FACE)
+                else:
+                    self._mgl_ctx.disable(moderngl.CULL_FACE)
+            except Exception:
+                pass
+        return drawn
+
+    def _mgl_draw_mesh_selection_overlay_cache(self, cache: dict, selected_color, mvp) -> bool:
+        if not isinstance(cache, dict):
+            return False
+        self._mgl_draw_cached_mesh_selection_faces(cache.get("object_faces"), selected_color, mvp)
+        self._mgl_draw_cached_mesh_selection_outlines(cache.get("object_outlines"), selected_color, mvp)
+        self._mgl_draw_cached_mesh_selection_faces(cache.get("faces"), selected_color, mvp)
+        self._mgl_draw_cached_mesh_selection_lines(cache.get("edges"), selected_color, mvp, 5.0)
+        return self._mgl_draw_cached_mesh_selection_points(cache.get("points"), mvp, 5.6)
+
     def _mgl_draw_mesh_overlay_element(self, elem, color, mvp) -> None:
         if not isinstance(elem, dict):
             return
@@ -18455,42 +19383,24 @@ class MGLRendererMixin:
         selected = getattr(self, "_mesh_select_selected", None)
         selected_many = getattr(self, "_mesh_select_selected_many", None)
         hover = getattr(self, "_mesh_select_hover", None)
-        selected_elems = []
-        selected_point_groups = self._mgl_selected_point_groups(selected_many=selected_many, selected=selected)
-        selected_point_sets = getattr(self, "_mesh_select_selected_point_index_sets_by_owner", None)
-        if not isinstance(selected_point_sets, dict):
-            selected_point_sets = {}
-        selected_keys = set()
-        key_fn = getattr(self, "_mesh_element_key", None)
-        if isinstance(selected_many, (list, tuple)) and selected_many:
-            for elem in selected_many:
-                if not isinstance(elem, dict):
-                    continue
-                if str(elem.get("mode") or "").strip().lower() == "point":
-                    continue
-                if callable(key_fn):
-                    try:
-                        key = key_fn(elem)
-                        if key is not None and key in selected_keys:
-                            continue
-                        if key is not None:
-                            selected_keys.add(key)
-                    except Exception:
-                        pass
-                selected_elems.append(elem)
-        elif isinstance(selected, dict) and str(selected.get("mode") or "").strip().lower() != "point":
-            if callable(key_fn):
-                try:
-                    key = key_fn(selected)
-                    if key is not None:
-                        selected_keys.add(key)
-                except Exception:
-                    pass
-            selected_elems.append(selected)
-        if not selected_elems and not selected_point_groups and not isinstance(hover, dict):
-            return
         hover_color = getattr(self, "_mesh_select_hover_color", (0.0, 0.72, 1.0, 0.74))
         selected_color = getattr(self, "_mesh_select_selected_color", (1.0, 0.48, 0.0, 0.92))
+        use_point_overlay = bool(getattr(self, "_mesh_selection_use_mgl_point_overlay", True))
+        cache = self._mgl_get_mesh_selection_overlay_cache(
+            selected=selected,
+            selected_many=selected_many,
+            selected_color=selected_color,
+            use_point_overlay=use_point_overlay,
+        )
+        if not bool(cache.get("has_selection")) and not isinstance(hover, dict):
+            return
+        selected_keys = cache.get("selected_keys")
+        if not isinstance(selected_keys, set):
+            selected_keys = set()
+        selected_point_sets = cache.get("selected_point_sets")
+        if not isinstance(selected_point_sets, dict):
+            selected_point_sets = {}
+        key_fn = getattr(self, "_mesh_element_key", None)
         try:
             if isinstance(hover, dict):
                 hover_selected = False
@@ -18510,18 +19420,13 @@ class MGLRendererMixin:
                         hover_selected = False
                 if not hover_selected:
                     self._mgl_draw_mesh_overlay_element(hover, hover_color, mvp)
-            points_drawn = False
-            if bool(getattr(self, "_mesh_selection_use_mgl_point_overlay", False)):
-                for owner, indices in selected_point_groups.items():
-                    if self._mgl_draw_mesh_overlay_points(owner, indices, selected_color, mvp, 7.6):
-                        points_drawn = True
+            points_drawn = self._mgl_draw_mesh_selection_overlay_cache(cache, selected_color, mvp)
             if points_drawn:
                 try:
                     self._mesh_selection_points_drawn_in_mgl = True
+                    self._mesh_selection_skip_qt_selected_points = True
                 except Exception:
                     pass
-            for elem in selected_elems:
-                self._mgl_draw_mesh_overlay_element(elem, selected_color, mvp)
         finally:
             try:
                 if bool(getattr(self, "_mgl_cull_enabled", False)):
@@ -19641,6 +20546,7 @@ class MGLRendererMixin:
                 vertex_shader=_MESH_SELECTION_OUTLINE_VERT,
                 fragment_shader=_MESH_SELECTION_OUTLINE_FRAG,
             )
+            self._mesh_selection_overlay_cache = None
             self._mgl_shadow_prog = self._mgl_ctx.program(vertex_shader=shadow_vertex, fragment_shader=shadow_fragment)
             try:
                 self._mgl_prog["Light"].value = (1.0, 1.0, 1.0)
