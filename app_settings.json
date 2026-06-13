@@ -1,9 +1,9 @@
 {
   "save_layout": true,
   "panel_layout": {
-    "timeline": false,
+    "timeline": true,
     "audio": false,
-    "profiler": false
+    "profiler": true
   },
   "view_mode": "2d",
   "voice_audio_mode": "bilateral",
