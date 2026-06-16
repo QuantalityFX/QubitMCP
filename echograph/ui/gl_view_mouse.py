@@ -344,6 +344,9 @@ def _handle_mouse_press_moderngl(self, e):
             mesh_element_mode = mode in {"object", "point", "edge", "face"}
         except Exception:
             mesh_element_mode = False
+        mask_paint_press = getattr(self, "_handle_mask_paint_press", None)
+        if callable(mask_paint_press) and mask_paint_press(e):
+            return True
         if self._handle_mouse_press_moderngl_mesh_box_select_start(e, alt_pressed):
             return True
         prefer_gizmo = False
@@ -2782,6 +2785,10 @@ def _handle_mouse_move_moderngl(self, e, _rot_dbg):
         if self._handle_mouse_move_moderngl_xform_drag(e):
             return True
 
+        mask_paint_move = getattr(self, "_handle_mask_paint_move", None)
+        if callable(mask_paint_move) and mask_paint_move(e):
+            return True
+
         with profile_scope("input.navigation_drag"):
             if self._handle_mouse_move_moderngl_navigation_drag(e):
                 self._handle_mouse_move_moderngl_clear_hover_for_drag()
@@ -5173,6 +5180,10 @@ def _handle_mouse_release_legacy(self, e):
 def mouseReleaseEvent(self, e):
     rot_shared = getattr(self, "_rot_shared", None)
 
+    mask_paint_release = getattr(self, "_handle_mask_paint_release", None)
+    if callable(mask_paint_release) and mask_paint_release(e):
+        return
+
     if self._handle_mouse_release_rot_shared_arc(e):
         return
 
@@ -5193,6 +5204,9 @@ def mouseReleaseEvent(self, e):
     self._handle_mouse_release_legacy(e)
 
 def wheelEvent(self, e):
+    mask_paint_wheel = getattr(self, "_handle_mask_paint_wheel", None)
+    if callable(mask_paint_wheel) and mask_paint_wheel(e):
+        return
     if bool(getattr(self, "_fps_nav_active", False)):
         try:
             delta = e.angleDelta().y() / 120.0

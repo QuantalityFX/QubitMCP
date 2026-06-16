@@ -2078,6 +2078,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
             except Exception:
                 pass
             node_w = self._BASE_W
+        elif kind in ("mask", "paint_mask", "paint mask"):
+            # Match embedded MaskWidget height so the bottom frame clears all controls.
+            body_h = 140
+            try:
+                from nodes.mask import spec as _mask_spec  # type: ignore
+                body_h = max(body_h, int(getattr(_mask_spec, "MASK_NODE_BODY_H", body_h)))
+            except Exception:
+                pass
+            node_w = self._BASE_W
         elif kind in ("fx", "fx_trail"):
             # Match the FX embedded widget more closely so the bottom frame does not hang below it.
             body_h = 452

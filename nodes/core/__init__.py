@@ -86,6 +86,7 @@ def register_defaults() -> None:
     register("skinned_splat_proxy", stripe_color="#38bdf8")
     register("modeler", stripe_color="#0ea5e9")
     register("copy_to_points", stripe_color="#06b6d4")
+    register("mask", stripe_color="#f43f5e")
     register("fx_splat_physics", stripe_color="#84cc16")
     register("fx_splat_fx", stripe_color="#f472b6")
     register("colorize", stripe_color="#22d3ee")

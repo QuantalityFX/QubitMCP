@@ -705,6 +705,16 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._mgl_proc_glyph_grid = (1, 1)
         self._mgl_proc_glyph_key = None
         self._mgl_scene_proc_textures_by_owner: Dict[str, Dict[str, object]] = {}
+        self._mask_paint_provider = None
+        self._mask_paint_label = "Mask"
+        self._mask_paint_enabled = False
+        self._mask_paint_active = False
+        self._mask_paint_mouse_px = None
+        self._mask_paint_last_device_pos = None
+        self._mask_paint_b_held = False
+        self._mask_paint_resize_active = False
+        self._mask_paint_resize_start_pos = None
+        self._mask_paint_resize_start_size = 48
         self._mgl_frame_id = 0
         self._mgl_submeshes: List[Dict[str, object]] = []
         self._mgl_error = ""
@@ -1524,6 +1534,15 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         with profile_scope("render.3d.rotate_gizmo_overlay"):
             self._draw_rotate_shared_overlay()
 
+    def leaveEvent(self, event):
+        if bool(getattr(self, "_mask_paint_enabled", False)):
+            self._mask_paint_mouse_px = None
+            try:
+                self.update()
+            except Exception:
+                pass
+        return super().leaveEvent(event)
+
     def refresh_from_scene(self) -> None:
         if self._render_scene_plane:
             self._capture_scene_texture()
@@ -1817,6 +1836,11 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
 
     def _on_mesh_box_select_clicked(self, checked: bool = False) -> None:
         self._mesh_box_select_enabled = bool(checked)
+        if self._mesh_box_select_enabled:
+            try:
+                self.clear_mask_paint_tool()
+            except Exception:
+                pass
         self._mesh_box_select_drag = None
         self._update_mesh_box_select_button()
         try:
@@ -1885,6 +1909,11 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             mode = ""
         current = str(getattr(self, "_mesh_select_mode", "") or "").strip().lower()
         self._mesh_select_mode = "" if current == mode else mode
+        if self._mesh_select_mode:
+            try:
+                self.clear_mask_paint_tool()
+            except Exception:
+                pass
         self._mesh_select_hover = None
         self._mesh_select_selected = None
         self._mesh_select_selected_many = []
@@ -4766,6 +4795,624 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         #QtCore.QTimer.singleShot(0, self._apply_manual_model)
         #QtCore.QTimer.singleShot(0, lambda: self.gl_view.debug_points())
 
+    def _mask_paint_notify_provider(self, provider, enabled: bool) -> None:
+        notify = getattr(provider, "notify_tool_enabled", None)
+        if callable(notify):
+            try:
+                notify(bool(enabled))
+            except Exception:
+                pass
+
+    def _mask_paint_apply_overlay_cursors(self) -> None:
+        for name in ("_controls", "_timeline_panel", "_timeline_audio_panel"):
+            widget = getattr(self, name, None)
+            if widget is None:
+                continue
+            try:
+                widget.setCursor(QtCore.Qt.ArrowCursor)
+            except Exception:
+                pass
+
+    def _mask_paint_pos_over_interactive_ui(self, pos) -> bool:
+        try:
+            point = QtCore.QPoint(int(float(pos.x())), int(float(pos.y())))
+        except Exception:
+            return False
+        for name in ("_controls", "_timeline_panel", "_timeline_audio_panel"):
+            widget = getattr(self, name, None)
+            if widget is None or not widget.isVisible():
+                continue
+            try:
+                if widget.geometry().contains(point):
+                    return True
+            except Exception:
+                pass
+        try:
+            child = self.childAt(point)
+            return child is not None and child is not self
+        except Exception:
+            return False
+
+    def _mask_paint_set_cursor_for_pos(self, pos) -> None:
+        try:
+            if self._mask_paint_pos_over_interactive_ui(pos):
+                self.setCursor(QtCore.Qt.ArrowCursor)
+            else:
+                self.setCursor(QtCore.Qt.BlankCursor)
+        except Exception:
+            pass
+
+    def set_mask_paint_tool(self, provider, enabled: bool = True, label: str = "Mask") -> None:
+        old_provider = getattr(self, "_mask_paint_provider", None)
+        next_enabled = bool(enabled and provider is not None)
+        if old_provider is not None and (old_provider is not provider or not next_enabled):
+            self._mask_paint_notify_provider(old_provider, False)
+        self._mask_paint_provider = provider if provider is not None else None
+        self._mask_paint_label = (label or "Mask").strip() or "Mask"
+        self._mask_paint_enabled = next_enabled
+        self._mask_paint_active = False
+        self._mask_paint_last_device_pos = None
+        self._mask_paint_resize_active = False
+        self._mask_paint_resize_start_pos = None
+        if self._mask_paint_enabled:
+            self._mask_paint_apply_overlay_cursors()
+            try:
+                global_pos = QtGui.QCursor.pos()
+                local_pos = self.mapFromGlobal(global_pos)
+                if self.rect().contains(local_pos):
+                    self._mask_paint_mouse_px = QtCore.QPointF(float(local_pos.x()), float(local_pos.y()))
+            except Exception:
+                pass
+            try:
+                self._mesh_select_hover = None
+            except Exception:
+                pass
+            self._mask_paint_set_cursor_for_pos(self._mask_paint_mouse_px or QtCore.QPointF(-1.0, -1.0))
+            try:
+                self.setFocus(QtCore.Qt.MouseFocusReason)
+            except Exception:
+                pass
+            self._mask_paint_notify_provider(provider, True)
+        else:
+            self._mask_paint_mouse_px = None
+            self._mask_paint_b_held = False
+            try:
+                self.setCursor(QtCore.Qt.ArrowCursor)
+            except Exception:
+                pass
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    def clear_mask_paint_tool(self) -> None:
+        self.set_mask_paint_tool(None, False)
+
+    def _mask_paint_event_pos(self, e) -> QtCore.QPointF:
+        try:
+            return QtCore.QPointF(e.position())
+        except Exception:
+            try:
+                return QtCore.QPointF(float(e.x()), float(e.y()))
+            except Exception:
+                return QtCore.QPointF(0.0, 0.0)
+
+    def _mask_paint_event_viewport(self, e):
+        pos = self._mask_paint_event_pos(e)
+        dpr = 1.0
+        try:
+            dpr = float(self.devicePixelRatioF())
+        except Exception:
+            try:
+                dpr = float(self.devicePixelRatio())
+            except Exception:
+                dpr = 1.0
+        px = int(float(pos.x()) * dpr)
+        py = int(float(pos.y()) * dpr)
+        vw = int(float(self.width()) * dpr)
+        vh = int(float(self.height()) * dpr)
+        return pos, px, py, vw, vh
+
+    def _mask_paint_radius_px(self) -> float:
+        provider = getattr(self, "_mask_paint_provider", None)
+        size = 48.0
+        try:
+            fn = getattr(provider, "brush_size", None)
+            if callable(fn):
+                size = float(fn())
+        except Exception:
+            size = 48.0
+        return max(1.0, min(512.0, size * 0.5))
+
+    def _mask_paint_device_radius_px(self) -> float:
+        radius = self._mask_paint_radius_px()
+        try:
+            radius *= max(0.25, float(self.devicePixelRatioF()))
+        except Exception:
+            try:
+                radius *= max(0.25, float(self.devicePixelRatio()))
+            except Exception:
+                pass
+        return max(1.0, radius)
+
+    def _mask_paint_stamp_spacing_px(self) -> float:
+        return max(1.0, self._mask_paint_device_radius_px() * 0.5)
+
+    def _mask_paint_falloff(self) -> float:
+        provider = getattr(self, "_mask_paint_provider", None)
+        try:
+            fn = getattr(provider, "falloff", None)
+            if callable(fn):
+                return max(0.0, min(1.0, float(fn())))
+        except Exception:
+            pass
+        return 0.35
+
+    def _mask_paint_pick_uv(self, px: int, py: int, vw: int, vh: int):
+        renderer = getattr(self, "_mgl_renderer", None) or self
+        pick_uv = getattr(renderer, "pick_mesh_uv_at", None)
+        if callable(pick_uv):
+            try:
+                return pick_uv(int(px), int(py), int(vw), int(vh))
+            except Exception:
+                return None
+        return None
+
+    def _mask_paint_uv_distance_px(self, uv_a, uv_b, img_w: int, img_h: int) -> Optional[float]:
+        if not isinstance(uv_a, (list, tuple)) or not isinstance(uv_b, (list, tuple)):
+            return None
+        if len(uv_a) < 2 or len(uv_b) < 2:
+            return None
+        try:
+            du = float(uv_b[0]) - float(uv_a[0])
+            dv = float(uv_b[1]) - float(uv_a[1])
+            if du > 0.5:
+                du -= 1.0
+            elif du < -0.5:
+                du += 1.0
+            if dv > 0.5:
+                dv -= 1.0
+            elif dv < -0.5:
+                dv += 1.0
+            return math.sqrt((du * float(max(1, img_w))) ** 2 + (dv * float(max(1, img_h))) ** 2)
+        except Exception:
+            return None
+
+    def _mask_paint_texture_radius_px(self, px: int, py: int, uv, owner: str, vw: int, vh: int) -> float:
+        provider = getattr(self, "_mask_paint_provider", None)
+        screen_radius = self._mask_paint_device_radius_px()
+        img_w = 1024
+        img_h = 1024
+        try:
+            image_fn = getattr(provider, "image", None)
+            img = image_fn() if callable(image_fn) else None
+            if img is not None and not img.isNull():
+                img_w = int(img.width())
+                img_h = int(img.height())
+        except Exception:
+            pass
+        samples = []
+        offsets = (
+            (screen_radius, 0.0),
+            (-screen_radius, 0.0),
+            (0.0, screen_radius),
+            (0.0, -screen_radius),
+        )
+        owner = str(owner or "").strip()
+        for ox, oy in offsets:
+            hit = self._mask_paint_pick_uv(
+                int(round(float(px) + float(ox))),
+                int(round(float(py) + float(oy))),
+                int(vw),
+                int(vh),
+            )
+            if not isinstance(hit, dict):
+                continue
+            hit_owner = str(hit.get("owner") or "").strip()
+            if owner and hit_owner and hit_owner != owner:
+                continue
+            edge_uv = hit.get("uv")
+            dist = self._mask_paint_uv_distance_px(uv, edge_uv, img_w, img_h)
+            if dist is not None and math.isfinite(dist) and dist > 0.0:
+                samples.append(float(dist))
+        if samples:
+            samples.sort()
+            mid = len(samples) // 2
+            if len(samples) % 2:
+                radius = samples[mid]
+            else:
+                radius = (samples[mid - 1] + samples[mid]) * 0.5
+        else:
+            radius = screen_radius
+        return max(1.0, min(float(max(img_w, img_h)), float(radius)))
+
+    def _mask_paint_set_brush_size(self, size: int) -> bool:
+        provider = getattr(self, "_mask_paint_provider", None)
+        if provider is None:
+            return False
+        try:
+            size = max(2, min(512, int(round(float(size)))))
+        except Exception:
+            size = 48
+        setter = getattr(provider, "set_brush_size", None)
+        if callable(setter):
+            try:
+                setter(size)
+                return True
+            except Exception:
+                return False
+        return False
+
+    def _mask_paint_start_resize(self, e) -> bool:
+        pos = self._mask_paint_event_pos(e)
+        self._mask_paint_mouse_px = QtCore.QPointF(pos)
+        self._mask_paint_resize_active = True
+        self._mask_paint_active = False
+        self._mask_paint_last_device_pos = None
+        self._mask_paint_resize_start_pos = QtCore.QPointF(pos)
+        try:
+            provider = getattr(self, "_mask_paint_provider", None)
+            size_fn = getattr(provider, "brush_size", None)
+            self._mask_paint_resize_start_size = int(size_fn()) if callable(size_fn) else 48
+        except Exception:
+            self._mask_paint_resize_start_size = 48
+        self._mask_paint_set_cursor_for_pos(pos)
+        try:
+            e.accept()
+            self.update()
+        except Exception:
+            pass
+        return True
+
+    def _mask_paint_update_resize(self, e) -> bool:
+        if not bool(getattr(self, "_mask_paint_resize_active", False)):
+            return False
+        pos = self._mask_paint_event_pos(e)
+        start = getattr(self, "_mask_paint_resize_start_pos", None)
+        if not isinstance(start, QtCore.QPointF):
+            start = QtCore.QPointF(pos)
+            self._mask_paint_resize_start_pos = start
+        try:
+            start_size = int(getattr(self, "_mask_paint_resize_start_size", 48))
+        except Exception:
+            start_size = 48
+        delta = (float(pos.x()) - float(start.x())) + (float(start.y()) - float(pos.y()))
+        new_size = max(2, min(512, int(round(float(start_size) + delta))))
+        self._mask_paint_mouse_px = QtCore.QPointF(pos)
+        changed = self._mask_paint_set_brush_size(new_size)
+        self._mask_paint_set_cursor_for_pos(pos)
+        try:
+            self.update()
+            e.accept()
+        except Exception:
+            pass
+        return True if changed or bool(getattr(self, "_mask_paint_resize_active", False)) else False
+
+    def _handle_mask_paint_wheel(self, e) -> bool:
+        if not bool(getattr(self, "_mask_paint_enabled", False)):
+            return False
+        try:
+            if bool(e.modifiers() & QtCore.Qt.AltModifier):
+                return False
+        except Exception:
+            pass
+        if not bool(getattr(self, "_mask_paint_b_held", False)):
+            return False
+        provider = getattr(self, "_mask_paint_provider", None)
+        if provider is None:
+            return False
+        try:
+            delta = float(e.angleDelta().y()) / 120.0
+        except Exception:
+            delta = 0.0
+        if abs(delta) < 1.0e-6:
+            try:
+                delta = float(e.pixelDelta().y()) / 40.0
+            except Exception:
+                delta = 0.0
+        if abs(delta) < 1.0e-6:
+            return False
+        try:
+            size_fn = getattr(provider, "brush_size", None)
+            current = int(size_fn()) if callable(size_fn) else 48
+        except Exception:
+            current = 48
+        step = 8.0
+        new_size = max(2, min(512, int(round(float(current) + (float(delta) * step)))))
+        self._mask_paint_set_brush_size(new_size)
+        try:
+            pos = self._mask_paint_event_pos(e)
+            self._mask_paint_mouse_px = QtCore.QPointF(pos)
+            self._mask_paint_set_cursor_for_pos(pos)
+        except Exception:
+            pass
+        try:
+            self.update()
+            e.accept()
+        except Exception:
+            pass
+        return True
+
+    def _mask_paint_swap_colors(self) -> bool:
+        provider = getattr(self, "_mask_paint_provider", None)
+        if provider is None:
+            return False
+        swap = getattr(provider, "swap_colors", None)
+        if not callable(swap):
+            return False
+        try:
+            swap()
+            self.update()
+            return True
+        except Exception:
+            return False
+
+    def _handle_mask_paint_key_press(self, e, key=None) -> bool:
+        if not bool(getattr(self, "_mask_paint_enabled", False)):
+            return False
+        if key is None:
+            try:
+                key = e.key()
+            except Exception:
+                key = None
+        if key == QtCore.Qt.Key_B:
+            self._mask_paint_b_held = True
+            try:
+                e.accept()
+            except Exception:
+                pass
+            return True
+        if key == QtCore.Qt.Key_V:
+            try:
+                if bool(e.isAutoRepeat()):
+                    e.accept()
+                    return True
+            except Exception:
+                pass
+            if self._mask_paint_swap_colors():
+                try:
+                    e.accept()
+                except Exception:
+                    pass
+                return True
+        return False
+
+    def _handle_mask_paint_key_release(self, e, key=None) -> bool:
+        if key is None:
+            try:
+                key = e.key()
+            except Exception:
+                key = None
+        if key == QtCore.Qt.Key_B and (
+            bool(getattr(self, "_mask_paint_enabled", False)) or bool(getattr(self, "_mask_paint_b_held", False))
+        ):
+            self._mask_paint_b_held = False
+            try:
+                e.accept()
+            except Exception:
+                pass
+            return True
+        return False
+
+    def _mask_paint_operation_for_event(self, e):
+        provider = getattr(self, "_mask_paint_provider", None)
+        mode = "add"
+        try:
+            mode_fn = getattr(provider, "brush_mode", None)
+            if callable(mode_fn):
+                mode = str(mode_fn() or "add").strip().lower()
+        except Exception:
+            mode = "add"
+        try:
+            mods = e.modifiers()
+        except Exception:
+            mods = QtCore.Qt.NoModifier
+        try:
+            if bool(mods & QtCore.Qt.ShiftModifier):
+                return "smooth", False
+            if mode == "smooth":
+                return "smooth", False
+            return "add", bool(mods & QtCore.Qt.ControlModifier)
+        except Exception:
+            return "smooth" if mode == "smooth" else "add", False
+
+    def _mask_paint_sample_device(
+        self,
+        px: int,
+        py: int,
+        vw: int,
+        vh: int,
+        operation: str = "add",
+        invert: bool = False,
+    ) -> bool:
+        provider = getattr(self, "_mask_paint_provider", None)
+        if provider is None:
+            return False
+        hit = self._mask_paint_pick_uv(px, py, vw, vh)
+        if not isinstance(hit, dict):
+            return False
+        uv = hit.get("uv")
+        if not isinstance(uv, (list, tuple)) or len(uv) < 2:
+            return False
+        radius = self._mask_paint_texture_radius_px(
+            int(px),
+            int(py),
+            uv,
+            str(hit.get("owner") or ""),
+            int(vw),
+            int(vh),
+        )
+        operation = str(operation or "add").strip().lower()
+        if operation == "smooth":
+            smooth = getattr(provider, "smooth_uv", None)
+            if not callable(smooth):
+                return False
+            try:
+                return bool(smooth(float(uv[0]), float(uv[1]), radius, self._mask_paint_falloff()))
+            except Exception:
+                return False
+        paint = getattr(provider, "paint_uv", None)
+        if not callable(paint):
+            return False
+        color = None
+        if invert:
+            try:
+                bg_fn = getattr(provider, "background", None)
+                color = bg_fn() if callable(bg_fn) else None
+            except Exception:
+                color = None
+        try:
+            return bool(paint(float(uv[0]), float(uv[1]), radius, self._mask_paint_falloff(), color=color))
+        except Exception:
+            return False
+
+    def _mask_paint_apply_event(self, e) -> bool:
+        pos, px, py, vw, vh = self._mask_paint_event_viewport(e)
+        self._mask_paint_mouse_px = QtCore.QPointF(pos)
+        operation, invert = self._mask_paint_operation_for_event(e)
+        last = getattr(self, "_mask_paint_last_device_pos", None)
+        spacing = self._mask_paint_stamp_spacing_px()
+        samples = []
+        if isinstance(last, (list, tuple)) and len(last) >= 2:
+            lx, ly = float(last[0]), float(last[1])
+            dx = float(px) - lx
+            dy = float(py) - ly
+            dist = math.sqrt(dx * dx + dy * dy)
+            count = min(128, int(dist / spacing)) if spacing > 0.0 else 0
+            if count > 0:
+                for idx in range(1, count + 1):
+                    t = min(1.0, (float(idx) * spacing) / max(1.0e-6, dist))
+                    samples.append((int(round(lx + dx * t)), int(round(ly + dy * t))))
+        else:
+            samples = [(px, py)]
+
+        changed = False
+        for sx, sy in samples:
+            if self._mask_paint_sample_device(int(sx), int(sy), int(vw), int(vh), operation, invert):
+                changed = True
+        if samples:
+            self._mask_paint_last_device_pos = (int(samples[-1][0]), int(samples[-1][1]))
+        if changed:
+            try:
+                self.update()
+            except Exception:
+                pass
+        return changed
+
+    def _handle_mask_paint_press(self, e) -> bool:
+        if not bool(getattr(self, "_mask_paint_enabled", False)):
+            return False
+        if not bool(getattr(self, "_use_moderngl", False)):
+            return False
+        try:
+            button = e.button()
+        except Exception:
+            return False
+        try:
+            if bool(e.modifiers() & QtCore.Qt.AltModifier):
+                return False
+        except Exception:
+            pass
+        try:
+            self.setFocus(QtCore.Qt.MouseFocusReason)
+        except Exception:
+            pass
+        if button == QtCore.Qt.MiddleButton:
+            return self._mask_paint_start_resize(e)
+        if button != QtCore.Qt.LeftButton:
+            return False
+        self._mask_paint_active = True
+        self._mask_paint_last_device_pos = None
+        self._mask_paint_apply_event(e)
+        try:
+            self._mask_paint_set_cursor_for_pos(self._mask_paint_event_pos(e))
+            e.accept()
+        except Exception:
+            pass
+        return True
+
+    def _handle_mask_paint_move(self, e) -> bool:
+        if not bool(getattr(self, "_mask_paint_enabled", False)):
+            return False
+        try:
+            if bool(e.modifiers() & QtCore.Qt.AltModifier):
+                return False
+        except Exception:
+            pass
+        if bool(getattr(self, "_mask_paint_resize_active", False)):
+            try:
+                pressed = bool(e.buttons() & QtCore.Qt.MiddleButton)
+            except Exception:
+                pressed = False
+            if pressed:
+                return self._mask_paint_update_resize(e)
+            self._mask_paint_resize_active = False
+        try:
+            if bool(getattr(self, "_mgl_orbit_dragging", False)) or getattr(self, "_mgl_zoom_press_pos", None) is not None:
+                return False
+        except Exception:
+            pass
+        try:
+            pos = self._mask_paint_event_pos(e)
+            self._mask_paint_mouse_px = QtCore.QPointF(pos)
+            self._mask_paint_set_cursor_for_pos(pos)
+        except Exception:
+            pass
+        painting = bool(getattr(self, "_mask_paint_active", False))
+        try:
+            painting = painting and bool(e.buttons() & QtCore.Qt.LeftButton)
+        except Exception:
+            painting = False
+        if painting:
+            self._mask_paint_apply_event(e)
+        try:
+            self.update()
+            e.accept()
+        except Exception:
+            pass
+        return True
+
+    def _handle_mask_paint_release(self, e) -> bool:
+        if not bool(getattr(self, "_mask_paint_enabled", False)):
+            return False
+        if bool(getattr(self, "_mask_paint_resize_active", False)):
+            try:
+                if e.button() != QtCore.Qt.MiddleButton:
+                    return False
+            except Exception:
+                return False
+            self._mask_paint_resize_active = False
+            self._mask_paint_resize_start_pos = None
+            try:
+                self._mask_paint_set_cursor_for_pos(self._mask_paint_event_pos(e))
+                e.accept()
+                self.update()
+            except Exception:
+                pass
+            return True
+        if not bool(getattr(self, "_mask_paint_active", False)):
+            return False
+        try:
+            if e.button() != QtCore.Qt.LeftButton:
+                return False
+        except Exception:
+            return False
+        provider = getattr(self, "_mask_paint_provider", None)
+        try:
+            save = getattr(provider, "save", None)
+            if callable(save):
+                save()
+        except Exception:
+            pass
+        self._mask_paint_active = False
+        self._mask_paint_last_device_pos = None
+        try:
+            self._mask_paint_set_cursor_for_pos(self._mask_paint_event_pos(e))
+            e.accept()
+        except Exception:
+            pass
+        return True
+
     def set_procedural_texture_provider(self, provider, label: str = "Procedural") -> None:
         if not self._use_moderngl:
             return
@@ -6443,6 +7090,10 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             except Exception:
                 pass
         try:
+            self._draw_mask_paint_cursor(painter)
+        except Exception:
+            pass
+        try:
             self._draw_xform_gizmo_top_overlay(painter)
         except Exception:
             pass
@@ -6451,6 +7102,68 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         if depth_disabled:
             try:
                 self._gl.glEnable(GL_DEPTH_TEST)
+            except Exception:
+                pass
+
+    def _draw_mask_paint_cursor(self, painter: QtGui.QPainter) -> None:
+        if not bool(getattr(self, "_mask_paint_enabled", False)):
+            return
+        pos = getattr(self, "_mask_paint_mouse_px", None)
+        if not isinstance(pos, QtCore.QPointF):
+            return
+        if not self.rect().contains(QtCore.QPoint(int(pos.x()), int(pos.y()))):
+            return
+        if self._mask_paint_pos_over_interactive_ui(pos):
+            return
+        radius = self._mask_paint_radius_px()
+        if radius <= 0.5:
+            return
+        falloff = self._mask_paint_falloff()
+        fg = QtGui.QColor(255, 255, 255, 230)
+        provider = getattr(self, "_mask_paint_provider", None)
+        try:
+            mode = "add"
+            mode_fn = getattr(provider, "brush_mode", None)
+            if callable(mode_fn):
+                mode = str(mode_fn() or "add").strip().lower()
+            mods = QtWidgets.QApplication.keyboardModifiers()
+            use_background = mode != "smooth" and bool(mods & QtCore.Qt.ControlModifier)
+            color_fn = getattr(provider, "background" if use_background else "foreground", None)
+            if callable(color_fn):
+                maybe = color_fn()
+                if isinstance(maybe, QtGui.QColor) and maybe.isValid():
+                    fg = maybe
+                    fg.setAlpha(235)
+        except Exception:
+            pass
+        rect = QtCore.QRectF(float(pos.x()) - radius, float(pos.y()) - radius, radius * 2.0, radius * 2.0)
+        try:
+            painter.save()
+            painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+            painter.setBrush(QtCore.Qt.NoBrush)
+            painter.setPen(QtGui.QPen(QtGui.QColor(0, 0, 0, 190), 3.0))
+            painter.drawEllipse(rect)
+            painter.setPen(QtGui.QPen(fg, 1.4))
+            painter.drawEllipse(rect)
+            if falloff > 0.01:
+                inner_radius = radius * max(0.0, min(1.0, 1.0 - falloff))
+                if inner_radius > 2.0:
+                    inner = QtCore.QRectF(
+                        float(pos.x()) - inner_radius,
+                        float(pos.y()) - inner_radius,
+                        inner_radius * 2.0,
+                        inner_radius * 2.0,
+                    )
+                    pen = QtGui.QPen(QtGui.QColor(255, 255, 255, 120), 1.0, QtCore.Qt.DashLine)
+                    painter.setPen(pen)
+                    painter.drawEllipse(inner)
+            painter.setPen(QtGui.QPen(QtGui.QColor(0, 0, 0, 180), 2.0))
+            painter.drawPoint(pos)
+            painter.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 210), 1.0))
+            painter.drawPoint(pos)
+        finally:
+            try:
+                painter.restore()
             except Exception:
                 pass
 
@@ -8020,6 +8733,9 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             key = e.key()
         except Exception:
             key = None
+        mask_key_press = getattr(self, "_handle_mask_paint_key_press", None)
+        if callable(mask_key_press) and mask_key_press(e, key):
+            return
         nav_key = None
         try:
             if key == QtCore.Qt.Key_W:
@@ -8100,6 +8816,9 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             key = e.key()
         except Exception:
             key = None
+        mask_key_release = getattr(self, "_handle_mask_paint_key_release", None)
+        if callable(mask_key_release) and mask_key_release(e, key):
+            return
         nav_key = None
         try:
             if key == QtCore.Qt.Key_W:
@@ -8137,6 +8856,12 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         super().keyReleaseEvent(e)
 
     def focusOutEvent(self, e):
+        try:
+            self._mask_paint_b_held = False
+            self._mask_paint_resize_active = False
+            self._mask_paint_resize_start_pos = None
+        except Exception:
+            pass
         # Keep gizmo when focus leaves the viewport (avoid hiding splats on UI click)
         try:
             try:

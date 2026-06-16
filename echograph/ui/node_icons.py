@@ -34,6 +34,7 @@ _HTML_PREVIEW_ICON = None
 _IMAGE_COLLECTION_ICON = None
 _TEXTURE_LAYER_ICON = None
 _TEXTURE_NODE_ICON = None
+_MASK_NODE_ICON = None
 _MATERIAL_NODE_ICON = None
 _UV_UNWRAP_ICON = None
 _TRANSFORMS_ICON = None
@@ -340,6 +341,14 @@ def _texture_node_icon():
         return _TEXTURE_NODE_ICON
     _TEXTURE_NODE_ICON = _load_pm("TextureNode_Icon.png")
     return _TEXTURE_NODE_ICON
+
+
+def _mask_node_icon():
+    global _MASK_NODE_ICON
+    if _MASK_NODE_ICON is not None:
+        return _MASK_NODE_ICON
+    _MASK_NODE_ICON = _load_pm("PaintBrush_Off_Icon.png")
+    return _MASK_NODE_ICON
 
 
 def _material_node_icon():

@@ -230,6 +230,17 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Texture Layer plugin import failed:", e)
 
+    # 8.91) Mask
+    try:
+        from nodes import mask
+        if hasattr(mask, "register"):
+            mask.register()
+            _safe_probe("mask")
+        else:
+            print("[EchoGraph] Mask module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Mask plugin import failed:", e)
+
     # 8.92) Material
     try:
         from nodes import material

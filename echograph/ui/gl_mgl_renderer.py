@@ -12605,6 +12605,7 @@ class MGLRendererMixin:
         if np is None:
             return None
         point_blocks: List[NDArray] = []
+        uv_blocks: List[NDArray] = []
         index_blocks: List[NDArray] = []
         offset = 0
         for entry in list(entries or []):
@@ -12616,6 +12617,16 @@ class MGLRendererMixin:
                 continue
             if points.size == 0 or points.shape[0] < 3:
                 continue
+            try:
+                uvs = np.asarray(entry.get("uvs"), dtype="f4").reshape(-1, 2)
+            except Exception:
+                uvs = np.zeros((points.shape[0], 2), dtype="f4")
+            if uvs.shape[0] != points.shape[0]:
+                if uvs.shape[0] > points.shape[0]:
+                    uvs = uvs[: points.shape[0], :]
+                else:
+                    pad = np.zeros((points.shape[0] - uvs.shape[0], 2), dtype="f4")
+                    uvs = np.concatenate((uvs, pad), axis=0)
             raw_indices = entry.get("indices")
             try:
                 if raw_indices is None:
@@ -12636,12 +12647,14 @@ class MGLRendererMixin:
             if triangles.size == 0:
                 continue
             point_blocks.append(points.astype("f4", copy=False))
+            uv_blocks.append(uvs.astype("f4", copy=False))
             index_blocks.append((triangles + int(offset)).astype(np.int64, copy=False))
             offset += int(points.shape[0])
         if not point_blocks or not index_blocks:
             return None
         try:
             points_all = np.concatenate(point_blocks, axis=0).astype("f4", copy=False)
+            uvs_all = np.concatenate(uv_blocks, axis=0).astype("f4", copy=False) if uv_blocks else np.zeros((points_all.shape[0], 2), dtype="f4")
             triangles_all = np.concatenate(index_blocks, axis=0).astype(np.int64, copy=False)
         except Exception:
             return None
@@ -12673,6 +12686,7 @@ class MGLRendererMixin:
             bmax = np.zeros(3, dtype="f4")
         return {
             "points": points_all,
+            "uvs": uvs_all,
             "triangles": triangles_all,
             "edges": edge_arr,
             "wire_points": wire_points,
@@ -12979,21 +12993,26 @@ class MGLRendererMixin:
             tvec = tvec[keep]
             e1_keep = e1[valid][keep]
             e2_keep = e2[valid][keep]
+            u_keep = u[keep]
             qvec = np.cross(tvec, e1_keep)
             v = np.einsum("j,ij->i", local_d, qvec) * inv_det
-            keep2 = (v >= 0.0) & ((u[keep] + v) <= 1.0)
+            keep2 = (v >= 0.0) & ((u_keep + v) <= 1.0)
             if not bool(np.any(keep2)):
                 return None
             valid_indices = valid_indices[keep2]
             e2_keep = e2_keep[keep2]
             qvec = qvec[keep2]
             inv_det = inv_det[keep2]
+            u_keep = u_keep[keep2]
+            v_keep = v[keep2]
             t = np.einsum("ij,ij->i", e2_keep, qvec) * inv_det
             keep3 = t >= 0.0
             if not bool(np.any(keep3)):
                 return None
             valid_indices = valid_indices[keep3]
             t = t[keep3]
+            u_keep = u_keep[keep3]
+            v_keep = v_keep[keep3]
             best_local = int(np.argmin(t))
             face_index = int(valid_indices[best_local])
             t_local = float(t[best_local])
@@ -13006,6 +13025,37 @@ class MGLRendererMixin:
             t_world = float(np.dot(hit_world - ray_o, ray_d))
             if t_world < 0.0:
                 return None
+            u_hit = float(u_keep[best_local])
+            v_hit = float(v_keep[best_local])
+            bary = (
+                float(1.0 - u_hit - v_hit),
+                u_hit,
+                v_hit,
+            )
+            uv_hit = None
+            try:
+                uvs = np.asarray(topo.get("uvs"), dtype=np.float32).reshape(-1, 2)
+                tri = triangles[face_index].astype(np.int64, copy=False)
+                if uvs.shape[0] > int(np.max(tri)):
+                    tri_uvs = uvs[tri[:3]]
+                    if bool(np.any(np.abs(tri_uvs) > 1.0e-8)) or float(np.max(tri_uvs) - np.min(tri_uvs)) > 1.0e-8:
+                        uv_hit_np = (
+                            tri_uvs[0] * np.float32(bary[0])
+                            + tri_uvs[1] * np.float32(bary[1])
+                            + tri_uvs[2] * np.float32(bary[2])
+                        )
+                        uv_hit = (float(uv_hit_np[0]), float(uv_hit_np[1]))
+            except Exception:
+                uv_hit = None
+            if uv_hit is None:
+                try:
+                    span = np.maximum((bmax - bmin).astype(np.float32), np.float32(1.0e-6))
+                    uv_hit = (
+                        float((hit_local[0] - bmin[0]) / span[0]),
+                        float((hit_local[2] - bmin[2]) / span[2]),
+                    )
+                except Exception:
+                    uv_hit = None
             return {
                 "owner": owner,
                 "face_index": face_index,
@@ -13013,6 +13063,8 @@ class MGLRendererMixin:
                 "hit_local": hit_local,
                 "hit_world": hit_world,
                 "t_world": t_world,
+                "barycentric": bary,
+                "uv": uv_hit,
             }
         except Exception:
             return None
@@ -13442,6 +13494,77 @@ class MGLRendererMixin:
                 except Exception:
                     continue
         return results
+
+    def pick_mesh_uv_at(
+        self,
+        px: int,
+        py: int,
+        viewport_w: int,
+        viewport_h: int,
+    ):
+        if np is None:
+            return None
+        ray = self._mgl_pick_ray(px, py, viewport_w, viewport_h)
+        if ray is None:
+            return None
+        ray_o, ray_d = ray
+
+        owners: List[str] = []
+        scene = getattr(self, "_mgl_scene", None)
+        if scene is not None:
+            try:
+                for tag in ("scene-model", "model"):
+                    for item in scene.iter_by_tag(tag):
+                        if not bool(getattr(item, "visible", False)):
+                            continue
+                        payload = getattr(item, "payload", None) or {}
+                        owner = str(payload.get("owner") or item.name or "").strip()
+                        if owner and owner not in owners:
+                            owners.append(owner)
+            except Exception:
+                owners = []
+        if not owners:
+            topo_map = getattr(self, "_mgl_scene_mesh_topology_by_owner", None)
+            if isinstance(topo_map, dict):
+                owners = [str(owner) for owner in topo_map.keys() if str(owner).strip()]
+
+        best = None
+        best_t = 1.0e30
+        for owner in owners:
+            if not self._mgl_scene_owner_visible(owner):
+                continue
+            topo = self._mgl_mesh_topology_for_owner(owner)
+            if topo is None:
+                continue
+            hit = self._mgl_pick_triangles_for_owner(owner, topo, ray_o, ray_d)
+            if not isinstance(hit, dict):
+                continue
+            uv = hit.get("uv")
+            if not isinstance(uv, (list, tuple)) or len(uv) < 2:
+                continue
+            t_world = float(hit.get("t_world", 1.0e30))
+            if t_world < best_t:
+                best_t = t_world
+                best = hit
+
+        if not isinstance(best, dict):
+            return None
+        owner = str(best.get("owner") or "").strip()
+        try:
+            self._mgl_last_pick_kind = "mesh"
+            self._mgl_last_pick_owner = owner
+        except Exception:
+            pass
+        uv = best.get("uv")
+        return {
+            "owner": owner,
+            "uv": (float(uv[0]), float(uv[1])),
+            "face_index": int(best.get("face_index", -1)),
+            "triangle": best.get("triangle"),
+            "barycentric": best.get("barycentric"),
+            "hit_world": best.get("hit_world"),
+            "t_world": float(best.get("t_world", 0.0)),
+        }
 
     def pick_mesh_element_at(
         self,
