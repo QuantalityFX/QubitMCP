@@ -464,6 +464,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     _primitive.register()
             except Exception:
                 pass
+        # Ensure Curve spec is registered even if the loader was skipped.
+        if (self.model.kind or "").strip().lower() in ("curve", "curve_primitive", "primitive_curve"):
+            try:
+                from nodes import curve as _curve  # type: ignore
+                if hasattr(_curve, "register"):
+                    _curve.register()
+            except Exception:
+                pass
         # Ensure Copy To Points spec is registered even if the loader was skipped.
         if (self.model.kind or "").strip().lower() in (
             "copy_to_points",
@@ -644,6 +652,25 @@ class NodeItem(QtWidgets.QGraphicsObject):
             raw = hidden_entry.get("value", "")
             hidden = {t.strip().lower() for t in str(raw).split(",") if t.strip()}
             hidden.update({"primitive", "path"})
+            hidden_entry["value"] = ",".join(sorted(hidden))
+            self.model.params = params
+        elif kind_lower in ("curve", "curve_primitive", "primitive_curve"):
+            params = list(self.model.params or [])
+            names = {(p.get("name") or "").strip().lower() for p in params}
+            if "curve_type" not in names:
+                params.append({"name": "curve_type", "value": "line"})
+            store_key = "__ui_hidden_params"
+            hidden_entry = None
+            for p in params:
+                if (p.get("name") or "").strip().lower() == store_key:
+                    hidden_entry = p
+                    break
+            if hidden_entry is None:
+                hidden_entry = {"name": store_key, "value": ""}
+                params.append(hidden_entry)
+            raw = hidden_entry.get("value", "")
+            hidden = {t.strip().lower() for t in str(raw).split(",") if t.strip()}
+            hidden.update({"curve_type"})
             hidden_entry["value"] = ",".join(sorted(hidden))
             self.model.params = params
         elif kind_lower in ("volume_selector", "split_volume"):
@@ -945,6 +972,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
             return "material"
         if kind in ("fx", "fx_trail", "fx_splat_physics", "fx splat physics", "splat_physics", "splat physics", "splatphysics", "fx_splat_fx", "fx splat fx", "splat_fx", "splat fx", "fx_splat_glow", "fx splat glow", "splat_glow", "splat glow", "splatglow", "colorize", "splat_colorize", "splat colorize", "fx_splat_colorize", "fx splat colorize", "gaussian_colorize", "gaussian colorize", "fx_music_effects", "fx music effects", "music_effects", "music effects", "musiceffects"):
             return "fx"
+        if kind in ("groom_guides", "groom guides", "hair_guides", "hair guides"):
+            return "groom_guides"
         if kind in ("fbx_import", "fbx import", "fbximport"):
             return "fbx"
         return None
@@ -1001,6 +1030,16 @@ class NodeItem(QtWidgets.QGraphicsObject):
         kind = self._header_debug_button_kind()
         if not kind:
             return False
+        if kind == "groom_guides":
+            try:
+                from nodes.groom_guides import spec as _groom_guides_spec  # type: ignore
+
+                show_report = getattr(_groom_guides_spec, "show_groom_guides_debug_report", None)
+                if callable(show_report):
+                    return bool(show_report(self))
+            except Exception as exc:
+                QtWidgets.QMessageBox.warning(None, "Groom Guides Debug", f"Debug report failed: {exc}")
+                return False
         new_value = "0" if self._header_debug_enabled() else "1"
         try:
             self._set_param_value("debug_log", new_value, rebuild=False, notify_scene=True)
@@ -1203,8 +1242,12 @@ class NodeItem(QtWidgets.QGraphicsObject):
             hidden.update({"source", "output", "codec", "fps", "bitrate"})
         elif kind == "primitive":
             hidden.update({"primitive", "path"})
+        elif kind in ("curve", "curve_primitive", "primitive_curve"):
+            hidden.update({"curve_type"})
         elif kind in ("copy_to_points", "copy to points", "copy_to_point", "copy to point", "copytopoints"):
             hidden.update({"match_normal", "pack", "path", "points_source", "copy_source"})
+        elif kind in ("groom_guides", "groom guides", "hair_guides", "hair guides"):
+            hidden.update({"mask", "source", "path", "guides_path", "threshold", "length", "seed", "guide_count", "segments", "debug_log"})
         elif kind in ("uv_unwrap", "normals", "normal", "smooth_normals", "smooth normals"):
             hidden.update({"source", "path"})
         elif kind == "texture":
@@ -2026,6 +2069,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
         elif kind == "primitive":
             body_h = 32
             node_w = self._BASE_W
+        elif kind in ("curve", "curve_primitive", "primitive_curve"):
+            body_h = 34
+            node_w = max(self._BASE_W, 220)
         elif kind in ("copy_to_points", "copy to points", "copy_to_point", "copy to point", "copytopoints"):
             body_h = 116
             node_w = max(self._BASE_W, 236)
@@ -2087,6 +2133,15 @@ class NodeItem(QtWidgets.QGraphicsObject):
             except Exception:
                 pass
             node_w = self._BASE_W
+        elif kind in ("groom_guides", "groom guides", "hair_guides", "hair guides"):
+            body_h = 118
+            node_w = max(self._BASE_W, 260)
+            try:
+                from nodes.groom_guides import spec as _groom_guides_spec  # type: ignore
+                body_h = max(body_h, int(getattr(_groom_guides_spec, "GROOM_GUIDES_BODY_H", body_h)))
+                node_w = max(node_w, int(getattr(_groom_guides_spec, "GROOM_GUIDES_NODE_W", node_w)))
+            except Exception:
+                pass
         elif kind in ("fx", "fx_trail"):
             # Match the FX embedded widget more closely so the bottom frame does not hang below it.
             body_h = 452
@@ -2740,6 +2795,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 try:
                     from nodes.primitive import spec as _primitive_spec  # type: ignore
                     y_cursor = _primitive_spec.render_node_body(self, y_cursor)
+                    kind_lower = None
+                except Exception:
+                    pass
+            # --- Inline Curve body to guarantee the dropdown + view button are present ---
+            if kind_lower in ("curve", "curve_primitive", "primitive_curve"):
+                try:
+                    from nodes.curve import spec as _curve_spec  # type: ignore
+                    y_cursor = _curve_spec.render_node_body(self, y_cursor)
                     kind_lower = None
                 except Exception:
                     pass
@@ -3586,6 +3649,17 @@ class NodeItem(QtWidgets.QGraphicsObject):
             "copy_to_point",
             "copy to point",
             "copytopoints",
+        }
+        curve_kinds = {
+            "curve",
+            "curve_primitive",
+            "primitive_curve",
+        }
+        groom_guides_kinds = {
+            "groom_guides",
+            "groom guides",
+            "hair_guides",
+            "hair guides",
         }
         modeler_kinds = {"modeler"}
         light_kinds = {
@@ -4474,6 +4548,53 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     _scene_log(
                         f"edge[{edge_idx}] add copy_to_points node={asset.get('node', '')!r} "
                         f"path={asset.get('path', '')!r}"
+                    )
+                continue
+            if kind in curve_kinds:
+                try:
+                    from nodes.curve import spec as _curve_spec  # type: ignore
+
+                    build_asset = getattr(_curve_spec, "build_curve_scene_asset", None)
+                    asset = build_asset(src_item) if callable(build_asset) else None
+                except Exception as exc:
+                    asset = None
+                    _scene_log(f"edge[{edge_idx}] curve build failed node={src_name or kind} err={exc!r}")
+                if isinstance(asset, dict):
+                    asset_owner = str(asset.get("node") or src_name or kind).strip()
+                    xf = _lookup_xform(asset_owner)
+                    if not isinstance(xf, dict) and asset_owner != src_name:
+                        xf = _lookup_xform(src_name)
+                    if isinstance(xf, dict):
+                        asset["xform"] = dict(xf)
+                    asset["visible"] = asset_owner not in hidden
+                    assets.append(asset)
+                    _scene_log(
+                        f"edge[{edge_idx}] add curve node={asset.get('node', '')!r} "
+                        f"segments={asset.get('line_segment_count', '')!r}"
+                    )
+                continue
+            if kind in groom_guides_kinds:
+                try:
+                    from nodes.groom_guides import spec as _groom_guides_spec  # type: ignore
+
+                    build_asset = getattr(_groom_guides_spec, "build_groom_guides_scene_asset", None)
+                    outcome = build_asset(src_item) if callable(build_asset) else None
+                    asset = getattr(outcome, "asset", None)
+                except Exception as exc:
+                    asset = None
+                    _scene_log(f"edge[{edge_idx}] groom_guides build failed node={src_name or kind} err={exc!r}")
+                if isinstance(asset, dict):
+                    asset_owner = str(asset.get("node") or src_name or kind).strip()
+                    xf = _lookup_xform(asset_owner)
+                    if not isinstance(xf, dict) and asset_owner != src_name:
+                        xf = _lookup_xform(src_name)
+                    if isinstance(xf, dict):
+                        asset["xform"] = dict(xf)
+                    asset["visible"] = asset_owner not in hidden
+                    assets.append(asset)
+                    _scene_log(
+                        f"edge[{edge_idx}] add groom_guides node={asset.get('node', '')!r} "
+                        f"guides={asset.get('guide_count', '')!r}"
                     )
                 continue
             if kind in music_effects_kinds:
@@ -6961,6 +7082,9 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "copytopoints",
                 "modeler",
                 "primitive",
+                "curve",
+                "curve_primitive",
+                "primitive_curve",
                 "html_preview",
                 "html preview",
                 "htmlpreview",
@@ -6977,6 +7101,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "texture pro",
                 "texture_layer",
                 "texture layer",
+                "mask",
+                "paint_mask",
+                "paint mask",
+                "groom_guides",
+                "groom guides",
+                "hair_guides",
+                "hair guides",
                 "mnaterial",
                 "material",
                 "fx",
@@ -7221,6 +7352,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 icon_pm = node_icons._uv_unwrap_icon() or node_icons._primitive_icon() or node_icons._output_icon()
             elif kind_lower == "primitive":
                 icon_pm = node_icons._primitive_icon() or node_icons._output_icon()
+            elif kind_lower in ("curve", "curve_primitive", "primitive_curve"):
+                icon_pm = node_icons._primitive_icon() or node_icons._output_icon()
             elif kind_lower in ("split_volume", "volume_selector"):
                 icon_pm = node_icons._volume_split_icon() or node_icons._output_icon()
             elif kind_lower in ("uv_unwrap", "uv unwrap", "normals", "normal", "smooth_normals", "smooth normals"):
@@ -7229,6 +7362,10 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 icon_pm = node_icons._texture_node_icon() or node_icons._output_icon()
             elif kind_lower in ("texture_layer", "texture layer"):
                 icon_pm = node_icons._texture_layer_icon() or node_icons._output_icon()
+            elif kind_lower in ("mask", "paint_mask", "paint mask"):
+                icon_pm = node_icons._mask_node_icon() or node_icons._texture_node_icon() or node_icons._output_icon()
+            elif kind_lower in ("groom_guides", "groom guides", "hair_guides", "hair guides"):
+                icon_pm = node_icons._mask_node_icon() or node_icons._instance_icon() or node_icons._output_icon()
             elif kind_lower in ("mnaterial", "material"):
                 icon_pm = node_icons._material_node_icon() or node_icons._output_icon()
             elif kind_lower in ("fx", "fx_trail", "fx_splat_physics", "fx splat physics", "splat_physics", "splat physics", "splatphysics", "fx_splat_fx", "fx splat fx", "splat_fx", "splat fx", "fx_splat_glow", "fx splat glow", "splat_glow", "splat glow", "splatglow", "colorize", "splat_colorize", "splat colorize", "fx_splat_colorize", "fx splat colorize", "gaussian_colorize", "gaussian colorize", "fx_music_effects", "fx music effects", "music_effects", "music effects", "musiceffects"):

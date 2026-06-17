@@ -491,6 +491,58 @@ class MGLRendererMixin:
             )
         return item
 
+    def _mgl_add_overlay_point_item_from_points(
+        self,
+        name: str,
+        points: NDArray,
+        visible: bool,
+        tag: str,
+        owner: Optional[str] = None,
+        path_key: Optional[str] = None,
+        color=(1.0, 0.95, 0.2, 1.0),
+        point_size: float = 8.0,
+    ) -> Optional[MGLSceneItem]:
+        if self._mgl_ctx is None or getattr(self, "_mgl_overlay_point_prog", None) is None or np is None:
+            return None
+        try:
+            point_data = np.asarray(points, dtype="f4").reshape(-1, 3)
+        except Exception:
+            return None
+        if point_data.size == 0 or point_data.shape[0] <= 0:
+            return None
+        try:
+            rgba = np.asarray(tuple(float(v) for v in color[:4]), dtype="f4").reshape(1, 4)
+            color_data = np.repeat(rgba, point_data.shape[0], axis=0)
+            verts = np.concatenate((point_data, color_data), axis=1).astype("f4", copy=False)
+            vbo = self._mgl_ctx.buffer(verts.tobytes())
+            vao = self._mgl_ctx.vertex_array(
+                self._mgl_overlay_point_prog,
+                [(vbo, "3f 4f", "in_position", "in_color")],
+            )
+        except Exception:
+            return None
+        payload = {
+            "vao": vao,
+            "point_count": int(point_data.shape[0]),
+            "point_size": float(max(1.0, point_size)),
+            "mode": moderngl.POINTS,
+            "color": tuple(float(v) for v in color[:4]),
+            "overlay": True,
+        }
+        if owner:
+            payload["owner"] = owner
+        if path_key:
+            payload["path"] = path_key
+        return MGLSceneItem(
+            name=name,
+            draw_fn=MGLRendererMixin._mgl_draw_scene_overlay_points,
+            payload=payload,
+            resources=[vao, vbo],
+            visible=visible,
+            order=41,
+            tag=tag,
+        )
+
     def _mgl_timeline_frame_index(self) -> int:
         frame_fn = getattr(self, "_timeline_current_frame", None)
         if not callable(frame_fn):
@@ -4687,6 +4739,9 @@ class MGLRendererMixin:
             "scene-volume",
             "scene-camera",
             "scene-light",
+            "scene-groom-guides",
+            "scene-groom-guide-points",
+            "scene-curve",
             "scene-fx-trail",
             "retarget-handles",
             "retarget-selection",
@@ -10494,6 +10549,9 @@ class MGLRendererMixin:
                     "scene-volume",
                     "scene-camera",
                     "scene-light",
+                    "scene-groom-guides",
+                    "scene-groom-guide-points",
+                    "scene-curve",
                     "retarget-handles",
                     "retarget-selection",
                     "scene-skeleton-handles",
@@ -12090,6 +12148,106 @@ class MGLRendererMixin:
                 except Exception:
                     pass
 
+    def _mgl_draw_scene_overlay_points(self, item: MGLSceneItem, mvp) -> None:
+        if self._mgl_ctx is None or getattr(self, "_mgl_overlay_point_prog", None) is None or np is None:
+            return
+        payload = item.payload or {}
+        vao = payload.get("vao")
+        if vao is None:
+            return
+        mvp_to_use = mvp
+        model = payload.get("model")
+        if model is not None and Matrix44 is not None:
+            try:
+                if isinstance(model, Matrix44):
+                    mvp_to_use = mvp * model
+                else:
+                    mvp_to_use = mvp * Matrix44(model, dtype="f4")
+            except Exception:
+                mvp_to_use = mvp
+        elif str(payload.get("owner") or "").strip():
+            try:
+                mvp_to_use, _model_np = self._mgl_overlay_mvp_for_owner(str(payload.get("owner") or ""), mvp)
+            except Exception:
+                mvp_to_use = mvp
+        prev_depth_mask = prev_depth_func = None
+        prev_depth_test = True
+        prev_program_point_size = None
+        program_point_size_enabled = False
+        prev_cull = bool(getattr(self, "_mgl_cull_enabled", False))
+        try:
+            prev_depth_test = bool(getattr(self._mgl_ctx, "depth_test", True))
+        except Exception:
+            prev_depth_test = True
+        try:
+            prev_depth_mask = getattr(self._mgl_ctx, "depth_mask", None)
+        except Exception:
+            prev_depth_mask = None
+        try:
+            prev_depth_func = getattr(self._mgl_ctx, "depth_func", None)
+        except Exception:
+            prev_depth_func = None
+        try:
+            prev_program_point_size, program_point_size_enabled = self._mgl_enable_mesh_selection_program_point_size()
+            try:
+                self._mgl_ctx.enable(moderngl.BLEND | moderngl.PROGRAM_POINT_SIZE)
+            except Exception:
+                self._mgl_ctx.enable(moderngl.BLEND)
+            depth_test = bool(payload.get("depth_test", False))
+            try:
+                if depth_test:
+                    self._mgl_ctx.enable(moderngl.DEPTH_TEST)
+                    try:
+                        self._mgl_ctx.depth_func = "<="
+                    except Exception:
+                        pass
+                    self._mgl_ctx.disable(moderngl.CULL_FACE)
+                else:
+                    self._mgl_ctx.disable(moderngl.DEPTH_TEST | moderngl.CULL_FACE)
+            except Exception:
+                pass
+            try:
+                self._mgl_ctx.depth_mask = False
+                self._mgl_ctx.blend_func = (moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA)
+            except Exception:
+                pass
+            point_size = float(max(1.0, payload.get("point_size", 8.0) or 8.0))
+            self._mgl_overlay_point_prog["Mvp"].write(np.asarray(mvp_to_use, dtype="f4").tobytes())
+            self._mgl_overlay_point_prog["PointSize"].value = point_size
+            try:
+                self._mgl_ctx.point_size = point_size
+            except Exception:
+                pass
+            vao.render(moderngl.POINTS)
+        except Exception as exc:
+            self._mgl_error = f"Scene overlay point draw failed: {exc}"
+        finally:
+            if prev_depth_mask is not None:
+                try:
+                    self._mgl_ctx.depth_mask = prev_depth_mask
+                except Exception:
+                    pass
+            if prev_depth_func is not None:
+                try:
+                    self._mgl_ctx.depth_func = prev_depth_func
+                except Exception:
+                    pass
+            try:
+                if prev_depth_test:
+                    self._mgl_ctx.enable(moderngl.DEPTH_TEST)
+                else:
+                    self._mgl_ctx.disable(moderngl.DEPTH_TEST)
+            except Exception:
+                pass
+            try:
+                if prev_cull:
+                    self._mgl_ctx.enable(moderngl.CULL_FACE)
+                else:
+                    self._mgl_ctx.disable(moderngl.CULL_FACE)
+            except Exception:
+                pass
+            self._mgl_restore_mesh_selection_program_point_size(prev_program_point_size)
+
     def _mgl_draw_scene_wire(self, item: MGLSceneItem, mvp) -> None:
         if self._mgl_wire_prog is None:
             return
@@ -12229,6 +12387,57 @@ class MGLRendererMixin:
                     item=str(getattr(item, "name", "") or ""),
                     error=repr(exc),
                 )
+            finally:
+                if prev_depth_mask is not None:
+                    try:
+                        self._mgl_ctx.depth_mask = prev_depth_mask
+                    except Exception:
+                        pass
+                if prev_depth_func is not None:
+                    try:
+                        self._mgl_ctx.depth_func = prev_depth_func
+                    except Exception:
+                        pass
+                try:
+                    if prev_depth_test:
+                        self._mgl_ctx.enable(moderngl.DEPTH_TEST)
+                    else:
+                        self._mgl_ctx.disable(moderngl.DEPTH_TEST)
+                except Exception:
+                    pass
+                try:
+                    if bool(getattr(self, "_mgl_cull_enabled", False)):
+                        self._mgl_ctx.enable(moderngl.CULL_FACE)
+                    else:
+                        self._mgl_ctx.disable(moderngl.CULL_FACE)
+                except Exception:
+                    pass
+            return
+
+        if tag == "scene-groom-guides" or bool(payload.get("overlay", False)):
+            depth_test = bool(payload.get("depth_test", False))
+            try:
+                if depth_test:
+                    self._mgl_ctx.enable(moderngl.BLEND | moderngl.DEPTH_TEST)
+                    try:
+                        self._mgl_ctx.depth_func = "<="
+                    except Exception:
+                        pass
+                    self._mgl_ctx.disable(moderngl.CULL_FACE)
+                else:
+                    self._mgl_ctx.disable(moderngl.DEPTH_TEST | moderngl.CULL_FACE)
+            except Exception:
+                pass
+            try:
+                self._mgl_ctx.depth_mask = False
+            except Exception:
+                pass
+            color = _as_rgba(payload.get("color") or self._mgl_wire_color)
+            _apply_uniforms(color)
+            try:
+                _render()
+            except Exception as exc:
+                self._mgl_error = f"Scene wire draw failed: {exc}"
             finally:
                 if prev_depth_mask is not None:
                     try:
@@ -12716,7 +12925,7 @@ class MGLRendererMixin:
         if scene is None:
             return True
         try:
-            for tag in ("scene-model", "model"):
+            for tag in ("scene-model", "model", "scene-curve", "scene-groom-guides", "scene-groom-guide-points"):
                 for item in scene.iter_by_tag(tag):
                     payload = getattr(item, "payload", None) or {}
                     item_owner = str(payload.get("owner") or item.name or "").strip().lower()
@@ -12755,6 +12964,111 @@ class MGLRendererMixin:
         except Exception:
             return None
         return None
+
+    def _mgl_store_curve_topology_for_owner(
+        self,
+        owner: str,
+        points,
+        edges=None,
+        wire_points=None,
+        *,
+        point_groups=None,
+        point_group_colors=None,
+        model=None,
+        source_owner: str = "",
+        topology_kind: str = "curve",
+    ) -> None:
+        if np is None:
+            return
+        owner_key = str(owner or "").strip()
+        if not owner_key:
+            return
+        try:
+            point_arr = np.asarray(points, dtype="f4").reshape(-1, 3)
+        except Exception:
+            return
+        if point_arr.size == 0 or point_arr.shape[0] <= 0:
+            return
+        if edges is None:
+            if point_arr.shape[0] >= 2:
+                edge_arr = np.asarray(
+                    [(idx, idx + 1) for idx in range(point_arr.shape[0] - 1)],
+                    dtype=np.int64,
+                ).reshape(-1, 2)
+            else:
+                edge_arr = np.zeros((0, 2), dtype=np.int64)
+        else:
+            try:
+                edge_arr = np.asarray(edges, dtype=np.int64).reshape(-1, 2)
+            except Exception:
+                edge_arr = np.zeros((0, 2), dtype=np.int64)
+        if edge_arr.size:
+            try:
+                valid = np.all((edge_arr >= 0) & (edge_arr < point_arr.shape[0]), axis=1)
+                edge_arr = edge_arr[valid]
+            except Exception:
+                edge_arr = np.zeros((0, 2), dtype=np.int64)
+        try:
+            wire_arr = np.asarray(wire_points, dtype="f4").reshape(-1, 3) if wire_points is not None else None
+        except Exception:
+            wire_arr = None
+        if wire_arr is None or wire_arr.size == 0:
+            rows = []
+            for edge in edge_arr:
+                try:
+                    rows.append(point_arr[int(edge[0])])
+                    rows.append(point_arr[int(edge[1])])
+                except Exception:
+                    continue
+            wire_arr = np.asarray(rows, dtype="f4").reshape(-1, 3) if rows else np.zeros((0, 3), dtype="f4")
+        try:
+            bmin = point_arr.min(axis=0).astype("f4")
+            bmax = point_arr.max(axis=0).astype("f4")
+            # Give pure lines a small selectable object volume without changing rendered geometry.
+            span = bmax - bmin
+            diag = float(np.linalg.norm(span))
+            pad = max(diag * 0.02, 0.02)
+            bmin = (bmin - np.float32(pad)).astype("f4")
+            bmax = (bmax + np.float32(pad)).astype("f4")
+        except Exception:
+            bmin = np.zeros(3, dtype="f4")
+            bmax = np.zeros(3, dtype="f4")
+        topo = {
+            "points": point_arr.astype("f4", copy=False),
+            "uvs": np.zeros((point_arr.shape[0], 2), dtype="f4"),
+            "triangles": np.zeros((0, 3), dtype=np.int64),
+            "edges": edge_arr.astype(np.int64, copy=False),
+            "wire_points": wire_arr.astype("f4", copy=False),
+            "bounds_min": bmin,
+            "bounds_max": bmax,
+            "curve_topology": True,
+            "topology_kind": str(topology_kind or "curve"),
+        }
+        if isinstance(point_groups, dict):
+            clean_groups = {}
+            for group_name, indices in point_groups.items():
+                try:
+                    idx_arr = np.asarray(list(indices or []), dtype=np.int64).reshape(-1)
+                    idx_arr = idx_arr[(idx_arr >= 0) & (idx_arr < point_arr.shape[0])]
+                    clean_groups[str(group_name)] = [int(idx) for idx in np.unique(idx_arr)]
+                except Exception:
+                    continue
+            if clean_groups:
+                topo["point_groups"] = clean_groups
+        if isinstance(point_group_colors, dict):
+            topo["point_group_colors"] = dict(point_group_colors)
+        if model is not None:
+            try:
+                topo["model"] = np.asarray(model, dtype="f4").reshape(4, 4)
+            except Exception:
+                pass
+        if source_owner:
+            topo["source_owner"] = str(source_owner)
+        topo_map = getattr(self, "_mgl_scene_mesh_topology_by_owner", None)
+        if not isinstance(topo_map, dict):
+            topo_map = {}
+            setattr(self, "_mgl_scene_mesh_topology_by_owner", topo_map)
+        topo_map[owner_key] = topo
 
     @staticmethod
     def _mgl_ray_aabb_hit(o, d, bmin, bmax):
@@ -12905,7 +13219,7 @@ class MGLRendererMixin:
         scene = getattr(self, "_mgl_scene", None)
         if scene is not None and owner_key:
             try:
-                for tag in ("scene-model", "model"):
+                for tag in ("scene-model", "model", "scene-groom-guides", "scene-groom-guide-points"):
                     for item in scene.iter_by_tag(tag):
                         payload = getattr(item, "payload", None) or {}
                         item_owner = str(payload.get("owner") or item.name or "").strip().lower()
@@ -12916,6 +13230,14 @@ class MGLRendererMixin:
                             return np.asarray(model, dtype=np.float32).reshape(4, 4)
                         if tag == "model" and np is not None:
                             return np.eye(4, dtype=np.float32)
+            except Exception:
+                pass
+        topo_map = getattr(self, "_mgl_scene_mesh_topology_by_owner", None)
+        if isinstance(topo_map, dict) and owner_key and np is not None:
+            try:
+                _stored_key, topo = self._mgl_lookup_owner_entry(topo_map, owner_key)
+                if isinstance(topo, dict) and topo.get("model") is not None:
+                    return np.asarray(topo.get("model"), dtype=np.float32).reshape(4, 4)
             except Exception:
                 pass
         return self._mgl_build_scene_asset_model_matrix(owner, bmin, bmax)
@@ -13207,13 +13529,14 @@ class MGLRendererMixin:
         threshold = max(8.0, 11.0 * max(1.0, dpr))
         threshold2 = threshold * threshold
         best_elem = None
-        best_score = (1.0e30, 1.0e30)
+        best_score = (1.0e30, 1.0e30, 1.0e30)
         for owner in owners:
             if not self._mgl_scene_owner_visible(owner):
                 continue
             topo = self._mgl_mesh_topology_for_owner(owner)
             if not isinstance(topo, dict):
                 continue
+            curve_priority = 0.0 if bool(topo.get("curve_topology", False)) else 1.0
             projected = self._mgl_project_owner_points_device(owner, topo, viewport_w, viewport_h)
             if not isinstance(projected, dict):
                 continue
@@ -13236,7 +13559,7 @@ class MGLRendererMixin:
             if dist2 > threshold2:
                 continue
             z = float(zs[idx]) if idx < zs.size and math.isfinite(float(zs[idx])) else 1.0
-            score = (dist2, z)
+            score = (curve_priority, dist2, z)
             if score >= best_score:
                 continue
             try:
@@ -13254,6 +13577,91 @@ class MGLRendererMixin:
             }
         return best_elem
 
+    def _mgl_pick_projected_edge_for_owners(
+        self,
+        owners: List[str],
+        px: int,
+        py: int,
+        viewport_w: int,
+        viewport_h: int,
+    ):
+        if np is None:
+            return None
+        try:
+            dpr = float(viewport_w) / max(1.0, float(self.width()))
+        except Exception:
+            dpr = 1.0
+        threshold = max(8.0, 10.0 * max(1.0, dpr))
+        threshold2 = threshold * threshold
+        best_elem = None
+        best_score = (1.0e30, 1.0e30, 1.0e30)
+        cursor = np.asarray([float(px), float(py)], dtype=np.float32)
+        for owner in owners:
+            if not self._mgl_scene_owner_visible(owner):
+                continue
+            topo = self._mgl_mesh_topology_for_owner(owner)
+            if not isinstance(topo, dict):
+                continue
+            curve_priority = 0.0 if bool(topo.get("curve_topology", False)) else 1.0
+            try:
+                edges = np.asarray(topo.get("edges"), dtype=np.int64).reshape(-1, 2)
+            except Exception:
+                edges = np.zeros((0, 2), dtype=np.int64)
+            if edges.size == 0:
+                continue
+            projected = self._mgl_project_owner_points_device(owner, topo, viewport_w, viewport_h)
+            if not isinstance(projected, dict):
+                continue
+            try:
+                valid = np.asarray(projected.get("valid"), dtype=bool).reshape(-1)
+                xs = np.asarray(projected.get("x"), dtype=np.float32).reshape(-1)
+                ys = np.asarray(projected.get("y"), dtype=np.float32).reshape(-1)
+                zs = np.asarray(projected.get("z"), dtype=np.float32).reshape(-1)
+                count = min(valid.size, xs.size, ys.size, zs.size)
+            except Exception:
+                continue
+            if count <= 0:
+                continue
+            valid = valid[:count]
+            xs = xs[:count]
+            ys = ys[:count]
+            zs = zs[:count]
+            for edge in edges:
+                try:
+                    a = int(edge[0])
+                    b = int(edge[1])
+                    if a < 0 or b < 0 or a >= count or b >= count:
+                        continue
+                    if not (bool(valid[a]) and bool(valid[b])):
+                        continue
+                    pa = np.asarray([float(xs[a]), float(ys[a])], dtype=np.float32)
+                    pb = np.asarray([float(xs[b]), float(ys[b])], dtype=np.float32)
+                    ab = pb - pa
+                    denom = float(np.dot(ab, ab))
+                    if denom <= 1.0e-8:
+                        closest = pa
+                    else:
+                        t = max(0.0, min(1.0, float(np.dot(cursor - pa, ab) / denom)))
+                        closest = pa + (ab * np.float32(t))
+                    diff = cursor - closest
+                    dist2 = float(np.dot(diff, diff))
+                    if dist2 > threshold2:
+                        continue
+                    z = min(float(zs[a]), float(zs[b]))
+                    score = (curve_priority, dist2, z)
+                    if score >= best_score:
+                        continue
+                    best_score = score
+                    best_elem = {
+                        "mode": "edge",
+                        "owner": owner,
+                        "edge": tuple(sorted((a, b))),
+                        "screen_distance": math.sqrt(max(0.0, dist2)),
+                    }
+                except Exception:
+                    continue
+        return best_elem
+
     def _mgl_mesh_selection_owners(self) -> List[str]:
         owners: List[str] = []
         seen = set()
@@ -13269,7 +13677,7 @@ class MGLRendererMixin:
         scene = getattr(self, "_mgl_scene", None)
         if scene is not None:
             try:
-                for tag in ("scene-model", "model"):
+                for tag in ("scene-model", "model", "scene-curve", "scene-groom-guides"):
                     for item in scene.iter_by_tag(tag):
                         if not bool(getattr(item, "visible", False)):
                             continue
@@ -13513,7 +13921,7 @@ class MGLRendererMixin:
         scene = getattr(self, "_mgl_scene", None)
         if scene is not None:
             try:
-                for tag in ("scene-model", "model"):
+                for tag in ("scene-model", "model", "scene-curve", "scene-groom-guides"):
                     for item in scene.iter_by_tag(tag):
                         if not bool(getattr(item, "visible", False)):
                             continue
@@ -13612,6 +14020,15 @@ class MGLRendererMixin:
                 except Exception:
                     pass
                 return point_elem
+        if mode == "edge":
+            edge_elem = self._mgl_pick_projected_edge_for_owners(owners, px, py, viewport_w, viewport_h)
+            if isinstance(edge_elem, dict):
+                try:
+                    self._mgl_last_pick_kind = "mesh"
+                    self._mgl_last_pick_owner = str(edge_elem.get("owner") or "")
+                except Exception:
+                    pass
+                return edge_elem
 
         best = None
         best_t = 1e30
@@ -13630,6 +14047,12 @@ class MGLRendererMixin:
                 best = hit
 
         if not isinstance(best, dict):
+            if mode == "object":
+                edge_elem = self._mgl_pick_projected_edge_for_owners(owners, px, py, viewport_w, viewport_h)
+                if isinstance(edge_elem, dict):
+                    owner = str(edge_elem.get("owner") or "").strip()
+                    if owner:
+                        return {"mode": "object", "owner": owner}
             if mode == "object":
                 pick = getattr(self, "pick_owner_at", None)
                 owner = pick(px, py, viewport_w, viewport_h) if callable(pick) else None
@@ -18424,7 +18847,7 @@ class MGLRendererMixin:
             groups.setdefault(display_owner, set()).add(idx)
         return {owner: tuple(sorted(indices)) for owner, indices in groups.items() if indices}
 
-    def _mgl_draw_mesh_overlay_points(self, owner: str, indices, color, mvp, point_size: float) -> bool:
+    def _mgl_draw_mesh_overlay_points(self, owner: str, indices, color, mvp, point_size: float, *, depth_test: bool = False) -> bool:
         if self._mgl_ctx is None or getattr(self, "_mgl_overlay_point_prog", None) is None or np is None:
             return False
         owner = str(owner or "").strip()
@@ -18484,7 +18907,15 @@ class MGLRendererMixin:
             except Exception:
                 self._mgl_ctx.enable(moderngl.BLEND)
             try:
-                self._mgl_ctx.disable(moderngl.DEPTH_TEST | moderngl.CULL_FACE)
+                if bool(depth_test):
+                    self._mgl_ctx.enable(moderngl.DEPTH_TEST)
+                    try:
+                        self._mgl_ctx.depth_func = "<="
+                    except Exception:
+                        pass
+                    self._mgl_ctx.disable(moderngl.CULL_FACE)
+                else:
+                    self._mgl_ctx.disable(moderngl.DEPTH_TEST | moderngl.CULL_FACE)
             except Exception:
                 pass
             try:
@@ -18498,8 +18929,6 @@ class MGLRendererMixin:
                 self._mgl_ctx.point_size = float(max(1.0, point_size))
             except Exception:
                 pass
-            if not program_point_size_enabled:
-                return False
             vao.render(moderngl.POINTS)
             return True
         except Exception as exc:
@@ -18584,6 +19013,32 @@ class MGLRendererMixin:
         owner = str(elem.get("owner") or "").strip()
         topo = self._mgl_mesh_topology_for_owner(owner)
         if not isinstance(topo, dict):
+            return
+        try:
+            triangles = np.asarray(topo.get("triangles"), dtype=np.int64).reshape(-1, 3)
+        except Exception:
+            triangles = np.zeros((0, 3), dtype=np.int64)
+        if triangles.size == 0:
+            try:
+                wire_points = np.asarray(topo.get("wire_points"), dtype="f4").reshape(-1, 3)
+            except Exception:
+                wire_points = np.zeros((0, 3), dtype="f4")
+            if wire_points.size == 0:
+                try:
+                    points = np.asarray(topo.get("points"), dtype="f4").reshape(-1, 3)
+                    edges = np.asarray(topo.get("edges"), dtype=np.int64).reshape(-1, 2)
+                    rows = []
+                    for edge in edges:
+                        a, b = int(edge[0]), int(edge[1])
+                        if a < 0 or b < 0 or a >= points.shape[0] or b >= points.shape[0]:
+                            continue
+                        rows.append(points[a])
+                        rows.append(points[b])
+                    wire_points = np.asarray(rows, dtype="f4").reshape(-1, 3) if rows else np.zeros((0, 3), dtype="f4")
+                except Exception:
+                    wire_points = np.zeros((0, 3), dtype="f4")
+            if wire_points.size:
+                self._mgl_draw_mesh_overlay_lines(owner, wire_points, color, mvp, 5.0)
             return
         self._mgl_draw_mesh_overlay_object_faces(owner, topo, color, mvp)
         self._mgl_draw_mesh_overlay_object_outline_hull(owner, topo, color, mvp)
@@ -19181,8 +19636,6 @@ class MGLRendererMixin:
                 self._mgl_ctx.point_size = float(max(1.0, point_size))
             except Exception:
                 pass
-            if not program_point_size_enabled:
-                return False
             for entry in list(entries or []):
                 vao = entry.get("vao") if isinstance(entry, dict) else None
                 owner = str(entry.get("owner") or "").strip() if isinstance(entry, dict) else ""
@@ -19498,6 +19951,62 @@ class MGLRendererMixin:
         elif mode == "face":
             self._mgl_draw_mesh_overlay_face(elem, color, mvp)
 
+    def _mgl_draw_curve_control_points_overlay(self, *, mvp) -> bool:
+        if str(getattr(self, "_mesh_select_mode", "") or "").strip().lower() != "point":
+            return False
+        if np is None:
+            return False
+        topo_map = getattr(self, "_mgl_scene_mesh_topology_by_owner", None)
+        if not isinstance(topo_map, dict) or not topo_map:
+            return False
+        drawn = False
+        for owner, topo in list(topo_map.items()):
+            owner_s = str(owner or "").strip()
+            if not owner_s or not isinstance(topo, dict):
+                continue
+            if not bool(topo.get("curve_topology", False)):
+                continue
+            if not self._mgl_scene_owner_visible(owner_s):
+                continue
+            depth_test_points = str(topo.get("topology_kind") or "").strip().lower() == "groom_guides"
+            try:
+                points = np.asarray(topo.get("points"), dtype="f4").reshape(-1, 3)
+            except Exception:
+                continue
+            if points.shape[0] <= 0:
+                continue
+            root_indices = set()
+            try:
+                point_groups = topo.get("point_groups")
+                if isinstance(point_groups, dict):
+                    root_indices = {int(idx) for idx in (point_groups.get("root") or [])}
+            except Exception:
+                root_indices = set()
+            all_indices = list(range(int(points.shape[0])))
+            regular_indices = [idx for idx in all_indices if idx not in root_indices]
+            if not regular_indices and not root_indices:
+                regular_indices = all_indices
+            if self._mgl_draw_mesh_overlay_points(
+                owner_s,
+                regular_indices,
+                (0.0, 0.85, 1.0, 0.95),
+                mvp,
+                4.8,
+                depth_test=depth_test_points,
+            ):
+                drawn = True
+            if root_indices:
+                if self._mgl_draw_mesh_overlay_points(
+                    owner_s,
+                    sorted(root_indices),
+                    (1.0, 0.92, 0.1, 0.95),
+                    mvp,
+                    5.6,
+                    depth_test=depth_test_points,
+                ):
+                    drawn = True
+        return drawn
+
     def _paint_mgl_draw_mesh_selection_overlay_pass(self, *, mvp) -> None:
         try:
             self._mesh_selection_points_drawn_in_mgl = False
@@ -19515,6 +20024,7 @@ class MGLRendererMixin:
             selected_color=selected_color,
             use_point_overlay=use_point_overlay,
         )
+        self._mgl_draw_curve_control_points_overlay(mvp=mvp)
         if not bool(cache.get("has_selection")) and not isinstance(hover, dict):
             return
         selected_keys = cache.get("selected_keys")
@@ -22083,6 +22593,16 @@ class MGLRendererMixin:
                 return new_min.copy(), new_max.copy()
             return np.minimum(bmin, new_min), np.maximum(bmax, new_max)
 
+        def _groom_guides_log(message: str) -> None:
+            try:
+                root = Path(__file__).resolve().parents[2]
+                log_dir = root / "logs"
+                log_dir.mkdir(parents=True, exist_ok=True)
+                with (log_dir / "groom_guides_renderer_debug.log").open("a", encoding="utf-8") as handle:
+                    handle.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {message}\n")
+            except Exception:
+                pass
+
         def _normalize_asset_xform(raw):
             if not isinstance(raw, dict):
                 return None
@@ -22384,6 +22904,279 @@ class MGLRendererMixin:
                 kind = str(asset.get("kind") or "").strip().lower()
                 ext_hint = str(asset.get("ext") or "").strip().lower()
                 material = self._mgl_normalize_material(asset.get("material"))
+                if kind in {"curve", "curve_primitive", "primitive_curve"}:
+                    owner = str(asset.get("node") or asset.get("owner") or "Curve").strip() or "Curve"
+                    visible = bool(asset.get("visible", True))
+                    raw_points = asset.get("points")
+                    line_points = asset.get("line_points")
+                    if not line_points:
+                        rows = []
+                        if isinstance(raw_points, list) and len(raw_points) >= 2:
+                            for idx in range(len(raw_points) - 1):
+                                rows.append(raw_points[idx])
+                                rows.append(raw_points[idx + 1])
+                        line_points = rows
+                    try:
+                        line_arr = np.asarray(line_points, dtype="f4").reshape(-1, 3)
+                    except Exception:
+                        line_arr = np.zeros((0, 3), dtype="f4")
+                    if line_arr.size:
+                        point_arr = None
+                        edge_arr = None
+                        try:
+                            point_arr = np.asarray(raw_points, dtype="f4").reshape(-1, 3)
+                        except Exception:
+                            point_arr = None
+                        if point_arr is None or point_arr.size == 0:
+                            point_arr = line_arr.astype("f4", copy=True)
+                            edge_arr = np.asarray(
+                                [(idx, idx + 1) for idx in range(0, int(point_arr.shape[0]) - 1, 2)],
+                                dtype=np.int64,
+                            ).reshape(-1, 2)
+                        else:
+                            edge_arr = np.asarray(
+                                [(idx, idx + 1) for idx in range(int(point_arr.shape[0]) - 1)],
+                                dtype=np.int64,
+                            ).reshape(-1, 2)
+                        try:
+                            bmin = line_arr.min(axis=0).astype("f4")
+                            bmax = line_arr.max(axis=0).astype("f4")
+                            self._mgl_scene_bounds_by_owner[owner] = (bmin, bmax)
+                            self._mgl_scene_mesh_bounds_by_owner[owner] = (bmin, bmax)
+                            bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, bmin, bmax)
+                            has_mesh_bounds = True
+                            mesh_owner_names.add(owner)
+                        except Exception:
+                            pass
+                        try:
+                            self._mgl_store_curve_topology_for_owner(owner, point_arr, edge_arr, line_arr)
+                        except Exception:
+                            pass
+                        wire_item = self._mgl_add_wire_item_from_points(
+                            name=f"{owner}-curve",
+                            line_points=line_arr,
+                            visible=visible,
+                            tag="scene-curve",
+                            owner=owner,
+                            path_key=f"curve://{owner}",
+                        )
+                        if wire_item is not None:
+                            payload = wire_item.payload or {}
+                            color = asset.get("color")
+                            try:
+                                if color is not None and len(color) >= 4:
+                                    payload["color"] = tuple(float(v) for v in tuple(color)[:4])
+                                elif color is not None and len(color) >= 3:
+                                    payload["color"] = (
+                                        float(color[0]),
+                                        float(color[1]),
+                                        float(color[2]),
+                                        1.0,
+                                    )
+                                else:
+                                    payload["color"] = (1.0, 1.0, 1.0, 1.0)
+                            except Exception:
+                                payload["color"] = (1.0, 1.0, 1.0, 1.0)
+                            try:
+                                payload["line_width"] = float(asset.get("line_width", 3.0) or 3.0)
+                            except Exception:
+                                payload["line_width"] = 3.0
+                            payload["overlay"] = True
+                            payload["depth_test"] = False
+                            payload["material"] = {"transparency": 0.01}
+                            payload["curve"] = {
+                                "curve_type": str(asset.get("curve_type") or "line").strip().lower(),
+                                "point_count": int(asset.get("point_count", 0) or 0),
+                                "line_segment_count": int(line_arr.shape[0] // 2),
+                            }
+                            wire_item.payload = payload
+                            wire_item.order = 35
+                            scene.add(wire_item)
+                    continue
+                if kind in {"groom_guides", "groom guides", "hair_guides", "hair guides"}:
+                    display_owner = str(asset.get("node") or asset.get("owner") or "Groom Guides").strip()
+                    source_owner = str(asset.get("source_owner") or "").strip()
+                    source_mesh_owner = source_owner or display_owner
+                    owner = display_owner
+                    visible = bool(asset.get("visible", True))
+                    curves = asset.get("curves")
+                    line_points = []
+                    curve_points = []
+                    curve_edges = []
+                    root_points = []
+                    root_indices = []
+                    if isinstance(curves, list) and curves:
+                        for curve in curves:
+                            if not isinstance(curve, list) or len(curve) < 2:
+                                continue
+                            offset = len(curve_points)
+                            curve_points.extend(curve)
+                            root_points.append(curve[0])
+                            root_indices.append(offset)
+                            for idx in range(len(curve) - 1):
+                                line_points.append(curve[idx])
+                                line_points.append(curve[idx + 1])
+                                curve_edges.append((offset + idx, offset + idx + 1))
+                    if not line_points:
+                        line_points = asset.get("line_points")
+                    if not line_points and asset.get("guides_path"):
+                        try:
+                            guide_data = json.loads(Path(str(asset.get("guides_path"))).read_text(encoding="utf-8"))
+                            rows = []
+                            curves = guide_data.get("curves") if isinstance(guide_data, dict) else None
+                            for curve in curves or []:
+                                if not isinstance(curve, list) or len(curve) < 2:
+                                    continue
+                                offset = len(curve_points)
+                                curve_points.extend(curve)
+                                root_points.append(curve[0])
+                                root_indices.append(offset)
+                                for idx in range(len(curve) - 1):
+                                    rows.append(curve[idx])
+                                    rows.append(curve[idx + 1])
+                                    curve_edges.append((offset + idx, offset + idx + 1))
+                            line_points = rows
+                        except Exception:
+                            line_points = None
+                    try:
+                        line_arr = np.asarray(line_points, dtype="f4").reshape(-1, 3)
+                    except Exception:
+                        line_arr = np.zeros((0, 3), dtype="f4")
+                    _groom_guides_log(
+                        "load begin "
+                        + f"owner={owner!r} display_owner={display_owner!r} visible={bool(visible)} points={int(line_arr.shape[0])} "
+                        + f"segments={int(line_arr.shape[0] // 2)} roots={int(len(root_points))} guides_path={str(asset.get('guides_path') or '')!r}"
+                    )
+                    if line_arr.size:
+                        try:
+                            bmin = line_arr.min(axis=0).astype("f4")
+                            bmax = line_arr.max(axis=0).astype("f4")
+                            self._mgl_scene_bounds_by_owner[display_owner] = (bmin, bmax)
+                            self._mgl_scene_mesh_bounds_by_owner[display_owner] = (bmin, bmax)
+                            bounds_min, bounds_max = _merge_bounds(bounds_min, bounds_max, bmin, bmax)
+                            has_mesh_bounds = True
+                        except Exception:
+                            pass
+                        source_model = None
+                        try:
+                            source_model = self._mgl_scene_model_matrix_for_owner(source_mesh_owner)
+                        except Exception:
+                            source_model = None
+                        try:
+                            point_arr = np.asarray(curve_points, dtype="f4").reshape(-1, 3)
+                        except Exception:
+                            point_arr = np.zeros((0, 3), dtype="f4")
+                        try:
+                            edge_arr = np.asarray(curve_edges, dtype=np.int64).reshape(-1, 2)
+                        except Exception:
+                            edge_arr = np.zeros((0, 2), dtype=np.int64)
+                        if point_arr.size == 0:
+                            point_arr = line_arr.astype("f4", copy=True)
+                            edge_arr = np.asarray(
+                                [(idx, idx + 1) for idx in range(0, int(point_arr.shape[0]) - 1, 2)],
+                                dtype=np.int64,
+                            ).reshape(-1, 2)
+                        try:
+                            if not root_indices:
+                                root_indices = [int(idx) for idx in (asset.get("root_indices") or [])]
+                        except Exception:
+                            root_indices = []
+                        try:
+                            self._mgl_store_curve_topology_for_owner(
+                                owner,
+                                point_arr,
+                                edge_arr,
+                                line_arr,
+                                point_groups={"root": list(root_indices)},
+                                point_group_colors={"root": (1.0, 0.92, 0.1, 0.95)},
+                                model=source_model,
+                                source_owner=source_mesh_owner,
+                                topology_kind="groom_guides",
+                            )
+                        except Exception:
+                            pass
+                        wire_item = self._mgl_add_wire_item_from_points(
+                            name=f"{display_owner}-guides",
+                            line_points=line_arr,
+                            visible=visible,
+                            tag="scene-groom-guides",
+                            owner=owner,
+                            path_key=str(asset.get("guides_path") or f"groom://{owner}"),
+                        )
+                        if wire_item is not None:
+                            payload = wire_item.payload or {}
+                            payload["color"] = (0.0, 1.0, 0.55, 1.0)
+                            payload["line_width"] = 3.0
+                            payload["overlay"] = True
+                            payload["depth_test"] = True
+                            payload["source_owner"] = source_mesh_owner
+                            payload["material"] = {"transparency": 0.01}
+                            if source_model is not None:
+                                try:
+                                    payload["model"] = np.asarray(source_model, dtype="f4").reshape(4, 4)
+                                except Exception:
+                                    pass
+                            payload["groom_guides"] = {
+                                "guide_count": int(asset.get("guide_count", 0) or 0),
+                                "points_per_curve": int(asset.get("points_per_curve", 0) or 0),
+                                "length": float(asset.get("length", 0.0) or 0.0),
+                                "root_group": "root",
+                                "root_indices": list(root_indices),
+                                "curve_count": int(len(curves) if isinstance(curves, list) else 0),
+                            }
+                            wire_item.payload = payload
+                            wire_item.order = 40
+                            scene.add(wire_item)
+                            _groom_guides_log(
+                                "load add_wire "
+                                + f"owner={owner!r} display_owner={display_owner!r} item={wire_item.name!r} bounds_min={[float(v) for v in bmin]} "
+                                + f"bounds_max={[float(v) for v in bmax]} overlay=True line_width={payload.get('line_width')} "
+                                + f"has_model={bool(payload.get('model') is not None)}"
+                            )
+                        else:
+                            _groom_guides_log(f"load skip_wire owner={owner!r} reason=wire_item_none")
+                        try:
+                            root_arr = np.asarray(root_points, dtype="f4").reshape(-1, 3)
+                        except Exception:
+                            root_arr = np.zeros((0, 3), dtype="f4")
+                        if root_arr.size:
+                            point_item = self._mgl_add_overlay_point_item_from_points(
+                                name=f"{display_owner}-guide-roots",
+                                points=root_arr,
+                                visible=visible,
+                                tag="scene-groom-guide-points",
+                                owner=owner,
+                                path_key=str(asset.get("guides_path") or f"groom://{owner}/roots"),
+                                color=(1.0, 0.92, 0.1, 0.95),
+                                point_size=9.0,
+                            )
+                            if point_item is not None:
+                                payload = point_item.payload or {}
+                                payload["depth_test"] = True
+                                payload["source_owner"] = source_mesh_owner
+                                payload["point_group"] = "root"
+                                if source_model is not None:
+                                    try:
+                                        payload["model"] = np.asarray(source_model, dtype="f4").reshape(4, 4)
+                                    except Exception:
+                                        pass
+                                payload["material"] = {"transparency": 0.05}
+                                point_item.payload = payload
+                                point_item.order = 41
+                                scene.add(point_item)
+                                _groom_guides_log(
+                                    "load add_roots "
+                                    + f"owner={owner!r} display_owner={display_owner!r} item={point_item.name!r} "
+                                    + f"roots={int(root_arr.shape[0])} point_size={float(payload.get('point_size', 0.0) or 0.0):.2f} "
+                                    + f"has_model={bool(payload.get('model') is not None)}"
+                                )
+                            else:
+                                _groom_guides_log(f"load skip_roots owner={owner!r} reason=point_item_none roots={int(root_arr.shape[0])}")
+                        else:
+                            _groom_guides_log(f"load skip_roots owner={owner!r} reason=empty_root_points")
+                    else:
+                        _groom_guides_log(f"load skip_wire owner={owner!r} reason=empty_line_points")
+                    continue
                 if kind == "anim_retarget_preview":
                     retarget_bounds = self._mgl_retarget_load_preview_asset(asset)
                     if retarget_bounds is not None:

@@ -153,6 +153,17 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Primitive plugin import failed:", e)
 
+    # 8.52) Curve primitive
+    try:
+        from nodes import curve
+        if hasattr(curve, "register"):
+            curve.register()
+            _safe_probe("curve")
+        else:
+            print("[EchoGraph] Curve module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Curve plugin import failed:", e)
+
     # 8.55) Copy To Points
     try:
         from nodes import copy_to_points
@@ -240,6 +251,17 @@ def bootstrap_plugins():
             print("[EchoGraph] Mask module has no 'register' function.")
     except Exception as e:
         print("[EchoGraph] Mask plugin import failed:", e)
+
+    # 8.915) Groom Guides
+    try:
+        from nodes import groom_guides
+        if hasattr(groom_guides, "register"):
+            groom_guides.register()
+            _safe_probe("groom_guides")
+        else:
+            print("[EchoGraph] Groom Guides module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Groom Guides plugin import failed:", e)
 
     # 8.92) Material
     try:

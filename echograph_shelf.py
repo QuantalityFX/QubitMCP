@@ -3762,12 +3762,22 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             is_light = (kind == "light") or (ext_hint == ".light")
             is_fx_trail = kind == "fx_trail"
             is_anim_retarget_preview = kind == "anim_retarget_preview"
+            is_groom_guides = kind in {"groom_guides", "groom guides", "hair_guides", "hair guides"}
+            is_curve = kind in {"curve", "curve_primitive", "primitive_curve"}
             target_owner = str(entry.get("target_owner") or "").strip()
             _scene_log(
                 f"raw[{idx}] node={node_name!r} path={path!r} kind={kind!r} "
                 f"ext={entry.get('ext')!r} visible={entry.get('visible')!r}"
             )
-            if not path and not is_camera and not is_light and not is_fx_trail and not is_anim_retarget_preview:
+            if (
+                not path
+                and not is_camera
+                and not is_light
+                and not is_fx_trail
+                and not is_anim_retarget_preview
+                and not is_groom_guides
+                and not is_curve
+            ):
                 _scene_log(f"raw[{idx}] drop: missing path node={node_name!r}")
                 continue
             if is_fx_trail and not target_owner:
@@ -3895,6 +3905,57 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 clean_entry["target_handles"] = list(entry.get("target_handles") or [])
                 clean_entry["handle_radius"] = float(entry.get("handle_radius", 0.008) or 0.008)
                 clean_entry["curve_thickness"] = float(entry.get("curve_thickness", 2.4) or 2.4)
+            if is_groom_guides:
+                clean_entry["guides_path"] = str(entry.get("guides_path") or "").strip()
+                clean_entry["source_path"] = str(entry.get("source_path") or "").strip()
+                clean_entry["source_owner"] = str(entry.get("source_owner") or "").strip()
+                try:
+                    clean_entry["guide_count"] = int(entry.get("guide_count", 0) or 0)
+                except Exception:
+                    clean_entry["guide_count"] = 0
+                try:
+                    clean_entry["points_per_curve"] = int(entry.get("points_per_curve", 0) or 0)
+                except Exception:
+                    clean_entry["points_per_curve"] = 0
+                try:
+                    clean_entry["length"] = float(entry.get("length", 0.0) or 0.0)
+                except Exception:
+                    clean_entry["length"] = 0.0
+                def _clean_index_list(values):
+                    cleaned = []
+                    for idx in values or []:
+                        try:
+                            cleaned.append(int(idx))
+                        except Exception:
+                            continue
+                    return cleaned
+                clean_entry["root_indices"] = _clean_index_list(entry.get("root_indices") or [])
+                if isinstance(entry.get("point_groups"), dict):
+                    clean_entry["point_groups"] = {
+                        str(group_name): _clean_index_list(indices or [])
+                        for group_name, indices in (entry.get("point_groups") or {}).items()
+                    }
+                clean_entry["curves"] = list(entry.get("curves") or [])
+                clean_entry["line_points"] = list(entry.get("line_points") or [])
+                clean_entry["debug"] = dict(entry.get("debug") or {}) if isinstance(entry.get("debug"), dict) else {}
+            if is_curve:
+                clean_entry["curve_type"] = str(entry.get("curve_type") or "line").strip().lower() or "line"
+                clean_entry["points"] = list(entry.get("points") or [])
+                clean_entry["line_points"] = list(entry.get("line_points") or [])
+                try:
+                    clean_entry["point_count"] = int(entry.get("point_count", 0) or 0)
+                except Exception:
+                    clean_entry["point_count"] = 0
+                try:
+                    clean_entry["line_segment_count"] = int(entry.get("line_segment_count", 0) or 0)
+                except Exception:
+                    clean_entry["line_segment_count"] = 0
+                try:
+                    clean_entry["line_width"] = float(entry.get("line_width", 3.0) or 3.0)
+                except Exception:
+                    clean_entry["line_width"] = 3.0
+                if "color" in entry:
+                    clean_entry["color"] = entry.get("color")
             clean.append(clean_entry)
             _scene_log(f"clean[{len(clean)-1}] node={node_name!r} path={path!r} visible={visible}")
             if is_fx_trail and bool(entry.get("debug_log", False)):
@@ -3934,6 +3995,16 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                         str(entry.get("node") or ""),
                         bool(entry.get("debug_log", False)),
                         str(entry.get("source_owner") or ""),
+                        str(entry.get("guides_path") or ""),
+                        int(entry.get("guide_count", 0) or 0),
+                        int(entry.get("points_per_curve", 0) or 0),
+                        round(float(entry.get("length", 0.0) or 0.0), 6),
+                        len(list(entry.get("root_indices") or [])),
+                        len(list(entry.get("curves") or [])),
+                        len(list(entry.get("line_points") or [])),
+                        str(entry.get("curve_type") or ""),
+                        int(entry.get("point_count", 0) or 0),
+                        int(entry.get("line_segment_count", 0) or 0),
                         str(entry.get("target_owner") or ""),
                         str(entry.get("joint_map") or ""),
                         len(list(entry.get("source_handles") or [])),
