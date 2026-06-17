@@ -819,6 +819,51 @@ void main() {
 }
 """,
 
+    "wire_instanced_vertex": """
+#version 330
+uniform mat4 Mvp;
+uniform vec2 Viewport;
+uniform float LineWidth;
+in vec2 in_corner;
+in vec3 in_start;
+in vec3 in_end;
+void main() {
+    vec4 clip_start = Mvp * vec4(in_start, 1.0);
+    vec4 clip_end = Mvp * vec4(in_end, 1.0);
+    float s0 = clip_start.z + clip_start.w;
+    float s1 = clip_end.z + clip_end.w;
+    if (s0 < 0.0 && s1 < 0.0) {
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+        return;
+    }
+    if (s0 < 0.0 || s1 < 0.0) {
+        float denom = s0 - s1;
+        float t = abs(denom) > 1e-6 ? (s0 / denom) : 0.0;
+        t = clamp(t, 0.0, 1.0);
+        if (s0 < 0.0) {
+            clip_start = mix(clip_start, clip_end, t);
+        } else {
+            clip_end = mix(clip_start, clip_end, t);
+        }
+    }
+    float ws = max(1e-6, clip_start.w);
+    float we = max(1e-6, clip_end.w);
+    vec2 ndc0 = clip_start.xy / ws;
+    vec2 ndc1 = clip_end.xy / we;
+    vec2 dir = ndc1 - ndc0;
+    float len = length(dir);
+    vec2 perp = len > 1e-6 ? vec2(-dir.y, dir.x) / len : vec2(0.0, 1.0);
+    vec2 pixel = vec2(2.0 / max(Viewport.x, 1.0), 2.0 / max(Viewport.y, 1.0));
+    vec2 offset = perp * (LineWidth * 0.5) * pixel;
+    vec4 clip_pos = (in_corner.x < 0.5) ? clip_start : clip_end;
+    float wp = max(1e-6, clip_pos.w);
+    vec2 ndc_pos = clip_pos.xy / wp;
+    vec2 ndc_out = ndc_pos + offset * in_corner.y;
+    float ndc_z = clip_pos.z / wp;
+    gl_Position = vec4(ndc_out, ndc_z, 1.0);
+}
+""",
+
     "wire_fragment": """
 #version 330
 uniform vec4 Color;

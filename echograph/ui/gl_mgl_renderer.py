@@ -65,7 +65,11 @@ from echograph.rigging.fbx_stage7_timeline import (
     clip_marker_frames,
     clip_sample_time_from_timeline_seconds,
 )
-from echograph.rigging.groom_deform import deform_groom_curves
+from echograph.rigging.groom_deform import (
+    build_groom_deform_runtime,
+    deform_groom_curves,
+    evaluate_groom_deform_runtime,
+)
 
 # OpenGL constants (avoid optional PyOpenGL dependency).
 GL_COLOR_BUFFER_BIT = 0x00004000
@@ -406,21 +410,157 @@ class MGLRendererMixin:
             raise RuntimeError("numpy unavailable")
         points = np.asarray(line_points, dtype="f4").reshape(-1, 3)
         edge_count = int(points.shape[0] // 2)
-        verts: List[float] = []
-        for i in range(edge_count):
-            p0 = points[i * 2]
-            p1 = points[i * 2 + 1]
-            ax, ay, az = float(p0[0]), float(p0[1]), float(p0[2])
-            bx, by, bz = float(p1[0]), float(p1[1]), float(p1[2])
-            if ax == bx and ay == by and az == bz:
-                continue
-            verts.extend([ax, ay, az, ax, ay, az, bx, by, bz, -1.0])
-            verts.extend([ax, ay, az, ax, ay, az, bx, by, bz, 1.0])
-            verts.extend([bx, by, bz, ax, ay, az, bx, by, bz, 1.0])
-            verts.extend([ax, ay, az, ax, ay, az, bx, by, bz, -1.0])
-            verts.extend([bx, by, bz, ax, ay, az, bx, by, bz, 1.0])
-            verts.extend([bx, by, bz, ax, ay, az, bx, by, bz, -1.0])
-        return np.asarray(verts, dtype="f4")
+        if edge_count <= 0:
+            return np.zeros((0,), dtype="f4")
+        segments = points[: edge_count * 2].reshape(edge_count, 2, 3)
+        p0 = segments[:, 0, :]
+        p1 = segments[:, 1, :]
+        keep = np.any(p0 != p1, axis=1)
+        if not bool(np.any(keep)):
+            return np.zeros((0,), dtype="f4")
+        p0 = p0[keep]
+        p1 = p1[keep]
+        count = int(p0.shape[0])
+        verts = np.empty((count, 6, 10), dtype="f4")
+        verts[:, :, 3:6] = p0[:, None, :]
+        verts[:, :, 6:9] = p1[:, None, :]
+        verts[:, 0, 0:3] = p0
+        verts[:, 1, 0:3] = p0
+        verts[:, 2, 0:3] = p1
+        verts[:, 3, 0:3] = p0
+        verts[:, 4, 0:3] = p1
+        verts[:, 5, 0:3] = p1
+        verts[:, :, 9] = np.asarray((-1.0, 1.0, 1.0, -1.0, 1.0, -1.0), dtype="f4").reshape(1, 6)
+        return verts.reshape(-1)
+
+    def _mgl_get_wire_corner_vbo(self):
+        if self._mgl_ctx is None or np is None:
+            return None
+        existing = getattr(self, "_mgl_wire_corner_vbo", None)
+        if existing is not None:
+            return existing
+        corners = np.asarray(
+            [
+                (0.0, -1.0),
+                (0.0, 1.0),
+                (1.0, 1.0),
+                (0.0, -1.0),
+                (1.0, 1.0),
+                (1.0, -1.0),
+            ],
+            dtype="f4",
+        )
+        try:
+            existing = self._mgl_ctx.buffer(corners.tobytes())
+        except Exception:
+            return None
+        self._mgl_wire_corner_vbo = existing
+        return existing
+
+    @staticmethod
+    def _mgl_wire_endpoint_data_from_line_points(line_points: NDArray) -> NDArray:
+        if np is None:
+            raise RuntimeError("numpy unavailable")
+        points = np.asarray(line_points, dtype="f4").reshape(-1, 3)
+        edge_count = int(points.shape[0] // 2)
+        if edge_count <= 0:
+            return np.zeros((0, 6), dtype="f4")
+        segments = points[: edge_count * 2].reshape(edge_count, 2, 3)
+        p0 = segments[:, 0, :]
+        p1 = segments[:, 1, :]
+        keep = np.any(p0 != p1, axis=1)
+        if not bool(np.any(keep)):
+            return np.zeros((0, 6), dtype="f4")
+        return segments[keep].reshape(-1, 6).astype("f4", copy=False)
+
+    def _mgl_update_instanced_wire_item_from_points(self, item: MGLSceneItem, line_points: NDArray) -> bool:
+        if self._mgl_ctx is None or np is None:
+            return False
+        prog = getattr(self, "_mgl_wire_instanced_prog", None)
+        if prog is None or bool(getattr(self, "_mgl_wire_instanced_disabled", False)):
+            return False
+        corner_vbo = self._mgl_get_wire_corner_vbo()
+        if corner_vbo is None:
+            return False
+        try:
+            endpoints = self._mgl_wire_endpoint_data_from_line_points(line_points)
+        except Exception:
+            return False
+        if endpoints.size == 0:
+            return False
+        payload = item.payload or {}
+        perf = payload.get("_groom_deform_perf")
+        if not isinstance(perf, dict):
+            perf = {}
+            payload["_groom_deform_perf"] = perf
+        segment_count = int(endpoints.shape[0])
+        byte_count = int(endpoints.nbytes)
+        vbo = payload.get("wire_segment_vbo") if bool(payload.get("wire_instanced", False)) else None
+        vao = payload.get("vao") if bool(payload.get("wire_instanced", False)) else None
+        try:
+            vbo_size = int(getattr(vbo, "size", 0) or 0) if vbo is not None else 0
+        except Exception:
+            vbo_size = 0
+        if vbo is None or vao is None or vbo_size != byte_count:
+            old_vao = payload.get("vao")
+            old_wire_vbo = payload.get("wire_vbo")
+            old_segment_vbo = payload.get("wire_segment_vbo")
+            try:
+                new_vbo = self._mgl_ctx.buffer(endpoints.tobytes())
+                new_vao = self._mgl_ctx.vertex_array(
+                    prog,
+                    [
+                        (corner_vbo, "2f", "in_corner"),
+                        (new_vbo, "3f 3f /i", "in_start", "in_end"),
+                    ],
+                )
+            except Exception as exc:
+                try:
+                    self._mgl_log_throttled(
+                        "_mgl_wire_instanced_create_failed",
+                        "wire instanced create failed err=" + repr(exc),
+                        1.0,
+                    )
+                except Exception:
+                    pass
+                self._mgl_wire_instanced_disabled = True
+                return False
+            for resource in (old_vao, old_wire_vbo, old_segment_vbo):
+                if (
+                    resource is None
+                    or resource is new_vao
+                    or resource is new_vbo
+                    or resource is corner_vbo
+                ):
+                    continue
+                try:
+                    if hasattr(resource, "release"):
+                        resource.release()
+                except Exception:
+                    pass
+            vao = new_vao
+            vbo = new_vbo
+        else:
+            try:
+                vbo.write(endpoints.tobytes())
+            except Exception:
+                return False
+        payload["vao"] = vao
+        payload["wire_vbo"] = vbo
+        payload["wire_segment_vbo"] = vbo
+        payload["wire_instanced"] = True
+        payload["wire_vertex_count"] = int(segment_count * 6)
+        payload["wire_instance_count"] = int(segment_count)
+        payload["line_segment_count"] = int(segment_count)
+        payload["mode"] = moderngl.TRIANGLES if moderngl is not None else payload.get("mode")
+        perf["instanced_uploads"] = int(perf.get("instanced_uploads", 0) or 0) + 1
+        perf["last_upload_path"] = "instanced"
+        perf["last_compact_upload_bytes"] = int(byte_count)
+        perf["last_expanded_upload_bytes_est"] = int(segment_count * 6 * 10 * 4)
+        perf["line_segment_count"] = int(segment_count)
+        item.payload = payload
+        item.resources = [vao, vbo]
+        return True
 
     def _mgl_add_wire_item_from_points(
         self,
@@ -628,6 +768,55 @@ class MGLRendererMixin:
             return timeline_seconds
         clip = context.get("clip")
         return clip_sample_time_from_timeline_seconds(clip, timeline_seconds)
+
+    def _mgl_evaluate_rig_cached(
+        self,
+        skeleton,
+        clip,
+        sample_seconds: float,
+        *,
+        loop: bool,
+        include_debug_data: bool = False,
+    ):
+        if skeleton is None:
+            return None
+        try:
+            frame_key = int(self._mgl_timeline_frame_index())
+        except Exception:
+            frame_key = 0
+        cache = getattr(self, "_mgl_rig_eval_frame_cache", None)
+        if not isinstance(cache, dict) or cache.get("frame") != frame_key:
+            cache = {"frame": frame_key, "items": {}}
+            self._mgl_rig_eval_frame_cache = cache
+        items = cache.get("items")
+        if not isinstance(items, dict):
+            items = {}
+            cache["items"] = items
+        key = (
+            id(skeleton),
+            id(clip),
+            round(float(sample_seconds), 6),
+            bool(loop),
+            bool(include_debug_data),
+        )
+        cached = items.get(key)
+        if cached is not None:
+            return cached
+        evaluation = evaluate_rig_at_time(
+            skeleton,
+            clip,
+            float(sample_seconds),
+            loop=bool(loop),
+            include_debug_data=bool(include_debug_data),
+        )
+        items[key] = evaluation
+        if len(items) > 48:
+            try:
+                for stale_key in list(items.keys())[:-48]:
+                    del items[stale_key]
+            except Exception:
+                pass
+        return evaluation
 
     def _mgl_fbx_rig_context_for_path(self, path: Path) -> Optional[dict]:
         try:
@@ -2100,14 +2289,17 @@ class MGLRendererMixin:
         if payload.get("_fbx_skin_frame", None) == skin_frame_key:
             return
         try:
-            evaluation = evaluate_rig_at_time(
-                skeleton,
-                clip,
-                sample_seconds,
-                loop=loop,
-                include_debug_data=False,
-            )
+            with profile_scope("render.3d.mgl.fbx_skin.eval"):
+                evaluation = self._mgl_evaluate_rig_cached(
+                    skeleton,
+                    clip,
+                    sample_seconds,
+                    loop=loop,
+                    include_debug_data=False,
+                )
         except Exception:
+            return
+        if evaluation is None:
             return
 
         try:
@@ -2116,6 +2308,7 @@ class MGLRendererMixin:
             return
         joint_count = int(skin_mats.shape[0])
         meshes = list(runtime.get("meshes") or [])
+        skin_deform_started = time.perf_counter()
         for mesh in meshes:
             bind_positions = np.asarray(mesh.get("bind_positions"), dtype="f4").reshape(-1, 3)
             triangle_indices = np.asarray(mesh.get("triangle_indices"), dtype=np.int64).ravel()
@@ -2193,10 +2386,17 @@ class MGLRendererMixin:
 
             payload["_fbx_skin_frame"] = skin_frame_key
         try:
+            payload["_fbx_skin_deform_upload_ms"] = max(0.0, (time.perf_counter() - skin_deform_started) * 1000.0)
+            payload["_fbx_skin_mesh_count"] = int(len(meshes))
+        except Exception:
+            pass
+        try:
             owner = str(payload.get("owner") or getattr(item, "name", "") or "").strip()
-            if owner:
-                self._mgl_store_mesh_topology_for_owner(owner, payload)
-                self._mgl_clear_mesh_selection_overlay_cache()
+            selection_active = bool(str(getattr(self, "_mesh_select_mode", "") or "").strip())
+            if owner and selection_active:
+                with profile_scope("render.3d.mgl.fbx_skin.selection_topology"):
+                    self._mgl_store_mesh_topology_for_owner(owner, payload)
+                    self._mgl_clear_mesh_selection_overlay_cache()
         except Exception:
             pass
         item.payload = payload
@@ -4003,6 +4203,7 @@ class MGLRendererMixin:
         sample_seconds = self._mgl_fbx_context_timeline_sample_seconds(rig_context, sample_owner)
         clip = rig_context.get("clip")
         skeleton = rig_context.get("skeleton")
+        selection_active = bool(str(getattr(self, "_mesh_select_mode", "") or "").strip())
         signature = (
             int(self._mgl_timeline_frame_index()),
             round(float(sample_seconds), 6),
@@ -4011,17 +4212,101 @@ class MGLRendererMixin:
             id(clip),
             int(len(bind_curves)),
             str(cfg.get("mode") or "skinned_cv"),
+            int(selection_active),
         )
         if payload.get("_groom_deform_frame") == signature:
             return None
+        perf = payload.get("_groom_deform_perf")
+        if not isinstance(perf, dict):
+            perf = {}
+            payload["_groom_deform_perf"] = perf
+        runtime = payload.get("_groom_deform_runtime")
+        runtime_sig = (
+            id(rig_context),
+            id(bind_curves),
+            id(guide_bindings),
+            int(len(bind_curves)),
+            int(len(guide_bindings)),
+            str(cfg.get("mode") or "skinned_cv"),
+        )
+        if not isinstance(runtime, dict) or payload.get("_groom_deform_runtime_sig") != runtime_sig:
+            try:
+                with profile_scope("render.3d.mgl.groom_deform.build_runtime"):
+                    runtime = build_groom_deform_runtime(
+                        bind_curves,
+                        guide_bindings,
+                        rig_context,
+                        mode=str(cfg.get("mode") or "skinned_cv"),
+                    )
+                payload["_groom_deform_runtime"] = runtime
+                payload["_groom_deform_runtime_sig"] = runtime_sig
+                perf["runtime_builds"] = int(perf.get("runtime_builds", 0) or 0) + 1
+            except Exception as exc:
+                runtime = None
+                perf["runtime_build_errors"] = int(perf.get("runtime_build_errors", 0) or 0) + 1
+                try:
+                    self._mgl_log_throttled(
+                        "_mgl_groom_deform_runtime_error_" + str(owner or "unknown"),
+                        "groom_deform: runtime build failed owner=" + str(owner or "") + " err=" + repr(exc),
+                        1.0,
+                    )
+                except Exception:
+                    pass
+        if isinstance(runtime, dict) and int(runtime.get("point_count", 0) or 0) > 0:
+            try:
+                with profile_scope("render.3d.mgl.groom_deform.eval_runtime"):
+                    evaluation = self._mgl_evaluate_rig_cached(
+                        skeleton,
+                        clip,
+                        float(sample_seconds),
+                        loop=bool((rig_context or {}).get("loop", True)),
+                        include_debug_data=False,
+                    )
+                    skin_mats = np.asarray(evaluation.skin_matrices, dtype="f4").reshape(-1, 4, 4)
+                    points, line_points, root_points, debug = evaluate_groom_deform_runtime(
+                        runtime,
+                        rig_context,
+                        sample_seconds=float(sample_seconds),
+                        mode=str(cfg.get("mode") or "skinned_cv"),
+                        skin_mats=skin_mats,
+                        sampled_time=float(getattr(evaluation, "sampled_time", sample_seconds)),
+                    )
+                perf["runtime_evals"] = int(perf.get("runtime_evals", 0) or 0) + 1
+                perf["last_eval_path"] = "runtime"
+                payload["_groom_deform_frame"] = signature
+                payload["_groom_deform_debug"] = dict(debug or {})
+                payload["_groom_deform_sample_owner"] = str(sample_owner or "")
+                payload["_groom_deform_sample_seconds"] = float(sample_seconds)
+                return points, line_points, root_points, debug
+            except Exception as exc:
+                perf["runtime_eval_errors"] = int(perf.get("runtime_eval_errors", 0) or 0) + 1
+                try:
+                    self._mgl_log_throttled(
+                        "_mgl_groom_deform_runtime_eval_error_" + str(owner or "unknown"),
+                        "groom_deform: runtime eval failed owner=" + str(owner or "") + " err=" + repr(exc),
+                        1.0,
+                    )
+                except Exception:
+                    pass
         try:
-            curves, line_points, root_points, debug = deform_groom_curves(
-                bind_curves,
-                guide_bindings,
-                rig_context,
-                sample_seconds=float(sample_seconds),
-                mode=str(cfg.get("mode") or "skinned_cv"),
-            )
+            with profile_scope("render.3d.mgl.groom_deform.eval_slow_fallback"):
+                curves, line_points, root_points, debug = deform_groom_curves(
+                    bind_curves,
+                    guide_bindings,
+                    rig_context,
+                    sample_seconds=float(sample_seconds),
+                    mode=str(cfg.get("mode") or "skinned_cv"),
+                )
+            perf["slow_fallback_evals"] = int(perf.get("slow_fallback_evals", 0) or 0) + 1
+            perf["last_eval_path"] = "slow_fallback"
+            try:
+                self._mgl_log_throttled(
+                    "_mgl_groom_deform_slow_fallback_" + str(owner or "unknown"),
+                    "groom_deform: SLOW eval fallback used owner=" + str(owner or ""),
+                    1.0,
+                )
+            except Exception:
+                pass
         except Exception as exc:
             try:
                 self._mgl_log_throttled(
@@ -4075,38 +4360,71 @@ class MGLRendererMixin:
         except Exception:
             items = []
         for item in items:
+            if not bool(getattr(item, "visible", True)):
+                continue
             payload = getattr(item, "payload", None) or {}
             if not isinstance(payload.get("groom_deform"), dict):
                 continue
             owner = str(payload.get("owner") or "").strip()
-            result = self._mgl_groom_deform_eval_payload(payload, owner)
+            with profile_scope("render.3d.mgl.groom_deform.eval"):
+                result = self._mgl_groom_deform_eval_payload(payload, owner)
             if result is None:
                 continue
-            curves, line_points, root_points, _debug = result
+            curves_or_points, line_points, root_points, _debug = result
             try:
                 line_arr = np.asarray(line_points, dtype="f4").reshape(-1, 3)
             except Exception:
                 continue
             if line_arr.size == 0:
                 continue
-            try:
-                verts = self._mgl_wire_vertex_data_from_line_points(line_arr)
-            except Exception:
-                continue
-            if verts.size == 0:
-                continue
-            vbo = payload.get("wire_vbo")
-            if vbo is None and len(getattr(item, "resources", []) or []) >= 2:
-                vbo = item.resources[1]
-            if vbo is None:
-                continue
-            try:
-                size = int(getattr(vbo, "size", int(verts.nbytes)) or int(verts.nbytes))
-                if size != int(verts.nbytes):
+            with profile_scope("render.3d.mgl.groom_deform.upload_wire"):
+                instanced_uploaded = self._mgl_update_instanced_wire_item_from_points(item, line_arr)
+            if not instanced_uploaded:
+                try:
+                    with profile_scope("render.3d.mgl.groom_deform.upload_expanded_build"):
+                        verts = self._mgl_wire_vertex_data_from_line_points(line_arr)
+                except Exception:
                     continue
-                vbo.write(verts.tobytes())
-            except Exception:
-                continue
+                if verts.size == 0:
+                    continue
+                vbo = payload.get("wire_vbo")
+                if vbo is None and len(getattr(item, "resources", []) or []) >= 2:
+                    vbo = item.resources[1]
+                if vbo is None:
+                    continue
+                try:
+                    size = int(getattr(vbo, "size", int(verts.nbytes)) or int(verts.nbytes))
+                    if size != int(verts.nbytes):
+                        continue
+                    with profile_scope("render.3d.mgl.groom_deform.upload_expanded_write"):
+                        vbo.write(verts.tobytes())
+                    payload["wire_instanced"] = False
+                    payload["wire_vertex_count"] = int(verts.shape[0] // 10)
+                    payload["line_segment_count"] = int(line_arr.shape[0] // 2)
+                    perf = payload.get("_groom_deform_perf")
+                    if not isinstance(perf, dict):
+                        perf = {}
+                        payload["_groom_deform_perf"] = perf
+                    perf["expanded_upload_fallbacks"] = int(perf.get("expanded_upload_fallbacks", 0) or 0) + 1
+                    perf["last_upload_path"] = "expanded_fallback"
+                    perf["last_expanded_upload_bytes"] = int(verts.nbytes)
+                    perf["line_segment_count"] = int(line_arr.shape[0] // 2)
+                    try:
+                        self._mgl_log_throttled(
+                            "_mgl_groom_deform_expanded_upload_" + str(owner or "unknown"),
+                            "groom_deform: SLOW expanded wire upload owner="
+                            + str(owner or "")
+                            + " segments="
+                            + str(int(line_arr.shape[0] // 2))
+                            + " bytes="
+                            + str(int(verts.nbytes)),
+                            1.0,
+                        )
+                    except Exception:
+                        pass
+                except Exception:
+                    continue
+            payload = item.payload or payload
             try:
                 bmin = line_arr.min(axis=0).astype("f4")
                 bmax = line_arr.max(axis=0).astype("f4")
@@ -4116,31 +4434,45 @@ class MGLRendererMixin:
             except Exception:
                 pass
             try:
-                point_arr, edge_arr, root_indices = self._mgl_curve_arrays_from_curves(curves)
+                runtime = payload.get("_groom_deform_runtime") if isinstance(payload.get("_groom_deform_runtime"), dict) else None
+                if isinstance(curves_or_points, np.ndarray):
+                    point_arr = np.asarray(curves_or_points, dtype="f4").reshape(-1, 3)
+                    try:
+                        edge_arr = np.asarray(runtime.get("line_point_indices"), dtype=np.int64).reshape(-1, 2) if isinstance(runtime, dict) else np.zeros((0, 2), dtype=np.int64)
+                    except Exception:
+                        edge_arr = np.zeros((0, 2), dtype=np.int64)
+                    try:
+                        root_indices = [int(idx) for idx in np.asarray(runtime.get("root_point_indices"), dtype=np.int64).reshape(-1)] if isinstance(runtime, dict) else []
+                    except Exception:
+                        root_indices = []
+                else:
+                    point_arr, edge_arr, root_indices = self._mgl_curve_arrays_from_curves(curves_or_points)
                 if point_arr is not None and point_arr.size:
                     groom_guides = payload.get("groom_guides") if isinstance(payload.get("groom_guides"), dict) else {}
                     if not root_indices:
                         root_indices = [int(idx) for idx in (groom_guides.get("root_indices") or [])]
-                    self._mgl_store_curve_topology_for_owner(
-                        owner,
-                        point_arr,
-                        edge_arr,
-                        line_arr,
-                        point_groups={"root": list(root_indices)},
-                        point_group_colors={"root": (1.0, 0.92, 0.1, 0.95)},
-                        model=payload.get("model"),
-                        source_owner=str(payload.get("source_owner") or ""),
-                        topology_kind="groom_guides",
-                    )
-                    try:
-                        self._mgl_clear_mesh_selection_overlay_cache()
-                    except Exception:
-                        self._mesh_selection_overlay_cache = None
+                    if str(getattr(self, "_mesh_select_mode", "") or "").strip().lower():
+                        with profile_scope("render.3d.mgl.groom_deform.selection_topology"):
+                            self._mgl_store_curve_topology_for_owner(
+                                owner,
+                                point_arr,
+                                edge_arr,
+                                line_arr,
+                                point_groups={"root": list(root_indices)},
+                                point_group_colors={"root": (1.0, 0.92, 0.1, 0.95)},
+                                model=payload.get("model"),
+                                source_owner=str(payload.get("source_owner") or ""),
+                                topology_kind="groom_guides",
+                            )
+                            try:
+                                self._mgl_clear_mesh_selection_overlay_cache()
+                            except Exception:
+                                self._mesh_selection_overlay_cache = None
             except Exception:
                 pass
             payload["line_points"] = line_arr
             item.payload = payload
-            if owner and isinstance(root_points, list):
+            if owner and root_points is not None:
                 roots_by_owner[owner.lower()] = root_points
 
         if not roots_by_owner:
@@ -4150,10 +4482,12 @@ class MGLRendererMixin:
         except Exception:
             root_items = []
         for item in root_items:
+            if not bool(getattr(item, "visible", True)):
+                continue
             payload = getattr(item, "payload", None) or {}
             owner = str(payload.get("owner") or "").strip().lower()
             root_points = roots_by_owner.get(owner)
-            if not root_points:
+            if root_points is None:
                 continue
             try:
                 root_arr = np.asarray(root_points, dtype="f4").reshape(-1, 3)
@@ -12537,6 +12871,10 @@ class MGLRendererMixin:
         if self._mgl_wire_prog is None:
             return
         payload = item.payload or {}
+        wire_instanced = bool(payload.get("wire_instanced", False))
+        wire_prog = getattr(self, "_mgl_wire_instanced_prog", None) if wire_instanced else self._mgl_wire_prog
+        if wire_prog is None:
+            return
         tag = str(getattr(item, "tag", "") or "")
         scene_skeleton_overlay = bool(tag == "scene-rig-joints" and payload.get("scene_skeleton_overlay", False))
         if scene_skeleton_overlay:
@@ -12563,6 +12901,10 @@ class MGLRendererMixin:
         if isinstance(payload.get("fbx_rig_context"), dict):
             self._mgl_refresh_fbx_rig_wire_item(item)
             payload = item.payload or {}
+            wire_instanced = bool(payload.get("wire_instanced", False))
+            wire_prog = getattr(self, "_mgl_wire_instanced_prog", None) if wire_instanced else self._mgl_wire_prog
+            if wire_prog is None:
+                return
         vao = payload.get("vao")
         if vao is None:
             if scene_skeleton_overlay:
@@ -12602,10 +12944,10 @@ class MGLRendererMixin:
                             mvp_to_use = mvp * Matrix44(model, dtype="f4")
                     except Exception:
                         mvp_to_use = mvp
-                self._mgl_wire_prog["Mvp"].write(mvp_to_use.astype("f4").tobytes())
-                self._mgl_wire_prog["Color"].value = color_rgba
-                self._mgl_wire_prog["Viewport"].value = (float(max(1, self.width())), float(max(1, self.height())))
-                self._mgl_wire_prog["LineWidth"].value = float(
+                wire_prog["Mvp"].write(mvp_to_use.astype("f4").tobytes())
+                wire_prog["Color"].value = color_rgba
+                wire_prog["Viewport"].value = (float(max(1, self.width())), float(max(1, self.height())))
+                wire_prog["LineWidth"].value = float(
                     payload.get("line_width", getattr(self, "_mgl_wire_edge_width", getattr(self, "_mgl_wire_line_width", 1.0)))
                 )
             except Exception:
@@ -12613,7 +12955,15 @@ class MGLRendererMixin:
 
         def _render():
             mode = payload.get("mode")
-            if mode is None:
+            if wire_instanced:
+                try:
+                    instance_count = int(payload.get("wire_instance_count", payload.get("line_segment_count", 0)) or 0)
+                except Exception:
+                    instance_count = 0
+                if instance_count <= 0:
+                    return
+                vao.render(mode if mode is not None else moderngl.TRIANGLES, vertices=6, instances=instance_count)
+            elif mode is None:
                 vao.render()
             else:
                 vao.render(mode)
@@ -21487,6 +21837,7 @@ class MGLRendererMixin:
             grid_vertex = SHADERS["grid_vertex"]
             grid_fragment = SHADERS["grid_fragment"]
             wire_vertex = SHADERS["wire_vertex"]
+            wire_instanced_vertex = SHADERS.get("wire_instanced_vertex", wire_vertex)
             wire_fragment = SHADERS["wire_fragment"]
             overlay_point_vertex = SHADERS["overlay_point_vertex"]
             overlay_point_fragment = SHADERS["overlay_point_fragment"]
@@ -21496,6 +21847,16 @@ class MGLRendererMixin:
             self._mgl_prog = self._mgl_ctx.program(vertex_shader=mesh_vertex, fragment_shader=mesh_fragment)
             self._mgl_grid_prog = self._mgl_ctx.program(vertex_shader=grid_vertex, fragment_shader=grid_fragment)
             self._mgl_wire_prog = self._mgl_ctx.program(vertex_shader=wire_vertex, fragment_shader=wire_fragment)
+            self._mgl_wire_instanced_prog = None
+            self._mgl_wire_instanced_disabled = False
+            try:
+                self._mgl_wire_instanced_prog = self._mgl_ctx.program(
+                    vertex_shader=wire_instanced_vertex,
+                    fragment_shader=wire_fragment,
+                )
+            except Exception:
+                self._mgl_wire_instanced_prog = None
+                self._mgl_wire_instanced_disabled = True
             self._mgl_overlay_point_prog = self._mgl_ctx.program(
                 vertex_shader=overlay_point_vertex,
                 fragment_shader=overlay_point_fragment,
@@ -21615,6 +21976,11 @@ class MGLRendererMixin:
                 self._mgl_wire_prog["LineWidth"].value = float(
                     getattr(self, "_mgl_wire_edge_width", getattr(self, "_mgl_wire_line_width", 1.0))
                 )
+                if self._mgl_wire_instanced_prog is not None:
+                    self._mgl_wire_instanced_prog["Color"].value = self._mgl_wire_color
+                    self._mgl_wire_instanced_prog["LineWidth"].value = float(
+                        getattr(self, "_mgl_wire_edge_width", getattr(self, "_mgl_wire_line_width", 1.0))
+                    )
             except Exception:
                 pass
             self._mgl_arcball = _ArcBallUtil(self.width(), self.height())

@@ -525,6 +525,308 @@ def _source_space_deformed_scalp_root(
     return deformed_root
 
 
+def _root_skin_records_for_binding(
+    binding: Dict[str, Any],
+    rig_context: Dict[str, Any],
+    cache: Dict[int, Tuple[np.ndarray, List[List[Tuple[int, float]]]]],
+    root_index: int,
+    fallback_bind: np.ndarray,
+) -> Tuple[List[int], List[int], List[float], List[np.ndarray], np.ndarray, np.ndarray, bool]:
+    record_roots: List[int] = []
+    record_joints: List[int] = []
+    record_weights: List[float] = []
+    record_positions: List[np.ndarray] = []
+    static_root = np.zeros((3,), dtype="f4")
+    rig_bind = _bind_scalp_root(binding, rig_context, cache)
+    attached = False
+    mesh_obj = _mesh_for_binding(rig_context, binding)
+    vertices = list(binding.get("skin_triangle_vertices") or binding.get("triangle_vertices") or [])
+    bary = list(binding.get("skin_barycentric") or binding.get("barycentric") or [])
+    if mesh_obj is not None and len(vertices) >= 3 and len(bary) >= 3:
+        try:
+            weights = np.asarray([float(v) for v in bary[:3]], dtype="f4").reshape(3)
+        except Exception:
+            weights = np.zeros((0,), dtype="f4")
+        total = float(weights.sum()) if weights.size else 0.0
+        if total > 1.0e-8:
+            weights = (weights / np.float32(total)).astype("f4", copy=False)
+            positions, rows = _mesh_skin_cache_entry(mesh_obj, cache)
+            if positions.size:
+                for corner, raw_vertex in enumerate(vertices[:3]):
+                    try:
+                        vertex_index = int(raw_vertex)
+                    except Exception:
+                        continue
+                    if vertex_index < 0 or vertex_index >= int(positions.shape[0]):
+                        continue
+                    corner_weight = float(weights[corner])
+                    if corner_weight <= 1.0e-8:
+                        continue
+                    pos = positions[int(vertex_index)].astype("f4", copy=False)
+                    influences = rows[int(vertex_index)] if int(vertex_index) < len(rows) else []
+                    if not influences:
+                        static_root += pos * np.float32(corner_weight)
+                        attached = True
+                        continue
+                    influence_total = sum(float(weight) for _joint, weight in influences if float(weight) > 1.0e-8)
+                    if influence_total <= 1.0e-8:
+                        static_root += pos * np.float32(corner_weight)
+                        attached = True
+                        continue
+                    for joint, weight in influences:
+                        weight_f = float(weight)
+                        if weight_f <= 1.0e-8:
+                            continue
+                        record_roots.append(int(root_index))
+                        record_joints.append(int(joint))
+                        record_weights.append(float(corner_weight) * (weight_f / float(influence_total)))
+                        record_positions.append(pos)
+                        attached = True
+    if not attached:
+        influences = _binding_influences(binding)
+        if influences:
+            bind = fallback_bind.astype("f4", copy=False)
+            for joint, weight in influences:
+                record_roots.append(int(root_index))
+                record_joints.append(int(joint))
+                record_weights.append(float(weight))
+                record_positions.append(bind)
+            rig_bind = bind
+            attached = True
+    if rig_bind is None:
+        rig_bind = fallback_bind.astype("f4", copy=False)
+    return record_roots, record_joints, record_weights, record_positions, static_root, rig_bind.astype("f4", copy=False), attached
+
+
+def build_groom_deform_runtime(
+    curves: Sequence[Sequence[Sequence[float]]],
+    guide_bindings: Sequence[Dict[str, Any]],
+    rig_context: Dict[str, Any],
+    *,
+    mode: str = "skinned_cv",
+) -> Dict[str, Any]:
+    point_rows: List[np.ndarray] = []
+    offset_rows: List[np.ndarray] = []
+    point_root_indices: List[int] = []
+    line_point_indices: List[int] = []
+    root_point_indices: List[int] = []
+    source_roots: List[np.ndarray] = []
+    rig_bind_roots: List[np.ndarray] = []
+    root_static_rows: List[np.ndarray] = []
+    root_attached: List[bool] = []
+    root_joint_rows: List[List[int]] = []
+    root_weight_rows: List[List[float]] = []
+    record_roots: List[int] = []
+    record_joints: List[int] = []
+    record_weights: List[float] = []
+    record_positions: List[np.ndarray] = []
+    mesh_cache: Dict[int, Tuple[np.ndarray, List[List[Tuple[int, float]]]]] = {}
+    for curve_index, curve in enumerate(list(curves or [])):
+        try:
+            bind_points = np.asarray(curve, dtype="f4").reshape(-1, 3)
+        except Exception:
+            bind_points = np.zeros((0, 3), dtype="f4")
+        if bind_points.size == 0 or int(bind_points.shape[0]) < 2:
+            continue
+        binding = guide_bindings[curve_index] if curve_index < len(guide_bindings) and isinstance(guide_bindings[curve_index], dict) else {}
+        source_root = _binding_bind_position(binding)
+        if source_root is None:
+            source_root = bind_points[0].astype("f4", copy=False)
+        root_index = int(len(source_roots))
+        point_offset = int(len(point_rows))
+        source_roots.append(source_root.astype("f4", copy=False))
+        root_point_indices.append(point_offset)
+        offsets = (bind_points - bind_points[:1]).astype("f4", copy=False)
+        for point in bind_points:
+            point_rows.append(point.astype("f4", copy=False))
+            point_root_indices.append(root_index)
+        for offset in offsets:
+            offset_rows.append(offset.astype("f4", copy=False))
+        for idx in range(int(bind_points.shape[0]) - 1):
+            line_point_indices.append(point_offset + idx)
+            line_point_indices.append(point_offset + idx + 1)
+
+        records = _root_skin_records_for_binding(binding, rig_context, mesh_cache, root_index, source_root)
+        rec_roots, rec_joints, rec_weights, rec_positions, static_root, rig_bind, attached = records
+        record_roots.extend(rec_roots)
+        record_joints.extend(rec_joints)
+        record_weights.extend(rec_weights)
+        record_positions.extend(rec_positions)
+        root_static_rows.append(static_root.astype("f4", copy=False))
+        rig_bind_roots.append(rig_bind.astype("f4", copy=False))
+        root_attached.append(bool(attached))
+        influences = _binding_influences(binding)
+        root_joint_rows.append([int(joint) for joint, _weight in influences])
+        root_weight_rows.append([float(weight) for _joint, weight in influences])
+
+    point_count = int(len(point_rows))
+    root_count = int(len(source_roots))
+    max_influences = max([len(row) for row in root_joint_rows] + [0])
+    if max_influences <= 0:
+        max_influences = 1
+    root_joint_indices = np.full((root_count, max_influences), -1, dtype=np.int32)
+    root_joint_weights = np.zeros((root_count, max_influences), dtype="f4")
+    for idx, joints in enumerate(root_joint_rows):
+        weights = root_weight_rows[idx] if idx < len(root_weight_rows) else []
+        limit = min(max_influences, len(joints), len(weights))
+        if limit <= 0:
+            continue
+        root_joint_indices[idx, :limit] = np.asarray(joints[:limit], dtype=np.int32)
+        root_joint_weights[idx, :limit] = np.asarray(weights[:limit], dtype="f4")
+
+    return {
+        "schema": "qubit.groom_deform.runtime.v1",
+        "mode": str(mode or "skinned_cv").strip().lower() or "skinned_cv",
+        "point_count": int(point_count),
+        "root_count": int(root_count),
+        "segment_count": int(len(line_point_indices) // 2),
+        "bind_points": np.asarray(point_rows, dtype="f4").reshape(-1, 3) if point_rows else np.zeros((0, 3), dtype="f4"),
+        "point_offsets": np.asarray(offset_rows, dtype="f4").reshape(-1, 3) if offset_rows else np.zeros((0, 3), dtype="f4"),
+        "point_root_indices": np.asarray(point_root_indices, dtype=np.int64).reshape(-1) if point_root_indices else np.zeros((0,), dtype=np.int64),
+        "line_point_indices": np.asarray(line_point_indices, dtype=np.int64).reshape(-1) if line_point_indices else np.zeros((0,), dtype=np.int64),
+        "root_point_indices": np.asarray(root_point_indices, dtype=np.int64).reshape(-1) if root_point_indices else np.zeros((0,), dtype=np.int64),
+        "source_roots": np.asarray(source_roots, dtype="f4").reshape(-1, 3) if source_roots else np.zeros((0, 3), dtype="f4"),
+        "rig_bind_roots": np.asarray(rig_bind_roots, dtype="f4").reshape(-1, 3) if rig_bind_roots else np.zeros((0, 3), dtype="f4"),
+        "root_static_positions": np.asarray(root_static_rows, dtype="f4").reshape(-1, 3) if root_static_rows else np.zeros((0, 3), dtype="f4"),
+        "root_attached": np.asarray(root_attached, dtype=bool).reshape(-1) if root_attached else np.zeros((0,), dtype=bool),
+        "root_joint_indices": root_joint_indices,
+        "root_joint_weights": root_joint_weights,
+        "root_record_indices": np.asarray(record_roots, dtype=np.int64).reshape(-1) if record_roots else np.zeros((0,), dtype=np.int64),
+        "root_record_joint_indices": np.asarray(record_joints, dtype=np.int32).reshape(-1) if record_joints else np.zeros((0,), dtype=np.int32),
+        "root_record_weights": np.asarray(record_weights, dtype="f4").reshape(-1) if record_weights else np.zeros((0,), dtype="f4"),
+        "root_record_bind_positions": np.asarray(record_positions, dtype="f4").reshape(-1, 3) if record_positions else np.zeros((0, 3), dtype="f4"),
+    }
+
+
+def evaluate_groom_deform_runtime(
+    runtime: Dict[str, Any],
+    rig_context: Dict[str, Any],
+    *,
+    sample_seconds: float = 0.0,
+    mode: str | None = None,
+    skin_mats: np.ndarray | None = None,
+    sampled_time: float | None = None,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, Any]]:
+    if not isinstance(runtime, dict):
+        raise GroomDeformError("groom deform runtime is invalid.")
+    if skin_mats is None:
+        skeleton = rig_context.get("skeleton") if isinstance(rig_context, dict) else None
+        if skeleton is None:
+            raise GroomDeformError("rig_context does not contain a skeleton.")
+        clip = rig_context.get("clip") if isinstance(rig_context, dict) else None
+        evaluation = evaluate_rig_at_time(
+            skeleton,
+            clip,
+            float(sample_seconds),
+            loop=bool((rig_context or {}).get("loop", True)),
+            include_debug_data=False,
+        )
+        skin_mats = np.asarray(evaluation.skin_matrices, dtype="f4").reshape(-1, 4, 4)
+        sampled_time = float(getattr(evaluation, "sampled_time", sample_seconds))
+    else:
+        skin_mats = np.asarray(skin_mats, dtype="f4").reshape(-1, 4, 4)
+    joint_count = int(skin_mats.shape[0])
+    source_roots = np.asarray(runtime.get("source_roots"), dtype="f4").reshape(-1, 3)
+    rig_bind_roots = np.asarray(runtime.get("rig_bind_roots"), dtype="f4").reshape(-1, 3)
+    root_static = np.asarray(runtime.get("root_static_positions"), dtype="f4").reshape(-1, 3)
+    root_count = int(source_roots.shape[0])
+    if root_static.shape[0] != root_count:
+        root_static = np.zeros((root_count, 3), dtype="f4")
+    if rig_bind_roots.shape[0] != root_count:
+        rig_bind_roots = source_roots.astype("f4", copy=True)
+    deformed_rig_roots = root_static.astype("f4", copy=True)
+    rec_roots = np.asarray(runtime.get("root_record_indices"), dtype=np.int64).reshape(-1)
+    rec_joints = np.asarray(runtime.get("root_record_joint_indices"), dtype=np.int32).reshape(-1)
+    rec_weights = np.asarray(runtime.get("root_record_weights"), dtype="f4").reshape(-1)
+    rec_positions = np.asarray(runtime.get("root_record_bind_positions"), dtype="f4").reshape(-1, 3)
+    record_count = int(min(rec_roots.size, rec_joints.size, rec_weights.size, rec_positions.shape[0]))
+    if record_count > 0 and joint_count > 0 and root_count > 0:
+        rec_roots = rec_roots[:record_count]
+        rec_joints = rec_joints[:record_count]
+        rec_weights = rec_weights[:record_count]
+        rec_positions = rec_positions[:record_count]
+        valid = (
+            (rec_roots >= 0)
+            & (rec_roots < root_count)
+            & (rec_joints >= 0)
+            & (rec_joints < joint_count)
+            & (rec_weights > np.float32(1.0e-8))
+        )
+        if bool(np.any(valid)):
+            transformed = _transform_points_row_major(skin_mats[rec_joints[valid]], rec_positions[valid])
+            np.add.at(deformed_rig_roots, rec_roots[valid], transformed * rec_weights[valid, None])
+    attached = np.asarray(runtime.get("root_attached"), dtype=bool).reshape(-1)
+    if attached.shape[0] != root_count:
+        attached = np.zeros((root_count,), dtype=bool)
+    roots = source_roots.astype("f4", copy=True)
+    if root_count > 0 and bool(np.any(attached)):
+        roots[attached] = source_roots[attached] + (deformed_rig_roots[attached] - rig_bind_roots[attached])
+
+    offsets = np.asarray(runtime.get("point_offsets"), dtype="f4").reshape(-1, 3)
+    point_root_indices = np.asarray(runtime.get("point_root_indices"), dtype=np.int64).reshape(-1)
+    point_count = int(min(offsets.shape[0], point_root_indices.size))
+    if point_count <= 0 or root_count <= 0:
+        points = np.zeros((0, 3), dtype="f4")
+    else:
+        offsets = offsets[:point_count]
+        point_root_indices = point_root_indices[:point_count]
+        valid_points = (point_root_indices >= 0) & (point_root_indices < root_count)
+        safe_roots = np.zeros((point_count, 3), dtype="f4")
+        safe_roots[valid_points] = roots[point_root_indices[valid_points]]
+        mode_key = str(mode or runtime.get("mode") or "skinned_cv").strip().lower()
+        out_offsets = offsets.astype("f4", copy=True)
+        if mode_key in {"skinned_cv", "skinned", "root_frame", "root_rotate", "rotate"} and joint_count > 0:
+            root_joint_indices = np.asarray(runtime.get("root_joint_indices"), dtype=np.int32)
+            root_joint_weights = np.asarray(runtime.get("root_joint_weights"), dtype="f4")
+            if root_joint_indices.ndim == 2 and root_joint_weights.shape == root_joint_indices.shape and root_joint_indices.shape[0] >= root_count:
+                accum = np.zeros_like(out_offsets, dtype="f4")
+                totals = np.zeros((point_count,), dtype="f4")
+                slots = int(root_joint_indices.shape[1])
+                for slot in range(slots):
+                    joints = root_joint_indices[point_root_indices, slot]
+                    weights = root_joint_weights[point_root_indices, slot]
+                    valid = valid_points & (joints >= 0) & (joints < joint_count) & (weights > np.float32(1.0e-8))
+                    if not bool(np.any(valid)):
+                        continue
+                    transformed_offsets = _transform_vectors_row_major(skin_mats[joints[valid]], offsets[valid])
+                    accum[valid] += transformed_offsets * weights[valid, None]
+                    totals[valid] += weights[valid]
+                weighted = totals > np.float32(1.0e-8)
+                if bool(np.any(weighted)):
+                    out_offsets[weighted] = accum[weighted] / totals[weighted, None]
+        points = safe_roots + out_offsets
+    line_indices = np.asarray(runtime.get("line_point_indices"), dtype=np.int64).reshape(-1)
+    if line_indices.size and points.shape[0]:
+        valid = (line_indices >= 0) & (line_indices < int(points.shape[0]))
+        if bool(np.all(valid)):
+            line_points = points[line_indices]
+        else:
+            line_points = points[line_indices[valid]]
+    else:
+        line_points = np.zeros((0, 3), dtype="f4")
+    root_indices = np.asarray(runtime.get("root_point_indices"), dtype=np.int64).reshape(-1)
+    if root_indices.size and points.shape[0]:
+        valid_roots = root_indices[(root_indices >= 0) & (root_indices < int(points.shape[0]))]
+        root_points = points[valid_roots] if valid_roots.size else np.zeros((0, 3), dtype="f4")
+    else:
+        root_points = np.zeros((0, 3), dtype="f4")
+    return (
+        points.astype("f4", copy=False),
+        line_points.astype("f4", copy=False),
+        root_points.astype("f4", copy=False),
+        {
+            "sample_seconds": float(sample_seconds),
+            "sampled_time": float(sampled_time if sampled_time is not None else sample_seconds),
+            "bound_guides": int(np.count_nonzero(attached)) if attached.size else 0,
+            "missing_guides": int(max(0, root_count - int(np.count_nonzero(attached)))) if attached.size else 0,
+            "scalp_attached_guides": int(np.count_nonzero(attached)) if attached.size else 0,
+            "joint_count": int(joint_count),
+            "mode": str(mode or runtime.get("mode") or "skinned_cv").strip().lower(),
+            "runtime_cached": True,
+        },
+    )
+
+
 def deform_groom_curves(
     curves: Sequence[Sequence[Sequence[float]]],
     guide_bindings: Sequence[Dict[str, Any]],
@@ -629,7 +931,9 @@ def deform_groom_curves(
 
 __all__ = [
     "GroomDeformError",
+    "build_groom_deform_runtime",
     "curves_to_line_points",
     "deform_groom_curves",
+    "evaluate_groom_deform_runtime",
     "transfer_groom_root_skin_weights",
 ]

@@ -55,8 +55,10 @@ from .skinned_splat_proxy import (
 )
 from .groom_deform import (
     GroomDeformError,
+    build_groom_deform_runtime,
     curves_to_line_points,
     deform_groom_curves,
+    evaluate_groom_deform_runtime,
     transfer_groom_root_skin_weights,
 )
 from .bvh_ingest import (
@@ -107,8 +109,10 @@ __all__ = [
     "write_gaussian_splat_ply",
     "write_skinned_splat_skin_npz",
     "GroomDeformError",
+    "build_groom_deform_runtime",
     "curves_to_line_points",
     "deform_groom_curves",
+    "evaluate_groom_deform_runtime",
     "transfer_groom_root_skin_weights",
     "BVHIngestError",
     "BVHAnimationIngestResult",
