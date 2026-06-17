@@ -34,6 +34,13 @@ _SKINNED_SPLAT_PROXY_KIND_ALIASES = {
     "fbx_to_skinned_splat_proxy",
     "fbx skinned splat proxy",
 }
+_GROOM_DEFORM_KIND_ALIASES = {
+    "groom_deform",
+    "groom deform",
+    "groomdeform",
+    "hair_deform",
+    "hair deform",
+}
 _FX_SPLAT_PHYSICS_KIND_ALIASES = {
     "fx_splat_physics",
     "fx splat physics",
@@ -1941,6 +1948,65 @@ def _collect_assets(node_item) -> List[Dict[str, str]]:
                         + f"path={str(asset.get('path') or '')} "
                         + f"proxy={str(proxy.get('manifest') or proxy.get('status') or '')} "
                         + f"hide_source={bool(proxy.get('hide_source_mesh', False))}",
+                    )
+            continue
+        if kind in _GROOM_DEFORM_KIND_ALIASES:
+            try:
+                from nodes.groom_deform import spec as _groom_deform_spec  # type: ignore
+
+                build_asset = getattr(_groom_deform_spec, "build_groom_deform_scene_asset", None)
+                outcome = build_asset(src_item) if callable(build_asset) else None
+                asset = getattr(outcome, "asset", None)
+                source_assets = tuple(getattr(outcome, "source_assets", None) or tuple())
+            except Exception as exc:
+                asset = None
+                source_assets = tuple()
+                if _scene_debug_enabled(model):
+                    _scene_log(
+                        node_item,
+                        f"groom_deform asset build failed node={src_name or kind} err={exc!r}",
+                    )
+            if isinstance(asset, dict):
+                groom_cfg = asset.get("groom_deform") if isinstance(asset.get("groom_deform"), dict) else {}
+                hide_deformer = bool(groom_cfg.get("hide_deformer_geo", True))
+                if not hide_deformer:
+                    for source_asset in source_assets:
+                        if not isinstance(source_asset, dict):
+                            continue
+                        source_entry = dict(source_asset)
+                        source_owner = str(source_entry.get("node") or source_entry.get("owner") or "").strip()
+                        if source_owner:
+                            saved_source_xform = _lookup_xform(xforms, source_owner)
+                            if isinstance(saved_source_xform, dict):
+                                source_entry["xform"] = dict(saved_source_xform)
+                            source_entry["visible"] = source_owner not in hidden
+                        source_path = str(source_entry.get("path") or "").strip()
+                        if source_path and source_path in seen:
+                            continue
+                        assets.append(source_entry)
+                        if source_path:
+                            seen.add(source_path)
+                asset_owner = str(asset.get("node") or src_name or kind).strip()
+                saved_xform = _lookup_xform(xforms, asset_owner)
+                if not isinstance(saved_xform, dict) and asset_owner != src_name:
+                    saved_xform = _lookup_xform(xforms, src_name)
+                if isinstance(saved_xform, dict):
+                    asset["xform"] = dict(saved_xform)
+                asset["visible"] = asset_owner not in hidden
+                assets.append(asset)
+                path_key = str(asset.get("guides_path") or asset.get("path") or "").strip()
+                if path_key:
+                    seen.add(path_key)
+                if dbg_collect:
+                    debug = asset.get("debug") if isinstance(asset.get("debug"), dict) else {}
+                    _scene_log(
+                        node_item,
+                        "groom_deform asset "
+                        + f"node={str(asset.get('node') or '')} "
+                        + f"guides={str(asset.get('guides_path') or '')} "
+                        + f"guides_count={int(asset.get('guide_count', 0) or 0)} "
+                        + f"bound={int(debug.get('bound_guides', 0) or 0)} "
+                        + f"hide_deformer={bool(hide_deformer)}",
                     )
             continue
         if kind in _FX_SPLAT_PHYSICS_KIND_ALIASES:

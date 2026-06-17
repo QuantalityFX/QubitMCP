@@ -65,6 +65,7 @@ from echograph.rigging.fbx_stage7_timeline import (
     clip_marker_frames,
     clip_sample_time_from_timeline_seconds,
 )
+from echograph.rigging.groom_deform import deform_groom_curves
 
 # OpenGL constants (avoid optional PyOpenGL dependency).
 GL_COLOR_BUFFER_BIT = 0x00004000
@@ -399,6 +400,28 @@ class MGLRendererMixin:
             pass
         self._mgl_material_log(event, **fields)
 
+    @staticmethod
+    def _mgl_wire_vertex_data_from_line_points(line_points: NDArray) -> NDArray:
+        if np is None:
+            raise RuntimeError("numpy unavailable")
+        points = np.asarray(line_points, dtype="f4").reshape(-1, 3)
+        edge_count = int(points.shape[0] // 2)
+        verts: List[float] = []
+        for i in range(edge_count):
+            p0 = points[i * 2]
+            p1 = points[i * 2 + 1]
+            ax, ay, az = float(p0[0]), float(p0[1]), float(p0[2])
+            bx, by, bz = float(p1[0]), float(p1[1]), float(p1[2])
+            if ax == bx and ay == by and az == bz:
+                continue
+            verts.extend([ax, ay, az, ax, ay, az, bx, by, bz, -1.0])
+            verts.extend([ax, ay, az, ax, ay, az, bx, by, bz, 1.0])
+            verts.extend([bx, by, bz, ax, ay, az, bx, by, bz, 1.0])
+            verts.extend([ax, ay, az, ax, ay, az, bx, by, bz, -1.0])
+            verts.extend([bx, by, bz, ax, ay, az, bx, by, bz, 1.0])
+            verts.extend([bx, by, bz, ax, ay, az, bx, by, bz, -1.0])
+        return np.asarray(verts, dtype="f4")
+
     def _mgl_add_wire_item_from_points(
         self,
         name: str,
@@ -430,23 +453,8 @@ class MGLRendererMixin:
                     + f"name={name} points={int(line_points.shape[0])}"
                 )
             return None
-        verts: List[float] = []
-        for i in range(edge_count):
-            p0 = line_points[i * 2]
-            p1 = line_points[i * 2 + 1]
-            ax, ay, az = float(p0[0]), float(p0[1]), float(p0[2])
-            bx, by, bz = float(p1[0]), float(p1[1]), float(p1[2])
-            if ax == bx and ay == by and az == bz:
-                continue
-            # triangle 1
-            verts.extend([ax, ay, az, ax, ay, az, bx, by, bz, -1.0])
-            verts.extend([ax, ay, az, ax, ay, az, bx, by, bz, 1.0])
-            verts.extend([bx, by, bz, ax, ay, az, bx, by, bz, 1.0])
-            # triangle 2
-            verts.extend([ax, ay, az, ax, ay, az, bx, by, bz, -1.0])
-            verts.extend([bx, by, bz, ax, ay, az, bx, by, bz, 1.0])
-            verts.extend([bx, by, bz, ax, ay, az, bx, by, bz, -1.0])
-        if not verts:
+        verts = self._mgl_wire_vertex_data_from_line_points(line_points)
+        if verts.size == 0:
             if tag == "scene-rig-joints":
                 self._mgl_fbx_joints_log(
                     "wire_from_points skip reason=all_degenerate "
@@ -454,7 +462,7 @@ class MGLRendererMixin:
                 )
             return None
         try:
-            vbo = self._mgl_ctx.buffer(np.array(verts, dtype="f4").tobytes())
+            vbo = self._mgl_ctx.buffer(verts.tobytes())
             vao_content = [(vbo, "3f 3f 3f 1f", "in_pos", "in_start", "in_end", "in_side")]
             vao = self._mgl_ctx.vertex_array(self._mgl_wire_prog, vao_content)
         except Exception:
@@ -466,6 +474,9 @@ class MGLRendererMixin:
             return None
         payload = {
             "vao": vao,
+            "wire_vbo": vbo,
+            "wire_vertex_count": int(verts.shape[0] // 10),
+            "line_segment_count": int(edge_count),
             "color": self._mgl_wire_color,
             "mode": moderngl.TRIANGLES,
         }
@@ -523,6 +534,7 @@ class MGLRendererMixin:
             return None
         payload = {
             "vao": vao,
+            "point_vbo": vbo,
             "point_count": int(point_data.shape[0]),
             "point_size": float(max(1.0, point_size)),
             "mode": moderngl.POINTS,
@@ -1921,6 +1933,7 @@ class MGLRendererMixin:
                         "unweighted_indices": unweighted_indices,
                         "vbo": entry.get("vbo"),
                         "nbo": entry.get("nbo"),
+                        "entry": entry,
                         "affine": affine,
                         "fit_rmse": float(rmse),
                     }
@@ -1999,6 +2012,7 @@ class MGLRendererMixin:
                         "unweighted_indices": unweighted_indices,
                         "vbo": entry.get("vbo"),
                         "nbo": entry.get("nbo"),
+                        "entry": entry,
                         "affine": np.eye(4, dtype="f4"),
                     }
                 )
@@ -2165,15 +2179,26 @@ class MGLRendererMixin:
             tri_normals = self._mgl_fbx_triangle_normals(tri_points)
             vbo = mesh.get("vbo")
             nbo = mesh.get("nbo")
+            entry = mesh.get("entry")
             try:
                 if vbo is not None:
                     vbo.write(tri_points.tobytes())
                 if nbo is not None:
                     nbo.write(tri_normals.tobytes())
+                if isinstance(entry, dict):
+                    entry["points"] = tri_points.astype("f4", copy=False)
+                    entry["normals"] = tri_normals.astype("f4", copy=False)
             except Exception:
                 continue
 
             payload["_fbx_skin_frame"] = skin_frame_key
+        try:
+            owner = str(payload.get("owner") or getattr(item, "name", "") or "").strip()
+            if owner:
+                self._mgl_store_mesh_topology_for_owner(owner, payload)
+                self._mgl_clear_mesh_selection_overlay_cache()
+        except Exception:
+            pass
         item.payload = payload
 
     def _mgl_normalize_music_effects_config(self, raw) -> Optional[Dict[str, Any]]:
@@ -3900,6 +3925,261 @@ class MGLRendererMixin:
                 pass
         return bool(changed)
 
+    def _mgl_groom_deform_sample_owner(self, payload: dict, owner: str) -> str:
+        cfg = payload.get("groom_deform") if isinstance(payload, dict) else None
+        if not isinstance(cfg, dict):
+            cfg = {}
+        candidates: List[str] = []
+
+        def _add_candidate(value) -> None:
+            text = str(value or "").strip()
+            if not text:
+                return
+            text_l = text.lower()
+            for existing in candidates:
+                if existing.lower() == text_l:
+                    return
+            candidates.append(text)
+
+        for source in (cfg, payload):
+            if not isinstance(source, dict):
+                continue
+            for key in ("sample_owner", "deformer_owner", "source_owner"):
+                _add_candidate(source.get(key))
+        for source in (cfg, payload):
+            if not isinstance(source, dict):
+                continue
+            for value in list(source.get("sample_owner_candidates") or []):
+                _add_candidate(value)
+        for source in (cfg, payload):
+            if not isinstance(source, dict):
+                continue
+            for key in ("rig_owner", "animation_owner", "retarget_owner"):
+                _add_candidate(source.get(key))
+        _add_candidate(owner)
+        if not candidates:
+            return str(owner or "").strip()
+
+        try:
+            frame = float(self._mgl_timeline_frame_index())
+        except Exception:
+            frame = 0.0
+        map_fn = getattr(self, "_timeline_composition_source_frame", None)
+        if callable(map_fn):
+            for candidate in candidates:
+                try:
+                    mapped = map_fn(candidate, frame, allow_owner_key_mode=True)
+                except Exception:
+                    mapped = None
+                if mapped is not None:
+                    return candidate
+
+        speed_fn = getattr(self, "_timeline_owner_speed_percent", None)
+        if callable(speed_fn):
+            for candidate in candidates:
+                try:
+                    percent = float(speed_fn(candidate))
+                except Exception:
+                    percent = 100.0
+                if abs(percent - 100.0) > 1.0e-6:
+                    return candidate
+
+        return candidates[0]
+
+    def _mgl_groom_deform_eval_payload(self, payload: dict, owner: str):
+        if np is None or not isinstance(payload, dict):
+            return None
+        cfg = payload.get("groom_deform")
+        if not isinstance(cfg, dict):
+            return None
+        rig_context = cfg.get("rig_context")
+        if not isinstance(rig_context, dict):
+            return None
+        bind_curves = cfg.get("bind_curves")
+        guide_bindings = cfg.get("guide_bindings")
+        if not isinstance(bind_curves, list) or not isinstance(guide_bindings, list):
+            return None
+        sample_owner = self._mgl_groom_deform_sample_owner(payload, owner)
+        sample_seconds = self._mgl_fbx_context_timeline_sample_seconds(rig_context, sample_owner)
+        clip = rig_context.get("clip")
+        skeleton = rig_context.get("skeleton")
+        signature = (
+            int(self._mgl_timeline_frame_index()),
+            round(float(sample_seconds), 6),
+            str(sample_owner or ""),
+            id(skeleton),
+            id(clip),
+            int(len(bind_curves)),
+            str(cfg.get("mode") or "skinned_cv"),
+        )
+        if payload.get("_groom_deform_frame") == signature:
+            return None
+        try:
+            curves, line_points, root_points, debug = deform_groom_curves(
+                bind_curves,
+                guide_bindings,
+                rig_context,
+                sample_seconds=float(sample_seconds),
+                mode=str(cfg.get("mode") or "skinned_cv"),
+            )
+        except Exception as exc:
+            try:
+                self._mgl_log_throttled(
+                    "_mgl_groom_deform_eval_error_" + str(owner or "unknown"),
+                    "groom_deform: eval failed owner=" + str(owner or "") + " err=" + repr(exc),
+                    1.0,
+                )
+            except Exception:
+                pass
+            return None
+        payload["_groom_deform_frame"] = signature
+        payload["_groom_deform_debug"] = dict(debug or {})
+        payload["_groom_deform_sample_owner"] = str(sample_owner or "")
+        payload["_groom_deform_sample_seconds"] = float(sample_seconds)
+        return curves, line_points, root_points, debug
+
+    @staticmethod
+    def _mgl_curve_arrays_from_curves(curves):
+        if np is None:
+            return None, None, []
+        curve_points = []
+        curve_edges = []
+        root_indices = []
+        for curve in list(curves or []):
+            if not isinstance(curve, list) or len(curve) < 2:
+                continue
+            offset = len(curve_points)
+            curve_points.extend(curve)
+            root_indices.append(offset)
+            for idx in range(len(curve) - 1):
+                curve_edges.append((offset + idx, offset + idx + 1))
+        try:
+            point_arr = np.asarray(curve_points, dtype="f4").reshape(-1, 3)
+        except Exception:
+            point_arr = np.zeros((0, 3), dtype="f4")
+        try:
+            edge_arr = np.asarray(curve_edges, dtype=np.int64).reshape(-1, 2)
+        except Exception:
+            edge_arr = np.zeros((0, 2), dtype=np.int64)
+        return point_arr, edge_arr, root_indices
+
+    def _mgl_update_groom_deform_guides(self) -> None:
+        if np is None:
+            return
+        scene = getattr(self, "_mgl_scene", None)
+        if scene is None:
+            return
+        roots_by_owner: Dict[str, List[List[float]]] = {}
+        try:
+            items = list(scene.iter_by_tag("scene-groom-guides"))
+        except Exception:
+            items = []
+        for item in items:
+            payload = getattr(item, "payload", None) or {}
+            if not isinstance(payload.get("groom_deform"), dict):
+                continue
+            owner = str(payload.get("owner") or "").strip()
+            result = self._mgl_groom_deform_eval_payload(payload, owner)
+            if result is None:
+                continue
+            curves, line_points, root_points, _debug = result
+            try:
+                line_arr = np.asarray(line_points, dtype="f4").reshape(-1, 3)
+            except Exception:
+                continue
+            if line_arr.size == 0:
+                continue
+            try:
+                verts = self._mgl_wire_vertex_data_from_line_points(line_arr)
+            except Exception:
+                continue
+            if verts.size == 0:
+                continue
+            vbo = payload.get("wire_vbo")
+            if vbo is None and len(getattr(item, "resources", []) or []) >= 2:
+                vbo = item.resources[1]
+            if vbo is None:
+                continue
+            try:
+                size = int(getattr(vbo, "size", int(verts.nbytes)) or int(verts.nbytes))
+                if size != int(verts.nbytes):
+                    continue
+                vbo.write(verts.tobytes())
+            except Exception:
+                continue
+            try:
+                bmin = line_arr.min(axis=0).astype("f4")
+                bmax = line_arr.max(axis=0).astype("f4")
+                if owner:
+                    self._mgl_scene_bounds_by_owner[owner] = (bmin, bmax)
+                    self._mgl_scene_mesh_bounds_by_owner[owner] = (bmin, bmax)
+            except Exception:
+                pass
+            try:
+                point_arr, edge_arr, root_indices = self._mgl_curve_arrays_from_curves(curves)
+                if point_arr is not None and point_arr.size:
+                    groom_guides = payload.get("groom_guides") if isinstance(payload.get("groom_guides"), dict) else {}
+                    if not root_indices:
+                        root_indices = [int(idx) for idx in (groom_guides.get("root_indices") or [])]
+                    self._mgl_store_curve_topology_for_owner(
+                        owner,
+                        point_arr,
+                        edge_arr,
+                        line_arr,
+                        point_groups={"root": list(root_indices)},
+                        point_group_colors={"root": (1.0, 0.92, 0.1, 0.95)},
+                        model=payload.get("model"),
+                        source_owner=str(payload.get("source_owner") or ""),
+                        topology_kind="groom_guides",
+                    )
+                    try:
+                        self._mgl_clear_mesh_selection_overlay_cache()
+                    except Exception:
+                        self._mesh_selection_overlay_cache = None
+            except Exception:
+                pass
+            payload["line_points"] = line_arr
+            item.payload = payload
+            if owner and isinstance(root_points, list):
+                roots_by_owner[owner.lower()] = root_points
+
+        if not roots_by_owner:
+            return
+        try:
+            root_items = list(scene.iter_by_tag("scene-groom-guide-points"))
+        except Exception:
+            root_items = []
+        for item in root_items:
+            payload = getattr(item, "payload", None) or {}
+            owner = str(payload.get("owner") or "").strip().lower()
+            root_points = roots_by_owner.get(owner)
+            if not root_points:
+                continue
+            try:
+                root_arr = np.asarray(root_points, dtype="f4").reshape(-1, 3)
+            except Exception:
+                continue
+            if root_arr.size == 0:
+                continue
+            vbo = payload.get("point_vbo")
+            if vbo is None and len(getattr(item, "resources", []) or []) >= 2:
+                vbo = item.resources[1]
+            if vbo is None:
+                continue
+            try:
+                color = payload.get("color") or (1.0, 0.92, 0.1, 0.95)
+                rgba = np.asarray(tuple(float(v) for v in tuple(color)[:4]), dtype="f4").reshape(1, 4)
+                color_rows = np.repeat(rgba, int(root_arr.shape[0]), axis=0)
+                point_data = np.concatenate((root_arr, color_rows), axis=1).astype("f4", copy=False)
+                size = int(getattr(vbo, "size", int(point_data.nbytes)) or int(point_data.nbytes))
+                if size != int(point_data.nbytes):
+                    continue
+                vbo.write(point_data.tobytes())
+                payload["point_count"] = int(root_arr.shape[0])
+                item.payload = payload
+            except Exception:
+                continue
+
     @staticmethod
     def _mgl_edge_vertices_from_mesh(
         points: NDArray,
@@ -4585,6 +4865,11 @@ class MGLRendererMixin:
             payload = getattr(item, "payload", None) or {}
         except Exception:
             payload = {}
+        try:
+            if str(getattr(item, "tag", "") or "") == "scene-groom-guides":
+                return False
+        except Exception:
+            pass
         return self._mgl_material_is_transparent(payload.get("material"))
 
     def _mgl_owner_pivot_local(self, owner: str, bmin=None, bmax=None):
@@ -12434,6 +12719,26 @@ class MGLRendererMixin:
                 pass
             color = _as_rgba(payload.get("color") or self._mgl_wire_color)
             _apply_uniforms(color)
+            if tag == "scene-groom-guides" and isinstance(payload.get("groom_deform"), dict):
+                try:
+                    if not bool(payload.get("_groom_deform_draw_logged", False)):
+                        root = Path(__file__).resolve().parents[2]
+                        log_dir = root / "logs"
+                        log_dir.mkdir(parents=True, exist_ok=True)
+                        with (log_dir / "groom_guides_renderer_debug.log").open("a", encoding="utf-8") as handle:
+                            handle.write(
+                                f"{time.strftime('%Y-%m-%d %H:%M:%S')} "
+                                f"draw groom_deform_wire item={getattr(item, 'name', '')!r} "
+                                f"owner={str(payload.get('owner') or '')!r} "
+                                f"visible={bool(getattr(item, 'visible', False))} "
+                                f"segments={int(payload.get('line_segment_count', 0) or 0)} "
+                                f"has_model={bool(payload.get('model') is not None)} "
+                                f"depth_test={bool(depth_test)} order={int(getattr(item, 'order', 0) or 0)}\n"
+                            )
+                        payload["_groom_deform_draw_logged"] = True
+                        item.payload = payload
+                except Exception:
+                    pass
             try:
                 _render()
             except Exception as exc:
@@ -12911,9 +13216,18 @@ class MGLRendererMixin:
         if not isinstance(topo_map, dict):
             topo_map = {}
             setattr(self, "_mgl_scene_mesh_topology_by_owner", topo_map)
+        if isinstance(payload, dict) and bool(payload.get("selection_disabled", False)):
+            owner_l = owner_key.lower()
+            for key in list(topo_map.keys()):
+                if str(key or "").strip().lower() == owner_l:
+                    topo_map.pop(key, None)
+            return
         topo = self._mgl_mesh_topology_from_entries(self._mgl_mesh_entries_for_payload(payload))
         if topo is None:
-            topo_map.pop(owner_key, None)
+            owner_l = owner_key.lower()
+            for key in list(topo_map.keys()):
+                if str(key or "").strip().lower() == owner_l:
+                    topo_map.pop(key, None)
             return
         topo_map[owner_key] = topo
 
@@ -12924,16 +13238,19 @@ class MGLRendererMixin:
         scene = getattr(self, "_mgl_scene", None)
         if scene is None:
             return True
+        matched = False
         try:
             for tag in ("scene-model", "model", "scene-curve", "scene-groom-guides", "scene-groom-guide-points"):
                 for item in scene.iter_by_tag(tag):
                     payload = getattr(item, "payload", None) or {}
                     item_owner = str(payload.get("owner") or item.name or "").strip().lower()
                     if item_owner == owner_key:
-                        return bool(getattr(item, "visible", False))
+                        matched = True
+                        if bool(getattr(item, "visible", False)):
+                            return True
         except Exception:
             return True
-        return True
+        return not matched
 
     def _mgl_mesh_topology_for_owner(self, owner: str) -> Optional[Dict[str, object]]:
         owner_key = str(owner or "").strip()
@@ -12950,7 +13267,11 @@ class MGLRendererMixin:
         try:
             for tag in ("scene-model", "model"):
                 for item in scene.iter_by_tag(tag):
+                    if not bool(getattr(item, "visible", False)):
+                        continue
                     payload = getattr(item, "payload", None) or {}
+                    if isinstance(payload, dict) and bool(payload.get("selection_disabled", False)):
+                        continue
                     item_owner = str(payload.get("owner") or item.name or "").strip()
                     if item_owner.lower() != owner_key.lower():
                         continue
@@ -17953,6 +18274,10 @@ class MGLRendererMixin:
             pass
         try:
             self._mgl_scene_skeleton_refresh_dynamic_handles()
+        except Exception:
+            pass
+        try:
+            self._mgl_update_groom_deform_guides()
         except Exception:
             pass
 
@@ -22993,8 +23318,63 @@ class MGLRendererMixin:
                             wire_item.order = 35
                             scene.add(wire_item)
                     continue
-                if kind in {"groom_guides", "groom guides", "hair_guides", "hair guides"}:
+                if kind in {"groom_guides", "groom guides", "hair_guides", "hair guides", "groom_deform", "groom deform", "groomdeform", "hair_deform", "hair deform"}:
                     display_owner = str(asset.get("node") or asset.get("owner") or "Groom Guides").strip()
+                    source_kind_key = str(asset.get("source_kind") or "").strip().lower()
+                    is_groom_deform_asset = (
+                        source_kind_key == "groom_deform"
+                        or kind in {"groom_deform", "groom deform", "groomdeform", "hair_deform", "hair deform"}
+                        or display_owner.strip().lower() in {"groom_deform", "groom deform"}
+                        or isinstance(asset.get("deform_rig_context"), dict)
+                        or str(asset.get("groom_deform_mode") or "").strip() != ""
+                    )
+                    groom_deform_cfg = dict(asset.get("groom_deform")) if isinstance(asset.get("groom_deform"), dict) else None
+                    if not isinstance(groom_deform_cfg, dict):
+                        groom_deform_cfg = dict(asset.get("groom_deform_info")) if isinstance(asset.get("groom_deform_info"), dict) else None
+                    if not isinstance(groom_deform_cfg, dict) and bool(is_groom_deform_asset):
+                        rig_context = asset.get("deform_rig_context")
+                        bind_curves_cfg = asset.get("bind_curves")
+                        guide_bindings_cfg = asset.get("guide_bindings")
+                        if isinstance(rig_context, dict) and isinstance(bind_curves_cfg, list) and isinstance(guide_bindings_cfg, list):
+                            groom_deform_cfg = {
+                                "mode": str(asset.get("groom_deform_mode") or "skinned_cv"),
+                                "rig_context": rig_context,
+                                "guide_bindings": list(guide_bindings_cfg),
+                                "bind_curves": list(bind_curves_cfg),
+                                "hide_deformer_geo": bool(asset.get("hide_deformer_geo", False)),
+                                "source_owner": str(asset.get("source_owner") or "").strip(),
+                                "rig_owner": str(asset.get("rig_owner") or "").strip(),
+                                "deformer_owner": str(asset.get("deformer_owner") or "").strip(),
+                                "sample_owner": str(asset.get("sample_owner") or "").strip(),
+                                "sample_owner_candidates": list(asset.get("sample_owner_candidates") or []),
+                            }
+                    if isinstance(groom_deform_cfg, dict):
+                        for meta_key in ("source_owner", "rig_owner", "deformer_owner", "sample_owner"):
+                            if not str(groom_deform_cfg.get(meta_key) or "").strip():
+                                value = str(asset.get(meta_key) or "").strip()
+                                if value:
+                                    groom_deform_cfg[meta_key] = value
+                        if not list(groom_deform_cfg.get("sample_owner_candidates") or []):
+                            candidates = []
+                            for candidate_key in ("sample_owner", "deformer_owner", "source_owner", "rig_owner"):
+                                candidate = str(groom_deform_cfg.get(candidate_key) or "").strip()
+                                if candidate and candidate.lower() not in {value.lower() for value in candidates}:
+                                    candidates.append(candidate)
+                            if display_owner and display_owner.lower() not in {value.lower() for value in candidates}:
+                                candidates.append(display_owner)
+                            if candidates:
+                                groom_deform_cfg["sample_owner_candidates"] = candidates
+                            if not str(groom_deform_cfg.get("sample_owner") or "").strip():
+                                groom_deform_cfg["sample_owner"] = candidates[0] if candidates else display_owner
+                    elif bool(is_groom_deform_asset):
+                        _groom_guides_log(
+                            "load warn missing_groom_deform_payload "
+                            + f"owner={display_owner!r} kind={kind!r} "
+                            + f"source_kind={source_kind_key!r} "
+                            + f"has_deform_rig_context={bool(isinstance(asset.get('deform_rig_context'), dict))} "
+                            + f"has_bind_curves={bool(isinstance(asset.get('bind_curves'), list))} "
+                            + f"has_guide_bindings={bool(isinstance(asset.get('guide_bindings'), list))}"
+                        )
                     source_owner = str(asset.get("source_owner") or "").strip()
                     source_mesh_owner = source_owner or display_owner
                     owner = display_owner
@@ -23045,7 +23425,8 @@ class MGLRendererMixin:
                     _groom_guides_log(
                         "load begin "
                         + f"owner={owner!r} display_owner={display_owner!r} visible={bool(visible)} points={int(line_arr.shape[0])} "
-                        + f"segments={int(line_arr.shape[0] // 2)} roots={int(len(root_points))} guides_path={str(asset.get('guides_path') or '')!r}"
+                        + f"segments={int(line_arr.shape[0] // 2)} roots={int(len(root_points))} kind={kind!r} "
+                        + f"groom_deform={bool(isinstance(groom_deform_cfg, dict))} guides_path={str(asset.get('guides_path') or '')!r}"
                     )
                     if line_arr.size:
                         try:
@@ -23082,6 +23463,7 @@ class MGLRendererMixin:
                         except Exception:
                             root_indices = []
                         try:
+                            topology_model = source_model
                             self._mgl_store_curve_topology_for_owner(
                                 owner,
                                 point_arr,
@@ -23089,7 +23471,7 @@ class MGLRendererMixin:
                                 line_arr,
                                 point_groups={"root": list(root_indices)},
                                 point_group_colors={"root": (1.0, 0.92, 0.1, 0.95)},
-                                model=source_model,
+                                model=topology_model,
                                 source_owner=source_mesh_owner,
                                 topology_kind="groom_guides",
                             )
@@ -23108,7 +23490,7 @@ class MGLRendererMixin:
                             payload["color"] = (0.0, 1.0, 0.55, 1.0)
                             payload["line_width"] = 3.0
                             payload["overlay"] = True
-                            payload["depth_test"] = True
+                            payload["depth_test"] = False if isinstance(groom_deform_cfg, dict) else True
                             payload["source_owner"] = source_mesh_owner
                             payload["material"] = {"transparency": 0.01}
                             if source_model is not None:
@@ -23124,8 +23506,11 @@ class MGLRendererMixin:
                                 "root_indices": list(root_indices),
                                 "curve_count": int(len(curves) if isinstance(curves, list) else 0),
                             }
+                            payload["line_segment_count"] = int(line_arr.shape[0] // 2)
+                            if isinstance(groom_deform_cfg, dict):
+                                payload["groom_deform"] = dict(groom_deform_cfg)
                             wire_item.payload = payload
-                            wire_item.order = 40
+                            wire_item.order = 940 if isinstance(groom_deform_cfg, dict) else 40
                             scene.add(wire_item)
                             _groom_guides_log(
                                 "load add_wire "
@@ -23152,9 +23537,11 @@ class MGLRendererMixin:
                             )
                             if point_item is not None:
                                 payload = point_item.payload or {}
-                                payload["depth_test"] = True
+                                payload["depth_test"] = False if isinstance(groom_deform_cfg, dict) else True
                                 payload["source_owner"] = source_mesh_owner
                                 payload["point_group"] = "root"
+                                if isinstance(groom_deform_cfg, dict):
+                                    payload["groom_deform"] = dict(groom_deform_cfg)
                                 if source_model is not None:
                                     try:
                                         payload["model"] = np.asarray(source_model, dtype="f4").reshape(4, 4)
@@ -23162,7 +23549,7 @@ class MGLRendererMixin:
                                         pass
                                 payload["material"] = {"transparency": 0.05}
                                 point_item.payload = payload
-                                point_item.order = 41
+                                point_item.order = 941 if isinstance(groom_deform_cfg, dict) else 41
                                 scene.add(point_item)
                                 _groom_guides_log(
                                     "load add_roots "
@@ -23900,6 +24287,7 @@ class MGLRendererMixin:
                             "hidden_submeshes": list(hidden_submeshes),
                             "fbx_rig_context": fbx_rig_context if isinstance(fbx_rig_context, dict) else None,
                             "fbx_bind_joints_only": bool(fbx_bind_joints_only),
+                            "selection_disabled": bool(asset.get("selection_disabled", False)),
                         },
                         resources=[res for res in resources if res is not None],
                         visible=model_visible,
@@ -23974,6 +24362,7 @@ class MGLRendererMixin:
                                 "hidden_submeshes": list(hidden_submeshes),
                                 "fbx_rig_context": fbx_rig_context if isinstance(fbx_rig_context, dict) else None,
                                 "fbx_bind_joints_only": bool(fbx_bind_joints_only),
+                                "selection_disabled": bool(asset.get("selection_disabled", False)),
                             },
                             resources=resources,
                             visible=model_visible,
@@ -24092,6 +24481,7 @@ class MGLRendererMixin:
                                 "hidden_submeshes": list(hidden_submeshes),
                                 "fbx_rig_context": fbx_rig_context if isinstance(fbx_rig_context, dict) else None,
                                 "fbx_bind_joints_only": bool(fbx_bind_joints_only),
+                                "selection_disabled": bool(asset.get("selection_disabled", False)),
                             },
                             resources=[res for res in resources if res is not None],
                             visible=model_visible,

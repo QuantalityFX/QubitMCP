@@ -974,6 +974,8 @@ class NodeItem(QtWidgets.QGraphicsObject):
             return "fx"
         if kind in ("groom_guides", "groom guides", "hair_guides", "hair guides"):
             return "groom_guides"
+        if kind in ("groom_deform", "groom deform", "groomdeform", "hair_deform", "hair deform"):
+            return "groom_deform"
         if kind in ("fbx_import", "fbx import", "fbximport"):
             return "fbx"
         return None
@@ -1039,6 +1041,16 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     return bool(show_report(self))
             except Exception as exc:
                 QtWidgets.QMessageBox.warning(None, "Groom Guides Debug", f"Debug report failed: {exc}")
+                return False
+        if kind == "groom_deform":
+            try:
+                from nodes.groom_deform import spec as _groom_deform_spec  # type: ignore
+
+                show_report = getattr(_groom_deform_spec, "show_groom_deform_debug_report", None)
+                if callable(show_report):
+                    return bool(show_report(self))
+            except Exception as exc:
+                QtWidgets.QMessageBox.warning(None, "Groom Deform Debug", f"Debug report failed: {exc}")
                 return False
         new_value = "0" if self._header_debug_enabled() else "1"
         try:
@@ -2758,6 +2770,11 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 "normal",
                 "smooth_normals",
                 "smooth normals",
+                "groom_deform",
+                "groom deform",
+                "groomdeform",
+                "hair_deform",
+                "hair deform",
             )
             deferred_render = None
             if kind_lower in ("chatbot", "chat bot", "chat_bot"):
@@ -3058,7 +3075,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         )
                         lab.setToolTip("Double-click to rename")
                     else:
-                        lab = QtWidgets.QLabel(pname)
+                        display_pname = pname
+                        if kind in ("groom_deform", "groom deform", "groomdeform", "hair_deform", "hair deform"):
+                            if pname_key == "guides":
+                                display_pname = "Guides"
+                            elif pname_key == "rig":
+                                display_pname = "Anim Retarget"
+                        lab = QtWidgets.QLabel(display_pname)
                     if kind == "note":
                         lab.setStyleSheet(self._note_param_label_style(completed=is_completed))
                         try:
@@ -3097,8 +3120,14 @@ class NodeItem(QtWidgets.QGraphicsObject):
                         kind in ("light", "scene_light", "directional_light", "point_light", "spot_light", "area_light")
                         and pname_key in ("type", "light_type")
                     )
+                    input_label_only = (
+                        kind in ("groom_deform", "groom deform", "groomdeform", "hair_deform", "hair deform")
+                        and pname_key in ("guides", "rig")
+                    )
                     edit = None
-                    if use_light_type_combo:
+                    if input_label_only:
+                        lay.addStretch(1)
+                    elif use_light_type_combo:
                         class _LightTypeComboBox(QtWidgets.QComboBox):
                             def __init__(self, parent=None):
                                 super().__init__(parent)
@@ -3661,6 +3690,13 @@ class NodeItem(QtWidgets.QGraphicsObject):
             "hair_guides",
             "hair guides",
         }
+        groom_deform_kinds = {
+            "groom_deform",
+            "groom deform",
+            "groomdeform",
+            "hair_deform",
+            "hair deform",
+        }
         modeler_kinds = {"modeler"}
         light_kinds = {
             "light",
@@ -3732,6 +3768,30 @@ class NodeItem(QtWidgets.QGraphicsObject):
                 collector = getattr(_scene_spec, "_collect_assets", None)
                 if callable(collector):
                     return list(collector(self) or [])
+            if scene_kind in groom_deform_kinds:
+                try:
+                    from nodes.groom_deform import spec as _groom_deform_spec  # type: ignore
+
+                    build_asset = getattr(_groom_deform_spec, "build_groom_deform_scene_asset", None)
+                    outcome = build_asset(self) if callable(build_asset) else None
+                    asset = getattr(outcome, "asset", None)
+                    source_assets = tuple(getattr(outcome, "source_assets", None) or tuple())
+                except Exception as exc:
+                    asset = None
+                    source_assets = tuple()
+                    _scene_log(f"groom_deform self build failed err={exc!r}")
+                if isinstance(asset, dict):
+                    assets_for_view = []
+                    groom_cfg = asset.get("groom_deform") if isinstance(asset.get("groom_deform"), dict) else {}
+                    if not bool(groom_cfg.get("hide_deformer_geo", True)):
+                        assets_for_view.extend(dict(entry) for entry in source_assets if isinstance(entry, dict))
+                    assets_for_view.append(dict(asset))
+                    _scene_log(
+                        "groom_deform self add "
+                        + f"node={asset.get('node', '')!r} guides={asset.get('guide_count', '')!r} "
+                        + f"hide_deformer={bool(groom_cfg.get('hide_deformer_geo', True))}"
+                    )
+                    return assets_for_view
         except Exception:
             pass
 
@@ -4595,6 +4655,54 @@ class NodeItem(QtWidgets.QGraphicsObject):
                     _scene_log(
                         f"edge[{edge_idx}] add groom_guides node={asset.get('node', '')!r} "
                         f"guides={asset.get('guide_count', '')!r}"
+                    )
+                continue
+            if kind in groom_deform_kinds:
+                try:
+                    from nodes.groom_deform import spec as _groom_deform_spec  # type: ignore
+
+                    build_asset = getattr(_groom_deform_spec, "build_groom_deform_scene_asset", None)
+                    outcome = build_asset(src_item) if callable(build_asset) else None
+                    asset = getattr(outcome, "asset", None)
+                    source_assets = tuple(getattr(outcome, "source_assets", None) or tuple())
+                except Exception as exc:
+                    asset = None
+                    source_assets = tuple()
+                    _scene_log(f"edge[{edge_idx}] groom_deform build failed node={src_name or kind} err={exc!r}")
+                if isinstance(asset, dict):
+                    groom_cfg = asset.get("groom_deform") if isinstance(asset.get("groom_deform"), dict) else {}
+                    hide_deformer = bool(groom_cfg.get("hide_deformer_geo", True))
+                    if not hide_deformer:
+                        for source_asset in source_assets:
+                            if not isinstance(source_asset, dict):
+                                continue
+                            source_entry = dict(source_asset)
+                            source_owner = str(source_entry.get("node") or source_entry.get("owner") or "").strip()
+                            if source_owner:
+                                xf = _lookup_xform(source_owner)
+                                if isinstance(xf, dict):
+                                    source_entry["xform"] = dict(xf)
+                                source_entry["visible"] = source_owner not in hidden
+                            source_path = str(source_entry.get("path") or "").strip()
+                            if source_path and source_path in seen:
+                                continue
+                            assets.append(source_entry)
+                            if source_path:
+                                seen.add(source_path)
+                    asset_owner = str(asset.get("node") or src_name or kind).strip()
+                    xf = _lookup_xform(asset_owner)
+                    if not isinstance(xf, dict) and asset_owner != src_name:
+                        xf = _lookup_xform(src_name)
+                    if isinstance(xf, dict):
+                        asset["xform"] = dict(xf)
+                    asset["visible"] = asset_owner not in hidden
+                    assets.append(asset)
+                    path_key = str(asset.get("guides_path") or asset.get("path") or "").strip()
+                    if path_key:
+                        seen.add(path_key)
+                    _scene_log(
+                        f"edge[{edge_idx}] add groom_deform node={asset.get('node', '')!r} "
+                        f"guides={asset.get('guide_count', '')!r} hide_deformer={bool(hide_deformer)}"
                     )
                 continue
             if kind in music_effects_kinds:

@@ -263,6 +263,17 @@ def bootstrap_plugins():
     except Exception as e:
         print("[EchoGraph] Groom Guides plugin import failed:", e)
 
+    # 8.916) Groom Deform
+    try:
+        from nodes import groom_deform
+        if hasattr(groom_deform, "register"):
+            groom_deform.register()
+            _safe_probe("groom_deform")
+        else:
+            print("[EchoGraph] Groom Deform module has no 'register' function.")
+    except Exception as e:
+        print("[EchoGraph] Groom Deform plugin import failed:", e)
+
     # 8.92) Material
     try:
         from nodes import material

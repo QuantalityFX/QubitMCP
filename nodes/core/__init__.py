@@ -89,6 +89,7 @@ def register_defaults() -> None:
     register("curve", stripe_color="#22d3ee")
     register("mask", stripe_color="#f43f5e")
     register("groom_guides", stripe_color="#f59e0b")
+    register("groom_deform", stripe_color="#fb7185")
     register("fx_splat_physics", stripe_color="#84cc16")
     register("fx_splat_fx", stripe_color="#f472b6")
     register("colorize", stripe_color="#22d3ee")

@@ -21,6 +21,7 @@ except Exception:
     from PySide2 import QtCore, QtGui, QtWidgets  # type: ignore
 
 from nodes.core import Spec
+from echograph.rigging.groom_deform import transfer_groom_root_skin_weights
 
 
 SUPPORTED_MESH_EXTS = {".obj", ".fbx", ".gltf", ".glb"}
@@ -62,6 +63,8 @@ GROOM_GUIDES_DEBUG_KEYS = (
     "guide_length",
     "attempts",
     "uv_misses",
+    "skin_bound_roots",
+    "skin_missing_roots",
     "guides_path",
 )
 
@@ -293,36 +296,73 @@ def _output_path(
 def _mesh_arrays_tuple(mesh_arrays, hidden_submeshes=None):
     hidden = {str(name).strip().lower() for name in (hidden_submeshes or []) if str(name).strip()}
     submeshes = list(getattr(mesh_arrays, "submeshes", None) or []) if mesh_arrays is not None else []
+    triangle_sources: list[dict[str, Any]] = []
     if hidden and submeshes:
         visible_submeshes = []
         for idx, sub in enumerate(submeshes):
             sub_name = str(getattr(sub, "name", "") or "").strip() or f"mesh_{int(idx)}"
             if sub_name.lower() not in hidden:
-                visible_submeshes.append(sub)
+                visible_submeshes.append((idx, sub_name, sub))
         if not visible_submeshes:
-            return None, None, None
+            return None, None, None, None
         try:
-            points = np.concatenate([np.asarray(getattr(sub, "points"), dtype="f4").reshape(-1, 3) for sub in visible_submeshes], axis=0)
-            normals = np.concatenate([np.asarray(getattr(sub, "normals"), dtype="f4").reshape(-1, 3) for sub in visible_submeshes], axis=0)
-            uvs = np.concatenate([np.asarray(getattr(sub, "uvs"), dtype="f4").reshape(-1, 2) for sub in visible_submeshes], axis=0)
-            return points, normals, uvs
+            point_chunks = []
+            normal_chunks = []
+            uv_chunks = []
+            for source_idx, sub_name, sub in visible_submeshes:
+                sub_points = np.asarray(getattr(sub, "points"), dtype="f4").reshape(-1, 3)
+                point_chunks.append(sub_points)
+                normal_chunks.append(np.asarray(getattr(sub, "normals"), dtype="f4").reshape(-1, 3))
+                uv_chunks.append(np.asarray(getattr(sub, "uvs"), dtype="f4").reshape(-1, 2))
+                for tri_idx in range(int(sub_points.shape[0] // 3)):
+                    triangle_sources.append(
+                        {
+                            "source_submesh_index": int(source_idx),
+                            "source_mesh_name": str(sub_name),
+                            "source_mesh_triangle_index": int(tri_idx),
+                        }
+                    )
+            points = np.concatenate(point_chunks, axis=0)
+            normals = np.concatenate(normal_chunks, axis=0)
+            uvs = np.concatenate(uv_chunks, axis=0)
+            return points, normals, uvs, triangle_sources
         except Exception:
             pass
-    return getattr(mesh_arrays, "points", None), getattr(mesh_arrays, "normals", None), getattr(mesh_arrays, "uvs", None)
+    if submeshes:
+        for idx, sub in enumerate(submeshes):
+            sub_name = str(getattr(sub, "name", "") or "").strip() or f"mesh_{int(idx)}"
+            try:
+                tri_count = int(np.asarray(getattr(sub, "points"), dtype="f4").reshape(-1, 3).shape[0] // 3)
+            except Exception:
+                tri_count = 0
+            for tri_idx in range(tri_count):
+                triangle_sources.append(
+                    {
+                        "source_submesh_index": int(idx),
+                        "source_mesh_name": str(sub_name),
+                        "source_mesh_triangle_index": int(tri_idx),
+                    }
+                )
+    return (
+        getattr(mesh_arrays, "points", None),
+        getattr(mesh_arrays, "normals", None),
+        getattr(mesh_arrays, "uvs", None),
+        triangle_sources or None,
+    )
 
 
 def _load_mesh_arrays(path: Path, hidden_submeshes=None):
     if np is None:
-        return None, None, None
+        return None, None, None, None
     try:
         from echograph.ui import gl_loaders
     except Exception:
-        return None, None, None
+        return None, None, None, None
     ext = path.suffix.lower()
     try:
         if ext == ".obj":
             pts, norms, uvs = gl_loaders.load_obj_mesh_arrays(path)
-            return pts, norms, uvs
+            return pts, norms, uvs, None
         if ext == ".fbx":
             arrays = gl_loaders.load_fbx_mesh_arrays_pyassimp(path)
             return _mesh_arrays_tuple(arrays, hidden_submeshes)
@@ -336,10 +376,10 @@ def _load_mesh_arrays(path: Path, hidden_submeshes=None):
     except Exception:
         model = None
     if model is None or not getattr(model, "vertices", None):
-        return None, None, None
+        return None, None, None, None
     points = np.asarray(model.vertices, dtype="f4").reshape(-1, 3)
     normals = np.zeros_like(points)
-    return points, normals, np.zeros((points.shape[0], 2), dtype="f4")
+    return points, normals, np.zeros((points.shape[0], 2), dtype="f4"), None
 
 
 def _ensure_triangle_arrays(points, normals, uvs):
@@ -533,6 +573,20 @@ def _source_assets_for_mask(mask_item, source_path: str, provider) -> tuple[dict
             modeler_assets = getattr(modeler_spec, "_modeler_scene_assets", None)
             if callable(modeler_assets):
                 assets = [dict(entry) for entry in modeler_assets(scene, src_item) if isinstance(entry, dict)]
+        elif src_kind in {"fbx_import", "fbx import", "fbximport"} and src_item is not None:
+            try:
+                from nodes.scene import spec as scene_spec  # type: ignore
+
+                rig_fn = getattr(scene_spec, "_fbx_import_rig_context", None)
+                rig_context = rig_fn(getattr(src_item, "model", None)) if callable(rig_fn) else None
+            except Exception:
+                rig_context = None
+            if src_path:
+                ext = Path(src_path).suffix.lower()
+                entry = {"path": src_path, "texture": "", "node": Path(src_path).stem, "ext": ext, "visible": True}
+                if isinstance(rig_context, dict):
+                    entry["fbx_rig_context"] = rig_context
+                assets = [entry]
         elif src_path:
             ext = Path(src_path).suffix.lower()
             assets = [{"path": src_path, "texture": "", "node": Path(src_path).stem, "ext": ext, "visible": True}]
@@ -603,7 +657,7 @@ def _uv_triangle_hit(uv, tri_uvs, uv_mins, uv_maxs, uv_denoms):
     return int(hits[local]), np.array([a_w[local], b_w[local], c_w[local]], dtype="f4")
 
 
-def _build_guides(points, normals, uvs, mask_img: QtGui.QImage, guide_count: int, points_per_curve: int, threshold: float, length_scale: float, seed: int):
+def _build_guides(points, normals, uvs, mask_img: QtGui.QImage, guide_count: int, points_per_curve: int, threshold: float, length_scale: float, seed: int, triangle_sources=None):
     debug: dict[str, Any] = {
         "requested_guides": int(guide_count),
         "points_per_curve": int(points_per_curve),
@@ -612,10 +666,10 @@ def _build_guides(points, normals, uvs, mask_img: QtGui.QImage, guide_count: int
         "seed": int(seed),
     }
     if np is None:
-        return None, None, "NumPy is required for Groom Guides.", debug
+        return None, None, None, "NumPy is required for Groom Guides.", debug
     points, normals, uvs = _ensure_triangle_arrays(points, normals, uvs)
     if points is None or normals is None or uvs is None:
-        return None, None, "Source mesh has no usable triangle data.", debug
+        return None, None, None, "Source mesh has no usable triangle data.", debug
     tris = points.reshape(-1, 3, 3)
     tri_norms = normals.reshape(-1, 3, 3)
     tri_uvs = uvs.reshape(-1, 3, 2)
@@ -633,7 +687,7 @@ def _build_guides(points, normals, uvs, mask_img: QtGui.QImage, guide_count: int
     debug["mask_effective_threshold"] = float(effective_threshold)
     debug["mask_candidate_pixels"] = int(white_pixels)
     if xs is None or ys is None or cdf is None or int(white_pixels) <= 0:
-        return None, None, "No white mask pixels found for guide placement.", debug
+        return None, None, None, "No white mask pixels found for guide placement.", debug
     uv_mins = np.min(tri_uvs, axis=1)
     uv_maxs = np.max(tri_uvs, axis=1)
     uv0 = tri_uvs[:, 0, :]
@@ -642,12 +696,13 @@ def _build_guides(points, normals, uvs, mask_img: QtGui.QImage, guide_count: int
     uv_denoms = ((uv1[:, 0] - uv0[:, 0]) * (uv2[:, 1] - uv0[:, 1])) - ((uv2[:, 0] - uv0[:, 0]) * (uv1[:, 1] - uv0[:, 1]))
     debug["uv_triangle_count"] = int(np.count_nonzero(np.abs(uv_denoms) > 1.0e-10))
     if int(debug["uv_triangle_count"]) <= 0:
-        return None, None, "Source mesh has no usable UV triangles for mask projection.", debug
+        return None, None, None, "Source mesh has no usable UV triangles for mask projection.", debug
     rng = np.random.default_rng(int(seed))
     max_attempts = max(int(guide_count) * 128, 8192)
     w = max(1, int(mask_img.width()))
     h = max(1, int(mask_img.height()))
     curves: list[list[list[float]]] = []
+    guide_bindings: list[dict[str, Any]] = []
     attempts = 0
     uv_misses = 0
     while len(curves) < int(guide_count) and attempts < max_attempts:
@@ -663,6 +718,18 @@ def _build_guides(points, normals, uvs, mask_img: QtGui.QImage, guide_count: int
         base = (tris[tri_idx] * bary[:, None]).sum(axis=0)
         normal = (tri_norms[tri_idx] * bary[:, None]).sum(axis=0)
         normal = _normal_outward(base, normal, center)
+        guide_bindings.append(
+            {
+                "guide_index": int(len(curves)),
+                "source_triangle_index": int(tri_idx),
+                "source_barycentric": [float(v) for v in bary.tolist()],
+                "uv": [float(u), float(v)],
+                "bind_position": [float(v) for v in base.tolist()],
+                "bind_normal": [float(v) for v in normal.tolist()],
+            }
+        )
+        if isinstance(triangle_sources, list) and tri_idx < len(triangle_sources) and isinstance(triangle_sources[tri_idx], dict):
+            guide_bindings[-1].update(dict(triangle_sources[tri_idx]))
         curve: list[list[float]] = []
         for idx in range(int(points_per_curve)):
             t = float(idx) / float(max(1, int(points_per_curve) - 1))
@@ -673,7 +740,7 @@ def _build_guides(points, normals, uvs, mask_img: QtGui.QImage, guide_count: int
     debug["uv_misses"] = int(uv_misses)
     debug["generated_curves"] = int(len(curves))
     if not curves:
-        return None, None, "White mask pixels were found, but none landed inside the mesh UV triangles.", debug
+        return None, None, None, "White mask pixels were found, but none landed inside the mesh UV triangles.", debug
     line_points = _curves_to_line_points(curves)
     try:
         curve_points = np.asarray([point for curve in curves for point in curve], dtype="f4").reshape(-1, 3)
@@ -687,7 +754,7 @@ def _build_guides(points, normals, uvs, mask_img: QtGui.QImage, guide_count: int
         detail = f"Generated {len(curves)} guide curve(s); paint more white mask area for the requested count."
     elif float(effective_threshold) < float(threshold):
         detail = f"Generated {len(curves)} guide curve(s) from soft mask edges."
-    return curves, line_points, detail, debug
+    return curves, line_points, guide_bindings, detail, debug
 
 
 def build_groom_guides_scene_asset(node_item) -> GroomGuidesBuildOutcome:
@@ -719,7 +786,7 @@ def build_groom_guides_scene_asset(node_item) -> GroomGuidesBuildOutcome:
         if not isinstance(entry, dict):
             continue
         hidden_submeshes.extend([str(name).strip() for name in (entry.get("hidden_submeshes") or []) if str(name).strip()])
-    points, normals, uvs = _load_mesh_arrays(source_file, hidden_submeshes)
+    points, normals, uvs, triangle_sources = _load_mesh_arrays(source_file, hidden_submeshes)
     if points is None:
         return GroomGuidesBuildOutcome(None, source_assets, "error", "Could not read the source mesh.", debug)
     try:
@@ -742,11 +809,53 @@ def build_groom_guides_scene_asset(node_item) -> GroomGuidesBuildOutcome:
         seed = int(float(_param_value(model, "seed", "7")))
     except Exception:
         seed = 7
-    curves, line_points, detail, build_debug = _build_guides(points, normals, uvs, mask_img, guide_count, points_per_curve, threshold, length_scale, seed)
+    curves, line_points, guide_bindings, detail, build_debug = _build_guides(
+        points,
+        normals,
+        uvs,
+        mask_img,
+        guide_count,
+        points_per_curve,
+        threshold,
+        length_scale,
+        seed,
+        triangle_sources=triangle_sources,
+    )
     if isinstance(build_debug, dict):
         debug.update(build_debug)
     if not curves or not line_points:
         return GroomGuidesBuildOutcome(None, source_assets, "error", detail, debug)
+    guide_bindings = [dict(entry) for entry in list(guide_bindings or []) if isinstance(entry, dict)]
+    source_rig_context = None
+    for entry in source_assets:
+        if isinstance(entry, dict) and isinstance(entry.get("fbx_rig_context"), dict):
+            source_rig_context = entry.get("fbx_rig_context")
+            break
+    if isinstance(source_rig_context, dict) and guide_bindings:
+        root_positions = [list(entry.get("bind_position") or (0.0, 0.0, 0.0)) for entry in guide_bindings]
+        try:
+            skin_bindings = transfer_groom_root_skin_weights(
+                root_positions,
+                source_rig_context,
+                hidden_submeshes=hidden_submeshes,
+                preferred_bindings=guide_bindings,
+            )
+        except Exception:
+            skin_bindings = []
+        for idx, binding in enumerate(guide_bindings):
+            skin = skin_bindings[idx] if idx < len(skin_bindings) and isinstance(skin_bindings[idx], dict) else {}
+            binding["skin_mesh_name"] = str(skin.get("mesh_name") or "")
+            binding["skin_triangle_index"] = int(skin.get("triangle_index", -1) or -1)
+            binding["skin_triangle_vertices"] = list(skin.get("triangle_vertices") or [])
+            binding["skin_barycentric"] = list(skin.get("barycentric") or [])
+            binding["skin_influences"] = list(skin.get("influences") or [])
+            try:
+                binding["skin_distance"] = float(skin.get("distance", 0.0) or 0.0)
+            except Exception:
+                binding["skin_distance"] = 0.0
+    skin_bound_roots = sum(1 for entry in guide_bindings if list(entry.get("skin_influences") or []))
+    debug["skin_bound_roots"] = int(skin_bound_roots)
+    debug["skin_missing_roots"] = int(max(0, len(guide_bindings) - skin_bound_roots))
     root_indices = [int(idx * points_per_curve) for idx in range(len(curves))]
     point_groups = {"root": list(root_indices)}
     source_owner = ""
@@ -773,6 +882,7 @@ def build_groom_guides_scene_asset(node_item) -> GroomGuidesBuildOutcome:
         "hidden_submeshes": list(hidden_submeshes),
         "length": float(length_scale),
         "root_indices": list(root_indices),
+        "guide_bindings": list(guide_bindings),
         "point_groups": dict(point_groups),
         "debug": dict(debug),
         "curves": curves,
@@ -796,11 +906,14 @@ def build_groom_guides_scene_asset(node_item) -> GroomGuidesBuildOutcome:
         "length": float(length_scale),
         "hidden_submeshes": list(hidden_submeshes),
         "root_indices": list(root_indices),
+        "guide_bindings": list(guide_bindings),
         "point_groups": dict(point_groups),
         "debug": dict(debug),
         "curves": curves,
         "line_points": line_points,
     }
+    if isinstance(source_rig_context, dict):
+        asset["source_fbx_rig_context"] = source_rig_context
     debug["guides_path"] = str(output_path)
     return GroomGuidesBuildOutcome(asset, source_assets, "ok", detail, debug)
 

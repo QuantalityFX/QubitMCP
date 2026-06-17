@@ -3762,7 +3762,17 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             is_light = (kind == "light") or (ext_hint == ".light")
             is_fx_trail = kind == "fx_trail"
             is_anim_retarget_preview = kind == "anim_retarget_preview"
-            is_groom_guides = kind in {"groom_guides", "groom guides", "hair_guides", "hair guides"}
+            is_groom_guides = kind in {
+                "groom_guides",
+                "groom guides",
+                "hair_guides",
+                "hair guides",
+                "groom_deform",
+                "groom deform",
+                "groomdeform",
+                "hair_deform",
+                "hair deform",
+            }
             is_curve = kind in {"curve", "curve_primitive", "primitive_curve"}
             target_owner = str(entry.get("target_owner") or "").strip()
             _scene_log(
@@ -3820,6 +3830,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 "visible": visible,
                 "xform": entry.get("xform"),
             }
+            if "source_kind" in entry:
+                clean_entry["source_kind"] = str(entry.get("source_kind") or "").strip()
             if isinstance(entry.get("render_proxy"), dict):
                 clean_entry["render_proxy"] = dict(entry.get("render_proxy") or {})
             if "xform_offset" in entry:
@@ -3909,6 +3921,15 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 clean_entry["guides_path"] = str(entry.get("guides_path") or "").strip()
                 clean_entry["source_path"] = str(entry.get("source_path") or "").strip()
                 clean_entry["source_owner"] = str(entry.get("source_owner") or "").strip()
+                for key in ("rig_owner", "deformer_owner", "sample_owner"):
+                    if key in entry:
+                        clean_entry[key] = str(entry.get(key) or "").strip()
+                if "sample_owner_candidates" in entry:
+                    clean_entry["sample_owner_candidates"] = [
+                        str(value).strip()
+                        for value in (entry.get("sample_owner_candidates") or [])
+                        if str(value).strip()
+                    ]
                 try:
                     clean_entry["guide_count"] = int(entry.get("guide_count", 0) or 0)
                 except Exception:
@@ -3938,6 +3959,16 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                 clean_entry["curves"] = list(entry.get("curves") or [])
                 clean_entry["line_points"] = list(entry.get("line_points") or [])
                 clean_entry["debug"] = dict(entry.get("debug") or {}) if isinstance(entry.get("debug"), dict) else {}
+                clean_entry["guide_bindings"] = list(entry.get("guide_bindings") or [])
+                clean_entry["bind_curves"] = list(entry.get("bind_curves") or [])
+                if isinstance(entry.get("deform_rig_context"), dict):
+                    clean_entry["deform_rig_context"] = dict(entry.get("deform_rig_context") or {})
+                if "groom_deform_mode" in entry:
+                    clean_entry["groom_deform_mode"] = str(entry.get("groom_deform_mode") or "").strip()
+                if isinstance(entry.get("groom_deform"), dict):
+                    clean_entry["groom_deform"] = dict(entry.get("groom_deform") or {})
+                elif isinstance(entry.get("groom_deform_info"), dict):
+                    clean_entry["groom_deform_info"] = dict(entry.get("groom_deform_info") or {})
             if is_curve:
                 clean_entry["curve_type"] = str(entry.get("curve_type") or "line").strip().lower() or "line"
                 clean_entry["points"] = list(entry.get("points") or [])
@@ -3990,6 +4021,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                         bool(frame),
                         int(current_timeline_frame),
                         str(entry.get("kind") or ""),
+                        str(entry.get("source_kind") or ""),
                         str(entry.get("ext") or ""),
                         str(entry.get("path") or ""),
                         str(entry.get("node") or ""),
@@ -3999,6 +4031,15 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
                         int(entry.get("guide_count", 0) or 0),
                         int(entry.get("points_per_curve", 0) or 0),
                         round(float(entry.get("length", 0.0) or 0.0), 6),
+                        bool(isinstance(entry.get("groom_deform"), dict)),
+                        str(entry.get("groom_deform_mode") or ""),
+                        str(entry.get("rig_owner") or ""),
+                        str(entry.get("deformer_owner") or ""),
+                        str(entry.get("sample_owner") or ""),
+                        repr(list(entry.get("sample_owner_candidates") or [])),
+                        len(list(entry.get("guide_bindings") or [])),
+                        len(list(entry.get("bind_curves") or [])),
+                        bool(isinstance(entry.get("deform_rig_context"), dict)),
                         len(list(entry.get("root_indices") or [])),
                         len(list(entry.get("curves") or [])),
                         len(list(entry.get("line_points") or [])),
