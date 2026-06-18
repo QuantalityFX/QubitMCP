@@ -25,6 +25,9 @@ def _graph_gl_view_super(self):
 _MOUSE_METHOD_NAMES = [
     '_ray_from_mouse',
     'mousePressEvent',
+    'mouseDoubleClickEvent',
+    '_handle_mouse_double_click_moderngl',
+    '_mesh_connected_selection_elements',
     '_handle_mouse_press_moderngl',
     '_handle_mouse_retarget_viewport',
     '_mesh_box_select_event_pos',
@@ -325,6 +328,215 @@ def mousePressEvent(self, e):
         return
     _graph_gl_view_super(self).mousePressEvent(e)
 
+def mouseDoubleClickEvent(self, e):
+    if self._handle_mouse_double_click_moderngl(e):
+        return
+    _graph_gl_view_super(self).mouseDoubleClickEvent(e)
+
+def _handle_mouse_double_click_moderngl(self, e):
+    if not bool(getattr(self, "_use_moderngl", False)):
+        return False
+    try:
+        if e.button() != QtCore.Qt.LeftButton:
+            return False
+    except Exception:
+        return False
+    try:
+        if bool(e.modifiers() & QtCore.Qt.AltModifier):
+            return False
+    except Exception:
+        pass
+
+    mode = str(getattr(self, "_mesh_select_mode", "") or "").strip().lower()
+    if mode not in {"object", "point", "edge", "face"}:
+        return False
+
+    renderer = getattr(self, "_mgl_renderer", None) or self
+    pick_elem = getattr(renderer, "pick_mesh_element_at", None)
+    if not callable(pick_elem):
+        return False
+
+    elem = None
+    try:
+        px, py, vw, vh = self._handle_mouse_release_moderngl_click_pick_viewport(e=e)
+        with profile_scope("input.double_click_pick.mesh_element"):
+            elem = pick_elem(px, py, vw, vh, mode=mode)
+    except Exception:
+        elem = None
+    if not isinstance(elem, dict):
+        return False
+
+    try:
+        selection_op = _mesh_selection_operation_from_mods(e.modifiers())
+    except Exception:
+        selection_op = "replace"
+    elems = self._mesh_connected_selection_elements(elem, mode=mode, renderer=renderer)
+    if not elems:
+        elems = [elem]
+    try:
+        self._set_mesh_element_selection_many(elems, selection_op=selection_op)
+        self._set_mesh_element_hover(None)
+    except Exception:
+        return False
+    try:
+        self._mgl_pick_press_pos = None
+    except Exception:
+        pass
+    try:
+        self.update()
+    except Exception:
+        pass
+    e.accept()
+    return True
+
+def _mesh_connected_selection_elements(self, elem, *, mode: str = "", renderer=None):
+    if not isinstance(elem, dict):
+        return []
+    owner = str(elem.get("owner") or "").strip()
+    if not owner:
+        return []
+    mode = str(mode or elem.get("mode") or "").strip().lower()
+    if mode == "object":
+        return [{"mode": "object", "owner": owner}]
+    if mode not in {"point", "edge", "face"}:
+        return [dict(elem)]
+
+    renderer = renderer or getattr(self, "_mgl_renderer", None) or self
+    topo_get = getattr(renderer, "_mgl_mesh_topology_for_owner", None)
+    topo = topo_get(owner) if callable(topo_get) else None
+    if not isinstance(topo, dict):
+        return [dict(elem)]
+    try:
+        points = np.asarray(topo.get("points"), dtype=np.float32).reshape(-1, 3)
+        point_count = int(points.shape[0])
+    except Exception:
+        point_count = 0
+    if point_count <= 0:
+        return [dict(elem)]
+
+    try:
+        edges = np.asarray(topo.get("edges"), dtype=np.int64).reshape(-1, 2)
+        valid = np.all((edges >= 0) & (edges < point_count), axis=1)
+        edges = edges[valid]
+    except Exception:
+        edges = np.zeros((0, 2), dtype=np.int64)
+    try:
+        triangles = np.asarray(topo.get("triangles"), dtype=np.int64).reshape(-1, 3)
+        valid = np.all((triangles >= 0) & (triangles < point_count), axis=1)
+        triangles = triangles[valid]
+    except Exception:
+        triangles = np.zeros((0, 3), dtype=np.int64)
+    if edges.size == 0 and triangles.size:
+        edge_pairs = set()
+        for tri in triangles:
+            try:
+                a, b, c = int(tri[0]), int(tri[1]), int(tri[2])
+            except Exception:
+                continue
+            for e0, e1 in ((a, b), (b, c), (c, a)):
+                if e0 != e1:
+                    edge_pairs.add((min(e0, e1), max(e0, e1)))
+        try:
+            edges = np.asarray(sorted(edge_pairs), dtype=np.int64).reshape(-1, 2)
+        except Exception:
+            edges = np.zeros((0, 2), dtype=np.int64)
+
+    start = set()
+    if mode == "point":
+        try:
+            idx = int(elem.get("vertex_index"))
+            if 0 <= idx < point_count:
+                start.add(idx)
+        except Exception:
+            pass
+    elif mode == "edge":
+        edge = elem.get("edge")
+        if isinstance(edge, (list, tuple)) and len(edge) >= 2:
+            for value in edge[:2]:
+                try:
+                    idx = int(value)
+                    if 0 <= idx < point_count:
+                        start.add(idx)
+                except Exception:
+                    continue
+    elif mode == "face":
+        indices = elem.get("indices")
+        if isinstance(indices, (list, tuple)):
+            for value in indices[:3]:
+                try:
+                    idx = int(value)
+                    if 0 <= idx < point_count:
+                        start.add(idx)
+                except Exception:
+                    continue
+        if not start:
+            try:
+                face_index = int(elem.get("face_index"))
+                tri = triangles[face_index]
+                start.update(int(v) for v in tri[:3] if 0 <= int(v) < point_count)
+            except Exception:
+                pass
+    if not start:
+        return [dict(elem)]
+
+    adjacency = {}
+    for edge in edges:
+        try:
+            a = int(edge[0])
+            b = int(edge[1])
+        except Exception:
+            continue
+        if a == b or a < 0 or b < 0 or a >= point_count or b >= point_count:
+            continue
+        adjacency.setdefault(a, []).append(b)
+        adjacency.setdefault(b, []).append(a)
+
+    component = set()
+    stack = list(start)
+    while stack:
+        idx = stack.pop()
+        if idx in component:
+            continue
+        component.add(idx)
+        for neighbor in adjacency.get(idx, ()):
+            if neighbor not in component:
+                stack.append(neighbor)
+    if not component:
+        component = set(start)
+
+    if mode == "point":
+        return [
+            {"mode": "point", "owner": owner, "vertex_index": int(idx)}
+            for idx in sorted(component)
+        ]
+    if mode == "edge":
+        elems = []
+        for edge in edges:
+            try:
+                a = int(edge[0])
+                b = int(edge[1])
+            except Exception:
+                continue
+            if a in component and b in component:
+                elems.append({"mode": "edge", "owner": owner, "edge": (min(a, b), max(a, b))})
+        return elems or [dict(elem)]
+    if mode == "face":
+        elems = []
+        for face_index, tri in enumerate(triangles):
+            try:
+                tri_indices = (int(tri[0]), int(tri[1]), int(tri[2]))
+            except Exception:
+                continue
+            if all(idx in component for idx in tri_indices):
+                elems.append({
+                    "mode": "face",
+                    "owner": owner,
+                    "face_index": int(face_index),
+                    "indices": tri_indices,
+                })
+        return elems or [dict(elem)]
+    return [dict(elem)]
+
 def _handle_mouse_press_moderngl(self, e):
     # ModernGL path: gizmo interaction, scene picking, and Alt camera controls.
     if self._use_moderngl:
@@ -347,6 +559,13 @@ def _handle_mouse_press_moderngl(self, e):
         mask_paint_press = getattr(self, "_handle_mask_paint_press", None)
         if callable(mask_paint_press) and mask_paint_press(e):
             return True
+        try:
+            box_select_active = bool(self._mesh_box_select_active_mode())
+        except Exception:
+            box_select_active = False
+        if box_select_active and not bool(alt_pressed) and e.button() == QtCore.Qt.LeftButton:
+            if self._handle_mouse_press_moderngl_left_gizmo(e):
+                return True
         if self._handle_mouse_press_moderngl_mesh_box_select_start(e, alt_pressed):
             return True
         prefer_gizmo = False
@@ -4574,10 +4793,15 @@ def _handle_mouse_release_moderngl_mesh_box_select(self, e):
         pass
     if dx <= 8.0 and dy <= 8.0:
         return False
+    try:
+        selection_op = _mesh_selection_operation_from_mods(e.modifiers())
+    except Exception:
+        selection_op = "replace"
     self._handle_mouse_release_moderngl_mesh_box_select_apply(
         start=start,
         current=current,
         mode=str(drag.get("mode") or self._mesh_box_select_active_mode() or "").strip().lower(),
+        selection_op=selection_op,
     )
     try:
         self._mgl_pick_press_pos = None
@@ -4595,7 +4819,7 @@ def _handle_mouse_release_moderngl_mesh_box_select(self, e):
     e.accept()
     return True
 
-def _handle_mouse_release_moderngl_mesh_box_select_apply(self, *, start, current, mode: str):
+def _handle_mouse_release_moderngl_mesh_box_select_apply(self, *, start, current, mode: str, selection_op: str = "replace"):
     if mode not in {"point", "edge", "face"}:
         return
     renderer = getattr(self, "_mgl_renderer", None) or self
@@ -4627,13 +4851,17 @@ def _handle_mouse_release_moderngl_mesh_box_select_apply(self, *, start, current
     if not isinstance(elems, list):
         elems = []
     try:
-        self._set_mesh_element_selection_many(elems)
+        self._set_mesh_element_selection_many(elems, selection_op=selection_op)
         self._set_mesh_element_hover(None)
     except Exception:
         pass
     owners = []
     seen = set()
-    for elem in elems:
+    try:
+        selected_elems = self._mesh_selected_elements()
+    except Exception:
+        selected_elems = elems
+    for elem in selected_elems:
         if not isinstance(elem, dict):
             continue
         owner = str(elem.get("owner") or "").strip()
@@ -4810,6 +5038,10 @@ def _handle_mouse_release_moderngl_click_pick_impl(self, e):
     try:
         if not self._handle_mouse_release_moderngl_click_pick_is_click(e):
             return
+        try:
+            selection_op = _mesh_selection_operation_from_mods(e.modifiers())
+        except Exception:
+            selection_op = "replace"
         renderer = getattr(self, "_mgl_renderer", None) or self
         try:
             self._mgl_mesh_element_click_handled = False
@@ -4818,13 +5050,14 @@ def _handle_mouse_release_moderngl_click_pick_impl(self, e):
         owner = self._handle_mouse_release_moderngl_click_pick_owner(
             e=e,
             renderer=renderer,
+            selection_op=selection_op,
         )
         try:
             if bool(getattr(self, "_mgl_mesh_element_click_handled", False)):
                 return
         except Exception:
             pass
-        self._handle_mouse_release_moderngl_click_pick_apply(owner=owner, renderer=renderer)
+        self._handle_mouse_release_moderngl_click_pick_apply(owner=owner, renderer=renderer, selection_op=selection_op)
     except Exception:
         pass
 
@@ -4836,7 +5069,7 @@ def _handle_mouse_release_moderngl_click_pick_is_click(self, e):
     dy = abs(int(e.y()) - int(press.y()))
     return dx <= 8 and dy <= 8
 
-def _handle_mouse_release_moderngl_click_pick_owner(self, *, e, renderer):
+def _handle_mouse_release_moderngl_click_pick_owner(self, *, e, renderer, selection_op: str = "replace"):
     pick = getattr(renderer, "pick_owner_at", None)
     if not callable(pick):
         return None
@@ -4853,14 +5086,18 @@ def _handle_mouse_release_moderngl_click_pick_owner(self, *, e, renderer):
             except Exception:
                 elem = None
         if isinstance(elem, dict):
+            owner = str(elem.get("owner") or "").strip()
+            if mode == "object":
+                try:
+                    self._set_mesh_element_hover(None)
+                except Exception:
+                    pass
+                return owner or None
             try:
-                self._set_mesh_element_selection(elem)
+                self._set_mesh_element_selection(elem, selection_op=selection_op)
                 self._set_mesh_element_hover(None)
             except Exception:
                 pass
-            owner = str(elem.get("owner") or "").strip()
-            if mode == "object":
-                return owner or None
             if owner:
                 try:
                     self._mgl_mesh_element_click_handled = True
@@ -4868,10 +5105,11 @@ def _handle_mouse_release_moderngl_click_pick_owner(self, *, e, renderer):
                     pass
                 self._handle_mouse_release_moderngl_pick_owner(owner, renderer)
                 return None
-        try:
-            self._clear_mesh_element_selection()
-        except Exception:
-            pass
+        if selection_op == "replace":
+            try:
+                self._clear_mesh_element_selection()
+            except Exception:
+                pass
         return None
     pick_hit = getattr(renderer, "pick_hit_at", None)
     if callable(pick_hit):
@@ -4900,15 +5138,16 @@ def _handle_mouse_release_moderngl_click_pick_dpr(self):
             dpr = 1.0
     return dpr
 
-def _handle_mouse_release_moderngl_click_pick_apply(self, *, owner, renderer):
+def _handle_mouse_release_moderngl_click_pick_apply(self, *, owner, renderer, selection_op: str = "replace"):
     if owner:
-        self._handle_mouse_release_moderngl_pick_owner(owner, renderer)
+        self._handle_mouse_release_moderngl_pick_owner(owner, renderer, selection_op=selection_op)
     else:
-        self._handle_mouse_release_moderngl_pick_empty()
+        if selection_op == "replace":
+            self._handle_mouse_release_moderngl_pick_empty()
 
-def _handle_mouse_release_moderngl_pick_owner(self, owner, renderer):
+def _handle_mouse_release_moderngl_pick_owner(self, owner, renderer, selection_op: str = "replace"):
     with profile_scope("input.click_pick.select_owner"):
-        self._handle_mouse_release_moderngl_pick_owner_select(owner=owner, renderer=renderer)
+        self._handle_mouse_release_moderngl_pick_owner_select(owner=owner, renderer=renderer, selection_op=selection_op)
     with profile_scope("input.click_pick.place_gizmo"):
         self._handle_mouse_release_moderngl_pick_owner_place_gizmo(owner=owner, renderer=renderer)
 
@@ -4925,7 +5164,7 @@ def _handle_mouse_release_moderngl_pick_owner(self, owner, renderer):
 
     self.update()
 
-def _handle_mouse_release_moderngl_pick_owner_select(self, *, owner, renderer):
+def _handle_mouse_release_moderngl_pick_owner_select(self, *, owner, renderer, selection_op: str = "replace"):
     w = self.window()
     if hasattr(w, "select_scene_asset"):
         w.select_scene_asset(owner)
@@ -4948,7 +5187,7 @@ def _handle_mouse_release_moderngl_pick_owner_select(self, *, owner, renderer):
         self._xform_gizmo_owner_kind = None
     try:
         if str(getattr(self, "_mesh_select_mode", "") or "").strip().lower() == "object":
-            self._set_mesh_element_selection({"mode": "object", "owner": owner})
+            self._set_mesh_element_selection({"mode": "object", "owner": owner}, selection_op=selection_op)
     except Exception:
         pass
 

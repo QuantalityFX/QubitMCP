@@ -6,40 +6,9 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent))
 
 # --- EchoGraph: stdout/stderr -> per-day temp log (works with pythonw) ---
-import os, time, tempfile, atexit, traceback
+from echograph.services import runtime_logging
 
-def _init_logging():
-    log_dir = os.path.join(tempfile.gettempdir(), "EchoGraph")
-    os.makedirs(log_dir, exist_ok=True)
-    log_path = os.path.join(log_dir, f"echograph_{time.strftime('%Y%m%d')}.log")
-
-    # Line-buffered so writes appear quickly
-    f = open(log_path, mode="a", encoding="utf-8", buffering=1)
-    sys.stdout = f
-    sys.stderr = f
-
-    print(f"[{time.strftime('%H:%M:%S')}] --- EchoGraph started ---")
-
-    # Log any uncaught exceptions too
-    def _excepthook(exc_type, exc, tb):
-        print("\n[EchoGraph] Uncaught exception:")
-        traceback.print_exception(exc_type, exc, tb)
-    sys.excepthook = _excepthook
-
-    @atexit.register
-    def _close_log():
-        try:
-            print(f"[{time.strftime('%H:%M:%S')}] --- EchoGraph exit ---")
-        except Exception:
-            pass
-        try:
-            f.flush(); f.close()
-        except Exception:
-            pass
-
-    return log_path
-
-_LOG_PATH = _init_logging()
+_LOG_PATH = runtime_logging.init_echo_log()
 
 # Qt imports with fallback
 try:

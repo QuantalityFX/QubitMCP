@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,8 +43,20 @@ GROOM_DEFORM_DEBUG_KEYS = (
     "rig_node",
     "rig_kind",
     "diagnosis",
+    "debug_log",
     "renderer_debug_log",
     "renderer_expected_tag",
+    "point_id_label_rule",
+    "point_id_deformed_curve_count",
+    "point_id_deformed_total_points",
+    "point_id_deformed_root_count",
+    "point_id_deformed_root_indices_match",
+    "point_id_deformed_expected_line_points",
+    "point_id_deformed_nonfinite_points",
+    "point_id_deformed_zero_length_segments",
+    "point_id_deformed_first_root_mismatches",
+    "point_id_deformed_curve_samples",
+    "point_id_bind_root_indices_match",
     "asset_kind",
     "asset_source_kind",
     "has_groom_deform_payload",
@@ -370,6 +383,7 @@ def build_groom_deform_scene_asset(node_item) -> GroomDeformBuildOutcome:
     except Exception:
         sample_seconds = 0.0
     mode = (_param_value(model, "mode", "skinned_cv").strip() or "skinned_cv").lower()
+    debug_log_enabled = _param_bool(model, "debug_log", False)
     try:
         deformed_curves, line_points, root_points, deform_debug = deform_groom_curves(
             curves,
@@ -429,6 +443,7 @@ def build_groom_deform_scene_asset(node_item) -> GroomDeformBuildOutcome:
         "guide_count": int(len(deformed_curves)),
         "points_per_curve": int(guides_asset.get("points_per_curve", 0) or 0),
         "hide_deformer_geo": bool(hide_deformer),
+        "debug_log": bool(debug_log_enabled),
         "source_owner": source_owner,
         "rig_owner": rig_owner,
         "deformer_owner": deformer_owner,
@@ -441,6 +456,7 @@ def build_groom_deform_scene_asset(node_item) -> GroomDeformBuildOutcome:
         "guide_bindings": list(guide_bindings),
         "bind_curves": curves,
         "hide_deformer_geo": bool(hide_deformer),
+        "debug_log": bool(debug_log_enabled),
         "source_owner": source_owner,
         "rig_owner": rig_owner,
         "deformer_owner": deformer_owner,
@@ -452,6 +468,7 @@ def build_groom_deform_scene_asset(node_item) -> GroomDeformBuildOutcome:
         "source_kind": "groom_deform",
         "node": node_name,
         "visible": True,
+        "debug_log": bool(debug_log_enabled),
         "guides_path": guides_path,
         "source_path": source_path,
         "source_owner": source_owner,
@@ -524,6 +541,146 @@ def _line_stats(line_points) -> dict[str, Any]:
     }
 
 
+def _point3(raw) -> Optional[list[float]]:
+    if not isinstance(raw, (list, tuple)) or len(raw) < 3:
+        return None
+    try:
+        return [float(raw[0]), float(raw[1]), float(raw[2])]
+    except Exception:
+        return None
+
+
+def _preview_sequence(values, limit: int = 32) -> list[Any]:
+    try:
+        seq = list(values or [])
+    except Exception:
+        seq = []
+    limit = max(0, int(limit))
+    if limit <= 0:
+        return []
+    return seq[:limit]
+
+
+def _curve_point_id_debug(
+    curves,
+    root_indices=None,
+    *,
+    label: str,
+    max_curves: int = 24,
+    max_points_per_curve: int = 12,
+) -> dict[str, Any]:
+    curve_rows = list(curves or [])
+    clean_roots: list[int] = []
+    for raw in list(root_indices or []):
+        try:
+            clean_roots.append(int(raw))
+        except Exception:
+            continue
+
+    point_counts: list[int] = []
+    expected_roots: list[int] = []
+    samples: list[dict[str, Any]] = []
+    first_root_mismatches: list[dict[str, int]] = []
+    total_points = 0
+    invalid_curve_rows = 0
+    invalid_points = 0
+    nonfinite_points = 0
+    zero_length_segments = 0
+    duplicate_consecutive_points = 0
+
+    for curve_idx, curve in enumerate(curve_rows):
+        if not isinstance(curve, (list, tuple)):
+            invalid_curve_rows += 1
+            point_counts.append(0)
+            continue
+        points = list(curve)
+        count = int(len(points))
+        start = int(total_points)
+        end = int(start + count - 1) if count > 0 else int(start - 1)
+        point_counts.append(count)
+        if count > 0:
+            expected_roots.append(start)
+
+        prev_point: Optional[list[float]] = None
+        for point_idx, raw_point in enumerate(points):
+            point = _point3(raw_point)
+            if point is None:
+                invalid_points += 1
+                prev_point = None
+                continue
+            if not all(math.isfinite(float(value)) for value in point):
+                nonfinite_points += 1
+            if prev_point is not None:
+                dist_sq = sum((float(point[axis]) - float(prev_point[axis])) ** 2 for axis in range(3))
+                if dist_sq <= 1.0e-16:
+                    zero_length_segments += 1
+                    duplicate_consecutive_points += 1
+            prev_point = point
+
+        if len(samples) < max(0, int(max_curves)):
+            local_count = min(count, max(0, int(max_points_per_curve)))
+            local_labels = list(range(local_count))
+            global_points = list(range(start, start + local_count))
+            root = _point3(points[0]) if count > 0 else None
+            tip = _point3(points[-1]) if count > 0 else None
+            samples.append(
+                {
+                    "curve_index": int(curve_idx),
+                    "point_count": int(count),
+                    "global_start": int(start),
+                    "global_end": int(end),
+                    "expected_root_index": int(start) if count > 0 else -1,
+                    "global_point_preview": global_points,
+                    "local_label_preview": local_labels,
+                    "root": root,
+                    "tip": tip,
+                }
+            )
+        total_points += count
+
+    compare_count = max(len(expected_roots), len(clean_roots))
+    for idx in range(compare_count):
+        expected = expected_roots[idx] if idx < len(expected_roots) else -1
+        actual = clean_roots[idx] if idx < len(clean_roots) else -1
+        if int(expected) != int(actual):
+            first_root_mismatches.append(
+                {
+                    "index": int(idx),
+                    "expected": int(expected),
+                    "actual": int(actual),
+                }
+            )
+            if len(first_root_mismatches) >= 16:
+                break
+
+    nonempty_counts = [count for count in point_counts if count > 0]
+    expected_line_points = sum(max(0, count - 1) * 2 for count in point_counts)
+    roots_match = len(first_root_mismatches) == 0 and len(expected_roots) == len(clean_roots)
+    return {
+        "label": str(label or ""),
+        "label_rule": "curve point label = global point index - curve root global index",
+        "curve_count": int(len(curve_rows)),
+        "nonempty_curve_count": int(len(nonempty_counts)),
+        "total_points": int(total_points),
+        "expected_line_point_count": int(expected_line_points),
+        "root_indices_count": int(len(clean_roots)),
+        "expected_root_indices_count": int(len(expected_roots)),
+        "root_indices_match_expected": bool(roots_match),
+        "root_indices_preview": _preview_sequence(clean_roots, 64),
+        "expected_root_indices_preview": _preview_sequence(expected_roots, 64),
+        "first_root_mismatches": first_root_mismatches,
+        "min_points_per_curve": int(min(nonempty_counts)) if nonempty_counts else 0,
+        "max_points_per_curve": int(max(nonempty_counts)) if nonempty_counts else 0,
+        "unique_points_per_curve": _preview_sequence(sorted(set(nonempty_counts)), 32),
+        "invalid_curve_rows": int(invalid_curve_rows),
+        "invalid_points": int(invalid_points),
+        "nonfinite_points": int(nonfinite_points),
+        "zero_length_segments": int(zero_length_segments),
+        "duplicate_consecutive_points": int(duplicate_consecutive_points),
+        "curve_samples": samples,
+    }
+
+
 def _groom_deform_debug_dict(node_item, outcome: GroomDeformBuildOutcome) -> dict[str, Any]:
     asset = outcome.asset if isinstance(outcome.asset, dict) else {}
     debug = dict(getattr(outcome, "debug", None) or {})
@@ -539,7 +696,10 @@ def _groom_deform_debug_dict(node_item, outcome: GroomDeformBuildOutcome) -> dic
     curves = list(asset.get("curves") or [])
     bind_curves = list(asset.get("bind_curves") or [])
     roots = list(asset.get("root_points") or [])
+    root_indices = list(asset.get("root_indices") or [])
     line_stats = _line_stats(asset.get("line_points") or [])
+    point_id_deformed = _curve_point_id_debug(curves, root_indices, label="deformed")
+    point_id_bind = _curve_point_id_debug(bind_curves, root_indices, label="bind")
     skin_bound = sum(1 for entry in guide_bindings if isinstance(entry, dict) and list(entry.get("skin_influences") or []))
     triangle_bound = sum(
         1
@@ -553,6 +713,19 @@ def _groom_deform_debug_dict(node_item, outcome: GroomDeformBuildOutcome) -> dic
         "detail": str(getattr(outcome, "detail", "") or ""),
         "renderer_debug_log": str(_logs_dir() / "groom_guides_renderer_debug.log"),
         "renderer_expected_tag": "scene-groom-guides",
+        "point_id_label_rule": str(point_id_deformed.get("label_rule") or ""),
+        "point_id_deformed_curve_count": int(point_id_deformed.get("curve_count", 0) or 0),
+        "point_id_deformed_total_points": int(point_id_deformed.get("total_points", 0) or 0),
+        "point_id_deformed_root_count": int(point_id_deformed.get("root_indices_count", 0) or 0),
+        "point_id_deformed_root_indices_match": bool(point_id_deformed.get("root_indices_match_expected", False)),
+        "point_id_deformed_expected_line_points": int(point_id_deformed.get("expected_line_point_count", 0) or 0),
+        "point_id_deformed_nonfinite_points": int(point_id_deformed.get("nonfinite_points", 0) or 0),
+        "point_id_deformed_zero_length_segments": int(point_id_deformed.get("zero_length_segments", 0) or 0),
+        "point_id_deformed_first_root_mismatches": list(point_id_deformed.get("first_root_mismatches") or []),
+        "point_id_deformed_curve_samples": list(point_id_deformed.get("curve_samples") or []),
+        "point_id_bind_root_indices_match": bool(point_id_bind.get("root_indices_match_expected", False)),
+        "point_id_deformed_curve_debug": point_id_deformed,
+        "point_id_bind_curve_debug": point_id_bind,
         "asset_kind": str(asset.get("kind") or ""),
         "asset_source_kind": str(asset.get("source_kind") or ""),
         "has_groom_deform_payload": bool(isinstance(asset.get("groom_deform"), dict)),
@@ -573,6 +746,7 @@ def _groom_deform_debug_dict(node_item, outcome: GroomDeformBuildOutcome) -> dic
         "source_assets_count": int(len(getattr(outcome, "source_assets", None) or [])),
         "deformer_assets_count": int(len(getattr(outcome, "source_assets", None) or [])),
         "hide_deformer_geo": bool((cfg or {}).get("hide_deformer_geo", True)),
+        "debug_log": bool(asset.get("debug_log", False) or (cfg or {}).get("debug_log", False)),
         "skin_influence_bound_guides": int(skin_bound),
         "skin_influence_missing_guides": int(max(0, len(guide_bindings) - skin_bound)),
         "triangle_bound_guides": int(triangle_bound),

@@ -26,6 +26,7 @@ from echograph.ui.timeline_controller import TimelineController
 from echograph.ui.timeline_menu import build_timeline_panels_menu
 from echograph.ui.profiler_controller import ProfilerController
 from echograph.services.profiler import profiled, profile_scope
+from echograph.services import runtime_logging
 
 
 from echograph.qt_compat import (
@@ -4800,6 +4801,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             "QToolButton:hover{background:#2b313a;}"
             "QToolButton::menu-indicator{image:none;width:0px;height:0px;}"
             "QToolButton[active=\"true\"]{background:#1f7a45;}"
+            "QToolButton#DebugButton[debugActive=\"true\"]{background:#7f1d1d;color:#fecaca;}"
+            "QToolButton#DebugButton[debugActive=\"true\"]:hover{background:#991b1b;}"
         )
         bar.setFixedHeight(36)
         h = QtWidgets.QHBoxLayout(bar); h.setContentsMargins(8,4,8,4); h.setSpacing(1)
@@ -5227,23 +5230,8 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
         btn_frame.clicked.connect(self._frame_all_nodes)
         h.addWidget(btn_frame, 0)
 
-        btn_logs = QtWidgets.QPushButton(bar)
-        btn_logs.setToolTip("Open EchoGraph log folder")
-        btn_logs.setFixedHeight(22)
-        try:
-            logs_icon = QtGui.QIcon(str(script_dir() / "icons" / "debug_002_Icon_s.png"))
-            if not logs_icon.isNull():
-                btn_logs.setIcon(logs_icon)
-                btn_logs.setIconSize(QtCore.QSize(16, 16))
-                btn_logs.setText("")
-            else:
-                btn_logs.setText("Logs")
-        except Exception:
-            btn_logs.setText("Logs")
-        btn_logs.clicked.connect(lambda: QtGui.QDesktopServices.openUrl(
-            QtCore.QUrl.fromLocalFile(__import__("os").path.join(__import__("tempfile").gettempdir(), "EchoGraph"))
-        ))
-        h.addWidget(btn_logs, 0)
+        debug_btn = self._build_topbar_debug_button(bar)
+        h.addWidget(debug_btn, 0)
 
         self._btn_3d = QtWidgets.QPushButton("3D View", bar)
         self._btn_3d.setToolTip("Switch to 3D viewport")
@@ -5253,6 +5241,173 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
 
         h.addStretch(1)   # ← stretch AFTER the settings block to keep it left
         return bar
+
+    def _debug_icon(self, active: bool = False) -> QtGui.QIcon:
+        cache_name = "_debug_icon_active" if active else "_debug_icon_normal"
+        cached = getattr(self, cache_name, None)
+        if isinstance(cached, QtGui.QIcon) and not cached.isNull():
+            return cached
+        try:
+            path = script_dir() / "icons" / "debug_002_Icon_s.png"
+            pix = QtGui.QPixmap(str(path))
+            if pix.isNull():
+                return QtGui.QIcon()
+            if active:
+                image = pix.toImage().convertToFormat(QtGui.QImage.Format_ARGB32)
+                for y in range(image.height()):
+                    for x in range(image.width()):
+                        color = image.pixelColor(x, y)
+                        if color.alpha() <= 0:
+                            continue
+                        color.setRed(239)
+                        color.setGreen(68)
+                        color.setBlue(68)
+                        image.setPixelColor(x, y, color)
+                icon = QtGui.QIcon(QtGui.QPixmap.fromImage(image))
+            else:
+                icon = QtGui.QIcon(pix)
+            setattr(self, cache_name, icon)
+            return icon
+        except Exception:
+            return QtGui.QIcon()
+
+    def _build_topbar_debug_button(self, parent) -> QtWidgets.QToolButton:
+        btn = QtWidgets.QToolButton(parent)
+        btn.setObjectName("DebugButton")
+        btn.setCursor(QtCore.Qt.PointingHandCursor)
+        btn.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
+        btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        btn.setFixedHeight(22)
+        btn.setIconSize(QtCore.QSize(16, 16))
+        btn.setStyleSheet(
+            "QToolButton#DebugButton{background:transparent;border:0px;padding:1px 6px;color:#e5e7eb;border-radius:2px;text-align:center;}"
+            "QToolButton#DebugButton:hover{background:#2b313a;}"
+            "QToolButton#DebugButton::menu-indicator{image:none;width:0px;height:0px;}"
+            "QToolButton#DebugButton[active=\"true\"]{background:#1f7a45;}"
+            "QToolButton#DebugButton[debugActive=\"true\"]{background:#7f1d1d;color:#fecaca;}"
+            "QToolButton#DebugButton[debugActive=\"true\"]:hover{background:#991b1b;}"
+        )
+
+        menu = QtWidgets.QMenu(btn)
+        menu.setObjectName("DebugMenu")
+        menu.setStyleSheet(
+            "#DebugMenu{background:#1b2026;color:#e5e7eb;border:1px solid #333;padding:4px;}"
+            "#DebugMenu::item{background:transparent;color:#e5e7eb;padding:5px 22px 5px 24px;}"
+            "#DebugMenu::item:selected{background:#14532d;color:#dcfce7;}"
+            "#DebugMenu::item:checked{color:#bbf7d0;}"
+            "#DebugMenu::indicator{width:13px;height:13px;}"
+        )
+
+        open_action = QAction("Debug Path Location", menu)
+        open_action.triggered.connect(lambda _checked=False: self._run_menu_action(self._open_debug_path_location, "_debug_btn"))
+        menu.addAction(open_action)
+
+        echo_action = QAction("EchoGraph Log", menu)
+        echo_action.setCheckable(True)
+        echo_action.triggered.connect(self._on_echo_log_action_triggered)
+        menu.addAction(echo_action)
+
+        viewport_action = QAction("Enable Viewport Debug", menu)
+        viewport_action.setCheckable(True)
+        viewport_action.triggered.connect(self._on_viewport_debug_action_triggered)
+        menu.addAction(viewport_action)
+
+        menu.aboutToShow.connect(self._sync_debug_menu_state)
+        menu.aboutToShow.connect(lambda: self._set_debug_menu_active(True))
+        menu.aboutToHide.connect(lambda: self._set_debug_menu_active(False))
+        btn.setMenu(menu)
+
+        self._debug_btn = btn
+        self._debug_open_path_action = open_action
+        self._echo_log_action = echo_action
+        self._viewport_debug_action = viewport_action
+        self._sync_debug_menu_state()
+        return btn
+
+    def _sync_debug_menu_state(self) -> None:
+        echo_enabled = bool(runtime_logging.echo_log_enabled())
+        viewport_enabled = bool(runtime_logging.viewport_render_debug_enabled())
+        echo_action = getattr(self, "_echo_log_action", None)
+        if echo_action is not None:
+            try:
+                echo_action.blockSignals(True)
+                echo_action.setChecked(echo_enabled)
+                echo_action.setText("EchoGraph Log: On" if echo_enabled else "EchoGraph Log: Off")
+            finally:
+                try:
+                    echo_action.blockSignals(False)
+                except Exception:
+                    pass
+        viewport_action = getattr(self, "_viewport_debug_action", None)
+        if viewport_action is not None:
+            try:
+                viewport_action.blockSignals(True)
+                viewport_action.setChecked(viewport_enabled)
+                viewport_action.setText("Disable Viewport Debug" if viewport_enabled else "Enable Viewport Debug")
+            finally:
+                try:
+                    viewport_action.blockSignals(False)
+                except Exception:
+                    pass
+        self._update_debug_button_state()
+
+    def _update_debug_button_state(self) -> None:
+        btn = getattr(self, "_debug_btn", None)
+        if btn is None:
+            return
+        viewport_enabled = bool(runtime_logging.viewport_render_debug_enabled())
+        try:
+            icon = self._debug_icon(active=viewport_enabled)
+            btn.setIcon(icon)
+            if icon.isNull():
+                btn.setText("Debug")
+                btn.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
+            else:
+                btn.setText("")
+                btn.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
+            btn.setToolTip("Viewport debug logging is on" if viewport_enabled else "Debug logs")
+            btn.setProperty("debugActive", bool(viewport_enabled))
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+            btn.update()
+        except Exception:
+            pass
+
+    def _set_debug_menu_active(self, active: bool) -> None:
+        btn = getattr(self, "_debug_btn", None)
+        if btn is None:
+            return
+        try:
+            if not runtime_logging.viewport_render_debug_enabled():
+                btn.setProperty("active", bool(active))
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+            btn.update()
+        except Exception:
+            pass
+
+    def _open_debug_path_location(self) -> None:
+        try:
+            path = runtime_logging.debug_log_dir()
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(path)))
+        except Exception:
+            pass
+
+    def _on_echo_log_action_triggered(self, checked: bool) -> None:
+        runtime_logging.set_echo_log_enabled(bool(checked))
+        self._sync_debug_menu_state()
+
+    def _on_viewport_debug_action_triggered(self, checked: bool) -> None:
+        runtime_logging.set_viewport_render_debug_enabled(bool(checked))
+        self._apply_pan_settings_to_gl_view()
+        try:
+            gv = getattr(self, "gl_view", None)
+            if gv is not None:
+                setattr(gv, "_viewport_render_debug_enabled", bool(checked))
+                gv.update()
+        except Exception:
+            pass
+        self._sync_debug_menu_state()
 
     def _open_help_docs(self) -> None:
         try:
@@ -6196,6 +6351,7 @@ class EchoGraphWindow(QtWidgets.QMainWindow):
             gv._mgl_zoom_pan_scale = float(getattr(self, "_gizmo_zoom_scale", 0.02))
             gv._mgl_pan_ref_zoom = None
             gv._mgl_splat_log = bool(getattr(self, "_splat_log_enabled", False))
+            gv._viewport_render_debug_enabled = bool(runtime_logging.viewport_render_debug_enabled())
             gv._mgl_scene_skeleton_show_joint_names = bool(
                 getattr(self, "_scene_skeleton_joint_names_enabled", _SCENE_SKELETON_JOINT_NAMES_DEFAULT)
             )

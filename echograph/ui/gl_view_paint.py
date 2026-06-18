@@ -350,6 +350,9 @@ def paint_gl(view: Any) -> None:
                                 setattr(view, "_xform_hover_axis_proj", None)
 
                         else:
+                            setattr(view, "_xform_overlay_mode", None)
+                            setattr(view, "_xform_overlay_center_px", None)
+                            setattr(view, "_xform_overlay_axis_proj", None)
                             setattr(view, "_xform_hover_axis", None)
                             setattr(view, "_xform_hover_center", False)
                             setattr(view, "_xform_hover_center_px", None)

@@ -47,6 +47,7 @@ from echograph.ui.gl_view_example import build_example_program as _ex_build_exam
 from echograph.ui.gl_view_example import example_cube_data as _ex_cube_data
 from echograph.ui.gl_view_example import example_grid_data as _ex_grid_data
 from echograph.services.profiler import profile_scope
+from echograph.services import runtime_logging
 from .gl_view_math import axis_proj_max_len as _gv_axis_proj_max_len
 from .gl_view_math import axis_line_ray_param as _gv_axis_line_ray_param
 from .gl_view_math import closest_unwrapped_euler as _gv_closest_unwrapped_euler
@@ -255,6 +256,31 @@ def _qt_shift_active(mods) -> bool:
     except Exception:
         return False
 
+def _qt_ctrl_active(mods) -> bool:
+    try:
+        return bool(mods & QtCore.Qt.ControlModifier)
+    except Exception:
+        pass
+    try:
+        return bool(mods & QtCore.Qt.KeyboardModifier.ControlModifier)
+    except Exception:
+        pass
+    try:
+        return bool(int(mods) & int(QtCore.Qt.ControlModifier))
+    except Exception:
+        return False
+
+def _mesh_selection_operation_from_mods(mods) -> str:
+    shift = bool(_qt_shift_active(mods))
+    ctrl = bool(_qt_ctrl_active(mods))
+    if shift and ctrl:
+        return "toggle"
+    if ctrl:
+        return "subtract"
+    if shift:
+        return "add"
+    return "replace"
+
 
 def _coerce_view_bool(value, default: bool) -> bool:
     if isinstance(value, bool):
@@ -391,6 +417,9 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._xform_hover_center = False
         self._xform_hover_center_px = None
         self._xform_hover_axis_proj = None
+        self._xform_overlay_mode = None
+        self._xform_overlay_center_px = None
+        self._xform_overlay_axis_proj = None
         self._xform_drag_plane_normal = None
         self._xform_drag_plane_start = None
         self._xform_use_local = True
@@ -492,6 +521,8 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._mgl_debug = False
         self._mgl_cam_debug = False
         self._thumb_debug = False
+        self._viewport_render_debug_enabled = False
+        self._viewport_render_debug_log_times = {}
         # camera debug log (same folder as the main EchoGraph log)
         try:
             log_dir = Path(tempfile.gettempdir()) / "EchoGraph"
@@ -825,6 +856,10 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._cam_select_lock_icon_unlocked = None
         self._grid_icon_on = None
         self._grid_icon_off = None
+        self._point_id_icon = None
+        self._point_id_btn = None
+        self._point_id_btn_frame = None
+        self._point_id_display_enabled = False
         self._mesh_select_icons: Dict[str, QtGui.QIcon] = {}
         self._mesh_select_buttons: Dict[str, QtWidgets.QToolButton] = {}
         self._mesh_select_button_frames: Dict[str, QtWidgets.QFrame] = {}
@@ -1029,6 +1064,7 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         self._build_debug_copy_button()
         self._build_mesh_selection_buttons()
         self._build_mesh_box_select_button()
+        self._build_point_id_button()
         self._build_camera_orbit_button()
         self._build_fly_mode_button()
         self._build_grid_button()
@@ -1165,6 +1201,14 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             y += self._side_btn_size + self._side_btn_gap
         elif box_btn is not None:
             box_btn.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
+            y += self._side_btn_size + self._side_btn_gap
+        point_id_frame = getattr(self, "_point_id_btn_frame", None)
+        point_id_btn = getattr(self, "_point_id_btn", None)
+        if point_id_frame is not None:
+            point_id_frame.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
+            y += self._side_btn_size + self._side_btn_gap
+        elif point_id_btn is not None:
+            point_id_btn.setGeometry(self._side_btn_margin, y, self._side_btn_size, self._side_btn_size)
             y += self._side_btn_size + self._side_btn_gap
         grid_frame = getattr(self, "_grid_btn_frame", None)
         grid_btn = getattr(self, "_grid_btn", None)
@@ -1519,6 +1563,22 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             painter.end()
             return
         super().paintEvent(event)
+        try:
+            self._viewport_render_debug_log_throttled(
+                "paint_event",
+                "paint_event",
+                interval=1.0,
+                width=int(self.width()),
+                height=int(self.height()),
+                use_moderngl=bool(getattr(self, "_use_moderngl", False)),
+                point_id_enabled=bool(getattr(self, "_point_id_display_enabled", False)),
+                debug_overlay=bool(getattr(self, "_debug_overlay", False)),
+                mesh_select_mode=str(getattr(self, "_mesh_select_mode", "") or ""),
+                scene_texture=bool(getattr(self, "_scene_texture", None)),
+                shader_error=str(getattr(self, "_shader_error", "") or ""),
+            )
+        except Exception:
+            pass
         if not hasattr(self, "_gl"):
             painter = QtGui.QPainter(self)
             painter.fillRect(self.rect(), QtGui.QColor("#0f172a"))
@@ -1902,6 +1962,62 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         except Exception:
             pass
 
+    def _build_point_id_button(self) -> None:
+        try:
+            btn = QtWidgets.QToolButton(self)
+            btn.setCursor(QtCore.Qt.PointingHandCursor)
+            btn.setCheckable(True)
+            btn.setIconSize(QtCore.QSize(self._side_btn_icon, self._side_btn_icon))
+            btn.setFixedSize(self._side_btn_size, self._side_btn_size)
+            self._load_point_id_icon()
+            icon = getattr(self, "_point_id_icon", None)
+            if icon is not None:
+                btn.setIcon(icon)
+            else:
+                btn.setText("#")
+            btn.clicked.connect(self._on_point_id_button_toggled)
+            self._point_id_btn = btn
+            self._point_id_btn_frame = self._wrap_side_button(btn, "_point_id_btn_frame")
+            self._update_point_id_button()
+            btn.show()
+        except Exception:
+            self._point_id_btn = None
+            self._point_id_btn_frame = None
+
+    def _load_point_id_icon(self) -> None:
+        if getattr(self, "_point_id_icon", None) is not None:
+            return
+        try:
+            path = Path(__file__).resolve().parents[2] / "icons" / "PointID_Icon.png"
+            if path.exists():
+                self._point_id_icon = QtGui.QIcon(str(path))
+        except Exception:
+            self._point_id_icon = None
+
+    def _update_point_id_button(self) -> None:
+        btn = getattr(self, "_point_id_btn", None)
+        if btn is None:
+            return
+        active = bool(getattr(self, "_point_id_display_enabled", False))
+        try:
+            btn.blockSignals(True)
+            btn.setChecked(active)
+        finally:
+            try:
+                btn.blockSignals(False)
+            except Exception:
+                pass
+        btn.setToolTip(f"Point Numbers: {'On' if active else 'Off'}")
+        self._apply_selection_tool_icon_style(btn, active=active)
+
+    def _on_point_id_button_toggled(self, checked: bool = False) -> None:
+        self._point_id_display_enabled = bool(checked)
+        self._update_point_id_button()
+        try:
+            self.update()
+        except Exception:
+            pass
+
     def _on_mesh_selection_mode_clicked(self, mode: str) -> None:
         mode = str(mode or "").strip().lower()
         valid = {spec[0] for spec in self._mesh_selection_mode_specs()}
@@ -1989,24 +2105,96 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
             owner_key: set(indices) for owner_key, indices in index_sets.items() if indices
         }
 
-    def _set_mesh_element_selection(self, elem) -> None:
+    def _mesh_selection_operation(self, selection_op: str | None = None, *, additive: bool = False) -> str:
+        op = str(selection_op or "").strip().lower()
+        if op in {"replace", "add", "subtract", "toggle"}:
+            return op
+        return "add" if bool(additive) else "replace"
+
+    def _set_mesh_element_selection(self, elem, *, additive: bool = False, selection_op: str | None = None) -> None:
         next_elem = dict(elem) if isinstance(elem, dict) else None
-        old_key = self._mesh_element_key(getattr(self, "_mesh_select_selected", None))
-        new_key = self._mesh_element_key(next_elem)
-        self._mesh_select_selected = next_elem
-        self._mesh_select_selected_many = [next_elem] if isinstance(next_elem, dict) else []
-        self._cache_mesh_selected_point_groups(self._mesh_select_selected_many)
-        if self._mesh_element_key(getattr(self, "_mesh_select_hover", None)) == new_key:
+        op = self._mesh_selection_operation(selection_op, additive=bool(additive))
+        self._set_mesh_element_selection_many([next_elem] if next_elem is not None else [], selection_op=op)
+
+    def _mesh_selected_element_list_and_keys(self) -> Tuple[List[dict], set]:
+        clean = []
+        seen = set()
+        for elem_existing in self._mesh_selected_elements():
+            key = self._mesh_element_key(elem_existing)
+            if key is None or key in seen:
+                continue
+            clean.append(dict(elem_existing))
+            seen.add(key)
+        return clean, seen
+
+    def _mesh_selection_candidate_list_and_keys(self, elems) -> Tuple[List[dict], set]:
+        clean = []
+        seen = set()
+        if isinstance(elems, (list, tuple)):
+            for elem in elems:
+                if not isinstance(elem, dict):
+                    continue
+                key = self._mesh_element_key(elem)
+                if key is None or key in seen:
+                    continue
+                clean.append(dict(elem))
+                seen.add(key)
+        return clean, seen
+
+    def _apply_mesh_element_selection(self, clean: List[dict], new_keys: set, old_keys: set) -> None:
+        self._mesh_select_selected_many = clean
+        self._mesh_select_selected = dict(clean[0]) if clean else None
+        self._cache_mesh_selected_point_groups(clean)
+        hover_key = self._mesh_element_key(getattr(self, "_mesh_select_hover", None))
+        if hover_key in new_keys:
             self._mesh_select_hover = None
         try:
             self._sync_mesh_selection_gizmo_to_selection()
         except Exception:
             pass
-        if old_key != new_key:
+        if old_keys != new_keys:
             try:
                 self.update()
             except Exception:
                 pass
+
+    def _set_mesh_element_selection_many(self, elems, *, additive: bool = False, selection_op: str | None = None) -> None:
+        op = self._mesh_selection_operation(selection_op, additive=bool(additive))
+        old_keys = self._mesh_selected_element_keys()
+        current, current_keys = self._mesh_selected_element_list_and_keys()
+        candidates, candidate_keys = self._mesh_selection_candidate_list_and_keys(elems)
+        if op == "replace":
+            clean = candidates
+            new_keys = set(candidate_keys)
+        elif op == "subtract":
+            clean = [elem for elem in current if self._mesh_element_key(elem) not in candidate_keys]
+            new_keys = {self._mesh_element_key(elem) for elem in clean}
+            new_keys.discard(None)
+        elif op == "toggle":
+            clean = list(current)
+            seen = set(current_keys)
+            for elem in candidates:
+                key = self._mesh_element_key(elem)
+                if key is None:
+                    continue
+                if key in seen:
+                    clean = [existing for existing in clean if self._mesh_element_key(existing) != key]
+                    seen.discard(key)
+                else:
+                    clean.append(dict(elem))
+                    seen.add(key)
+            new_keys = set(seen)
+        else:
+            clean = list(current)
+            seen = set(current_keys)
+            for elem in candidates:
+                key = self._mesh_element_key(elem)
+                if key is None or key in seen:
+                    continue
+                clean.append(dict(elem))
+                seen.add(key)
+            new_keys = set(seen)
+        self._apply_mesh_element_selection(clean, new_keys, old_keys)
 
     def _mesh_selected_element_keys(self) -> set:
         keys = set()
@@ -2038,36 +2226,6 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
                 return False
         key = self._mesh_element_key(elem)
         return key is not None and key in self._mesh_selected_element_keys()
-
-    def _set_mesh_element_selection_many(self, elems) -> None:
-        clean = []
-        seen = set()
-        if isinstance(elems, (list, tuple)):
-            for elem in elems:
-                if not isinstance(elem, dict):
-                    continue
-                key = self._mesh_element_key(elem)
-                if key is None or key in seen:
-                    continue
-                clean.append(dict(elem))
-                seen.add(key)
-        old_keys = self._mesh_selected_element_keys()
-        new_keys = set(seen)
-        self._mesh_select_selected_many = clean
-        self._mesh_select_selected = dict(clean[0]) if clean else None
-        self._cache_mesh_selected_point_groups(clean)
-        hover_key = self._mesh_element_key(getattr(self, "_mesh_select_hover", None))
-        if hover_key in new_keys:
-            self._mesh_select_hover = None
-        try:
-            self._sync_mesh_selection_gizmo_to_selection()
-        except Exception:
-            pass
-        if old_keys != new_keys:
-            try:
-                self.update()
-            except Exception:
-                pass
 
     def _mesh_selected_elements(self) -> List[dict]:
         many = getattr(self, "_mesh_select_selected_many", None)
@@ -7072,6 +7230,27 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
         if self._use_moderngl and self._mgl_uv_overlay_enabled:
             self._draw_uv_overlay(painter)
         self._draw_axis_gizmo(painter)
+        draw_point_ids = getattr(self, "_draw_point_id_qt_overlay", None)
+        try:
+            self._viewport_render_debug_log_throttled(
+                "qt_overlay",
+                "qt_overlay",
+                interval=1.0,
+                width=int(self.width()),
+                height=int(self.height()),
+                point_id_enabled=bool(getattr(self, "_point_id_display_enabled", False)),
+                point_id_suspended=bool(getattr(self, "_point_id_overlay_suspended", lambda: False)()),
+                mesh_select_mode=str(getattr(self, "_mesh_select_mode", "") or ""),
+                callable_point_ids=bool(callable(draw_point_ids)),
+            )
+        except Exception:
+            pass
+        if callable(draw_point_ids):
+            try:
+                with profile_scope("render.3d.qt_overlay.point_ids"):
+                    draw_point_ids(painter)
+            except Exception:
+                pass
         try:
             self._draw_mesh_box_selection_qt_overlay(painter)
         except Exception:
@@ -7170,7 +7349,12 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
     def _draw_xform_gizmo_top_overlay(self, painter: QtGui.QPainter) -> None:
         if not bool(getattr(self, "_mgl_gizmo_visible", True)):
             return
-        mode = str(getattr(self, "_xform_overlay_mode", getattr(self, "_xform_gizmo_mode", "translate")) or "translate")
+        active_mode = str(getattr(self, "_xform_gizmo_mode", "translate") or "translate")
+        if active_mode not in ("translate", "scale"):
+            return
+        mode = str(getattr(self, "_xform_overlay_mode", active_mode) or active_mode)
+        if mode != active_mode:
+            return
         if mode not in ("translate", "scale"):
             return
         center = getattr(self, "_xform_overlay_center_px", None)
@@ -7956,6 +8140,23 @@ class GraphGLView(GraphGLTimelineMixin, MGLRendererMixin, QOpenGLWidget if QOpen
     def _dbgprint(self, enabled: bool, *a, **k) -> None:
         if enabled:
             print(*a, **k)
+
+    def _viewport_render_debug_log_throttled(self, key: str, event: str, interval: float = 1.0, **fields) -> None:
+        if not bool(runtime_logging.viewport_render_debug_enabled()):
+            return
+        try:
+            store = getattr(self, "_viewport_render_debug_log_times", None)
+            if not isinstance(store, dict):
+                store = {}
+                self._viewport_render_debug_log_times = store
+            now = float(time.time())
+            last = float(store.get(str(key), 0.0) or 0.0)
+            if (now - last) < float(interval):
+                return
+            store[str(key)] = now
+        except Exception:
+            pass
+        runtime_logging.log_viewport_render(event, **fields)
 
     def _camdbg(self, *a) -> None:
         if bool(getattr(self, "_mgl_cam_debug", False)):

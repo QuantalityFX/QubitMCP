@@ -70,6 +70,7 @@ from echograph.rigging.groom_deform import (
     deform_groom_curves,
     evaluate_groom_deform_runtime,
 )
+from echograph.services import runtime_logging
 
 # OpenGL constants (avoid optional PyOpenGL dependency).
 GL_COLOR_BUFFER_BIT = 0x00004000
@@ -2393,7 +2394,8 @@ class MGLRendererMixin:
         try:
             owner = str(payload.get("owner") or getattr(item, "name", "") or "").strip()
             selection_active = bool(str(getattr(self, "_mesh_select_mode", "") or "").strip())
-            if owner and selection_active:
+            point_id_active = bool(getattr(self, "_point_id_display_enabled", False)) and not self._point_id_overlay_suspended()
+            if owner and (selection_active or point_id_active):
                 with profile_scope("render.3d.mgl.fbx_skin.selection_topology"):
                     self._mgl_store_mesh_topology_for_owner(owner, payload)
                     self._mgl_clear_mesh_selection_overlay_cache()
@@ -4204,6 +4206,7 @@ class MGLRendererMixin:
         clip = rig_context.get("clip")
         skeleton = rig_context.get("skeleton")
         selection_active = bool(str(getattr(self, "_mesh_select_mode", "") or "").strip())
+        point_id_active = bool(getattr(self, "_point_id_display_enabled", False)) and not self._point_id_overlay_suspended()
         signature = (
             int(self._mgl_timeline_frame_index()),
             round(float(sample_seconds), 6),
@@ -4213,6 +4216,7 @@ class MGLRendererMixin:
             int(len(bind_curves)),
             str(cfg.get("mode") or "skinned_cv"),
             int(selection_active),
+            int(point_id_active),
         )
         if payload.get("_groom_deform_frame") == signature:
             return None
@@ -4451,7 +4455,8 @@ class MGLRendererMixin:
                     groom_guides = payload.get("groom_guides") if isinstance(payload.get("groom_guides"), dict) else {}
                     if not root_indices:
                         root_indices = [int(idx) for idx in (groom_guides.get("root_indices") or [])]
-                    if str(getattr(self, "_mesh_select_mode", "") or "").strip().lower():
+                    point_id_active = bool(getattr(self, "_point_id_display_enabled", False)) and not self._point_id_overlay_suspended()
+                    if str(getattr(self, "_mesh_select_mode", "") or "").strip().lower() or point_id_active:
                         with profile_scope("render.3d.mgl.groom_deform.selection_topology"):
                             self._mgl_store_curve_topology_for_owner(
                                 owner,
@@ -4463,6 +4468,13 @@ class MGLRendererMixin:
                                 model=payload.get("model"),
                                 source_owner=str(payload.get("source_owner") or ""),
                                 topology_kind="groom_guides",
+                                debug_log=bool(
+                                    payload.get("debug_log", False)
+                                    or (
+                                        isinstance(payload.get("groom_deform"), dict)
+                                        and payload.get("groom_deform", {}).get("debug_log", False)
+                                    )
+                                ),
                             )
                             try:
                                 self._mgl_clear_mesh_selection_overlay_cache()
@@ -7319,6 +7331,365 @@ class MGLRendererMixin:
             return float(xs[idx]) / dpr, float(ys[idx]) / dpr
         except Exception:
             return None
+
+    @staticmethod
+    def _point_id_labels_for_topology(topo: dict, count: int) -> List[str]:
+        total = max(0, int(count))
+        if total <= 0:
+            return []
+        labels = [str(idx) for idx in range(total)]
+        try:
+            is_curve = bool(topo.get("curve_topology", False))
+        except Exception:
+            is_curve = False
+        if not is_curve:
+            return labels
+        roots: List[int] = []
+        try:
+            point_groups = topo.get("point_groups")
+            if isinstance(point_groups, dict):
+                roots = [int(idx) for idx in list(point_groups.get("root") or [])]
+        except Exception:
+            roots = []
+        roots = sorted({idx for idx in roots if 0 <= idx < total})
+        if not roots:
+            roots = [0]
+        for root_pos, root_idx in enumerate(roots):
+            next_root = roots[root_pos + 1] if (root_pos + 1) < len(roots) else total
+            for idx in range(root_idx, max(root_idx, min(next_root, total))):
+                labels[idx] = str(int(idx - root_idx))
+        return labels
+
+    def _point_id_overlay_suspended(self) -> bool:
+        try:
+            timer = getattr(self, "_timeline_play_timer", None)
+            if timer is not None and bool(timer.isActive()):
+                return True
+        except Exception:
+            pass
+        for name in ("_orbit_dragging", "_pan_dragging", "_dolly_dragging", "_fps_nav_active"):
+            try:
+                if bool(getattr(self, name, False)):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _point_id_debug_log(self, event: str, **fields) -> None:
+        runtime_logging.log_viewport_render(
+            event,
+            force=bool(os.environ.get("ECHOGRAPH_POINT_ID_DEBUG_VERBOSE")),
+            **fields,
+        )
+
+    def _point_id_debug_log_throttled(self, key: str, event: str, interval: float = 0.75, **fields) -> None:
+        try:
+            store = getattr(self, "_point_id_debug_log_times", None)
+            if not isinstance(store, dict):
+                store = {}
+                setattr(self, "_point_id_debug_log_times", store)
+            now = float(time.time())
+            last = float(store.get(key, 0.0) or 0.0)
+            if now - last < float(interval):
+                return
+            store[key] = now
+        except Exception:
+            pass
+        self._point_id_debug_log(event, **fields)
+
+    def _draw_point_id_qt_overlay(self, painter: QtGui.QPainter) -> None:
+        if np is None or not bool(getattr(self, "_point_id_display_enabled", False)):
+            return
+        if self._point_id_overlay_suspended():
+            return
+        try:
+            dpr = float(self.devicePixelRatioF())
+        except Exception:
+            try:
+                dpr = float(self.devicePixelRatio())
+            except Exception:
+                dpr = 1.0
+        dpr = max(1.0e-6, float(dpr))
+        try:
+            viewport_w = int(float(self.width()) * dpr)
+            viewport_h = int(float(self.height()) * dpr)
+        except Exception:
+            return
+        selected_point_sets = getattr(self, "_mesh_select_selected_point_index_sets_by_owner", None)
+        if not isinstance(selected_point_sets, dict):
+            selected_point_sets = {}
+        point_select_active = str(getattr(self, "_mesh_select_mode", "") or "").strip().lower() == "point"
+        point_markers_to_draw: List[Tuple[float, float, float, bool]] = []
+        labels_to_draw: List[Tuple[float, float, float, str, bool, bool]] = []
+        debug_overlay_active = False
+        for owner in self._mgl_mesh_selection_owners():
+            if not self._mgl_scene_owner_visible(owner):
+                continue
+            topo = self._mgl_mesh_topology_for_owner(owner)
+            if not isinstance(topo, dict):
+                continue
+            projected = self._mgl_project_owner_points_device(owner, topo, viewport_w, viewport_h)
+            if not isinstance(projected, dict):
+                continue
+            try:
+                valid = np.asarray(projected.get("valid"), dtype=bool).reshape(-1)
+                xs = np.asarray(projected.get("x"), dtype=np.float32).reshape(-1)
+                ys = np.asarray(projected.get("y"), dtype=np.float32).reshape(-1)
+                zs = np.asarray(projected.get("z"), dtype=np.float32).reshape(-1)
+                count = min(valid.size, xs.size, ys.size, zs.size)
+            except Exception:
+                continue
+            if count <= 0:
+                continue
+            labels = self._point_id_labels_for_topology(topo, count)
+            is_curve = bool(topo.get("curve_topology", False))
+            owner_key = str(owner or "").strip().lower()
+            selected_indices = selected_point_sets.get(owner_key)
+            if not isinstance(selected_indices, set):
+                try:
+                    selected_indices = {int(idx) for idx in list(selected_indices or [])}
+                except Exception:
+                    selected_indices = set()
+            try:
+                visible_indices = np.flatnonzero(valid[:count])
+            except Exception:
+                visible_indices = np.asarray([idx for idx in range(count) if bool(valid[idx])], dtype=np.int64)
+            if visible_indices.size <= 0:
+                continue
+            max_label_candidates = int(getattr(self, "_point_id_max_label_candidates", 3500) or 3500)
+            label_stride = max(1, int(math.ceil(float(visible_indices.size) / float(max(1, max_label_candidates)))))
+            max_point_markers = int(getattr(self, "_point_id_max_point_markers", 5000) or 5000)
+            point_marker_stride = max(1, int(math.ceil(float(visible_indices.size) / float(max(1, max_point_markers)))))
+            debug_enabled = bool(
+                runtime_logging.viewport_render_debug_enabled()
+                or os.environ.get("ECHOGRAPH_POINT_ID_DEBUG_VERBOSE")
+            )
+            if debug_enabled:
+                debug_overlay_active = True
+                root_values = []
+                root_preview = []
+                try:
+                    groups = topo.get("point_groups")
+                    if isinstance(groups, dict):
+                        root_values = [int(idx) for idx in list(groups.get("root") or [])]
+                        root_preview = root_values[:32]
+                except Exception:
+                    root_values = []
+                    root_preview = []
+                sample_rows = []
+                for raw_sample_idx in list(visible_indices[: min(16, int(visible_indices.size))]):
+                    try:
+                        sample_idx = int(raw_sample_idx)
+                        sample_rows.append(
+                            {
+                                "index": int(sample_idx),
+                                "label": labels[sample_idx] if sample_idx < len(labels) else str(sample_idx),
+                                "x": float(xs[sample_idx]) / dpr,
+                                "y": float(ys[sample_idx]) / dpr,
+                                "z": float(zs[sample_idx]),
+                            }
+                        )
+                    except Exception:
+                        continue
+                self._point_id_debug_log_throttled(
+                    f"point_id_topology:{str(owner).lower()}",
+                    "point_id_topology",
+                    owner=str(owner),
+                    curve_topology=bool(is_curve),
+                    topology_kind=str(topo.get("topology_kind") or ""),
+                    point_count=int(count),
+                    visible_point_count=int(visible_indices.size),
+                    label_count=int(len(labels)),
+                    label_stride=int(label_stride),
+                    point_marker_stride=int(point_marker_stride),
+                    max_label_candidates=int(max_label_candidates),
+                    max_point_markers=int(max_point_markers),
+                    root_count=int(len(root_values)),
+                    root_preview=root_preview,
+                    sample_labels=sample_rows,
+                    viewport=[int(viewport_w), int(viewport_h)],
+                    dpr=float(dpr),
+                )
+            for visible_pos, raw_idx in enumerate(visible_indices):
+                try:
+                    idx = int(raw_idx)
+                except Exception:
+                    continue
+                try:
+                    x = float(xs[idx]) / dpr
+                    y = float(ys[idx]) / dpr
+                    z = float(zs[idx])
+                    if not point_select_active and (visible_pos % point_marker_stride) == 0:
+                        point_markers_to_draw.append((z, x, y, is_curve))
+                    is_selected = bool(idx in selected_indices)
+                    label = labels[idx] if idx < len(labels) else str(idx)
+                    if is_selected or (visible_pos % label_stride) == 0:
+                        labels_to_draw.append(
+                            (
+                                z,
+                                x,
+                                y,
+                                label,
+                                is_curve,
+                                is_selected,
+                            )
+                        )
+                except Exception:
+                    continue
+        if not labels_to_draw and not point_markers_to_draw:
+            return
+        point_markers_to_draw.sort(key=lambda row: float(row[0]))
+        labels_to_draw.sort(key=lambda row: float(row[0]))
+        try:
+            painter.save()
+        except Exception:
+            pass
+        try:
+            painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+            marker_radius = 2.35
+            point_blue = QtGui.QColor(56, 220, 255, 255)
+            point_blue_fill = QtGui.QColor(64, 190, 255, 220)
+            point_blue_outline = QtGui.QColor(0, 122, 190, 135)
+            marker_outline_pen = QtGui.QPen(point_blue_outline, 0.8)
+            marker_outline_pen.setCosmetic(True)
+            marker_brush = QtGui.QBrush(point_blue_fill)
+            drawn_markers = 0
+            max_visible_markers = int(getattr(self, "_point_id_max_visible_markers", 5000) or 5000)
+            mesh_marker_path = QtGui.QPainterPath()
+            curve_marker_path = QtGui.QPainterPath()
+            for _z, x, y, is_curve in point_markers_to_draw:
+                if drawn_markers >= max_visible_markers:
+                    break
+                marker_rect = QtCore.QRectF(
+                    float(x) - marker_radius,
+                    float(y) - marker_radius,
+                    marker_radius * 2.0,
+                    marker_radius * 2.0,
+                )
+                if is_curve:
+                    curve_marker_path.addEllipse(marker_rect)
+                else:
+                    mesh_marker_path.addEllipse(marker_rect)
+                drawn_markers += 1
+            if not mesh_marker_path.isEmpty():
+                painter.setPen(marker_outline_pen)
+                painter.setBrush(marker_brush)
+                painter.drawPath(mesh_marker_path)
+            if not curve_marker_path.isEmpty():
+                painter.setPen(marker_outline_pen)
+                painter.setBrush(marker_brush)
+                painter.drawPath(curve_marker_path)
+            font = painter.font()
+            try:
+                font.setPointSize(max(9, int(font.pointSize() or 9)))
+                font.setBold(False)
+                painter.setFont(font)
+            except Exception:
+                pass
+            text_outline_pen = QtGui.QPen(point_blue_outline, 0.65)
+            text_outline_pen.setCosmetic(True)
+            try:
+                text_outline_pen.setJoinStyle(QtCore.Qt.RoundJoin)
+            except Exception:
+                pass
+            text_brush = QtGui.QBrush(point_blue)
+            selected_text_color = QtGui.QColor(255, 232, 40, 255)
+            selected_text_brush = QtGui.QBrush(selected_text_color)
+            selected_outline = QtGui.QColor(126, 88, 0, 145)
+            selected_text_outline_pen = QtGui.QPen(selected_outline, 0.65)
+            selected_text_outline_pen.setCosmetic(True)
+            try:
+                selected_text_outline_pen.setJoinStyle(QtCore.Qt.RoundJoin)
+            except Exception:
+                pass
+            metrics = QtGui.QFontMetrics(painter.font())
+            try:
+                text_h = float(metrics.height())
+            except Exception:
+                text_h = 10.0
+            try:
+                text_ascent = float(metrics.ascent())
+            except Exception:
+                text_ascent = max(1.0, text_h * 0.75)
+            default_max_labels = int(getattr(self, "_point_id_max_label_candidates", 3500) or 3500)
+            max_labels = int(getattr(self, "_point_id_max_visible_labels", default_max_labels) or default_max_labels)
+            drawn_labels = 0
+            label_gap = marker_radius + 2.0
+            drawn_sample = []
+            mesh_label_path = QtGui.QPainterPath()
+            curve_label_path = QtGui.QPainterPath()
+            selected_label_path = QtGui.QPainterPath()
+            selected_labels = 0
+            for _z, x, y, label, is_curve, is_selected in labels_to_draw:
+                if not is_selected and drawn_labels >= max_labels:
+                    continue
+                tx = x
+                ty = y + label_gap + text_ascent
+                text = str(label)
+                try:
+                    text_w = float(metrics.horizontalAdvance(text))
+                except Exception:
+                    text_w = float(max(7, len(text) * 7))
+                label_path = QtGui.QPainterPath()
+                label_path.addText(QtCore.QPointF(tx, ty), painter.font(), text)
+                if is_selected:
+                    selected_label_path.addPath(label_path)
+                    selected_labels += 1
+                elif is_curve:
+                    curve_label_path.addPath(label_path)
+                else:
+                    mesh_label_path.addPath(label_path)
+                if len(drawn_sample) < 24:
+                    drawn_sample.append(
+                        {
+                            "label": text,
+                            "x": float(tx),
+                            "y": float(ty),
+                            "text_w": float(text_w),
+                            "text_h": float(text_h),
+                            "curve": bool(is_curve),
+                            "selected": bool(is_selected),
+                        }
+                    )
+                drawn_labels += 1
+            if not mesh_label_path.isEmpty():
+                painter.setPen(text_outline_pen)
+                painter.setBrush(text_brush)
+                painter.drawPath(mesh_label_path)
+            if not curve_label_path.isEmpty():
+                painter.setPen(text_outline_pen)
+                painter.setBrush(text_brush)
+                painter.drawPath(curve_label_path)
+            if not selected_label_path.isEmpty():
+                painter.setPen(selected_text_outline_pen)
+                painter.setBrush(selected_text_brush)
+                painter.drawPath(selected_label_path)
+            if debug_overlay_active:
+                self._point_id_debug_log_throttled(
+                    "point_id_draw_summary",
+                    "point_id_draw_summary",
+                    point_candidates=int(len(point_markers_to_draw)),
+                    drawn_points=int(drawn_markers),
+                    point_markers_suppressed=bool(point_select_active),
+                    label_candidates=int(len(labels_to_draw)),
+                    drawn_labels=int(drawn_labels),
+                    selected_labels=int(selected_labels),
+                    max_labels=int(max_labels),
+                    overlap_culling=False,
+                    drawn_sample=drawn_sample,
+                    label_draw_method="painter_path",
+                    marker_radius=float(marker_radius),
+                    font_family=str(painter.font().family()),
+                    font_point_size=float(painter.font().pointSizeF()),
+                    text_height=float(text_h),
+                    viewport=[int(viewport_w), int(viewport_h)],
+                    dpr=float(dpr),
+                )
+        finally:
+            try:
+                painter.restore()
+            except Exception:
+                pass
 
     def _draw_mesh_selection_qt_overlay(self, painter: QtGui.QPainter) -> None:
         hover_color = getattr(self, "_mesh_select_hover_color", (0.0, 0.72, 1.0, 0.74))
@@ -13648,6 +14019,7 @@ class MGLRendererMixin:
         model=None,
         source_owner: str = "",
         topology_kind: str = "curve",
+        debug_log: bool = False,
     ) -> None:
         if np is None:
             return
@@ -13714,6 +14086,7 @@ class MGLRendererMixin:
             "bounds_max": bmax,
             "curve_topology": True,
             "topology_kind": str(topology_kind or "curve"),
+            "debug_log": bool(debug_log),
         }
         if isinstance(point_groups, dict):
             clean_groups = {}
@@ -23640,7 +24013,13 @@ class MGLRendererMixin:
                         except Exception:
                             pass
                         try:
-                            self._mgl_store_curve_topology_for_owner(owner, point_arr, edge_arr, line_arr)
+                            self._mgl_store_curve_topology_for_owner(
+                                owner,
+                                point_arr,
+                                edge_arr,
+                                line_arr,
+                                debug_log=bool(asset.get("debug_log", False)),
+                            )
                         except Exception:
                             pass
                         wire_item = self._mgl_add_wire_item_from_points(
@@ -23713,8 +24092,11 @@ class MGLRendererMixin:
                                 "deformer_owner": str(asset.get("deformer_owner") or "").strip(),
                                 "sample_owner": str(asset.get("sample_owner") or "").strip(),
                                 "sample_owner_candidates": list(asset.get("sample_owner_candidates") or []),
+                                "debug_log": bool(asset.get("debug_log", False)),
                             }
                     if isinstance(groom_deform_cfg, dict):
+                        if "debug_log" not in groom_deform_cfg:
+                            groom_deform_cfg["debug_log"] = bool(asset.get("debug_log", False))
                         for meta_key in ("source_owner", "rig_owner", "deformer_owner", "sample_owner"):
                             if not str(groom_deform_cfg.get(meta_key) or "").strip():
                                 value = str(asset.get(meta_key) or "").strip()
@@ -23745,6 +24127,10 @@ class MGLRendererMixin:
                     source_mesh_owner = source_owner or display_owner
                     owner = display_owner
                     visible = bool(asset.get("visible", True))
+                    debug_log_enabled = bool(
+                        asset.get("debug_log", False)
+                        or (isinstance(groom_deform_cfg, dict) and groom_deform_cfg.get("debug_log", False))
+                    )
                     curves = asset.get("curves")
                     line_points = []
                     curve_points = []
@@ -23840,6 +24226,7 @@ class MGLRendererMixin:
                                 model=topology_model,
                                 source_owner=source_mesh_owner,
                                 topology_kind="groom_guides",
+                                debug_log=bool(debug_log_enabled),
                             )
                         except Exception:
                             pass
@@ -23857,6 +24244,7 @@ class MGLRendererMixin:
                             payload["line_width"] = 3.0
                             payload["overlay"] = True
                             payload["depth_test"] = False if isinstance(groom_deform_cfg, dict) else True
+                            payload["debug_log"] = bool(debug_log_enabled)
                             payload["source_owner"] = source_mesh_owner
                             payload["material"] = {"transparency": 0.01}
                             if source_model is not None:
@@ -23904,6 +24292,7 @@ class MGLRendererMixin:
                             if point_item is not None:
                                 payload = point_item.payload or {}
                                 payload["depth_test"] = False if isinstance(groom_deform_cfg, dict) else True
+                                payload["debug_log"] = bool(debug_log_enabled)
                                 payload["source_owner"] = source_mesh_owner
                                 payload["point_group"] = "root"
                                 if isinstance(groom_deform_cfg, dict):
